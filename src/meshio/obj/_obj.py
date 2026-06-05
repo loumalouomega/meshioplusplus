@@ -133,4 +133,5 @@ def write(filename, mesh):
                 f.write(fmt.format(*(c + 1)))
 
 
-register_format("obj", [".obj"], read, {"obj": write})
+# NOTE: format registration now lives in meshio/obj/__init__.py, which wraps the
+# reader/writer below with the C++-backed fast paths.
