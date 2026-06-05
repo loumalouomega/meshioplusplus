@@ -66,4 +66,42 @@ inline std::vector<int> meshio_to_vtk_order(const std::string& meshio_type) {
     return {};
 }
 
+// VTK cell type id -> meshio cell type (subset meshio can represent; matches
+// vtk_to_meshio_type in _vtk_common.py). Unknown ids are absent.
+inline const std::unordered_map<int, std::string>& vtk_to_meshio_type() {
+    static const std::unordered_map<int, std::string> m = {
+        {0, "empty"},        {1, "vertex"},     {3, "line"},
+        {5, "triangle"},     {7, "polygon"},    {8, "pixel"},
+        {9, "quad"},         {10, "tetra"},     {12, "hexahedron"},
+        {13, "wedge"},       {14, "pyramid"},   {15, "penta_prism"},
+        {16, "hexa_prism"},  {21, "line3"},     {22, "triangle6"},
+        {23, "quad8"},       {24, "tetra10"},   {25, "hexahedron20"},
+        {26, "wedge15"},     {27, "pyramid13"}, {28, "quad9"},
+        {29, "hexahedron27"},{30, "quad6"},     {31, "wedge12"},
+        {32, "wedge18"},     {33, "hexahedron24"}, {34, "triangle7"},
+        {35, "line4"},       {42, "polyhedron"},
+        {68, "VTK_LAGRANGE_CURVE"},        {69, "VTK_LAGRANGE_TRIANGLE"},
+        {70, "VTK_LAGRANGE_QUADRILATERAL"},{71, "VTK_LAGRANGE_TETRAHEDRON"},
+        {72, "VTK_LAGRANGE_HEXAHEDRON"},   {73, "VTK_LAGRANGE_WEDGE"},
+        {74, "VTK_LAGRANGE_PYRAMID"},
+        {75, "VTK_BEZIER_CURVE"},          {76, "VTK_BEZIER_TRIANGLE"},
+        {77, "VTK_BEZIER_QUADRILATERAL"},  {78, "VTK_BEZIER_TETRAHEDRON"},
+        {79, "VTK_BEZIER_HEXAHEDRON"},     {80, "VTK_BEZIER_WEDGE"},
+        {81, "VTK_BEZIER_PYRAMID"},
+    };
+    return m;
+}
+
+// Inverse node reordering (VTK -> meshio). Only the linear wedge differs; the
+// permutation [0,2,1,3,5,4] is its own inverse. Returns empty for identity.
+inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
+    if (vtk_type == 13) return {0, 2, 1, 3, 5, 4};
+    return {};
+}
+
+// Cell types whose node count varies per cell in a VTK/VTU types array.
+inline bool is_special_cell(const std::string& meshio_type) {
+    return meshio_type == "polygon" || meshio_type.rfind("VTK_LAGRANGE_", 0) == 0;
+}
+
 }  // namespace meshio
