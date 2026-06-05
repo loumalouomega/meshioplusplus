@@ -8,6 +8,8 @@
 #include <pybind11/stl.h>
 
 #include "meshio/exceptions.hpp"
+#include "meshio/formats/obj_off.hpp"
+#include "meshio/formats/stl.hpp"
 #include "meshio/formats/vtk.hpp"
 #include "meshio/formats/vtu.hpp"
 #include "meshio/types.hpp"
@@ -57,15 +59,44 @@ PYBIND11_MODULE(_core, m) {
         return meshio_py::mesh_to_py(meshio::read_vtu(path));
     });
 
-    // VTK 5.1 writer (ascii or big-endian binary).
-    m.def("vtk_write_51", [](const std::string& path, py::object pymesh, bool binary) {
-        meshio_py::PyMeshRefs refs;
-        meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
-        meshio::write_vtk_51(path, cpp, binary);
-    });
+    // VTK writer (version 5.1 or 4.2; ascii or big-endian binary).
+    m.def("vtk_write",
+          [](const std::string& path, py::object pymesh, bool binary, bool v51) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_vtk(path, cpp, binary, v51);
+          });
 
     // VTK 5.1 reader -> Python mesh (zero-copy capsule-backed arrays).
     m.def("vtk_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_vtk(path));
+    });
+
+    // STL writer / reader (ascii or binary).
+    m.def("stl_write", [](const std::string& path, py::object pymesh, bool binary) {
+        meshio_py::PyMeshRefs refs;
+        meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+        meshio::write_stl(path, cpp, binary);
+    });
+    m.def("stl_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_stl(path));
+    });
+
+    // OFF writer / reader.
+    m.def("off_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_off(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("off_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_off(path));
+    });
+
+    // OBJ writer / reader.
+    m.def("obj_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_obj(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("obj_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_obj(path));
     });
 }
