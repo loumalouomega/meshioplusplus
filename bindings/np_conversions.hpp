@@ -113,6 +113,15 @@ inline meshio::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs) {
         m.cell_data.emplace(std::move(name), std::move(blocks));
     }
 
+    py::object fd = pymesh.attr("field_data");
+    if (!fd.is_none()) {
+        for (auto item : fd.cast<py::dict>()) {
+            std::string name = py::cast<std::string>(item.first);
+            py::array d = ensure_contiguous(item.second, refs);
+            m.field_data.emplace(std::move(name), view_from_numpy(d));
+        }
+    }
+
     return m;
 }
 
@@ -158,8 +167,14 @@ inline py::object mesh_to_py(meshio::Mesh&& m) {
         cell_data[py::str(kv.first)] = lst;
     }
 
+    py::dict field_data;
+    for (auto& kv : m.field_data)
+        field_data[py::str(kv.first)] =
+            numpy_from_ndarray(std::move(const_cast<meshio::NDArray&>(kv.second)));
+
     return MeshCls(points, cells, py::arg("point_data") = point_data,
-                   py::arg("cell_data") = cell_data);
+                   py::arg("cell_data") = cell_data,
+                   py::arg("field_data") = field_data);
 }
 
 }  // namespace meshio_py
