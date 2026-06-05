@@ -528,4 +528,5 @@ def write(filename, mesh: Mesh, binary: bool = True):  # noqa: C901
                 fh.write(out.encode())
 
 
-register_format("ply", [".ply"], read, {"ply": write})
+# NOTE: format registration now lives in meshio/ply/__init__.py, which wraps the
+# reader/writer above with the C++-backed fast paths.
