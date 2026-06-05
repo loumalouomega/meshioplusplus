@@ -909,4 +909,5 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     tree.write(filename)
 
 
-register_format("vtu", [".vtu"], read, {"vtu": write})
+# NOTE: format registration now lives in meshio/vtu/__init__.py, which wraps the
+# reader/writer below with the C++-backed fast paths.
