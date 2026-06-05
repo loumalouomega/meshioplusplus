@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshio"
@@ -54,8 +54,22 @@ homepage = "https://github.com/nschloe/meshio"
 code = "https://github.com/nschloe/meshio"
 issues = "https://github.com/nschloe/meshio/issues"
 
-[project.entry-points.console_scripts]
+[project.scripts]
 meshio = "meshio._cli:main"
+
+[tool.scikit-build]
+# scikit-build-core drives the CMake build of the meshio._core extension and
+# bundles it next to the pure-Python package (src layout).
+minimum-version = "0.8"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/meshio"]
+cmake.version = ">=3.15"
+cmake.build-type = "Release"
+
+[tool.scikit-build.editable]
+# Rebuild the extension automatically on import during development.
+rebuild = true
+verbose = false
 
 [tool.isort]
 profile = "black"
