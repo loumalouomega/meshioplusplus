@@ -9,6 +9,7 @@
 
 #include "meshio/exceptions.hpp"
 #include "meshio/formats/gmsh.hpp"
+#include "meshio/formats/medit.hpp"
 #include "meshio/formats/obj_off.hpp"
 #include "meshio/formats/ply.hpp"
 #include "meshio/formats/stl.hpp"
@@ -125,5 +126,14 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("ply_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_ply(path));
+    });
+
+    // Medit ascii writer / reader (.mesh).
+    m.def("medit_write_ascii", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_medit_ascii(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("medit_read_ascii", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_medit_ascii(path));
     });
 }
