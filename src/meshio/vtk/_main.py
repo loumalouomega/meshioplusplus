@@ -34,13 +34,5 @@ def write(filename, mesh, fmt_version: str = "5.1", **kwargs):
     _vtk_51.write(filename, mesh, **kwargs)
 
 
-register_format(
-    "vtk",
-    [".vtk"],
-    read,
-    {
-        "vtk42": _vtk_42.write,
-        "vtk51": _vtk_42.write,
-        "vtk": _vtk_51.write,
-    },
-)
+# NOTE: format registration now lives in meshio/vtk/__init__.py, which wraps the
+# default writer with the C++-backed fast path.
