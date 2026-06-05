@@ -92,4 +92,5 @@ def write(filename, mesh):
         fh.write(out.encode())
 
 
-register_format("off", [".off"], read, {"off": write})
+# NOTE: format registration now lives in meshio/off/__init__.py, which wraps the
+# reader/writer below with the C++-backed fast paths.
