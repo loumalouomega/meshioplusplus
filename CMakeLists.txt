@@ -19,15 +19,9 @@ find_package(pybind11 CONFIG REQUIRED)
 find_package(ZLIB REQUIRED)
 
 # C++ core sources (grows as formats are ported).
-set(MESHIO_CORE_SOURCES
-    bindings/_core.cpp
-    cpp/src/formats/vtu.cpp
-    cpp/src/formats/vtu_read.cpp
-    cpp/src/formats/vtk.cpp
-    cpp/src/formats/vtk_read.cpp
-    cpp/src/formats/stl.cpp
-    cpp/src/formats/off.cpp
-    cpp/src/formats/obj.cpp
+file(GLOB_RECURSE MESHIO_CORE_SOURCES
+    bindings/*.cpp
+    cpp/src/*.cpp
     cpp/third_party/pugixml/pugixml.cpp)
 
 pybind11_add_module(_core ${MESHIO_CORE_SOURCES})
