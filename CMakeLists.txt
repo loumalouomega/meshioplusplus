@@ -25,6 +25,9 @@ set(MESHIO_CORE_SOURCES
     cpp/src/formats/vtu_read.cpp
     cpp/src/formats/vtk.cpp
     cpp/src/formats/vtk_read.cpp
+    cpp/src/formats/stl.cpp
+    cpp/src/formats/off.cpp
+    cpp/src/formats/obj.cpp
     cpp/third_party/pugixml/pugixml.cpp)
 
 pybind11_add_module(_core ${MESHIO_CORE_SOURCES})
