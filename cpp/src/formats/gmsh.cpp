@@ -143,6 +143,13 @@ struct Cursor {
         pos += 8;
         return v;
     }
+    // Read an unsigned integer of `sz` bytes (little-endian host).
+    std::uint64_t read_uint(int sz) {
+        std::uint64_t v = 0;
+        std::memcpy(&v, buf.data() + pos, static_cast<std::size_t>(sz));
+        pos += static_cast<std::size_t>(sz);
+        return v;
+    }
 };
 
 struct EBlock {
@@ -319,6 +326,183 @@ NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
     return out;
 }
 
+// ---- version 4.1 -------------------------------------------------------------
+
+struct E41 {
+    std::string type;
+    std::size_t n = 0;
+    std::size_t count = 0;
+    int entity_tag = 0;
+    std::vector<std::int64_t> conn;  // count*n, 0-based gmsh node ids
+};
+
+void read_nodes_41(Cursor& cur, bool is_ascii, int data_size, NDArray& points,
+                   std::vector<std::int64_t>& tags,
+                   std::vector<std::array<std::int64_t, 2>>& dim_tags) {
+    auto rd_size = [&]() -> std::int64_t {
+        return is_ascii ? cur.next_int()
+                        : static_cast<std::int64_t>(cur.read_uint(data_size));
+    };
+    auto rd_int = [&]() -> int {
+        return is_ascii ? static_cast<int>(cur.next_int()) : cur.read_i32();
+    };
+    auto rd_dbl = [&]() -> double {
+        return is_ascii ? cur.next_double() : cur.read_f64();
+    };
+
+    std::int64_t num_blocks = rd_size();
+    std::int64_t num_nodes = rd_size();
+    rd_size();  // min tag
+    rd_size();  // max tag
+    points = NDArray(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
+    tags.resize(num_nodes);
+    dim_tags.resize(num_nodes);
+    double* pp = points.as<double>();
+
+    std::size_t idx = 0;
+    for (std::int64_t b = 0; b < num_blocks; ++b) {
+        int dim = rd_int();
+        int entity_tag = rd_int();
+        int parametric = rd_int();
+        if (parametric != 0) throw ReadError("parametric Gmsh nodes not supported");
+        std::int64_t nb = rd_size();
+        for (std::int64_t i = 0; i < nb; ++i) tags[idx + i] = rd_size() - 1;
+        for (std::int64_t i = 0; i < nb; ++i) {
+            pp[(idx + i) * 3 + 0] = rd_dbl();
+            pp[(idx + i) * 3 + 1] = rd_dbl();
+            pp[(idx + i) * 3 + 2] = rd_dbl();
+        }
+        for (std::int64_t i = 0; i < nb; ++i)
+            dim_tags[idx + i] = {dim, entity_tag};
+        idx += static_cast<std::size_t>(nb);
+    }
+    cur.skip_to_end("Nodes");
+}
+
+void read_elements_41(Cursor& cur, bool is_ascii, int data_size,
+                      std::vector<E41>& blocks) {
+    auto rd_size = [&]() -> std::int64_t {
+        return is_ascii ? cur.next_int()
+                        : static_cast<std::int64_t>(cur.read_uint(data_size));
+    };
+    auto rd_int = [&]() -> int {
+        return is_ascii ? static_cast<int>(cur.next_int()) : cur.read_i32();
+    };
+
+    std::int64_t num_blocks = rd_size();
+    rd_size();  // num elements
+    rd_size();  // min tag
+    rd_size();  // max tag
+    const auto& g2m = gmsh_to_meshio_type();
+    const auto& nnpc = num_nodes_per_cell();
+
+    for (std::int64_t b = 0; b < num_blocks; ++b) {
+        rd_int();  // entity dim
+        int entity_tag = rd_int();
+        int etype = rd_int();
+        std::int64_t num_ele = rd_size();
+        auto it = g2m.find(etype);
+        if (it == g2m.end())
+            throw ReadError("Gmsh element type " + std::to_string(etype) +
+                            " not supported by the C++ reader");
+        std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
+        E41 blk;
+        blk.type = it->second;
+        blk.n = n;
+        blk.count = static_cast<std::size_t>(num_ele);
+        blk.entity_tag = entity_tag;
+        blk.conn.reserve(static_cast<std::size_t>(num_ele) * n);
+        for (std::int64_t e = 0; e < num_ele; ++e) {
+            rd_size();  // element tag
+            for (std::size_t j = 0; j < n; ++j) blk.conn.push_back(rd_size() - 1);
+        }
+        blocks.push_back(std::move(blk));
+    }
+    cur.skip_to_end("Elements");
+}
+
+Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
+    NDArray points(DType::Float64, {0, 3});
+    std::vector<std::int64_t> point_tags;
+    std::vector<std::array<std::int64_t, 2>> dim_tags;
+    std::vector<E41> eblocks;
+    std::map<std::string, NDArray> field_data, point_data, cell_data_raw;
+
+    while (!cur.eof()) {
+        std::string line = cur.next_nonblank();
+        if (line.empty()) break;
+        if (line[0] != '$') throw ReadError("Gmsh: unexpected line " + line);
+        std::string env = trim(line.substr(1));
+        if (env == "PhysicalNames")
+            read_physical_names(cur, field_data);
+        else if (env == "Entities")
+            throw ReadError("Gmsh $Entities not supported by the C++ reader");
+        else if (env == "Nodes")
+            read_nodes_41(cur, is_ascii, data_size, points, point_tags, dim_tags);
+        else if (env == "Elements")
+            read_elements_41(cur, is_ascii, data_size, eblocks);
+        else if (env == "Periodic")
+            throw ReadError("Gmsh $Periodic not supported by the C++ reader");
+        else if (env == "NodeData")
+            read_data(cur, "NodeData", is_ascii, point_data);
+        else if (env == "ElementData")
+            read_data(cur, "ElementData", is_ascii, cell_data_raw);
+        else
+            cur.skip_to_end(env);
+    }
+
+    std::int64_t max_tag = 0;
+    for (auto t : point_tags) max_tag = std::max(max_tag, t);
+    std::vector<std::int64_t> remap(static_cast<std::size_t>(max_tag) + 1, -1);
+    for (std::size_t i = 0; i < point_tags.size(); ++i)
+        remap[static_cast<std::size_t>(point_tags[i])] = static_cast<std::int64_t>(i);
+
+    Mesh mesh;
+    mesh.points = std::move(points);
+    mesh.point_data = std::move(point_data);
+    mesh.field_data = std::move(field_data);
+
+    // Node entity (dim, tag) -> gmsh:dim_tags point data.
+    NDArray dt(DType::Int64, {dim_tags.size(), 2});
+    for (std::size_t i = 0; i < dim_tags.size(); ++i) {
+        dt.as<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
+        dt.as<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
+    }
+    mesh.point_data.emplace("gmsh:dim_tags", std::move(dt));
+
+    std::vector<NDArray> geom_blocks;
+    for (const auto& b : eblocks) {
+        const std::vector<int>& perm = gmsh_to_meshio_perm(b.type);
+        NDArray data(DType::Int64, {b.count, b.n});
+        std::int64_t* dp = data.as<std::int64_t>();
+        for (std::size_t r = 0; r < b.count; ++r)
+            for (std::size_t j = 0; j < b.n; ++j) {
+                std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                dp[r * b.n + j] = remap[static_cast<std::size_t>(b.conn[r * b.n + src])];
+            }
+        mesh.cells.emplace_back(b.type, std::move(data));
+
+        NDArray ge(DType::Int32, {b.count});
+        for (std::size_t r = 0; r < b.count; ++r)
+            ge.as<std::int32_t>()[r] = b.entity_tag;
+        geom_blocks.push_back(std::move(ge));
+    }
+
+    for (auto& kv : cell_data_raw) {
+        std::vector<NDArray> per_block;
+        std::size_t offset = 0;
+        for (const auto& b : eblocks) {
+            per_block.push_back(slice_rows(kv.second, offset, offset + b.count));
+            offset += b.count;
+        }
+        mesh.cell_data.emplace(kv.first, std::move(per_block));
+    }
+    if (!geom_blocks.empty())
+        mesh.cell_data.emplace("gmsh:geometrical", std::move(geom_blocks));
+
+    return mesh;
+}
+
 }  // namespace
 
 Mesh read_gmsh(const std::string& path) {
@@ -334,8 +518,6 @@ Mesh read_gmsh(const std::string& path) {
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
-    if (version.rfind("2", 0) != 0)
-        throw ReadError("C++ Gmsh reader only handles version 2.2");
     bool is_ascii = (file_type == 0);
     if (!is_ascii) {
         cur.read_i32();  // endianness marker
@@ -343,6 +525,11 @@ Mesh read_gmsh(const std::string& path) {
         if (cur.pos < buf.size() && buf[cur.pos] == '\n') ++cur.pos;
     }
     cur.skip_to_end("MeshFormat");
+
+    if (version == "4.1" || version == "4")
+        return read_gmsh41_body(cur, is_ascii, data_size);
+    if (version.rfind("2", 0) != 0)
+        throw ReadError("C++ Gmsh reader handles versions 2.2 and 4.1 only");
 
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
@@ -628,6 +815,166 @@ void write_gmsh22(const std::string& path, const Mesh& mesh, bool binary) {
                     double v = detail::read_double(d, r * ncomp + c);
                     os.write(reinterpret_cast<const char*>(&v), 8);
                 }
+            } else {
+                os << (r + 1);
+                for (std::size_t c = 0; c < ncomp; ++c) {
+                    std::snprintf(buf, sizeof(buf), " %.17g", detail::read_double(d, r * ncomp + c));
+                    os << buf;
+                }
+                os << '\n';
+            }
+        }
+        if (binary) os << '\n';
+        os << "$EndNodeData\n";
+    }
+
+    for (const auto& kv : elem_data)
+        write_data(os, "ElementData", kv.first, *kv.second, binary);
+}
+
+void write_gmsh41(const std::string& path, const Mesh& mesh, bool binary) {
+    std::ofstream os(path, std::ios::binary);
+    if (!os) throw WriteError("Could not open file for writing: " + path);
+
+    const std::size_t num_points = mesh.num_points();
+    const std::size_t dim = mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
+    const int data_size = 8;
+
+    auto put_u64 = [&](std::uint64_t v) {
+        os.write(reinterpret_cast<const char*>(&v), 8);
+    };
+    auto put_i32 = [&](std::int32_t v) {
+        os.write(reinterpret_cast<const char*>(&v), 4);
+    };
+    auto put_f64 = [&](double v) { os.write(reinterpret_cast<const char*>(&v), 8); };
+
+    // Separate point/cell data from tags.
+    std::map<std::string, const NDArray*> node_data;
+    for (const auto& kv : mesh.point_data)
+        if (kv.first != "gmsh:dim_tags") node_data.emplace(kv.first, &kv.second);
+    std::map<std::string, const std::vector<NDArray>*> elem_data;
+    const std::vector<NDArray>* geometrical = nullptr;
+    for (const auto& kv : mesh.cell_data) {
+        if (kv.first == "gmsh:geometrical")
+            geometrical = &kv.second;
+        else if (kv.first != "gmsh:physical" && kv.first != "cell_tags")
+            elem_data.emplace(kv.first, &kv.second);
+    }
+
+    const auto& topo = topological_dimension();
+    auto cell_dim = [&](const std::string& t) -> int {
+        auto it = topo.find(t);
+        return it == topo.end() ? 0 : it->second;
+    };
+
+    os << "$MeshFormat\n4.1 " << (binary ? 1 : 0) << " " << data_size << "\n";
+    if (binary) {
+        put_i32(1);
+        os << '\n';
+    }
+    os << "$EndMeshFormat\n";
+
+    write_physical_names(os, mesh.field_data);
+
+    // Nodes: a single entity block (no $Entities is emitted).
+    int node_dim = mesh.cells.empty() ? 0 : cell_dim(mesh.cells.front().type);
+    os << "$Nodes\n";
+    if (binary) {
+        put_u64(1);
+        put_u64(num_points);
+        put_u64(1);
+        put_u64(num_points);
+        put_i32(node_dim);
+        put_i32(0);
+        put_i32(0);
+        put_u64(num_points);
+        for (std::size_t i = 0; i < num_points; ++i) put_u64(i + 1);
+        for (std::size_t i = 0; i < num_points; ++i)
+            for (std::size_t c = 0; c < 3; ++c)
+                put_f64((c < dim) ? detail::read_double(mesh.points, i * dim + c) : 0.0);
+        os << '\n';
+    } else {
+        os << "1 " << num_points << " 1 " << num_points << "\n";
+        os << node_dim << " 0 0 " << num_points << "\n";
+        for (std::size_t i = 0; i < num_points; ++i) os << (i + 1) << "\n";
+        char buf[80];
+        for (std::size_t i = 0; i < num_points; ++i) {
+            double x = (0 < dim) ? detail::read_double(mesh.points, i * dim + 0) : 0.0;
+            double y = (1 < dim) ? detail::read_double(mesh.points, i * dim + 1) : 0.0;
+            double z = (2 < dim) ? detail::read_double(mesh.points, i * dim + 2) : 0.0;
+            std::snprintf(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
+            os << buf;
+        }
+    }
+    os << "$EndNodes\n";
+
+    // Elements: one block per cell block.
+    std::size_t total_cells = 0;
+    for (const auto& cb : mesh.cells) total_cells += cb.num_cells();
+    const auto& m2g = meshio_to_gmsh_type();
+    os << "$Elements\n";
+    if (binary) {
+        put_u64(mesh.cells.size());
+        put_u64(total_cells);
+        put_u64(1);
+        put_u64(total_cells);
+    } else {
+        os << mesh.cells.size() << " " << total_cells << " 1 " << total_cells << "\n";
+    }
+    std::size_t tag0 = 1;
+    for (std::size_t ci = 0; ci < mesh.cells.size(); ++ci) {
+        const CellBlock& cb = mesh.cells[ci];
+        auto it = m2g.find(cb.type);
+        if (it == m2g.end()) throw WriteError("Gmsh writer: unsupported cell type " + cb.type);
+        int gtype = it->second;
+        int bdim = cell_dim(cb.type);
+        int entity_tag =
+            (geometrical && ci < geometrical->size() && (*geometrical)[ci].size() > 0)
+                ? static_cast<int>(detail::read_int((*geometrical)[ci], 0))
+                : 0;
+        std::size_t n = cb.data.shape().size() >= 2 ? cb.data.shape()[1] : 1;
+        const std::vector<int>& perm = meshio_to_gmsh_perm(cb.type);
+        std::size_t count = cb.num_cells();
+        if (binary) {
+            put_i32(bdim);
+            put_i32(entity_tag);
+            put_i32(gtype);
+            put_u64(count);
+            for (std::size_t r = 0; r < count; ++r) {
+                put_u64(tag0 + r);
+                for (std::size_t j = 0; j < n; ++j) {
+                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                    put_u64(static_cast<std::uint64_t>(detail::read_int(cb.data, r * n + src) + 1));
+                }
+            }
+        } else {
+            os << bdim << " " << entity_tag << " " << gtype << " " << count << "\n";
+            for (std::size_t r = 0; r < count; ++r) {
+                os << (tag0 + r);
+                for (std::size_t j = 0; j < n; ++j) {
+                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                    os << " " << (detail::read_int(cb.data, r * n + src) + 1);
+                }
+                os << "\n";
+            }
+        }
+        tag0 += count;
+    }
+    if (binary) os << '\n';
+    os << "$EndElements\n";
+
+    for (const auto& kv : node_data) {
+        const NDArray& d = *kv.second;
+        std::size_t ncomp = d.shape().size() >= 2 ? d.shape()[1] : 1;
+        std::size_t rows = d.shape().empty() ? 0 : d.shape()[0];
+        os << "$NodeData\n1\n\"" << kv.first << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows
+           << "\n";
+        char buf[32];
+        for (std::size_t r = 0; r < rows; ++r) {
+            if (binary) {
+                std::int32_t id = static_cast<std::int32_t>(r + 1);
+                os.write(reinterpret_cast<const char*>(&id), 4);
+                for (std::size_t c = 0; c < ncomp; ++c) put_f64(detail::read_double(d, r * ncomp + c));
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {

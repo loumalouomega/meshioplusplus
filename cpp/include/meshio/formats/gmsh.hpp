@@ -14,6 +14,10 @@ namespace meshio {
 // Write `mesh` to `path` as a Gmsh 2.2 .msh file (ascii or binary).
 void write_gmsh22(const std::string& path, const Mesh& mesh, bool binary);
 
+// Write `mesh` to `path` as a Gmsh 4.1 .msh file (ascii or binary). Intended for
+// meshes without entity information (no gmsh:dim_tags); $Entities is not emitted.
+void write_gmsh41(const std::string& path, const Mesh& mesh, bool binary);
+
 // Read a Gmsh .msh file. Throws meshio::ReadError for anything not handled
 // (version != 2.2, $Periodic) so the Python reader can take over.
 Mesh read_gmsh(const std::string& path);
