@@ -29,16 +29,22 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
     meshes; otherwise falls back to the reference Python writer.
     """
     if (
-        fmt_version == "2.2"
-        and float_fmt == ".16e"
+        float_fmt == ".16e"
         and getattr(mesh, "gmsh_periodic", None) is None
         and not is_buffer(filename, "w")
     ):
-        try:
-            _core.gmsh22_write(str(filename), mesh, binary)
-            return
-        except Exception:
-            pass
+        if fmt_version == "2.2":
+            try:
+                _core.gmsh22_write(str(filename), mesh, binary)
+                return
+            except Exception:
+                pass
+        elif fmt_version == "4.1" and "gmsh:dim_tags" not in mesh.point_data:
+            try:
+                _core.gmsh41_write(str(filename), mesh, binary)
+                return
+            except Exception:
+                pass
     return _py_write(filename, mesh, fmt_version=fmt_version, binary=binary, float_fmt=float_fmt)
 
 
