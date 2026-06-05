@@ -10,6 +10,7 @@
 #include "meshio/exceptions.hpp"
 #include "meshio/formats/gmsh.hpp"
 #include "meshio/formats/obj_off.hpp"
+#include "meshio/formats/ply.hpp"
 #include "meshio/formats/stl.hpp"
 #include "meshio/formats/vtk.hpp"
 #include "meshio/formats/vtu.hpp"
@@ -114,5 +115,15 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("gmsh_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_gmsh(path));
+    });
+
+    // PLY writer / reader (ascii or binary).
+    m.def("ply_write", [](const std::string& path, py::object pymesh, bool binary) {
+        meshio_py::PyMeshRefs refs;
+        meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+        meshio::write_ply(path, cpp, binary);
+    });
+    m.def("ply_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_ply(path));
     });
 }
