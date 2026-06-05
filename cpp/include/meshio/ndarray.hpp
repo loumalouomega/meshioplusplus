@@ -97,6 +97,16 @@ public:
     std::byte* data() { return view_ ? view_ : owned_.data(); }
     const std::byte* data() const { return view_ ? view_ : owned_.data(); }
 
+    // Change the logical shape without touching the buffer (sizes must match).
+    void reshape(std::vector<std::size_t> new_shape) {
+        std::size_t n = new_shape.empty()
+                            ? 0
+                            : std::accumulate(new_shape.begin(), new_shape.end(),
+                                              std::size_t{1}, std::multiplies<std::size_t>());
+        if (n != size()) return;  // ignore inconsistent reshape
+        shape_ = std::move(new_shape);
+    }
+
     // Turn a view into an owning copy (no-op if already owning). Used before
     // handing a buffer's lifetime to Python via a capsule.
     void make_owned() {
