@@ -2,7 +2,7 @@ from .. import _core
 from .._files import is_buffer
 from .._helpers import register_format
 from . import _vtk_42, _vtk_51
-from ._main import read
+from ._main import read as _py_read
 from ._main import write as _main_write
 
 
@@ -21,20 +21,30 @@ def _cpp_ok(mesh):
     return True
 
 
+def read(filename):
+    """Read a VTK legacy file.
+
+    Uses the C++ core for version 5.1 UNSTRUCTURED_GRID files (ascii or
+    big-endian binary), falling back to the reference Python reader otherwise
+    (version 4.2, structured grids, SCALARS/VECTORS sections, polyhedron).
+    """
+    if not is_buffer(filename, "r"):
+        try:
+            return _core.vtk_read(str(filename))
+        except Exception:
+            pass
+    return _py_read(filename)
+
+
 def write(filename, mesh, fmt_version="5.1", binary=True, **kwargs):
     """Write a VTK legacy file.
 
-    Uses the C++ core for ASCII output of version 5.1 (the default) on supported
-    meshes, otherwise falls back to the reference Python writer.
+    Uses the C++ core for version 5.1 (the default), ascii or big-endian binary,
+    on supported meshes; otherwise falls back to the reference Python writer.
     """
-    if (
-        fmt_version == "5.1"
-        and not binary
-        and not is_buffer(filename, "w")
-        and _cpp_ok(mesh)
-    ):
+    if fmt_version == "5.1" and not is_buffer(filename, "w") and _cpp_ok(mesh):
         try:
-            _core.vtk_write_ascii_51(str(filename), mesh)
+            _core.vtk_write_51(str(filename), mesh, binary)
             return
         except Exception:
             pass
