@@ -44,17 +44,28 @@ PYBIND11_MODULE(_core, m) {
         return meshio_py::mesh_to_py(std::move(cpp));
     });
 
-    // VTU ASCII writer (zero-copy input from the Python mesh).
-    m.def("vtu_write_ascii", [](const std::string& path, py::object pymesh) {
-        meshio_py::PyMeshRefs refs;
-        meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
-        meshio::write_vtu_ascii(path, cpp);
+    // VTU writer (ascii / binary / zlib), zero-copy input from the Python mesh.
+    m.def("vtu_write",
+          [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_vtu(path, cpp, binary, zlib);
+          });
+
+    // VTU reader -> Python mesh (zero-copy capsule-backed arrays).
+    m.def("vtu_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_vtu(path));
     });
 
-    // VTK 5.1 ASCII writer (zero-copy input from the Python mesh).
-    m.def("vtk_write_ascii_51", [](const std::string& path, py::object pymesh) {
+    // VTK 5.1 writer (ascii or big-endian binary).
+    m.def("vtk_write_51", [](const std::string& path, py::object pymesh, bool binary) {
         meshio_py::PyMeshRefs refs;
         meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
-        meshio::write_vtk_ascii_51(path, cpp);
+        meshio::write_vtk_51(path, cpp, binary);
+    });
+
+    // VTK 5.1 reader -> Python mesh (zero-copy capsule-backed arrays).
+    m.def("vtk_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_vtk(path));
     });
 }
