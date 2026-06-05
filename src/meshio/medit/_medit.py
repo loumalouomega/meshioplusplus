@@ -523,4 +523,5 @@ def write_binary_file(f, mesh):
         tmp_array.tofile(fh)
 
 
-register_format("medit", [".mesh", ".meshb"], read, {"medit": write})
+# NOTE: format registration now lives in meshio/medit/__init__.py, which wraps the
+# reader/writer above with the C++-backed fast paths (ascii .mesh).
