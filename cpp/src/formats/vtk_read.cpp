@@ -1,0 +1,238 @@
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <map>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "meshio/detail/value_io.hpp"
+#include "meshio/detail/vtk_cells.hpp"
+#include "meshio/exceptions.hpp"
+#include "meshio/formats/vtk.hpp"
+#include "meshio/types.hpp"
+
+namespace meshio {
+
+namespace {
+
+DType dtype_from_vtk_token(std::string t) {
+    for (auto& ch : t) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (t == "float") return DType::Float32;
+    if (t == "double") return DType::Float64;
+    if (t == "int" || t == "vtktypeint64" || t == "long") return DType::Int64;
+    if (t == "vtktypeint8" || t == "char") return DType::Int8;
+    if (t == "vtktypeint16" || t == "short") return DType::Int16;
+    if (t == "vtktypeint32") return DType::Int32;
+    if (t == "vtktypeuint8" || t == "unsigned_char") return DType::UInt8;
+    if (t == "vtktypeuint16") return DType::UInt16;
+    if (t == "vtktypeuint32") return DType::UInt32;
+    if (t == "vtktypeuint64") return DType::UInt64;
+    throw ReadError("VTK data type '" + t + "' not supported by the C++ reader");
+}
+
+void store(NDArray& a, std::size_t i, double d, std::int64_t v) {
+    switch (a.dtype()) {
+        case DType::Float32: a.as<float>()[i] = static_cast<float>(d); break;
+        case DType::Float64: a.as<double>()[i] = d; break;
+        case DType::Int8: a.as<std::int8_t>()[i] = static_cast<std::int8_t>(v); break;
+        case DType::Int16: a.as<std::int16_t>()[i] = static_cast<std::int16_t>(v); break;
+        case DType::Int32: a.as<std::int32_t>()[i] = static_cast<std::int32_t>(v); break;
+        case DType::Int64: a.as<std::int64_t>()[i] = v; break;
+        case DType::UInt8: a.as<std::uint8_t>()[i] = static_cast<std::uint8_t>(v); break;
+        case DType::UInt16: a.as<std::uint16_t>()[i] = static_cast<std::uint16_t>(v); break;
+        case DType::UInt32: a.as<std::uint32_t>()[i] = static_cast<std::uint32_t>(v); break;
+        case DType::UInt64: a.as<std::uint64_t>()[i] = static_cast<std::uint64_t>(v); break;
+    }
+}
+
+struct Cursor {
+    const std::string& buf;
+    std::size_t pos = 0;
+
+    explicit Cursor(const std::string& b) : buf(b) {}
+
+    bool eof() const { return pos >= buf.size(); }
+
+    std::string read_line() {
+        std::size_t start = pos;
+        while (pos < buf.size() && buf[pos] != '\n') ++pos;
+        std::string line = buf.substr(start, pos - start);
+        if (pos < buf.size()) ++pos;  // skip '\n'
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        return line;
+    }
+
+    void consume_eol() {
+        while (pos < buf.size() && buf[pos] != '\n' &&
+               std::isspace(static_cast<unsigned char>(buf[pos])))
+            ++pos;
+        if (pos < buf.size() && buf[pos] == '\n') ++pos;
+    }
+
+    // Read `count` values of dtype `dt`, ascii or big-endian binary.
+    NDArray read_values(DType dt, std::size_t count, bool is_ascii) {
+        NDArray a(dt, {count});
+        const std::size_t isz = dtype_size(dt);
+        if (is_ascii) {
+            const bool flt = detail::is_float_dtype(dt);
+            const char* base = buf.c_str();
+            for (std::size_t i = 0; i < count; ++i) {
+                char* endp = nullptr;
+                if (flt) {
+                    double x = std::strtod(base + pos, &endp);
+                    if (endp == base + pos) throw ReadError("VTK ascii parse error");
+                    store(a, i, x, 0);
+                } else {
+                    long long x = std::strtoll(base + pos, &endp, 10);
+                    if (endp == base + pos) throw ReadError("VTK ascii parse error");
+                    store(a, i, 0.0, static_cast<std::int64_t>(x));
+                }
+                pos = static_cast<std::size_t>(endp - base);
+            }
+        } else {
+            if (pos + count * isz > buf.size()) throw ReadError("VTK binary truncated");
+            unsigned char* out = reinterpret_cast<unsigned char*>(a.data());
+            for (std::size_t i = 0; i < count; ++i)
+                for (std::size_t b = 0; b < isz; ++b)
+                    out[i * isz + b] =
+                        static_cast<unsigned char>(buf[pos + i * isz + (isz - 1 - b)]);
+            pos += count * isz;
+        }
+        consume_eol();
+        return a;
+    }
+};
+
+std::vector<std::string> split(const std::string& s) {
+    std::vector<std::string> out;
+    std::istringstream iss(s);
+    std::string tok;
+    while (iss >> tok) out.push_back(tok);
+    return out;
+}
+
+std::string upper(std::string s) {
+    for (auto& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::vector<std::int64_t> to_int64(const NDArray& a) {
+    std::vector<std::int64_t> v(a.size());
+    for (std::size_t i = 0; i < a.size(); ++i) v[i] = detail::read_int(a, i);
+    return v;
+}
+
+}  // namespace
+
+Mesh read_vtk(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw ReadError("Could not open file: " + path);
+    std::string buf((std::istreambuf_iterator<char>(in)),
+                    std::istreambuf_iterator<char>());
+    Cursor cur(buf);
+
+    std::string header = cur.read_line();
+    if (header.find("Version 5") == std::string::npos)
+        throw ReadError("C++ VTK reader only handles version 5.x");
+    cur.read_line();  // title
+    std::string dtype_line = upper(cur.read_line());
+    bool is_ascii;
+    if (dtype_line.find("ASCII") != std::string::npos)
+        is_ascii = true;
+    else if (dtype_line.find("BINARY") != std::string::npos)
+        is_ascii = false;
+    else
+        throw ReadError("Unknown VTK data type line: " + dtype_line);
+
+    Mesh mesh;
+    std::vector<std::int64_t> conn, offsets, types;
+    std::map<std::string, NDArray> cell_data_raw;
+    std::string active;  // POINT_DATA or CELL_DATA
+
+    while (!cur.eof()) {
+        std::string line = cur.read_line();
+        if (line.empty()) continue;
+        std::vector<std::string> tok = split(line);
+        if (tok.empty()) continue;
+        std::string section = upper(tok[0]);
+
+        if (section == "DATASET") {
+            if (tok.size() < 2 || upper(tok[1]) != "UNSTRUCTURED_GRID")
+                throw ReadError("C++ VTK reader only handles UNSTRUCTURED_GRID");
+        } else if (section == "POINTS") {
+            std::size_t n = std::stoull(tok[1]);
+            DType dt = dtype_from_vtk_token(tok[2]);
+            NDArray pts = cur.read_values(dt, n * 3, is_ascii);
+            pts.reshape({n, 3});
+            mesh.points = std::move(pts);
+        } else if (section == "CELLS") {
+            std::size_t num_off = std::stoull(tok[1]);
+            std::size_t num_idx = std::stoull(tok[2]);
+            std::string l = cur.read_line();
+            if (upper(l).rfind("OFFSETS", 0) != 0)
+                throw ReadError("C++ VTK reader requires the 5.1 OFFSETS layout");
+            DType odt = dtype_from_vtk_token(split(l)[1]);
+            std::vector<std::int64_t> off_all = to_int64(cur.read_values(odt, num_off, is_ascii));
+            l = cur.read_line();
+            if (upper(l).rfind("CONNECTIVITY", 0) != 0)
+                throw ReadError("Expected CONNECTIVITY");
+            DType cdt = dtype_from_vtk_token(split(l)[1]);
+            conn = to_int64(cur.read_values(cdt, num_idx, is_ascii));
+            // off_all has a leading 0; end-offsets are the remainder.
+            offsets.assign(off_all.begin() + 1, off_all.end());
+        } else if (section == "CELL_TYPES") {
+            std::size_t n = std::stoull(tok[1]);
+            DType dt = is_ascii ? DType::Int64 : DType::Int32;
+            types = to_int64(cur.read_values(dt, n, is_ascii));
+        } else if (section == "POINT_DATA") {
+            active = "POINT_DATA";
+        } else if (section == "CELL_DATA") {
+            active = "CELL_DATA";
+        } else if (section == "FIELD") {
+            std::size_t k = std::stoull(tok[2]);
+            for (std::size_t fi = 0; fi < k; ++fi) {
+                std::vector<std::string> ft = split(cur.read_line());
+                if (!ft.empty() && upper(ft[0]) == "METADATA") {
+                    while (true) {
+                        std::string ml = cur.read_line();
+                        bool blank = true;
+                        for (char c : ml)
+                            if (!std::isspace(static_cast<unsigned char>(c))) blank = false;
+                        if (blank) break;
+                    }
+                    ft = split(cur.read_line());
+                }
+                std::string name = ft[0];
+                std::size_t ncomp = std::stoull(ft[1]);
+                std::size_t ntuples = std::stoull(ft[2]);
+                DType dt = dtype_from_vtk_token(ft[3]);
+                NDArray arr = cur.read_values(dt, ncomp * ntuples, is_ascii);
+                if (ncomp != 1) arr.reshape({ntuples, ncomp});
+                if (active == "POINT_DATA")
+                    mesh.point_data.emplace(name, std::move(arr));
+                else
+                    cell_data_raw.emplace(name, std::move(arr));
+            }
+        } else if (section == "METADATA") {
+            while (true) {
+                std::string ml = cur.read_line();
+                bool blank = true;
+                for (char c : ml)
+                    if (!std::isspace(static_cast<unsigned char>(c))) blank = false;
+                if (blank || cur.eof()) break;
+            }
+        } else {
+            throw ReadError("VTK section '" + section +
+                            "' not supported by the C++ reader");
+        }
+    }
+
+    detail::reconstruct_cells(conn, offsets, types, cell_data_raw, mesh.cells,
+                              mesh.cell_data);
+    return mesh;
+}
+
+}  // namespace meshio
