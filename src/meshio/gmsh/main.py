@@ -102,12 +102,5 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
     writer.write(filename, mesh, binary=binary, float_fmt=float_fmt)
 
 
-register_format(
-    "gmsh",
-    [".msh"],
-    read,
-    {
-        "gmsh22": lambda f, m, **kwargs: write(f, m, "2.2", **kwargs),
-        "gmsh": lambda f, m, **kwargs: write(f, m, "4.1", **kwargs),
-    },
-)
+# NOTE: format registration now lives in meshio/gmsh/__init__.py, which wraps the
+# reader/writer above with the C++-backed fast paths (version 2.2).
