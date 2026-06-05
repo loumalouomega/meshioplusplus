@@ -39,12 +39,12 @@ def read(filename):
 def write(filename, mesh, fmt_version="5.1", binary=True, **kwargs):
     """Write a VTK legacy file.
 
-    Uses the C++ core for version 5.1 (the default), ascii or big-endian binary,
-    on supported meshes; otherwise falls back to the reference Python writer.
+    Uses the C++ core for versions 5.1 (default) and 4.2, ascii or big-endian
+    binary, on supported meshes; otherwise falls back to the Python writer.
     """
-    if fmt_version == "5.1" and not is_buffer(filename, "w") and _cpp_ok(mesh):
+    if fmt_version in ("5.1", "4.2") and not is_buffer(filename, "w") and _cpp_ok(mesh):
         try:
-            _core.vtk_write_51(str(filename), mesh, binary)
+            _core.vtk_write(str(filename), mesh, binary, fmt_version == "5.1")
             return
         except Exception:
             pass
