@@ -107,6 +107,11 @@ PYBIND11_MODULE(_core, m) {
         meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
         meshio::write_gmsh22(path, cpp, binary);
     });
+    m.def("gmsh41_write", [](const std::string& path, py::object pymesh, bool binary) {
+        meshio_py::PyMeshRefs refs;
+        meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+        meshio::write_gmsh41(path, cpp, binary);
+    });
     m.def("gmsh_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_gmsh(path));
     });
