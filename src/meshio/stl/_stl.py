@@ -256,4 +256,5 @@ def _write_binary(filename, pts, normals):
         a.tofile(fh)
 
 
-register_format("stl", [".stl"], read, {"stl": write})
+# NOTE: format registration now lives in meshio/stl/__init__.py, which wraps the
+# reader/writer below with the C++-backed fast paths.
