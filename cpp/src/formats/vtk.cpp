@@ -86,7 +86,7 @@ void write_field_block(std::ostream& os, const std::string& name, DType dt,
 
 }  // namespace
 
-void write_vtk_51(const std::string& path, const Mesh& mesh, bool binary) {
+void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51) {
     for (const auto& cb : mesh.cells)
         if (cb.type.rfind("polyhedron", 0) == 0)
             throw WriteError("C++ VTK writer does not support polyhedron cells");
@@ -104,7 +104,7 @@ void write_vtk_51(const std::string& path, const Mesh& mesh, bool binary) {
         total_idx += cb.data.size();
     }
 
-    os << "# vtk DataFile Version 5.1\n";
+    os << (v51 ? "# vtk DataFile Version 5.1\n" : "# vtk DataFile Version 4.2\n");
     os << "written by meshio (C++ core)\n";
     os << (binary ? "BINARY\n" : "ASCII\n");
     os << "DATASET UNSTRUCTURED_GRID\n";
@@ -130,10 +130,10 @@ void write_vtk_51(const std::string& path, const Mesh& mesh, bool binary) {
         if (num_points == 0) os << '\n';
     }
 
-    // Cells: OFFSETS (num_cells + 1) and CONNECTIVITY (total_idx).
-    os << "CELLS " << (total_cells + 1) << ' ' << total_idx << '\n';
-    os << "OFFSETS vtktypeint64\n";
-    {
+    if (v51) {
+        // Version 5.1: OFFSETS (num_cells + 1) and CONNECTIVITY (total_idx).
+        os << "CELLS " << (total_cells + 1) << ' ' << total_idx << '\n';
+        os << "OFFSETS vtktypeint64\n";
         std::int64_t running = 0;
         if (binary)
             put_be_i64(os, running);
@@ -150,24 +150,47 @@ void write_vtk_51(const std::string& path, const Mesh& mesh, bool binary) {
             }
         }
         if (binary) os << '\n';
-    }
 
-    os << "CONNECTIVITY vtktypeint64\n";
-    for (const auto& cb : mesh.cells) {
-        const std::size_t nc = cb.num_cells();
-        const std::size_t k = cols(cb.data);
-        std::vector<int> order = meshio_to_vtk_order(cb.type);
-        for (std::size_t r = 0; r < nc; ++r)
-            for (std::size_t j = 0; j < k; ++j) {
-                std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                std::int64_t v = read_int(cb.data, r * k + col);
+        os << "CONNECTIVITY vtktypeint64\n";
+        for (const auto& cb : mesh.cells) {
+            const std::size_t nc = cb.num_cells();
+            const std::size_t k = cols(cb.data);
+            std::vector<int> order = meshio_to_vtk_order(cb.type);
+            for (std::size_t r = 0; r < nc; ++r)
+                for (std::size_t j = 0; j < k; ++j) {
+                    std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                    std::int64_t v = read_int(cb.data, r * k + col);
+                    if (binary)
+                        put_be_i64(os, v);
+                    else
+                        os << v << '\n';
+                }
+        }
+        if (binary) os << '\n';
+    } else {
+        // Version 4.2: interleaved [count, nodes...] per cell, as int32.
+        os << "CELLS " << total_cells << ' ' << (total_idx + total_cells) << '\n';
+        for (const auto& cb : mesh.cells) {
+            const std::size_t nc = cb.num_cells();
+            const std::int32_t k = static_cast<std::int32_t>(cols(cb.data));
+            std::vector<int> order = meshio_to_vtk_order(cb.type);
+            for (std::size_t r = 0; r < nc; ++r) {
                 if (binary)
-                    put_be_i64(os, v);
+                    put_be_i32(os, k);
                 else
-                    os << v << '\n';
+                    os << k << '\n';
+                for (int j = 0; j < k; ++j) {
+                    std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                    std::int64_t v = read_int(cb.data, r * static_cast<std::size_t>(k) + col);
+                    if (binary)
+                        put_be_i32(os, static_cast<std::int32_t>(v));
+                    else
+                        os << v << '\n';
+                }
             }
+        }
+        if (binary) os << '\n';
     }
-    if (binary) os << '\n';
 
     // Cell types.
     os << "CELL_TYPES " << total_cells << '\n';

@@ -135,8 +135,7 @@ Mesh read_vtk(const std::string& path) {
     Cursor cur(buf);
 
     std::string header = cur.read_line();
-    if (header.find("Version 5") == std::string::npos)
-        throw ReadError("C++ VTK reader only handles version 5.x");
+    const bool is_v5 = header.find("Version 5") != std::string::npos;
     cur.read_line();  // title
     std::string dtype_line = upper(cur.read_line());
     bool is_ascii;
@@ -169,20 +168,38 @@ Mesh read_vtk(const std::string& path) {
             pts.reshape({n, 3});
             mesh.points = std::move(pts);
         } else if (section == "CELLS") {
-            std::size_t num_off = std::stoull(tok[1]);
-            std::size_t num_idx = std::stoull(tok[2]);
-            std::string l = cur.read_line();
-            if (upper(l).rfind("OFFSETS", 0) != 0)
-                throw ReadError("C++ VTK reader requires the 5.1 OFFSETS layout");
-            DType odt = dtype_from_vtk_token(split(l)[1]);
-            std::vector<std::int64_t> off_all = to_int64(cur.read_values(odt, num_off, is_ascii));
-            l = cur.read_line();
-            if (upper(l).rfind("CONNECTIVITY", 0) != 0)
-                throw ReadError("Expected CONNECTIVITY");
-            DType cdt = dtype_from_vtk_token(split(l)[1]);
-            conn = to_int64(cur.read_values(cdt, num_idx, is_ascii));
-            // off_all has a leading 0; end-offsets are the remainder.
-            offsets.assign(off_all.begin() + 1, off_all.end());
+            if (is_v5) {
+                std::size_t num_off = std::stoull(tok[1]);
+                std::size_t num_idx = std::stoull(tok[2]);
+                std::string l = cur.read_line();
+                if (upper(l).rfind("OFFSETS", 0) != 0)
+                    throw ReadError("Expected OFFSETS (VTK 5.1 layout)");
+                DType odt = dtype_from_vtk_token(split(l)[1]);
+                std::vector<std::int64_t> off_all =
+                    to_int64(cur.read_values(odt, num_off, is_ascii));
+                l = cur.read_line();
+                if (upper(l).rfind("CONNECTIVITY", 0) != 0)
+                    throw ReadError("Expected CONNECTIVITY");
+                DType cdt = dtype_from_vtk_token(split(l)[1]);
+                conn = to_int64(cur.read_values(cdt, num_idx, is_ascii));
+                // off_all has a leading 0; end-offsets are the remainder.
+                offsets.assign(off_all.begin() + 1, off_all.end());
+            } else {
+                // Version 4.2: interleaved [count, nodes...]; int32 values.
+                std::size_t num_cells = std::stoull(tok[1]);
+                std::size_t total = std::stoull(tok[2]);
+                DType dt = is_ascii ? DType::Int64 : DType::Int32;
+                std::vector<std::int64_t> raw =
+                    to_int64(cur.read_values(dt, total, is_ascii));
+                std::size_t p = 0;
+                std::int64_t running = 0;
+                for (std::size_t i = 0; i < num_cells; ++i) {
+                    std::int64_t n = raw[p++];
+                    for (std::int64_t j = 0; j < n; ++j) conn.push_back(raw[p++]);
+                    running += n;
+                    offsets.push_back(running);
+                }
+            }
         } else if (section == "CELL_TYPES") {
             std::size_t n = std::stoull(tok[1]);
             DType dt = is_ascii ? DType::Int64 : DType::Int32;
