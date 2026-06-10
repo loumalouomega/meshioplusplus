@@ -18,6 +18,8 @@
 #include "meshio/formats/stl.hpp"
 #include "meshio/formats/su2.hpp"
 #include "meshio/formats/tecplot.hpp"
+#include "meshio/formats/tetgen.hpp"
+#include "meshio/formats/ugrid.hpp"
 #include "meshio/formats/vtk.hpp"
 #include "meshio/formats/vtu.hpp"
 #include "meshio/types.hpp"
@@ -185,5 +187,23 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tecplot_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_tecplot(path));
+    });
+
+    // UGRID writer / reader (.ugrid, ascii + binary variants).
+    m.def("ugrid_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_ugrid(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("ugrid_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_ugrid(path));
+    });
+
+    // TetGen writer / reader (.node/.ele pair).
+    m.def("tetgen_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_tetgen(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("tetgen_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_tetgen(path));
     });
 }

@@ -10,7 +10,6 @@ import numpy as np
 from ..__about__ import __version__
 from .._common import warn
 from .._exceptions import ReadError, WriteError
-from .._helpers import register_format
 from .._mesh import CellBlock, Mesh
 
 
@@ -163,6 +162,3 @@ def write(filename, mesh, float_fmt=".16e"):
             for k, tet in enumerate(data):
                 data = list(tet[:4]) + [mesh.cell_data[key][id][k] for key in attr_keys]
                 fh.write(fmt.format(k, *data))
-
-
-register_format("tetgen", [".ele", ".node"], read, {"tetgen": write})
