@@ -16,6 +16,7 @@
 #include "meshio/formats/nastran.hpp"
 #include "meshio/formats/netgen.hpp"
 #include "meshio/formats/obj_off.hpp"
+#include "meshio/formats/permas.hpp"
 #include "meshio/formats/ply.hpp"
 #include "meshio/formats/stl.hpp"
 #include "meshio/formats/su2.hpp"
@@ -207,6 +208,15 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tetgen_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_tetgen(path));
+    });
+
+    // PERMAS writer / reader (.post/.dato).
+    m.def("permas_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_permas(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("permas_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_permas(path));
     });
 
     // FLAC3D writer / reader (.f3grid, ascii + binary, common path).
