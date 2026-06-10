@@ -8,7 +8,6 @@ import numpy as np
 from ..__about__ import __version__
 from .._common import warn
 from .._files import open_file
-from .._helpers import register_format
 from .._mesh import Mesh
 
 
@@ -453,6 +452,3 @@ def write_buffer(f, mesh, float_fmt):
         _write_codim_domain_data(f, mesh, cells_index, dimension, codim)
 
     f.write("\nendmesh\n")
-
-
-register_format("netgen", [".vol", ".vol.gz"], read, {"netgen": write})

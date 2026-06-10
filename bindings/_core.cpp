@@ -13,6 +13,7 @@
 #include "meshio/formats/gmsh.hpp"
 #include "meshio/formats/medit.hpp"
 #include "meshio/formats/nastran.hpp"
+#include "meshio/formats/netgen.hpp"
 #include "meshio/formats/obj_off.hpp"
 #include "meshio/formats/ply.hpp"
 #include "meshio/formats/stl.hpp"
@@ -205,5 +206,16 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tetgen_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_tetgen(path));
+    });
+
+    // Netgen writer / reader (.vol, common path).
+    m.def("netgen_write",
+          [](const std::string& path, py::object pymesh, const std::string& float_fmt) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_netgen(path, cpp, float_fmt);
+          });
+    m.def("netgen_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_netgen(path));
     });
 }
