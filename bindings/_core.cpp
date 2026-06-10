@@ -24,6 +24,7 @@
 #include "meshio/formats/tetgen.hpp"
 #include "meshio/formats/ugrid.hpp"
 #include "meshio/formats/vtk.hpp"
+#include "meshio/formats/wkt.hpp"
 #include "meshio/formats/vtu.hpp"
 #include "meshio/types.hpp"
 #include "np_conversions.hpp"
@@ -208,6 +209,15 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tetgen_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_tetgen(path));
+    });
+
+    // WKT (TIN) writer / reader (.wkt).
+    m.def("wkt_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_wkt(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("wkt_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_wkt(path));
     });
 
     // PERMAS writer / reader (.post/.dato).
