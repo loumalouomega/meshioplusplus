@@ -450,4 +450,5 @@ def write(
         # f.write("*END")
 
 
-register_format("abaqus", [".inp"], read, {"abaqus": write})
+# NOTE: format registration now lives in meshio/abaqus/__init__.py, which wraps
+# the reader/writer above with the C++-backed fast paths.
