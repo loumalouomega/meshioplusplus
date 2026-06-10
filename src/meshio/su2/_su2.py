@@ -370,4 +370,5 @@ def write(filename, mesh):
     return
 
 
-register_format("su2", [".su2"], read, {"su2": write})
+# NOTE: format registration now lives in meshio/su2/__init__.py, which wraps the
+# reader/writer above with the C++-backed fast paths.
