@@ -8,6 +8,8 @@
 #include <pybind11/stl.h>
 
 #include "meshio/exceptions.hpp"
+#include "meshio/formats/abaqus.hpp"
+#include "meshio/formats/avsucd.hpp"
 #include "meshio/formats/gmsh.hpp"
 #include "meshio/formats/medit.hpp"
 #include "meshio/formats/obj_off.hpp"
@@ -135,5 +137,23 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("medit_read_ascii", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_medit_ascii(path));
+    });
+
+    // Abaqus writer / reader (.inp).
+    m.def("abaqus_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_abaqus(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("abaqus_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_abaqus(path));
+    });
+
+    // AVS-UCD writer / reader (.avs).
+    m.def("avsucd_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_avsucd(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("avsucd_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_avsucd(path));
     });
 }
