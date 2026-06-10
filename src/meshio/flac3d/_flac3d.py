@@ -14,7 +14,6 @@ from ..__about__ import __version__ as version
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
-from .._helpers import register_format
 from .._mesh import Mesh
 
 meshio_only = {
@@ -606,6 +605,3 @@ def _write_table(f, data, ncol: int = 20):
     for line in lines:
         if len(line):
             f.write(" {}\n".format(" ".join([str(l) for l in line])))
-
-
-register_format("flac3d", [".f3grid"], read, {"flac3d": write})

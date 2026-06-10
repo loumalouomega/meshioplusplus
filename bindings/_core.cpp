@@ -10,6 +10,7 @@
 #include "meshio/exceptions.hpp"
 #include "meshio/formats/abaqus.hpp"
 #include "meshio/formats/avsucd.hpp"
+#include "meshio/formats/flac3d.hpp"
 #include "meshio/formats/gmsh.hpp"
 #include "meshio/formats/medit.hpp"
 #include "meshio/formats/nastran.hpp"
@@ -206,6 +207,18 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tetgen_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_tetgen(path));
+    });
+
+    // FLAC3D writer / reader (.f3grid, ascii + binary, common path).
+    m.def("flac3d_write",
+          [](const std::string& path, py::object pymesh, const std::string& float_fmt,
+             bool binary) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_flac3d(path, cpp, float_fmt, binary);
+          });
+    m.def("flac3d_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_flac3d(path));
     });
 
     // Netgen writer / reader (.vol, common path).
