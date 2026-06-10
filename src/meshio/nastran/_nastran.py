@@ -537,4 +537,5 @@ def _convert_to_nastran_ordering(cell, nastran_type):
     return cell
 
 
-register_format("nastran", [".bdf", ".fem", ".nas"], read, {"nastran": write})
+# NOTE: format registration now lives in meshio/nastran/__init__.py, which wraps
+# the reader/writer above with the C++-backed fast paths.
