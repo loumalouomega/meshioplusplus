@@ -505,4 +505,5 @@ def _write_table(f, data, ncol=20):
             f.write(" ".join(str(l) for l in line) + "\n")
 
 
-register_format("tecplot", [".dat", ".tec"], read, {"tecplot": write})
+# NOTE: format registration now lives in meshio/tecplot/__init__.py, which wraps
+# the reader/writer above with the C++-backed fast paths.
