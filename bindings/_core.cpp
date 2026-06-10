@@ -12,6 +12,7 @@
 #include "meshio/formats/avsucd.hpp"
 #include "meshio/formats/gmsh.hpp"
 #include "meshio/formats/medit.hpp"
+#include "meshio/formats/nastran.hpp"
 #include "meshio/formats/obj_off.hpp"
 #include "meshio/formats/ply.hpp"
 #include "meshio/formats/stl.hpp"
@@ -155,5 +156,14 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("avsucd_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_avsucd(path));
+    });
+
+    // Nastran writer / reader (.bdf/.fem/.nas) — meshio-C++ files only.
+    m.def("nastran_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_nastran(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("nastran_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_nastran(path));
     });
 }
