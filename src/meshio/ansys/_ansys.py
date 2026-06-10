@@ -12,7 +12,6 @@ from ..__about__ import __version__
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
-from .._helpers import register_format
 from .._mesh import Mesh
 
 
@@ -460,6 +459,3 @@ def write(filename, mesh, binary=True):
                 np.savetxt(fh, values + first_node_index, fmt="%x")
                 fh.write(b"))\n")
             first_index = last_index + 1
-
-
-register_format("ansys", [".msh"], read, {"ansys": write})

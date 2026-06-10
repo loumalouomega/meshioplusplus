@@ -9,6 +9,7 @@
 
 #include "meshio/exceptions.hpp"
 #include "meshio/formats/abaqus.hpp"
+#include "meshio/formats/ansys.hpp"
 #include "meshio/formats/avsucd.hpp"
 #include "meshio/formats/flac3d.hpp"
 #include "meshio/formats/gmsh.hpp"
@@ -209,6 +210,16 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tetgen_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_tetgen(path));
+    });
+
+    // Ansys/Fluent writer / reader (.msh, ascii + binary).
+    m.def("ansys_write", [](const std::string& path, py::object pymesh, bool binary) {
+        meshio_py::PyMeshRefs refs;
+        meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+        meshio::write_ansys(path, cpp, binary);
+    });
+    m.def("ansys_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_ansys(path));
     });
 
     // WKT (TIN) writer / reader (.wkt).
