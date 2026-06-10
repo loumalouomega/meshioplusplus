@@ -11,6 +11,7 @@
 #include "meshio/formats/abaqus.hpp"
 #include "meshio/formats/ansys.hpp"
 #include "meshio/formats/avsucd.hpp"
+#include "meshio/formats/dolfin.hpp"
 #include "meshio/formats/flac3d.hpp"
 #include "meshio/formats/gmsh.hpp"
 #include "meshio/formats/medit.hpp"
@@ -210,6 +211,15 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tetgen_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_tetgen(path));
+    });
+
+    // DOLFIN XML writer / reader (.xml).
+    m.def("dolfin_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_dolfin(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("dolfin_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_dolfin(path));
     });
 
     // Ansys/Fluent writer / reader (.msh, ascii + binary).

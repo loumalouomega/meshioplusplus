@@ -12,7 +12,6 @@ import numpy as np
 
 from .._common import warn
 from .._exceptions import ReadError, WriteError
-from .._helpers import register_format
 from .._mesh import Mesh
 
 
@@ -234,6 +233,3 @@ def write(filename, mesh):
             cell_data_filename = f"{fname}_{name}.xml"
             dim = 2 if mesh.points.shape[1] == 2 or all(mesh.points[:, 2] == 0) else 3
             _write_cell_data(cell_data_filename, dim, np.array(data))
-
-
-register_format("dolfin-xml", [".xml"], read, {"dolfin-xml": write})
