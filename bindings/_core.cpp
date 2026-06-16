@@ -28,6 +28,7 @@
 #include "meshio/formats/vtk.hpp"
 #include "meshio/formats/wkt.hpp"
 #include "meshio/formats/vtu.hpp"
+#include "meshio/formats/xdmf.hpp"
 #include "meshio/types.hpp"
 #include "np_conversions.hpp"
 
@@ -211,6 +212,17 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tetgen_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_tetgen(path));
+    });
+
+    // XDMF writer / reader (.xdmf/.xmf) — XML + Binary data formats.
+    m.def("xdmf_write",
+          [](const std::string& path, py::object pymesh, const std::string& data_format) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_xdmf(path, cpp, data_format);
+          });
+    m.def("xdmf_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_xdmf(path));
     });
 
     // DOLFIN XML writer / reader (.xml).
