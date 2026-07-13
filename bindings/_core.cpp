@@ -22,8 +22,12 @@
 #include "meshio/formats/exodus.hpp"
 #endif
 #include "meshio/formats/flac3d.hpp"
+#include "meshio/formats/flux.hpp"
+#include "meshio/formats/freefem.hpp"
 #include "meshio/formats/gmsh.hpp"
 #include "meshio/formats/medit.hpp"
+#include "meshio/formats/mfm.hpp"
+#include "meshio/formats/mphtxt.hpp"
 #include "meshio/formats/nastran.hpp"
 #include "meshio/formats/netgen.hpp"
 #include "meshio/formats/obj_off.hpp"
@@ -34,6 +38,7 @@
 #include "meshio/formats/tecplot.hpp"
 #include "meshio/formats/tetgen.hpp"
 #include "meshio/formats/ugrid.hpp"
+#include "meshio/formats/unv.hpp"
 #include "meshio/formats/vtk.hpp"
 #include "meshio/formats/wkt.hpp"
 #include "meshio/formats/vtu.hpp"
@@ -227,6 +232,15 @@ PYBIND11_MODULE(_core, m) {
         return meshio_py::mesh_to_py(meshio::read_ugrid(path));
     });
 
+    // UNV (I-DEAS Universal) writer / reader (.unv).
+    m.def("unv_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_unv(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("unv_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_unv(path));
+    });
+
     // TetGen writer / reader (.node/.ele pair).
     m.def("tetgen_write", [](const std::string& path, py::object pymesh) {
         meshio_py::PyMeshRefs refs;
@@ -375,6 +389,44 @@ PYBIND11_MODULE(_core, m) {
           });
     m.def("flac3d_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_flac3d(path));
+    });
+
+    // FLUX .pf3 writer / reader.
+    m.def("flux_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_flux(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("flux_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_flux(path));
+    });
+
+    // COMSOL .mphtxt writer / reader.
+    m.def("mphtxt_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_mphtxt(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("mphtxt_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_mphtxt(path));
+    });
+
+    // FreeFem++ writer / reader (.msh).
+    m.def("freefem_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_freefem(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("freefem_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_freefem(path));
+    });
+
+    // MFM (Modulef Formatted Mesh) writer / reader (.mfm).
+    m.def("mfm_write",
+          [](const std::string& path, py::object pymesh, const std::string& float_fmt) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_mfm(path, cpp, float_fmt);
+          });
+    m.def("mfm_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_mfm(path));
     });
 
     // Netgen writer / reader (.vol, common path).

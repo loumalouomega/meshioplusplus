@@ -8,7 +8,6 @@ import numpy as np
 from ..__about__ import __version__ as version
 from .._common import _pick_first_int_data, warn
 from .._files import open_file
-from .._helpers import register_format
 from .._mesh import CellBlock, Mesh
 
 meshio_to_avsucd_type = {

@@ -1,7 +1,6 @@
 import pathlib
 
 from .._exceptions import ReadError
-from .._helpers import register_format
 from . import _vtk_42, _vtk_51
 
 

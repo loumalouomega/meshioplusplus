@@ -9,7 +9,6 @@ import numpy as np
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
-from .._helpers import register_format
 from .._mesh import CellBlock, Mesh
 
 

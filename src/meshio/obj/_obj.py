@@ -10,7 +10,6 @@ import numpy as np
 from ..__about__ import __version__
 from .._exceptions import WriteError
 from .._files import open_file
-from .._helpers import register_format
 from .._mesh import CellBlock, Mesh
 
 

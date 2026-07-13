@@ -16,7 +16,14 @@ endif()
 # scikit-build-core provides the right Python; locate the module-only component.
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)
-find_package(ZLIB REQUIRED)
+
+# ZLIB is optional too: without it the VTU zlib compression path falls back to
+# Python (whose zlib is always available in the stdlib). This keeps Windows CI
+# and wheels buildable with no system libraries.
+option(MESHIO_WITH_ZLIB "Build the C++ VTU zlib compression path" ON)
+if(MESHIO_WITH_ZLIB)
+  find_package(ZLIB QUIET)
+endif()
 
 # Optional heavy dependencies. When absent, the corresponding format sources
 # compile to empty translation units (#ifdef-guarded) and the Python
@@ -61,7 +68,14 @@ target_include_directories(
                 ${CMAKE_CURRENT_SOURCE_DIR}/bindings
                 ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/pugixml)
 target_compile_features(_core PRIVATE cxx_std_17)
-target_link_libraries(_core PRIVATE ZLIB::ZLIB)
+
+if(MESHIO_WITH_ZLIB AND ZLIB_FOUND)
+  message(STATUS "meshio: VTU zlib compression enabled")
+  target_compile_definitions(_core PRIVATE MESHIO_HAS_ZLIB)
+  target_link_libraries(_core PRIVATE ZLIB::ZLIB)
+else()
+  message(STATUS "meshio: zlib not found/disabled - VTU zlib falls back to Python")
+endif()
 
 if(MESHIO_WITH_HDF5 AND HDF5_FOUND)
   message(STATUS "meshio: HDF5 formats enabled (HDF5 ${HDF5_VERSION})")

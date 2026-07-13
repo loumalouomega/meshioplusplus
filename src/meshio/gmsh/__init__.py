@@ -45,7 +45,9 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
                 return
             except Exception:
                 pass
-    return _py_write(filename, mesh, fmt_version=fmt_version, binary=binary, float_fmt=float_fmt)
+    return _py_write(
+        filename, mesh, fmt_version=fmt_version, binary=binary, float_fmt=float_fmt
+    )
 
 
 register_format(

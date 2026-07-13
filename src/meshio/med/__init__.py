@@ -24,8 +24,9 @@ def write(filename, mesh):
         cell_tags = getattr(mesh, "cell_tags", None) or {}
         med_nom = mesh.field_data.get("med:nom", [])
         try:
-            _core.med_write(str(filename), mesh, dict(point_tags), dict(cell_tags),
-                            list(med_nom))
+            _core.med_write(
+                str(filename), mesh, dict(point_tags), dict(cell_tags), list(med_nom)
+            )
             return
         except Exception:
             pass

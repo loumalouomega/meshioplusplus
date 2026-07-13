@@ -1,7 +1,7 @@
 from .. import _core
 from .._files import is_buffer
 from .._helpers import register_format
-from . import _vtk_42, _vtk_51
+from . import _vtk_42
 from ._main import read as _py_read
 from ._main import write as _main_write
 

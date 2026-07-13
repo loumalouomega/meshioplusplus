@@ -15,7 +15,9 @@
 #include <string>
 #include <vector>
 
+#ifdef MESHIO_HAS_ZLIB
 #include <zlib.h>
+#endif
 
 #include "meshio/exceptions.hpp"
 
@@ -78,6 +80,7 @@ inline std::vector<unsigned char> b64decode(const char* s, std::size_t len) {
     return out;
 }
 
+#ifdef MESHIO_HAS_ZLIB
 inline std::vector<unsigned char> zlib_compress_block(const unsigned char* src,
                                                       std::size_t n) {
     uLongf bound = compressBound(static_cast<uLong>(n));
@@ -99,6 +102,7 @@ inline std::vector<unsigned char> zlib_decompress(const unsigned char* src,
     out.resize(destLen);
     return out;
 }
+#endif  // MESHIO_HAS_ZLIB
 
 inline std::uint64_t read_uint_le(const unsigned char* p, std::size_t isz) {
     std::uint64_t v = 0;
@@ -122,6 +126,10 @@ inline std::vector<unsigned char> vtu_decode_uncompressed(const char* text,
 // Decode a zlib-compressed VTU "binary" DataArray (block scheme).
 inline std::vector<unsigned char> vtu_decode_zlib(const char* text, std::size_t len,
                                                   std::size_t hsz) {
+#ifndef MESHIO_HAS_ZLIB
+    (void)text; (void)len; (void)hsz;
+    throw ReadError("VTU zlib decompression requires a zlib-enabled build");
+#else
     std::size_t first_chars = ((hsz + 2) / 3) * 4;
     if (len < first_chars) throw ReadError("VTU zlib header too short");
     std::vector<unsigned char> hb = b64decode(text, first_chars);
@@ -153,6 +161,7 @@ inline std::vector<unsigned char> vtu_decode_zlib(const char* text, std::size_t 
         off += static_cast<std::size_t>(comp_sizes[k]);
     }
     return out;
+#endif  // MESHIO_HAS_ZLIB
 }
 
 // Encode raw little-endian bytes as a VTU "binary" DataArray text.
@@ -166,6 +175,9 @@ inline std::string vtu_encode_binary(const unsigned char* data, std::size_t nbyt
         return b64encode(buf.data(), buf.size());
     }
 
+#ifndef MESHIO_HAS_ZLIB
+    throw WriteError("VTU zlib compression requires a zlib-enabled build");
+#else
     const std::uint32_t max_block = 32768;
     std::uint32_t num_blocks =
         static_cast<std::uint32_t>((nbytes + max_block - 1) / max_block);
@@ -194,6 +206,7 @@ inline std::string vtu_encode_binary(const unsigned char* data, std::size_t nbyt
     for (const auto& b : blocks) concat.insert(concat.end(), b.begin(), b.end());
     out += b64encode(concat.data(), concat.size());
     return out;
+#endif  // MESHIO_HAS_ZLIB
 }
 
 }  // namespace detail
