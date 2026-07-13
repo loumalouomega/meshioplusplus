@@ -14,7 +14,6 @@ import numpy as np
 from ..__about__ import __version__
 from .._common import warn
 from .._exceptions import ReadError
-from .._helpers import register_format
 from .._mesh import Mesh
 
 exodus_to_meshio_type = {
@@ -368,6 +367,3 @@ def write(filename, mesh):
                 data = rootgrp.createVariable(f"node_ns{k + 1}", dtype, (dim1,))
                 # Exodus is 1-based
                 data[:] = values + 1
-
-
-register_format("exodus", [".e", ".exo", ".ex2"], read, {"exodus": write})

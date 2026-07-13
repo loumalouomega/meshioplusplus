@@ -12,8 +12,13 @@
 #include <vector>
 
 #include "meshio/detail/value_io.hpp"
+#include "meshio/detail/xdmf_common.hpp"
 #include "meshio/exceptions.hpp"
 #include "pugixml.hpp"
+
+#ifdef MESHIO_HAS_HDF5
+#include "meshio/detail/hdf5_util.hpp"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -21,40 +26,12 @@ namespace meshio {
 
 namespace {
 
-// ---- type maps (ported from xdmf/common.py) ----
+// ---- type maps (shared with HMF via detail/xdmf_common.hpp) ----
 
-const char* meshio_to_xdmf(const std::string& t) {
-    static const std::unordered_map<std::string, const char*> m = {
-        {"vertex", "Polyvertex"}, {"line", "Polyline"}, {"line3", "Edge_3"},
-        {"quad", "Quadrilateral"}, {"quad8", "Quadrilateral_8"},
-        {"quad9", "Quadrilateral_9"}, {"pyramid", "Pyramid"},
-        {"pyramid13", "Pyramid_13"}, {"tetra", "Tetrahedron"},
-        {"triangle", "Triangle"}, {"triangle6", "Triangle_6"},
-        {"tetra10", "Tetrahedron_10"}, {"wedge", "Wedge"}, {"wedge15", "Wedge_15"},
-        {"wedge18", "Wedge_18"}, {"hexahedron", "Hexahedron"},
-        {"hexahedron20", "Hexahedron_20"}, {"hexahedron24", "Hexahedron_24"},
-        {"hexahedron27", "Hexahedron_27"}};
-    auto it = m.find(t);
-    if (it == m.end()) throw WriteError("XDMF: unsupported cell type " + t);
-    return it->second;
-}
-
-std::string xdmf_to_meshio(const std::string& t) {
-    static const std::unordered_map<std::string, std::string> m = {
-        {"Polyvertex", "vertex"}, {"Polyline", "line"}, {"Edge_3", "line3"},
-        {"Quadrilateral", "quad"}, {"Quadrilateral_8", "quad8"}, {"Quad_8", "quad8"},
-        {"Quadrilateral_9", "quad9"}, {"Quad_9", "quad9"}, {"Pyramid", "pyramid"},
-        {"Pyramid_13", "pyramid13"}, {"Tetrahedron", "tetra"}, {"Triangle", "triangle"},
-        {"Triangle_6", "triangle6"}, {"Tri_6", "triangle6"}, {"Tetrahedron_10", "tetra10"},
-        {"Tet_10", "tetra10"}, {"Wedge", "wedge"}, {"Wedge_15", "wedge15"},
-        {"Wedge_18", "wedge18"}, {"Hexahedron", "hexahedron"},
-        {"Hexahedron_20", "hexahedron20"}, {"Hex_20", "hexahedron20"},
-        {"Hexahedron_24", "hexahedron24"}, {"Hex_24", "hexahedron24"},
-        {"Hexahedron_27", "hexahedron27"}, {"Hex_27", "hexahedron27"}};
-    auto it = m.find(t);
-    if (it == m.end()) throw ReadError("XDMF: unsupported topology type " + t);
-    return it->second;
-}
+using xdmfcommon::concat_cell_data;
+using xdmfcommon::meshio_to_xdmf;
+using xdmfcommon::split_raw_cell_data;
+using xdmfcommon::xdmf_to_meshio;
 
 int meshio_to_xdmf_index(const std::string& t) {
     static const std::unordered_map<std::string, int> m = {
@@ -184,8 +161,29 @@ NDArray read_data_item(const pugi::xml_node& di, const fs::path& base_dir) {
         bin.read(reinterpret_cast<char*>(a.data()), static_cast<std::streamsize>(a.nbytes()));
         return a;
     }
-    // HDF -> Python fallback
+    if (fmt != "HDF") throw ReadError("XDMF: unknown data format " + fmt);
+
+#ifdef MESHIO_HAS_HDF5
+    // "<file>.h5:/path/to/dataset", file path relative to the xdmf file.
+    std::string info = di.text().get();
+    std::size_t a0 = info.find_first_not_of(" \t\r\n");
+    std::size_t a1 = info.find_last_not_of(" \t\r\n");
+    info = (a0 == std::string::npos) ? "" : info.substr(a0, a1 - a0 + 1);
+    std::size_t colon = info.find(':');
+    if (colon == std::string::npos)
+        throw ReadError("XDMF: malformed HDF reference '" + info + "'");
+    std::string h5file = info.substr(0, colon);
+    std::string h5path = info.substr(colon + 1);
+
+    h5::SilenceErrors silence;
+    fs::path full = base_dir / h5file;
+    h5::Hid f = h5::open_file_read(full.string());
+    NDArray a = h5::read_dataset(f, h5path);
+    a.reshape(dims);  // stored shape is authoritative in the XML
+    return a;
+#else
     throw ReadError("XDMF: HDF data format handled by Python fallback");
+#endif
 }
 
 // Mixed-topology translation (ported from common.translate_mixed_cells).
@@ -284,23 +282,8 @@ Mesh read_xdmf(const std::string& path) {
     // Split raw cell data into per-block arrays (cell_data_from_raw).
     std::vector<std::size_t> sizes;
     for (const auto& cb : mesh.cells) sizes.push_back(cb.num_cells());
-    for (auto& kv : cell_data_raw) {
-        const NDArray& raw = kv.second;
-        std::size_t ncols = raw.ndim() >= 2 ? raw.shape()[1] : 1;
-        std::size_t off = 0;
-        std::vector<NDArray> blocks;
-        for (std::size_t bs : sizes) {
-            std::vector<std::size_t> bshape = raw.shape();
-            if (!bshape.empty()) bshape[0] = bs;
-            NDArray b(raw.dtype(), bshape);
-            std::size_t elems = bs * ncols;
-            std::memcpy(b.data(), raw.data() + off * ncols * dtype_size(raw.dtype()),
-                        elems * dtype_size(raw.dtype()));
-            off += bs;
-            blocks.push_back(std::move(b));
-        }
-        mesh.cell_data.emplace(kv.first, std::move(blocks));
-    }
+    for (auto& kv : cell_data_raw)
+        mesh.cell_data.emplace(kv.first, split_raw_cell_data(kv.second, sizes));
 
     return mesh;
 }
@@ -309,8 +292,13 @@ namespace {
 
 struct XmlWriter {
     const std::string& data_format;
-    std::string base;     // path without extension (for .bin files)
+    std::string base;     // path without extension (for .bin / .h5 files)
     int counter = 0;
+    int gzip_level = -1;  // HDF only
+#ifdef MESHIO_HAS_HDF5
+    meshio::h5::Hid h5_file;   // lazily created sibling <base>.h5
+    std::string h5_basename;
+#endif
 
     // Append a <DataItem> under `parent` carrying `arr` in the chosen format.
     void add_data_item(pugi::xml_node parent, const NDArray& arr) {
@@ -337,6 +325,23 @@ struct XmlWriter {
             di.text().set(fn.c_str());
             return;
         }
+        if (data_format == "HDF") {
+#ifdef MESHIO_HAS_HDF5
+            if (!h5_file.valid()) {
+                std::string h5_path = base + ".h5";
+                h5_file = meshio::h5::create_file(h5_path);
+                std::size_t slash = h5_path.find_last_of("/\\");
+                h5_basename =
+                    slash == std::string::npos ? h5_path : h5_path.substr(slash + 1);
+            }
+            std::string name = "data" + std::to_string(counter++);
+            meshio::h5::write_dataset(h5_file, name, arr, gzip_level);
+            di.text().set((h5_basename + ":/" + name).c_str());
+            return;
+#else
+            throw WriteError("XDMF: HDF data format requires an HDF5-enabled build");
+#endif
+        }
         // XML inline
         std::string text = "\n";
         char buf[40];
@@ -361,31 +366,24 @@ struct XmlWriter {
     }
 };
 
-NDArray concat_cell_data(const std::vector<NDArray>& blocks) {
-    std::size_t total_rows = 0;
-    std::vector<std::size_t> shape = blocks.front().shape();
-    for (const auto& b : blocks) total_rows += b.shape().empty() ? 0 : b.shape()[0];
-    shape[0] = total_rows;
-    NDArray out(blocks.front().dtype(), shape);
-    std::size_t off = 0;
-    for (const auto& b : blocks) {
-        std::memcpy(out.data() + off, b.data(), b.nbytes());
-        off += b.nbytes();
-    }
-    return out;
-}
-
 }  // namespace
 
-void write_xdmf(const std::string& path, const Mesh& mesh, const std::string& data_format) {
-    if (data_format != "XML" && data_format != "Binary")
-        throw WriteError("XDMF C++ core only writes XML/Binary data formats");
+void write_xdmf(const std::string& path, const Mesh& mesh,
+                const std::string& data_format, int gzip_level) {
+#ifdef MESHIO_HAS_HDF5
+    const bool hdf_ok = true;
+#else
+    const bool hdf_ok = false;
+#endif
+    if (data_format != "XML" && data_format != "Binary" &&
+        !(data_format == "HDF" && hdf_ok))
+        throw WriteError("XDMF C++ core cannot write data format " + data_format);
 
     std::string base = path;
     std::size_t dot = base.find_last_of('.');
     if (dot != std::string::npos) base = base.substr(0, dot);
 
-    XmlWriter w{data_format, base, 0};
+    XmlWriter w{data_format, base, 0, gzip_level};
 
     pugi::xml_document doc;
     pugi::xml_node xdmf = doc.append_child("Xdmf");

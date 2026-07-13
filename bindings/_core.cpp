@@ -11,7 +11,16 @@
 #include "meshio/formats/abaqus.hpp"
 #include "meshio/formats/ansys.hpp"
 #include "meshio/formats/avsucd.hpp"
+#ifdef MESHIO_HAS_HDF5
+#include "meshio/formats/cgns.hpp"
+#include "meshio/formats/h5m.hpp"
+#include "meshio/formats/hmf.hpp"
+#include "meshio/formats/med.hpp"
+#endif
 #include "meshio/formats/dolfin.hpp"
+#ifdef MESHIO_HAS_NETCDF
+#include "meshio/formats/exodus.hpp"
+#endif
 #include "meshio/formats/flac3d.hpp"
 #include "meshio/formats/gmsh.hpp"
 #include "meshio/formats/medit.hpp"
@@ -37,6 +46,19 @@ namespace py = pybind11;
 PYBIND11_MODULE(_core, m) {
     m.doc() = "meshio C++ core (pybind11)";
     m.attr("__cpp_core__") = true;
+
+    // Build-time capability flags: the HDF5/netCDF formats are optional and
+    // compile out when the libraries are absent (Python is the fallback).
+#ifdef MESHIO_HAS_HDF5
+    m.attr("__has_hdf5__") = true;
+#else
+    m.attr("__has_hdf5__") = false;
+#endif
+#ifdef MESHIO_HAS_NETCDF
+    m.attr("__has_netcdf__") = true;
+#else
+    m.attr("__has_netcdf__") = false;
+#endif
 
     // Translate C++ I/O errors to the existing Python exception classes.
     py::register_exception_translator([](std::exception_ptr p) {
@@ -214,16 +236,97 @@ PYBIND11_MODULE(_core, m) {
         return meshio_py::mesh_to_py(meshio::read_tetgen(path));
     });
 
-    // XDMF writer / reader (.xdmf/.xmf) — XML + Binary data formats.
+    // XDMF writer / reader (.xdmf/.xmf) — XML/Binary always; HDF when built
+    // with HDF5.
     m.def("xdmf_write",
-          [](const std::string& path, py::object pymesh, const std::string& data_format) {
+          [](const std::string& path, py::object pymesh, const std::string& data_format,
+             int gzip_level) {
               meshio_py::PyMeshRefs refs;
               meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
-              meshio::write_xdmf(path, cpp, data_format);
-          });
+              meshio::write_xdmf(path, cpp, data_format, gzip_level);
+          },
+          py::arg("path"), py::arg("mesh"), py::arg("data_format"),
+          py::arg("gzip_level") = -1);
     m.def("xdmf_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_xdmf(path));
     });
+
+#ifdef MESHIO_HAS_HDF5
+    // CGNS writer / reader (.cgns).
+    m.def("cgns_write",
+          [](const std::string& path, py::object pymesh, int gzip_level) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_cgns(path, cpp, gzip_level);
+          });
+    m.def("cgns_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_cgns(path));
+    });
+
+    // HMF writer / reader (.hmf).
+    m.def("hmf_write",
+          [](const std::string& path, py::object pymesh, int gzip_level) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_hmf(path, cpp, gzip_level);
+          });
+    m.def("hmf_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_hmf(path));
+    });
+
+    // MOAB h5m writer / reader (.h5m).
+    m.def("h5m_write",
+          [](const std::string& path, py::object pymesh, bool add_global_ids,
+             int gzip_level) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::write_h5m(path, cpp, add_global_ids, gzip_level);
+          });
+    m.def("h5m_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_h5m(path));
+    });
+
+    // MED/Salome writer / reader (.med). point_tags/cell_tags are custom Mesh
+    // attributes and med:nom is a list of string-lists, so they travel outside
+    // the Mesh conversion layer.
+    m.def("med_write",
+          [](const std::string& path, py::object pymesh,
+             std::map<std::int64_t, std::vector<std::string>> point_tags,
+             std::map<std::int64_t, std::vector<std::string>> cell_tags,
+             std::vector<std::vector<std::string>> med_nom) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp =
+                  meshio_py::py_to_mesh(pymesh, refs, /*lenient_field_data=*/true);
+              meshio::MedInfo info;
+              info.point_tags = std::move(point_tags);
+              info.cell_tags = std::move(cell_tags);
+              info.med_nom = std::move(med_nom);
+              meshio::write_med(path, cpp, info);
+          });
+    m.def("med_read", [](const std::string& path) {
+        meshio::MedInfo info;
+        py::object pymesh = meshio_py::mesh_to_py(meshio::read_med(path, info));
+        py::dict ptags, ctags;
+        for (const auto& kv : info.point_tags) ptags[py::int_(kv.first)] = kv.second;
+        for (const auto& kv : info.cell_tags) ctags[py::int_(kv.first)] = kv.second;
+        pymesh.attr("point_tags") = ptags;
+        pymesh.attr("cell_tags") = ctags;
+        if (!info.med_nom.empty())
+            pymesh.attr("field_data")[py::str("med:nom")] = py::cast(info.med_nom);
+        return pymesh;
+    });
+#endif
+
+#ifdef MESHIO_HAS_NETCDF
+    // Exodus II writer / reader (.e/.exo/.ex2).
+    m.def("exodus_write", [](const std::string& path, py::object pymesh) {
+        meshio_py::PyMeshRefs refs;
+        meshio::write_exodus(path, meshio_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("exodus_read", [](const std::string& path) {
+        return meshio_py::mesh_to_py(meshio::read_exodus(path));
+    });
+#endif
 
     // DOLFIN XML writer / reader (.xml).
     m.def("dolfin_write", [](const std::string& path, py::object pymesh) {

@@ -1,11 +1,10 @@
 #pragma once
 //
-// XDMF3 reader/writer — XML and Binary data paths only (no HDF5 linkage).
-// DataItem Format="XML" (inline) and Format="Binary" (raw external .bin) are
-// handled in C++ via pugixml; Format="HDF" is left to the Python/h5py
-// fallback (the reader throws on it and the shim routes data_format="HDF" to
-// Python). Supports single-type and Mixed topology, Node/Cell attributes, and
-// XY/XYZ geometry.
+// XDMF3 reader/writer. DataItem Format="XML" (inline), Format="Binary" (raw
+// external .bin) and — when built with MESHIO_HAS_HDF5 — Format="HDF"
+// (sibling .h5 file, optional gzip) are handled in C++; without HDF5 the HDF
+// paths throw and the Python/h5py fallback takes over. Supports single-type
+// and Mixed topology, Node/Cell attributes, and XY/XYZ geometry.
 
 #include <string>
 
@@ -13,7 +12,8 @@
 
 namespace meshio {
 
-void write_xdmf(const std::string& path, const Mesh& mesh, const std::string& data_format);
+void write_xdmf(const std::string& path, const Mesh& mesh,
+                const std::string& data_format, int gzip_level = -1);
 Mesh read_xdmf(const std::string& path);
 
 }  // namespace meshio

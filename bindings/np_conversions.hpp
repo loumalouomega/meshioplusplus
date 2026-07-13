@@ -79,8 +79,11 @@ inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& refs) {
 
 // Python meshio.Mesh -> C++ meshio::Mesh (views; zero-copy). Polyhedron cell
 // blocks (ragged list data) are skipped here and must be handled on the Python
-// side by the caller.
-inline meshio::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs) {
+// side by the caller. With `lenient_field_data`, non-numeric field_data
+// entries (e.g. MED's "med:nom" list of strings) are silently skipped instead
+// of raising; the caller carries them through its own side-channel.
+inline meshio::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs,
+                               bool lenient_field_data = false) {
     meshio::Mesh m;
 
     m.points = view_from_numpy(ensure_contiguous(pymesh.attr("points"), refs));
@@ -117,8 +120,17 @@ inline meshio::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs) {
     if (!fd.is_none()) {
         for (auto item : fd.cast<py::dict>()) {
             std::string name = py::cast<std::string>(item.first);
-            py::array d = ensure_contiguous(item.second, refs);
-            m.field_data.emplace(std::move(name), view_from_numpy(d));
+            if (lenient_field_data) {
+                try {
+                    py::array d = ensure_contiguous(item.second, refs);
+                    m.field_data.emplace(std::move(name), view_from_numpy(d));
+                } catch (...) {
+                    // non-numeric entry: handled by the caller's side-channel
+                }
+            } else {
+                py::array d = ensure_contiguous(item.second, refs);
+                m.field_data.emplace(std::move(name), view_from_numpy(d));
+            }
         }
     }
 

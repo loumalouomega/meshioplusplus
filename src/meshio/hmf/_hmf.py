@@ -1,7 +1,6 @@
 import meshio
 
 from .._common import cell_data_from_raw, raw_from_cell_data, warn
-from .._helpers import register_format
 from ..xdmf.common import meshio_to_xdmf_type, xdmf_to_meshio_type
 
 
@@ -145,11 +144,3 @@ def _write_cell_data(cell_data, grid, compression, compression_opts):
             compression=compression,
             compression_opts=compression_opts,
         )
-
-
-register_format(
-    "hmf",
-    [".hmf"],
-    read,
-    {"hmf": write},
-)

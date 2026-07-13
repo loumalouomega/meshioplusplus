@@ -7,7 +7,6 @@ import numpy as np
 
 from .._common import num_nodes_per_cell
 from .._exceptions import ReadError, WriteError
-from .._helpers import register_format
 from .._mesh import Mesh
 
 # https://docs.salome-platform.org/5/med/dev/med__outils_8hxx.html
@@ -455,6 +454,3 @@ def _write_families(fm_group, tags):
             name_80 = name[i] + "\x00" * (80 - len(name[i]))
             # Needs numpy array, see <https://github.com/h5py/h5py/issues/1735>
             dataset[i] = np.array([ord(x) for x in name_80])
-
-
-register_format("med", [".med"], read, {"med": write})

@@ -10,9 +10,11 @@ from .main import read as _py_read
 from .main import write as _py_write
 from .time_series import TimeSeriesReader, TimeSeriesWriter
 
+_HAS_HDF5 = getattr(_core, "__has_hdf5__", False)
+
 
 def read(filename):
-    """Read an XDMF file (C++ core for XML/Binary data, Python/h5py for HDF)."""
+    """Read an XDMF file (C++ core; HDF DataItems need an HDF5-enabled build)."""
     if not is_buffer(filename, "r"):
         try:
             return _core.xdmf_read(str(filename))
@@ -22,10 +24,16 @@ def read(filename):
 
 
 def write(filename, mesh, data_format="HDF", **kwargs):
-    """Write an XDMF file (C++ core for XML/Binary data, Python/h5py for HDF)."""
-    if data_format in ("XML", "Binary") and not is_buffer(filename, "w"):
+    """Write an XDMF file (C++ core; HDF needs an HDF5-enabled build)."""
+    compression = kwargs.get("compression", "gzip")
+    compression_opts = kwargs.get("compression_opts", 4)
+    cpp_ok = data_format in ("XML", "Binary") or (
+        data_format == "HDF" and _HAS_HDF5 and compression in (None, "gzip")
+    )
+    if cpp_ok and not is_buffer(filename, "w"):
+        gzip_level = -1 if compression is None else int(compression_opts or 4)
         try:
-            _core.xdmf_write(str(filename), mesh, data_format)
+            _core.xdmf_write(str(filename), mesh, data_format, gzip_level)
             return
         except Exception:
             pass

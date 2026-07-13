@@ -1,0 +1,116 @@
+#ifdef MESHIO_HAS_HDF5
+
+#include "meshio/formats/hmf.hpp"
+
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "meshio/detail/hdf5_util.hpp"
+#include "meshio/detail/xdmf_common.hpp"
+#include "meshio/exceptions.hpp"
+
+namespace meshio {
+
+Mesh read_hmf(const std::string& path) {
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::open_file_read(path);
+
+    if (h5::read_attr_string(f, "type") != "hmf")
+        throw ReadError("HMF: not an hmf file");
+    if (h5::read_attr_string(f, "version") != "0.1-alpha")
+        throw ReadError("HMF: unsupported version");
+
+    h5::Hid domain = h5::open_group(f, "domain");
+    h5::Hid grid = h5::open_group(domain, "grid");
+
+    Mesh mesh;
+    // Mirrors the Python reader's dict semantics: one entry per meshio type,
+    // a repeated type replaces the earlier data; insertion order preserved.
+    std::vector<std::pair<std::string, NDArray>> cells;
+    std::vector<std::pair<std::string, NDArray>> cell_data_raw;
+
+    for (const std::string& key : h5::group_links(grid)) {
+        if (key.rfind("Topology", 0) == 0) {
+            h5::Hid d(H5Dopen2(grid, key.c_str(), H5P_DEFAULT), H5Dclose);
+            if (!d.valid()) throw ReadError("HMF: could not open " + key);
+            std::string xt = h5::read_attr_string(d, "TopologyType");
+            std::string mt = xdmfcommon::xdmf_to_meshio(xt);
+            NDArray data = h5::read_dataset(grid, key);
+            bool replaced = false;
+            for (auto& kv : cells)
+                if (kv.first == mt) { kv.second = std::move(data); replaced = true; break; }
+            if (!replaced) cells.emplace_back(mt, std::move(data));
+        } else if (key == "Geometry") {
+            h5::Hid d(H5Dopen2(grid, key.c_str(), H5P_DEFAULT), H5Dclose);
+            std::string gt = h5::read_attr_string(d, "GeometryType");
+            if (gt != "X" && gt != "XY" && gt != "XYZ")
+                throw ReadError("HMF: unexpected GeometryType " + gt);
+            mesh.points = h5::read_dataset(grid, key);
+        } else if (key == "CellAttributes") {
+            h5::Hid g = h5::open_group(grid, key);
+            for (const std::string& name : h5::group_links(g))
+                cell_data_raw.emplace_back(name, h5::read_dataset(g, name));
+        } else if (key == "NodeAttributes") {
+            h5::Hid g = h5::open_group(grid, key);
+            for (const std::string& name : h5::group_links(g))
+                mesh.point_data.emplace(name, h5::read_dataset(g, name));
+        } else {
+            throw ReadError("HMF: unexpected entry " + key);
+        }
+    }
+
+    for (auto& kv : cells) mesh.cells.emplace_back(std::move(kv.first), std::move(kv.second));
+
+    std::vector<std::size_t> sizes;
+    for (const auto& cb : mesh.cells) sizes.push_back(cb.num_cells());
+    for (auto& kv : cell_data_raw)
+        mesh.cell_data.emplace(kv.first, xdmfcommon::split_raw_cell_data(kv.second, sizes));
+
+    return mesh;
+}
+
+void write_hmf(const std::string& path, const Mesh& mesh, int gzip_level) {
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::create_file(path);
+
+    h5::write_attr_string(f, "type", "hmf");
+    h5::write_attr_string(f, "version", "0.1-alpha");
+
+    h5::Hid domain = h5::create_group(f, "domain");
+    h5::Hid grid = h5::create_group(domain, "grid");
+
+    // Geometry
+    {
+        h5::write_dataset(grid, "Geometry", mesh.points, gzip_level);
+        h5::Hid d(H5Dopen2(grid, "Geometry", H5P_DEFAULT), H5Dclose);
+        const std::size_t dim =
+            mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
+        h5::write_attr_string(d, "GeometryType", std::string("XYZ").substr(0, dim));
+    }
+
+    // Topology{k}
+    for (std::size_t k = 0; k < mesh.cells.size(); ++k) {
+        const CellBlock& cb = mesh.cells[k];
+        std::string name = "Topology" + std::to_string(k);
+        h5::write_dataset(grid, name, cb.data, gzip_level);
+        h5::Hid d(H5Dopen2(grid, name.c_str(), H5P_DEFAULT), H5Dclose);
+        h5::write_attr_string(d, "TopologyType", xdmfcommon::meshio_to_xdmf(cb.type));
+    }
+
+    // NodeAttributes / CellAttributes
+    h5::Hid na = h5::create_group(grid, "NodeAttributes");
+    for (const auto& kv : mesh.point_data)
+        h5::write_dataset(na, kv.first, kv.second, gzip_level);
+
+    h5::Hid ca = h5::create_group(grid, "CellAttributes");
+    for (const auto& kv : mesh.cell_data) {
+        if (kv.second.empty()) continue;
+        h5::write_dataset(ca, kv.first, xdmfcommon::concat_cell_data(kv.second),
+                          gzip_level);
+    }
+}
+
+}  // namespace meshio
+
+#endif  // MESHIO_HAS_HDF5
