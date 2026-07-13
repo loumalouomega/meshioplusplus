@@ -2,43 +2,46 @@
 
 ## Format table
 
+Each format name links to a detailed reference page (structure, options, data
+mapping, and the C++ vs Python behaviour).
+
 | Format name | Extensions | Read | Write | Extra dependencies |
 |-------------|-----------|------|-------|--------------------|
-| `abaqus` | `.inp` | ✓ | ✓ | — |
-| `ansys` | `.msh` | ✓ | ✓ | — |
-| `avsucd` | `.avs` | ✓ | ✓ | — |
-| `cgns` | `.cgns` | ✓ | ✓ | `h5py` |
-| `dolfin-xml` | `.xml` | ✓ | ✓ | — |
-| `exodus` | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
-| `flac3d` | `.f3grid` | ✓ | ✓ | — |
-| `flux` | `.pf3` | ✓ | ✓ | — |
-| `freefem` | `.msh` | ✓ | ✓ | — |
-| `gmsh` / `gmsh22` | `.msh` | ✓ | ✓ | — |
-| `h5m` | `.h5m` | ✓ | ✓ | `h5py` |
-| `hmf` | `.hmf` | ✓ | ✓ | `h5py` |
-| `mdpa` | `.mdpa` | ✓ | ✓ | — |
-| `med` | `.med` | ✓ | ✓ | `h5py` |
-| `medit` | `.mesh`, `.meshb` | ✓ | ✓ | — |
-| `mfm` | `.mfm` | ✓ | ✓ | — |
-| `mphtxt` | `.mphtxt` | ✓ | ✓ | — |
-| `nastran` | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — |
-| `netgen` | `.vol`, `.vol.gz` | ✓ | ✓ | — |
-| `neuroglancer` | (no extension) | ✓ | ✓ | — |
-| `obj` | `.obj` | ✓ | ✓ | — |
-| `off` | `.off` | ✓ | ✓ | — |
-| `permas` | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
-| `ply` | `.ply` | ✓ | ✓ | — |
-| `stl` | `.stl` | ✓ | ✓ | — |
-| `su2` | `.su2` | ✓ | ✓ | — |
-| `svg` | `.svg` | — | ✓ | — |
-| `tecplot` | `.dat`, `.tec` | ✓ | ✓ | — |
-| `tetgen` | `.ele` / `.node` | ✓ | ✓ | — |
-| `ugrid` | `.ugrid` | ✓ | ✓ | — |
-| `unv` | `.unv` | ✓ | ✓ | — |
-| `vtk` / `vtk42` / `vtk51` | `.vtk` | ✓ | ✓ | — |
-| `vtu` | `.vtu` | ✓ | ✓ | — |
-| `wkt` | `.wkt` | ✓ | ✓ | — |
-| `xdmf` | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
+| [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — |
+| [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — |
+| [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — |
+| [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` |
+| [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — |
+| [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
+| [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — |
+| [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — |
+| [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — |
+| [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — |
+| [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
+| [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
+| [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — |
+| [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` |
+| [`medit`](./formats/medit.md) | `.mesh`, `.meshb` | ✓ | ✓ | — |
+| [`mfm`](./formats/mfm.md) | `.mfm` | ✓ | ✓ | — |
+| [`mphtxt`](./formats/mphtxt.md) | `.mphtxt` | ✓ | ✓ | — |
+| [`nastran`](./formats/nastran.md) | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — |
+| [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — |
+| [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — |
+| [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — |
+| [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — |
+| [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
+| [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — |
+| [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — |
+| [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — |
+| [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — |
+| [`tecplot`](./formats/tecplot.md) | `.dat`, `.tec` | ✓ | ✓ | — |
+| [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — |
+| [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — |
+| [`unv`](./formats/unv.md) | `.unv` | ✓ | ✓ | — |
+| [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
+| [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
+| [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
+| [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
 
 **Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When reading, meshio tries them in registration order and uses the first that parses the file. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity.
 
