@@ -11,12 +11,16 @@
 | `dolfin-xml` | `.xml` | ✓ | ✓ | — |
 | `exodus` | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
 | `flac3d` | `.f3grid` | ✓ | ✓ | — |
+| `flux` | `.pf3` | ✓ | ✓ | — |
+| `freefem` | `.msh` | ✓ | ✓ | — |
 | `gmsh` / `gmsh22` | `.msh` | ✓ | ✓ | — |
 | `h5m` | `.h5m` | ✓ | ✓ | `h5py` |
 | `hmf` | `.hmf` | ✓ | ✓ | `h5py` |
 | `mdpa` | `.mdpa` | ✓ | ✓ | — |
 | `med` | `.med` | ✓ | ✓ | `h5py` |
 | `medit` | `.mesh`, `.meshb` | ✓ | ✓ | — |
+| `mfm` | `.mfm` | ✓ | ✓ | — |
+| `mphtxt` | `.mphtxt` | ✓ | ✓ | — |
 | `nastran` | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — |
 | `netgen` | `.vol`, `.vol.gz` | ✓ | ✓ | — |
 | `neuroglancer` | (no extension) | ✓ | ✓ | — |
@@ -30,16 +34,33 @@
 | `tecplot` | `.dat`, `.tec` | ✓ | ✓ | — |
 | `tetgen` | `.ele` / `.node` | ✓ | ✓ | — |
 | `ugrid` | `.ugrid` | ✓ | ✓ | — |
+| `unv` | `.unv` | ✓ | ✓ | — |
 | `vtk` / `vtk42` / `vtk51` | `.vtk` | ✓ | ✓ | — |
 | `vtu` | `.vtu` | ✓ | ✓ | — |
 | `wkt` | `.wkt` | ✓ | ✓ | — |
 | `xdmf` | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
 
-**Note on `.msh`:** Both `ansys` and `gmsh` use `.msh`. When reading, meshio tries `ansys` first, then `gmsh`. Specify `file_format` explicitly to avoid ambiguity.
+**Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When reading, meshio tries them in registration order and uses the first that parses the file. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity.
 
 **Note on `tetgen`:** The format spans two files (`.node` + `.ele`). It cannot be read from or written to a buffer.
 
 **Note on `svg`:** Write-only, 2D meshes only.
+
+**Note on `mfm`:** Single element type per file (non-hybrid), linear elements only.
+
+**Note on FEconv-derived formats (`unv`, `mfm`, `freefem`, `mphtxt`, `flux`):** These readers/writers were implemented against the [FEconv](https://github.com/victorsndvg/FEconv) format documentation. `unv` handles the parabolic mid-node "sandwich" ordering and maps permanent groups (dataset 2467) to `point_sets`/`cell_sets`; `mphtxt` and `flux` round-trip per-element region references as `cell_data` (`mphtxt:geom`, `pf3:ref`). Node orderings for higher-order elements round-trip losslessly but may differ from the originating tool's internal ordering for some element types.
+
+---
+
+## Native acceleration and fallbacks
+
+meshio ships a C++ core (`meshio._core`, built with pybind11 + scikit-build-core). Most formats read and write through the C++ core with zero-copy numpy at the I/O boundary; each has a pure-Python fallback that is used automatically when the C++ path can't handle a file or when the extension was built without an optional dependency:
+
+- **HDF5** (`cgns`, `h5m`, `hmf`, `med`, and XDMF `data_format="HDF"`) — C++ when built with `MESHIO_WITH_HDF5`, otherwise `h5py`.
+- **netCDF** (`exodus`) — C++ when built with `MESHIO_WITH_NETCDF`, otherwise `netCDF4`.
+- **zlib** (VTU zlib compression) — C++ when built with `MESHIO_WITH_ZLIB`, otherwise the Python stdlib.
+
+Behaviour and file compatibility are identical either way; the native paths are only faster. Install the optional runtime deps with `pip install meshio[all]`.
 
 ---
 
@@ -118,12 +139,7 @@ meshio.stl.write(filename, mesh,
 
 ### MED (`.med`)
 
-```python
-meshio.med.write(filename, mesh,
-    compression="gzip",
-    compression_opts=4,
-)
-```
+`meshio.med.write(filename, mesh)` — no extra options (MED does not compress).
 
 ### CGNS (`.cgns`)
 

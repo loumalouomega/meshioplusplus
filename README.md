@@ -28,12 +28,17 @@ meshio can read and write all of the following and smoothly converts between the
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
 > [CGNS](https://cgns.github.io/) (`.cgns`),
 > [DOLFIN XML](https://manpages.ubuntu.com/manpages/jammy/en/man1/dolfin-convert.1.html) (`.xml`),
+> [COMSOL](https://www.comsol.com) (`.mphtxt`),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [FLAC3D](https://www.itascacg.com/software/flac3d) (`.f3grid`),
+> [FLUX](https://www.altair.com/flux/) (`.pf3`),
+> [FreeFem++](https://freefem.org/) (`.msh`),
 > [H5M](https://www.mcs.anl.gov/~fathom/moab-docs/h5mmain.html) (`.h5m`),
+> [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`),
 > [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`),
+> [Modulef MFM](https://github.com/victorsndvg/FEconv) (`.mfm`),
 > [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) (bulk data, `.bdf`, `.fem`, `.nas`),
 > [Netgen](https://github.com/ngsolve/netgen) (`.vol`, `.vol.gz`),
 > [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/neuroglancer/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
@@ -55,6 +60,13 @@ meshio can read and write all of the following and smoothly converts between the
 
 ([Here's a little survey](https://forms.gle/PSeNb3N3gv3wbEus8) on which formats are actually
 used.)
+
+meshio ships a **C++ core** (built with pybind11 + scikit-build-core) that reads and
+writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF
+acceleration. Every format has a pure-Python fallback, so behaviour and file compatibility
+are identical whether or not the native libraries are present. Full docs (install,
+data model, per-format options, CLI) live at
+[the documentation site](https://nschloe.github.io/meshio/) (sources under [`doc/`](doc/)).
 
 Install with one of
 
