@@ -16,6 +16,9 @@
 MANIFEST
 README.rst
 build/
+build-tests/
+# CMake FetchContent downloads (e.g. GoogleTest) land here inside a build dir
+_deps/
 dist/
 doc/_build/
 *.egg-info/

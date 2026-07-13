@@ -19,7 +19,8 @@ keywords = [
 ]
 authors = [
   {email = "nico.schloemer@gmail.com"},
-  {name = "Nico Schlömer"}
+  {name = "Nico Schlömer"},
+  {name = "Vicente Mataix Ferrándiz"}
 ]
 classifiers = [
   "Development Status :: 5 - Production/Stable",

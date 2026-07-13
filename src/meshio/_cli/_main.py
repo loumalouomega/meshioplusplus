@@ -57,5 +57,6 @@ def _get_version_text():
         [
             f"meshio {__version__} [Python {python_version}]",
             "Copyright (c) 2015-2021 Nico Schlömer et al.",
+            "Copyright (c) 2025 Vicente Mataix Ferrándiz",
         ]
     )

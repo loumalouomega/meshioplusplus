@@ -21,6 +21,34 @@ jobs:
           python-version: "3.12"
       - uses: pre-commit/action@v3.0.1
 
+  cpp-tests:
+    name: C++ tests (GoogleTest / CTest)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev
+      - name: Install build tools
+        run: python -m pip install --upgrade pip pybind11 cmake ninja
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DMESHIO_BUILD_TESTS=ON
+          -DPython_EXECUTABLE=$(which python)
+          -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
+      - name: Build
+        run: cmake --build build
+      - name: Run C++ tests
+        run: ctest --test-dir build --output-on-failure
+
   test:
     needs: [lint]
     runs-on: ${{ matrix.os }}
