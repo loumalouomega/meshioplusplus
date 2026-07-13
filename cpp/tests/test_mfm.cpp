@@ -1,0 +1,33 @@
+// MFM round-trip tests (single linear element type per file).
+
+#include <gtest/gtest.h>
+
+#include "mesh_fixtures.hpp"
+#include "meshio/exceptions.hpp"
+#include "meshio/formats/mfm.hpp"
+
+namespace {
+
+void mfm_roundtrip(const mt::Mesh& mesh) {
+    mt::roundtrip(
+        [](const std::string& p, const mt::Mesh& m) { meshio::write_mfm(p, m, ".16e"); },
+        [](const std::string& p) { return meshio::read_mfm(p); }, mesh, ".mfm");
+}
+
+}  // namespace
+
+TEST(Mfm, Line) { mfm_roundtrip(mt::line_mesh()); }
+TEST(Mfm, Triangle) { mfm_roundtrip(mt::tri_mesh()); }
+TEST(Mfm, Triangle2D) { mfm_roundtrip(mt::tri_mesh_2d()); }
+TEST(Mfm, Quad) { mfm_roundtrip(mt::quad_mesh()); }
+TEST(Mfm, Tetra) { mfm_roundtrip(mt::tet_mesh()); }
+TEST(Mfm, Hexahedron) { mfm_roundtrip(mt::hex_mesh()); }
+TEST(Mfm, Wedge) { mfm_roundtrip(mt::wedge_mesh()); }
+
+TEST(Mfm, RejectsMixedTypes) {
+    std::string path = mt::temp_path(".mfm");
+    EXPECT_THROW(meshio::write_mfm(path, mt::tri_quad_mesh(), ".16e"),
+                 meshio::WriteError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
