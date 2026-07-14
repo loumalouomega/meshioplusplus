@@ -7,6 +7,14 @@ GitHub](https://github.com/<org>/meshioplusplus).
 
 ## v6.0.0 (2026-07-14)
 
+- **Default C++ parallel backend is now `AUTO`** (prefers OpenMP, then
+  STL+TBB, then sequential) instead of `STL` — the old default silently ran
+  sequentially on libstdc++ without TBB. Published wheels are now parallel.
+  `meshioplusplus._core.__parallel_backend__` reports the active backend. The
+  binary-format read/write paths were also optimised (bulk-buffered I/O); output
+  is unchanged (byte-identical). **Source builds** should now run
+  `git submodule update --init` to fetch the vendored **Eigen** (used for the
+  MED transpose); it is optional — builds without it fall back to a plain loop.
 - **Project renamed to meshio++** (machine identifier `meshioplusplus`, used
   wherever a literal `+` isn't valid: the Python package/import name, PyPI
   distribution, CLI entry point, C++ namespace, CMake project/targets, and

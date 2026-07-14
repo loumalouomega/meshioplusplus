@@ -17,6 +17,7 @@ namespace meshioplusplus {
 namespace {
 
 using detail::cols;
+using detail::dispatch_dtype;
 using detail::is_float_dtype;
 using detail::read_double;
 using detail::read_int;
@@ -43,23 +44,6 @@ void ascii_double(std::ostream& os, double v) {
     os << buf;
 }
 
-// Write isz bytes of *p in reversed (big-endian) order.
-void put_be(std::ostream& os, const unsigned char* p, std::size_t isz) {
-    for (std::size_t i = isz; i-- > 0;) os.put(static_cast<char>(p[i]));
-}
-void put_be_i64(std::ostream& os, std::int64_t v) {
-    put_be(os, reinterpret_cast<const unsigned char*>(&v), 8);
-}
-void put_be_i32(std::ostream& os, std::int32_t v) {
-    put_be(os, reinterpret_cast<const unsigned char*>(&v), 4);
-}
-
-// Emit one NDArray element (index i) as big-endian raw bytes.
-void put_be_elem(std::ostream& os, const NDArray& a, std::size_t i) {
-    std::size_t isz = dtype_size(a.dtype());
-    put_be(os, reinterpret_cast<const unsigned char*>(a.data()) + i * isz, isz);
-}
-
 // Byte-swap a whole array into a big-endian buffer (elements independent ->
 // parallel), for a single os.write instead of per-element stream calls.
 std::vector<unsigned char> be_buffer(const NDArray& a) {
@@ -67,11 +51,50 @@ std::vector<unsigned char> be_buffer(const NDArray& a) {
     const std::size_t n = a.size();
     const auto* src = reinterpret_cast<const unsigned char*>(a.data());
     std::vector<unsigned char> buf(n * isz);
-    parallel_for(n, [&](std::size_t i) {
+    parallel_for_bw(n, [&](std::size_t i) {
         for (std::size_t b = 0; b < isz; ++b)
             buf[i * isz + b] = src[i * isz + (isz - 1 - b)];
     });
     return buf;
+}
+
+// Byte-swap a typed vector into a big-endian buffer and emit it in one write
+// (replaces per-element os.put stream calls for the CELLS/OFFSETS/... sections).
+template <class T>
+void write_be(std::ostream& os, const std::vector<T>& v) {
+    constexpr std::size_t isz = sizeof(T);
+    std::vector<unsigned char> buf(v.size() * isz);
+    const auto* src = reinterpret_cast<const unsigned char*>(v.data());
+    parallel_for_bw(v.size(), [&](std::size_t i) {
+        for (std::size_t b = 0; b < isz; ++b)
+            buf[i * isz + b] = src[i * isz + (isz - 1 - b)];
+    });
+    os.write(reinterpret_cast<const char*>(buf.data()),
+             static_cast<std::streamsize>(buf.size()));
+}
+
+// Store the low `bytes` bytes of v into dst in big-endian order.
+inline void be_store(unsigned char* dst, std::uint64_t v, std::size_t bytes) {
+    for (std::size_t b = 0; b < bytes; ++b)
+        dst[b] = static_cast<unsigned char>(v >> (8 * (bytes - 1 - b)));
+}
+
+// Fused gather + big-endian store of one connectivity block: reads each
+// (optionally reordered) index and writes it as `bytes` big-endian bytes into
+// `dst` — one pass, no intermediate typed buffer (halves the memory traffic vs
+// building an int64/int32 array and byte-swapping it separately).
+inline void gather_be(unsigned char* dst, const NDArray& data, std::size_t nc,
+                      std::size_t k, const int* ord, std::size_t bytes) {
+    dispatch_dtype(data.dtype(), [&]<class T>() {
+        const T* src = data.as<T>();
+        parallel_for_bw(nc, [&](std::size_t r) {
+            for (std::size_t j = 0; j < k; ++j) {
+                std::size_t col = ord ? static_cast<std::size_t>(ord[j]) : j;
+                auto v = static_cast<std::uint64_t>(static_cast<std::int64_t>(src[r * k + col]));
+                be_store(dst + (r * k + j) * bytes, v, bytes);
+            }
+        });
+    });
 }
 
 void write_field_block(std::ostream& os, const std::string& name, DType dt,
@@ -132,7 +155,7 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
         // Pre-sized padded buffer, parallel byte-swap, then one write.
         const auto* src = reinterpret_cast<const unsigned char*>(mesh.points.data());
         std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
-        parallel_for(num_points, [&](std::size_t r) {
+        parallel_for_bw(num_points, [&](std::size_t r) {
             for (std::size_t c = 0; c < dim && c < 3; ++c)
                 for (std::size_t b = 0; b < pt_isz; ++b)
                     buf[(r * 3 + c) * pt_isz + b] =
@@ -154,78 +177,111 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
         // Version 5.1: OFFSETS (num_cells + 1) and CONNECTIVITY (total_idx).
         os << "CELLS " << (total_cells + 1) << ' ' << total_idx << '\n';
         os << "OFFSETS vtktypeint64\n";
+        // Cumulative offsets (sequential prefix sum, cheap).
+        std::vector<std::int64_t> offs(total_cells + 1);
+        offs[0] = 0;
+        std::size_t oi = 1;
         std::int64_t running = 0;
-        if (binary)
-            put_be_i64(os, running);
-        else
-            os << running << '\n';
         for (const auto& cb : mesh.cells) {
             const std::int64_t k = static_cast<std::int64_t>(cols(cb.data));
-            for (std::size_t r = 0; r < cb.num_cells(); ++r) {
-                running += k;
-                if (binary)
-                    put_be_i64(os, running);
-                else
-                    os << running << '\n';
+            for (std::size_t r = 0; r < cb.num_cells(); ++r) offs[oi++] = (running += k);
+        }
+        if (binary) {
+            write_be(os, offs);
+            os << '\n';
+            os << "CONNECTIVITY vtktypeint64\n";
+            // Fused gather + big-endian store, one pass into the byte buffer.
+            std::vector<unsigned char> cbuf(total_idx * 8);
+            std::size_t base = 0;
+            for (const auto& cb : mesh.cells) {
+                const std::size_t nc = cb.num_cells();
+                const std::size_t k = cols(cb.data);
+                std::vector<int> order = meshio_to_vtk_order(cb.type);
+                const int* ord = order.empty() ? nullptr : order.data();
+                gather_be(cbuf.data() + base * 8, cb.data, nc, k, ord, 8);
+                base += nc * k;
+            }
+            os.write(reinterpret_cast<const char*>(cbuf.data()),
+                     static_cast<std::streamsize>(cbuf.size()));
+            os << '\n';
+        } else {
+            for (std::int64_t v : offs) os << v << '\n';
+            os << "CONNECTIVITY vtktypeint64\n";
+            for (const auto& cb : mesh.cells) {
+                const std::size_t nc = cb.num_cells();
+                const std::size_t k = cols(cb.data);
+                std::vector<int> order = meshio_to_vtk_order(cb.type);
+                for (std::size_t r = 0; r < nc; ++r)
+                    for (std::size_t j = 0; j < k; ++j) {
+                        std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                        os << read_int(cb.data, r * k + col) << '\n';
+                    }
             }
         }
-        if (binary) os << '\n';
-
-        os << "CONNECTIVITY vtktypeint64\n";
-        for (const auto& cb : mesh.cells) {
-            const std::size_t nc = cb.num_cells();
-            const std::size_t k = cols(cb.data);
-            std::vector<int> order = meshio_to_vtk_order(cb.type);
-            for (std::size_t r = 0; r < nc; ++r)
-                for (std::size_t j = 0; j < k; ++j) {
-                    std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    std::int64_t v = read_int(cb.data, r * k + col);
-                    if (binary)
-                        put_be_i64(os, v);
-                    else
-                        os << v << '\n';
-                }
-        }
-        if (binary) os << '\n';
     } else {
         // Version 4.2: interleaved [count, nodes...] per cell, as int32.
         os << "CELLS " << total_cells << ' ' << (total_idx + total_cells) << '\n';
-        for (const auto& cb : mesh.cells) {
-            const std::size_t nc = cb.num_cells();
-            const std::int32_t k = static_cast<std::int32_t>(cols(cb.data));
-            std::vector<int> order = meshio_to_vtk_order(cb.type);
-            for (std::size_t r = 0; r < nc; ++r) {
-                if (binary)
-                    put_be_i32(os, k);
-                else
+        if (binary) {
+            // Fused: each cell -> [k, v0..v(k-1)] big-endian int32, one pass.
+            std::vector<unsigned char> cbuf((total_idx + total_cells) * 4);
+            std::size_t p = 0;  // element index into cbuf
+            for (const auto& cb : mesh.cells) {
+                const std::size_t nc = cb.num_cells();
+                const std::size_t k = cols(cb.data);
+                const std::size_t stride = k + 1;
+                std::vector<int> order = meshio_to_vtk_order(cb.type);
+                const int* ord = order.empty() ? nullptr : order.data();
+                const std::size_t block_base = p;
+                dispatch_dtype(cb.data.dtype(), [&]<class T>() {
+                    const T* src = cb.data.as<T>();
+                    parallel_for_bw(nc, [&](std::size_t r) {
+                        unsigned char* o = cbuf.data() + (block_base + r * stride) * 4;
+                        be_store(o, static_cast<std::uint64_t>(k), 4);
+                        for (std::size_t j = 0; j < k; ++j) {
+                            std::size_t col = ord ? static_cast<std::size_t>(ord[j]) : j;
+                            auto v = static_cast<std::uint64_t>(
+                                static_cast<std::int64_t>(src[r * k + col]));
+                            be_store(o + (j + 1) * 4, v, 4);
+                        }
+                    });
+                });
+                p += nc * stride;
+            }
+            os.write(reinterpret_cast<const char*>(cbuf.data()),
+                     static_cast<std::streamsize>(cbuf.size()));
+            os << '\n';
+        } else {
+            for (const auto& cb : mesh.cells) {
+                const std::size_t nc = cb.num_cells();
+                const std::size_t k = cols(cb.data);
+                std::vector<int> order = meshio_to_vtk_order(cb.type);
+                for (std::size_t r = 0; r < nc; ++r) {
                     os << k << '\n';
-                for (int j = 0; j < k; ++j) {
-                    std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    std::int64_t v = read_int(cb.data, r * static_cast<std::size_t>(k) + col);
-                    if (binary)
-                        put_be_i32(os, static_cast<std::int32_t>(v));
-                    else
-                        os << v << '\n';
+                    for (std::size_t j = 0; j < k; ++j) {
+                        std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                        os << read_int(cb.data, r * k + col) << '\n';
+                    }
                 }
             }
         }
-        if (binary) os << '\n';
     }
 
     // Cell types.
     os << "CELL_TYPES " << total_cells << '\n';
     const auto& tmap = meshio_to_vtk_type();
+    std::vector<std::int32_t> ctypes(total_cells);
+    std::size_t ci = 0;
     for (const auto& cb : mesh.cells) {
         auto it = tmap.find(cb.type);
         if (it == tmap.end()) throw WriteError("Unknown cell type for VTK: " + cb.type);
-        for (std::size_t r = 0; r < cb.num_cells(); ++r) {
-            if (binary)
-                put_be_i32(os, it->second);
-            else
-                os << it->second << '\n';
-        }
+        for (std::size_t r = 0; r < cb.num_cells(); ++r) ctypes[ci++] = it->second;
     }
-    if (binary) os << '\n';
+    if (binary) {
+        write_be(os, ctypes);
+        os << '\n';
+    } else {
+        for (std::int32_t v : ctypes) os << v << '\n';
+    }
 
     // Point data.
     if (!mesh.point_data.empty()) {

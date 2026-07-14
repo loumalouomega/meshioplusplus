@@ -13,6 +13,7 @@
 
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 
@@ -33,9 +34,11 @@ inline NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
 }
 
 // `offsets` are end offsets (one per cell): offsets[i] is the index in
-// `connectivity` just past cell i's last node.
+// `connectivity` just past cell i's last node. `conn` is a raw pointer so the
+// caller can pass an int64 NDArray buffer directly (VTK 5.1 connectivity is
+// already vtktypeint64) without an intermediate to_int64 copy.
 inline void reconstruct_cells(
-    const std::vector<std::int64_t>& conn, const std::vector<std::int64_t>& offsets,
+    const std::int64_t* conn, const std::vector<std::int64_t>& offsets,
     const std::vector<std::int64_t>& types,
     const std::map<std::string, NDArray>& cell_data_raw,
     std::vector<CellBlock>& out_cells,
@@ -80,11 +83,12 @@ inline void reconstruct_cells(
                 std::size_t m = j - i;
                 NDArray data(DType::Int64, {m, static_cast<std::size_t>(sz)});
                 std::int64_t* out = data.as<std::int64_t>();
-                for (std::size_t r = 0; r < m; ++r) {
-                    std::int64_t endoff = offsets[start + i + r];
+                const std::size_t ii = i;
+                parallel_for_bw(m, [&](std::size_t r) {
+                    std::int64_t endoff = offsets[start + ii + r];
                     std::int64_t base = endoff - sz;
                     for (std::int64_t c = 0; c < sz; ++c) out[r * sz + c] = conn[base + c];
-                }
+                });
                 out_cells.emplace_back(meshio_type, std::move(data));
                 add_cd(start + i, start + j);
                 i = j;
@@ -98,14 +102,16 @@ inline void reconstruct_cells(
             std::size_t m = end - start;
             NDArray data(DType::Int64, {m, static_cast<std::size_t>(n)});
             std::int64_t* out = data.as<std::int64_t>();
-            for (std::size_t r = 0; r < m; ++r) {
-                std::int64_t endoff = offsets[start + r];
+            const int* ord = order.empty() ? nullptr : order.data();
+            const std::size_t ss = start;
+            parallel_for_bw(m, [&](std::size_t r) {
+                std::int64_t endoff = offsets[ss + r];
                 std::int64_t base = endoff - n;
                 for (int j = 0; j < n; ++j) {
-                    int col = order.empty() ? j : order[j];
+                    int col = ord ? ord[j] : j;
                     out[r * n + j] = conn[base + col];
                 }
-            }
+            });
             out_cells.emplace_back(meshio_type, std::move(data));
             add_cd(start, end);
         }

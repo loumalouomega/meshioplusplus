@@ -108,6 +108,21 @@ else()
   message(STATUS "meshio++: netCDF not found/disabled - Exodus falls back to Python")
 endif()
 
+# Eigen (header-only, vendored as a git submodule at cpp/third_party/eigen):
+# used for the MED Fortran<->C transpose. Optional -- when the submodule is not
+# checked out (e.g. an sdist without submodules) the code falls back to the
+# hand-written transpose loop. Run `git submodule update --init` to enable it.
+option(MESHIOPLUSPLUS_WITH_EIGEN "Use vendored Eigen for the MED transpose" ON)
+if(MESHIOPLUSPLUS_WITH_EIGEN AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/eigen/Eigen/Dense")
+  message(STATUS "meshio++: Eigen enabled (MED transpose)")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_EIGEN)
+  target_include_directories(
+    meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/eigen)
+else()
+  message(STATUS "meshio++: Eigen not found/disabled - MED transpose uses the plain loop")
+endif()
+
 # --------------------------------------------------------------------------
 # Parallel backend for meshioplusplus::parallel_for (cpp/include/meshioplusplus/parallel.hpp).
 # Selected at configure time; exactly one MESHIOPLUSPLUS_PARALLEL_* macro is defined:
@@ -120,10 +135,21 @@ endif()
 # Adding a new backend (Kokkos, ...) = a branch here + one #elif block in
 # cpp/include/meshioplusplus/parallel.hpp.
 # --------------------------------------------------------------------------
-set(MESHIOPLUSPLUS_PARALLEL_BACKEND "STL" CACHE STRING
-    "Parallel backend for meshioplusplus::parallel_for: SEQ, STL, OPENMP or TBB")
-set_property(CACHE MESHIOPLUSPLUS_PARALLEL_BACKEND PROPERTY STRINGS SEQ STL OPENMP TBB)
+set(MESHIOPLUSPLUS_PARALLEL_BACKEND "AUTO" CACHE STRING
+    "Parallel backend for meshioplusplus::parallel_for: AUTO, SEQ, STL, OPENMP or TBB")
+set_property(CACHE MESHIOPLUSPLUS_PARALLEL_BACKEND PROPERTY STRINGS AUTO SEQ STL OPENMP TBB)
 string(TOUPPER "${MESHIOPLUSPLUS_PARALLEL_BACKEND}" _meshioplusplus_parallel)
+
+# AUTO: prefer OpenMP (portable: libgomp on manylinux, MSVC built-in, libomp on
+# macOS; needs no TBB), then the STL(+TBB) path, else the sequential backend.
+if(_meshioplusplus_parallel STREQUAL "AUTO")
+  find_package(OpenMP QUIET COMPONENTS CXX)
+  if(OpenMP_CXX_FOUND)
+    set(_meshioplusplus_parallel "OPENMP")
+  else()
+    set(_meshioplusplus_parallel "STL")
+  endif()
+endif()
 
 if(_meshioplusplus_parallel STREQUAL "STL")
   if(MSVC)

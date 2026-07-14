@@ -204,7 +204,7 @@ Mesh read_vtu(const std::string& path) {
         }
     }
 
-    detail::reconstruct_cells(conn, offsets, types, cell_data_raw, mesh.cells,
+    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh.cells,
                               mesh.cell_data);
     return mesh;
 }

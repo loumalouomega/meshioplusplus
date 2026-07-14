@@ -45,6 +45,7 @@
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
 #include "np_conversions.hpp"
 
@@ -66,6 +67,10 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_netcdf__") = false;
 #endif
+    // Active compile-time parallel backend ("seq"/"stl"/"openmp"/"tbb"): lets
+    // callers verify that parallel_for actually threads (STL without TBB is
+    // effectively sequential).
+    m.attr("__parallel_backend__") = meshioplusplus::parallel_backend_name();
 
     // Translate C++ I/O errors to the existing Python exception classes.
     py::register_exception_translator([](std::exception_ptr p) {

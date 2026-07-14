@@ -31,24 +31,33 @@
 //     calling thread after all iterations complete (the parallel STL would
 //     otherwise std::terminate, and OpenMP regions must not leak exceptions).
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <exception>
 #include <utility>
 
 #if defined(MESHIOPLUSPLUS_PARALLEL_STL)
-#include <algorithm>
 #include <execution>
 #include <thread>
 #include <vector>
+#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+#include <omp.h>
 #elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
 #include <tbb/blocked_range.h>
+#include <tbb/global_control.h>
 #include <tbb/parallel_for.h>
 #endif
 
 namespace meshioplusplus {
 
 inline constexpr std::size_t parallel_grain_default = 2048;
+
+// Memory-bandwidth-bound loops (byte-swap, transpose, gather) saturate a
+// socket's bandwidth with only a few threads and then *regress* as thread
+// overhead and cache contention grow — unlike compute-bound loops (zlib,
+// base64) which scale to all cores. Cap the bandwidth-bound loops here.
+inline constexpr unsigned parallel_bandwidth_threads = 4;
 
 constexpr const char* parallel_backend_name() {
 #if defined(MESHIOPLUSPLUS_PARALLEL_STL)
@@ -87,13 +96,14 @@ private:
 };
 
 template <class F>
-void parallel_for_impl(std::size_t n, F& f, std::size_t grain) {
+void parallel_for_impl(std::size_t n, F& f, std::size_t grain, unsigned max_threads) {
 #if defined(MESHIOPLUSPLUS_PARALLEL_STL)
     struct Chunk {
         std::size_t begin, end;
     };
     const std::size_t hw = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    const std::size_t max_chunks = hw * 4;
+    std::size_t max_chunks = hw * 4;
+    if (max_threads) max_chunks = std::min<std::size_t>(max_chunks, max_threads);
     const std::size_t by_grain = (n + grain - 1) / grain;
     const std::size_t nchunks = std::max<std::size_t>(1, std::min(max_chunks, by_grain));
     const std::size_t per = (n + nchunks - 1) / nchunks;
@@ -114,37 +124,58 @@ void parallel_for_impl(std::size_t n, F& f, std::size_t grain) {
     (void)grain;
     first_exception exc;
     const long long nn = static_cast<long long>(n);
-#pragma omp parallel for schedule(static)
+    const int nt = max_threads ? std::min<int>(static_cast<int>(max_threads),
+                                               omp_get_max_threads())
+                               : omp_get_max_threads();
+#pragma omp parallel for schedule(static) num_threads(nt)
     for (long long i = 0; i < nn; ++i) {
         exc.run([&] { f(static_cast<std::size_t>(i)); });
     }
     exc.rethrow_if_any();
 #elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
     first_exception exc;
-    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, n, grain),
-                      [&](const tbb::blocked_range<std::size_t>& r) {
-                          exc.run([&] {
-                              for (std::size_t i = r.begin(); i != r.end(); ++i) f(i);
+    auto body = [&] {
+        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, n, grain),
+                          [&](const tbb::blocked_range<std::size_t>& r) {
+                              exc.run([&] {
+                                  for (std::size_t i = r.begin(); i != r.end(); ++i) f(i);
+                              });
                           });
-                      });
+    };
+    if (max_threads) {
+        tbb::global_control gc(tbb::global_control::max_allowed_parallelism, max_threads);
+        body();
+    } else {
+        body();
+    }
     exc.rethrow_if_any();
 #else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
     (void)grain;
+    (void)max_threads;
     for (std::size_t i = 0; i < n; ++i) f(i);
 #endif
 }
 
 }  // namespace detail
 
+// max_threads == 0 means "use all available"; pass parallel_bandwidth_threads
+// (or parallel_for_bw below) for memory-bandwidth-bound loops.
 template <class F>
-void parallel_for(std::size_t n, F&& f,
-                  std::size_t grain = parallel_grain_default) {
+void parallel_for(std::size_t n, F&& f, std::size_t grain = parallel_grain_default,
+                  unsigned max_threads = 0) {
     if (n == 0) return;
     if (n <= grain) {
         for (std::size_t i = 0; i < n; ++i) f(i);
         return;
     }
-    detail::parallel_for_impl(n, f, grain);
+    detail::parallel_for_impl(n, f, grain, max_threads);
+}
+
+// Convenience for memory-bandwidth-bound loops: caps the thread count to avoid
+// the over-subscription regression measured for byte-swap/transpose/gather.
+template <class F>
+void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_default) {
+    parallel_for(n, std::forward<F>(f), grain, parallel_bandwidth_threads);
 }
 
 }  // namespace meshioplusplus

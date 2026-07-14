@@ -20,6 +20,10 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
 
+#ifdef MESHIOPLUSPLUS_HAS_EIGEN
+#include <Eigen/Dense>
+#endif
+
 namespace meshioplusplus {
 
 namespace {
@@ -72,7 +76,7 @@ NDArray reorder_med_cells(const std::string& cell_type, const NDArray& data) {
     detail::dispatch_dtype(data.dtype(), [&]<class T>() {
         const T* src = data.as<T>();
         T* dst = out.as<T>();
-        parallel_for(n, [&](std::size_t i) {
+        parallel_for_bw(n, [&](std::size_t i) {
             for (std::size_t c = 0; c < k; ++c) dst[i * k + c] = src[i * k + perm[c]];
         });
     });
@@ -110,7 +114,7 @@ void write_attr_double(hid_t loc, const std::string& name, double v) {
 }
 
 // Fortran-order (n, k) -> flat column-major buffer, applying `shift` to
-// integer dtypes. Pure index transpose; rows are independent -> parallel.
+// integer dtypes. Pure index transpose (memory-bandwidth bound).
 NDArray flatten_f(const NDArray& a, std::int64_t shift) {
     const std::size_t n = detail::rows(a);
     const std::size_t k = detail::cols(a);
@@ -118,40 +122,56 @@ NDArray flatten_f(const NDArray& a, std::int64_t shift) {
     detail::dispatch_dtype(a.dtype(), [&]<class T>() {
         const T* src = a.as<T>();
         T* dst = out.as<T>();
-        if constexpr (std::is_floating_point_v<T>) {
-            parallel_for(n, [&](std::size_t i) {
-                for (std::size_t c = 0; c < k; ++c) dst[c * n + i] = src[i * k + c];
-            });
-        } else {
-            const T s = static_cast<T>(shift);
-            parallel_for(n, [&](std::size_t i) {
-                for (std::size_t c = 0; c < k; ++c)
-                    dst[c * n + i] = static_cast<T>(src[i * k + c] + s);
-            });
+#ifdef MESHIOPLUSPLUS_HAS_EIGEN
+        if (shift == 0) {
+            // (n,k) row-major -> (n,k) col-major = Eigen storage-order convert.
+            using RM = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+            using CM = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>;
+            Eigen::Map<CM>(dst, n, k) = Eigen::Map<const RM>(src, n, k);
+            return;
         }
+#endif
+        const T s = static_cast<T>(shift);
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t c = 0; c < k; ++c) {
+                if constexpr (std::is_floating_point_v<T>)
+                    dst[c * n + i] = src[i * k + c];
+                else
+                    dst[c * n + i] = static_cast<T>(src[i * k + c] + s);
+            }
+        });
     });
     return out;
 }
 
 // Flat column-major buffer -> (n, k) row-major, applying `shift` to integer
-// dtypes. Inverse transpose of flatten_f; rows independent -> parallel.
+// dtypes and (fused, in the same pass) an optional column permutation `perm`
+// (the MED->meshio node reorder). Inverse transpose of flatten_f.
 NDArray unflatten_f(const NDArray& flat, std::size_t n, std::size_t k,
-                    std::int64_t shift) {
+                    std::int64_t shift, const std::vector<int>* perm = nullptr) {
+    const int* p = (perm && perm->size() == k) ? perm->data() : nullptr;
     NDArray out(flat.dtype(), {n, k});
     detail::dispatch_dtype(flat.dtype(), [&]<class T>() {
         const T* src = flat.as<T>();
         T* dst = out.as<T>();
-        if constexpr (std::is_floating_point_v<T>) {
-            parallel_for(n, [&](std::size_t i) {
-                for (std::size_t c = 0; c < k; ++c) dst[i * k + c] = src[c * n + i];
-            });
-        } else {
-            const T s = static_cast<T>(shift);
-            parallel_for(n, [&](std::size_t i) {
-                for (std::size_t c = 0; c < k; ++c)
-                    dst[i * k + c] = static_cast<T>(src[c * n + i] + s);
-            });
+#ifdef MESHIOPLUSPLUS_HAS_EIGEN
+        if (!p && shift == 0) {
+            using RM = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+            using CM = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>;
+            Eigen::Map<RM>(dst, n, k) = Eigen::Map<const CM>(src, n, k);
+            return;
         }
+#endif
+        const T s = static_cast<T>(shift);
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t c = 0; c < k; ++c) {
+                std::size_t sc = p ? static_cast<std::size_t>(p[c]) : c;
+                if constexpr (std::is_floating_point_v<T>)
+                    dst[i * k + c] = src[sc * n + i];
+                else
+                    dst[i * k + c] = static_cast<T>(src[sc * n + i] + s);
+            }
+        });
     });
     return out;
 }
@@ -347,9 +367,15 @@ Mesh read_med(const std::string& path, MedInfo& info) {
             NDArray nod = h5::read_dataset(g, "NOD");
             std::size_t k = n_cells > 0 ? nod.size() / static_cast<std::size_t>(n_cells)
                                         : 0;
-            NDArray data = unflatten_f(nod, static_cast<std::size_t>(n_cells), k, -1);
             warn_unconverted_3d(it->second);
-            data = reorder_med_cells(it->second, data);  // MED -> meshio order
+            // Fuse the Fortran->C transpose (shift -1) with the MED->meshio
+            // node reorder into a single pass over the connectivity.
+            auto pit = med_node_perm().find(it->second);
+            const std::vector<int>* perm =
+                (pit != med_node_perm().end() && pit->second.size() == k) ? &pit->second
+                                                                          : nullptr;
+            NDArray data =
+                unflatten_f(nod, static_cast<std::size_t>(n_cells), k, -1, perm);
             mesh.cells.emplace_back(it->second, std::move(data));
             cell_types.push_back(it->second);
         }

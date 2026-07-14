@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
+          submodules: recursive  # vendored Eigen (MED transpose)
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -38,10 +39,11 @@ jobs:
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev libtbb-dev
       - name: Install build tools
         run: python -m pip install --upgrade pip pybind11 cmake ninja
-      - name: Configure (STL parallel backend)
+      - name: Configure (STL parallel backend + TBB)
         run: >-
           cmake -S . -B build -G Ninja
           -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_PARALLEL_BACKEND=STL
           -DPython_EXECUTABLE=$(which python)
           -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
       - name: Build
@@ -72,6 +74,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
+          submodules: recursive  # vendored Eigen (MED transpose)
 
       - uses: actions/setup-python@v5
         with:
@@ -89,7 +92,9 @@ jobs:
 
       - name: Install native libraries (macOS)
         if: runner.os == 'macOS'
-        run: brew install hdf5 netcdf
+        # libomp lets the AUTO parallel backend use OpenMP on Apple clang
+        # (libc++ has no parallel STL).
+        run: brew install hdf5 netcdf libomp
 
       # macOS 13.3+ deployment target: required for std::format (its
       # floating-point formatting symbols live in the OS libc++ dylib).

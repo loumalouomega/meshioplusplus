@@ -209,16 +209,17 @@ cells).
 
 <img alt="meshio vs meshio++ speedup on example.msh" src="benchmark/plots/benchmark_speedup.svg" width="85%">
 
-meshio++'s wins are largest where pure-Python is slowest — **text/ASCII
-formats** (VTU ASCII is ~8× faster to write and ~5× to read). For **binary
-dumps** that pure-Python meshio already handles with numpy's `fromfile`/`tofile`
-(legacy VTK binary, single-type Gmsh binary) there is little to gain, and the
-pybind11 boundary can make meshio++ marginally slower; **HDF5** formats are
-roughly even. The fallbacks keep output byte-compatible either way.
+meshio++'s biggest wins are the parallel and text paths: **VTU binary+zlib
+~12× write** (the zlib blocks run across cores via an OpenMP backend), **VTU
+ASCII ~7× write / ~5× read**, and mixed-topology **XDMF read ~10×**. The binary
+and HDF5 formats that used to be *slower* — VTK/Gmsh binary and MED — are now at
+or above parity after an optimisation pass (bulk-buffered binary I/O, a real
+parallel backend, and an Eigen-backed MED transpose); plain-binary **reads** are
+the one place numpy's single-pass `fromfile` still leads. Output stays
+byte-identical throughout.
 
-The speedup is per-element: for text formats it climbs out of the small-mesh
-regime and plateaus (large meshes realise the *full* speedup), while for plain
-binary dumps numpy's vectorised path stays ahead at any size:
+The speedup is per-element: text/parallel formats climb out of the small-mesh
+regime and plateau (large meshes realise the full speedup):
 
 <img alt="speedup vs mesh size" src="benchmark/plots/benchmark_scaling.svg" width="85%">
 

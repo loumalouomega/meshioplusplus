@@ -367,11 +367,21 @@ void read_nodes_41(Cursor& cur, bool is_ascii, int data_size, NDArray& points,
         int parametric = rd_int();
         if (parametric != 0) throw ReadError("parametric Gmsh nodes not supported");
         std::int64_t nb = rd_size();
-        for (std::int64_t i = 0; i < nb; ++i) tags[idx + i] = rd_size() - 1;
-        for (std::int64_t i = 0; i < nb; ++i) {
-            pp[(idx + i) * 3 + 0] = rd_dbl();
-            pp[(idx + i) * 3 + 1] = rd_dbl();
-            pp[(idx + i) * 3 + 2] = rd_dbl();
+        const std::size_t nbz = static_cast<std::size_t>(nb);
+        if (!is_ascii && data_size == 8) {
+            // Native-endian, contiguous: bulk-copy tags (u64) and coords (3*f64).
+            std::memcpy(&tags[idx], cur.buf.data() + cur.pos, nbz * 8);
+            cur.pos += nbz * 8;
+            for (std::size_t i = 0; i < nbz; ++i) tags[idx + i] -= 1;
+            std::memcpy(pp + idx * 3, cur.buf.data() + cur.pos, nbz * 3 * 8);
+            cur.pos += nbz * 3 * 8;
+        } else {
+            for (std::int64_t i = 0; i < nb; ++i) tags[idx + i] = rd_size() - 1;
+            for (std::int64_t i = 0; i < nb; ++i) {
+                pp[(idx + i) * 3 + 0] = rd_dbl();
+                pp[(idx + i) * 3 + 1] = rd_dbl();
+                pp[(idx + i) * 3 + 2] = rd_dbl();
+            }
         }
         for (std::int64_t i = 0; i < nb; ++i)
             dim_tags[idx + i] = {dim, entity_tag};
@@ -412,10 +422,28 @@ void read_elements_41(Cursor& cur, bool is_ascii, int data_size,
         blk.n = n;
         blk.count = static_cast<std::size_t>(num_ele);
         blk.entity_tag = entity_tag;
-        blk.conn.reserve(static_cast<std::size_t>(num_ele) * n);
-        for (std::int64_t e = 0; e < num_ele; ++e) {
-            rd_size();  // element tag
-            for (std::size_t j = 0; j < n; ++j) blk.conn.push_back(rd_size() - 1);
+        const std::size_t nez = static_cast<std::size_t>(num_ele);
+        if (!is_ascii && data_size == 8) {
+            // Each element is [tag, node0..node(n-1)] u64, native-endian and
+            // contiguous: one memcpy, then extract the nodes (drop the tag).
+            const std::size_t stride = n + 1;
+            std::vector<std::uint64_t> raw(nez * stride);
+            std::memcpy(raw.data(), cur.buf.data() + cur.pos, nez * stride * 8);
+            cur.pos += nez * stride * 8;
+            blk.conn.resize(nez * n);
+            std::int64_t* dst = blk.conn.data();
+            const std::uint64_t* src = raw.data();
+            parallel_for_bw(nez, [&](std::size_t e) {
+                const std::uint64_t* row = src + e * stride;
+                for (std::size_t j = 0; j < n; ++j)
+                    dst[e * n + j] = static_cast<std::int64_t>(row[j + 1]) - 1;
+            });
+        } else {
+            blk.conn.reserve(nez * n);
+            for (std::int64_t e = 0; e < num_ele; ++e) {
+                rd_size();  // element tag
+                for (std::size_t j = 0; j < n; ++j) blk.conn.push_back(rd_size() - 1);
+            }
         }
         blocks.push_back(std::move(blk));
     }
@@ -452,13 +480,25 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
             cur.skip_to_end(env);
     }
 
-    std::int64_t max_tag = 0;
-    for (auto t : point_tags) max_tag = std::max(max_tag, t);
-    std::vector<std::int64_t> remap(static_cast<std::size_t>(max_tag) + 1, -1);
-    // Scatter: node tags are unique, so writes never alias -> parallel.
-    parallel_for(point_tags.size(), [&](std::size_t i) {
-        remap[static_cast<std::size_t>(point_tags[i])] = static_cast<std::int64_t>(i);
-    });
+    // When node tags are contiguous 0..N-1 (the common case) the tag->row remap
+    // is the identity, so we can skip building it *and* skip the random-access
+    // gather below (the connectivity is already the final mesh indexing).
+    bool remap_identity = true;
+    for (std::size_t i = 0; i < point_tags.size(); ++i)
+        if (point_tags[i] != static_cast<std::int64_t>(i)) {
+            remap_identity = false;
+            break;
+        }
+    std::vector<std::int64_t> remap;
+    if (!remap_identity) {
+        std::int64_t max_tag = 0;
+        for (auto t : point_tags) max_tag = std::max(max_tag, t);
+        remap.assign(static_cast<std::size_t>(max_tag) + 1, -1);
+        // Scatter: node tags are unique, so writes never alias -> parallel.
+        parallel_for_bw(point_tags.size(), [&](std::size_t i) {
+            remap[static_cast<std::size_t>(point_tags[i])] = static_cast<std::int64_t>(i);
+        });
+    }
 
     Mesh mesh;
     mesh.points = std::move(points);
@@ -467,7 +507,7 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
 
     // Node entity (dim, tag) -> gmsh:dim_tags point data.
     NDArray dt(DType::Int64, {dim_tags.size(), 2});
-    parallel_for(dim_tags.size(), [&](std::size_t i) {
+    parallel_for_bw(dim_tags.size(), [&](std::size_t i) {
         dt.as<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
         dt.as<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
     });
@@ -478,19 +518,30 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
         const std::vector<int>& perm = gmsh_to_meshio_perm(b.type);
         NDArray data(DType::Int64, {b.count, b.n});
         std::int64_t* dp = data.as<std::int64_t>();
-        // Gather through the prebuilt read-only remap -> parallel over rows.
-        parallel_for(b.count, [&](std::size_t r) {
-            for (std::size_t j = 0; j < b.n; ++j) {
-                std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                dp[r * b.n + j] = remap[static_cast<std::size_t>(b.conn[r * b.n + src])];
-            }
-        });
+        const int* prm = perm.empty() ? nullptr : perm.data();
+        if (remap_identity && !prm) {
+            // Identity remap, no reorder -> the connectivity is already final.
+            std::memcpy(dp, b.conn.data(), b.count * b.n * 8);
+        } else if (remap_identity) {
+            parallel_for_bw(b.count, [&](std::size_t r) {
+                for (std::size_t j = 0; j < b.n; ++j)
+                    dp[r * b.n + j] = b.conn[r * b.n + static_cast<std::size_t>(prm[j])];
+            });
+        } else {
+            // Gather through the prebuilt read-only remap -> parallel over rows.
+            parallel_for_bw(b.count, [&](std::size_t r) {
+                for (std::size_t j = 0; j < b.n; ++j) {
+                    std::size_t src = prm ? static_cast<std::size_t>(prm[j]) : j;
+                    dp[r * b.n + j] = remap[static_cast<std::size_t>(b.conn[r * b.n + src])];
+                }
+            });
+        }
         mesh.cells.emplace_back(b.type, std::move(data));
 
         NDArray ge(DType::Int32, {b.count});
         std::int32_t* gep = ge.as<std::int32_t>();
         const std::int32_t etag = b.entity_tag;
-        parallel_for(b.count, [&](std::size_t r) { gep[r] = etag; });
+        parallel_for_bw(b.count, [&](std::size_t r) { gep[r] = etag; });
         geom_blocks.push_back(std::move(ge));
     }
 
@@ -514,8 +565,15 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
 Mesh read_gmsh(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) throw ReadError("Could not open file: " + path);
-    std::string buf((std::istreambuf_iterator<char>(in)),
-                    std::istreambuf_iterator<char>());
+    // Bulk slurp (seek+read) rather than char-by-char istreambuf_iterator.
+    in.seekg(0, std::ios::end);
+    std::streamoff flen = in.tellg();
+    in.seekg(0, std::ios::beg);
+    std::string buf;
+    if (flen > 0) {
+        buf.resize(static_cast<std::size_t>(flen));
+        in.read(buf.data(), flen);
+    }
     Cursor cur(buf);
 
     if (trim(cur.read_line()) != "$MeshFormat") throw ReadError("Expected $MeshFormat");
@@ -568,7 +626,7 @@ Mesh read_gmsh(const std::string& path) {
     for (auto t : point_tags) max_tag = std::max(max_tag, t - 1);
     std::vector<std::int64_t> remap(static_cast<std::size_t>(max_tag) + 1, -1);
     // Scatter: node tags are unique, so writes never alias -> parallel.
-    parallel_for(point_tags.size(), [&](std::size_t i) {
+    parallel_for_bw(point_tags.size(), [&](std::size_t i) {
         remap[static_cast<std::size_t>(point_tags[i] - 1)] = static_cast<std::int64_t>(i);
     });
 
@@ -587,7 +645,7 @@ Mesh read_gmsh(const std::string& path) {
         NDArray data(DType::Int64, {b.count, b.n});
         std::int64_t* dp = data.as<std::int64_t>();
         // Gather through the prebuilt read-only remap -> parallel over rows.
-        parallel_for(b.count, [&](std::size_t r) {
+        parallel_for_bw(b.count, [&](std::size_t r) {
             for (std::size_t j = 0; j < b.n; ++j) {
                 std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
                 std::int64_t gid = b.conn[r * b.n + src];
@@ -599,7 +657,7 @@ Mesh read_gmsh(const std::string& path) {
         if (min_tags >= 1) {
             NDArray ph(DType::Int32, {b.count});
             std::int32_t* php = ph.as<std::int32_t>();
-            parallel_for(b.count, [&](std::size_t r) {
+            parallel_for_bw(b.count, [&](std::size_t r) {
                 php[r] = static_cast<std::int32_t>(b.tags[r * b.num_tags + 0]);
             });
             physical_blocks.push_back(std::move(ph));
@@ -607,7 +665,7 @@ Mesh read_gmsh(const std::string& path) {
         if (min_tags >= 2) {
             NDArray ge(DType::Int32, {b.count});
             std::int32_t* gep = ge.as<std::int32_t>();
-            parallel_for(b.count, [&](std::size_t r) {
+            parallel_for_bw(b.count, [&](std::size_t r) {
                 gep[r] = static_cast<std::int32_t>(b.tags[r * b.num_tags + 1]);
             });
             geometrical_blocks.push_back(std::move(ge));
@@ -902,10 +960,22 @@ void write_gmsh41(const std::string& path, const Mesh& mesh, bool binary) {
         put_i32(0);
         put_i32(0);
         put_u64(num_points);
-        for (std::size_t i = 0; i < num_points; ++i) put_u64(i + 1);
-        for (std::size_t i = 0; i < num_points; ++i)
-            for (std::size_t c = 0; c < 3; ++c)
-                put_f64((c < dim) ? detail::read_double(mesh.points, i * dim + c) : 0.0);
+        // Node tags 1..num_points and the (3-padded) coords, each as one write
+        // instead of a stream call per scalar (native endianness).
+        std::vector<std::uint64_t> ntags(num_points);
+        for (std::size_t i = 0; i < num_points; ++i) ntags[i] = i + 1;
+        os.write(reinterpret_cast<const char*>(ntags.data()),
+                 static_cast<std::streamsize>(num_points * 8));
+        std::vector<double> cbuf(num_points * 3, 0.0);
+        detail::dispatch_dtype(mesh.points.dtype(), [&]<class T>() {
+            const T* src = mesh.points.as<T>();
+            parallel_for_bw(num_points, [&](std::size_t i) {
+                for (std::size_t c = 0; c < dim && c < 3; ++c)
+                    cbuf[i * 3 + c] = static_cast<double>(src[i * dim + c]);
+            });
+        });
+        os.write(reinterpret_cast<const char*>(cbuf.data()),
+                 static_cast<std::streamsize>(num_points * 3 * 8));
         os << '\n';
     } else {
         os << "1 " << num_points << " 1 " << num_points << "\n";
@@ -954,13 +1024,24 @@ void write_gmsh41(const std::string& path, const Mesh& mesh, bool binary) {
             put_i32(entity_tag);
             put_i32(gtype);
             put_u64(count);
-            for (std::size_t r = 0; r < count; ++r) {
-                put_u64(tag0 + r);
-                for (std::size_t j = 0; j < n; ++j) {
-                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                    put_u64(static_cast<std::uint64_t>(detail::read_int(cb.data, r * n + src) + 1));
-                }
-            }
+            // One buffer per block: [tag, node0..node(n-1)] u64, native, one write.
+            const int* prm = perm.empty() ? nullptr : perm.data();
+            const std::size_t stride = n + 1;
+            std::vector<std::uint64_t> ebuf(count * stride);
+            const std::uint64_t base = tag0;
+            detail::dispatch_dtype(cb.data.dtype(), [&]<class T>() {
+                const T* src = cb.data.as<T>();
+                parallel_for_bw(count, [&](std::size_t r) {
+                    std::uint64_t* o = ebuf.data() + r * stride;
+                    o[0] = base + r;
+                    for (std::size_t j = 0; j < n; ++j) {
+                        std::size_t sc = prm ? static_cast<std::size_t>(prm[j]) : j;
+                        o[j + 1] = static_cast<std::uint64_t>(src[r * n + sc]) + 1;
+                    }
+                });
+            });
+            os.write(reinterpret_cast<const char*>(ebuf.data()),
+                     static_cast<std::streamsize>(ebuf.size() * 8));
         } else {
             os << bdim << " " << entity_tag << " " << gtype << " " << count << "\n";
             for (std::size_t r = 0; r < count; ++r) {

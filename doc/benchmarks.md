@@ -20,23 +20,38 @@ Reproduce everything with
 meshio++ moves the parsing/serialising hot loops into C++, so the win is
 largest exactly where pure-Python is slowest — **text/ASCII formats**:
 
+- **VTU binary + zlib** — the zlib block compression parallelises across cores
+  (the C++ core defaults to an **OpenMP** backend), so this is now the biggest
+  win: **~12× write** on the bracket (~16× on a larger cube), ~2× read.
 - **VTU ASCII** — the C++ number formatter and parser are several times faster
-  than the Python/numpy text path (~8× write, ~5× read on the bracket).
-- **VTU binary + zlib** — a solid, consistent speedup (~1.7× each way).
+  than the Python/numpy text path (~7× write, ~5× read).
 - **XDMF read** — much faster on mixed-topology meshes (~10× on the bracket),
-  though roughly even on a single-block mesh.
+  roughly even on a single-block mesh.
+- **MED (HDF5)** — with the Eigen-backed Fortran↔C transpose fused with the
+  node reorder, MED is now at parity or better (~1.2× write, ~1.0× read).
+- **Gmsh binary** — the writer buffers each block into one `write` instead of a
+  stream call per scalar: ~1.3× write; reads land ~0.8×.
 
-For **plain binary dumps** (legacy VTK binary, single-type Gmsh binary) the
-pure-Python meshio already reads and writes with numpy's `fromfile`/`tofile` at
-C speed, so there is little left to win — and the pybind11 boundary can make
-meshio++ *slightly slower* on the very simplest layouts. **HDF5** formats
-(XDMF-HDF, MED) go through the same HDF5 C library either way, so they are
-roughly even. A Python-only format (MDPA) is the ~1× control — neither library
-has a C++ path for it.
+For **plain binary dumps** (legacy VTK binary) pure-Python meshio streams the
+whole array through numpy's `fromfile`/`tofile` at C speed, which is hard to
+beat — meshio++ writes are now at parity (~0.9–1.1×) and reads land ~0.7–0.8×
+(MED read is at parity, ~0.9–1.2×), since numpy's single-pass `fromfile` remains
+the ceiling for the reader's parse + byte-swap + cell reconstruction. A
+Python-only format (MDPA) is the ~1× control.
 
-This is the honest shape of it: meshio++ is a large win for text-heavy formats
-and complex readers, roughly neutral for numpy-friendly binary blobs, and never
-changes the file contents — the fallbacks guarantee byte-compatible output.
+These formats were previously *slower* in meshio++ (VTK/Gmsh binary and MED read
+all landed at 0.2–0.6×); the current numbers reflect an optimisation pass —
+bulk-buffered binary I/O (one `write` per section, fused gather+byte-swap; bulk
+`memcpy` decode and an identity-remap fast path on read), passing the int64
+connectivity buffer straight to cell reconstruction (no copy), a real parallel
+backend (OpenMP by default), thread-capping for the memory-bandwidth-bound
+loops, and Eigen for the MED transpose. Output stays byte-identical throughout
+(the round-trip and reference-file tests are the gate).
+
+This is the honest shape of it: meshio++ is a large win for text and
+compute-bound formats (ASCII, zlib) and now at least at parity on the binary and
+HDF5 formats, with plain-binary *reads* the one place numpy's vectorised I/O
+still leads.
 
 ## Real mesh (`example.msh`)
 
@@ -55,14 +70,23 @@ Both libraries are O(n), so the relative speedup settles to a per-format
 constant on non-trivial meshes — but the edges behave differently by format:
 
 - **Text formats (VTU ASCII)** — the write speedup *climbs* out of the
-  small-mesh regime (~5× → ~8×) as fixed per-call overheads amortise, then
-  plateaus. A large real mesh realises the full speedup; a tiny one does not.
-- **Compressed binary (VTU + zlib)** — roughly flat (~1.7×).
-- **Plain binary (VTK)** — pure-Python meshio streams it through numpy's
-  fully vectorised `fromfile`/`tofile`, which only pulls *further* ahead as the
-  mesh grows, so meshio++'s ratio drifts a little lower with size here.
+  small-mesh regime as fixed per-call overheads amortise, then plateaus. A large
+  real mesh realises the full speedup; a tiny one does not.
+- **Compressed binary (VTU + zlib)** — the OpenMP-parallel zlib compression
+  *grows* with size as there is more work to spread across cores.
+- **Plain binary (VTK)** — writes track parity; reads stay a little below,
+  since numpy's fully vectorised `fromfile` is a hard single-pass baseline.
 
 ![speedup vs mesh size](/benchmarks/benchmark_scaling.svg)
+
+::: tip Parallel backend
+The C++ core parallelises with a compile-time backend (`AUTO` → OpenMP by
+default). Memory-bandwidth-bound loops (byte-swap, transpose, gather) are
+thread-capped because they saturate bandwidth after a few threads; compute-bound
+loops (zlib, base64) use all cores. Check the active backend with
+`python -c "import meshioplusplus._core as c; print(c.__parallel_backend__)"` —
+if it prints `stl` without TBB linked, `parallel_for` runs sequentially.
+:::
 
 ## Reproducing
 

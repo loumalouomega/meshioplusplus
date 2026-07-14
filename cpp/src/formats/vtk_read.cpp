@@ -98,7 +98,7 @@ struct Cursor {
             unsigned char* out = reinterpret_cast<unsigned char*>(a.data());
             // Element offsets are i*isz -> byte-swap in parallel.
             const std::size_t start = pos;
-            parallel_for(count, [&](std::size_t i) {
+            parallel_for_bw(count, [&](std::size_t i) {
                 for (std::size_t b = 0; b < isz; ++b)
                     out[i * isz + b] = static_cast<unsigned char>(
                         buf[start + i * isz + (isz - 1 - b)]);
@@ -125,7 +125,13 @@ std::string upper(std::string s) {
 
 std::vector<std::int64_t> to_int64(const NDArray& a) {
     std::vector<std::int64_t> v(a.size());
-    for (std::size_t i = 0; i < a.size(); ++i) v[i] = detail::read_int(a, i);
+    std::int64_t* dst = v.data();
+    // Hoist the per-element dtype switch out of the loop, then bulk-convert.
+    detail::dispatch_dtype(a.dtype(), [&]<class T>() {
+        const T* src = a.as<T>();
+        parallel_for_bw(a.size(),
+                     [&](std::size_t i) { dst[i] = static_cast<std::int64_t>(src[i]); });
+    });
     return v;
 }
 
@@ -134,8 +140,15 @@ std::vector<std::int64_t> to_int64(const NDArray& a) {
 Mesh read_vtk(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) throw ReadError("Could not open file: " + path);
-    std::string buf((std::istreambuf_iterator<char>(in)),
-                    std::istreambuf_iterator<char>());
+    // Bulk slurp (seek+read) rather than char-by-char istreambuf_iterator.
+    in.seekg(0, std::ios::end);
+    std::streamoff len = in.tellg();
+    in.seekg(0, std::ios::beg);
+    std::string buf;
+    if (len > 0) {
+        buf.resize(static_cast<std::size_t>(len));
+        in.read(buf.data(), len);
+    }
     Cursor cur(buf);
 
     std::string header = cur.read_line();
@@ -152,6 +165,10 @@ Mesh read_vtk(const std::string& path) {
 
     Mesh mesh;
     std::vector<std::int64_t> conn, offsets, types;
+    // Held alive so reconstruct_cells can read the int64 connectivity buffer
+    // directly (VTK 5.1), skipping a to_int64 copy of the whole connectivity.
+    NDArray conn_nd;
+    const std::int64_t* conn_ptr = nullptr;
     std::map<std::string, NDArray> cell_data_raw;
     std::string active;  // POINT_DATA or CELL_DATA
 
@@ -185,7 +202,14 @@ Mesh read_vtk(const std::string& path) {
                 if (upper(l).rfind("CONNECTIVITY", 0) != 0)
                     throw ReadError("Expected CONNECTIVITY");
                 DType cdt = dtype_from_vtk_token(split(l)[1]);
-                conn = to_int64(cur.read_values(cdt, num_idx, is_ascii));
+                conn_nd = cur.read_values(cdt, num_idx, is_ascii);
+                if (conn_nd.dtype() == DType::Int64) {
+                    // Already int64 (vtktypeint64) -> read the buffer directly.
+                    conn_ptr = conn_nd.as<std::int64_t>();
+                } else {
+                    conn = to_int64(conn_nd);
+                    conn_ptr = conn.data();
+                }
                 // off_all has a leading 0; end-offsets are the remainder.
                 offsets.assign(off_all.begin() + 1, off_all.end());
             } else {
@@ -195,6 +219,8 @@ Mesh read_vtk(const std::string& path) {
                 DType dt = is_ascii ? DType::Int64 : DType::Int32;
                 std::vector<std::int64_t> raw =
                     to_int64(cur.read_values(dt, total, is_ascii));
+                conn.reserve(total - num_cells);
+                offsets.reserve(num_cells);
                 std::size_t p = 0;
                 std::int64_t running = 0;
                 for (std::size_t i = 0; i < num_cells; ++i) {
@@ -203,6 +229,7 @@ Mesh read_vtk(const std::string& path) {
                     running += n;
                     offsets.push_back(running);
                 }
+                conn_ptr = conn.data();
             }
         } else if (section == "CELL_TYPES") {
             std::size_t n = std::stoull(tok[1]);
@@ -251,7 +278,7 @@ Mesh read_vtk(const std::string& path) {
         }
     }
 
-    detail::reconstruct_cells(conn, offsets, types, cell_data_raw, mesh.cells,
+    detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh.cells,
                               mesh.cell_data);
     return mesh;
 }
