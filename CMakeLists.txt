@@ -5,7 +5,7 @@ project(
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio mesh I/O library")
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -69,7 +69,7 @@ file(GLOB_RECURSE MESHIO_CORE_SOURCES
 
 add_library(meshio_core_obj OBJECT ${MESHIO_CORE_SOURCES})
 set_target_properties(meshio_core_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_features(meshio_core_obj PUBLIC cxx_std_17)
+target_compile_features(meshio_core_obj PUBLIC cxx_std_20)
 target_include_directories(
   meshio_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include
                          ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/pugixml)
@@ -107,6 +107,76 @@ if(MESHIO_WITH_NETCDF AND (netCDF_FOUND OR NETCDF_LIBRARY))
 else()
   message(STATUS "meshio: netCDF not found/disabled - Exodus falls back to Python")
 endif()
+
+# --------------------------------------------------------------------------
+# Parallel backend for meshio::parallel_for (cpp/include/meshio/parallel.hpp).
+# Selected at configure time; exactly one MESHIO_PARALLEL_* macro is defined:
+#   SEQ    - sequential (always available)
+#   STL    - C++17 std::execution::par (default). Built into MSVC's STL; on
+#            libstdc++ it requires TBB - probed below, with an automatic
+#            fallback to SEQ (warning) when unusable (e.g. Apple libc++).
+#   OPENMP - #pragma omp parallel for (hard error if OpenMP is missing)
+#   TBB    - tbb::parallel_for        (hard error if TBB is missing)
+# Adding a new backend (Kokkos, ...) = a branch here + one #elif block in
+# cpp/include/meshio/parallel.hpp.
+# --------------------------------------------------------------------------
+set(MESHIO_PARALLEL_BACKEND "STL" CACHE STRING
+    "Parallel backend for meshio::parallel_for: SEQ, STL, OPENMP or TBB")
+set_property(CACHE MESHIO_PARALLEL_BACKEND PROPERTY STRINGS SEQ STL OPENMP TBB)
+string(TOUPPER "${MESHIO_PARALLEL_BACKEND}" _meshio_parallel)
+
+if(_meshio_parallel STREQUAL "STL")
+  if(MSVC)
+    target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_STL)
+  else()
+    find_package(TBB CONFIG QUIET)
+    include(CheckCXXSourceCompiles)
+    if(TBB_FOUND)
+      set(CMAKE_REQUIRED_LIBRARIES TBB::tbb)
+    endif()
+    check_cxx_source_compiles(
+      "
+      #include <algorithm>
+      #include <execution>
+      #include <vector>
+      int main() {
+        std::vector<int> v(4);
+        std::for_each(std::execution::par, v.begin(), v.end(), [](int& x) { x = 1; });
+        return v[0] - 1;
+      }"
+      MESHIO_HAS_PSTL)
+    unset(CMAKE_REQUIRED_LIBRARIES)
+    if(MESHIO_HAS_PSTL)
+      target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_STL)
+      if(TBB_FOUND)
+        target_link_libraries(meshio_core_obj PUBLIC TBB::tbb)
+      endif()
+    else()
+      message(WARNING
+        "meshio: the STL parallel backend is unusable on this toolchain "
+        "(libstdc++ needs TBB installed; Apple libc++ has no parallel STL) - "
+        "falling back to the sequential backend. Install TBB or configure with "
+        "-DMESHIO_PARALLEL_BACKEND=OPENMP.")
+      set(_meshio_parallel "SEQ")
+      target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_SEQ)
+    endif()
+  endif()
+elseif(_meshio_parallel STREQUAL "OPENMP")
+  find_package(OpenMP REQUIRED COMPONENTS CXX)
+  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_OPENMP)
+  target_link_libraries(meshio_core_obj PUBLIC OpenMP::OpenMP_CXX)
+elseif(_meshio_parallel STREQUAL "TBB")
+  find_package(TBB CONFIG REQUIRED)
+  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_TBB)
+  target_link_libraries(meshio_core_obj PUBLIC TBB::tbb)
+elseif(_meshio_parallel STREQUAL "SEQ")
+  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_SEQ)
+else()
+  message(FATAL_ERROR
+    "meshio: unknown MESHIO_PARALLEL_BACKEND '${MESHIO_PARALLEL_BACKEND}' "
+    "(use SEQ, STL, OPENMP or TBB)")
+endif()
+message(STATUS "meshio: parallel backend: ${_meshio_parallel}")
 
 # The pybind11 extension: bindings + the shared core object library.
 file(GLOB MESHIO_BINDING_SOURCES bindings/*.cpp)

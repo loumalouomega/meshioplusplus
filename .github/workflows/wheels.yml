@@ -20,14 +20,17 @@ jobs:
         uses: pypa/cibuildwheel@v2.21
         env:
           # Portable wheels: the optional HDF5/netCDF/zlib native paths are
-          # turned OFF, so the only build requirement is a C++17 compiler.
+          # turned OFF, so the only build requirement is a C++20 compiler.
           # HDF5/netCDF formats and VTU zlib work through the h5py/netCDF4
           # runtime extras and the stdlib, exactly as the fallback shims intend.
+          # macOS 13.3+ is required for std::format (its floating-point
+          # formatting symbols live in the OS libc++ dylib).
           CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
           CIBW_SKIP: "*-musllinux* *_i686 *-win32"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
           CIBW_ENVIRONMENT: >-
             CMAKE_ARGS="-DMESHIO_WITH_HDF5=OFF -DMESHIO_WITH_NETCDF=OFF -DMESHIO_WITH_ZLIB=OFF"
+            MACOSX_DEPLOYMENT_TARGET="13.3"
           CIBW_TEST_REQUIRES: "pytest h5py"
           CIBW_TEST_COMMAND: "python -c \"import meshio; print(meshio.__version__)\""
 

@@ -15,8 +15,14 @@
 .cache/
 MANIFEST
 README.rst
-build/
+# Ignore build artifacts but keep the tracked configure scripts
+# (an ignored *directory* cannot have re-included children, so use build/*).
+build/*
+!build/configure.sh
+!build/configure.bat
 build-tests/
+build-omp/
+build-tbb/
 # CMake FetchContent downloads (e.g. GoogleTest) land here inside a build dir
 _deps/
 dist/

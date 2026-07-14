@@ -35,10 +35,10 @@ jobs:
       - name: Install native libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev libtbb-dev
       - name: Install build tools
         run: python -m pip install --upgrade pip pybind11 cmake ninja
-      - name: Configure
+      - name: Configure (STL parallel backend)
         run: >-
           cmake -S . -B build -G Ninja
           -DMESHIO_BUILD_TESTS=ON
@@ -48,6 +48,17 @@ jobs:
         run: cmake --build build
       - name: Run C++ tests
         run: ctest --test-dir build --output-on-failure
+      - name: Configure (OpenMP parallel backend)
+        run: >-
+          cmake -S . -B build-omp -G Ninja
+          -DMESHIO_BUILD_TESTS=ON
+          -DMESHIO_PARALLEL_BACKEND=OPENMP
+          -DPython_EXECUTABLE=$(which python)
+          -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
+      - name: Build (OpenMP)
+        run: cmake --build build-omp
+      - name: Run C++ tests (OpenMP)
+        run: ctest --test-dir build-omp --output-on-failure
 
   test:
     needs: [lint]
@@ -74,11 +85,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev
 
       - name: Install native libraries (macOS)
         if: runner.os == 'macOS'
         run: brew install hdf5 netcdf
+
+      # macOS 13.3+ deployment target: required for std::format (its
+      # floating-point formatting symbols live in the OS libc++ dylib).
+      - name: Set macOS deployment target
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo 'MACOSX_DEPLOYMENT_TARGET=13.3' >> "$GITHUB_ENV"
 
       - name: Configure build (Linux/macOS - native paths on)
         if: runner.os != 'Windows'

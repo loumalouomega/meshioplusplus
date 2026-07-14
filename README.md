@@ -63,11 +63,14 @@ meshio can read and write all of the following and smoothly converts between the
 ([Here's a little survey](https://forms.gle/PSeNb3N3gv3wbEus8) on which formats are actually
 used.)
 
-meshio ships a **C++ core** (built with pybind11 + scikit-build-core) that reads and
+meshio ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and
 writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF
-acceleration. Every format has a pure-Python fallback, so behaviour and file compatibility
-are identical whether or not the native libraries are present. Full docs (install,
-data model, per-format options, CLI) live at
+acceleration and a **selectable parallel backend** (STL parallel algorithms by default;
+OpenMP or TBB via `-DMESHIO_PARALLEL_BACKEND=...`). Every format has a pure-Python
+fallback, so behaviour and file compatibility are identical whether or not the native
+libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS)
+or `build/configure.bat` (Windows). Full docs (install, data model, per-format options,
+CLI) live at
 [the documentation site](https://nschloe.github.io/meshio/) (sources under [`doc/`](doc/)).
 
 Install with one of

@@ -46,3 +46,54 @@ or via tox (tests against Python 3.8 and 3.12):
 ```
 tox
 ```
+
+## Building from source (C++ core)
+
+meshio's core is C++20, built through scikit-build-core + CMake when you
+`pip install` from source. The optional native paths (HDF5, netCDF, zlib) are
+auto-detected; the CMake options can be passed through `CMAKE_ARGS`:
+
+```
+CMAKE_ARGS="-DMESHIO_WITH_HDF5=ON -DMESHIO_WITH_NETCDF=ON -DMESHIO_WITH_ZLIB=ON" \
+  pip install --no-build-isolation -e .
+```
+
+### Standalone C++ build
+
+For using the C++ library directly (without Python), two configure scripts live
+in `build/`:
+
+```
+./build/configure.sh --backend OPENMP --tests --build     # Linux/macOS
+build\configure.bat --backend STL --tests --build         # Windows
+```
+
+They create a CMake tree under `build/cpp-<build-type>` and print the follow-up
+build/ctest commands.
+
+### Parallelism
+
+The C++ core parallelizes its hot loops through a compile-time-selected
+backend (`meshio::parallel_for`):
+
+```
+-DMESHIO_PARALLEL_BACKEND=STL      # default: C++17 parallel algorithms
+-DMESHIO_PARALLEL_BACKEND=OPENMP
+-DMESHIO_PARALLEL_BACKEND=TBB
+-DMESHIO_PARALLEL_BACKEND=SEQ      # sequential
+```
+
+Notes:
+
+- With GCC/libstdc++ the STL backend requires TBB (`apt install libtbb-dev`);
+  when TBB is unusable, CMake warns and falls back to the sequential backend.
+- MSVC's STL backend needs nothing extra; Apple's libc++ has no parallel STL
+  (use OpenMP via `brew install libomp`, or SEQ).
+- The design is open to new backends (Kokkos, …): one CMake branch plus one
+  `#elif` block in `cpp/include/meshio/parallel.hpp`.
+
+### Logging
+
+The C++ core logs through `std::format`-based helpers with source locations.
+Control verbosity with the `MESHIO_LOG_LEVEL` environment variable:
+`debug`, `info`, `warn` (default), `error`, or `off`.
