@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "source": "1797609in.stp",
+  "options": {
+    "dimension": 3,
+    "sizeMin": 0,
+    "sizeMax": 0.03102946407042117,
+    "algorithm2D": 6,
+    "algorithm3D": 4,
+    "elementOrder": 1,
+    "elementShape": "simplex",
+    "optimize": true,
+    "stlAngle": 40
+  }
+}
