@@ -1,17 +1,17 @@
-#ifdef MESHIO_HAS_HDF5
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
 
-#include "meshio/formats/cgns.hpp"
+#include "meshioplusplus/formats/cgns.hpp"
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
 
-#include "meshio/detail/hdf5_util.hpp"
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 Mesh read_cgns(const std::string& path) {
     h5::SilenceErrors silence;
@@ -130,6 +130,6 @@ void write_cgns(const std::string& path, const Mesh& mesh, int gzip_level) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus
 
-#endif  // MESHIO_HAS_HDF5
+#endif  // MESHIOPLUSPLUS_HAS_HDF5

@@ -14,10 +14,10 @@ container — a tetrahedra-only mesh, not the full CGNS/SIDS specification.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.cgns")
-meshio.cgns.write("out.cgns", mesh, compression="gzip", compression_opts=4)
+mesh = meshioplusplus.read("mesh.cgns")
+meshioplusplus.cgns.write("out.cgns", mesh, compression="gzip", compression_opts=4)
 ```
 
 - **`compression`** / **`compression_opts`** — HDF5 gzip filter and level.
@@ -61,7 +61,7 @@ format.
   dtype.
 - The writer only ever emits a `"tetra"` cell block — any other cell type
   present in `mesh.cells` is silently ignored (not warned).
-- This is the least complete format meshio supports: no compression-aware
+- This is the least complete format meshio++ supports: no compression-aware
   reading (compression is a write-only concept here — HDF5 handles
   decompression transparently), no field/point/cell data at all.
 

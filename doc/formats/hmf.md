@@ -1,6 +1,6 @@
 # HMF (`.hmf`)
 
-An experimental HDF5 mesh container specific to meshio, reusing the XDMF
+An experimental HDF5 mesh container specific to meshio++, reusing the XDMF
 topology-name vocabulary. **The format may change at any time** — writing
 always emits a warning to that effect.
 
@@ -14,10 +14,10 @@ always emits a warning to that effect.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.hmf")
-meshio.hmf.write("out.hmf", mesh, compression="gzip", compression_opts=4)
+mesh = meshioplusplus.read("mesh.hmf")
+meshioplusplus.hmf.write("out.hmf", mesh, compression="gzip", compression_opts=4)
 ```
 
 - **`compression`** / **`compression_opts`** — HDF5 gzip filter and level.
@@ -52,9 +52,9 @@ as an HDF5 dataset name under `NodeAttributes`/`CellAttributes`.
 
 ## Quirks & limitations
 
-- If two `Topology{k}` datasets happen to resolve to the **same** meshio
+- If two `Topology{k}` datasets happen to resolve to the **same** meshio++
   type, the Python reader's dict-based accumulation means the **later** one
-  silently **replaces** the earlier one (since `cells` is keyed by meshio
+  silently **replaces** the earlier one (since `cells` is keyed by meshio++
   type name, not by dataset index). The C++ reader deliberately replicates
   this exact "later entry wins" semantics rather than merging or erroring.
 - `GeometryType` is asserted to be one of `"X"`/`"XY"`/`"XYZ"` but is

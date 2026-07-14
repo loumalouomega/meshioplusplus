@@ -8,14 +8,14 @@
 #include <string>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/detail/vtk_cells.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/formats/vtk.hpp"
-#include "meshio/parallel.hpp"
-#include "meshio/types.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/vtk_cells.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/vtk.hpp"
+#include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/types.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -256,4 +256,4 @@ Mesh read_vtk(const std::string& path) {
     return mesh;
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

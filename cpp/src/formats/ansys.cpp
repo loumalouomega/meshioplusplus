@@ -1,4 +1,4 @@
-#include "meshio/formats/ansys.hpp"
+#include "meshioplusplus/formats/ansys.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -11,10 +11,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -265,7 +265,7 @@ void write_ansys(const std::string& path, const Mesh& mesh, bool binary) {
         {"hexahedron", 4}, {"pyramid", 5}, {"wedge", 6}};
 
     char hbuf[128];
-    fh << "(1 \"meshio C++ core\")\n";
+    fh << "(1 \"meshio++ C++ core\")\n";
     std::snprintf(hbuf, sizeof(hbuf), "(2 %zu)\n", dim);
     fh << hbuf;
 
@@ -344,4 +344,4 @@ void write_ansys(const std::string& path, const Mesh& mesh, bool binary) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

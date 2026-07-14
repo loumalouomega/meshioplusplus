@@ -16,15 +16,15 @@
 #include <string>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/mesh.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/mesh.hpp"
 
 namespace mt {
 
-using meshio::CellBlock;
-using meshio::DType;
-using meshio::Mesh;
-using meshio::NDArray;
+using meshioplusplus::CellBlock;
+using meshioplusplus::DType;
+using meshioplusplus::Mesh;
+using meshioplusplus::NDArray;
 
 // ---- builders ----
 
@@ -151,11 +151,11 @@ inline std::map<std::string, std::multiset<std::vector<std::int64_t>>> cell_rows
     std::map<std::string, std::multiset<std::vector<std::int64_t>>> out;
     for (const auto& cb : m.cells) {
         std::size_t n = cb.num_cells();
-        std::size_t k = meshio::detail::cols(cb.data);
+        std::size_t k = meshioplusplus::detail::cols(cb.data);
         for (std::size_t r = 0; r < n; ++r) {
             std::vector<std::int64_t> row(k);
             for (std::size_t j = 0; j < k; ++j)
-                row[j] = meshio::detail::read_int(cb.data, r * k + j);
+                row[j] = meshioplusplus::detail::read_int(cb.data, r * k + j);
             out[cb.type].insert(std::move(row));
         }
     }
@@ -164,13 +164,13 @@ inline std::map<std::string, std::multiset<std::vector<std::int64_t>>> cell_rows
 
 inline void expect_points_close(const Mesh& in, const Mesh& out, double atol) {
     ASSERT_EQ(in.num_points(), out.num_points());
-    std::size_t din = meshio::detail::cols(in.points);
-    std::size_t dout = meshio::detail::cols(out.points);
+    std::size_t din = meshioplusplus::detail::cols(in.points);
+    std::size_t dout = meshioplusplus::detail::cols(out.points);
     ASSERT_GE(dout, din);  // formats may pad 2D -> 3D, never truncate
     for (std::size_t i = 0; i < in.num_points(); ++i)
         for (std::size_t j = 0; j < din; ++j) {
-            double a = meshio::detail::read_double(in.points, i * din + j);
-            double b = meshio::detail::read_double(out.points, i * dout + j);
+            double a = meshioplusplus::detail::read_double(in.points, i * din + j);
+            double b = meshioplusplus::detail::read_double(out.points, i * dout + j);
             EXPECT_NEAR(a, b, atol) << "point " << i << " comp " << j;
         }
 }

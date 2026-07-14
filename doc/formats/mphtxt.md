@@ -15,10 +15,10 @@ run from `#` to end of line.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.mphtxt")
-meshio.mphtxt.write("out.mphtxt", mesh)
+mesh = meshioplusplus.read("mesh.mphtxt")
+meshioplusplus.mphtxt.write("out.mphtxt", mesh)
 ```
 
 `write` takes no keyword arguments.
@@ -51,9 +51,9 @@ The whole file (after stripping `#`-comments) is read as a flat token stream:
 
 ## Cell types
 
-Hybrid (multi-type) meshes are supported. COMSOL ↔ meshio type map:
+Hybrid (multi-type) meshes are supported. COMSOL ↔ meshio++ type map:
 
-| COMSOL | meshio | COMSOL | meshio |
+| COMSOL | meshio++ | COMSOL | meshio++ |
 |---|---|---|---|
 | `vtx` | `vertex` | | |
 | `edg` | `line` | `edg2` | `line3` |
@@ -64,7 +64,7 @@ Hybrid (multi-type) meshes are supported. COMSOL ↔ meshio type map:
 | `pyr` | `pyramid` | | |
 | `hex` | `hexahedron` | `hex2` | `hexahedron27` |
 
-Node-order permutation (COMSOL ↔ meshio, self-inverse swaps — identity for
+Node-order permutation (COMSOL ↔ meshio++, self-inverse swaps — identity for
 every other type):
 
 | type | permutation |

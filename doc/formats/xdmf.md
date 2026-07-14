@@ -3,7 +3,7 @@
 The [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) format: an XML
 "light data" description of topology/geometry/attributes, whose "heavy data"
 lives inline in the XML, in external raw binary files, or in a companion
-HDF5 file. Both XDMF2 and XDMF3 variants exist in the wild; meshio reads
+HDF5 file. Both XDMF2 and XDMF3 variants exist in the wild; meshio++ reads
 both, but the C++ core only handles XDMF3.
 
 | | |
@@ -16,10 +16,10 @@ both, but the C++ core only handles XDMF3.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.xdmf")
-meshio.xdmf.write("out.xdmf", mesh,
+mesh = meshioplusplus.read("mesh.xdmf")
+meshioplusplus.xdmf.write("out.xdmf", mesh,
     data_format="HDF",   # "HDF", "XML", or "Binary"
     compression="gzip",  # HDF only
     compression_opts=4,
@@ -59,15 +59,15 @@ separated inline numbers.
 ...)` tuples concatenated across all cells; the numeric type-index table is
 shared with the per-type `TopologyType` names (below). A `line`
 (`Polyline`) entry in a Mixed array carries an extra "number of points in
-this polyline" field immediately after its type index, which meshio requires
+this polyline" field immediately after its type index, which meshio++ requires
 to equal exactly `2`.
 
 ## Cell types
 
-meshio ↔ XDMF `TopologyType` names (each accepts one or more spellings on
+meshio++ ↔ XDMF `TopologyType` names (each accepts one or more spellings on
 read; the first is used on write):
 
-| meshio | XDMF | meshio | XDMF |
+| meshio++ | XDMF | meshio++ | XDMF |
 |---|---|---|---|
 | `vertex` | `Polyvertex` | `tetra` | `Tetrahedron` |
 | `line` | `Polyline` | `tetra10` | `Tetrahedron_10` / `Tet_10` |

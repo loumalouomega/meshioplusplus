@@ -14,10 +14,10 @@ material id), then optional node- and cell-data sections.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.avs")
-meshio.avsucd.write("out.avs", mesh)
+mesh = meshioplusplus.read("mesh.avs")
+meshioplusplus.avsucd.write("out.avs", mesh)
 ```
 
 `write` takes no keyword arguments.
@@ -49,14 +49,14 @@ respectively) float precision.
 
 ## Cell types
 
-| AVS-UCD | meshio | AVS-UCD | meshio |
+| AVS-UCD | meshio++ | AVS-UCD | meshio++ |
 |---|---|---|---|
 | `pt` | `vertex` | `tet` | `tetra` |
 | `line` | `line` | `pyr` | `pyramid` |
 | `tri` | `triangle` | `prism` | `wedge` |
 | `quad` | `quad` | `hex` | `hexahedron` |
 
-Node-order permutation, meshio → AVS-UCD:
+Node-order permutation, meshio++ → AVS-UCD:
 
 | type | permutation |
 |---|---|
@@ -65,7 +65,7 @@ Node-order permutation, meshio → AVS-UCD:
 | `wedge` | `[3, 4, 5, 0, 1, 2]` |
 | `hexahedron` | `[4, 5, 6, 7, 0, 1, 2, 3]` |
 
-AVS-UCD → meshio is the same table for `tetra`/`wedge`/`hexahedron` (all
+AVS-UCD → meshio++ is the same table for `tetra`/`wedge`/`hexahedron` (all
 involutions), but **not** for `pyramid`, which uses the (functionally correct
 but textually different) inverse `[1, 2, 3, 4, 0]`.
 

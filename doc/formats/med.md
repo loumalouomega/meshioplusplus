@@ -2,7 +2,7 @@
 
 The [MED](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html)
 format (Salome/Code-Aster), stored in HDF5. This is the most structurally
-involved format meshio supports.
+involved format meshio++ supports.
 
 | | |
 |---|---|
@@ -14,22 +14,22 @@ involved format meshio supports.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.med")
-meshio.med.write("out.med", mesh, med_version="4.1.0")
+mesh = meshioplusplus.read("mesh.med")
+meshioplusplus.med.write("out.med", mesh, med_version="4.1.0")
 ```
 
 - **`med_version`** — the `MAJ.MIN.REL` triple written to `INFOS_GENERALES`
   (e.g. `"4.1.0"`, `"4.0.0"`, `"3.0.0"`); default `"4.1.0"`. An unparsable
   string falls back to `4, 1, 0`.
 
-`meshio.med` also exposes two standalone multi-mesh functions with no
+`meshioplusplus.med` also exposes two standalone multi-mesh functions with no
 single-mesh equivalent:
 
 ```python
-meshes, mesh_names = meshio.med.read_med_multi("multi.med")
-meshio.med.write_med_multi("out.med", meshes, mesh_names=["fluid", "solid"])
+meshes, mesh_names = meshioplusplus.med.read_med_multi("multi.med")
+meshioplusplus.med.write_med_multi("out.med", meshes, mesh_names=["fluid", "solid"])
 ```
 
 - **`read_med_multi(filename, **kwargs)`** — reads every mesh under
@@ -43,10 +43,10 @@ meshio.med.write_med_multi("out.med", meshes, mesh_names=["fluid", "solid"])
   previous `h5py` global config afterward.
 
 **Note on native acceleration**: when built with `MESHIO_WITH_HDF5`, the C++
-core (`meshio._core.med_read`/`med_write`) handles the **mesh-representation**
+core (`meshioplusplus._core.med_read`/`med_write`) handles the **mesh-representation**
 part of MED exactly — points, point/cell tags, families with `GRO` group
 names, the mesh-level metadata attributes, node-orientation permutations, and
-`POG`/`POG2` ragged polygons — and `meshio.med.read`/`write` use it by default,
+`POG`/`POG2` ragged polygons — and `meshioplusplus.med.read`/`write` use it by default,
 falling back to the Python/h5py implementation (as when HDF5 is absent) for the
 constructs the C++ path deliberately does **not** replicate byte-for-byte:
 `CHA` **fields** (with the MED-4.1 bitmask / units / step metadata), the
@@ -63,7 +63,7 @@ INFOS_GENERALES                       # attrs MAJ/MIN/REL from med_version
 ENS_MAA/<mesh_name>                   # mesh_name defaults to "mesh"
   (attrs DIM, ESP = points.shape[1]; REP=0; UNT/UNI = mesh.unit_time/unit_coords;
    SRT=1; NOM=<16-char-padded axis names>; DES = mesh.description or
-   "Mesh created with meshio"; TYP=0)
+   "Mesh created with meshio++"; TYP=0)
   -0000000000000000001-0000000000000000001    # the (single) time-step group
     (attrs CGT=1, NDT=-1, NOR=-1, PDT=-1.0)
     NOE                                # nodes
@@ -98,7 +98,7 @@ keys named `"{base_name}[{NDT}] - {PDT:g}"` (parsed back by
 
 ## Cell types
 
-| meshio | MED | meshio | MED |
+| meshio++ | MED | meshio++ | MED |
 |---|---|---|---|
 | `vertex` | `PO1` | `tetra` | `TE4` |
 | `line` | `SE2` | `tetra10` | `T10` |
@@ -131,7 +131,7 @@ hexahedron: [4, 5, 6, 7, 0, 1, 2, 3]
 ```
 
 Quadratic 3D types (`tetra10`, `hexahedron20`, `pyramid13`, `wedge15`) share
-the same meshio↔MED orientation difference, but no corners+midpoints
+the same meshio++↔MED orientation difference, but no corners+midpoints
 permutation is implemented for them yet — they're read and written
 **unconverted** and may come out mis-oriented; a warning is emitted the first
 time one is encountered.
@@ -150,7 +150,7 @@ time one is encountered.
 - `mesh.mesh_name` / `mesh.description` / `mesh.unit_time` / `mesh.unit_coords`
   — mesh-level metadata attributes read from/written to `ENS_MAA`'s `NOM`
   (mesh group name)/`DES`/`UNT`/`UNI`. All default to `""`/`"mesh"` when
-  absent; `description` defaults to `"Mesh created with meshio"` on write if
+  absent; `description` defaults to `"Mesh created with meshio++"` on write if
   unset. Values round-trip through `latin-1` and are stripped of surrounding
   whitespace and NUL padding on read (MED files from other tools may
   fixed-width-pad these attributes).
@@ -205,7 +205,7 @@ time one is encountered.
   and `POG`/`POG2` ragged polygons — matching the Python output byte-for-byte
   (it iterates the `MAI` cell blocks in HDF5 creation order, like h5py's
   `track_order`, and reconstructs `point_sets`/`cell_sets` from families via
-  the shared Python helpers). It **raises** (so `meshio.med.read`/`write`
+  the shared Python helpers). It **raises** (so `meshioplusplus.med.read`/`write`
   fall back to Python) for: any file/mesh with `CHA` **fields** (the MED-4.1
   bitmask, `med:field_units`, `med:step_meta`, and multi-timestep grouping are
   Python-only), the `gmsh:physical`→family **bridging** on write, non-default

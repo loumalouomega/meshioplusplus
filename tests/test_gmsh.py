@@ -5,7 +5,7 @@ from functools import partial
 import numpy as np
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -49,8 +49,8 @@ def gmsh_periodic():
 )
 @pytest.mark.parametrize("binary", [False, True])
 def test_gmsh22(mesh, binary, tmp_path):
-    writer = partial(meshio.gmsh.write, fmt_version="2.2", binary=binary)
-    helpers.write_read(tmp_path, writer, meshio.gmsh.read, mesh, 1.0e-15)
+    writer = partial(meshioplusplus.gmsh.write, fmt_version="2.2", binary=binary)
+    helpers.write_read(tmp_path, writer, meshioplusplus.gmsh.read, mesh, 1.0e-15)
 
 
 @pytest.mark.parametrize(
@@ -78,9 +78,9 @@ def test_gmsh22(mesh, binary, tmp_path):
 )
 @pytest.mark.parametrize("binary", [False, True])
 def test_gmsh40(mesh, binary, tmp_path):
-    writer = partial(meshio.gmsh.write, fmt_version="4.0", binary=binary)
+    writer = partial(meshioplusplus.gmsh.write, fmt_version="4.0", binary=binary)
 
-    helpers.write_read(tmp_path, writer, meshio.gmsh.read, mesh, 1.0e-15)
+    helpers.write_read(tmp_path, writer, meshioplusplus.gmsh.read, mesh, 1.0e-15)
 
 
 @pytest.mark.parametrize(
@@ -109,8 +109,8 @@ def test_gmsh40(mesh, binary, tmp_path):
 )
 @pytest.mark.parametrize("binary", [False, True])
 def test_gmsh41(mesh, binary, tmp_path):
-    writer = partial(meshio.gmsh.write, fmt_version="4.1", binary=binary)
-    helpers.write_read(tmp_path, writer, meshio.gmsh.read, mesh, 1.0e-15)
+    writer = partial(meshioplusplus.gmsh.write, fmt_version="4.1", binary=binary)
+    helpers.write_read(tmp_path, writer, meshioplusplus.gmsh.read, mesh, 1.0e-15)
 
 
 def test_generic_io(tmp_path):
@@ -127,7 +127,7 @@ def test_generic_io(tmp_path):
 def test_reference_file(filename, ref_sum, ref_num_cells, binary, tmp_path):
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "msh" / filename
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
     tol = 1.0e-2
     s = mesh.points.sum()
     assert abs(s - ref_sum) < tol * ref_sum
@@ -136,8 +136,8 @@ def test_reference_file(filename, ref_sum, ref_num_cells, binary, tmp_path):
     assert list(map(len, mesh.cell_data["gmsh:geometrical"])) == ref_num_cells
     assert list(map(len, mesh.cell_data["gmsh:physical"])) == ref_num_cells
 
-    writer = partial(meshio.gmsh.write, fmt_version="2.2", binary=binary)
-    helpers.write_read(tmp_path, writer, meshio.gmsh.read, mesh, 1.0e-15)
+    writer = partial(meshioplusplus.gmsh.write, fmt_version="2.2", binary=binary)
+    helpers.write_read(tmp_path, writer, meshioplusplus.gmsh.read, mesh, 1.0e-15)
 
 
 @pytest.mark.parametrize(
@@ -161,7 +161,7 @@ def test_reference_file_with_entities(
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "msh" / filename
 
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
     tol = 1.0e-2
     s = mesh.points.sum()
     assert abs(s - ref_sum) < tol * ref_sum
@@ -170,7 +170,7 @@ def test_reference_file_with_entities(
         k: len(v) for k, v in mesh.cell_data_dict["gmsh:physical"].items()
     } == ref_num_cells
 
-    writer = partial(meshio.gmsh.write, fmt_version="4.1", binary=binary)
+    writer = partial(meshioplusplus.gmsh.write, fmt_version="4.1", binary=binary)
 
     num_cells = {k: 0 for k in ref_num_cells_in_cell_sets}
     for vv in mesh.cell_sets_dict.values():
@@ -178,4 +178,4 @@ def test_reference_file_with_entities(
             num_cells[k] += len(v)
     assert num_cells == ref_num_cells_in_cell_sets
 
-    helpers.write_read(tmp_path, writer, meshio.gmsh.read, mesh, 1.0e-15)
+    helpers.write_read(tmp_path, writer, meshioplusplus.gmsh.read, mesh, 1.0e-15)

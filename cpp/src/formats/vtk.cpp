@@ -1,4 +1,4 @@
-#include "meshio/formats/vtk.hpp"
+#include "meshioplusplus/formats/vtk.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -7,12 +7,12 @@
 #include <string>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/parallel.hpp"
-#include "meshio/vtk_common.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/vtk_common.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -122,7 +122,7 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
     }
 
     os << (v51 ? "# vtk DataFile Version 5.1\n" : "# vtk DataFile Version 4.2\n");
-    os << "written by meshio (C++ core)\n";
+    os << "written by meshio++ (C++ core)\n";
     os << (binary ? "BINARY\n" : "ASCII\n");
     os << "DATASET UNSTRUCTURED_GRID\n";
 
@@ -254,4 +254,4 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

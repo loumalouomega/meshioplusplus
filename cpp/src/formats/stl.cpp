@@ -1,4 +1,4 @@
-#include "meshio/formats/stl.hpp"
+#include "meshioplusplus/formats/stl.hpp"
 
 #include <array>
 #include <cctype>
@@ -12,10 +12,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -226,7 +226,7 @@ void write_stl(const std::string& path, const Mesh& mesh, bool binary) {
     if (binary) {
         char header[80];
         std::memset(header, 'X', 80);
-        const char* msg = "meshio (C++ core) binary STL";
+        const char* msg = "meshio++ (C++ core) binary STL";
         std::memcpy(header, msg, std::strlen(msg));
         os.write(header, 80);
         std::uint32_t n = static_cast<std::uint32_t>(tris.size());
@@ -259,4 +259,4 @@ void write_stl(const std::string& path, const Mesh& mesh, bool binary) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

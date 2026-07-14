@@ -15,10 +15,10 @@ attributes).
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.node")   # reads the .node/.ele pair
-meshio.tetgen.write("out.node", mesh, float_fmt=".16e")
+mesh = meshioplusplus.read("mesh.node")   # reads the .node/.ele pair
+meshioplusplus.tetgen.write("out.node", mesh, float_fmt=".16e")
 ```
 
 - **`float_fmt`** — coordinate format (default `".16e"`; the C++ fast path

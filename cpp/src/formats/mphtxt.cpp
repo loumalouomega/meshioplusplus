@@ -1,4 +1,4 @@
-#include "meshio/formats/mphtxt.hpp"
+#include "meshioplusplus/formats/mphtxt.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -8,10 +8,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -146,7 +146,7 @@ void write_mphtxt(const std::string& path, const Mesh& mesh) {
 
     auto geom_it = mesh.cell_data.find("mphtxt:geom");
 
-    f << "# Created by meshio (C++ core)\n\n";
+    f << "# Created by meshio++ (C++ core)\n\n";
     f << "0 1\n";
     f << "1 # number of tags\n5 mesh1\n";
     f << "1 # number of types\n3 obj\n\n";
@@ -192,4 +192,4 @@ void write_mphtxt(const std::string& path, const Mesh& mesh) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

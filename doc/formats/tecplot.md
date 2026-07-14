@@ -1,7 +1,7 @@
 # Tecplot (`.dat`, `.tec`)
 
 The [Tecplot ASCII](http://paulbourke.net/dataformats/tp/) data format: a
-`VARIABLES` list and one or more finite-element `ZONE`s. meshio only reads and
+`VARIABLES` list and one or more finite-element `ZONE`s. meshio++ only reads and
 writes a **single** FE zone.
 
 | | |
@@ -14,10 +14,10 @@ writes a **single** FE zone.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("field.dat")
-meshio.tecplot.write("out.dat", mesh)
+mesh = meshioplusplus.read("field.dat")
+meshioplusplus.tecplot.write("out.dat", mesh)
 ```
 
 `write` takes no keyword arguments.
@@ -54,7 +54,7 @@ else becomes `point_data` or `cell_data` per the location flags.
 
 ## Cell types & node ordering
 
-| Tecplot zone type | meshio |
+| Tecplot zone type | meshio++ |
 |---|---|
 | `LINESEG` / `FELINESEG` | `line` |
 | `TRIANGLE` / `FETRIANGLE` | `triangle` |

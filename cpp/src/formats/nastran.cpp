@@ -1,4 +1,4 @@
-#include "meshio/formats/nastran.hpp"
+#include "meshioplusplus/formats/nastran.hpp"
 
 #include <array>
 #include <cctype>
@@ -12,15 +12,15 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/types.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/types.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
-constexpr const char* kSentinel = "meshio-cpp-nastran";
+constexpr const char* kSentinel = "meshioplusplus-cpp-nastran";
 
 const std::unordered_map<std::string, std::string>& nastran_to_meshio() {
     static const std::unordered_map<std::string, std::string> m = {
@@ -222,7 +222,7 @@ Mesh read_nastran(const std::string& path) {
         if (lines[start].find(kSentinel) != std::string::npos) ok = true;
         if (strip(lines[start]).rfind("BEGIN BULK", 0) == 0) { ++start; break; }
     }
-    if (!ok) throw ReadError("Not a meshio-C++ Nastran file");
+    if (!ok) throw ReadError("Not a meshio++-C++ Nastran file");
 
     const auto& n2m = nastran_to_meshio();
     Mesh mesh;
@@ -306,4 +306,4 @@ Mesh read_nastran(const std::string& path) {
     return mesh;
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

@@ -14,10 +14,10 @@ bulk-data format: fixed-width card entries (`GRID`, `CTRIA3`, `CTETRA`,
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("model.bdf")
-meshio.nastran.write("out.bdf", mesh,
+mesh = meshioplusplus.read("model.bdf")
+meshioplusplus.nastran.write("out.bdf", mesh,
     point_format="fixed-large",   # "fixed-small", "fixed-large", or "free"
     cell_format="fixed-small",
 )
@@ -52,13 +52,13 @@ Element cards: `[element_id, ref(optional), node_ids...]`, except
 `CBAR`/`CBEAM`/`CBUSH`/`CBUSH1D`/`CGAP`, which only take the first 2 node ids
 from the card — a 3rd field present on those cards (an orientation vector or
 grid id) is **discarded on read**. Second-order solids (`CTETRA`, `CPYRA`,
-`CPENTA`, `CHEXA`) are auto-upgraded to their 10/13/15/20-node meshio
+`CPENTA`, `CHEXA`) are auto-upgraded to their 10/13/15/20-node meshio++
 counterparts whenever a card lists more node ids than the linear element's
 base count.
 
 ## Cell types & node ordering
 
-| Nastran | meshio | Nastran | meshio |
+| Nastran | meshio++ | Nastran | meshio++ |
 |---|---|---|---|
 | `CBEAM`, `CBUSH`, `CBUSH1D`, `CROD`, `CGAP`, `CBAR` | `line` | `CTETRA` | `tetra` |
 | `CTRIAR`, `CTRIA3` | `triangle` | `CTETRA_`* | `tetra10` |
@@ -107,7 +107,7 @@ directions unless noted):
   — any card with unexpected extra trailing tokens could be misclassified.
 - **The C++ reader is sentinel-gated**: it only parses files carrying the
   exact literal comment string the C++ writer itself emits
-  (`"meshio-cpp-nastran"`) as the first `$` comment line. Any real-world
+  (`"meshioplusplus-cpp-nastran"`) as the first `$` comment line. Any real-world
   Nastran file — including this project's own reference `.fem` fixtures —
   lacks that sentinel and is therefore always parsed by the (more permissive,
   general-purpose) Python reader. This is the single most consequential

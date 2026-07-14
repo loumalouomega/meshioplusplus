@@ -14,10 +14,10 @@ keyword headers.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.pf3")
-meshio.flux.write("out.pf3", mesh)
+mesh = meshioplusplus.read("mesh.pf3")
+meshioplusplus.flux.write("out.pf3", mesh)
 ```
 
 `write` takes no keyword arguments.
@@ -48,7 +48,7 @@ header followed by its connectivity:
 | 3 | **region reference** → `cell_data["pf3:ref"]` |
 | 4 | node count (redundant with field 7) |
 | 5 | unused (0) |
-| 6 | **`desc3`** (type code — selects the meshio type) |
+| 6 | **`desc3`** (type code — selects the meshio++ type) |
 | 7 | node count (drives how many ids follow) |
 | 8-11 | unused (0 0 0 0) |
 
@@ -70,7 +70,7 @@ The `desc3` field selects the type:
 | 7 | `quad` | 17 | `pyramid` |
 | 8 | `quad8` | 10 | `tetra` |
 
-meshio → `(desc1, desc2, desc3)` on write:
+meshio++ → `(desc1, desc2, desc3)` on write:
 
 | type | desc1, desc2, desc3 | type | desc1, desc2, desc3 |
 |---|---|---|---|
@@ -93,7 +93,7 @@ Hybrid meshes are supported.
 
 - Unlike UNV/gmsh/mphtxt, **no node-order permutation table** is applied —
   node ids pass through in file order directly. This round-trips losslessly
-  through meshio but is not guaranteed to match FLUX's own internal node
+  through meshio++ but is not guaranteed to match FLUX's own internal node
   ordering convention for every element type.
 - Header-line detection is French-text substring matching; a real FLUX file
   with reworded headers (not expected in practice, but possible) would break

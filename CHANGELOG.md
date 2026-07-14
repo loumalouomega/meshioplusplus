@@ -1,24 +1,35 @@
 <!--pytest-codeblocks:skipfile-->
 # Changelog
 
-This document only describes _breaking_ changes in meshio. If you are interested in bug
-fixes, enhancements etc., best follow [the meshio project on
-GitHub](https://github.com/nschloe/meshio).
+This document only describes _breaking_ changes in meshio++. If you are interested in bug
+fixes, enhancements etc., best follow [the meshio++ project on
+GitHub](https://github.com/<org>/meshioplusplus).
 
-## Unreleased
+## v6.0.0 (2026-07-14)
 
+- **Project renamed to meshio++** (machine identifier `meshioplusplus`, used
+  wherever a literal `+` isn't valid: the Python package/import name, PyPI
+  distribution, CLI entry point, C++ namespace, CMake project/targets, and
+  build macros). This is a clean break with no compatibility shim — `import
+  meshio` / `pip install meshio` no longer refer to this project; use `import
+  meshioplusplus` / `pip install meshioplusplus` going forward. The public API
+  surface, file formats, and behavior are otherwise unchanged from v5.x.
 - Added two new formats, `ansysInp` (Ansys/APDL coded database, `.cdb`/`.inp`) and
   `openfoam` (OpenFOAM polyMesh, read-only), and significantly extended MED/Salome
-  support: multi-mesh files (`meshio.med.read_med_multi`/`write_med_multi`), ragged
+  support: multi-mesh files (`meshioplusplus.med.read_med_multi`/`write_med_multi`), ragged
   polygon/Voronoi cell blocks, MED 4.1 bitmask metadata, node-orientation fixes,
   quadratic `triangle7`/`quad9`/polygon type support, mesh-level metadata
   (`mesh_name`/`description`/`unit_time`/`unit_coords`), and preserving Gmsh physical
-  groups as MED families on write. `meshio.med.read`/`write` now always use the Python
-  implementation (the C++ `meshio._core.med_read`/`med_write` bindings remain directly
+  groups as MED families on write. `meshioplusplus.med.read`/`write` now always use the Python
+  implementation (the C++ `meshioplusplus._core.med_read`/`med_write` bindings remain directly
   callable for the narrower/faster behavior). This work originates from
   [Simvia's `meshlane` fork](https://github.com/simvia-tech/meshlane) of meshio,
   contributed by Mariam Kesba, Fatima-Zahra Noussi, and Lucas Sovre, and has been
   brought back into this repository.
+- The C++ core is now C++20 (previously C++17) with `std::format`-based logging
+  (`MESHIOPLUSPLUS_LOG_LEVEL` env var) and a compile-time-selectable parallel
+  backend for hot loops (`-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ|STL|OPENMP|TBB`,
+  default STL).
 
 ## v5.1.0 (Dec 11, 2021)
 

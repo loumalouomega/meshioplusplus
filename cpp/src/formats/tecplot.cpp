@@ -1,4 +1,4 @@
-#include "meshio/formats/tecplot.hpp"
+#include "meshioplusplus/formats/tecplot.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -13,10 +13,10 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -334,7 +334,7 @@ void write_tecplot(const std::string& path, const Mesh& mesh) {
         }
     }
 
-    os << "TITLE = \"Written by meshio (C++ core)\"\n";
+    os << "TITLE = \"Written by meshio++ (C++ core)\"\n";
     os << "VARIABLES = ";
     for (std::size_t k = 0; k < variables.size(); ++k)
         os << (k ? ", " : "") << "\"" << variables[k] << "\"";
@@ -372,4 +372,4 @@ void write_tecplot(const std::string& path, const Mesh& mesh) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

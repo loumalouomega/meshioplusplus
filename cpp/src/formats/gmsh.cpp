@@ -1,4 +1,4 @@
-#include "meshio/formats/gmsh.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,12 +15,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/parallel.hpp"
-#include "meshio/types.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/types.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -1006,4 +1006,4 @@ void write_gmsh41(const std::string& path, const Mesh& mesh, bool binary) {
         write_data(os, "ElementData", kv.first, *kv.second, binary);
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

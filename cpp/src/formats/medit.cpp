@@ -1,4 +1,4 @@
-#include "meshio/formats/medit.hpp"
+#include "meshioplusplus/formats/medit.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -11,10 +11,10 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -252,4 +252,4 @@ void write_medit_ascii(const std::string& path, const Mesh& mesh) {
     os << "\nEnd\n";
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

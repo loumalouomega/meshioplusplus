@@ -1,6 +1,6 @@
-#ifdef MESHIO_HAS_NETCDF
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
 
-#include "meshio/formats/exodus.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
 
 #include <netcdf.h>
 
@@ -14,10 +14,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -389,7 +389,7 @@ void write_exodus(const std::string& path, const Mesh& mesh) {
 
     // global attributes
     {
-        std::string title = "Created by meshio (C++ core)";
+        std::string title = "Created by meshio++ (C++ core)";
         check(nc_put_att_text(ncid, NC_GLOBAL, "title", title.size(), title.c_str()),
               "title", true);
         float v = 5.1f;
@@ -550,6 +550,6 @@ void write_exodus(const std::string& path, const Mesh& mesh) {
     // the shim routes meshes with point_sets to the Python writer.
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus
 
-#endif  // MESHIO_HAS_NETCDF
+#endif  // MESHIOPLUSPLUS_HAS_NETCDF

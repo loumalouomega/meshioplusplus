@@ -1,4 +1,4 @@
-#include "meshio/formats/su2.hpp"
+#include "meshioplusplus/formats/su2.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -13,11 +13,11 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/parallel.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -283,4 +283,4 @@ void write_su2(const std::string& path, const Mesh& mesh) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

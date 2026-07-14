@@ -4,7 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "mesh_fixtures.hpp"
-#include "meshio/formats/stl.hpp"
+#include "meshioplusplus/formats/stl.hpp"
 
 namespace {
 
@@ -13,8 +13,8 @@ namespace {
 // triples instead.
 void stl_roundtrip(const mt::Mesh& mesh, bool binary) {
     std::string path = mt::temp_path(binary ? "_bin.stl" : "_asc.stl");
-    meshio::write_stl(path, mesh, binary);
-    mt::Mesh out = meshio::read_stl(path);
+    meshioplusplus::write_stl(path, mesh, binary);
+    mt::Mesh out = meshioplusplus::read_stl(path);
 
     ASSERT_EQ(out.cells.size(), 1u);
     EXPECT_EQ(out.cells[0].type, "triangle");
@@ -33,8 +33,8 @@ TEST(Stl, GeometryPreserved) {
     // Verify the triangle vertex coordinates survive a round-trip.
     mt::Mesh in = mt::tri_mesh();
     std::string path = mt::temp_path(".stl");
-    meshio::write_stl(path, in, false);
-    mt::Mesh out = meshio::read_stl(path);
+    meshioplusplus::write_stl(path, in, false);
+    mt::Mesh out = meshioplusplus::read_stl(path);
     // both meshes describe the same 2 triangles over the unit square
     EXPECT_EQ(out.cells[0].num_cells(), 2u);
     EXPECT_GE(out.num_points(), 3u);

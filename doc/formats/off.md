@@ -14,10 +14,10 @@ coordinates, then one line per face (leading vertex count + indices).
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("surface.off")
-meshio.off.write("out.off", mesh)
+mesh = meshioplusplus.read("surface.off")
+meshioplusplus.off.write("out.off", mesh)
 ```
 
 `write` takes no keyword arguments.

@@ -1,6 +1,6 @@
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -18,7 +18,9 @@ from . import helpers
     ],
 )
 def test_io(mesh, tmp_path):
-    helpers.write_read(tmp_path, meshio.mfm.write, meshio.mfm.read, mesh, 1.0e-12)
+    helpers.write_read(
+        tmp_path, meshioplusplus.mfm.write, meshioplusplus.mfm.read, mesh, 1.0e-12
+    )
 
 
 def test_generic_io(tmp_path):
@@ -27,5 +29,5 @@ def test_generic_io(tmp_path):
 
 
 def test_reject_mixed(tmp_path):
-    with pytest.raises(meshio.WriteError):
-        meshio.mfm.write(tmp_path / "x.mfm", helpers.tri_quad_mesh)
+    with pytest.raises(meshioplusplus.WriteError):
+        meshioplusplus.mfm.write(tmp_path / "x.mfm", helpers.tri_quad_mesh)

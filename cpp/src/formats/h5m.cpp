@@ -1,6 +1,6 @@
-#ifdef MESHIO_HAS_HDF5
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
 
-#include "meshio/formats/h5m.hpp"
+#include "meshioplusplus/formats/h5m.hpp"
 
 #include <ctime>
 #include <cstdint>
@@ -9,11 +9,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/hdf5_util.hpp"
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -44,7 +44,7 @@ void write_history(hid_t loc, int gzip_level) {
     std::time_t now = std::time(nullptr);
     char stamp[64];
     std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-    std::vector<std::string> items = {"meshio.h5m", "cpp-core", stamp};
+    std::vector<std::string> items = {"meshioplusplus.h5m", "cpp-core", stamp};
 
     std::size_t maxlen = 1;
     for (const auto& s : items) maxlen = std::max(maxlen, s.size());
@@ -235,6 +235,6 @@ void write_h5m(const std::string& path, const Mesh& mesh, bool add_global_ids,
     h5::write_attr_int(tstt, "max_id", global_id, H5T_STD_U64LE);
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus
 
-#endif  // MESHIO_HAS_HDF5
+#endif  // MESHIOPLUSPLUS_HAS_HDF5

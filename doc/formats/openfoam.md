@@ -17,11 +17,11 @@ tetra/pyramid/wedge/hexahedron.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("case.foam")                 # a <case>/case.foam marker file
-mesh = meshio.openfoam.read("/path/to/case")     # or the case directory directly
-mesh = meshio.openfoam.read("/path/to/constant/polyMesh")  # or polyMesh directly
+mesh = meshioplusplus.read("case.foam")                 # a <case>/case.foam marker file
+mesh = meshioplusplus.openfoam.read("/path/to/case")     # or the case directory directly
+mesh = meshioplusplus.openfoam.read("/path/to/constant/polyMesh")  # or polyMesh directly
 ```
 
 There is no writer — `register_format("openfoam", [".foam"], read, {})` is
@@ -131,7 +131,7 @@ Boundary (patch) faces: `triangle`, `quad`, and `polygon<N>` for `N > 4`
   patches always get distinct ids.
 - All binary reads assume little-endian (`LSB`) — the format's own `arch`
   string is trusted for label/scalar width but not for byte order.
-- Read goes through the C++ core (`meshio._core.openfoam_read`, using
+- Read goes through the C++ core (`meshioplusplus._core.openfoam_read`, using
   `std::filesystem` for the polyMesh directory), with the Python reference as
   an automatic fallback. General polyhedra cross the C++↔Python boundary via
   the ragged `polyhedron<N>` cell representation (a copied list of face

@@ -13,10 +13,10 @@ sections in plain text, optionally gzip-compressed.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("model.post")
-meshio.permas.write("out.post", mesh)
+mesh = meshioplusplus.read("model.post")
+meshioplusplus.permas.write("out.post", mesh)
 ```
 
 `write` takes no keyword arguments.
@@ -43,8 +43,10 @@ Lines starting `!` are comments and are skipped. A keyword line is
 - Everything else is silently ignored ("too many PERMAS keywords to
   explicitly skip").
 
-Write emits: `!PERMAS DataFile Version 18.0`, `!written by meshio v<version>`,
-`$ENTER COMPONENT NAME=DFLT_COMP`, `$STRUCTURE`, `$COOR`, then node rows
+Write emits: `!PERMAS DataFile Version 18.0`, a header line crediting meshio++
+(`!written by meshio++ v<version>` from the Python writer, `!written by
+meshio++ (C++ core)` from the C++ writer), `$ENTER COMPONENT NAME=DFLT_COMP`,
+`$STRUCTURE`, `$COOR`, then node rows
 (sequential 1-based index, not the original PERMAS gid — none is tracked on
 write), then per element type a `!` separator + `$ELEMENT TYPE=...` + rows
 (`<running_id> <n1+1> ...`, id counting continuously across all cell
@@ -52,7 +54,7 @@ blocks), then `$END STRUCTURE` / `$EXIT COMPONENT` / `$FIN`.
 
 ## Cell types
 
-| PERMAS | meshio | PERMAS | meshio |
+| PERMAS | meshio++ | PERMAS | meshio++ |
 |---|---|---|---|
 | `PLOT1` | `vertex` | `HEXFO8` | `hexahedron` |
 | `FSCPIPE2` (and 10 other beam/rod names) | `line` | `HEXE20` | `hexahedron20` |
@@ -63,8 +65,8 @@ blocks), then `$END STRUCTURE` / `$EXIT COMPONENT` / `$FIN`.
 | `QUAMS8` | `quad8` | `PENTA6` | `wedge` |
 | `QUAMS9` | `quad9` | `PENTA15` | `wedge15` |
 
-(Several PERMAS names collapse onto one meshio type on read; the write-side
-reverse map picks one canonical name per meshio type as shown, determined by
+(Several PERMAS names collapse onto one meshio++ type on read; the write-side
+reverse map picks one canonical name per meshio++ type as shown, determined by
 Python dict-insertion-order "last wins" — the C++ port hardcodes the
 resulting map directly to guarantee it matches.)
 
@@ -87,8 +89,8 @@ None — PERMAS produces no `point_data`/`cell_data`/`field_data` at all;
 
 - **Asymmetric quadratic-element round-trip**: the four second-order node
   reorder tables above are applied **only on write** — there is no inverse
-  permutation on read. A file written by meshio and read back by meshio's
-  own reader would therefore not restore the original meshio node order for
+  permutation on read. A file written by meshio++ and read back by meshio++'s
+  own reader would therefore not restore the original meshio++ node order for
   `triangle6`/`tetra10`/`quad9`/`wedge15` without external correction.
 - `$NSET`/`$ESET` sets are read into local dicts but never surface on the
   returned `Mesh` — effectively dead code in the current reader.

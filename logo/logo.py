@@ -2,7 +2,7 @@ import numpy as np
 import optimesh
 import pygmsh
 
-import meshio
+import meshioplusplus
 
 # def _old_logo()
 #     with pygmsh.occ.Geometry() as geom:
@@ -85,8 +85,8 @@ def create_logo2(y=0.0):
 if __name__ == "__main__":
     X, cells = create_logo2(y=0.08)
 
-    mesh = meshio.Mesh(X, {"triangle": cells})
-    meshio.svg.write("logo.svg", mesh, image_width=300)
+    mesh = meshioplusplus.Mesh(X, {"triangle": cells})
+    meshioplusplus.svg.write("logo.svg", mesh, image_width=300)
 
     X = np.column_stack([X, np.zeros_like(X[:, 0])])
-    meshio.Mesh(X, {"triangle": cells}).write("logo.vtk")
+    meshioplusplus.Mesh(X, {"triangle": cells}).write("logo.vtk")

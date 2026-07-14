@@ -13,10 +13,10 @@ supporting file versions **2.2**, **4.0** and **4.1**, in ASCII and binary.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.msh")          # version auto-detected
-meshio.gmsh.write("out.msh", mesh,
+mesh = meshioplusplus.read("mesh.msh")          # version auto-detected
+meshioplusplus.gmsh.write("out.msh", mesh,
     fmt_version="4.1",  # "2.2", "4.0" (write not supported), or "4.1"
     binary=True,
     float_fmt=".16e",
@@ -74,16 +74,16 @@ index, discarded after use.
 
 ## Cell types & node ordering
 
-`$Elements` type codes map to meshio types via a large table (`_gmsh_to_meshio_type`
+`$Elements` type codes map to meshio++ types via a large table (`_gmsh_to_meshio_type`
 in `common.py`) covering linear through very-high-order elements — types 1
 through 110, spanning `line`…`line11`, `triangle`…`triangle66`,
 `quad`…`quad121`, `tetra`…`tetra286`, `hexahedron`…`hexahedron1000`,
 `wedge`…`wedge550`, and `pyramid`/`pyramid13`/`pyramid14`.
 
-Five element types need a node-order permutation between Gmsh and meshio
+Five element types need a node-order permutation between Gmsh and meshio++
 (everything else uses natural order):
 
-| type | gmsh → meshio | meshio → gmsh |
+| type | gmsh → meshio++ | meshio++ → gmsh |
 |---|---|---|
 | `tetra10` | `[0,1,2,3,4,5,6,7,9,8]` (self-inverse) | same |
 | `hexahedron20` | `[0,1,2,3,4,5,6,7,8,11,13,9,16,18,19,17,10,12,14,15]` | `[0,1,2,3,4,5,6,7,8,11,16,9,17,10,18,19,12,15,13,14]` |
@@ -111,7 +111,7 @@ Five element types need a node-order permutation between Gmsh and meshio
   the reader squeezes single-component arrays to 1D.
 - Elements in v4.0/4.1 are addressed by **node tag**, not array position —
   the most structurally distinctive quirk of this format relative to nearly
-  every other one meshio supports.
+  every other one meshio++ supports.
 - v4.1 write requires `gmsh:dim_tags` in `point_data` to emit more than one
   cell type; without it, only a single cell type can be written
   (`WriteError` otherwise).

@@ -1,4 +1,4 @@
-#include "meshio/formats/vtu.hpp"
+#include "meshioplusplus/formats/vtu.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -7,14 +7,14 @@
 #include <string>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/detail/vtu_binary.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/parallel.hpp"
-#include "meshio/types.hpp"
-#include "meshio/vtk_common.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/vtu_binary.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/types.hpp"
+#include "meshioplusplus/vtk_common.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -90,7 +90,7 @@ void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib
           "byte_order=\"LittleEndian\"";
     if (binary && zlib) os << " compressor=\"vtkZLibDataCompressor\"";
     os << ">\n";
-    os << "<!--This file was created by meshio (C++ core)-->\n";
+    os << "<!--This file was created by meshio++ (C++ core)-->\n";
     os << "<UnstructuredGrid>\n";
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\""
        << total_cells << "\">\n";
@@ -212,4 +212,4 @@ void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib
     os << "</Piece>\n</UnstructuredGrid>\n</VTKFile>\n";
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

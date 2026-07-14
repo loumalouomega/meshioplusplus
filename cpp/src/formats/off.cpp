@@ -6,11 +6,11 @@
 #include <string>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/formats/obj_off.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/obj_off.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -81,7 +81,7 @@ void write_off(const std::string& path, const Mesh& mesh) {
         }
     }
 
-    os << "OFF\n# Created by meshio (C++ core)\n\n";
+    os << "OFF\n# Created by meshio++ (C++ core)\n\n";
     os << num_points << ' ' << ntri << " 0\n\n";
 
     char buf[96];
@@ -96,4 +96,4 @@ void write_off(const std::string& path, const Mesh& mesh) {
         os << "3 " << tri[t * 3] << ' ' << tri[t * 3 + 1] << ' ' << tri[t * 3 + 2] << '\n';
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

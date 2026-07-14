@@ -1,4 +1,4 @@
-#include "meshio/formats/permas.hpp"
+#include "meshioplusplus/formats/permas.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -10,10 +10,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -176,7 +176,7 @@ void write_permas(const std::string& path, const Mesh& mesh) {
         mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
 
     f << "!PERMAS DataFile Version 18.0\n";
-    f << "!written by meshio (C++ core)\n";
+    f << "!written by meshio++ (C++ core)\n";
     f << "$ENTER COMPONENT NAME=DFLT_COMP\n";
     f << "$STRUCTURE\n";
     f << "$COOR\n";
@@ -222,4 +222,4 @@ void write_permas(const std::string& path, const Mesh& mesh) {
     f << "$FIN\n";
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

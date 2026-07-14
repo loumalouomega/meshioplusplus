@@ -1,18 +1,18 @@
 // XDMF round-trip tests: XML and Binary data paths always; HDF when built with
-// MESHIO_HAS_HDF5.
+// MESHIOPLUSPLUS_HAS_HDF5.
 
 #include <gtest/gtest.h>
 
 #include "mesh_fixtures.hpp"
-#include "meshio/formats/xdmf.hpp"
+#include "meshioplusplus/formats/xdmf.hpp"
 
 namespace {
 void rt(const mt::Mesh& mesh, const std::string& data_format) {
     mt::roundtrip(
         [&](const std::string& p, const mt::Mesh& m) {
-            meshio::write_xdmf(p, m, data_format, -1);
+            meshioplusplus::write_xdmf(p, m, data_format, -1);
         },
-        [](const std::string& p) { return meshio::read_xdmf(p); }, mesh, ".xdmf");
+        [](const std::string& p) { return meshioplusplus::read_xdmf(p); }, mesh, ".xdmf");
 }
 }  // namespace
 
@@ -27,7 +27,7 @@ TEST(Xdmf, Binary) {
     rt(mt::hex_mesh(), "Binary");
     rt(mt::tri_quad_mesh(), "Binary");
 }
-#ifdef MESHIO_HAS_HDF5
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
 TEST(Xdmf, Hdf) {
     rt(mt::tri_mesh(), "HDF");
     rt(mt::tet_mesh(), "HDF");

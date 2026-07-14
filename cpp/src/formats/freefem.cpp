@@ -1,4 +1,4 @@
-#include "meshio/formats/freefem.hpp"
+#include "meshioplusplus/formats/freefem.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -7,10 +7,10 @@
 #include <string>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -150,4 +150,4 @@ void write_freefem(const std::string& path, const Mesh& mesh) {
     write_block(b2, dim == 2 ? 2 : 3);
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

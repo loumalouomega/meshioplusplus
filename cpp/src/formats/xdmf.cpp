@@ -1,4 +1,4 @@
-#include "meshio/formats/xdmf.hpp"
+#include "meshioplusplus/formats/xdmf.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -11,18 +11,18 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/detail/xdmf_common.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/xdmf_common.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "pugixml.hpp"
 
-#ifdef MESHIO_HAS_HDF5
-#include "meshio/detail/hdf5_util.hpp"
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+#include "meshioplusplus/detail/hdf5_util.hpp"
 #endif
 
 namespace fs = std::filesystem;
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -163,7 +163,7 @@ NDArray read_data_item(const pugi::xml_node& di, const fs::path& base_dir) {
     }
     if (fmt != "HDF") throw ReadError("XDMF: unknown data format " + fmt);
 
-#ifdef MESHIO_HAS_HDF5
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
     // "<file>.h5:/path/to/dataset", file path relative to the xdmf file.
     std::string info = di.text().get();
     std::size_t a0 = info.find_first_not_of(" \t\r\n");
@@ -295,8 +295,8 @@ struct XmlWriter {
     std::string base;     // path without extension (for .bin / .h5 files)
     int counter = 0;
     int gzip_level = -1;  // HDF only
-#ifdef MESHIO_HAS_HDF5
-    meshio::h5::Hid h5_file;   // lazily created sibling <base>.h5
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    meshioplusplus::h5::Hid h5_file;   // lazily created sibling <base>.h5
     std::string h5_basename;
 #endif
 
@@ -326,16 +326,16 @@ struct XmlWriter {
             return;
         }
         if (data_format == "HDF") {
-#ifdef MESHIO_HAS_HDF5
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
             if (!h5_file.valid()) {
                 std::string h5_path = base + ".h5";
-                h5_file = meshio::h5::create_file(h5_path);
+                h5_file = meshioplusplus::h5::create_file(h5_path);
                 std::size_t slash = h5_path.find_last_of("/\\");
                 h5_basename =
                     slash == std::string::npos ? h5_path : h5_path.substr(slash + 1);
             }
             std::string name = "data" + std::to_string(counter++);
-            meshio::h5::write_dataset(h5_file, name, arr, gzip_level);
+            meshioplusplus::h5::write_dataset(h5_file, name, arr, gzip_level);
             di.text().set((h5_basename + ":/" + name).c_str());
             return;
 #else
@@ -370,7 +370,7 @@ struct XmlWriter {
 
 void write_xdmf(const std::string& path, const Mesh& mesh,
                 const std::string& data_format, int gzip_level) {
-#ifdef MESHIO_HAS_HDF5
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
     const bool hdf_ok = true;
 #else
     const bool hdf_ok = false;
@@ -462,4 +462,4 @@ void write_xdmf(const std::string& path, const Mesh& mesh,
         throw WriteError("XDMF: could not write " + path);
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

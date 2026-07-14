@@ -16,10 +16,10 @@ and a per-element subdomain array.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.mfm")
-meshio.mfm.write("out.mfm", mesh, float_fmt=".16e")
+mesh = meshioplusplus.read("mesh.mfm")
+meshioplusplus.mfm.write("out.mfm", mesh, float_fmt=".16e")
 ```
 
 - **`float_fmt`** (default `".16e"`) — coordinate format string.
@@ -48,7 +48,7 @@ and the C++ reader does the equivalent) laid out as:
    `cell_data["mfm:ref"]`.
 
 The writer emits the same sections in the same order, with `nrc`/`nra`/`nrv`
-written as all-zero placeholders (they carry no meshio-side data).
+written as all-zero placeholders (they carry no meshio++-side data).
 
 ## Cell types
 
@@ -65,7 +65,7 @@ The element type is recovered from `(lnv, lne, lnf)` plus `lnn == lnv`:
 
 Linear elements only. Because MFM only stores **vertex** coordinates (no
 mid-edge node positions), second-order (P2) elements would necessarily be
-straight-sided if forced through this representation — meshio rejects them
+straight-sided if forced through this representation — meshio++ rejects them
 outright (requires `lnn == lnv`) rather than silently discarding curvature
 information.
 
@@ -80,7 +80,7 @@ information.
   across the whole mesh, raising `WriteError` for a mixed-type mesh — MFM is
   fundamentally single-type ("non-hybrid").
 - `nrc`/`nra`/`nrv` (face/edge/vertex reference arrays) are read and discarded
-  entirely — there is no meshio-side representation for them, and they're
+  entirely — there is no meshio++-side representation for them, and they're
   always written as zeros.
 - Requires `nnod == nver` (no separate "node" vs "vertex" numbering) in
   addition to `lnn == lnv` — both checks reject P2 elements.

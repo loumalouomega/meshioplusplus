@@ -15,10 +15,10 @@ versions.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.vtk")
-meshio.vtk.write("out.vtk", mesh, binary=True)   # version via file_format
+mesh = meshioplusplus.read("mesh.vtk")
+meshioplusplus.vtk.write("out.vtk", mesh, binary=True)   # version via file_format
 ```
 
 - **`binary`** — big-endian binary (`True`) or ASCII.
@@ -26,7 +26,7 @@ meshio.vtk.write("out.vtk", mesh, binary=True)   # version via file_format
   writes 4.2.
 
 Binary numeric data is **always big-endian** regardless of host platform —
-an explicit VTK-wiki-documented convention, not a meshio choice.
+an explicit VTK-wiki-documented convention, not a meshio++ choice.
 
 ## File structure
 
@@ -93,7 +93,7 @@ round-trip as extra data arrays (v5.1 only), same as VTU.
   cursor correctly).
 - The registered write-dict alias `vtk51` currently maps to the same
   function as `vtk42` in the format registry (both point at the 4.2 writer)
-  — use the `fmt_version="5.1"` kwarg via `meshio.vtk.write` directly, or the
+  — use the `fmt_version="5.1"` kwarg via `meshioplusplus.vtk.write` directly, or the
   default `file_format="vtk"`, to reliably get a 5.1 file.
 
 ## Notes

@@ -2,7 +2,7 @@
 
 An autonomous reader/writer for the Ansys **MAPDL "coded database"** format —
 distinct from the [Fluent `.msh` format](ansys.md) also named "ansys" in
-meshio. It parses `ET`/`ETBLOCK`, `NBLOCK`, `EBLOCK`, and `CMBLOCK` blocks
+meshioplusplus. It parses `ET`/`ETBLOCK`, `NBLOCK`, `EBLOCK`, and `CMBLOCK` blocks
 directly, with no dependency on any other format module.
 
 | | |
@@ -15,10 +15,10 @@ directly, with no dependency on any other format module.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.ansysInp.read("model.cdb")
-meshio.ansysInp.write("out.cdb", mesh)
+mesh = meshioplusplus.ansysInp.read("model.cdb")
+meshioplusplus.ansysInp.write("out.cdb", mesh)
 ```
 
 Both `read(filename)` and `write(filename, mesh)` take no keyword arguments.
@@ -26,9 +26,9 @@ Both `read(filename)` and `write(filename, mesh)` take no keyword arguments.
 **Note on `.inp`**: this format registers **both** `.cdb` and `.inp` as
 extensions, colliding with [Abaqus](abaqus.md)'s pre-existing `.inp`
 registration. Since `abaqus` is imported before `ansysInp` in
-`src/meshio/__init__.py`, plain extension-based dispatch
-(`meshio.read("x.inp")`) still resolves to **Abaqus** by default — pass
-`file_format="ansysInp"` explicitly, or call `meshio.ansysInp.read`/`write`
+`src/meshioplusplus/__init__.py`, plain extension-based dispatch
+(`meshioplusplus.read("x.inp")`) still resolves to **Abaqus** by default — pass
+`file_format="ansysInp"` explicitly, or call `meshioplusplus.ansysInp.read`/`write`
 directly, to select this format for a `.inp` file.
 
 ## File structure
@@ -80,7 +80,7 @@ FINISH
 
 Ansys element type ids are grouped into 4 families by node-count-independent
 type id, then combined with the node count actually present to resolve a
-meshio type:
+meshio++ type:
 
 | family | Ansys element type ids |
 |---|---|
@@ -89,7 +89,7 @@ meshio type:
 | `plane` | 25, 42, 77, 82, 182, 183, 223 |
 | `line` | 1, 3, 4, 21, 180, 188, 189, 288, 289 |
 
-| (family, nodes) | meshio | (family, nodes) | meshio |
+| (family, nodes) | meshio++ | (family, nodes) | meshio++ |
 |---|---|---|---|
 | (solid, 4) | `tetra` | (shell/plane, 3) | `triangle` |
 | (solid, 10) | `tetra10` | (shell/plane, 6) | `triangle6` |
@@ -100,11 +100,11 @@ meshio type:
 | (solid, 5) | `pyramid` | | |
 | (solid, 13) | `pyramid13` | | |
 
-Write uses a fixed reverse mapping (one Ansys type id per meshio type,
+Write uses a fixed reverse mapping (one Ansys type id per meshio++ type,
 regardless of which id the file was originally read with):
 `tetra→285, tetra10→187, hexahedron→185, hexahedron20→186, wedge→185,
 wedge15→186, pyramid→185, pyramid13→186, triangle→181, triangle6→281,
-quad→181, quad8→281, line→188, line3→189`. An unmapped meshio cell type
+quad→181, quad8→281, line→188, line3→189`. An unmapped meshio++ cell type
 raises `WriteError`.
 
 ## Data mapping
@@ -124,7 +124,7 @@ raises `WriteError`.
   preserve an original file's exact block layout, field widths, or element
   type ids) — a read→write round trip is not byte-identical, though it is
   semantically equivalent (same points, cells, sets).
-- Read and write go through the C++ core (`meshio._core.ansysinp_read`/
+- Read and write go through the C++ core (`meshioplusplus._core.ansysinp_read`/
   `ansysinp_write`), with the Python reference as an automatic fallback for
   buffers. CMBLOCK components (`point_sets`/`cell_sets`) travel through a
   dedicated `AnsysInfo` side-channel struct rather than the Mesh conversion

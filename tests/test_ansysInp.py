@@ -1,4 +1,4 @@
-"""Tests for the meshio.ansysInp module."""
+"""Tests for the meshioplusplus.ansysInp module."""
 
 import os
 import tempfile
@@ -7,10 +7,10 @@ import textwrap
 import numpy as np
 import pytest
 
-from meshio import CellBlock, Mesh
+from meshioplusplus import CellBlock, Mesh
 
 # Direct imports from the internal module for in-memory tests
-from meshio.ansysInp._ansysInp import (
+from meshioplusplus.ansysInp._ansysInp import (
     _int_width,
     _is_data_line,
     _read_lines,
@@ -326,7 +326,7 @@ class TestRead:
         assert mesh.cells[0].type == "tetra"
 
     def test_no_block_raises(self):
-        from meshio._exceptions import ReadError
+        from meshioplusplus._exceptions import ReadError
 
         with pytest.raises(ReadError):
             _read_from_str("/PREP7\nFINISH\n")
@@ -370,7 +370,7 @@ class TestWrite:
         assert "1" in eblock_line
 
     def test_unknown_type_raises(self):
-        from meshio._exceptions import WriteError
+        from meshioplusplus._exceptions import WriteError
 
         mesh = Mesh(
             points=np.zeros((3, 3)),
@@ -464,7 +464,7 @@ class TestCMBlockEdgeCases:
         """A CMBLOCK whose first item is a range marker (negative) must raise
         a clean ReadError instead of a TypeError.
         """
-        from meshio._exceptions import ReadError
+        from meshioplusplus._exceptions import ReadError
 
         with pytest.raises(ReadError, match="range marker"):
             _read_from_str(BAD_CMBLOCK_INP)

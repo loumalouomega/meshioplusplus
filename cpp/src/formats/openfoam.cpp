@@ -1,4 +1,4 @@
-#include "meshio/formats/openfoam.hpp"
+#include "meshioplusplus/formats/openfoam.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,13 +16,13 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/exceptions.hpp"
-#include "meshio/log.hpp"
-#include "meshio/parallel.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
 
 namespace fs = std::filesystem;
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -707,4 +707,4 @@ Mesh read_openfoam(const std::string& path_in, OpenFoamInfo& info) {
     return mesh;
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

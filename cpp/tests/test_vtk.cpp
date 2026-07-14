@@ -3,13 +3,13 @@
 #include <gtest/gtest.h>
 
 #include "mesh_fixtures.hpp"
-#include "meshio/formats/vtk.hpp"
+#include "meshioplusplus/formats/vtk.hpp"
 
 namespace {
 void rt(const mt::Mesh& mesh, bool binary, bool v51) {
     mt::roundtrip(
-        [=](const std::string& p, const mt::Mesh& m) { meshio::write_vtk(p, m, binary, v51); },
-        [](const std::string& p) { return meshio::read_vtk(p); }, mesh, ".vtk");
+        [=](const std::string& p, const mt::Mesh& m) { meshioplusplus::write_vtk(p, m, binary, v51); },
+        [](const std::string& p) { return meshioplusplus::read_vtk(p); }, mesh, ".vtk");
 }
 }  // namespace
 

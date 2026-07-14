@@ -14,10 +14,10 @@ and named cell groups.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("grid.f3grid")
-meshio.flac3d.write("out.f3grid", mesh, float_fmt=".16e", binary=False)
+mesh = meshioplusplus.read("grid.f3grid")
+meshioplusplus.flac3d.write("out.f3grid", mesh, float_fmt=".16e", binary=False)
 ```
 
 - **`float_fmt`** — coordinate format (ASCII only).
@@ -52,8 +52,8 @@ reference-file cell list below for a concrete example).
 
 **Right-handed zone reorder** (the format's central quirk): FLAC3D requires
 each zone's first four corner nodes to form a right-handed system. For every
-zone cell, meshio computes the scalar triple product of the first three edge
-vectors (from the "primary" meshio→FLAC3D order's first four nodes); if
+zone cell, meshio++ computes the scalar triple product of the first three edge
+vectors (from the "primary" meshio++→FLAC3D order's first four nodes); if
 positive, the primary order is used, otherwise a "flipped" alternate order.
 This check only happens **on write** — the read-side reorder is a fixed,
 unconditional permutation, since a well-formed file is assumed to already
@@ -61,7 +61,7 @@ store correctly-handed zones.
 
 ## Cell types & node ordering
 
-| meshio type | FLAC3D abbrev | primary order | flipped order (write-only) |
+| meshio++ type | FLAC3D abbrev | primary order | flipped order (write-only) |
 |---|---|---|---|
 | `triangle` | `T3` | `[0,1,2]` | — |
 | `quad` | `Q4` | `[0,1,2,3]` | — |
@@ -70,7 +70,7 @@ store correctly-handed zones.
 | `wedge` | `W6` | `[0,1,3,2,4,5]` | `[0,2,3,1,5,4]` |
 | `hexahedron` | `B8` | `[0,1,3,4,2,7,5,6]` | `[0,3,1,4,2,5,7,6]` |
 
-Read-side order (FLAC3D → meshio): `triangle/quad/tetra` unchanged;
+Read-side order (FLAC3D → meshio++): `triangle/quad/tetra` unchanged;
 `pyramid: [0,1,4,2,3]`; `wedge: [0,1,3,2,4,5]`; `hexahedron:
 [0,1,4,2,3,6,7,5]`.
 

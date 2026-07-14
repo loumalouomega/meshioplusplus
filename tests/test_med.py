@@ -4,9 +4,9 @@ import pathlib
 import numpy as np
 import pytest
 
-import meshio
-from meshio.med._med import numpy_to_med_type
-from meshio.med._med41 import (
+import meshioplusplus
+from meshioplusplus.med._med import numpy_to_med_type
+from meshioplusplus.med._med41 import (
     FieldBitmaskWriter,
     _bit_set,
     _bit_test,
@@ -44,7 +44,9 @@ h5py = pytest.importorskip("h5py")
     ],
 )
 def test_io(mesh, tmp_path):
-    helpers.write_read(tmp_path, meshio.med.write, meshio.med.read, mesh, 1.0e-15)
+    helpers.write_read(
+        tmp_path, meshioplusplus.med.write, meshioplusplus.med.read, mesh, 1.0e-15
+    )
 
 
 def test_generic_io(tmp_path):
@@ -56,7 +58,7 @@ def test_generic_io(tmp_path):
 def test_reference_file_with_mixed_cells(tmp_path):
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "med" / "cylinder.med"
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
 
     # Points
     assert np.isclose(mesh.points.sum(), 16.53169892762988)
@@ -94,14 +96,16 @@ def test_reference_file_with_mixed_cells(tmp_path):
     }
     assert mesh.cell_tags == ref_cell_tags_info
 
-    helpers.write_read(tmp_path, meshio.med.write, meshio.med.read, mesh, 1.0e-15)
+    helpers.write_read(
+        tmp_path, meshioplusplus.med.write, meshioplusplus.med.read, mesh, 1.0e-15
+    )
 
 
 def test_reference_file_with_point_cell_data(tmp_path):
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "med" / "box.med"
 
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
 
     # Points
     assert np.isclose(mesh.points.sum(), 12)
@@ -139,7 +143,9 @@ def test_reference_file_with_point_cell_data(tmp_path):
     data_psi_elem = mesh.cell_data["resu____ENEL_ELEM"][0]
     assert np.isclose(np.mean(data_psi, axis=1)[0, 0], data_psi_elem[0])
 
-    helpers.write_read(tmp_path, meshio.med.write, meshio.med.read, mesh, 1.0e-15)
+    helpers.write_read(
+        tmp_path, meshioplusplus.med.write, meshioplusplus.med.read, mesh, 1.0e-15
+    )
 
 
 def test_read_med_without_fas(tmp_path):
@@ -192,7 +198,7 @@ def test_read_med_without_fas(tmp_path):
         nod.attrs.create("NBR", 1)
 
     # Doit lire sans crasher
-    mesh = meshio.med.read(filename)
+    mesh = meshioplusplus.med.read(filename)
     assert len(mesh.points) == 3
     assert len(mesh.cells) == 1
     assert mesh.cells[0].type == "triangle"
@@ -204,7 +210,7 @@ def test_read_med_without_gro(tmp_path):
 
     # Écrire un mesh normal puis modifier le FAS
     mesh = helpers.tri_mesh
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     # Ajouter une famille SANS GRO dans le FAS
     with h5py.File(filename, "a") as f:
@@ -222,14 +228,14 @@ def test_read_med_without_gro(tmp_path):
             fam.attrs.create("NUM", -99)
             # Pas de GRO ici
 
-    mesh_out = meshio.med.read(filename)
+    mesh_out = meshioplusplus.med.read(filename)
     assert len(mesh_out.points) > 0
     assert len(mesh_out.cells) > 0
 
 
 def test_write_multi_blocks_same_type_with_cell_data(tmp_path):
     """Multiple blocks of the same type with cell_data must be merged."""
-    from meshio._mesh import CellBlock
+    from meshioplusplus._mesh import CellBlock
 
     points = np.array(
         [
@@ -254,13 +260,13 @@ def test_write_multi_blocks_same_type_with_cell_data(tmp_path):
         ]
     }
 
-    mesh = meshio.Mesh(points, cells, cell_data=cell_data)
+    mesh = meshioplusplus.Mesh(points, cells, cell_data=cell_data)
     filename = tmp_path / "multi_blocks.med"
 
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     # Re-read: triangles are merged into 1 block
-    mesh_out = meshio.med.read(filename)
+    mesh_out = meshioplusplus.med.read(filename)
     total_tri = sum(len(c.data) for c in mesh_out.cells if c.type == "triangle")
     assert total_tri == 4
 
@@ -280,7 +286,7 @@ def test_read_med_partial_cell_data(tmp_path):
     """A field defined on only one cell type must not crash."""
     filename = tmp_path / "partial.med"
 
-    from meshio._mesh import CellBlock
+    from meshioplusplus._mesh import CellBlock
 
     points = np.array(
         [
@@ -296,8 +302,8 @@ def test_read_med_partial_cell_data(tmp_path):
         CellBlock("tetra", np.array([[0, 1, 2, 3]])),
     ]
 
-    mesh = meshio.Mesh(points, cells)
-    meshio.med.write(filename, mesh)
+    mesh = meshioplusplus.Mesh(points, cells)
+    meshioplusplus.med.write(filename, mesh)
 
     # Add a CHA field only on tetra via h5py
     with h5py.File(filename, "a") as f:
@@ -330,7 +336,7 @@ def test_read_med_partial_cell_data(tmp_path):
         pfl.create_dataset("CO", data=np.array([42.0]))
 
     # Must read without TypeError: len() of unsized object
-    mesh_out = meshio.med.read(filename)
+    mesh_out = meshioplusplus.med.read(filename)
     assert len(mesh_out.cells) >= 2
 
     # Field must exist on tetra, None on triangle
@@ -386,7 +392,7 @@ def test_med_type_preserved_after_write_read(tmp_path, dtype, expected_med_type)
     for key in mesh.point_data:
         mesh.point_data[key] = mesh.point_data[key].astype(dtype)
 
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "r") as f:
         if "CHA" in f:
@@ -411,7 +417,7 @@ def test_med_version_written(tmp_path, med_version, expected):
     """Check that the specified MED version is written to the HDF5 file."""
     filename = tmp_path / f"test_v{med_version}.med"
     mesh = helpers.tri_mesh
-    meshio.med.write(filename, mesh, med_version=med_version)
+    meshioplusplus.med.write(filename, mesh, med_version=med_version)
 
     with h5py.File(filename, "r") as f:
         info = f["INFOS_GENERALES"]
@@ -424,7 +430,7 @@ def test_med_version_default(tmp_path):
     """Default MED version should be 4.1.0."""
     filename = tmp_path / "test_default.med"
     mesh = helpers.tri_mesh
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "r") as f:
         info = f["INFOS_GENERALES"]
@@ -569,7 +575,7 @@ def test_bitmask_written_in_real_med_file(tmp_path):
     filename = tmp_path / "test_bitmask_full.med"
 
     mesh = helpers.add_point_data(helpers.tri_mesh, 1)
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "r") as f:
         assert "CHA" in f
@@ -595,7 +601,7 @@ def test_polygonal_cells():
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "med" / "voronoi_hex.med"
 
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
 
     # Points
     assert np.isclose(mesh.points.sum(), 3.869519702231004)
@@ -626,11 +632,11 @@ def test_polygonal_cells_write_read(tmp_path):
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "med" / "voronoi_hex.med"
 
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
     out = tmp_path / "polygons_roundtrip.med"
-    meshio.med.write(out, mesh)
+    meshioplusplus.med.write(out, mesh)
 
-    mesh2 = meshio.med.read(out)
+    mesh2 = meshioplusplus.med.read(out)
     assert len(mesh2.points) == len(mesh.points)
     assert np.allclose(mesh2.points, mesh.points)
 
@@ -652,9 +658,9 @@ def test_family_group_names_round_trip(tmp_path):
     filename = tmp_path / "fam_round_trip.med"
     mesh = helpers.tri_mesh
     mesh.point_tags = {-1: ["alpha", "beta"], -2: ["gamma"]}
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
-    mesh_out = meshio.med.read(filename)
+    mesh_out = meshioplusplus.med.read(filename)
     assert mesh_out.point_tags == {-1: ["alpha", "beta"], -2: ["gamma"]}
 
 
@@ -663,7 +669,7 @@ def test_family_with_no_groups_omits_GRO(tmp_path):
     filename = tmp_path / "fam_empty.med"
     mesh = helpers.tri_mesh
     mesh.point_tags = {-42: []}
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "r") as f:
         family = f["FAS/mesh/NOEUD/FAM_-42_"]
@@ -680,8 +686,8 @@ def test_nom_dataset_dtype_is_array_i1_80(tmp_path):
     filename = this_dir / "meshes" / "med" / "cylinder.med"
     filename_out = tmp_path / "input_code_aster.med"
 
-    mesh_out = meshio.med.read(filename)
-    meshio.med.write(filename_out, mesh_out)
+    mesh_out = meshioplusplus.med.read(filename)
+    meshioplusplus.med.write(filename_out, mesh_out)
 
     with h5py.File(filename_out, "r") as f:
         mesh_name = list(f["ENS_MAA"].keys())[0]
@@ -708,8 +714,8 @@ def test_nom_dataset_padded_with_spaces(tmp_path):
     filename = this_dir / "meshes" / "med" / "cylinder.med"
     filename_out = tmp_path / "input_code_aster.med"
 
-    mesh_out = meshio.med.read(filename)
-    meshio.med.write(filename_out, mesh_out)
+    mesh_out = meshioplusplus.med.read(filename)
+    meshioplusplus.med.write(filename_out, mesh_out)
 
     with h5py.File(filename_out, "r") as f:
         mesh_name = list(f["ENS_MAA"].keys())[0]
@@ -738,7 +744,7 @@ def test_empty_family_has_no_gro(tmp_path):
     A family without group names must NOT have
     a GRO subgroup according to the MED spec.
     """
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     points = np.array(
         [
@@ -757,7 +763,7 @@ def test_empty_family_has_no_gro(tmp_path):
     mesh.cell_tags = {}
 
     filename = tmp_path / "empty_family.med"
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "r") as f:
         mesh_name = list(f["ENS_MAA"].keys())[0]
@@ -775,8 +781,8 @@ def test_family_name_too_long_raises_write_error(tmp_path):
     """
     A family name > 80 bytes must raise a WriteError.
     """
-    from meshio._exceptions import WriteError
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._exceptions import WriteError
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     points = np.array(
         [
@@ -796,7 +802,7 @@ def test_family_name_too_long_raises_write_error(tmp_path):
 
     filename = tmp_path / "toolong.med"
     with pytest.raises(WriteError, match="too long"):
-        meshio.med.write(filename, mesh)
+        meshioplusplus.med.write(filename, mesh)
 
 
 def test_metadata_defaults_roundtrip(tmp_path):
@@ -807,12 +813,12 @@ def test_metadata_defaults_roundtrip(tmp_path):
     never asserted, so a broken default would go unnoticed.
     """
     filename = tmp_path / "defaults.med"
-    meshio.med.write(filename, helpers.tri_mesh)  # not mutated -> no deepcopy
+    meshioplusplus.med.write(filename, helpers.tri_mesh)  # not mutated -> no deepcopy
 
-    out = meshio.med.read(filename)
+    out = meshioplusplus.med.read(filename)
 
     assert out.mesh_name == "mesh"
-    assert out.description == "Mesh created with meshio"
+    assert out.description == "Mesh created with meshio++"
     assert out.unit_time == ""
     assert out.unit_coords == ""
 
@@ -836,14 +842,14 @@ def test_metadata_custom_roundtrip(tmp_path, attr, med_key, value):
 
     mesh = copy.deepcopy(helpers.tri_mesh)
     setattr(mesh, attr, value)
-    meshio.med.write(f1, mesh)
+    meshioplusplus.med.write(f1, mesh)
 
     # Read side: the attribute is reconstructed on the Mesh object.
-    out = meshio.med.read(f1)
+    out = meshioplusplus.med.read(f1)
     assert getattr(out, attr) == value
 
     # Write side: the value must be written back, not overwritten by a default.
-    meshio.med.write(f2, out)
+    meshioplusplus.med.write(f2, out)
     with h5py.File(f2, "r") as f:
         name = next(iter(f["ENS_MAA"]))
         stored = f["ENS_MAA"][name].attrs[med_key].decode().rstrip("\x00")
@@ -862,14 +868,14 @@ def test_mesh_name_roundtrip(tmp_path):
 
     mesh = copy.deepcopy(helpers.tri_mesh)
     mesh.mesh_name = "my_custom_mesh"
-    meshio.med.write(f1, mesh)
+    meshioplusplus.med.write(f1, mesh)
 
-    out = meshio.med.read(f1)
+    out = meshioplusplus.med.read(f1)
     assert out.mesh_name == "my_custom_mesh"
 
     # The custom name must be preserved on the next write, and the default
     # name "mesh" must not reappear.
-    meshio.med.write(f2, out)
+    meshioplusplus.med.write(f2, out)
     with h5py.File(f2, "r") as f:
         assert "my_custom_mesh" in f["ENS_MAA"]
         assert "mesh" not in f["ENS_MAA"]
@@ -883,13 +889,13 @@ def test_read_strips_surrounding_whitespace(tmp_path):
     drop) and check that read() returns the trimmed value.
     """
     filename = tmp_path / "padded.med"
-    meshio.med.write(filename, helpers.tri_mesh)
+    meshioplusplus.med.write(filename, helpers.tri_mesh)
 
     with h5py.File(filename, "a") as f:
         name = next(iter(f["ENS_MAA"]))
         f["ENS_MAA"][name].attrs["DES"] = np.bytes_("   Salome mesh   ")
 
-    out = meshio.med.read(filename)
+    out = meshioplusplus.med.read(filename)
     assert out.description == "Salome mesh"
 
 
@@ -899,7 +905,7 @@ def test_point_tag_groups_attribute_exists_after_read():
     """
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "med" / "cylinder.med"
-    mesh_out = meshio.med.read(filename)
+    mesh_out = meshioplusplus.med.read(filename)
     assert hasattr(
         mesh_out, "point_tag_groups"
     ), "The Mesh must have the point_tag_groups attribute"
@@ -914,7 +920,7 @@ def test_cell_tag_groups_attribute_exists_after_read():
     """
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "med" / "cylinder.med"
-    mesh_out = meshio.med.read(filename)
+    mesh_out = meshioplusplus.med.read(filename)
     assert hasattr(
         mesh_out, "cell_tag_groups"
     ), "The Mesh must have the cell_tag_groups attribute"
@@ -926,7 +932,7 @@ def test_parse_med_field_name_single():
     _parse_med_field_name sur un nom sans pattern
     doit retourner (name, None, None).
     """
-    from meshio.med._med import _parse_med_field_name
+    from meshioplusplus.med._med import _parse_med_field_name
 
     base, idx, pdt = _parse_med_field_name("Temperature")
     assert base == "Temperature"
@@ -939,7 +945,7 @@ def test_parse_med_field_name_multi():
     _parse_med_field_name doit décomposer 'Temperature[2] - 1.5'
     en ('Temperature', 2, 1.5).
     """
-    from meshio.med._med import _parse_med_field_name
+    from meshioplusplus.med._med import _parse_med_field_name
 
     base, idx, pdt = _parse_med_field_name("Temperature[2] - 1.5")
     assert base == "Temperature"
@@ -953,7 +959,7 @@ def test_multi_timestep_grouped_under_single_hdf5_field(tmp_path):
     sous un seul groupe HDF5 dans CHA, pas comme des champs séparés.
     Sans PR16, chaque 'Temperature[i] - t' créait un groupe séparé.
     """
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     points = np.array(
         [
@@ -973,7 +979,7 @@ def test_multi_timestep_grouped_under_single_hdf5_field(tmp_path):
         },
     )
     filename = tmp_path / "multi_ts.med"
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "r") as f:
         assert "CHA" in f, "Le groupe CHA doit exister"
@@ -1000,7 +1006,7 @@ def test_no_cha_group_when_no_fields(tmp_path):
     """
     mesh = helpers.tri_mesh
     filename = tmp_path / "no_fields.med"
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "r") as f:
         assert (
@@ -1018,10 +1024,10 @@ def test_multi_timestep_roundtrip_box(tmp_path):
     filename = this_dir / "meshes" / "med" / "box.med"
     filename_out = tmp_path / "box_roundtrip.med"
 
-    mesh_out = meshio.med.read(filename)
-    meshio.med.write(filename_out, mesh_out)
+    mesh_out = meshioplusplus.med.read(filename)
+    meshioplusplus.med.write(filename_out, mesh_out)
 
-    mesh_rt = meshio.med.read(filename_out)
+    mesh_rt = meshioplusplus.med.read(filename_out)
 
     for key in mesh_out.point_data:
         if key == "point_tags":
@@ -1045,14 +1051,14 @@ def test_field_units_preserved_after_read(tmp_path):
     filename = tmp_path / "field_units.med"
 
     mesh = helpers.add_point_data(helpers.tri_mesh, 1)
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "a") as f:
         for field_name in f["CHA"]:
             f["CHA"][field_name].attrs["UNI"] = np.bytes_("Pa")
             f["CHA"][field_name].attrs["UNT"] = np.bytes_("s")
 
-    mesh_out = meshio.med.read(filename)
+    mesh_out = meshioplusplus.med.read(filename)
 
     assert (
         "med:field_units" in mesh_out.field_data
@@ -1075,15 +1081,15 @@ def test_field_units_roundtrip(tmp_path):
     filename2 = tmp_path / "field_units_rt.med"
 
     mesh = helpers.add_point_data(helpers.tri_mesh, 1)
-    meshio.med.write(filename1, mesh)
+    meshioplusplus.med.write(filename1, mesh)
 
     with h5py.File(filename1, "a") as f:
         for field_name in f["CHA"]:
             f["CHA"][field_name].attrs["UNI"] = np.bytes_("MPa")
             f["CHA"][field_name].attrs["UNT"] = np.bytes_("s")
 
-    mesh_out = meshio.med.read(filename1)
-    meshio.med.write(filename2, mesh_out)
+    mesh_out = meshioplusplus.med.read(filename1)
+    meshioplusplus.med.write(filename2, mesh_out)
 
     with h5py.File(filename2, "r") as f:
         for field_name in f["CHA"]:
@@ -1104,7 +1110,7 @@ def test_step_metadata_preserved_after_read(tmp_path):
     filename = tmp_path / "step_meta.med"
 
     mesh = helpers.add_point_data(helpers.tri_mesh, 1)
-    meshio.med.write(filename, mesh)
+    meshioplusplus.med.write(filename, mesh)
 
     with h5py.File(filename, "a") as f:
         for field_name in f["CHA"]:
@@ -1113,7 +1119,7 @@ def test_step_metadata_preserved_after_read(tmp_path):
             f["CHA"][field_name][ts_name].attrs["NOR"] = 3
             f["CHA"][field_name][ts_name].attrs["PDT"] = 2.5
 
-    mesh_out = meshio.med.read(filename)
+    mesh_out = meshioplusplus.med.read(filename)
 
     assert (
         "med:step_meta" in mesh_out.field_data
@@ -1135,7 +1141,7 @@ def test_step_metadata_roundtrip(tmp_path):
     filename2 = tmp_path / "step_meta_rt.med"
 
     mesh = helpers.add_point_data(helpers.tri_mesh, 1)
-    meshio.med.write(filename1, mesh)
+    meshioplusplus.med.write(filename1, mesh)
 
     with h5py.File(filename1, "a") as f:
         for field_name in f["CHA"]:
@@ -1144,8 +1150,8 @@ def test_step_metadata_roundtrip(tmp_path):
             f["CHA"][field_name][ts_name].attrs["NOR"] = 5
             f["CHA"][field_name][ts_name].attrs["PDT"] = 3.14
 
-    mesh_out = meshio.med.read(filename1)
-    meshio.med.write(filename2, mesh_out)
+    mesh_out = meshioplusplus.med.read(filename1)
+    meshioplusplus.med.write(filename2, mesh_out)
 
     with h5py.File(filename2, "r") as f:
         for field_name in f["CHA"]:
@@ -1170,8 +1176,8 @@ def test_metadata_latin1_roundtrip(tmp_path):
     mesh.unit_time = "µs"
     mesh.description = "Maillage généré par Salome"
 
-    meshio.med.write(filename, mesh)
-    out = meshio.med.read(filename)
+    meshioplusplus.med.write(filename, mesh)
+    out = meshioplusplus.med.read(filename)
 
     assert out.unit_coords == "µm"
     assert out.unit_time == "µs"
@@ -1183,7 +1189,7 @@ def test_med_multi_write_read_two_meshes(tmp_path):
     write_med_multi must write two meshes and read_med_multi must
     return them with the correct number of points and cells.
     """
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     mesh1 = Mesh(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
@@ -1202,11 +1208,11 @@ def test_med_multi_write_read_two_meshes(tmp_path):
     )
 
     filename = tmp_path / "two_meshes.med"
-    meshio.med.write_med_multi(
+    meshioplusplus.med.write_med_multi(
         filename, [mesh1, mesh2], mesh_names=["mesh_a", "mesh_b"]
     )
 
-    meshes, names = meshio.med.read_med_multi(filename)
+    meshes, names = meshioplusplus.med.read_med_multi(filename)
 
     assert names == ["mesh_a", "mesh_b"], f"Mesh names must be preserved, got {names}"
     assert len(meshes[0].points) == 3, "mesh_a must have 3 points"
@@ -1219,7 +1225,7 @@ def test_med_multi_default_mesh_names(tmp_path):
     """
     Without explicit mesh_names, meshes must be named mesh_0, mesh_1, etc.
     """
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     mesh1 = Mesh(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
@@ -1231,9 +1237,9 @@ def test_med_multi_default_mesh_names(tmp_path):
     )
 
     filename = tmp_path / "default_names.med"
-    meshio.med.write_med_multi(filename, [mesh1, mesh2])
+    meshioplusplus.med.write_med_multi(filename, [mesh1, mesh2])
 
-    meshes, names = meshio.med.read_med_multi(filename)
+    meshes, names = meshioplusplus.med.read_med_multi(filename)
     assert "mesh_0" in names, f"Default name 'mesh_0' expected, got {names}"
     assert "mesh_1" in names, f"Default name 'mesh_1' expected, got {names}"
 
@@ -1244,7 +1250,7 @@ def test_med_multi_field_collision_disambiguated(tmp_path):
     must be disambiguated with @<mesh_name> suffix.
     On read-back, the field name must be the original (without @).
     """
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     mesh1 = Mesh(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
@@ -1258,7 +1264,9 @@ def test_med_multi_field_collision_disambiguated(tmp_path):
     )
 
     filename = tmp_path / "collision.med"
-    meshio.med.write_med_multi(filename, [mesh1, mesh2], mesh_names=["m1", "m2"])
+    meshioplusplus.med.write_med_multi(
+        filename, [mesh1, mesh2], mesh_names=["m1", "m2"]
+    )
 
     # HDF5 must use @suffix for collision
     with h5py.File(filename, "r") as f:
@@ -1271,7 +1279,7 @@ def test_med_multi_field_collision_disambiguated(tmp_path):
         ), f"Expected 'pressure@m2' in CHA, got {cha_keys}"
 
     # Read-back must restore original field name without @
-    meshes, names = meshio.med.read_med_multi(filename)
+    meshes, names = meshioplusplus.med.read_med_multi(filename)
     assert (
         "pressure" in meshes[0].point_data
     ), "Field 'pressure' must be restored without @ suffix on read"
@@ -1290,7 +1298,7 @@ def test_med_multi_no_field_collision(tmp_path):
     """
     When two meshes have different field names, no @ suffix must be used.
     """
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     mesh1 = Mesh(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
@@ -1304,7 +1312,9 @@ def test_med_multi_no_field_collision(tmp_path):
     )
 
     filename = tmp_path / "no_collision.med"
-    meshio.med.write_med_multi(filename, [mesh1, mesh2], mesh_names=["m1", "m2"])
+    meshioplusplus.med.write_med_multi(
+        filename, [mesh1, mesh2], mesh_names=["m1", "m2"]
+    )
 
     with h5py.File(filename, "r") as f:
         cha_keys = list(f["CHA"].keys())
@@ -1323,7 +1333,7 @@ def test_med_multi_points_preserved(tmp_path):
     """
     Point coordinates must be exactly preserved after a write/read round-trip.
     """
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     pts1 = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     pts2 = np.array([[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 1.0, 0.0]])
@@ -1332,9 +1342,11 @@ def test_med_multi_points_preserved(tmp_path):
     mesh2 = Mesh(pts2, [CellBlock("triangle", np.array([[0, 1, 2]]))])
 
     filename = tmp_path / "points.med"
-    meshio.med.write_med_multi(filename, [mesh1, mesh2], mesh_names=["m1", "m2"])
+    meshioplusplus.med.write_med_multi(
+        filename, [mesh1, mesh2], mesh_names=["m1", "m2"]
+    )
 
-    meshes, _ = meshio.med.read_med_multi(filename)
+    meshes, _ = meshioplusplus.med.read_med_multi(filename)
     assert np.allclose(
         meshes[0].points, pts1
     ), "Points of mesh1 must be preserved after round-trip"
@@ -1348,7 +1360,7 @@ def test_med_multi_hdf5_structure(tmp_path):
     The HDF5 file must contain ENS_MAA with all mesh names
     and FAS with one group per mesh.
     """
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     mesh1 = Mesh(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
@@ -1360,7 +1372,9 @@ def test_med_multi_hdf5_structure(tmp_path):
     )
 
     filename = tmp_path / "structure.med"
-    meshio.med.write_med_multi(filename, [mesh1, mesh2], mesh_names=["alpha", "beta"])
+    meshioplusplus.med.write_med_multi(
+        filename, [mesh1, mesh2], mesh_names=["alpha", "beta"]
+    )
 
     with h5py.File(filename, "r") as f:
         assert "ENS_MAA" in f, "ENS_MAA must exist"
@@ -1432,7 +1446,7 @@ def test_med_node_perm_matches_medcoupling_faces():
     permutation, every face defined by MEDCoupling's INTERP_KERNEL cell model
     (CellModel.cxx) must point outward. Pins the ordering to the authoritative
     MED source, independent of any reference .med file."""
-    from meshio.med._med import _med_node_perm
+    from meshioplusplus.med._med import _med_node_perm
 
     for cell_type, (pts, med_faces) in _MED_ORIENT_REF.items():
         assert _all_med_faces_outward(
@@ -1456,7 +1470,7 @@ def test_med_multi_3d_orientation_and_roundtrip(tmp_path):
     """Multi-mesh MED: 3D cells are written in MED orientation, and the
     multi-mesh reader applies the inverse permutation so a write->read round-trip
     is identity. Exercises the multi-mesh write AND read directions."""
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     pts = np.array(
         [
@@ -1476,7 +1490,7 @@ def test_med_multi_3d_orientation_and_roundtrip(tmp_path):
     m2 = Mesh(pts + 2.0, [CellBlock("hexahedron", hexa.copy())])
 
     filename = tmp_path / "multi.med"
-    meshio.med.write_med_multi(filename, [m1, m2], mesh_names=["a", "b"])
+    meshioplusplus.med.write_med_multi(filename, [m1, m2], mesh_names=["a", "b"])
 
     # on-disk: hexes are in MED (negative-orientation) order for BOTH meshes
     def corner_jac(conn, P):
@@ -1496,7 +1510,7 @@ def test_med_multi_3d_orientation_and_roundtrip(tmp_path):
             assert corner_jac(conn[0], P) < 0, f"{name}: hex not MED-oriented on disk"
 
     # multi-mesh read applies the inverse perm -> round-trip identity
-    meshes, names = meshio.med.read_med_multi(filename)
+    meshes, names = meshioplusplus.med.read_med_multi(filename)
     by_name = dict(zip(names, meshes))
     for name, orig in (("a", m1), ("b", m2)):
         np.testing.assert_array_equal(orig.cells[0].data, by_name[name].cells[0].data)
@@ -1508,7 +1522,7 @@ def test_gmsh_physical_groups_written_as_med_families(tmp_path):
     families/groups, otherwise a .msh -> .med conversion drops all groups.
     Here two blocks carry distinct physical ids and no names -> fallback
     "group_<id>" labels."""
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     pts = np.array([[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]], float)
     cells = [
@@ -1519,8 +1533,8 @@ def test_gmsh_physical_groups_written_as_med_families(tmp_path):
     mesh = Mesh(pts, cells, cell_data=cell_data)
 
     filename = tmp_path / "phys.med"
-    meshio.write(filename, mesh)
-    back = meshio.read(filename)
+    meshioplusplus.write(filename, mesh)
+    back = meshioplusplus.read(filename)
 
     # every physical id became a group with the right cells
     assert set(back.cell_sets) == {"group_100", "group_200", "group_300"}
@@ -1534,7 +1548,7 @@ def test_gmsh_physical_groups_use_field_data_names(tmp_path):
     """When the .msh had $PhysicalNames, the readable group name comes from
     field_data ({name: [physical_id, dim]}) instead of the "group_<id>"
     fallback."""
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     pts = np.array([[0, 0], [1, 0], [0, 1]], float)
     cells = [CellBlock("triangle", np.array([[0, 1, 2]]))]
@@ -1546,8 +1560,8 @@ def test_gmsh_physical_groups_use_field_data_names(tmp_path):
     )
 
     filename = tmp_path / "named.med"
-    meshio.write(filename, mesh)
-    back = meshio.read(filename)
+    meshioplusplus.write(filename, mesh)
+    back = meshioplusplus.read(filename)
 
     assert "my_surface" in back.cell_sets
     np.testing.assert_array_equal(back.cell_sets["my_surface"][0], [0])
@@ -1558,7 +1572,7 @@ def test_gmsh_physical_and_cell_sets_both_preserved(tmp_path):
     physical id only in gmsh:physical. Both must survive to MED — the
     gmsh:physical bridge must not be skipped just because cell_sets is
     non-empty (and must not duplicate the already-named group)."""
-    from meshio._mesh import CellBlock, Mesh
+    from meshioplusplus._mesh import CellBlock, Mesh
 
     pts = np.array([[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]], float)
     cells = [CellBlock("triangle", np.array([[0, 1, 3], [1, 2, 4], [2, 5, 4]]))]
@@ -1572,8 +1586,8 @@ def test_gmsh_physical_and_cell_sets_both_preserved(tmp_path):
     )
 
     filename = tmp_path / "mixed.med"
-    meshio.write(filename, mesh)
-    back = meshio.read(filename)
+    meshioplusplus.write(filename, mesh)
+    back = meshioplusplus.read(filename)
 
     # the named group survives, un-named physical 9 becomes group_9,
     # and "surf" is NOT duplicated as group_7

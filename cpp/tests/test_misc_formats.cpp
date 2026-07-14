@@ -3,16 +3,16 @@
 #include <gtest/gtest.h>
 
 #include "mesh_fixtures.hpp"
-#include "meshio/formats/ansys.hpp"
-#include "meshio/formats/dolfin.hpp"
-#include "meshio/formats/flac3d.hpp"
-#include "meshio/formats/su2.hpp"
-#include "meshio/formats/tetgen.hpp"
-#include "meshio/formats/wkt.hpp"
+#include "meshioplusplus/formats/ansys.hpp"
+#include "meshioplusplus/formats/dolfin.hpp"
+#include "meshioplusplus/formats/flac3d.hpp"
+#include "meshioplusplus/formats/su2.hpp"
+#include "meshioplusplus/formats/tetgen.hpp"
+#include "meshioplusplus/formats/wkt.hpp"
 
 TEST(Su2, Basic) {
-    auto w = [](const std::string& p, const mt::Mesh& m) { meshio::write_su2(p, m); };
-    auto r = [](const std::string& p) { return meshio::read_su2(p); };
+    auto w = [](const std::string& p, const mt::Mesh& m) { meshioplusplus::write_su2(p, m); };
+    auto r = [](const std::string& p) { return meshioplusplus::read_su2(p); };
     mt::roundtrip(w, r, mt::tri_mesh_2d(), ".su2");
     mt::roundtrip(w, r, mt::tet_mesh(), ".su2");
     mt::roundtrip(w, r, mt::hex_mesh(), ".su2");
@@ -21,9 +21,9 @@ TEST(Su2, Basic) {
 TEST(Flac3d, AsciiAndBinary) {
     for (bool binary : {false, true}) {
         auto w = [=](const std::string& p, const mt::Mesh& m) {
-            meshio::write_flac3d(p, m, ".16e", binary);
+            meshioplusplus::write_flac3d(p, m, ".16e", binary);
         };
-        auto r = [](const std::string& p) { return meshio::read_flac3d(p); };
+        auto r = [](const std::string& p) { return meshioplusplus::read_flac3d(p); };
         mt::roundtrip(w, r, mt::tet_mesh(), ".f3grid");
         mt::roundtrip(w, r, mt::hex_mesh(), ".f3grid");
     }
@@ -32,9 +32,9 @@ TEST(Flac3d, AsciiAndBinary) {
 TEST(Ansys, AsciiAndBinary) {
     for (bool binary : {false, true}) {
         auto w = [=](const std::string& p, const mt::Mesh& m) {
-            meshio::write_ansys(p, m, binary);
+            meshioplusplus::write_ansys(p, m, binary);
         };
-        auto r = [](const std::string& p) { return meshio::read_ansys(p); };
+        auto r = [](const std::string& p) { return meshioplusplus::read_ansys(p); };
         mt::roundtrip(w, r, mt::tri_mesh_2d(), ".msh");
         mt::roundtrip(w, r, mt::tet_mesh(), ".msh");
         mt::roundtrip(w, r, mt::hex_mesh(), ".msh");
@@ -43,8 +43,8 @@ TEST(Ansys, AsciiAndBinary) {
 }
 
 TEST(Dolfin, TriangleTetra) {
-    auto w = [](const std::string& p, const mt::Mesh& m) { meshio::write_dolfin(p, m); };
-    auto r = [](const std::string& p) { return meshio::read_dolfin(p); };
+    auto w = [](const std::string& p, const mt::Mesh& m) { meshioplusplus::write_dolfin(p, m); };
+    auto r = [](const std::string& p) { return meshioplusplus::read_dolfin(p); };
     mt::roundtrip(w, r, mt::tri_mesh(), ".xml");
     mt::roundtrip(w, r, mt::tri_mesh_2d(), ".xml");
     mt::roundtrip(w, r, mt::tet_mesh(), ".xml");
@@ -55,8 +55,8 @@ TEST(Wkt, TriangleGeometry) {
     // that the triangle count round-trips.
     mt::Mesh in = mt::tri_mesh();
     std::string path = mt::temp_path(".wkt");
-    meshio::write_wkt(path, in);
-    mt::Mesh out = meshio::read_wkt(path);
+    meshioplusplus::write_wkt(path, in);
+    mt::Mesh out = meshioplusplus::read_wkt(path);
     ASSERT_EQ(out.cells.size(), 1u);
     EXPECT_EQ(out.cells[0].type, "triangle");
     EXPECT_EQ(out.cells[0].num_cells(), 2u);
@@ -68,8 +68,8 @@ TEST(Tetgen, TetraPair) {
     // TetGen writes a .node/.ele pair sharing a stem.
     mt::Mesh in = mt::tet_mesh();
     std::string node = mt::temp_path(".node");
-    meshio::write_tetgen(node, in);
-    mt::Mesh out = meshio::read_tetgen(node);
+    meshioplusplus::write_tetgen(node, in);
+    mt::Mesh out = meshioplusplus::read_tetgen(node);
     mt::expect_mesh_eq(in, out);
     std::string ele = node.substr(0, node.size() - 5) + ".ele";
     std::error_code ec;

@@ -14,10 +14,10 @@ vertex count, the vertex coordinates, then the triangle indices).
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh", file_format="neuroglancer")
-meshio.neuroglancer.write("out", mesh)
+mesh = meshioplusplus.read("mesh", file_format="neuroglancer")
+meshioplusplus.neuroglancer.write("out", mesh)
 ```
 
 `write` takes no keyword arguments. `register_format` is called with an
@@ -53,7 +53,7 @@ None — no point_data, cell_data, or field_data; a bare
 ## Quirks & limitations
 
 - **Write silently casts points to `float32`** regardless of the input
-  mesh's dtype — unlike most other meshio writers, there is no warning for
+  mesh's dtype — unlike most other meshio++ writers, there is no warning for
   this precision loss.
 - Triangle-index validation is `np.any(triangles > num_vertices)` — using
   `>` rather than `>=` — so an index **exactly equal to** `num_vertices`

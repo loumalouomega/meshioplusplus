@@ -1,4 +1,4 @@
-#include "meshio/formats/ply.hpp"
+#include "meshioplusplus/formats/ply.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -11,11 +11,11 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/parallel.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -338,7 +338,7 @@ void write_ply(const std::string& path, const Mesh& mesh, bool binary) {
 
     os << "ply\n";
     os << (binary ? "format binary_little_endian 1.0\n" : "format ascii 1.0\n");
-    os << "comment Created by meshio (C++ core)\n";
+    os << "comment Created by meshio++ (C++ core)\n";
     os << "element vertex " << num_points << "\n";
     const char* dim_names[3] = {"x", "y", "z"};
     for (std::size_t k = 0; k < ncoord; ++k)
@@ -409,4 +409,4 @@ void write_ply(const std::string& path, const Mesh& mesh, bool binary) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

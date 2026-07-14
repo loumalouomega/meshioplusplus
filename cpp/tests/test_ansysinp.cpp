@@ -6,21 +6,21 @@
 #include <vector>
 
 #include "mesh_fixtures.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/formats/ansysinp.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/ansysinp.hpp"
 
-using meshio::AnsysInfo;
-using meshio::read_ansysinp;
-using meshio::write_ansysinp;
+using meshioplusplus::AnsysInfo;
+using meshioplusplus::read_ansysinp;
+using meshioplusplus::write_ansysinp;
 
 namespace {
 
 // Round-trip a mesh (no sets) through the C++ ansysInp writer/reader.
-void roundtrip_plain(const meshio::Mesh& mesh, const std::string& suffix) {
+void roundtrip_plain(const meshioplusplus::Mesh& mesh, const std::string& suffix) {
     std::string path = mt::temp_path(suffix);
     AnsysInfo win, rout;
     write_ansysinp(path, mesh, win);
-    meshio::Mesh out = read_ansysinp(path, rout);
+    meshioplusplus::Mesh out = read_ansysinp(path, rout);
     mt::expect_mesh_eq(mesh, out);
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -33,7 +33,7 @@ TEST(AnsysInp, HexRoundtrip) { roundtrip_plain(mt::hex_mesh(), ".inp"); }
 TEST(AnsysInp, HybridRoundtrip) { roundtrip_plain(mt::tri_quad_mesh(), ".inp"); }
 
 TEST(AnsysInp, SetsRoundtrip) {
-    meshio::Mesh mesh = mt::tri_quad_mesh();  // blocks: triangle, quad, triangle
+    meshioplusplus::Mesh mesh = mt::tri_quad_mesh();  // blocks: triangle, quad, triangle
     std::string path = mt::temp_path(".inp");
 
     AnsysInfo win;
@@ -45,7 +45,7 @@ TEST(AnsysInp, SetsRoundtrip) {
     write_ansysinp(path, mesh, win);
 
     AnsysInfo rout;
-    meshio::Mesh out = read_ansysinp(path, rout);
+    meshioplusplus::Mesh out = read_ansysinp(path, rout);
     mt::expect_mesh_eq(mesh, out);
 
     ASSERT_TRUE(rout.point_sets.count("CORNERS"));
@@ -64,12 +64,12 @@ TEST(AnsysInp, SetsRoundtrip) {
 }
 
 TEST(AnsysInp, UnknownTypeThrows) {
-    meshio::Mesh m;
+    meshioplusplus::Mesh m;
     m.points = mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
     m.cells.emplace_back("polygon", mt::conn_from({{0, 1, 2}}));
     AnsysInfo info;
     std::string path = mt::temp_path(".inp");
-    EXPECT_THROW(write_ansysinp(path, m, info), meshio::WriteError);
+    EXPECT_THROW(write_ansysinp(path, m, info), meshioplusplus::WriteError);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

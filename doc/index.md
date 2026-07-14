@@ -2,7 +2,7 @@
 layout: home
 
 hero:
-  name: meshio
+  name: meshio++
   text: I/O for many mesh formats
   tagline: One unified mesh data model, 35+ file formats, a fast C++ core with pure-Python fallbacks.
   actions:
@@ -14,7 +14,7 @@ hero:
       link: /formats
     - theme: alt
       text: GitHub
-      link: https://github.com/nschloe/meshio
+      link: https://github.com/<org>/meshioplusplus
 
 features:
   - title: 35+ formats
@@ -25,22 +25,22 @@ features:
     details: A pybind11 extension with zero-copy numpy at the I/O boundary and optional HDF5/netCDF acceleration — with pure-Python fallbacks everywhere.
 ---
 
-## What is meshio?
+## What is meshio++?
 
-meshio reads and writes unstructured mesh files. It supports over 35 formats and
+meshio++ reads and writes unstructured mesh files. It supports over 35 formats and
 provides one unified [data model](./mesh_data_model.md) so you can convert between
 any of them, from the command line or from Python:
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("input.msh")   # format inferred from the extension
+mesh = meshioplusplus.read("input.msh")   # format inferred from the extension
 mesh.write("output.vtu")
 ```
 
 ```sh
-meshio convert input.msh output.vtu
-meshio info input.xdmf
+meshioplusplus convert input.msh output.vtu
+meshioplusplus info input.xdmf
 ```
 
 See the [Quickstart](./quickstart.md) to get going, the

@@ -2,10 +2,10 @@ import { defineConfig } from "vitepress";
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
-  title: "meshio",
+  title: "meshio++",
   description: "I/O for many mesh formats",
-  // Project site served from https://<user>.github.io/meshio/
-  base: "/meshio/",
+  // Project site served from https://<org>.github.io/meshioplusplus/
+  base: "/meshioplusplus/",
   lastUpdated: true,
   ignoreDeadLinks: true,
 
@@ -38,7 +38,7 @@ export default defineConfig({
           { text: "Supported formats", link: "/formats" },
           { text: "CLI reference", link: "/cli" },
           { text: "XDMF time series", link: "/xdmf_time_series" },
-          { text: "Extending meshio", link: "/extending" },
+          { text: "Extending meshio++", link: "/extending" },
           { text: "ParaView plugin", link: "/paraview_plugin" },
         ],
       },
@@ -88,18 +88,18 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: "github", link: "https://github.com/nschloe/meshio" },
+      { icon: "github", link: "https://github.com/<org>/meshioplusplus" },
     ],
 
     search: { provider: "local" },
 
     editLink: {
-      pattern: "https://github.com/nschloe/meshio/edit/main/doc/:path",
+      pattern: "https://github.com/<org>/meshioplusplus/edit/main/doc/:path",
     },
 
     footer: {
       message: "Released under the MIT License.",
-      copyright: "meshio contributors",
+      copyright: "meshio++ contributors",
     },
   },
 });

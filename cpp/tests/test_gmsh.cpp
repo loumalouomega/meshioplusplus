@@ -3,18 +3,18 @@
 #include <gtest/gtest.h>
 
 #include "mesh_fixtures.hpp"
-#include "meshio/formats/gmsh.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
 
 namespace {
 void rt22(const mt::Mesh& mesh, bool binary) {
     mt::roundtrip(
-        [=](const std::string& p, const mt::Mesh& m) { meshio::write_gmsh22(p, m, binary); },
-        [](const std::string& p) { return meshio::read_gmsh(p); }, mesh, ".msh");
+        [=](const std::string& p, const mt::Mesh& m) { meshioplusplus::write_gmsh22(p, m, binary); },
+        [](const std::string& p) { return meshioplusplus::read_gmsh(p); }, mesh, ".msh");
 }
 void rt41(const mt::Mesh& mesh, bool binary) {
     mt::roundtrip(
-        [=](const std::string& p, const mt::Mesh& m) { meshio::write_gmsh41(p, m, binary); },
-        [](const std::string& p) { return meshio::read_gmsh(p); }, mesh, ".msh");
+        [=](const std::string& p, const mt::Mesh& m) { meshioplusplus::write_gmsh41(p, m, binary); },
+        [](const std::string& p) { return meshioplusplus::read_gmsh(p); }, mesh, ".msh");
 }
 }  // namespace
 

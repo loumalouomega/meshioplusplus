@@ -1,5 +1,5 @@
 #!/bin/sh
-# configure.sh — configure (and optionally build) the meshio C++ core
+# configure.sh — configure (and optionally build) the meshio++ C++ core
 # standalone on Linux/macOS. Run from anywhere; build trees are created next
 # to this script (build/cpp-<build-type>).
 #
@@ -79,11 +79,11 @@ fi
 set -- \
     -S "$SOURCE_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DMESHIO_PARALLEL_BACKEND="$BACKEND" \
-    -DMESHIO_WITH_HDF5="$WITH_HDF5" \
-    -DMESHIO_WITH_NETCDF="$WITH_NETCDF" \
-    -DMESHIO_WITH_ZLIB="$WITH_ZLIB" \
-    -DMESHIO_BUILD_TESTS="$TESTS" \
+    -DMESHIOPLUSPLUS_PARALLEL_BACKEND="$BACKEND" \
+    -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
+    -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
+    -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB" \
+    -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
     -DPython_EXECUTABLE="$PYTHON_EXE"
 
 # pybind11 from the chosen Python, when available.
@@ -95,7 +95,7 @@ if [ -n "$TBB_DIR" ]; then
     set -- "$@" -DTBB_DIR="$TBB_DIR"
 fi
 
-echo "== meshio configure =="
+echo "== meshio++ configure =="
 echo "  source:    $SOURCE_DIR"
 echo "  build:     $BUILD_DIR"
 echo "  type:      $BUILD_TYPE"
@@ -116,7 +116,7 @@ if [ "$TESTS" = "ON" ]; then
 fi
 echo
 echo "Python package (editable) with the same options:"
-echo "  CMAKE_ARGS=\"-DMESHIO_PARALLEL_BACKEND=$BACKEND -DMESHIO_WITH_HDF5=$WITH_HDF5 -DMESHIO_WITH_NETCDF=$WITH_NETCDF -DMESHIO_WITH_ZLIB=$WITH_ZLIB\" \\"
+echo "  CMAKE_ARGS=\"-DMESHIOPLUSPLUS_PARALLEL_BACKEND=$BACKEND -DMESHIOPLUSPLUS_WITH_HDF5=$WITH_HDF5 -DMESHIOPLUSPLUS_WITH_NETCDF=$WITH_NETCDF -DMESHIOPLUSPLUS_WITH_ZLIB=$WITH_ZLIB\" \\"
 echo "    pip install --no-build-isolation -e \"$SOURCE_DIR\""
 
 if [ "$DO_BUILD" = "yes" ]; then

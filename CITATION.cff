@@ -12,7 +12,10 @@ authors:
   given-names: "Fatima-Zahra"
 - family-names: "Sovre"
   given-names: "Lucas"
-title: "meshio: Tools for mesh files"
+title: "meshio++: Tools for mesh files"
+# TODO: mint a new Zenodo DOI for meshio++ before an official release; the
+# DOI below is the original meshio project's record, kept here only to credit
+# that lineage.
 doi: 10.5281/zenodo.1173115
-url: https://github.com/nschloe/meshio
+url: https://github.com/<org>/meshioplusplus
 license: MIT

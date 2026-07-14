@@ -1,4 +1,4 @@
-#include "meshio/formats/flac3d.hpp"
+#include "meshioplusplus/formats/flac3d.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -12,11 +12,11 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/parallel.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -363,7 +363,7 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
     }
 
     // ASCII
-    f << "* FLAC3D grid produced by meshio (C++ core)\n";
+    f << "* FLAC3D grid produced by meshio++ (C++ core)\n";
     f << "* GRIDPOINTS\n";
     char buf[64];
     for (std::size_t i = 0; i < npts; ++i) {
@@ -416,4 +416,4 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
     f << "* FACE GROUPS\n";
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

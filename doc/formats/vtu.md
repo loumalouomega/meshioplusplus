@@ -15,10 +15,10 @@ block-compressed.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.vtu")
-meshio.vtu.write("out.vtu", mesh,
+mesh = meshioplusplus.read("mesh.vtu")
+meshioplusplus.vtu.write("out.vtu", mesh,
     binary=True,
     compression="zlib",  # "zlib", "lzma", or None
     header_type=None,    # "UInt32" or "UInt64"

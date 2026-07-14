@@ -6,7 +6,7 @@
 #include <string>
 
 #include "mesh_fixtures.hpp"
-#include "meshio/formats/openfoam.hpp"
+#include "meshioplusplus/formats/openfoam.hpp"
 
 namespace fs = std::filesystem;
 
@@ -49,8 +49,8 @@ fs::path make_hex_case() {
 
 TEST(OpenFoam, SingleHexAscii) {
     fs::path base = make_hex_case();
-    meshio::OpenFoamInfo info;
-    meshio::Mesh mesh = meshio::read_openfoam((base / "case.foam").string(), info);
+    meshioplusplus::OpenFoamInfo info;
+    meshioplusplus::Mesh mesh = meshioplusplus::read_openfoam((base / "case.foam").string(), info);
 
     EXPECT_EQ(mesh.num_points(), 8u);
     bool has_hex = false;
@@ -70,9 +70,9 @@ TEST(OpenFoam, SingleHexAscii) {
 
 TEST(OpenFoam, ResolveViaCaseDir) {
     fs::path base = make_hex_case();
-    meshio::OpenFoamInfo info;
+    meshioplusplus::OpenFoamInfo info;
     // Pass the case directory itself (not the .foam file).
-    meshio::Mesh mesh = meshio::read_openfoam(base.string(), info);
+    meshioplusplus::Mesh mesh = meshioplusplus::read_openfoam(base.string(), info);
     EXPECT_EQ(mesh.num_points(), 8u);
     std::error_code ec;
     fs::remove_all(base, ec);

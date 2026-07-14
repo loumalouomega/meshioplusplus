@@ -15,11 +15,11 @@ region/boundary label.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
 # `.msh` is shared with ansys and gmsh — be explicit on read:
-mesh = meshio.read("mesh.msh", file_format="freefem")
-meshio.freefem.write("out.msh", mesh)
+mesh = meshioplusplus.read("mesh.msh", file_format="freefem")
+meshioplusplus.freefem.write("out.msh", mesh)
 ```
 
 `write` takes no keyword arguments.

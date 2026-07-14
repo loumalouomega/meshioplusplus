@@ -14,10 +14,10 @@ the **penultimate** filename suffix (e.g. `foo.lb8.ugrid` → flavour `lb8`).
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("sphere.b8.ugrid")   # flavour taken from the suffix
-meshio.ugrid.write("out.lb8.ugrid", mesh)
+mesh = meshioplusplus.read("sphere.b8.ugrid")   # flavour taken from the suffix
+meshioplusplus.ugrid.write("out.lb8.ugrid", mesh)
 ```
 
 No kwargs — the flavour is entirely inferred from the filename.
@@ -63,13 +63,13 @@ num_pyramid, num_wedge, num_hexahedron`. Body, in fixed order:
 9. Hexahedron connectivity.
 
 Volume elements (6-9) get **zero-filled** boundary tags — UGRID has no
-per-volume-element tag concept, so meshio synthesizes zeros for uniformity
+per-volume-element tag concept, so meshio++ synthesizes zeros for uniformity
 with the surface tags.
 
 ## Cell types
 
 `triangle`, `quad` (surface); `tetra`, `pyramid`, `wedge`, `hexahedron`
-(volume). Node ordering matches meshio's convention for every type **except
+(volume). Node ordering matches meshio++'s convention for every type **except
 pyramids**, which need the permutation above — this is the one place in the
 format where getting the order wrong would silently produce inverted-volume
 elements rather than an outright error, so it's specifically covered by a

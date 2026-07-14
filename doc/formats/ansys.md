@@ -13,10 +13,10 @@ sections, in ASCII, binary, or a mix of both within one file.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.msh", file_format="ansys")
-meshio.ansys.write("out.msh", mesh, binary=True)
+mesh = meshioplusplus.read("mesh.msh", file_format="ansys")
+meshioplusplus.ansys.write("out.msh", mesh, binary=True)
 ```
 
 - **`binary`** — write binary (`True`) or ASCII section bodies.
@@ -60,7 +60,7 @@ normalize correctly.
 Write emits, in order:
 
 ```
-(1 "meshio VERSION")
+(1 "meshio++ VERSION")
 (2 DIM)
 (10 (0 1 N_POINTS 0))                          -- node-count declaration
 (12 (0 1 TOTAL_CELLS 0))                       -- cell-count declaration
@@ -72,7 +72,7 @@ Write emits, in order:
 
 Volume/element-type codes (`element-type` field of a `12` section):
 
-| code | meshio type | nodes |
+| code | meshio++ type | nodes |
 |---|---|---|
 | 0 | mixed (unhandled) | — |
 | 1 | `triangle` | 3 |
@@ -85,7 +85,7 @@ Volume/element-type codes (`element-type` field of a `12` section):
 Face-type codes (`13` sections, read-only — not used on write):
 `0`=mixed, `2`=`line`(2), `3`=`triangle`(3), `4`=`quad`(4).
 
-meshio → Ansys type codes on write: `triangle:1, tetra:2, quad:3,
+meshio++ → Ansys type codes on write: `triangle:1, tetra:2, quad:3,
 hexahedron:4, pyramid:5, wedge:6` (no writer support for `mixed`/polyhedral).
 
 ## Data mapping
@@ -97,7 +97,7 @@ carries geometry and zone/boundary structure only.
 
 - All connectivity and zone-header integers are **hexadecimal**, in both
   ASCII bodies and headers — the defining quirk of this format among the
-  ones meshio supports.
+  ones meshio++ supports.
 - Binary vs. ASCII is signalled purely by an optional `"20"`/`"30"` prefix
   glued onto the section-index digits (e.g. `2010` = binary float32 nodes,
   `3012` = binary int64 cells).

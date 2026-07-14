@@ -1,5 +1,5 @@
 @echo off
-rem configure.bat - configure (and optionally build) the meshio C++ core
+rem configure.bat - configure (and optionally build) the meshio++ C++ core
 rem standalone on Windows (MSVC). Run from anywhere; the build tree is created
 rem next to this script (build\cpp-<build-type>).
 rem
@@ -63,7 +63,7 @@ set "EXTRA="
 for /f "delims=" %%P in ('"%PYTHON_EXE%" -c "import pybind11; print(pybind11.get_cmake_dir())" 2^>nul') do set "EXTRA=-Dpybind11_DIR=%%P"
 if not "%TBB_DIR%"=="" set "EXTRA=%EXTRA% -DTBB_DIR=%TBB_DIR%"
 
-echo == meshio configure ==
+echo == meshio++ configure ==
 echo   source:    %SOURCE_DIR%
 echo   build:     %BUILD_DIR%
 echo   type:      %BUILD_TYPE%
@@ -74,11 +74,11 @@ echo   python:    %PYTHON_EXE%
 echo.
 
 cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
-    -DMESHIO_PARALLEL_BACKEND=%BACKEND% ^
-    -DMESHIO_WITH_HDF5=%WITH_HDF5% ^
-    -DMESHIO_WITH_NETCDF=%WITH_NETCDF% ^
-    -DMESHIO_WITH_ZLIB=%WITH_ZLIB% ^
-    -DMESHIO_BUILD_TESTS=%TESTS% ^
+    -DMESHIOPLUSPLUS_PARALLEL_BACKEND=%BACKEND% ^
+    -DMESHIOPLUSPLUS_WITH_HDF5=%WITH_HDF5% ^
+    -DMESHIOPLUSPLUS_WITH_NETCDF=%WITH_NETCDF% ^
+    -DMESHIOPLUSPLUS_WITH_ZLIB=%WITH_ZLIB% ^
+    -DMESHIOPLUSPLUS_BUILD_TESTS=%TESTS% ^
     -DPython_EXECUTABLE="%PYTHON_EXE%" ^
     %EXTRA%
 if errorlevel 1 exit /b 1
@@ -89,7 +89,7 @@ echo   cmake --build "%BUILD_DIR%" --config %BUILD_TYPE%
 if "%TESTS%"=="ON" echo   ctest --test-dir "%BUILD_DIR%" -C %BUILD_TYPE% --output-on-failure
 echo.
 echo Python package (editable) with the same options:
-echo   set CMAKE_ARGS=-DMESHIO_PARALLEL_BACKEND=%BACKEND% -DMESHIO_WITH_HDF5=%WITH_HDF5% -DMESHIO_WITH_NETCDF=%WITH_NETCDF% -DMESHIO_WITH_ZLIB=%WITH_ZLIB%
+echo   set CMAKE_ARGS=-DMESHIOPLUSPLUS_PARALLEL_BACKEND=%BACKEND% -DMESHIOPLUSPLUS_WITH_HDF5=%WITH_HDF5% -DMESHIOPLUSPLUS_WITH_NETCDF=%WITH_NETCDF% -DMESHIOPLUSPLUS_WITH_ZLIB=%WITH_ZLIB%
 echo   pip install --no-build-isolation -e "%SOURCE_DIR%"
 
 if "%DO_BUILD%"=="yes" (

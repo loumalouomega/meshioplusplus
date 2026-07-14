@@ -1,6 +1,6 @@
-#ifdef MESHIO_HAS_HDF5
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
 
-#include "meshio/formats/med.hpp"
+#include "meshioplusplus/formats/med.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,14 +13,14 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/detail/hdf5_util.hpp"
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/log.hpp"
-#include "meshio/parallel.hpp"
-#include "meshio/types.hpp"
+#include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/types.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -458,7 +458,7 @@ void write_med(const std::string& path, const Mesh& mesh, const MedInfo& info,
         write_attr_bytes(med_mesh, "NOM", nom);
     }
     write_attr_bytes(med_mesh,
-                     "DES", info.description.empty() ? "Mesh created with meshio"
+                     "DES", info.description.empty() ? "Mesh created with meshio++"
                                                      : info.description);
     h5::write_attr_int(med_mesh, "TYP", 0);
 
@@ -551,6 +551,6 @@ void write_med(const std::string& path, const Mesh& mesh, const MedInfo& info,
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus
 
-#endif  // MESHIO_HAS_HDF5
+#endif  // MESHIOPLUSPLUS_HAS_HDF5

@@ -14,10 +14,10 @@ The [Netgen](https://github.com/ngsolve/netgen) neutral mesh format
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.vol")
-meshio.netgen.write("out.vol", mesh, float_fmt=".16e")
+mesh = meshioplusplus.read("mesh.vol")
+meshioplusplus.netgen.write("out.vol", mesh, float_fmt=".16e")
 ```
 
 - **`float_fmt`** — coordinate format.
@@ -64,8 +64,8 @@ Node-count → type, per topological dimension:
 | 2 | 3→`triangle`, 6→`triangle6`, 4→`quad`, 8→`quad8` |
 | 3 | 4→`tetra`, 5→`pyramid`, 6→`wedge`, 8→`hexahedron`, 10→`tetra10`, 13→`pyramid13`, 15→`wedge15`, 20→`hexahedron20` |
 
-Full Netgen→meshio node permutation table (meshio[i] = netgen[table[i]]);
-the meshio→Netgen direction uses the exact per-entry inverse:
+Full Netgen→meshio++ node permutation table (meshio++[i] = netgen[table[i]]);
+the meshio++→Netgen direction uses the exact per-entry inverse:
 
 | type | permutation |
 |---|---|
@@ -85,7 +85,7 @@ the meshio→Netgen direction uses the exact per-entry inverse:
 ## Data mapping
 
 - `cell_data["netgen:index"]` — the single per-cell region/material marker;
-  Netgen cannot store the field's *name*, so on write meshio prefers a
+  Netgen cannot store the field's *name*, so on write meshio++ prefers a
   `netgen:index` entry if present, else the first integer-dtype cell_data
   array found.
 - `field_data[name] = [idx, edim]` — codimension-domain names (materials,
@@ -109,7 +109,7 @@ the meshio→Netgen direction uses the exact per-entry inverse:
   `face_colours`, or `singular_*`) — any of these tokens make the C++ reader
   throw and defer to Python.
 - Only **one** integer cell-data array can be stored per file (a Netgen
-  format limitation, not a meshio choice); when reading back, it is always
+  format limitation, not a meshio++ choice); when reading back, it is always
   named `"netgen:index"` regardless of its original name.
 - The `.vol.gz` gzip container is handled entirely in Python (via
   `gzip.open`); the C++ reader/writer explicitly refuse the `.gz` suffix.

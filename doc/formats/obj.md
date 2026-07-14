@@ -14,10 +14,10 @@ geometry format: a line-oriented ASCII format with `v` (vertices), `vt`/`vn`
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("model.obj")
-meshio.obj.write("out.obj", mesh)
+mesh = meshioplusplus.read("model.obj")
+meshioplusplus.obj.write("out.obj", mesh)
 ```
 
 `write` takes no keyword arguments.

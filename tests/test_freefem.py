@@ -1,6 +1,6 @@
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -15,13 +15,18 @@ from . import helpers
 )
 def test_io(mesh, tmp_path):
     helpers.write_read(
-        tmp_path, meshio.freefem.write, meshio.freefem.read, mesh, 1.0e-12, ".msh"
+        tmp_path,
+        meshioplusplus.freefem.write,
+        meshioplusplus.freefem.read,
+        mesh,
+        1.0e-12,
+        ".msh",
     )
 
 
 def test_explicit_file_format(tmp_path):
     p = tmp_path / "test.msh"
-    meshio.freefem.write(p, helpers.tri_mesh_2d)
-    mesh = meshio.read(p, file_format="freefem")
+    meshioplusplus.freefem.write(p, helpers.tri_mesh_2d)
+    mesh = meshioplusplus.read(p, file_format="freefem")
     assert mesh.cells[0].type == "triangle"
     assert len(mesh.cells[0].data) == 2

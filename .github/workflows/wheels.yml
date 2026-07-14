@@ -29,10 +29,10 @@ jobs:
           CIBW_SKIP: "*-musllinux* *_i686 *-win32"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
           CIBW_ENVIRONMENT: >-
-            CMAKE_ARGS="-DMESHIO_WITH_HDF5=OFF -DMESHIO_WITH_NETCDF=OFF -DMESHIO_WITH_ZLIB=OFF"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
             MACOSX_DEPLOYMENT_TARGET="13.3"
           CIBW_TEST_REQUIRES: "pytest h5py"
-          CIBW_TEST_COMMAND: "python -c \"import meshio; print(meshio.__version__)\""
+          CIBW_TEST_COMMAND: "python -c \"import meshioplusplus; print(meshioplusplus.__version__)\""
 
       - uses: actions/upload-artifact@v4
         with:
@@ -58,7 +58,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi
-      url: https://pypi.org/p/meshio
+      url: https://pypi.org/p/meshioplusplus
     permissions:
       id-token: write # OIDC trusted publishing
     steps:

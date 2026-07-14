@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -23,7 +23,9 @@ from . import helpers
     ],
 )
 def test_io(mesh, tmp_path):
-    helpers.write_read(tmp_path, meshio.unv.write, meshio.unv.read, mesh, 1.0e-12)
+    helpers.write_read(
+        tmp_path, meshioplusplus.unv.write, meshioplusplus.unv.read, mesh, 1.0e-12
+    )
 
 
 def test_generic_io(tmp_path):
@@ -32,14 +34,14 @@ def test_generic_io(tmp_path):
 
 
 def test_groups(tmp_path):
-    mesh = meshio.Mesh(
+    mesh = meshioplusplus.Mesh(
         np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]),
         [("triangle", np.array([[0, 1, 2], [0, 2, 3]]))],
     )
     mesh.point_sets = {"corners": np.array([0, 2])}
     mesh.cell_sets = {"all": [np.array([0, 1])]}
     p = tmp_path / "g.unv"
-    meshio.unv.write(p, mesh)
-    out = meshio.unv.read(p)
+    meshioplusplus.unv.write(p, mesh)
+    out = meshioplusplus.unv.read(p)
     assert np.array_equal(out.point_sets["corners"], [0, 2])
     assert np.array_equal(out.cell_sets["all"][0], [0, 1])

@@ -16,10 +16,10 @@ triangle (the 4th point repeats the 1st, closing the ring).
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("surface.wkt")
-meshio.wkt.write("out.wkt", mesh)
+mesh = meshioplusplus.read("surface.wkt")
+meshioplusplus.wkt.write("out.wkt", mesh)
 ```
 
 `write` takes no keyword arguments.

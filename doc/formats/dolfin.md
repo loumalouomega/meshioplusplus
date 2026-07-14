@@ -14,10 +14,10 @@ cell-data array associated with that mesh lives in its own sibling file.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.xml")
-meshio.dolfin.write("out.xml", mesh)
+mesh = meshioplusplus.read("mesh.xml")
+meshioplusplus.dolfin.write("out.xml", mesh)
 ```
 
 Both `read(filename)` and `write(filename, mesh)` take no keyword arguments.
@@ -70,7 +70,7 @@ it's `2` if the mesh is 2D or all point z-coordinates are exactly zero
 ## Cell types
 
 `triangle` and `tetra` only — no node reordering (DOLFIN's node order matches
-meshio's).
+meshio++'s).
 
 ## Data mapping
 

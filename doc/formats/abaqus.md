@@ -14,19 +14,19 @@ format: keyword-driven ASCII (`*NODE`, `*ELEMENT`, `*NSET`, `*ELSET`,
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("model.inp")
-meshio.abaqus.write("out.inp", mesh,
+mesh = meshioplusplus.read("model.inp")
+meshioplusplus.abaqus.write("out.inp", mesh,
     float_fmt=".16e",
     translate_cell_names=True,
 )
 ```
 
 - **`float_fmt`** — coordinate format.
-- **`translate_cell_names`** — if `True` (default), meshio cell types are
+- **`translate_cell_names`** — if `True` (default), meshio++ cell types are
   mapped to an Abaqus element name via the lookup table below; if `False`,
-  the meshio type string is written verbatim as `TYPE=`.
+  the meshio++ type string is written verbatim as `TYPE=`.
 
 ## File structure
 
@@ -53,7 +53,7 @@ skipped line-by-line (not block-skipped) until the next `*` line.
 The Abaqus element-type table is large (trusses, beams, shells, solids); a
 representative excerpt:
 
-| Abaqus | meshio | Abaqus | meshio |
+| Abaqus | meshio++ | Abaqus | meshio++ |
 |---|---|---|---|
 | `T2D2`, `T3D2`, `B21`, `B31` | `line` | `C3D8`, `C3D8R`, `S4`, `CPS4` | `hexahedron`* / `quad` |
 | `T2D3`, `T3D3`, `B22`, `B32` | `line3` | `C3D20`, `C3D20R` | `hexahedron20` |
@@ -64,15 +64,15 @@ representative excerpt:
 | | | `C3D15` | `wedge15` |
 
 (*`C3D8*` → `hexahedron`, `S4`/`CPS4`/etc. → `quad`; both map to distinct
-meshio types depending on whether the card is a solid or shell element.
+meshio++ types depending on whether the card is a solid or shell element.
 **`C3D4H` maps to the type string `"tetra4"`, not `"tetra"` — this is an
 asymmetric entry relative to `C3D4`→`tetra` and doesn't round-trip through
-meshio's standard type vocabulary; noted here as a known table quirk rather
+meshio++'s standard type vocabulary; noted here as a known table quirk rather
 than a deliberate feature.)
 
-The reverse map (meshio → Abaqus) is lossy: several Abaqus names collapse to
-one meshio type, so the writer always emits whichever Abaqus name happens to
-be *last* in the internal table for that meshio type — the originating
+The reverse map (meshio++ → Abaqus) is lossy: several Abaqus names collapse to
+one meshio++ type, so the writer always emits whichever Abaqus name happens to
+be *last* in the internal table for that meshio++ type — the originating
 keyword is not preserved through a read→write round trip.
 
 ## Data mapping
@@ -85,7 +85,7 @@ keyword is not preserved through a read→write round trip.
 ## Quirks & limitations
 
 - `translate_cell_names=False` bypasses the lookup table entirely and writes
-  the meshio type string as-is; useful for pass-through of unsupported types,
+  the meshio++ type string as-is; useful for pass-through of unsupported types,
   but has no C++ equivalent (the C++ writer always looks up the table and
   throws if the type isn't found).
 - `GENERATE` sets require exactly 3 numbers (`start,end,step`) or raise

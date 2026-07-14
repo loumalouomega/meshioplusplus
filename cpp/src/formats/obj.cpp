@@ -7,11 +7,11 @@
 #include <string>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/formats/obj_off.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/obj_off.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -146,7 +146,7 @@ void write_obj(const std::string& path, const Mesh& mesh) {
     const std::size_t num_points = mesh.num_points();
     const std::size_t dim = mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
 
-    os << "# Created by meshio (C++ core)\n";
+    os << "# Created by meshio++ (C++ core)\n";
     char buf[96];
     for (std::size_t r = 0; r < num_points; ++r) {
         double x = (0 < dim) ? detail::read_double(mesh.points, r * dim + 0) : 0.0;
@@ -184,4 +184,4 @@ void write_obj(const std::string& path, const Mesh& mesh) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

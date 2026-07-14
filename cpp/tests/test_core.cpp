@@ -4,14 +4,14 @@
 
 #include <cstdint>
 
-#include "meshio/exceptions.hpp"
-#include "meshio/mesh.hpp"
-#include "meshio/ndarray.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/ndarray.hpp"
 
-using meshio::CellBlock;
-using meshio::DType;
-using meshio::Mesh;
-using meshio::NDArray;
+using meshioplusplus::CellBlock;
+using meshioplusplus::DType;
+using meshioplusplus::Mesh;
+using meshioplusplus::NDArray;
 
 TEST(NDArray, OwningConstructionAndAccess) {
     NDArray a(DType::Float64, {2, 3});
@@ -29,7 +29,7 @@ TEST(NDArray, IntegerDtypeSizes) {
     EXPECT_EQ(NDArray(DType::Int32, {4}).nbytes(), 16u);
     EXPECT_EQ(NDArray(DType::Int64, {4}).nbytes(), 32u);
     EXPECT_EQ(NDArray(DType::UInt8, {4}).nbytes(), 4u);
-    EXPECT_EQ(meshio::dtype_size(DType::Float32), 4u);
+    EXPECT_EQ(meshioplusplus::dtype_size(DType::Float32), 4u);
 }
 
 TEST(NDArray, Reshape) {
@@ -94,15 +94,15 @@ TEST(Mesh, RaggedCellBlocks) {
 
 TEST(Exceptions, ReadWriteErrorMessages) {
     try {
-        throw meshio::ReadError("boom-read");
-    } catch (const meshio::ReadError& e) {
+        throw meshioplusplus::ReadError("boom-read");
+    } catch (const meshioplusplus::ReadError& e) {
         EXPECT_STREQ(e.what(), "boom-read");
     }
     try {
-        throw meshio::WriteError("boom-write");
+        throw meshioplusplus::WriteError("boom-write");
     } catch (const std::runtime_error& e) {  // both derive from runtime_error
         EXPECT_STREQ(e.what(), "boom-write");
     }
-    EXPECT_THROW(throw meshio::ReadError("x"), meshio::ReadError);
-    EXPECT_THROW(throw meshio::WriteError("x"), meshio::WriteError);
+    EXPECT_THROW(throw meshioplusplus::ReadError("x"), meshioplusplus::ReadError);
+    EXPECT_THROW(throw meshioplusplus::WriteError("x"), meshioplusplus::WriteError);
 }

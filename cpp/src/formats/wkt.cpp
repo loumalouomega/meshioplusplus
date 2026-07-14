@@ -1,4 +1,4 @@
-#include "meshio/formats/wkt.hpp"
+#include "meshioplusplus/formats/wkt.hpp"
 
 #include <array>
 #include <cstdint>
@@ -10,10 +10,10 @@
 #include <string>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -150,4 +150,4 @@ void write_wkt(const std::string& path, const Mesh& mesh) {
     f << ")";
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.15...3.30)
 
 project(
-  meshio_core
+  meshioplusplus_core
   LANGUAGES C CXX
-  DESCRIPTION "C++ core for the meshio mesh I/O library")
+  DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -20,18 +20,18 @@ find_package(pybind11 CONFIG REQUIRED)
 # ZLIB is optional too: without it the VTU zlib compression path falls back to
 # Python (whose zlib is always available in the stdlib). This keeps Windows CI
 # and wheels buildable with no system libraries.
-option(MESHIO_WITH_ZLIB "Build the C++ VTU zlib compression path" ON)
-if(MESHIO_WITH_ZLIB)
+option(MESHIOPLUSPLUS_WITH_ZLIB "Build the C++ VTU zlib compression path" ON)
+if(MESHIOPLUSPLUS_WITH_ZLIB)
   find_package(ZLIB QUIET)
 endif()
 
 # Optional heavy dependencies. When absent, the corresponding format sources
 # compile to empty translation units (#ifdef-guarded) and the Python
 # implementations serve as the runtime fallback.
-option(MESHIO_WITH_HDF5 "Build the HDF5-backed formats (CGNS, HMF, H5M, MED, XDMF-HDF)" ON)
-option(MESHIO_WITH_NETCDF "Build the netCDF-backed formats (Exodus)" ON)
+option(MESHIOPLUSPLUS_WITH_HDF5 "Build the HDF5-backed formats (CGNS, HMF, H5M, MED, XDMF-HDF)" ON)
+option(MESHIOPLUSPLUS_WITH_NETCDF "Build the netCDF-backed formats (Exodus)" ON)
 
-if(MESHIO_WITH_HDF5)
+if(MESHIOPLUSPLUS_WITH_HDF5)
   find_package(HDF5 QUIET COMPONENTS C)
   if(NOT HDF5_FOUND)
     # Some distros ship only an MPI-flavoured HDF5 (e.g. Debian's
@@ -47,7 +47,7 @@ if(MESHIO_WITH_HDF5)
     endif()
   endif()
 endif()
-if(MESHIO_WITH_NETCDF)
+if(MESHIOPLUSPLUS_WITH_NETCDF)
   # Also look in ~/.local for a user-built netcdf-c (no-sudo installs).
   find_package(netCDF CONFIG QUIET HINTS $ENV{HOME}/.local/lib/cmake/netCDF)
   if(NOT netCDF_FOUND)
@@ -57,60 +57,60 @@ if(MESHIO_WITH_NETCDF)
 endif()
 
 # --------------------------------------------------------------------------
-# meshio_core_obj: the pybind11-free C++ core (format readers/writers + pugixml).
+# meshioplusplus_core_obj: the pybind11-free C++ core (format readers/writers + pugixml).
 # It is compiled once and shared by the Python extension (`_core`) and, when
-# MESHIO_BUILD_TESTS is on, the standalone GoogleTest binary. All include
+# MESHIOPLUSPLUS_BUILD_TESTS is on, the standalone GoogleTest binary. All include
 # dirs / feature flags / optional-library links are attached PUBLIC here so
 # both consumers inherit them.
 # --------------------------------------------------------------------------
-file(GLOB_RECURSE MESHIO_CORE_SOURCES
+file(GLOB_RECURSE MESHIOPLUSPLUS_CORE_SOURCES
     cpp/src/*.cpp
     cpp/third_party/pugixml/pugixml.cpp)
 
-add_library(meshio_core_obj OBJECT ${MESHIO_CORE_SOURCES})
-set_target_properties(meshio_core_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_features(meshio_core_obj PUBLIC cxx_std_20)
+add_library(meshioplusplus_core_obj OBJECT ${MESHIOPLUSPLUS_CORE_SOURCES})
+set_target_properties(meshioplusplus_core_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(meshioplusplus_core_obj PUBLIC cxx_std_20)
 target_include_directories(
-  meshio_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include
+  meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include
                          ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/pugixml)
 
-if(MESHIO_WITH_ZLIB AND ZLIB_FOUND)
-  message(STATUS "meshio: VTU zlib compression enabled")
-  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_HAS_ZLIB)
-  target_link_libraries(meshio_core_obj PUBLIC ZLIB::ZLIB)
+if(MESHIOPLUSPLUS_WITH_ZLIB AND ZLIB_FOUND)
+  message(STATUS "meshio++: VTU zlib compression enabled")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_ZLIB)
+  target_link_libraries(meshioplusplus_core_obj PUBLIC ZLIB::ZLIB)
 else()
-  message(STATUS "meshio: zlib not found/disabled - VTU zlib falls back to Python")
+  message(STATUS "meshio++: zlib not found/disabled - VTU zlib falls back to Python")
 endif()
 
-if(MESHIO_WITH_HDF5 AND HDF5_FOUND)
-  message(STATUS "meshio: HDF5 formats enabled (HDF5 ${HDF5_VERSION})")
-  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_HAS_HDF5)
-  target_include_directories(meshio_core_obj PUBLIC ${HDF5_INCLUDE_DIRS})
-  target_link_libraries(meshio_core_obj PUBLIC ${HDF5_C_LIBRARIES})
+if(MESHIOPLUSPLUS_WITH_HDF5 AND HDF5_FOUND)
+  message(STATUS "meshio++: HDF5 formats enabled (HDF5 ${HDF5_VERSION})")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_HDF5)
+  target_include_directories(meshioplusplus_core_obj PUBLIC ${HDF5_INCLUDE_DIRS})
+  target_link_libraries(meshioplusplus_core_obj PUBLIC ${HDF5_C_LIBRARIES})
   if(HDF5_IS_PARALLEL AND MPI_C_FOUND)
-    target_include_directories(meshio_core_obj PUBLIC ${MPI_C_INCLUDE_DIRS})
-    target_link_libraries(meshio_core_obj PUBLIC MPI::MPI_C)
+    target_include_directories(meshioplusplus_core_obj PUBLIC ${MPI_C_INCLUDE_DIRS})
+    target_link_libraries(meshioplusplus_core_obj PUBLIC MPI::MPI_C)
   endif()
 else()
-  message(STATUS "meshio: HDF5 not found/disabled - HDF5 formats fall back to Python")
+  message(STATUS "meshio++: HDF5 not found/disabled - HDF5 formats fall back to Python")
 endif()
 
-if(MESHIO_WITH_NETCDF AND (netCDF_FOUND OR NETCDF_LIBRARY))
-  message(STATUS "meshio: netCDF formats enabled")
-  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_HAS_NETCDF)
+if(MESHIOPLUSPLUS_WITH_NETCDF AND (netCDF_FOUND OR NETCDF_LIBRARY))
+  message(STATUS "meshio++: netCDF formats enabled")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_NETCDF)
   if(netCDF_FOUND)
-    target_link_libraries(meshio_core_obj PUBLIC netCDF::netcdf)
+    target_link_libraries(meshioplusplus_core_obj PUBLIC netCDF::netcdf)
   else()
-    target_include_directories(meshio_core_obj PUBLIC ${NETCDF_INCLUDE_DIR})
-    target_link_libraries(meshio_core_obj PUBLIC ${NETCDF_LIBRARY})
+    target_include_directories(meshioplusplus_core_obj PUBLIC ${NETCDF_INCLUDE_DIR})
+    target_link_libraries(meshioplusplus_core_obj PUBLIC ${NETCDF_LIBRARY})
   endif()
 else()
-  message(STATUS "meshio: netCDF not found/disabled - Exodus falls back to Python")
+  message(STATUS "meshio++: netCDF not found/disabled - Exodus falls back to Python")
 endif()
 
 # --------------------------------------------------------------------------
-# Parallel backend for meshio::parallel_for (cpp/include/meshio/parallel.hpp).
-# Selected at configure time; exactly one MESHIO_PARALLEL_* macro is defined:
+# Parallel backend for meshioplusplus::parallel_for (cpp/include/meshioplusplus/parallel.hpp).
+# Selected at configure time; exactly one MESHIOPLUSPLUS_PARALLEL_* macro is defined:
 #   SEQ    - sequential (always available)
 #   STL    - C++17 std::execution::par (default). Built into MSVC's STL; on
 #            libstdc++ it requires TBB - probed below, with an automatic
@@ -118,16 +118,16 @@ endif()
 #   OPENMP - #pragma omp parallel for (hard error if OpenMP is missing)
 #   TBB    - tbb::parallel_for        (hard error if TBB is missing)
 # Adding a new backend (Kokkos, ...) = a branch here + one #elif block in
-# cpp/include/meshio/parallel.hpp.
+# cpp/include/meshioplusplus/parallel.hpp.
 # --------------------------------------------------------------------------
-set(MESHIO_PARALLEL_BACKEND "STL" CACHE STRING
-    "Parallel backend for meshio::parallel_for: SEQ, STL, OPENMP or TBB")
-set_property(CACHE MESHIO_PARALLEL_BACKEND PROPERTY STRINGS SEQ STL OPENMP TBB)
-string(TOUPPER "${MESHIO_PARALLEL_BACKEND}" _meshio_parallel)
+set(MESHIOPLUSPLUS_PARALLEL_BACKEND "STL" CACHE STRING
+    "Parallel backend for meshioplusplus::parallel_for: SEQ, STL, OPENMP or TBB")
+set_property(CACHE MESHIOPLUSPLUS_PARALLEL_BACKEND PROPERTY STRINGS SEQ STL OPENMP TBB)
+string(TOUPPER "${MESHIOPLUSPLUS_PARALLEL_BACKEND}" _meshioplusplus_parallel)
 
-if(_meshio_parallel STREQUAL "STL")
+if(_meshioplusplus_parallel STREQUAL "STL")
   if(MSVC)
-    target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_STL)
+    target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_STL)
   else()
     find_package(TBB CONFIG QUIET)
     include(CheckCXXSourceCompiles)
@@ -144,56 +144,56 @@ if(_meshio_parallel STREQUAL "STL")
         std::for_each(std::execution::par, v.begin(), v.end(), [](int& x) { x = 1; });
         return v[0] - 1;
       }"
-      MESHIO_HAS_PSTL)
+      MESHIOPLUSPLUS_HAS_PSTL)
     unset(CMAKE_REQUIRED_LIBRARIES)
-    if(MESHIO_HAS_PSTL)
-      target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_STL)
+    if(MESHIOPLUSPLUS_HAS_PSTL)
+      target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_STL)
       if(TBB_FOUND)
-        target_link_libraries(meshio_core_obj PUBLIC TBB::tbb)
+        target_link_libraries(meshioplusplus_core_obj PUBLIC TBB::tbb)
       endif()
     else()
       message(WARNING
-        "meshio: the STL parallel backend is unusable on this toolchain "
+        "meshio++: the STL parallel backend is unusable on this toolchain "
         "(libstdc++ needs TBB installed; Apple libc++ has no parallel STL) - "
         "falling back to the sequential backend. Install TBB or configure with "
-        "-DMESHIO_PARALLEL_BACKEND=OPENMP.")
-      set(_meshio_parallel "SEQ")
-      target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_SEQ)
+        "-DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP.")
+      set(_meshioplusplus_parallel "SEQ")
+      target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_SEQ)
     endif()
   endif()
-elseif(_meshio_parallel STREQUAL "OPENMP")
+elseif(_meshioplusplus_parallel STREQUAL "OPENMP")
   find_package(OpenMP REQUIRED COMPONENTS CXX)
-  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_OPENMP)
-  target_link_libraries(meshio_core_obj PUBLIC OpenMP::OpenMP_CXX)
-elseif(_meshio_parallel STREQUAL "TBB")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_OPENMP)
+  target_link_libraries(meshioplusplus_core_obj PUBLIC OpenMP::OpenMP_CXX)
+elseif(_meshioplusplus_parallel STREQUAL "TBB")
   find_package(TBB CONFIG REQUIRED)
-  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_TBB)
-  target_link_libraries(meshio_core_obj PUBLIC TBB::tbb)
-elseif(_meshio_parallel STREQUAL "SEQ")
-  target_compile_definitions(meshio_core_obj PUBLIC MESHIO_PARALLEL_SEQ)
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_TBB)
+  target_link_libraries(meshioplusplus_core_obj PUBLIC TBB::tbb)
+elseif(_meshioplusplus_parallel STREQUAL "SEQ")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_SEQ)
 else()
   message(FATAL_ERROR
-    "meshio: unknown MESHIO_PARALLEL_BACKEND '${MESHIO_PARALLEL_BACKEND}' "
+    "meshio++: unknown MESHIOPLUSPLUS_PARALLEL_BACKEND '${MESHIOPLUSPLUS_PARALLEL_BACKEND}' "
     "(use SEQ, STL, OPENMP or TBB)")
 endif()
-message(STATUS "meshio: parallel backend: ${_meshio_parallel}")
+message(STATUS "meshio++: parallel backend: ${_meshioplusplus_parallel}")
 
 # The pybind11 extension: bindings + the shared core object library.
-file(GLOB MESHIO_BINDING_SOURCES bindings/*.cpp)
-pybind11_add_module(_core ${MESHIO_BINDING_SOURCES})
+file(GLOB MESHIOPLUSPLUS_BINDING_SOURCES bindings/*.cpp)
+pybind11_add_module(_core ${MESHIOPLUSPLUS_BINDING_SOURCES})
 target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings)
-target_link_libraries(_core PRIVATE meshio_core_obj)
+target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
 
 # Land the extension next to the pure-Python package inside the wheel.
-install(TARGETS _core DESTINATION meshio)
+install(TARGETS _core DESTINATION meshioplusplus)
 
 # --------------------------------------------------------------------------
 # Optional standalone C++ tests (GoogleTest via CTest). OFF by default so that
 # `pip install .` / cibuildwheel never build them. Enable with
 # `-DMESHIO_BUILD_TESTS=ON` for a direct CMake configure.
 # --------------------------------------------------------------------------
-option(MESHIO_BUILD_TESTS "Build the C++ GoogleTest suite" OFF)
-if(MESHIO_BUILD_TESTS)
+option(MESHIOPLUSPLUS_BUILD_TESTS "Build the C++ GoogleTest suite" OFF)
+if(MESHIOPLUSPLUS_BUILD_TESTS)
   include(CTest)
   include(FetchContent)
   FetchContent_Declare(
@@ -203,11 +203,11 @@ if(MESHIO_BUILD_TESTS)
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
 
-  file(GLOB MESHIO_TEST_SOURCES cpp/tests/*.cpp)
-  add_executable(meshio_tests ${MESHIO_TEST_SOURCES})
-  target_include_directories(meshio_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests)
-  target_link_libraries(meshio_tests PRIVATE meshio_core_obj GTest::gtest_main)
+  file(GLOB MESHIOPLUSPLUS_TEST_SOURCES cpp/tests/*.cpp)
+  add_executable(meshioplusplus_tests ${MESHIOPLUSPLUS_TEST_SOURCES})
+  target_include_directories(meshioplusplus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests)
+  target_link_libraries(meshioplusplus_tests PRIVATE meshioplusplus_core_obj GTest::gtest_main)
 
   include(GoogleTest)
-  gtest_discover_tests(meshio_tests)
+  gtest_discover_tests(meshioplusplus_tests)
 endif()

@@ -15,14 +15,14 @@ repeats its own vertex coordinates.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("part.stl")
-meshio.stl.write("out.stl", mesh, binary=False)
+mesh = meshioplusplus.read("part.stl")
+meshioplusplus.stl.write("out.stl", mesh, binary=False)
 ```
 
 - **`binary`** — binary (`True`) or ASCII (`False`, the default — unlike
-  most binary-capable formats in meshio, which default to `True`).
+  most binary-capable formats in meshio++, which default to `True`).
 
 ## File structure
 

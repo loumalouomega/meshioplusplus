@@ -1,4 +1,4 @@
-#include "meshio/formats/flux.hpp"
+#include "meshioplusplus/formats/flux.hpp"
 
 #include <array>
 #include <cstdint>
@@ -9,11 +9,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/types.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/types.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -171,7 +171,7 @@ void write_flux(const std::string& path, const Mesh& mesh) {
     auto ref_it = mesh.cell_data.find("pf3:ref");
 
     char buf[128];
-    f << " File converted with meshio (C++ core)\n";
+    f << " File converted with meshio++ (C++ core)\n";
     auto hdr = [&](long long v, const char* label) {
         std::snprintf(buf, sizeof(buf), "%8lld           %s\n", v, label);
         f << buf;
@@ -232,4 +232,4 @@ void write_flux(const std::string& path, const Mesh& mesh) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from meshio.openfoam._openfoam import (
+from meshioplusplus.openfoam._openfoam import (
     _build_boundary_cells,
     _build_boundary_polygons,
     _build_hexahedron,
@@ -706,7 +706,7 @@ class TestBuildVolumeCells:
         cells = _build_volume_cells(
             1, faces, np.array(owner), np.array(neighbour, dtype=int), points
         )
-        from meshio._mesh import CellBlock
+        from meshioplusplus._mesh import CellBlock
 
         assert all(isinstance(cb, CellBlock) for cb in cells)
 
@@ -1019,10 +1019,10 @@ class TestReadFull:
 
 
 class TestPublicAPI:
-    """The format must be reachable through the public ``meshio.read`` entry
-    point. This is checked in a clean subprocess (only ``import meshio``) so it
-    exercises the package __init__ registration, not the direct
-    ``meshio.openfoam._openfoam`` import used elsewhere in this file.
+    """The format must be reachable through the public ``meshioplusplus.read`` entry
+    point. This is checked in a clean subprocess (only ``import meshioplusplus``) so
+    it exercises the package __init__ registration, not the direct
+    ``meshioplusplus.openfoam._openfoam`` import used elsewhere in this file.
     """
 
     def test_meshio_read_foam(self, case_dir):
@@ -1031,8 +1031,8 @@ class TestPublicAPI:
 
         foam = case_dir / "case.foam"
         code = (
-            "import meshio;"
-            f"m = meshio.read(r'{foam}');"
+            "import meshioplusplus;"
+            f"m = meshioplusplus.read(r'{foam}');"
             "assert len(m.points) == 8, m.points.shape;"
             "assert any(cb.type == 'hexahedron' for cb in m.cells)"
         )
@@ -1043,13 +1043,13 @@ class TestPublicAPI:
         )
         assert (
             result.returncode == 0
-        ), f"meshio.read('*.foam') failed via public API:\n{result.stderr}"
+        ), f"meshioplusplus.read('*.foam') failed via public API:\n{result.stderr}"
 
     def test_openfoam_read_exposed(self):
-        """meshio.openfoam.read must exist (package __init__ ran)."""
-        import meshio
+        """meshioplusplus.openfoam.read must exist (package __init__ ran)."""
+        import meshioplusplus
 
-        assert hasattr(meshio.openfoam, "read")
+        assert hasattr(meshioplusplus.openfoam, "read")
 
 
 class TestReadTwoCellMesh:

@@ -2,7 +2,7 @@
 
 The [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data)
 model-part data format: block-structured ASCII (`Begin ... / End ...`). This
-is the largest and most feature-rich format meshio supports — it has no C++
+is the largest and most feature-rich format meshio++ supports — it has no C++
 implementation.
 
 | | |
@@ -15,10 +15,10 @@ implementation.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("model.mdpa")
-meshio.mdpa.write("out.mdpa", mesh, float_fmt=".16e", binary=False)
+mesh = meshioplusplus.read("model.mdpa")
+meshioplusplus.mdpa.write("out.mdpa", mesh, float_fmt=".16e", binary=False)
 ```
 
 - **`float_fmt`** — coordinate format.
@@ -78,7 +78,7 @@ maps, SubModelPart hierarchy, alternate-mesh data) accumulates in
 The Kratos type tables (Geometries/Elements/Conditions) are large; a
 representative slice:
 
-| Kratos | meshio | Kratos | meshio |
+| Kratos | meshio++ | Kratos | meshio++ |
 |---|---|---|---|
 | `Line2D2`, `Element3D2N` | `line` | `Tetrahedra3D4`, `Element3D4N` | `tetra` |
 | `Line2D3`, `LineElement3D3N` | `line3` | `Tetrahedra3D10` | `tetra10` |
@@ -100,13 +100,13 @@ hex27 kratos order: [0,1,2,3,4,5,6,7,8,11,10,9,16,19,18,17,12,15,14,13,
                       20,23,21,24,22,25,26]
 ```
 
-All other cell types are assumed to already share meshio's VTK-style
+All other cell types are assumed to already share meshio++'s VTK-style
 ordering (no permutation applied).
 
 ## Data mapping
 
 MDPA has an unusually rich set of data keys, several structured differently
-from every other format meshio supports:
+from every other format meshio++ supports:
 
 - `field_data[key]` — `ModelPartData` scalars.
 - `field_data[f"table_{id}"]` — `{"variables": [...], "data": ndarray}`.
@@ -116,7 +116,7 @@ from every other format meshio supports:
   `DISPLACEMENT` as an `(n,3)` array from a `DISPLACEMENT[3]` header).
 - `point_data[f"{VAR}_fixed_status"]` — sentinel `-1`/`0`/`1`.
 - **`cell_data[<meshio_type>]["gmsh:physical"]`/`["gmsh:geometrical"]`/`[VAR]`**
-  — unlike every other meshio format, MDPA's cell_data is nested **by cell
+  — unlike every other meshio++ format, MDPA's cell_data is nested **by cell
   type name** as an inner dict (`{cell_type: {var: array}}`), not the usual
   flat `{var: [array_per_block]}` convention.
 - `mesh.misc_data` — non-standard attribute: `reader_element_ids_info`,
@@ -128,7 +128,7 @@ from every other format meshio supports:
 ## Quirks & limitations
 
 - The `cell_data` nested-by-type structure (`{cell_type: {var: array}}`) is
-  a genuine structural departure from meshio's usual flat convention — code
+  a genuine structural departure from meshio++'s usual flat convention — code
   consuming MDPA-read meshes needs to account for this specifically.
 - The h20/h27 permutation tables are applied **directly** on write (not
   their inverse) and via **argsort** on read — this is intentional and

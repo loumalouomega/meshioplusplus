@@ -16,9 +16,9 @@ There is no reader — `register_format` is called with `read=None`. Full
 write signature:
 
 ```python
-import meshio
+import meshioplusplus
 
-meshio.svg.write(
+meshioplusplus.svg.write(
     "out.svg", mesh,
     float_fmt=".3f",
     stroke_width=None,
@@ -42,7 +42,7 @@ meshio.svg.write(
 A single `<svg>` root containing one `<path>` element per drawable cell
 (**not** `<polygon>`) — chosen deliberately: the comment in the source notes
 that `svgo` (a common SVG optimizer) converts `<polygon>`s to `<path>`s but
-drops style information when it does so, so meshio emits paths directly to
+drops style information when it does so, so meshio++ emits paths directly to
 sidestep that.
 
 Path `d` templates (space-separated coordinate pairs, `float_fmt`-formatted):
@@ -61,7 +61,7 @@ SVG's screen convention (y-down).
 ## Cell types
 
 `line`, `triangle`, `quad` only. Any other cell block present in the mesh is
-**silently dropped — no warning at all** (unlike most other meshio writers'
+**silently dropped — no warning at all** (unlike most other meshio++ writers'
 warn-and-skip convention for unsupported cell types).
 
 ## Data mapping

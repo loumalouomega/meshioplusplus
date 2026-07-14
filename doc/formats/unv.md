@@ -15,10 +15,10 @@ containing only `-1`, followed by a dataset-id line and the dataset's records.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.unv")          # or meshio.unv.read("mesh.unv")
-meshio.unv.write("out.unv", mesh)
+mesh = meshioplusplus.read("mesh.unv")          # or meshioplusplus.unv.read("mesh.unv")
+meshioplusplus.unv.write("out.unv", mesh)
 ```
 
 Both `read`/`write` take no keyword arguments.
@@ -59,7 +59,7 @@ Record 1 is 6 integers: `label fedesc pid ... ... num_nodes` (fields 0, 1, 2,
 5 are used; fields 3-4 are ignored). If `fedesc` is one of the four beam
 descriptors (`11, 21, 22, 24`), an extra 3-integer orientation record follows
 immediately and is **discarded on read, always rewritten as `0 0 0` on
-write** — beam orientation data does not round-trip through meshio.
+write** — beam orientation data does not round-trip through meshioplusplus.
 Node-label records follow, gathered (possibly across several lines) until
 `num_nodes` labels have been collected.
 
@@ -76,7 +76,7 @@ the group name. Then `4*n` integers follow, laid out as `(entity_type, tag, 0,
 The **FE descriptor id** (record-1 field 1 of a 2412 dataset) selects the
 element type:
 
-| descriptor(s) | meshio type | descriptor(s) | meshio type |
+| descriptor(s) | meshio++ type | descriptor(s) | meshio++ type |
 |---|---|---|---|
 | 11, 21 | `line` | 111 | `tetra` |
 | 22, 24 | `line3` | 118 | `tetra10` |
@@ -85,14 +85,14 @@ element type:
 | 44, 84, 94, 122 | `quad` | 116 | `hexahedron20` |
 | 45, 85, 95 | `quad8` | | |
 
-On write, one canonical descriptor is chosen per meshio type: `line→21`
+On write, one canonical descriptor is chosen per meshio++ type: `line→21`
 (beam), `line3→24` (beam), `triangle→91`, `triangle6→92`, `quad→94`,
 `quad8→95`, `tetra→111`, `tetra10→118`, `wedge→112`, `hexahedron→115`,
 `hexahedron20→116`.
 
 Parabolic (second-order) elements use the **Salome/Code-Aster mid-node
 "sandwich" ordering** — corner, mid-node, corner, mid-node, … — which differs
-from meshio's "all corners, then all edge nodes" convention. The full
+from meshio++'s "all corners, then all edge nodes" convention. The full
 permutation table (`meshio_position[i] = unv_position[table[i]]` on read;
 inverse applied on write) is:
 
@@ -116,7 +116,7 @@ inverse applied on write) is:
 - Beam-type orientation data (the extra record after beam elements) is read
   and discarded; the writer always emits a placeholder `0 0 0` record — this
   is a genuinely lossy round-trip for beam-oriented meshes.
-- Node/element labels need not be contiguous or 1-based; meshio maintains
+- Node/element labels need not be contiguous or 1-based; meshio++ maintains
   explicit label→index maps throughout so groups referencing raw labels
   resolve correctly regardless of numbering gaps.
 - The C++ reader fully implements datasets **2411 and 2412** (nodes,

@@ -1,27 +1,34 @@
+<!-- TODO: this banner still shows the original meshio wordmark, hosted on the
+     old GH Pages site (which will 404 once the repo is renamed/moved). There
+     is no meshio++ wordmark asset in this repo yet (logo/logo.py only
+     generates the icon, and needs pygmsh/optimesh which aren't installed
+     here) -- design and host a replacement before an official release. -->
 <p align="center">
-  <a href="https://github.com/nschloe/meshio"><img alt="meshio" src="https://nschloe.github.io/meshio/logo-with-text.svg" width="60%"></a>
+  <a href="https://github.com/<org>/meshioplusplus"><img alt="meshio++" src="https://nschloe.github.io/meshio/logo-with-text.svg" width="60%"></a>
   <p align="center">I/O for mesh files.</p>
 </p>
 
-[![PyPi Version](https://img.shields.io/pypi/v/meshio.svg?style=flat-square)](https://pypi.org/project/meshio/)
-[![Anaconda Cloud](https://anaconda.org/conda-forge/meshio/badges/version.svg?=style=flat-square)](https://anaconda.org/conda-forge/meshio/)
-[![Packaging status](https://repology.org/badge/tiny-repos/python:meshio.svg)](https://repology.org/project/python:meshio/versions)
-[![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshio.svg?style=flat-square)](https://pypi.org/project/meshio/)
+[![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
+[![Anaconda Cloud](https://anaconda.org/conda-forge/meshioplusplus/badges/version.svg?=style=flat-square)](https://anaconda.org/conda-forge/meshioplusplus/)
+[![Packaging status](https://repology.org/badge/tiny-repos/python:meshioplusplus.svg)](https://repology.org/project/python:meshioplusplus/versions)
+[![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.1173115.svg?style=flat-square)](https://doi.org/10.5281/zenodo.1173115)
-[![GitHub stars](https://img.shields.io/github/stars/nschloe/meshio.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/nschloe/meshio)
-[![Downloads](https://pepy.tech/badge/meshio/month?style=flat-square)](https://pepy.tech/project/meshio)
+<!-- TODO: mint a new Zenodo DOI for meshio++ before an official release; the
+     badge above still points at the original meshio project's record. -->
+[![GitHub stars](https://img.shields.io/github/stars/<org>/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/<org>/meshioplusplus)
+[![Downloads](https://pepy.tech/badge/meshioplusplus/month?style=flat-square)](https://pepy.tech/project/meshioplusplus)
 
-<!--[![PyPi downloads](https://img.shields.io/pypi/dm/meshio.svg?style=flat-square)](https://pypistats.org/packages/meshio)-->
+<!--[![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)-->
 
 [![Discord](https://img.shields.io/static/v1?logo=discord&logoColor=white&label=chat&message=on%20discord&color=7289da&style=flat-square)](https://discord.gg/Z6DMsJh4Hr)
 
-[![gh-actions](https://img.shields.io/github/workflow/status/nschloe/meshio/ci?style=flat-square)](https://github.com/nschloe/meshio/actions?query=workflow%3Aci)
-[![codecov](https://img.shields.io/codecov/c/github/nschloe/meshio.svg?style=flat-square)](https://app.codecov.io/gh/nschloe/meshio)
-[![LGTM](https://img.shields.io/lgtm/grade/python/github/nschloe/meshio.svg?style=flat-square)](https://lgtm.com/projects/g/nschloe/meshio)
+[![gh-actions](https://img.shields.io/github/workflow/status/<org>/meshioplusplus/ci?style=flat-square)](https://github.com/<org>/meshioplusplus/actions?query=workflow%3Aci)
+[![codecov](https://img.shields.io/codecov/c/github/<org>/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/<org>/meshioplusplus)
+[![LGTM](https://img.shields.io/lgtm/grade/python/github/<org>/meshioplusplus.svg?style=flat-square)](https://lgtm.com/projects/g/<org>/meshioplusplus)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black)
 
 There are various mesh formats available for representing unstructured meshes.
-meshio can read and write all of the following and smoothly converts between them:
+meshio++ can read and write all of the following and smoothly converts between them:
 
 > [Abaqus](http://abaqus.software.polimi.it/v6.14/index.html) (`.inp`),
 > ANSYS msh (`.msh`),
@@ -63,38 +70,38 @@ meshio can read and write all of the following and smoothly converts between the
 ([Here's a little survey](https://forms.gle/PSeNb3N3gv3wbEus8) on which formats are actually
 used.)
 
-meshio ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and
+meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and
 writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF
 acceleration and a **selectable parallel backend** (STL parallel algorithms by default;
-OpenMP or TBB via `-DMESHIO_PARALLEL_BACKEND=...`). Every format has a pure-Python
+OpenMP or TBB via `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`). Every format has a pure-Python
 fallback, so behaviour and file compatibility are identical whether or not the native
 libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS)
 or `build/configure.bat` (Windows). Full docs (install, data model, per-format options,
 CLI) live at
-[the documentation site](https://nschloe.github.io/meshio/) (sources under [`doc/`](doc/)).
+[the documentation site](https://<org>.github.io/meshioplusplus/) (sources under [`doc/`](doc/)).
 
 Install with one of
 
 ```
-pip install meshio[all]
-conda install -c conda-forge meshio
+pip install meshioplusplus[all]
+conda install -c conda-forge meshioplusplus
 ```
 
-(`[all]` pulls in all optional dependencies. By default, meshio only uses numpy.)
+(`[all]` pulls in all optional dependencies. By default, meshio++ only uses numpy.)
 You can then use the command-line tool
 
 <!--pytest-codeblocks:skip-->
 
 ```sh
-meshio convert    input.msh output.vtk   # convert between two formats
+meshioplusplus convert    input.msh output.vtk   # convert between two formats
 
-meshio info       input.xdmf             # show some info about the mesh
+meshioplusplus info       input.xdmf             # show some info about the mesh
 
-meshio compress   input.vtu              # compress the mesh file
-meshio decompress input.vtu              # decompress the mesh file
+meshioplusplus compress   input.vtu              # compress the mesh file
+meshioplusplus decompress input.vtu              # decompress the mesh file
 
-meshio binary     input.msh              # convert to binary format
-meshio ascii      input.msh              # convert to ASCII format
+meshioplusplus binary     input.msh              # convert to binary format
+meshioplusplus ascii      input.msh              # convert to ASCII format
 ```
 
 with any of the supported formats.
@@ -104,12 +111,12 @@ In Python, simply do
 <!--pytest-codeblocks:skip-->
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read(
+mesh = meshioplusplus.read(
     filename,  # string, os.PathLike, or a buffer/open file
     # file_format="stl",  # optional if filename is a path; inferred from extension
-    # see meshio-convert -h for all possible formats
+    # see meshioplusplus convert --help for all possible formats
 )
 # mesh.points, mesh.cells, mesh.cells_dict, ...
 
@@ -119,7 +126,7 @@ mesh = meshio.read(
 to read a mesh. To write, do
 
 ```python
-import meshio
+import meshioplusplus
 
 # two triangles and one quad
 points = [
@@ -135,7 +142,7 @@ cells = [
     ("quad", [[1, 4, 5, 3]]),
 ]
 
-mesh = meshio.Mesh(
+mesh = meshioplusplus.Mesh(
     points,
     cells,
     # Optionally provide extra data on points, cells, etc.
@@ -149,7 +156,7 @@ mesh.write(
 )
 
 # Alternative with the same options
-meshio.write_points_cells("foo.vtk", points, cells)
+meshioplusplus.write_points_cells("foo.vtk", points, cells)
 ```
 
 For both input and output, you can optionally specify the exact `file_format`
@@ -158,13 +165,13 @@ For both input and output, you can optionally specify the exact `file_format`
 #### Time series
 
 The [XDMF format](https://xdmf.org/index.php/XDMF_Model_and_Format) supports
-time series with a shared mesh. You can write times series data using meshio
+time series with a shared mesh. You can write times series data using meshio++
 with
 
 <!--pytest-codeblocks:skip-->
 
 ```python
-with meshio.xdmf.TimeSeriesWriter(filename) as writer:
+with meshioplusplus.xdmf.TimeSeriesWriter(filename) as writer:
     writer.write_points_cells(points, cells)
     for t in [0.0, 0.1, 0.21]:
         writer.write_data(t, point_data={"phi": data})
@@ -175,7 +182,7 @@ and read it with
 <!--pytest-codeblocks:skip-->
 
 ```python
-with meshio.xdmf.TimeSeriesReader(filename) as reader:
+with meshioplusplus.xdmf.TimeSeriesReader(filename) as reader:
     points, cells = reader.read_points_cells()
     for k in range(reader.num_steps):
         t, point_data, cell_data = reader.read_data(k)
@@ -188,15 +195,20 @@ with meshio.xdmf.TimeSeriesReader(filename) as reader:
 
 If you have downloaded a binary version of ParaView, you may proceed as follows.
 
-- Install meshio for the Python major version that ParaView uses (check `pvpython --version`)
+- Install meshio++ for the Python major version that ParaView uses (check `pvpython --version`)
 - Open ParaView
-- Find the file `paraview-meshio-plugin.py` of your meshio installation (on Linux:
+- Find the file `paraview-meshioplusplus-plugin.py` of your meshio++ installation (on Linux:
   `~/.local/share/paraview-5.9/plugins/`) and load it under _Tools / Manage Plugins / Load New_
 - _Optional:_ Activate _Auto Load_
 
-You can now open all meshio-supported files in ParaView.
+You can now open all meshio++-supported files in ParaView.
 
 ### Performance comparison
+
+<!-- TODO: like the logo banner above, these images (and the ParaView screenshot
+     above) are still hosted on the original meshio project's GH Pages site,
+     which will 404 once this repo moves — rehost under the new project once
+     doc.yml deploys under the new org/repo. -->
 
 The comparisons here are for a triangular mesh with about 900k points and 1.8M
 triangles. The red lines mark the size of the mesh in memory.
@@ -215,11 +227,11 @@ triangles. The red lines mark the size of the mesh in memory.
 
 ### Installation
 
-meshio is [available from the Python Package Index](https://pypi.org/project/meshio/),
+meshio++ is [available from the Python Package Index](https://pypi.org/project/meshioplusplus/),
 so simply run
 
 ```
-pip install meshio
+pip install meshioplusplus
 ```
 
 to install.
@@ -228,18 +240,18 @@ Additional dependencies (`netcdf4`, `h5py`) are required for some of the output 
 and can be pulled in by
 
 ```
-pip install meshio[all]
+pip install meshioplusplus[all]
 ```
 
-You can also install meshio from [Anaconda](https://anaconda.org/conda-forge/meshio):
+You can also install meshio++ from [Anaconda](https://anaconda.org/conda-forge/meshioplusplus):
 
 ```
-conda install -c conda-forge meshio
+conda install -c conda-forge meshioplusplus
 ```
 
 ### Testing
 
-To run the meshio unit tests, check out this repository and type
+To run the meshio++ unit tests, check out this repository and type
 
 ```
 tox
@@ -247,4 +259,4 @@ tox
 
 ### License
 
-meshio is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_License).
+meshio++ is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_License).

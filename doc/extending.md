@@ -1,21 +1,21 @@
-# Extending meshio
+# Extending meshio++
 
 ## Registering a custom format at runtime
 
-Use `meshio.register_format` to add a format from outside the meshio package — for example, in application code or a third-party plugin.
+Use `meshioplusplus.register_format` to add a format from outside the meshio++ package — for example, in application code or a third-party plugin.
 
 ```python
-import meshio
+import meshioplusplus
 
 def my_read(filename):
-    # parse the file and return a meshio.Mesh
+    # parse the file and return a meshioplusplus.Mesh
     ...
 
 def my_write(filename, mesh, **kwargs):
     # serialize mesh to the file
     ...
 
-meshio.register_format(
+meshioplusplus.register_format(
     "myformat",               # format name used in file_format=
     [".myfmt"],               # file extensions (lowercase, with leading dot)
     my_read,                  # reader function, or None if write-only
@@ -23,12 +23,12 @@ meshio.register_format(
 )
 ```
 
-After calling `register_format`, the format is immediately available through `meshio.read`, `meshio.write`, and the CLI.
+After calling `register_format`, the format is immediately available through `meshioplusplus.read`, `meshioplusplus.write`, and the CLI.
 
 A format can expose multiple writer variants under different names:
 
 ```python
-meshio.register_format(
+meshioplusplus.register_format(
     "myformat",
     [".myfmt"],
     my_read,
@@ -42,7 +42,7 @@ meshio.register_format(
 ## Deregistering a format
 
 ```python
-meshio.deregister_format("myformat")
+meshioplusplus.deregister_format("myformat")
 ```
 
 This removes the format from all internal maps. Useful for overriding a built-in format or in tests.
@@ -51,11 +51,11 @@ This removes the format from all internal maps. Useful for overriding a built-in
 
 ## Adding a new built-in format
 
-Follow the existing module layout under `src/meshio/`:
+Follow the existing module layout under `src/meshioplusplus/`:
 
-1. **Create the module directory** `src/meshio/<format>/` with an `__init__.py` that exports `read` and `write`.
+1. **Create the module directory** `src/meshioplusplus/<format>/` with an `__init__.py` that exports `read` and `write`.
 
-2. **Implement `read(filename)`** — return a `meshio.Mesh`.
+2. **Implement `read(filename)`** — return a `meshioplusplus.Mesh`.
 
 3. **Implement `write(filename, mesh, **kwargs)`** — serialize the mesh.
 
@@ -68,18 +68,18 @@ Follow the existing module layout under `src/meshio/`:
    register_format("myformat", [".myfmt"], read, {"myformat": write})
    ```
 
-6. **Import the module in `src/meshio/__init__.py`** — add it to both the import list and `__all__`.
+6. **Import the module in `src/meshioplusplus/__init__.py`** — add it to both the import list and `__all__`.
 
 7. **Add `tests/test_<format>.py`** using `helpers.write_read`:
 
    ```python
    import pytest
-   import meshio
+   import meshioplusplus
    from . import helpers
 
    @pytest.mark.parametrize("mesh", [helpers.tri_mesh, helpers.tet_mesh])
    def test_myformat(mesh, tmp_path):
-       helpers.write_read(tmp_path, meshio.myformat.write, meshio.myformat.read, mesh, atol=1e-15)
+       helpers.write_read(tmp_path, meshioplusplus.myformat.write, meshioplusplus.myformat.read, mesh, atol=1e-15)
    ```
 
 ---
@@ -87,10 +87,10 @@ Follow the existing module layout under `src/meshio/`:
 ## Reader and writer function signatures
 
 ```python
-def read(filename: str) -> meshio.Mesh:
+def read(filename: str) -> meshioplusplus.Mesh:
     ...
 
-def write(filename: str, mesh: meshio.Mesh, **kwargs) -> None:
+def write(filename: str, mesh: meshioplusplus.Mesh, **kwargs) -> None:
     ...
 ```
 
@@ -98,10 +98,10 @@ Readers should return writeable numpy arrays (set `flags["WRITEABLE"] = True` if
 
 ## Buffers
 
-If your format can operate on open file buffers (not just paths), both `read` and `write` can accept buffer objects. Use `meshio._files.is_buffer(obj, mode)` to detect them:
+If your format can operate on open file buffers (not just paths), both `read` and `write` can accept buffer objects. Use `meshioplusplus._files.is_buffer(obj, mode)` to detect them:
 
 ```python
-from meshio._files import is_buffer
+from meshioplusplus._files import is_buffer
 
 def read(filename):
     if is_buffer(filename, "r"):

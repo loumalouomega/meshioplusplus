@@ -13,10 +13,10 @@ format, stored in HDF5 under a `tstt` root group.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.h5m")
-meshio.h5m.write("out.h5m", mesh,
+mesh = meshioplusplus.read("mesh.h5m")
+meshioplusplus.h5m.write("out.h5m", mesh,
     add_global_ids=True,
     compression="gzip",
     compression_opts=4,
@@ -50,9 +50,9 @@ replicates this exactly via `H5Tarray_create2`.
 
 ## Cell types
 
-Read table (`H5M type` → meshio type):
+Read table (`H5M type` → meshio++ type):
 
-| H5M | meshio | H5M | meshio |
+| H5M | meshio++ | H5M | meshio++ |
 |---|---|---|---|
 | `Edge2` | `line` | `Pyramid5` | `pyramid` |
 | `Tri3` | `triangle` | `Quad4` | `quad` |
@@ -82,7 +82,7 @@ Polyhedron=10`.
 - The reference Python writer's cell-data code path has a **pre-existing
   bug**: it iterates `mesh.cell_data.items()` while treating the last
   `elements` sub-group from a prior loop as if it applied to every cell
-  type — effectively dead/incorrect code for meshio's actual `cell_data`
+  type — effectively dead/incorrect code for meshio++'s actual `cell_data`
   schema. **The C++ writer deliberately does not attempt to replicate this
   bug** — it simply never writes cell data. The shim additionally only
   attempts the C++ write path when `mesh.cell_data` is empty, so any

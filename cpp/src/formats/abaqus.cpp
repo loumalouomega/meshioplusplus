@@ -1,4 +1,4 @@
-#include "meshio/formats/abaqus.hpp"
+#include "meshioplusplus/formats/abaqus.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -10,12 +10,12 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
-#include "meshio/parallel.hpp"
-#include "meshio/types.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/types.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -193,7 +193,7 @@ void write_abaqus(const std::string& path, const Mesh& mesh) {
 
     os << "*HEADING\n";
     os << "Abaqus DataFile Version 6.14\n";
-    os << "written by meshio (C++ core)\n";
+    os << "written by meshio++ (C++ core)\n";
     os << "*NODE\n";
     {
         // Format node rows in parallel (snprintf per row, bytes unchanged),
@@ -230,4 +230,4 @@ void write_abaqus(const std::string& path, const Mesh& mesh) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

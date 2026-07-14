@@ -14,10 +14,10 @@ with typed properties, followed by ASCII or (little/big-endian) binary data.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("bunny.ply")
-meshio.ply.write("out.ply", mesh, binary=True)
+mesh = meshioplusplus.read("bunny.ply")
+meshioplusplus.ply.write("out.ply", mesh, binary=True)
 ```
 
 - **`binary`** — binary (`True`, the default) or ASCII.

@@ -1,4 +1,4 @@
-#include "meshio/formats/mfm.hpp"
+#include "meshioplusplus/formats/mfm.hpp"
 
 #include <array>
 #include <cstdint>
@@ -10,10 +10,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -165,4 +165,4 @@ void write_mfm(const std::string& path, const Mesh& mesh, const std::string& flo
     for (std::size_t i = 0; i < nel; ++i) f << nsd[i] << "\n";
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

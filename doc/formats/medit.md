@@ -15,10 +15,10 @@ sections in ASCII (`.mesh`) or a binary, position-indexed record stream
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.mesh")
-meshio.medit.write("out.mesh", mesh, float_fmt=".16e")
+mesh = meshioplusplus.read("mesh.mesh")
+meshioplusplus.medit.write("out.mesh", mesh, float_fmt=".16e")
 ```
 
 - **`float_fmt`** (default `".16e"`) — coordinate format for the ASCII writer
@@ -63,7 +63,7 @@ position field widths: v1 → 4-byte int, 4-byte float; v2 → 4-byte int,
 int, 8-byte float, 8-byte positions. The rest of the file is a sequence of
 `(keyword_code, [position], [count], payload)` records, each keyed by a
 numeric GMF field code (from a large internal table of ~200 known libMeshb
-field codes — only a handful are meaningful to meshio: `GmfVertices` (4),
+field codes — only a handful are meaningful to meshio++: `GmfVertices` (4),
 `GmfEdges` (5), `GmfTriangles` (6), `GmfQuadrilaterals` (7),
 `GmfTetrahedra` (8), `GmfPrisms` (9), `GmfPyramids` (49), plus
 `GmfMeshVersionFormatted` (1), `GmfDimension` (3) and `GmfEnd` (54)).
@@ -71,7 +71,7 @@ Records with any other code are skipped with a warning.
 
 ## Cell types
 
-| keyword | meshio type | nodes |
+| keyword | meshio++ type | nodes |
 |---|---|---|
 | `Edges` | `line` | 2 |
 | `Triangles` | `triangle` | 3 |

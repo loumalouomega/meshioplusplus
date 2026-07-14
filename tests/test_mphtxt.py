@@ -1,6 +1,6 @@
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -21,7 +21,9 @@ from . import helpers
     ],
 )
 def test_io(mesh, tmp_path):
-    helpers.write_read(tmp_path, meshio.mphtxt.write, meshio.mphtxt.read, mesh, 1.0e-12)
+    helpers.write_read(
+        tmp_path, meshioplusplus.mphtxt.write, meshioplusplus.mphtxt.read, mesh, 1.0e-12
+    )
 
 
 def test_generic_io(tmp_path):

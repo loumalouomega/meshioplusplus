@@ -1,4 +1,4 @@
-#include "meshio/formats/tetgen.hpp"
+#include "meshioplusplus/formats/tetgen.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -13,10 +13,10 @@
 #include <utility>
 #include <vector>
 
-#include "meshio/detail/value_io.hpp"
-#include "meshio/exceptions.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
-namespace meshio {
+namespace meshioplusplus {
 
 namespace {
 
@@ -192,7 +192,7 @@ void write_tetgen(const std::string& path, const Mesh& mesh) {
         if (!fh) throw WriteError("Could not open file for writing: " + node_path);
 
         // Split point_data into one ref key and the remaining attribute keys,
-        // mirroring meshio.tetgen.write.
+        // mirroring meshioplusplus.tetgen.write.
         std::vector<std::string> attr_keys;
         for (const auto& kv : mesh.point_data) attr_keys.push_back(kv.first);
         std::vector<std::string> ref_keys;
@@ -214,7 +214,7 @@ void write_tetgen(const std::string& path, const Mesh& mesh) {
         const std::size_t nattr = attr_keys.size();
         const std::size_t nref = ref_keys.size();
 
-        fh << "# This file was created by meshio (C++ core)\n";
+        fh << "# This file was created by meshio++ (C++ core)\n";
         if (nattr + nref > 0) {
             fh << "# attribute and marker names: ";
             bool first = true;
@@ -265,7 +265,7 @@ void write_tetgen(const std::string& path, const Mesh& mesh) {
         }
         const std::size_t nattr = attr_keys.size();
 
-        fh << "# This file was created by meshio (C++ core)\n";
+        fh << "# This file was created by meshio++ (C++ core)\n";
         if (nattr > 0) {
             fh << "# attribute names: ";
             bool first = true;
@@ -295,4 +295,4 @@ void write_tetgen(const std::string& path, const Mesh& mesh) {
     }
 }
 
-}  // namespace meshio
+}  // namespace meshioplusplus

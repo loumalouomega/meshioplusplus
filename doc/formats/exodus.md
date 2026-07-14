@@ -13,10 +13,10 @@ in netCDF using its classic variable/dimension conventions.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.exo")
-meshio.exodus.write("out.exo", mesh)
+mesh = meshioplusplus.read("mesh.exo")
+meshioplusplus.exodus.write("out.exo", mesh)
 ```
 
 `write` takes no keyword arguments.
@@ -30,7 +30,7 @@ Global attrs: `title`, `version=5.1f`, `api_version=5.1f`,
 
 - `time_whole(time_step)` — a dummy single `0.0` timestep is always written.
 - `coor_names(num_dim, len_string)` — single-character `"X"`, `"Y"`, `"Z"`.
-- `coord(num_dim, num_nodes)` — transposed relative to meshio's `(n, dim)`
+- `coord(num_dim, num_nodes)` — transposed relative to meshio++'s `(n, dim)`
   layout — or, alternatively, separate `coordx`/`coordy`/`coordz(num_nodes)`
   variables (both styles are accepted on read).
 - `eb_prop1(num_el_blk)` — arbitrary distinct per-block ids (their exact
@@ -50,7 +50,7 @@ Global attrs: `title`, `version=5.1f`, `api_version=5.1f`,
 
 A large type table; representative entries:
 
-| Exodus | meshio | Exodus | meshio |
+| Exodus | meshio++ | Exodus | meshio++ |
 |---|---|---|---|
 | `SPHERE` | `vertex` | `TETRA`, `TET4` | `tetra4` (note: **not** `"tetra"`) |
 | `BEAM`, `BEAM2`, `BAR2` | `line` | `TETRA4` | `tetra4` |
@@ -62,7 +62,7 @@ A large type table; representative entries:
 | `HEX20` | `hexahedron20` | `TRI3`, `TRIANGLE` | `triangle` |
 | `HEX27` | `hexahedron27` | `TRI6` | `triangle6` |
 
-The write-side reverse map picks one canonical Exodus name per meshio type
+The write-side reverse map picks one canonical Exodus name per meshio++ type
 (e.g. `hexahedron → HEX8`, `tetra → TETRA`, `tetra4 → TET4` — a distinct
 entry from plain `tetra`).
 

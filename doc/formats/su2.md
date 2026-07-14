@@ -14,10 +14,10 @@ markers, using VTK-style numeric type codes.
 ## Reading & writing
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.su2")
-meshio.su2.write("out.su2", mesh)
+mesh = meshioplusplus.read("mesh.su2")
+meshioplusplus.su2.write("out.su2", mesh)
 ```
 
 `write` takes no keyword arguments.
@@ -57,7 +57,7 @@ by the first integer-typed `cell_data` array found (via the same
 
 ## Cell types
 
-| code | nodes | meshio type |
+| code | nodes | meshio++ type |
 |---|---|---|
 | 3 | 2 | `line` |
 | 5 | 3 | `triangle` |
