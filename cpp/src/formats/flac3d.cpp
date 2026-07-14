@@ -14,6 +14,7 @@
 
 #include "meshio/detail/value_io.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 
 namespace meshio {
 
@@ -325,8 +326,14 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
             const CellBlock& cb = mesh.cells[i];
             std::string key = zone_key(cb.type);
             std::size_t n = cb.num_cells();
+            // Right-handed reorder per row is independent -> compute in
+            // parallel, then stream sequentially.
+            std::vector<std::vector<std::int64_t>> zcells(n);
+            parallel_for(n, [&](std::size_t r) {
+                zcells[r] = zone_cell_flac3d(mesh.points, cb.data, r, key);
+            });
             for (std::size_t r = 0; r < n; ++r) {
-                std::vector<std::int64_t> cell = zone_cell_flac3d(mesh.points, cb.data, r, key);
+                const auto& cell = zcells[r];
                 wu32(f, ++gid);
                 wu32(f, static_cast<std::uint32_t>(cell.size()));
                 for (auto v : cell) wu32(f, static_cast<std::uint32_t>(v + 1));
@@ -377,10 +384,15 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
         std::string key = zone_key(cb.type);
         const char* abbr = flac3d_type(key);
         std::size_t n = cb.num_cells();
+        // Right-handed reorder per row is independent -> compute in parallel,
+        // then stream sequentially.
+        std::vector<std::vector<std::int64_t>> zcells(n);
+        parallel_for(n, [&](std::size_t r) {
+            zcells[r] = zone_cell_flac3d(mesh.points, cb.data, r, key);
+        });
         for (std::size_t r = 0; r < n; ++r) {
-            std::vector<std::int64_t> cell = zone_cell_flac3d(mesh.points, cb.data, r, key);
             f << "Z " << abbr << " " << (++gid);
-            for (auto v : cell) f << " " << (v + 1);
+            for (auto v : zcells[r]) f << " " << (v + 1);
             f << "\n";
         }
     }

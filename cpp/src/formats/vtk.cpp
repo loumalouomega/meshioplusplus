@@ -9,6 +9,7 @@
 
 #include "meshio/detail/value_io.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 #include "meshio/vtk_common.hpp"
 
 namespace meshio {
@@ -59,6 +60,20 @@ void put_be_elem(std::ostream& os, const NDArray& a, std::size_t i) {
     put_be(os, reinterpret_cast<const unsigned char*>(a.data()) + i * isz, isz);
 }
 
+// Byte-swap a whole array into a big-endian buffer (elements independent ->
+// parallel), for a single os.write instead of per-element stream calls.
+std::vector<unsigned char> be_buffer(const NDArray& a) {
+    const std::size_t isz = dtype_size(a.dtype());
+    const std::size_t n = a.size();
+    const auto* src = reinterpret_cast<const unsigned char*>(a.data());
+    std::vector<unsigned char> buf(n * isz);
+    parallel_for(n, [&](std::size_t i) {
+        for (std::size_t b = 0; b < isz; ++b)
+            buf[i * isz + b] = src[i * isz + (isz - 1 - b)];
+    });
+    return buf;
+}
+
 void write_field_block(std::ostream& os, const std::string& name, DType dt,
                        std::size_t num_components, std::size_t num_tuples, bool binary,
                        const std::vector<const NDArray*>& blocks) {
@@ -68,11 +83,13 @@ void write_field_block(std::ostream& os, const std::string& name, DType dt,
        << '\n';
     const bool flt = is_float_dtype(dt);
     for (const NDArray* blk : blocks) {
-        const std::size_t n = blk->size();
-        for (std::size_t i = 0; i < n; ++i) {
-            if (binary) {
-                put_be_elem(os, *blk, i);
-            } else {
+        if (binary) {
+            std::vector<unsigned char> buf = be_buffer(*blk);
+            os.write(reinterpret_cast<const char*>(buf.data()),
+                     static_cast<std::streamsize>(buf.size()));
+        } else {
+            const std::size_t n = blk->size();
+            for (std::size_t i = 0; i < n; ++i) {
                 if (flt)
                     ascii_double(os, read_double(*blk, i));
                 else
@@ -112,14 +129,17 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
     // Points (3 components; pad 2D with zero z).
     os << "POINTS " << num_points << ' ' << vtk_dtype_str(mesh.points.dtype()) << '\n';
     if (binary) {
-        const std::vector<unsigned char> zero(pt_isz, 0);
-        for (std::size_t r = 0; r < num_points; ++r)
-            for (std::size_t c = 0; c < 3; ++c) {
-                if (c < dim)
-                    put_be_elem(os, mesh.points, r * dim + c);
-                else
-                    os.write(reinterpret_cast<const char*>(zero.data()), pt_isz);
-            }
+        // Pre-sized padded buffer, parallel byte-swap, then one write.
+        const auto* src = reinterpret_cast<const unsigned char*>(mesh.points.data());
+        std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
+        parallel_for(num_points, [&](std::size_t r) {
+            for (std::size_t c = 0; c < dim && c < 3; ++c)
+                for (std::size_t b = 0; b < pt_isz; ++b)
+                    buf[(r * 3 + c) * pt_isz + b] =
+                        src[(r * dim + c) * pt_isz + (pt_isz - 1 - b)];
+        });
+        os.write(reinterpret_cast<const char*>(buf.data()),
+                 static_cast<std::streamsize>(buf.size()));
         os << '\n';
     } else {
         for (std::size_t r = 0; r < num_points; ++r)

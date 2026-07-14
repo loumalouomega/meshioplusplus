@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -14,6 +16,8 @@
 #include "meshio/detail/hdf5_util.hpp"
 #include "meshio/detail/value_io.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/log.hpp"
+#include "meshio/parallel.hpp"
 #include "meshio/types.hpp"
 
 namespace meshio {
@@ -32,6 +36,20 @@ const std::unordered_map<std::string, std::string>& meshio_to_med() {
     return m;
 }
 
+// Quadratic 3D types share the meshio <-> MED orientation difference, but
+// their permutations are not implemented; warn (like the Python reference)
+// when reading or writing them unconverted.
+void warn_unconverted_3d(const std::string& cell_type) {
+    if (cell_type == "tetra10" || cell_type == "hexahedron20" ||
+        cell_type == "pyramid13" || cell_type == "wedge15") {
+        log::warn(
+            "MED: orientation conversion for quadratic 3D cells '{}' is not yet "
+            "implemented. These cells may be mis-oriented for MED tools (Salome, "
+            "code_saturne, code_aster, etc.).",
+            cell_type);
+    }
+}
+
 // self-inverse meshio <-> MED node permutations (linear 3D types).
 const std::unordered_map<std::string, std::vector<int>>& med_node_perm() {
     static const std::unordered_map<std::string, std::vector<int>> m = {
@@ -42,8 +60,8 @@ const std::unordered_map<std::string, std::vector<int>>& med_node_perm() {
     return m;
 }
 
-// Apply the column permutation to a (n, k) integer cell array in place-ish
-// (returns a new array). No-op for types without a perm.
+// Apply the column permutation to a (n, k) integer cell array (returns a new
+// array). No-op for types without a perm. Rows are independent -> parallel.
 NDArray reorder_med_cells(const std::string& cell_type, const NDArray& data) {
     auto it = med_node_perm().find(cell_type);
     if (it == med_node_perm().end()) return data;
@@ -51,17 +69,13 @@ NDArray reorder_med_cells(const std::string& cell_type, const NDArray& data) {
     std::size_t n = detail::rows(data), k = detail::cols(data);
     if (k != perm.size()) return data;
     NDArray out(data.dtype(), {n, k});
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t c = 0; c < k; ++c) {
-            std::int64_t v = detail::read_int(data, i * k + perm[c]);
-            switch (out.dtype()) {
-                case DType::Int32: out.as<std::int32_t>()[i * k + c] = static_cast<std::int32_t>(v); break;
-                case DType::Int64: out.as<std::int64_t>()[i * k + c] = v; break;
-                case DType::UInt32: out.as<std::uint32_t>()[i * k + c] = static_cast<std::uint32_t>(v); break;
-                case DType::UInt64: out.as<std::uint64_t>()[i * k + c] = static_cast<std::uint64_t>(v); break;
-                default: out.as<std::int64_t>()[i * k + c] = v; break;
-            }
-        }
+    detail::dispatch_dtype(data.dtype(), [&]<class T>() {
+        const T* src = data.as<T>();
+        T* dst = out.as<T>();
+        parallel_for(n, [&](std::size_t i) {
+            for (std::size_t c = 0; c < k; ++c) dst[i * k + c] = src[i * k + perm[c]];
+        });
+    });
     return out;
 }
 
@@ -82,7 +96,7 @@ void write_attr_bytes(hid_t loc, const std::string& name, const std::string& val
     h5::Hid space(H5Screate(H5S_SCALAR), H5Sclose);
     h5::Hid a(H5Acreate2(loc, name.c_str(), t, space, H5P_DEFAULT, H5P_DEFAULT),
               H5Aclose);
-    if (!a.valid()) throw WriteError("MED: could not create attribute " + name);
+    if (!a.valid()) throw WriteError(std::format("MED: could not create attribute {}", name));
     std::string buf = value.empty() ? std::string(1, '\0') : value;
     H5Awrite(a, t, buf.data());
 }
@@ -95,58 +109,50 @@ void write_attr_double(hid_t loc, const std::string& name, double v) {
     H5Awrite(a, H5T_NATIVE_DOUBLE, &v);
 }
 
-// Fortran-order (n, k) -> flat column-major buffer, applying `shift`.
+// Fortran-order (n, k) -> flat column-major buffer, applying `shift` to
+// integer dtypes. Pure index transpose; rows are independent -> parallel.
 NDArray flatten_f(const NDArray& a, std::int64_t shift) {
     const std::size_t n = detail::rows(a);
     const std::size_t k = detail::cols(a);
     NDArray out(a.dtype(), {n * k});
-    for (std::size_t c = 0; c < k; ++c)
-        for (std::size_t i = 0; i < n; ++i) {
-            std::size_t src = i * k + c, dst = c * n + i;
-            if (detail::is_float_dtype(a.dtype())) {
-                double v = detail::read_double(a, src);
-                if (a.dtype() == DType::Float32)
-                    out.as<float>()[dst] = static_cast<float>(v);
-                else
-                    out.as<double>()[dst] = v;
-            } else {
-                std::int64_t v = detail::read_int(a, src) + shift;
-                switch (a.dtype()) {
-                    case DType::Int32: out.as<std::int32_t>()[dst] = static_cast<std::int32_t>(v); break;
-                    case DType::Int64: out.as<std::int64_t>()[dst] = v; break;
-                    case DType::UInt32: out.as<std::uint32_t>()[dst] = static_cast<std::uint32_t>(v); break;
-                    case DType::UInt64: out.as<std::uint64_t>()[dst] = static_cast<std::uint64_t>(v); break;
-                    default: throw WriteError("MED: unexpected integer dtype");
-                }
-            }
+    detail::dispatch_dtype(a.dtype(), [&]<class T>() {
+        const T* src = a.as<T>();
+        T* dst = out.as<T>();
+        if constexpr (std::is_floating_point_v<T>) {
+            parallel_for(n, [&](std::size_t i) {
+                for (std::size_t c = 0; c < k; ++c) dst[c * n + i] = src[i * k + c];
+            });
+        } else {
+            const T s = static_cast<T>(shift);
+            parallel_for(n, [&](std::size_t i) {
+                for (std::size_t c = 0; c < k; ++c)
+                    dst[c * n + i] = static_cast<T>(src[i * k + c] + s);
+            });
         }
+    });
     return out;
 }
 
-// Flat column-major buffer -> (n, k) row-major, applying `shift` to ints.
+// Flat column-major buffer -> (n, k) row-major, applying `shift` to integer
+// dtypes. Inverse transpose of flatten_f; rows independent -> parallel.
 NDArray unflatten_f(const NDArray& flat, std::size_t n, std::size_t k,
                     std::int64_t shift) {
     NDArray out(flat.dtype(), {n, k});
-    for (std::size_t c = 0; c < k; ++c)
-        for (std::size_t i = 0; i < n; ++i) {
-            std::size_t src = c * n + i, dst = i * k + c;
-            if (detail::is_float_dtype(flat.dtype())) {
-                double v = detail::read_double(flat, src);
-                if (flat.dtype() == DType::Float32)
-                    out.as<float>()[dst] = static_cast<float>(v);
-                else
-                    out.as<double>()[dst] = v;
-            } else {
-                std::int64_t v = detail::read_int(flat, src) + shift;
-                switch (flat.dtype()) {
-                    case DType::Int32: out.as<std::int32_t>()[dst] = static_cast<std::int32_t>(v); break;
-                    case DType::Int64: out.as<std::int64_t>()[dst] = v; break;
-                    case DType::UInt32: out.as<std::uint32_t>()[dst] = static_cast<std::uint32_t>(v); break;
-                    case DType::UInt64: out.as<std::uint64_t>()[dst] = static_cast<std::uint64_t>(v); break;
-                    default: throw ReadError("MED: unexpected integer dtype");
-                }
-            }
+    detail::dispatch_dtype(flat.dtype(), [&]<class T>() {
+        const T* src = flat.as<T>();
+        T* dst = out.as<T>();
+        if constexpr (std::is_floating_point_v<T>) {
+            parallel_for(n, [&](std::size_t i) {
+                for (std::size_t c = 0; c < k; ++c) dst[i * k + c] = src[c * n + i];
+            });
+        } else {
+            const T s = static_cast<T>(shift);
+            parallel_for(n, [&](std::size_t i) {
+                for (std::size_t c = 0; c < k; ++c)
+                    dst[i * k + c] = static_cast<T>(src[c * n + i] + s);
+            });
         }
+    });
     return out;
 }
 
@@ -231,8 +237,9 @@ void write_families(hid_t fm_group,
         std::vector<std::int8_t> buf(names.size() * 80, static_cast<std::int8_t>(' '));
         for (std::size_t i = 0; i < names.size(); ++i) {
             if (names[i].size() > 80)
-                throw WriteError("Family name '" + names[i] +
-                                 "' is too long for MED format (max 80 bytes).");
+                throw WriteError(std::format(
+                    "Family name '{}' is too long for MED format (max 80 bytes).",
+                    names[i]));
             for (std::size_t c = 0; c < names[i].size(); ++c)
                 buf[i * 80 + c] = static_cast<std::int8_t>(names[i][c]);
         }
@@ -249,8 +256,8 @@ Mesh read_med(const std::string& path, MedInfo& info) {
     h5::Hid ens = h5::open_group(f, "ENS_MAA");
     std::vector<std::string> meshes = h5::group_links(ens);
     if (meshes.size() != 1)
-        throw ReadError("Must only contain exactly 1 mesh, found " +
-                        std::to_string(meshes.size()) + ".");
+        throw ReadError(std::format("Must only contain exactly 1 mesh, found {}.",
+                                   meshes.size()));
     const std::string mesh_name = meshes[0];
     h5::Hid mesh_grp = h5::open_group(ens, mesh_name);
 
@@ -269,8 +276,8 @@ Mesh read_med(const std::string& path, MedInfo& info) {
     } else {
         std::vector<std::string> steps = h5::group_links(mesh_grp);
         if (steps.size() != 1)
-            throw ReadError("Must only contain exactly 1 time-step, found " +
-                            std::to_string(steps.size()) + ".");
+            throw ReadError(std::format(
+                "Must only contain exactly 1 time-step, found {}.", steps.size()));
         data_grp = h5::open_group(mesh_grp, steps[0]);
     }
 
@@ -313,7 +320,7 @@ Mesh read_med(const std::string& path, MedInfo& info) {
     for (const std::string& med_type : h5::group_links_crt(mai)) {
         auto it = med_to_meshio().find(med_type);
         if (it == med_to_meshio().end())
-            throw ReadError("MED: unsupported cell type " + med_type);
+            throw ReadError(std::format("MED: unsupported cell type {}", med_type));
         h5::Hid g = h5::open_group(mai, med_type);
 
         if (med_type == "POG" || med_type == "POG2") {
@@ -335,12 +342,13 @@ Mesh read_med(const std::string& path, MedInfo& info) {
             cell_types.push_back(it->second);
         } else {
             h5::Hid nod_ds(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
-            if (!nod_ds.valid()) throw ReadError("MED: missing NOD for " + med_type);
+            if (!nod_ds.valid()) throw ReadError(std::format("MED: missing NOD for {}", med_type));
             std::int64_t n_cells = h5::read_attr_int(nod_ds, "NBR");
             NDArray nod = h5::read_dataset(g, "NOD");
             std::size_t k = n_cells > 0 ? nod.size() / static_cast<std::size_t>(n_cells)
                                         : 0;
             NDArray data = unflatten_f(nod, static_cast<std::size_t>(n_cells), k, -1);
+            warn_unconverted_3d(it->second);
             data = reorder_med_cells(it->second, data);  // MED -> meshio order
             mesh.cells.emplace_back(it->second, std::move(data));
             cell_types.push_back(it->second);
@@ -488,7 +496,7 @@ void write_med(const std::string& path, const Mesh& mesh, const MedInfo& info,
         const CellBlock& cb = mesh.cells[k];
         auto it = meshio_to_med().find(cb.type);
         if (it == meshio_to_med().end())
-            throw WriteError("MED: unsupported cell type " + cb.type);
+            throw WriteError(std::format("MED: unsupported cell type {}", cb.type));
         h5::Hid g = h5::create_group(mai, it->second);
         h5::write_attr_int(g, "CGT", 1);
         h5::write_attr_int(g, "CGS", 1);
@@ -512,6 +520,7 @@ void write_med(const std::string& path, const Mesh& mesh, const MedInfo& info,
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.num_cells()));
         } else {
+            warn_unconverted_3d(cb.type);
             NDArray reordered = reorder_med_cells(cb.type, cb.data);
             NDArray nod = flatten_f(reordered, +1);
             h5::write_dataset(g, "NOD", nod);

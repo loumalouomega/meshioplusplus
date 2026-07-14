@@ -12,6 +12,7 @@
 #include "meshio/detail/vtk_cells.hpp"
 #include "meshio/exceptions.hpp"
 #include "meshio/formats/vtk.hpp"
+#include "meshio/parallel.hpp"
 #include "meshio/types.hpp"
 
 namespace meshio {
@@ -95,10 +96,13 @@ struct Cursor {
         } else {
             if (pos + count * isz > buf.size()) throw ReadError("VTK binary truncated");
             unsigned char* out = reinterpret_cast<unsigned char*>(a.data());
-            for (std::size_t i = 0; i < count; ++i)
+            // Element offsets are i*isz -> byte-swap in parallel.
+            const std::size_t start = pos;
+            parallel_for(count, [&](std::size_t i) {
                 for (std::size_t b = 0; b < isz; ++b)
-                    out[i * isz + b] =
-                        static_cast<unsigned char>(buf[pos + i * isz + (isz - 1 - b)]);
+                    out[i * isz + b] = static_cast<unsigned char>(
+                        buf[start + i * isz + (isz - 1 - b)]);
+            });
             pos += count * isz;
         }
         consume_eol();

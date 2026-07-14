@@ -17,6 +17,7 @@
 
 #include "meshio/detail/value_io.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 #include "meshio/types.hpp"
 
 namespace meshio {
@@ -454,8 +455,10 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
     std::int64_t max_tag = 0;
     for (auto t : point_tags) max_tag = std::max(max_tag, t);
     std::vector<std::int64_t> remap(static_cast<std::size_t>(max_tag) + 1, -1);
-    for (std::size_t i = 0; i < point_tags.size(); ++i)
+    // Scatter: node tags are unique, so writes never alias -> parallel.
+    parallel_for(point_tags.size(), [&](std::size_t i) {
         remap[static_cast<std::size_t>(point_tags[i])] = static_cast<std::int64_t>(i);
+    });
 
     Mesh mesh;
     mesh.points = std::move(points);
@@ -464,10 +467,10 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
 
     // Node entity (dim, tag) -> gmsh:dim_tags point data.
     NDArray dt(DType::Int64, {dim_tags.size(), 2});
-    for (std::size_t i = 0; i < dim_tags.size(); ++i) {
+    parallel_for(dim_tags.size(), [&](std::size_t i) {
         dt.as<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
         dt.as<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
-    }
+    });
     mesh.point_data.emplace("gmsh:dim_tags", std::move(dt));
 
     std::vector<NDArray> geom_blocks;
@@ -475,16 +478,19 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
         const std::vector<int>& perm = gmsh_to_meshio_perm(b.type);
         NDArray data(DType::Int64, {b.count, b.n});
         std::int64_t* dp = data.as<std::int64_t>();
-        for (std::size_t r = 0; r < b.count; ++r)
+        // Gather through the prebuilt read-only remap -> parallel over rows.
+        parallel_for(b.count, [&](std::size_t r) {
             for (std::size_t j = 0; j < b.n; ++j) {
                 std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
                 dp[r * b.n + j] = remap[static_cast<std::size_t>(b.conn[r * b.n + src])];
             }
+        });
         mesh.cells.emplace_back(b.type, std::move(data));
 
         NDArray ge(DType::Int32, {b.count});
-        for (std::size_t r = 0; r < b.count; ++r)
-            ge.as<std::int32_t>()[r] = b.entity_tag;
+        std::int32_t* gep = ge.as<std::int32_t>();
+        const std::int32_t etag = b.entity_tag;
+        parallel_for(b.count, [&](std::size_t r) { gep[r] = etag; });
         geom_blocks.push_back(std::move(ge));
     }
 
@@ -561,8 +567,10 @@ Mesh read_gmsh(const std::string& path) {
     std::int64_t max_tag = 0;
     for (auto t : point_tags) max_tag = std::max(max_tag, t - 1);
     std::vector<std::int64_t> remap(static_cast<std::size_t>(max_tag) + 1, -1);
-    for (std::size_t i = 0; i < point_tags.size(); ++i)
+    // Scatter: node tags are unique, so writes never alias -> parallel.
+    parallel_for(point_tags.size(), [&](std::size_t i) {
         remap[static_cast<std::size_t>(point_tags[i] - 1)] = static_cast<std::int64_t>(i);
+    });
 
     Mesh mesh;
     mesh.points = std::move(points);
@@ -578,24 +586,30 @@ Mesh read_gmsh(const std::string& path) {
         const std::vector<int>& perm = gmsh_to_meshio_perm(b.type);
         NDArray data(DType::Int64, {b.count, b.n});
         std::int64_t* dp = data.as<std::int64_t>();
-        for (std::size_t r = 0; r < b.count; ++r)
+        // Gather through the prebuilt read-only remap -> parallel over rows.
+        parallel_for(b.count, [&](std::size_t r) {
             for (std::size_t j = 0; j < b.n; ++j) {
                 std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
                 std::int64_t gid = b.conn[r * b.n + src];
                 dp[r * b.n + j] = remap[static_cast<std::size_t>(gid)];
             }
+        });
         mesh.cells.emplace_back(b.type, std::move(data));
 
         if (min_tags >= 1) {
             NDArray ph(DType::Int32, {b.count});
-            for (std::size_t r = 0; r < b.count; ++r)
-                ph.as<std::int32_t>()[r] = static_cast<std::int32_t>(b.tags[r * b.num_tags + 0]);
+            std::int32_t* php = ph.as<std::int32_t>();
+            parallel_for(b.count, [&](std::size_t r) {
+                php[r] = static_cast<std::int32_t>(b.tags[r * b.num_tags + 0]);
+            });
             physical_blocks.push_back(std::move(ph));
         }
         if (min_tags >= 2) {
             NDArray ge(DType::Int32, {b.count});
-            for (std::size_t r = 0; r < b.count; ++r)
-                ge.as<std::int32_t>()[r] = static_cast<std::int32_t>(b.tags[r * b.num_tags + 1]);
+            std::int32_t* gep = ge.as<std::int32_t>();
+            parallel_for(b.count, [&](std::size_t r) {
+                gep[r] = static_cast<std::int32_t>(b.tags[r * b.num_tags + 1]);
+            });
             geometrical_blocks.push_back(std::move(ge));
         }
     }

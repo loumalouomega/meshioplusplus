@@ -13,6 +13,7 @@
 
 #include "meshio/detail/value_io.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 
 namespace meshio {
 
@@ -208,8 +209,31 @@ Mesh read_ply(const std::string& path) {
     for (const auto& vp : vprops) vcols.emplace_back(vp.dtype, std::vector<std::size_t>{num_verts});
 
     if (is_binary) {
-        for (std::size_t i = 0; i < num_verts; ++i)
-            for (std::size_t c = 0; c < vprops.size(); ++c) rd_into(vcols[c], i, buf, pos, big);
+        // Fixed-width records: property c of vertex i sits at a closed-form
+        // byte offset -> decode + byteswap in parallel over vertices.
+        std::size_t stride = 0;
+        std::vector<std::size_t> coff(vprops.size());
+        for (std::size_t c = 0; c < vprops.size(); ++c) {
+            coff[c] = stride;
+            stride += dtype_size(vprops[c].dtype);
+        }
+        if (pos + num_verts * stride > buf.size())
+            throw ReadError("PLY binary truncated");
+        const std::size_t start = pos;
+        parallel_for(num_verts, [&](std::size_t i) {
+            for (std::size_t c = 0; c < vprops.size(); ++c) {
+                const std::size_t isz = dtype_size(vcols[c].dtype());
+                unsigned char* dst =
+                    reinterpret_cast<unsigned char*>(vcols[c].data()) + i * isz;
+                const std::size_t src = start + i * stride + coff[c];
+                if (big)
+                    for (std::size_t b = 0; b < isz; ++b)
+                        dst[b] = static_cast<unsigned char>(buf[src + isz - 1 - b]);
+                else
+                    std::memcpy(dst, buf.data() + src, isz);
+            }
+        });
+        pos = start + num_verts * stride;
     } else {
         for (std::size_t i = 0; i < num_verts; ++i) {
             std::string row = read_line();

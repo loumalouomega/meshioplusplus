@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <map>
 #include <set>
@@ -16,6 +17,8 @@
 #include <vector>
 
 #include "meshio/exceptions.hpp"
+#include "meshio/log.hpp"
+#include "meshio/parallel.hpp"
 
 namespace fs = std::filesystem;
 
@@ -519,8 +522,10 @@ Mesh read_openfoam(const std::string& path_in, OpenFoamInfo& info) {
         }
     }
     if (poly.empty())
-        throw ReadError("Could not locate polyMesh from '" + path_in +
-                        "'. Expected <case>/constant/polyMesh/.");
+        throw ReadError(std::format(
+            "Could not locate polyMesh from '{}'. Expected <case>/constant/polyMesh/.",
+            path_in));
+    log::info("Reading polyMesh from {}", poly.string());
 
     P3 points = read_points(poly / "points");
     std::vector<Face> faces = read_faces(poly / "faces");
@@ -535,6 +540,8 @@ Mesh read_openfoam(const std::string& path_in, OpenFoamInfo& info) {
     for (std::int64_t v : owner) owner_max = std::max(owner_max, v);
     for (std::int64_t v : neighbour) neigh_max = std::max(neigh_max, v);
     std::int64_t n_cells = owner.empty() ? 0 : std::max(owner_max, neigh_max) + 1;
+    log::info("{} points, {} faces, {} cells, {} patches", points.size(),
+              faces.size(), n_cells, boundary.size());
 
     // cell -> face ids
     std::vector<std::vector<std::int64_t>> cell_faces(static_cast<std::size_t>(n_cells));
@@ -553,9 +560,20 @@ Mesh read_openfoam(const std::string& path_in, OpenFoamInfo& info) {
     std::vector<std::string> poly_order;
     std::map<std::string, std::vector<std::vector<Face>>> poly_buckets;
 
-    for (std::int64_t cid = 0; cid < n_cells; ++cid) {
+    // Per-cell geometric reconstruction is the expensive part and every cell
+    // only reads faces/owner/points -> compute all cells in parallel into a
+    // pre-sized result array, then do the (ordered) bucket grouping
+    // sequentially.
+    struct CellResult {
+        std::string mtype;         // "" = degenerate (skipped)
+        Face conn;                 // named types
+        std::vector<Face> faces;   // oriented faces, polyhedra only
+    };
+    std::vector<CellResult> results(static_cast<std::size_t>(n_cells));
+    parallel_for(static_cast<std::size_t>(n_cells), [&](std::size_t cs) {
+        const std::int64_t cid = static_cast<std::int64_t>(cs);
         std::vector<Face> oriented;
-        for (std::int64_t fid : cell_faces[static_cast<std::size_t>(cid)]) {
+        for (std::int64_t fid : cell_faces[cs]) {
             Face f = faces[static_cast<std::size_t>(fid)];
             if (owner[static_cast<std::size_t>(fid)] != cid)
                 std::reverse(f.begin(), f.end());
@@ -563,23 +581,44 @@ Mesh read_openfoam(const std::string& path_in, OpenFoamInfo& info) {
         }
         auto [mtype, conn] = reconstruct_cell(oriented, points);
         if (mtype == "polyhedron") {
-            std::size_t nn = unique_node_count(oriented);
+            results[cs] = {"polyhedron", {}, std::move(oriented)};
+        } else if (conn.empty()) {
+            results[cs] = {};  // degenerate topology
+        } else {
+            results[cs] = {std::move(mtype), std::move(conn), {}};
+        }
+    });
+
+    std::size_t n_skipped = 0;
+    std::size_t n_polyhedra = 0;
+    for (auto& res : results) {
+        if (res.mtype == "polyhedron") {
+            std::size_t nn = unique_node_count(res.faces);
             std::string key = "polyhedron" + std::to_string(nn);
             if (!poly_buckets.count(key)) poly_order.push_back(key);
-            poly_buckets[key].push_back(std::move(oriented));
-        } else if (conn.empty()) {
-            // degenerate: skip
+            poly_buckets[key].push_back(std::move(res.faces));
+            ++n_polyhedra;
+        } else if (res.mtype.empty()) {
+            ++n_skipped;
         } else {
-            if (!vol_buckets.count(mtype)) vol_order.push_back(mtype);
-            vol_buckets[mtype].push_back(std::move(conn));
+            if (!vol_buckets.count(res.mtype)) vol_order.push_back(res.mtype);
+            vol_buckets[res.mtype].push_back(std::move(res.conn));
         }
     }
+    if (n_skipped > 0)
+        log::warn("{} cell(s) skipped (degenerate topology).", n_skipped);
+    if (n_polyhedra > 0)
+        log::info("{} general polyhedron cell(s) found.", n_polyhedra);
 
     Mesh mesh;
     std::size_t npts = points.size();
     mesh.points = NDArray(DType::Float64, {npts, 3});
-    for (std::size_t i = 0; i < npts; ++i)
-        for (std::size_t j = 0; j < 3; ++j) mesh.points.as<double>()[i * 3 + j] = points[i][j];
+    {
+        double* pdst = mesh.points.as<double>();
+        parallel_for(npts, [&](std::size_t i) {
+            for (std::size_t j = 0; j < 3; ++j) pdst[i * 3 + j] = points[i][j];
+        });
+    }
 
     std::vector<NDArray> cell_tags;  // one per block, in final block order
 
@@ -589,9 +628,10 @@ Mesh read_openfoam(const std::string& path_in, OpenFoamInfo& info) {
         std::size_t nc = rows.size();
         std::size_t k = nc ? rows[0].size() : 0;
         NDArray data(DType::Int64, {nc, k});
-        for (std::size_t r = 0; r < nc; ++r)
-            for (std::size_t c = 0; c < k; ++c)
-                data.as<std::int64_t>()[r * k + c] = rows[r][c];
+        std::int64_t* dp = data.as<std::int64_t>();
+        parallel_for(nc, [&](std::size_t r) {
+            for (std::size_t c = 0; c < k; ++c) dp[r * k + c] = rows[r][c];
+        });
         mesh.cells.emplace_back(t, std::move(data));
         cell_tags.emplace_back(DType::Int64, std::vector<std::size_t>{nc});  // zeros
     }
@@ -638,12 +678,14 @@ Mesh read_openfoam(const std::string& path_in, OpenFoamInfo& info) {
         std::size_t nc = rows.size();
         std::size_t k = nc ? rows[0].size() : 0;
         NDArray data(DType::Int64, {nc, k});
-        for (std::size_t r = 0; r < nc; ++r)
-            for (std::size_t c = 0; c < k; ++c)
-                data.as<std::int64_t>()[r * k + c] = rows[r][c];
-        mesh.cells.emplace_back(type, std::move(data));
         NDArray tag(DType::Int64, {nc});
-        for (std::size_t r = 0; r < nc; ++r) tag.as<std::int64_t>()[r] = tags[r];
+        std::int64_t* dp = data.as<std::int64_t>();
+        std::int64_t* tp = tag.as<std::int64_t>();
+        parallel_for(nc, [&](std::size_t r) {
+            for (std::size_t c = 0; c < k; ++c) dp[r * k + c] = rows[r][c];
+            tp[r] = tags[r];
+        });
+        mesh.cells.emplace_back(type, std::move(data));
         cell_tags.push_back(std::move(tag));
     };
     if (!bysize[3].empty()) add_boundary_block("triangle", bysize[3], tagsize[3]);

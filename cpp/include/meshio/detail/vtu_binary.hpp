@@ -10,6 +10,7 @@
 // The header dtype is UInt32 (meshio's default header_type). Host is assumed
 // little-endian.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -20,6 +21,7 @@
 #endif
 
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 
 namespace meshio {
 namespace detail {
@@ -30,25 +32,30 @@ inline const char* b64_table() {
 
 inline std::string b64encode(const unsigned char* data, std::size_t len) {
     const char* tbl = b64_table();
-    std::string out;
-    out.reserve(((len + 2) / 3) * 4);
-    std::size_t i = 0;
-    for (; i + 2 < len; i += 3) {
+    // Every 3-byte group maps to 4 output chars at a deterministic offset:
+    // pre-size the output and write by index -> parallel over groups.
+    const std::size_t ngroups = len / 3;  // full groups
+    std::string out(((len + 2) / 3) * 4, '\0');
+    parallel_for(ngroups, [&](std::size_t g) {
+        const std::size_t i = g * 3;
         unsigned n = (unsigned(data[i]) << 16) | (unsigned(data[i + 1]) << 8) |
                      unsigned(data[i + 2]);
-        out.push_back(tbl[(n >> 18) & 63]);
-        out.push_back(tbl[(n >> 12) & 63]);
-        out.push_back(tbl[(n >> 6) & 63]);
-        out.push_back(tbl[n & 63]);
-    }
-    if (i < len) {
+        char* o = out.data() + g * 4;
+        o[0] = tbl[(n >> 18) & 63];
+        o[1] = tbl[(n >> 12) & 63];
+        o[2] = tbl[(n >> 6) & 63];
+        o[3] = tbl[n & 63];
+    });
+    const std::size_t i = ngroups * 3;
+    if (i < len) {  // trailing 1- or 2-byte group with '=' padding
         const bool two = (i + 1 < len);
         unsigned n = unsigned(data[i]) << 16;
         if (two) n |= unsigned(data[i + 1]) << 8;
-        out.push_back(tbl[(n >> 18) & 63]);
-        out.push_back(tbl[(n >> 12) & 63]);
-        out.push_back(two ? tbl[(n >> 6) & 63] : '=');
-        out.push_back('=');
+        char* o = out.data() + ngroups * 4;
+        o[0] = tbl[(n >> 18) & 63];
+        o[1] = tbl[(n >> 12) & 63];
+        o[2] = two ? tbl[(n >> 6) & 63] : '=';
+        o[3] = '=';
     }
     return out;
 }
@@ -149,17 +156,33 @@ inline std::vector<unsigned char> vtu_decode_zlib(const char* text, std::size_t 
     std::vector<unsigned char> blockdata =
         b64decode(text + num_header_chars, len - num_header_chars);
 
-    std::vector<unsigned char> out;
-    std::size_t off = 0;
-    for (std::uint64_t k = 0; k < num_blocks; ++k) {
-        std::size_t expected =
-            (k + 1 == num_blocks) ? static_cast<std::size_t>(last_block)
-                                  : static_cast<std::size_t>(max_block);
-        auto dec = zlib_decompress(blockdata.data() + off,
-                                   static_cast<std::size_t>(comp_sizes[k]), expected);
-        out.insert(out.end(), dec.begin(), dec.end());
-        off += static_cast<std::size_t>(comp_sizes[k]);
-    }
+    // Input offsets are a (cheap, sequential) prefix sum of comp_sizes; the
+    // output offset of block k is k*max_block per the VTU block scheme -> the
+    // per-block inflate runs in parallel into a pre-sized buffer.
+    std::vector<std::size_t> in_off(static_cast<std::size_t>(num_blocks) + 1, 0);
+    for (std::uint64_t k = 0; k < num_blocks; ++k)
+        in_off[static_cast<std::size_t>(k) + 1] =
+            in_off[static_cast<std::size_t>(k)] + static_cast<std::size_t>(comp_sizes[k]);
+
+    const std::size_t total =
+        num_blocks ? static_cast<std::size_t>(num_blocks - 1) *
+                             static_cast<std::size_t>(max_block) +
+                         static_cast<std::size_t>(last_block)
+                   : 0;
+    std::vector<unsigned char> out(total);
+    parallel_for(
+        static_cast<std::size_t>(num_blocks),
+        [&](std::size_t k) {
+            std::size_t expected = (k + 1 == num_blocks)
+                                       ? static_cast<std::size_t>(last_block)
+                                       : static_cast<std::size_t>(max_block);
+            auto dec = zlib_decompress(blockdata.data() + in_off[k],
+                                       static_cast<std::size_t>(comp_sizes[k]),
+                                       expected);
+            std::memcpy(out.data() + k * static_cast<std::size_t>(max_block),
+                        dec.data(), std::min(dec.size(), expected));
+        },
+        /*grain=*/1);  // each block is 32 KB of inflate work
     return out;
 #endif  // MESHIO_HAS_ZLIB
 }
@@ -185,13 +208,16 @@ inline std::string vtu_encode_binary(const unsigned char* data, std::size_t nbyt
         num_blocks ? static_cast<std::uint32_t>(nbytes - std::size_t(num_blocks - 1) * max_block)
                    : max_block;
 
-    std::vector<std::vector<unsigned char>> blocks;
-    blocks.reserve(num_blocks);
-    for (std::uint32_t b = 0; b < num_blocks; ++b) {
-        std::size_t off = std::size_t(b) * max_block;
-        std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
-        blocks.push_back(zlib_compress_block(data + off, len));
-    }
+    // Blocks are independent -> compress in parallel into pre-sized slots.
+    std::vector<std::vector<unsigned char>> blocks(num_blocks);
+    parallel_for(
+        num_blocks,
+        [&](std::size_t b) {
+            std::size_t off = b * max_block;
+            std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
+            blocks[b] = zlib_compress_block(data + off, len);
+        },
+        /*grain=*/1);  // each block is 32 KB of deflate work
 
     std::vector<std::uint32_t> header;
     header.reserve(3 + num_blocks);

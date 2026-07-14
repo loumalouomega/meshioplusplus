@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -9,6 +10,7 @@
 #include "meshio/detail/value_io.hpp"
 #include "meshio/detail/vtu_binary.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 #include "meshio/types.hpp"
 #include "meshio/vtk_common.hpp"
 
@@ -54,12 +56,6 @@ void ascii_ndarray(std::ostream& os, const NDArray& a) {
     }
 }
 
-void append_elem(std::vector<unsigned char>& buf, const NDArray& a, std::size_t idx) {
-    const std::size_t isz = dtype_size(a.dtype());
-    const unsigned char* p = reinterpret_cast<const unsigned char*>(a.data()) + idx * isz;
-    buf.insert(buf.end(), p, p + isz);
-}
-
 }  // namespace
 
 void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib) {
@@ -103,16 +99,15 @@ void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib
     os << "<Points>\n";
     da_header(vtu_type_str(mesh.points.dtype()), "Points", 3);
     if (binary) {
-        std::vector<unsigned char> buf;
-        buf.reserve(num_points * 3 * pt_isz);
-        const std::vector<unsigned char> zero(pt_isz, 0);
-        for (std::size_t r = 0; r < num_points; ++r)
-            for (std::size_t c = 0; c < 3; ++c) {
-                if (c < dim)
-                    append_elem(buf, mesh.points, r * dim + c);
-                else
-                    buf.insert(buf.end(), zero.begin(), zero.end());
-            }
+        // Pre-sized buffer (zero-filled -> the padded z stays 0), indexed
+        // byte writes -> parallel over points.
+        std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
+        const auto* src = reinterpret_cast<const unsigned char*>(mesh.points.data());
+        parallel_for(num_points, [&](std::size_t r) {
+            for (std::size_t c = 0; c < dim && c < 3; ++c)
+                std::memcpy(buf.data() + (r * 3 + c) * pt_isz,
+                            src + (r * dim + c) * pt_isz, pt_isz);
+        });
         emit_bin(buf.data(), buf.size());
     } else {
         for (std::size_t r = 0; r < num_points; ++r)
@@ -122,27 +117,39 @@ void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib
     os << "</DataArray>\n</Points>\n";
 
     if (!mesh.cells.empty()) {
-        // Build connectivity / offsets / types (Int64).
-        std::vector<std::int64_t> connectivity, offsets, types;
+        // Build connectivity / offsets / types (Int64) into pre-sized arrays.
+        // Per-block offsets are closed-form (conn_base + (r+1)*k), so rows are
+        // independent and each block fills in parallel.
         const auto& tmap = meshio_to_vtk_type();
-        std::int64_t running = 0;
+        std::size_t total_conn = 0, ncells = 0;
+        for (const auto& cb : mesh.cells) {
+            total_conn += cb.num_cells() * cols(cb.data);
+            ncells += cb.num_cells();
+        }
+        std::vector<std::int64_t> connectivity(total_conn), offsets(ncells),
+            types(ncells);
+        std::size_t conn_base = 0, cell_base = 0;
         for (const auto& cb : mesh.cells) {
             const std::size_t nc = cb.num_cells();
             const std::size_t k = cols(cb.data);
             std::vector<int> order = meshio_to_vtk_order(cb.type);
-            for (std::size_t r = 0; r < nc; ++r)
-                for (std::size_t j = 0; j < k; ++j) {
-                    std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    connectivity.push_back(read_int(cb.data, r * k + col));
-                }
-            for (std::size_t r = 0; r < nc; ++r) {
-                running += static_cast<std::int64_t>(k);
-                offsets.push_back(running);
-            }
             auto it = tmap.find(cb.type);
             if (it == tmap.end())
                 throw WriteError("Unknown cell type for VTU: " + cb.type);
-            for (std::size_t r = 0; r < nc; ++r) types.push_back(it->second);
+            const std::int64_t vtk_type = it->second;
+            parallel_for(nc, [&](std::size_t r) {
+                for (std::size_t j = 0; j < k; ++j) {
+                    std::size_t col =
+                        order.empty() ? j : static_cast<std::size_t>(order[j]);
+                    connectivity[conn_base + r * k + j] =
+                        read_int(cb.data, r * k + col);
+                }
+                offsets[cell_base + r] =
+                    static_cast<std::int64_t>(conn_base + (r + 1) * k);
+                types[cell_base + r] = vtk_type;
+            });
+            conn_base += nc * k;
+            cell_base += nc;
         }
 
         auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {

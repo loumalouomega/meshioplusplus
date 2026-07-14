@@ -12,6 +12,7 @@
 
 #include "meshio/detail/value_io.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 #include "meshio/types.hpp"
 
 namespace meshio {
@@ -194,14 +195,22 @@ void write_abaqus(const std::string& path, const Mesh& mesh) {
     os << "Abaqus DataFile Version 6.14\n";
     os << "written by meshio (C++ core)\n";
     os << "*NODE\n";
-    char buf[48];
-    for (std::size_t i = 0; i < n; ++i) {
-        os << (i + 1);
-        for (std::size_t c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), ", %.16e", detail::read_double(mesh.points, i * dim + c));
-            os << buf;
-        }
-        os << "\n";
+    {
+        // Format node rows in parallel (snprintf per row, bytes unchanged),
+        // then stream sequentially.
+        std::vector<std::string> rows(n);
+        parallel_for(n, [&](std::size_t i) {
+            char buf[48];
+            std::string& row = rows[i];
+            row = std::to_string(i + 1);
+            for (std::size_t c = 0; c < dim; ++c) {
+                std::snprintf(buf, sizeof(buf), ", %.16e",
+                              detail::read_double(mesh.points, i * dim + c));
+                row += buf;
+            }
+            row += '\n';
+        });
+        for (const auto& row : rows) os << row;
     }
 
     const auto& m2a = meshio_to_abaqus();

@@ -15,6 +15,7 @@
 
 #include "meshio/detail/value_io.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 
 namespace meshio {
 
@@ -452,14 +453,20 @@ void write_ansysinp(const std::string& path, const Mesh& mesh, const AnsysInfo& 
     char buf[64];
     std::snprintf(buf, sizeof(buf), "NBLOCK,6,SOLID,%zu,%zu\n(3i9,6e20.13)\n", npts, npts);
     f << buf;
-    for (std::size_t k = 0; k < npts; ++k) {
-        double x = dim > 0 ? detail::read_double(mesh.points, k * dim + 0) : 0.0;
-        double y = dim > 1 ? detail::read_double(mesh.points, k * dim + 1) : 0.0;
-        double z = dim > 2 ? detail::read_double(mesh.points, k * dim + 2) : 0.0;
-        std::snprintf(buf, sizeof(buf), "%9zu%9d%9d", k + 1, 0, 0);
-        f << buf;
-        std::snprintf(buf, sizeof(buf), "% .13E% .13E% .13E\n", x, y, z);
-        f << buf;
+    {
+        // Format node rows in parallel (snprintf per row, bytes unchanged),
+        // then stream sequentially.
+        std::vector<std::string> rows(npts);
+        parallel_for(npts, [&](std::size_t k) {
+            char b1[32], b2[80];
+            double x = dim > 0 ? detail::read_double(mesh.points, k * dim + 0) : 0.0;
+            double y = dim > 1 ? detail::read_double(mesh.points, k * dim + 1) : 0.0;
+            double z = dim > 2 ? detail::read_double(mesh.points, k * dim + 2) : 0.0;
+            std::snprintf(b1, sizeof(b1), "%9zu%9d%9d", k + 1, 0, 0);
+            std::snprintf(b2, sizeof(b2), "% .13E% .13E% .13E\n", x, y, z);
+            rows[k] = std::string(b1) + b2;
+        });
+        for (const auto& row : rows) f << row;
     }
     f << "N,R5.3,LOC,      -1,\n";
 
@@ -476,30 +483,37 @@ void write_ansysinp(const std::string& path, const Mesh& mesh, const AnsysInfo& 
         int slot = slot_of(b.type);
         std::size_t nc = b.num_cells();
         std::size_t k = detail::cols(b.data);
-        for (std::size_t li = 0; li < nc; ++li) {
-            ++eid;
-            loc_to_eid[{bi, li}] = eid;
+        const std::int64_t eid_base = eid;  // element ids are consecutive
+        for (std::size_t li = 0; li < nc; ++li) loc_to_eid[{bi, li}] = eid_base + 1 + static_cast<std::int64_t>(li);
+        eid += static_cast<std::int64_t>(nc);
+        // Format element rows in parallel, then stream sequentially.
+        std::vector<std::string> rows(nc);
+        parallel_for(nc, [&](std::size_t li) {
+            char fld[32];
+            std::string& row = rows[li];
             std::vector<std::int64_t> nodes(k);
             for (std::size_t c = 0; c < k; ++c)
                 nodes[c] = detail::read_int(b.data, li * k + c) + 1;
             std::vector<std::int64_t> first = {
-                1, slot, 1, 1, 0, 0, 0, 0, static_cast<std::int64_t>(k), 0, eid};
+                1, slot, 1, 1, 0, 0, 0, 0, static_cast<std::int64_t>(k), 0,
+                eid_base + 1 + static_cast<std::int64_t>(li)};
             for (std::size_t c = 0; c < std::min<std::size_t>(8, k); ++c)
                 first.push_back(nodes[c]);
             for (std::int64_t v : first) {
-                std::snprintf(buf, sizeof(buf), "%9lld", static_cast<long long>(v));
-                f << buf;
+                std::snprintf(fld, sizeof(fld), "%9lld", static_cast<long long>(v));
+                row += fld;
             }
-            f << "\n";
+            row += '\n';
             if (k > 8) {
                 for (std::size_t c = 8; c < k; ++c) {
-                    std::snprintf(buf, sizeof(buf), "%9lld",
+                    std::snprintf(fld, sizeof(fld), "%9lld",
                                   static_cast<long long>(nodes[c]));
-                    f << buf;
+                    row += fld;
                 }
-                f << "\n";
+                row += '\n';
             }
-        }
+        });
+        for (const auto& row : rows) f << row;
     }
     std::snprintf(buf, sizeof(buf), "%9d\n", -1);
     f << buf;

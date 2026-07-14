@@ -15,6 +15,7 @@
 
 #include "meshio/detail/value_io.hpp"
 #include "meshio/exceptions.hpp"
+#include "meshio/parallel.hpp"
 
 namespace meshio {
 
@@ -196,12 +197,21 @@ void write_su2(const std::string& path, const Mesh& mesh) {
 
     os << "NDIME= " << dim << "\n";
     os << "NPOIN= " << npoin << "\n";
-    char buf[64];
-    for (std::size_t i = 0; i < npoin; ++i) {
-        for (std::size_t c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.16e", detail::read_double(mesh.points, i * dim + c));
-            os << buf << (c + 1 == dim ? '\n' : ' ');
-        }
+    {
+        // Format point rows in parallel (snprintf per row, bytes unchanged),
+        // then stream sequentially.
+        std::vector<std::string> rows(npoin);
+        parallel_for(npoin, [&](std::size_t i) {
+            char buf[64];
+            std::string& row = rows[i];
+            for (std::size_t c = 0; c < dim; ++c) {
+                std::snprintf(buf, sizeof(buf), "%.16e",
+                              detail::read_double(mesh.points, i * dim + c));
+                row += buf;
+                row += (c + 1 == dim ? '\n' : ' ');
+            }
+        });
+        for (const auto& row : rows) os << row;
     }
 
     std::vector<std::string> vtypes = (dim == 2)
