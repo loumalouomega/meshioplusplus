@@ -33,3 +33,5 @@ doc/_build/
 .tox/
 foo.vtk
 .vscode/
+# Jupyter
+.ipynb_checkpoints/

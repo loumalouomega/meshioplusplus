@@ -9,10 +9,18 @@ export default defineConfig({
   lastUpdated: true,
   ignoreDeadLinks: true,
 
+  head: [
+    ["link", { rel: "icon", type: "image/svg+xml", href: "/meshioplusplus/logo-icon.svg" }],
+    ["link", { rel: "alternate icon", type: "image/png", href: "/meshioplusplus/logo-icon.png" }],
+  ],
+
   themeConfig: {
+    logo: "/logo-icon.svg",
+
     nav: [
       { text: "Quickstart", link: "/quickstart" },
       { text: "Formats", link: "/formats" },
+      { text: "Benchmarks", link: "/benchmarks" },
       { text: "CLI", link: "/cli" },
     ],
 
@@ -40,6 +48,7 @@ export default defineConfig({
           { text: "XDMF time series", link: "/xdmf_time_series" },
           { text: "Extending meshio++", link: "/extending" },
           { text: "ParaView plugin", link: "/paraview_plugin" },
+          { text: "Benchmarks", link: "/benchmarks" },
         ],
       },
       {

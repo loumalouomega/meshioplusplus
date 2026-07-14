@@ -38,6 +38,29 @@ meshioplusplus binary mesh.msh        # convert to binary
 
 **Docs (VitePress):** `cd doc && npm install && npm run docs:build` (dev: `npm run docs:dev`).
 
+**Logo:** built with TikZ. `logo/build.sh` runs `logo/gen_logo_tikz.py`
+(numpy+matplotlib triangulation of an "FE blob" → `logo/_mesh_icon.tex`),
+compiles `logo/logo.tex`/`logo-icon.tex` with `pdflatex`, and converts to SVG
+via `dvisvgm` (PNG via PyMuPDF). Committed assets: `logo/logo-with-text.svg`
+(README banner + `doc/public/logo.svg`), `logo/logo-icon.svg` (favicon/nav).
+The old pygmsh generator `logo/logo.py` is superseded (see `logo/README.md`).
+
+**Example notebooks** (`example/*.ipynb`): read the bundled `example/example.msh`
+with meshio++ and render/convert it (PyVista off-screen via a VTU round-trip,
+matplotlib fallback). Committed **with outputs**; re-execute with
+`PYVISTA_OFF_SCREEN=true jupyter nbconvert --to notebook --execute --inplace example/*.ipynb`.
+
+**Benchmarks** (`benchmark/`): `bench.py` times read/write on formats both
+libraries support — meshio++ vs the legacy pure-Python `meshio` (imported from
+`/home/vicente/src/meshio_legacy/src` via `sys.path`, no build). `inputs.py`
+provides the real `example/example.msh` bracket (the headline input) + a
+synthetic numpy tet grid (also used for a size-scaling sweep). `01_benchmark.ipynb`
+runs it, writes `results.csv`, and regenerates the plots in
+`doc/public/benchmarks/` (`benchmark_times`/`_speedup` = the bracket,
+`benchmark_scaling` = speedup vs mesh size) shown on `doc/benchmarks.md`. The needed extras
+(`pyvista matplotlib jupyter nbconvert ipykernel`) are installed into `.venv`
+with `uv pip install`.
+
 ## Architecture
 
 **Core data model** (`src/meshioplusplus/_mesh.py`, pure Python, unchanged):

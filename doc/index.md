@@ -5,6 +5,9 @@ hero:
   name: meshio++
   text: I/O for many mesh formats
   tagline: One unified mesh data model, 35+ file formats, a fast C++ core with pure-Python fallbacks.
+  image:
+    src: /logo-icon.svg
+    alt: meshio++
   actions:
     - theme: brand
       text: Quickstart

@@ -1,10 +1,5 @@
-<!-- TODO: this banner still shows the original meshio wordmark, hosted on the
-     old GH Pages site (which will 404 once the repo is renamed/moved). There
-     is no meshio++ wordmark asset in this repo yet (logo/logo.py only
-     generates the icon, and needs pygmsh/optimesh which aren't installed
-     here) -- design and host a replacement before an official release. -->
 <p align="center">
-  <a href="https://github.com/<org>/meshioplusplus"><img alt="meshio++" src="https://nschloe.github.io/meshio/logo-with-text.svg" width="60%"></a>
+  <a href="https://github.com/<org>/meshioplusplus"><img alt="meshio++" src="logo/logo-with-text.svg" width="60%"></a>
   <p align="center">I/O for mesh files.</p>
 </p>
 
@@ -203,27 +198,33 @@ If you have downloaded a binary version of ParaView, you may proceed as follows.
 
 You can now open all meshio++-supported files in ParaView.
 
-### Performance comparison
+### Benchmarks
 
-<!-- TODO: like the logo banner above, these images (and the ParaView screenshot
-     above) are still hosted on the original meshio project's GH Pages site,
-     which will 404 once this repo moves — rehost under the new project once
-     doc.yml deploys under the new org/repo. -->
+How much does the C++ core help? The [`benchmark/`](benchmark/) folder times
+read/write conversions against the original pure-Python
+[meshio](https://github.com/nschloe/meshio) on the formats both support (same
+in-memory mesh, same machine). The headline input is the bundled
+[`example.msh`](example/example.msh) — a real Gmsh bracket (~52k nodes, ~293k
+cells).
 
-The comparisons here are for a triangular mesh with about 900k points and 1.8M
-triangles. The red lines mark the size of the mesh in memory.
+<img alt="meshio vs meshio++ speedup on example.msh" src="benchmark/plots/benchmark_speedup.svg" width="85%">
 
-#### File sizes
+meshio++'s wins are largest where pure-Python is slowest — **text/ASCII
+formats** (VTU ASCII is ~8× faster to write and ~5× to read). For **binary
+dumps** that pure-Python meshio already handles with numpy's `fromfile`/`tofile`
+(legacy VTK binary, single-type Gmsh binary) there is little to gain, and the
+pybind11 boundary can make meshio++ marginally slower; **HDF5** formats are
+roughly even. The fallbacks keep output byte-compatible either way.
 
-<img alt="file size" src="https://nschloe.github.io/meshio/filesizes.svg" width="60%">
+The speedup is per-element: for text formats it climbs out of the small-mesh
+regime and plateaus (large meshes realise the *full* speedup), while for plain
+binary dumps numpy's vectorised path stays ahead at any size:
 
-#### I/O speed
+<img alt="speedup vs mesh size" src="benchmark/plots/benchmark_scaling.svg" width="85%">
 
-<img alt="performance" src="https://nschloe.github.io/meshio/performance.svg" width="90%">
-
-#### Maximum memory usage
-
-<img alt="memory usage" src="https://nschloe.github.io/meshio/memory.svg" width="90%">
+Full methodology and a reproducible notebook are on the
+[Benchmarks](https://<org>.github.io/meshioplusplus/benchmarks) doc page (source:
+[`benchmark/01_benchmark.ipynb`](benchmark/01_benchmark.ipynb)).
 
 ### Installation
 
