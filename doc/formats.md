@@ -9,6 +9,7 @@ mapping, and the C++ vs Python behaviour).
 |-------------|-----------|------|-------|--------------------|
 | [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — |
 | [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — |
+| [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — |
 | [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — |
 | [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` |
 | [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — |
@@ -29,6 +30,7 @@ mapping, and the C++ vs Python behaviour).
 | [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — |
 | [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — |
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — |
+| [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | — | — |
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
 | [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — |
@@ -43,11 +45,15 @@ mapping, and the C++ vs Python behaviour).
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
 
-**Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When reading, meshio tries them in registration order and uses the first that parses the file. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity.
+**Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When writing without an explicit `file_format`, meshio picks `gmsh` if the mesh carries gmsh-native tags (`gmsh:physical`/`gmsh:geometrical`/`gmsh:dim_tags`) or MED-derived tags (`cell_tags`/`point_tags`/`med:*`), else falls back to the first registered candidate (`ansys`). When reading, meshio tries the registered formats in order and uses the first that parses the file. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity either way.
+
+**Note on `.inp`:** `abaqus` and `ansysInp` both use `.inp`. `abaqus` is registered first, so plain extension-based dispatch resolves to Abaqus by default; pass `file_format="ansysInp"` (or call `meshio.ansysInp.read`/`write` directly) to select the Ansys/APDL reader for a `.inp` file.
 
 **Note on `tetgen`:** The format spans two files (`.node` + `.ele`). It cannot be read from or written to a buffer.
 
 **Note on `svg`:** Write-only, 2D meshes only.
+
+**Note on `openfoam`:** Read-only; a directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file.
 
 **Note on `mfm`:** Single element type per file (non-hybrid), linear elements only.
 
@@ -59,7 +65,7 @@ mapping, and the C++ vs Python behaviour).
 
 meshio ships a C++ core (`meshio._core`, built with pybind11 + scikit-build-core). Most formats read and write through the C++ core with zero-copy numpy at the I/O boundary; each has a pure-Python fallback that is used automatically when the C++ path can't handle a file or when the extension was built without an optional dependency:
 
-- **HDF5** (`cgns`, `h5m`, `hmf`, `med`, and XDMF `data_format="HDF"`) — C++ when built with `MESHIO_WITH_HDF5`, otherwise `h5py`.
+- **HDF5** (`cgns`, `h5m`, `hmf`, `med`, and XDMF `data_format="HDF"`) — C++ when built with `MESHIO_WITH_HDF5`, otherwise `h5py`. For `med`, the C++ core covers the mesh-representation part (points, tags, families, metadata, node orientation, `POG` ragged polygons) and defers the field/bitmask/gmsh-bridging/multi-mesh constructs to the Python reference; see [`med.md`](./formats/med.md#quirks-limitations).
 - **netCDF** (`exodus`) — C++ when built with `MESHIO_WITH_NETCDF`, otherwise `netCDF4`.
 - **zlib** (VTU zlib compression) — C++ when built with `MESHIO_WITH_ZLIB`, otherwise the Python stdlib.
 
@@ -142,7 +148,25 @@ meshio.stl.write(filename, mesh,
 
 ### MED (`.med`)
 
-`meshio.med.write(filename, mesh)` — no extra options (MED does not compress).
+```python
+meshio.med.write(filename, mesh,
+    med_version="4.1.0",   # MAJ.MIN.REL written to INFOS_GENERALES
+)
+```
+
+MED does not support compression. `meshio.med.read_med_multi`/
+`write_med_multi` read/write files containing several meshes — see
+[`med.md`](./formats/med.md).
+
+### AnsysInp (`.cdb`, `.inp`)
+
+`meshio.ansysInp.read(filename)` / `meshio.ansysInp.write(filename, mesh)` —
+no extra options. See the [`.inp` note](#format-table) above for the
+Abaqus extension collision.
+
+### OpenFOAM (`.foam`, read-only)
+
+`meshio.openfoam.read(filename)` — no extra options, no writer.
 
 ### CGNS (`.cgns`)
 

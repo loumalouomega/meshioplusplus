@@ -25,6 +25,7 @@ meshio can read and write all of the following and smoothly converts between the
 
 > [Abaqus](http://abaqus.software.polimi.it/v6.14/index.html) (`.inp`),
 > ANSYS msh (`.msh`),
+> [Ansys/APDL coded database](https://www.ansys.com) (`.cdb`, `.inp`),
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
 > [CGNS](https://cgns.github.io/) (`.cgns`),
 > [DOLFIN XML](https://manpages.ubuntu.com/manpages/jammy/en/man1/dolfin-convert.1.html) (`.xml`),
@@ -45,6 +46,7 @@ meshio can read and write all of the following and smoothly converts between the
 > [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#File-formats) (format versions 2.2, 4.0, and 4.1, `.msh`),
 > [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) (`.obj`),
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
+> [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`, read-only),
 > [PERMAS](https://www.intes.de) (`.post`, `.post.gz`, `.dato`, `.dato.gz`),
 > [PLY](<https://en.wikipedia.org/wiki/PLY_(file_format)>) (`.ply`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),

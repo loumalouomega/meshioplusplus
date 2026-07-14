@@ -26,10 +26,20 @@ struct MedInfo {
     std::map<std::int64_t, std::vector<std::string>> point_tags;
     std::map<std::int64_t, std::vector<std::string>> cell_tags;
     std::vector<std::vector<std::string>> med_nom;  // field_data["med:nom"]
+
+    // Mesh-level metadata attributes (custom attributes on the Python Mesh).
+    std::string mesh_name = "mesh";
+    std::string description;
+    std::string unit_time;
+    std::string unit_coords;
+    // set_id -> family link name (e.g. "FAM_2_Side").
+    std::map<std::int64_t, std::string> point_tag_groups;
+    std::map<std::int64_t, std::string> cell_tag_groups;
 };
 
 Mesh read_med(const std::string& path, MedInfo& info);
-void write_med(const std::string& path, const Mesh& mesh, const MedInfo& info);
+void write_med(const std::string& path, const Mesh& mesh, const MedInfo& info,
+               const std::string& med_version = "4.1.0");
 
 }  // namespace meshio
 

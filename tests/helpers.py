@@ -732,6 +732,9 @@ def write_read(tmp_path, writer, reader, input_mesh, atol, extension=".dat"):
             assert np.allclose(d0, d1, atol=atol, rtol=0.0)
 
     for name, data in input_mesh.field_data.items():
+        # Skip MED-specific metadata keys that are dicts, not arrays
+        if name in ("med:field_units", "med:step_meta", "med:nom"):
+            continue
         if isinstance(data, list):
             assert data == mesh.field_data[name]
         else:

@@ -77,13 +77,44 @@ inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& refs) {
     return a;
 }
 
-// Python meshio.Mesh -> C++ meshio::Mesh (views; zero-copy). Polyhedron cell
-// blocks (ragged list data) are skipped here and must be handled on the Python
-// side by the caller. With `lenient_field_data`, non-numeric field_data
-// entries (e.g. MED's "med:nom" list of strings) are silently skipped instead
-// of raising; the caller carries them through its own side-channel.
+// Parse a ragged Python cell-block `data` (a list, not an ndarray) into a C++
+// CellBlock's ragged members. A "polyhedron" block is 2-level (list of cells,
+// each a list of faces, each a sequence of node ids); any other ragged block
+// (a "polygon" block with varying node counts) is 1-level (list of cells, each
+// a sequence of node ids). This copies (ragged data cannot be a zero-copy
+// view).
+inline meshio::CellBlock ragged_cellblock_from_py(std::string type,
+                                                  py::handle data_obj) {
+    meshio::CellBlock cb;
+    cb.type = std::move(type);
+    auto to_ids = [](py::handle seq) {
+        std::vector<std::int64_t> ids;
+        for (py::handle v : seq) ids.push_back(py::cast<std::int64_t>(v));
+        return ids;
+    };
+    if (cb.type.rfind("polyhedron", 0) == 0) {
+        for (py::handle cell : data_obj) {
+            std::vector<std::vector<std::int64_t>> faces;
+            for (py::handle face : cell) faces.push_back(to_ids(face));
+            cb.polyhedron_rows.push_back(std::move(faces));
+        }
+    } else {
+        for (py::handle row : data_obj) cb.polygon_rows.push_back(to_ids(row));
+    }
+    return cb;
+}
+
+// Python meshio.Mesh -> C++ meshio::Mesh (views; zero-copy for rectangular
+// blocks). By default ragged list data (polyhedron / jagged polygon blocks)
+// raises, so every rectangular-only format writer safely defers such meshes to
+// its Python fallback. Pass `allow_ragged=true` (only the ragged-aware format
+// bindings do) to instead parse ragged blocks into the CellBlock's ragged
+// members (a copy). With `lenient_field_data`, non-numeric field_data entries
+// (e.g. MED's "med:nom" list of strings) are silently skipped instead of
+// raising; the caller carries them through its own side-channel.
 inline meshio::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs,
-                               bool lenient_field_data = false) {
+                               bool lenient_field_data = false,
+                               bool allow_ragged = false) {
     meshio::Mesh m;
 
     m.points = view_from_numpy(ensure_contiguous(pymesh.attr("points"), refs));
@@ -91,10 +122,16 @@ inline meshio::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs,
     for (py::handle cb : pymesh.attr("cells")) {
         std::string type = py::cast<std::string>(cb.attr("type"));
         py::object data_obj = py::reinterpret_borrow<py::object>(cb.attr("data"));
-        // Ragged polyhedron data is a Python list, not an ndarray.
+        // Ragged polyhedron / jagged polygon data is a Python list, not an
+        // ndarray.
         if (py::isinstance<py::list>(data_obj)) {
-            throw meshio::WriteError(
-                "polyhedron cell blocks are not yet handled by the C++ core");
+            if (!allow_ragged) {
+                throw meshio::WriteError(
+                    "ragged (polyhedron / jagged polygon) cell blocks are not "
+                    "handled by this C++ format");
+            }
+            m.cells.push_back(ragged_cellblock_from_py(std::move(type), data_obj));
+            continue;
         }
         py::array d = ensure_contiguous(data_obj, refs);
         m.cells.emplace_back(std::move(type), view_from_numpy(d));
@@ -157,7 +194,33 @@ inline py::array numpy_from_ndarray(meshio::NDArray&& arr) {
                      heap->data(), owner);
 }
 
-// C++ meshio::Mesh -> Python meshio.Mesh (zero-copy output arrays).
+// Build the Python object a ragged CellBlock maps to: for a jagged polygon
+// block, a list of 1-D int64 numpy arrays (one per cell); for a polyhedron
+// block, a list of cells, each a list of 1-D int64 numpy arrays (one per
+// face). This matches exactly what meshio.Mesh/CellBlock store for these types
+// (kept as a Python list, not converted to a rectangular ndarray).
+inline py::object ragged_data_to_py(const meshio::CellBlock& cb) {
+    auto ids_to_arr = [](const std::vector<std::int64_t>& ids) {
+        py::array_t<std::int64_t> a(static_cast<py::ssize_t>(ids.size()));
+        if (!ids.empty())
+            std::memcpy(a.mutable_data(), ids.data(), ids.size() * sizeof(std::int64_t));
+        return a;
+    };
+    py::list out;
+    if (!cb.polyhedron_rows.empty()) {
+        for (const auto& cell : cb.polyhedron_rows) {
+            py::list faces;
+            for (const auto& face : cell) faces.append(ids_to_arr(face));
+            out.append(faces);
+        }
+    } else {
+        for (const auto& row : cb.polygon_rows) out.append(ids_to_arr(row));
+    }
+    return out;
+}
+
+// C++ meshio::Mesh -> Python meshio.Mesh (zero-copy output arrays for
+// rectangular blocks; ragged blocks are copied into Python lists).
 inline py::object mesh_to_py(meshio::Mesh&& m) {
     py::object MeshCls = py::module_::import("meshio").attr("Mesh");
 
@@ -165,7 +228,12 @@ inline py::object mesh_to_py(meshio::Mesh&& m) {
 
     py::list cells;
     for (auto& cb : m.cells) {
-        cells.append(py::make_tuple(py::str(cb.type), numpy_from_ndarray(std::move(cb.data))));
+        if (cb.is_ragged()) {
+            cells.append(py::make_tuple(py::str(cb.type), ragged_data_to_py(cb)));
+        } else {
+            cells.append(
+                py::make_tuple(py::str(cb.type), numpy_from_ndarray(std::move(cb.data))));
+        }
     }
 
     py::dict point_data;

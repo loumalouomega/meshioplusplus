@@ -48,6 +48,7 @@ export default defineConfig({
         items: [
           { text: "abaqus", link: "/formats/abaqus" },
           { text: "ansys", link: "/formats/ansys" },
+          { text: "ansysInp", link: "/formats/ansysinp" },
           { text: "avsucd", link: "/formats/avsucd" },
           { text: "cgns", link: "/formats/cgns" },
           { text: "dolfin-xml", link: "/formats/dolfin" },
@@ -68,6 +69,7 @@ export default defineConfig({
           { text: "neuroglancer", link: "/formats/neuroglancer" },
           { text: "obj", link: "/formats/obj" },
           { text: "off", link: "/formats/off" },
+          { text: "openfoam", link: "/formats/openfoam" },
           { text: "permas", link: "/formats/permas" },
           { text: "ply", link: "/formats/ply" },
           { text: "stl", link: "/formats/stl" },

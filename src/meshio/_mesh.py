@@ -11,6 +11,7 @@ from ._common import num_nodes_per_cell, warn
 topological_dimension = {
     "line": 1,
     "polygon": 2,
+    "polygon2": 2,
     "triangle": 2,
     "quad": 2,
     "tetra": 3,
@@ -19,6 +20,7 @@ topological_dimension = {
     "pyramid": 3,
     "line3": 1,
     "triangle6": 2,
+    "triangle7": 2,
     "quad9": 2,
     "tetra10": 3,
     "hexahedron27": 3,
@@ -95,6 +97,19 @@ class CellBlock:
 
         if cell_type.startswith("polyhedron"):
             self.dim = 3
+        elif cell_type.startswith("polygon"):
+            self.dim = 2
+            # Store as an ndarray when every polygon in the block has the same
+            # vertex count (uniform). Keep a Python list only for ragged blocks
+            # (e.g. MED Voronoi meshes mixing 4-7-gons), which cannot fit a
+            # rectangular array. This keeps the common uniform case compatible
+            # with writers that expect ndarray data (vtu/vtk/gmsh/...).
+            try:
+                arr = np.asarray(self.data)
+            except ValueError:
+                arr = None
+            if arr is not None and arr.ndim == 2:
+                self.data = arr
         else:
             self.data = np.asarray(self.data)
             self.dim = topological_dimension[cell_type]
@@ -150,7 +165,11 @@ class Mesh:
                     cell_type,
                     # polyhedron data cannot be converted to numpy arrays
                     # because the sublists don't all have the same length
-                    data if cell_type.startswith("polyhedron") else np.asarray(data),
+                    (
+                        data
+                        if cell_type.startswith(("polyhedron", "polygon"))
+                        else np.asarray(data)
+                    ),
                 )
             self.cells.append(cell_block)
 
@@ -180,6 +199,8 @@ class Mesh:
                 )
 
             for k in range(len(data)):
+                if data[k] is None:
+                    continue
                 data[k] = np.asarray(data[k])
                 if len(data[k]) != len(self.cells[k]):
                     raise ValueError(
@@ -207,7 +228,8 @@ class Mesh:
             for cell_block in self.cells:
                 string = cell_block.type
                 if cell_block.type in special_cells:
-                    string += f"({cell_block.data.shape[1]})"
+                    if isinstance(cell_block.data, np.ndarray):
+                        string += f"({cell_block.data.shape[1]})"
                 lines.append(f"    {string}: {len(cell_block)}")
         else:
             lines.append("  No cells.")

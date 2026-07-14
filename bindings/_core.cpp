@@ -10,6 +10,7 @@
 #include "meshio/exceptions.hpp"
 #include "meshio/formats/abaqus.hpp"
 #include "meshio/formats/ansys.hpp"
+#include "meshio/formats/ansysinp.hpp"
 #include "meshio/formats/avsucd.hpp"
 #ifdef MESHIO_HAS_HDF5
 #include "meshio/formats/cgns.hpp"
@@ -31,6 +32,7 @@
 #include "meshio/formats/nastran.hpp"
 #include "meshio/formats/netgen.hpp"
 #include "meshio/formats/obj_off.hpp"
+#include "meshio/formats/openfoam.hpp"
 #include "meshio/formats/permas.hpp"
 #include "meshio/formats/ply.hpp"
 #include "meshio/formats/stl.hpp"
@@ -83,12 +85,19 @@ PYBIND11_MODULE(_core, m) {
     m.def("topological_dimension", []() { return meshio::topological_dimension(); });
 
     // Debug helper: Python mesh -> C++ mesh (zero-copy views) -> Python mesh
-    // (capsule-backed arrays). Exercises both conversion directions.
-    m.def("_roundtrip", [](py::object pymesh) {
-        meshio_py::PyMeshRefs refs;
-        meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
-        return meshio_py::mesh_to_py(std::move(cpp));
-    });
+    // (capsule-backed arrays). Exercises both conversion directions. With
+    // allow_ragged=True it also round-trips polyhedron / jagged-polygon blocks
+    // through the C++ ragged CellBlock representation (a copy).
+    m.def(
+        "_roundtrip",
+        [](py::object pymesh, bool allow_ragged) {
+            meshio_py::PyMeshRefs refs;
+            meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs,
+                                                     /*lenient_field_data=*/false,
+                                                     allow_ragged);
+            return meshio_py::mesh_to_py(std::move(cpp));
+        },
+        py::arg("pymesh"), py::arg("allow_ragged") = false);
 
     // VTU writer (ascii / binary / zlib), zero-copy input from the Python mesh.
     m.def("vtu_write",
@@ -303,28 +312,50 @@ PYBIND11_MODULE(_core, m) {
     // MED/Salome writer / reader (.med). point_tags/cell_tags are custom Mesh
     // attributes and med:nom is a list of string-lists, so they travel outside
     // the Mesh conversion layer.
-    m.def("med_write",
-          [](const std::string& path, py::object pymesh,
-             std::map<std::int64_t, std::vector<std::string>> point_tags,
-             std::map<std::int64_t, std::vector<std::string>> cell_tags,
-             std::vector<std::vector<std::string>> med_nom) {
-              meshio_py::PyMeshRefs refs;
-              meshio::Mesh cpp =
-                  meshio_py::py_to_mesh(pymesh, refs, /*lenient_field_data=*/true);
-              meshio::MedInfo info;
-              info.point_tags = std::move(point_tags);
-              info.cell_tags = std::move(cell_tags);
-              info.med_nom = std::move(med_nom);
-              meshio::write_med(path, cpp, info);
-          });
+    m.def(
+        "med_write",
+        [](const std::string& path, py::object pymesh,
+           std::map<std::int64_t, std::vector<std::string>> point_tags,
+           std::map<std::int64_t, std::vector<std::string>> cell_tags,
+           std::vector<std::vector<std::string>> med_nom, std::string mesh_name,
+           std::string description, std::string unit_time, std::string unit_coords,
+           std::map<std::int64_t, std::string> point_tag_groups,
+           std::map<std::int64_t, std::string> cell_tag_groups,
+           std::string med_version) {
+            meshio_py::PyMeshRefs refs;
+            meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs,
+                                                     /*lenient_field_data=*/true,
+                                                     /*allow_ragged=*/true);
+            meshio::MedInfo info;
+            info.point_tags = std::move(point_tags);
+            info.cell_tags = std::move(cell_tags);
+            info.med_nom = std::move(med_nom);
+            info.mesh_name = mesh_name.empty() ? "mesh" : std::move(mesh_name);
+            info.description = std::move(description);
+            info.unit_time = std::move(unit_time);
+            info.unit_coords = std::move(unit_coords);
+            info.point_tag_groups = std::move(point_tag_groups);
+            info.cell_tag_groups = std::move(cell_tag_groups);
+            meshio::write_med(path, cpp, info, med_version);
+        });
     m.def("med_read", [](const std::string& path) {
         meshio::MedInfo info;
         py::object pymesh = meshio_py::mesh_to_py(meshio::read_med(path, info));
-        py::dict ptags, ctags;
+        py::dict ptags, ctags, pgroups, cgroups;
         for (const auto& kv : info.point_tags) ptags[py::int_(kv.first)] = kv.second;
         for (const auto& kv : info.cell_tags) ctags[py::int_(kv.first)] = kv.second;
+        for (const auto& kv : info.point_tag_groups)
+            pgroups[py::int_(kv.first)] = kv.second;
+        for (const auto& kv : info.cell_tag_groups)
+            cgroups[py::int_(kv.first)] = kv.second;
         pymesh.attr("point_tags") = ptags;
         pymesh.attr("cell_tags") = ctags;
+        pymesh.attr("point_tag_groups") = pgroups;
+        pymesh.attr("cell_tag_groups") = cgroups;
+        pymesh.attr("mesh_name") = info.mesh_name;
+        pymesh.attr("description") = info.description;
+        pymesh.attr("unit_time") = info.unit_time;
+        pymesh.attr("unit_coords") = info.unit_coords;
         if (!info.med_nom.empty())
             pymesh.attr("field_data")[py::str("med:nom")] = py::cast(info.med_nom);
         return pymesh;
@@ -359,6 +390,51 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("ansys_read", [](const std::string& path) {
         return meshio_py::mesh_to_py(meshio::read_ansys(path));
+    });
+
+    // Ansys MAPDL coded database (.cdb/.inp). CMBLOCK components are point_sets
+    // / cell_sets, custom Mesh attributes carried through the AnsysInfo
+    // side-channel.
+    m.def("ansysinp_write",
+          [](const std::string& path, py::object pymesh,
+             std::map<std::string, std::vector<std::int64_t>> point_sets,
+             std::map<std::string, std::vector<std::vector<std::int64_t>>> cell_sets) {
+              meshio_py::PyMeshRefs refs;
+              meshio::Mesh cpp = meshio_py::py_to_mesh(pymesh, refs);
+              meshio::AnsysInfo info;
+              info.point_sets = std::move(point_sets);
+              info.cell_sets = std::move(cell_sets);
+              meshio::write_ansysinp(path, cpp, info);
+          });
+    m.def("ansysinp_read", [](const std::string& path) {
+        meshio::AnsysInfo info;
+        py::object pymesh = meshio_py::mesh_to_py(meshio::read_ansysinp(path, info));
+        py::dict psets, csets;
+        for (const auto& kv : info.point_sets)
+            psets[py::str(kv.first)] = py::array_t<std::int64_t>(
+                static_cast<py::ssize_t>(kv.second.size()), kv.second.data());
+        for (const auto& kv : info.cell_sets) {
+            py::list blocks;
+            for (const auto& blk : kv.second)
+                blocks.append(py::array_t<std::int64_t>(
+                    static_cast<py::ssize_t>(blk.size()), blk.data()));
+            csets[py::str(kv.first)] = blocks;
+        }
+        pymesh.attr("point_sets") = psets;
+        pymesh.attr("cell_sets") = csets;
+        return pymesh;
+    });
+
+    // OpenFOAM polyMesh reader (read-only). Boundary patch names are
+    // mesh.cell_tags, carried through the OpenFoamInfo side-channel.
+    m.def("openfoam_read", [](const std::string& path) {
+        meshio::OpenFoamInfo info;
+        py::object pymesh = meshio_py::mesh_to_py(meshio::read_openfoam(path, info));
+        py::dict ctags;
+        for (const auto& kv : info.cell_tags) ctags[py::int_(kv.first)] = kv.second;
+        pymesh.attr("cell_tags") = ctags;
+        pymesh.attr("point_tags") = py::dict();
+        return pymesh;
     });
 
     // WKT (TIN) writer / reader (.wkt).

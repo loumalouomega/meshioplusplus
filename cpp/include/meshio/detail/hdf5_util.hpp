@@ -293,6 +293,26 @@ inline std::vector<std::string> group_links(hid_t loc) {
     return names;
 }
 
+// Like group_links but in HDF5 link *creation* order when the group tracks it
+// (matching h5py iteration on track_order=True files); falls back to name
+// order otherwise. Needed where cell-block order is significant (e.g. MED).
+inline std::vector<std::string> group_links_crt(hid_t loc) {
+    H5G_info_t info;
+    H5Gget_info(loc, &info);
+    std::vector<std::string> names;
+    names.reserve(info.nlinks);
+    for (hsize_t i = 0; i < info.nlinks; ++i) {
+        ssize_t len = H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC,
+                                         i, nullptr, 0, H5P_DEFAULT);
+        if (len < 0) return group_links(loc);  // creation order not indexed
+        std::string name(static_cast<std::size_t>(len), '\0');
+        H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, name.data(),
+                           static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
+        names.push_back(std::move(name));
+    }
+    return names;
+}
+
 // Silence HDF5's default stderr error stack (we convert to exceptions).
 struct SilenceErrors {
     SilenceErrors() {

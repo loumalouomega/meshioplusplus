@@ -5,6 +5,21 @@ This document only describes _breaking_ changes in meshio. If you are interested
 fixes, enhancements etc., best follow [the meshio project on
 GitHub](https://github.com/nschloe/meshio).
 
+## Unreleased
+
+- Added two new formats, `ansysInp` (Ansys/APDL coded database, `.cdb`/`.inp`) and
+  `openfoam` (OpenFOAM polyMesh, read-only), and significantly extended MED/Salome
+  support: multi-mesh files (`meshio.med.read_med_multi`/`write_med_multi`), ragged
+  polygon/Voronoi cell blocks, MED 4.1 bitmask metadata, node-orientation fixes,
+  quadratic `triangle7`/`quad9`/polygon type support, mesh-level metadata
+  (`mesh_name`/`description`/`unit_time`/`unit_coords`), and preserving Gmsh physical
+  groups as MED families on write. `meshio.med.read`/`write` now always use the Python
+  implementation (the C++ `meshio._core.med_read`/`med_write` bindings remain directly
+  callable for the narrower/faster behavior). This work originates from
+  [Simvia's `meshlane` fork](https://github.com/simvia-tech/meshlane) of meshio,
+  contributed by Mariam Kesba, Fatima-Zahra Noussi, and Lucas Sovre, and has been
+  brought back into this repository.
+
 ## v5.1.0 (Dec 11, 2021)
 
 - CellBlocks are no longer tuples, but classes. You can no longer iterate over them like

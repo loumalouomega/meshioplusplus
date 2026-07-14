@@ -66,6 +66,32 @@ TEST(Mesh, CountsAndCellBlock) {
     EXPECT_EQ(empty.num_points(), 0u);
 }
 
+TEST(Mesh, RaggedCellBlocks) {
+    // 1-level ragged (jagged polygon): cells with varying node counts.
+    CellBlock poly;
+    poly.type = "polygon";
+    poly.polygon_rows = {{0, 1, 2}, {1, 2, 3, 4, 5}};
+    EXPECT_TRUE(poly.is_ragged());
+    EXPECT_EQ(poly.num_cells(), 2u);
+    EXPECT_EQ(poly.polygon_rows[1].size(), 5u);
+
+    // 2-level ragged (polyhedron): each cell is a list of faces.
+    CellBlock poh;
+    poh.type = "polyhedron4";
+    poh.polyhedron_rows = {
+        {{1, 2, 5}, {1, 2, 7}, {1, 5, 7}, {2, 5, 7}},
+        {{2, 5, 6}, {2, 6, 7}, {2, 5, 7}, {5, 6, 7}},
+    };
+    EXPECT_TRUE(poh.is_ragged());
+    EXPECT_EQ(poh.num_cells(), 2u);
+    EXPECT_EQ(poh.polyhedron_rows[0].size(), 4u);  // 4 faces
+
+    // A rectangular block is not ragged.
+    CellBlock tri("triangle", NDArray(DType::Int64, {3, 3}));
+    EXPECT_FALSE(tri.is_ragged());
+    EXPECT_EQ(tri.num_cells(), 3u);
+}
+
 TEST(Exceptions, ReadWriteErrorMessages) {
     try {
         throw meshio::ReadError("boom-read");
