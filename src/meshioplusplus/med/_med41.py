@@ -7,6 +7,8 @@ Instead of storing a list of strings, a single 32-bit integer is used where
 each bit represents the presence/absence of a type.
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 _ATTR_ENTITY_MASK = "LEN"
