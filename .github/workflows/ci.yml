@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main, port-to-c++]
+    branches: [main]
   pull_request:
-    branches: [main, port-to-c++]
+    branches: [main]
 
 # Cancel superseded runs on the same ref.
 concurrency:
