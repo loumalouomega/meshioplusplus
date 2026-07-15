@@ -8,7 +8,8 @@
 [![Anaconda Cloud](https://anaconda.org/conda-forge/meshioplusplus/badges/version.svg?=style=flat-square)](https://anaconda.org/conda-forge/meshioplusplus/)
 [![Packaging status](https://repology.org/badge/tiny-repos/python:meshioplusplus.svg)](https://repology.org/project/python:meshioplusplus/versions)
 [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.1173115.svg?style=flat-square)](https://doi.org/10.5281/zenodo.1173115)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
+
 <!-- TODO: mint a new Zenodo DOI for meshio++ before an official release; the
      badge above still points at the original meshio project's record. -->
 [![GitHub stars](https://img.shields.io/github/stars/<org>/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/<org>/meshioplusplus)
