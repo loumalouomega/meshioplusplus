@@ -29,29 +29,37 @@ largest exactly where pure-Python is slowest — **text/ASCII formats**:
   roughly even on a single-block mesh.
 - **MED (HDF5)** — with the Eigen-backed Fortran↔C transpose fused with the
   node reorder, MED is now at parity or better (~1.2× write, ~1.0× read).
-- **Gmsh binary** — the writer buffers each block into one `write` instead of a
-  stream call per scalar: ~1.3× write; reads land ~0.8×.
+- **Gmsh binary** — the writer buffers each block into one `write`, and the
+  reader decodes straight from the slurped buffer into an owning array that is
+  *moved* into the cell block (no copy): ~1.4× write, **~1.8× read**.
+- **VTK binary** — writes at parity (fused gather+byte-swap, one `write`). Reads
+  now **beat** pure-Python on single-cell-type meshes (~1.0–1.1×) because the
+  connectivity `NDArray` is moved straight into the cell block instead of being
+  copied during reconstruction; mixed-topology meshes fall back to a gather and
+  land a little below (~0.8×, still up from ~0.4× before).
 
-For **plain binary dumps** (legacy VTK binary) pure-Python meshio streams the
-whole array through numpy's `fromfile`/`tofile` at C speed, which is hard to
-beat — meshio++ writes are now at parity (~0.9–1.1×) and reads land ~0.7–0.8×
-(MED read is at parity, ~0.9–1.2×), since numpy's single-pass `fromfile` remains
-the ceiling for the reader's parse + byte-swap + cell reconstruction. A
+For **plain binary dumps**, pure-Python meshio streams the whole array through
+numpy's `fromfile`/`tofile` at C speed — a high bar — but with the redundant
+connectivity copies removed (the reader now *adopts* the byte-swapped buffer as
+the cell array in the common single-type case), meshio++'s VTK/Gmsh reads now
+land **at or above parity** there. HDF5 (MED, XDMF) is even-to-faster. A
 Python-only format (MDPA) is the ~1× control.
 
 These formats were previously *slower* in meshio++ (VTK/Gmsh binary and MED read
 all landed at 0.2–0.6×); the current numbers reflect an optimisation pass —
 bulk-buffered binary I/O (one `write` per section, fused gather+byte-swap; bulk
-`memcpy` decode and an identity-remap fast path on read), passing the int64
-connectivity buffer straight to cell reconstruction (no copy), a real parallel
+`memcpy` decode on read), **zero-copy cell reconstruction** (the connectivity
+buffer is reshaped and moved into the cell block, not copied), a real parallel
 backend (OpenMP by default), thread-capping for the memory-bandwidth-bound
 loops, and Eigen for the MED transpose. Output stays byte-identical throughout
 (the round-trip and reference-file tests are the gate).
 
 This is the honest shape of it: meshio++ is a large win for text and
-compute-bound formats (ASCII, zlib) and now at least at parity on the binary and
-HDF5 formats, with plain-binary *reads* the one place numpy's vectorised I/O
-still leads.
+compute-bound formats (ASCII, zlib) and now at or above parity on the binary and
+HDF5 formats too — including single-cell-type binary *reads*, which the zero-copy
+reconstruction brought level with (or past) numpy's vectorised `fromfile`.
+Mixed-topology binary reads, which can't adopt the buffer directly, land just
+under parity.
 
 ## Real mesh (`example.msh`)
 
@@ -74,8 +82,8 @@ constant on non-trivial meshes — but the edges behave differently by format:
   real mesh realises the full speedup; a tiny one does not.
 - **Compressed binary (VTU + zlib)** — the OpenMP-parallel zlib compression
   *grows* with size as there is more work to spread across cores.
-- **Plain binary (VTK)** — writes track parity; reads stay a little below,
-  since numpy's fully vectorised `fromfile` is a hard single-pass baseline.
+- **Plain binary (VTK/Gmsh)** — writes track parity; single-cell-type reads now
+  match or beat numpy (the connectivity buffer is adopted with no copy).
 
 ![speedup vs mesh size](/benchmarks/benchmark_scaling.svg)
 

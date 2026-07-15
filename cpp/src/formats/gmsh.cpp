@@ -334,7 +334,8 @@ struct E41 {
     std::size_t n = 0;
     std::size_t count = 0;
     int entity_tag = 0;
-    std::vector<std::int64_t> conn;  // count*n, 0-based gmsh node ids
+    NDArray conn;  // (count, n) Int64, 0-based gmsh node ids; moved into the
+                   // CellBlock directly when the tag remap is the identity.
 };
 
 void read_nodes_41(Cursor& cur, bool is_ascii, int data_size, NDArray& points,
@@ -423,26 +424,28 @@ void read_elements_41(Cursor& cur, bool is_ascii, int data_size,
         blk.count = static_cast<std::size_t>(num_ele);
         blk.entity_tag = entity_tag;
         const std::size_t nez = static_cast<std::size_t>(num_ele);
+        blk.conn = NDArray(DType::Int64, {nez, n});
+        std::int64_t* dst = blk.conn.as<std::int64_t>();
         if (!is_ascii && data_size == 8) {
             // Each element is [tag, node0..node(n-1)] u64, native-endian and
-            // contiguous: one memcpy, then extract the nodes (drop the tag).
+            // contiguous. Decode the nodes straight from the slurped buffer into
+            // the owning connectivity array (drop the tag), one parallel pass.
             const std::size_t stride = n + 1;
-            std::vector<std::uint64_t> raw(nez * stride);
-            std::memcpy(raw.data(), cur.buf.data() + cur.pos, nez * stride * 8);
-            cur.pos += nez * stride * 8;
-            blk.conn.resize(nez * n);
-            std::int64_t* dst = blk.conn.data();
-            const std::uint64_t* src = raw.data();
+            const char* base = cur.buf.data() + cur.pos;
             parallel_for_bw(nez, [&](std::size_t e) {
-                const std::uint64_t* row = src + e * stride;
-                for (std::size_t j = 0; j < n; ++j)
-                    dst[e * n + j] = static_cast<std::int64_t>(row[j + 1]) - 1;
+                const char* row = base + (e * stride + 1) * 8;  // skip element tag
+                for (std::size_t j = 0; j < n; ++j) {
+                    std::uint64_t v;
+                    std::memcpy(&v, row + j * 8, 8);
+                    dst[e * n + j] = static_cast<std::int64_t>(v) - 1;
+                }
             });
+            cur.pos += nez * stride * 8;
         } else {
-            blk.conn.reserve(nez * n);
+            std::size_t p = 0;
             for (std::int64_t e = 0; e < num_ele; ++e) {
                 rd_size();  // element tag
-                for (std::size_t j = 0; j < n; ++j) blk.conn.push_back(rd_size() - 1);
+                for (std::size_t j = 0; j < n; ++j) dst[p++] = rd_size() - 1;
             }
         }
         blocks.push_back(std::move(blk));
@@ -514,29 +517,33 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
     mesh.point_data.emplace("gmsh:dim_tags", std::move(dt));
 
     std::vector<NDArray> geom_blocks;
-    for (const auto& b : eblocks) {
+    for (auto& b : eblocks) {
         const std::vector<int>& perm = gmsh_to_meshio_perm(b.type);
-        NDArray data(DType::Int64, {b.count, b.n});
-        std::int64_t* dp = data.as<std::int64_t>();
         const int* prm = perm.empty() ? nullptr : perm.data();
         if (remap_identity && !prm) {
-            // Identity remap, no reorder -> the connectivity is already final.
-            std::memcpy(dp, b.conn.data(), b.count * b.n * 8);
-        } else if (remap_identity) {
-            parallel_for_bw(b.count, [&](std::size_t r) {
-                for (std::size_t j = 0; j < b.n; ++j)
-                    dp[r * b.n + j] = b.conn[r * b.n + static_cast<std::size_t>(prm[j])];
-            });
+            // Identity remap, no reorder -> the connectivity is already final:
+            // move the owning (count, n) array straight into the cell block.
+            mesh.cells.emplace_back(b.type, std::move(b.conn));
         } else {
-            // Gather through the prebuilt read-only remap -> parallel over rows.
-            parallel_for_bw(b.count, [&](std::size_t r) {
-                for (std::size_t j = 0; j < b.n; ++j) {
-                    std::size_t src = prm ? static_cast<std::size_t>(prm[j]) : j;
-                    dp[r * b.n + j] = remap[static_cast<std::size_t>(b.conn[r * b.n + src])];
-                }
-            });
+            NDArray data(DType::Int64, {b.count, b.n});
+            std::int64_t* dp = data.as<std::int64_t>();
+            const std::int64_t* cn = b.conn.as<std::int64_t>();
+            if (remap_identity) {
+                parallel_for_bw(b.count, [&](std::size_t r) {
+                    for (std::size_t j = 0; j < b.n; ++j)
+                        dp[r * b.n + j] = cn[r * b.n + static_cast<std::size_t>(prm[j])];
+                });
+            } else {
+                // Gather through the prebuilt read-only remap -> parallel by row.
+                parallel_for_bw(b.count, [&](std::size_t r) {
+                    for (std::size_t j = 0; j < b.n; ++j) {
+                        std::size_t src = prm ? static_cast<std::size_t>(prm[j]) : j;
+                        dp[r * b.n + j] = remap[static_cast<std::size_t>(cn[r * b.n + src])];
+                    }
+                });
+            }
+            mesh.cells.emplace_back(b.type, std::move(data));
         }
-        mesh.cells.emplace_back(b.type, std::move(data));
 
         NDArray ge(DType::Int32, {b.count});
         std::int32_t* gep = ge.as<std::int32_t>();

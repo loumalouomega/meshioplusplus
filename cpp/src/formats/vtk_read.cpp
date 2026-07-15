@@ -169,6 +169,7 @@ Mesh read_vtk(const std::string& path) {
     // directly (VTK 5.1), skipping a to_int64 copy of the whole connectivity.
     NDArray conn_nd;
     const std::int64_t* conn_ptr = nullptr;
+    bool conn_owned = false;  // conn_nd owns the int64 connectivity (VTK 5.1)
     std::map<std::string, NDArray> cell_data_raw;
     std::string active;  // POINT_DATA or CELL_DATA
 
@@ -206,6 +207,7 @@ Mesh read_vtk(const std::string& path) {
                 if (conn_nd.dtype() == DType::Int64) {
                     // Already int64 (vtktypeint64) -> read the buffer directly.
                     conn_ptr = conn_nd.as<std::int64_t>();
+                    conn_owned = true;
                 } else {
                     conn = to_int64(conn_nd);
                     conn_ptr = conn.data();
@@ -278,8 +280,44 @@ Mesh read_vtk(const std::string& path) {
         }
     }
 
-    detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh.cells,
-                              mesh.cell_data);
+    // Fast path (zero copy): a single cell type spanning all cells, non-special,
+    // with an identity VTK->meshio node order and regular end-offsets
+    // (offsets[i] == (i+1)*n) means the owning int64 connectivity NDArray is
+    // already the block data -> reshape and move it straight into the CellBlock
+    // instead of gathering a fresh copy.
+    bool moved = false;
+    if (conn_owned && !types.empty()) {
+        const int vt = static_cast<int>(types[0]);
+        bool single = true;
+        for (std::size_t i = 1; i < types.size(); ++i)
+            if (types[i] != types[0]) {
+                single = false;
+                break;
+            }
+        const auto& tmap = vtk_to_meshio_type();
+        auto it = tmap.find(vt);
+        if (single && it != tmap.end() && !is_special_cell(it->second) &&
+            vtk_to_meshio_order(vt).empty()) {
+            auto nit = num_nodes_per_cell().find(it->second);
+            if (nit != num_nodes_per_cell().end()) {
+                const std::size_t n = static_cast<std::size_t>(nit->second);
+                const std::size_t ncells = types.size();
+                bool regular = conn_nd.size() == ncells * n && offsets.size() == ncells;
+                for (std::size_t i = 0; regular && i < ncells; ++i)
+                    if (offsets[i] != static_cast<std::int64_t>((i + 1) * n)) regular = false;
+                if (regular) {
+                    conn_nd.reshape({ncells, n});
+                    mesh.cells.emplace_back(it->second, std::move(conn_nd));
+                    for (auto& kv : cell_data_raw)
+                        mesh.cell_data[kv.first].push_back(std::move(kv.second));
+                    moved = true;
+                }
+            }
+        }
+    }
+    if (!moved)
+        detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh.cells,
+                                  mesh.cell_data);
     return mesh;
 }
 

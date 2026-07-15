@@ -214,9 +214,10 @@ meshio++'s biggest wins are the parallel and text paths: **VTU binary+zlib
 ASCII ~7× write / ~5× read**, and mixed-topology **XDMF read ~10×**. The binary
 and HDF5 formats that used to be *slower* — VTK/Gmsh binary and MED — are now at
 or above parity after an optimisation pass (bulk-buffered binary I/O, a real
-parallel backend, and an Eigen-backed MED transpose); plain-binary **reads** are
-the one place numpy's single-pass `fromfile` still leads. Output stays
-byte-identical throughout.
+parallel backend, an Eigen-backed MED transpose, and **zero-copy cell
+reconstruction** that moves the connectivity buffer straight into the mesh);
+single-cell-type binary **reads** now match or beat numpy's `fromfile`
+(Gmsh read ~1.8×, VTK read ~1.0–1.1×). Output stays byte-identical throughout.
 
 The speedup is per-element: text/parallel formats climb out of the small-mesh
 regime and plateau (large meshes realise the full speedup):

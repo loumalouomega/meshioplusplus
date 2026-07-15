@@ -13,6 +13,7 @@
 
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
 
@@ -66,58 +67,149 @@ inline void swap_bytes(char* p, int n) {
     for (int i = 0; i < n / 2; ++i) std::swap(p[i], p[n - 1 - i]);
 }
 
-inline std::int64_t bin_read_int(std::istream& in, int size, bool swap) {
-    char buf[8];
-    in.read(buf, size);
-    if (in.gcount() != size) throw ReadError("UGRID: unexpected end of file");
-    if (swap) swap_bytes(buf, size);
+// Read one int/float of `size` bytes from the slurped buffer at `pos`
+// (advancing it), swapping for big-endian files. Reading from memory avoids a
+// virtual istream call per value.
+inline std::int64_t buf_read_int(const std::string& buf, std::size_t& pos, int size,
+                                 bool swap) {
+    if (pos + static_cast<std::size_t>(size) > buf.size())
+        throw ReadError("UGRID: unexpected end of file");
+    char tmp[8];
+    std::memcpy(tmp, buf.data() + pos, static_cast<std::size_t>(size));
+    pos += static_cast<std::size_t>(size);
+    if (swap) swap_bytes(tmp, size);
     if (size == 4) {
         std::int32_t v;
-        std::memcpy(&v, buf, 4);
+        std::memcpy(&v, tmp, 4);
         return v;
     }
     std::int64_t v;
-    std::memcpy(&v, buf, 8);
+    std::memcpy(&v, tmp, 8);
     return v;
 }
 
-inline double bin_read_float(std::istream& in, int size, bool swap) {
-    char buf[8];
-    in.read(buf, size);
-    if (in.gcount() != size) throw ReadError("UGRID: unexpected end of file");
-    if (swap) swap_bytes(buf, size);
+inline double buf_read_float(const std::string& buf, std::size_t& pos, int size,
+                             bool swap) {
+    if (pos + static_cast<std::size_t>(size) > buf.size())
+        throw ReadError("UGRID: unexpected end of file");
+    char tmp[8];
+    std::memcpy(tmp, buf.data() + pos, static_cast<std::size_t>(size));
+    pos += static_cast<std::size_t>(size);
+    if (swap) swap_bytes(tmp, size);
     if (size == 4) {
         float v;
-        std::memcpy(&v, buf, 4);
+        std::memcpy(&v, tmp, 4);
         return v;
     }
     double v;
-    std::memcpy(&v, buf, 8);
+    std::memcpy(&v, tmp, 8);
     return v;
 }
 
-inline void bin_write_int(std::ostream& os, std::int64_t v, int size, bool swap) {
-    char buf[8];
+// Append one int/float of `size` bytes to an in-memory output buffer (flushed
+// to the stream in a single write) instead of a stream call per value.
+inline void buf_write_int(std::string& out, std::int64_t v, int size, bool swap) {
+    char tmp[8];
     if (size == 4) {
         std::int32_t t = static_cast<std::int32_t>(v);
-        std::memcpy(buf, &t, 4);
+        std::memcpy(tmp, &t, 4);
     } else {
-        std::memcpy(buf, &v, 8);
+        std::memcpy(tmp, &v, 8);
     }
-    if (swap) swap_bytes(buf, size);
-    os.write(buf, size);
+    if (swap) swap_bytes(tmp, size);
+    out.append(tmp, static_cast<std::size_t>(size));
 }
 
-inline void bin_write_float(std::ostream& os, double v, int size, bool swap) {
-    char buf[8];
+inline void buf_write_float(std::string& out, double v, int size, bool swap) {
+    char tmp[8];
     if (size == 4) {
         float t = static_cast<float>(v);
-        std::memcpy(buf, &t, 4);
+        std::memcpy(tmp, &t, 4);
     } else {
-        std::memcpy(buf, &v, 8);
+        std::memcpy(tmp, &v, 8);
     }
-    if (swap) swap_bytes(buf, size);
-    os.write(buf, size);
+    if (swap) swap_bytes(tmp, size);
+    out.append(tmp, static_cast<std::size_t>(size));
+}
+
+// Bulk-decode `count` floats (float_size bytes, little/big-endian) from buf at
+// pos into dst (dtype fdt), one parallel pass. Replaces the per-value loop.
+inline void bulk_read_floats(const std::string& buf, std::size_t& pos, std::size_t count,
+                             NDArray& dst, int float_size, bool swap) {
+    if (pos + count * static_cast<std::size_t>(float_size) > buf.size())
+        throw ReadError("UGRID: unexpected end of file");
+    const char* base = buf.data() + pos;
+    detail::dispatch_dtype(dst.dtype(), [&]<class T>() {
+        T* d = dst.as<T>();
+        parallel_for_bw(count, [&](std::size_t i) {
+            char tmp[8];
+            std::memcpy(tmp, base + i * float_size, static_cast<std::size_t>(float_size));
+            if (swap) swap_bytes(tmp, float_size);
+            double v;
+            if (float_size == 4) {
+                float t;
+                std::memcpy(&t, tmp, 4);
+                v = t;
+            } else {
+                std::memcpy(&v, tmp, 8);
+            }
+            d[i] = static_cast<T>(v);
+        });
+    });
+    pos += count * static_cast<std::size_t>(float_size);
+}
+
+// Bulk-decode a (nrows, k) integer block (int_size bytes, little/big-endian)
+// from buf at pos into dst (dtype idt), applying `shift` (e.g. -1 for the
+// 1-based->0-based conversion) and an optional per-row column permutation
+// (dst column j <- source column perm[j]). One parallel pass over rows.
+inline void bulk_read_ints(const std::string& buf, std::size_t& pos, std::size_t nrows,
+                           std::size_t k, const int* perm, NDArray& dst, int int_size,
+                           bool swap, std::int64_t shift) {
+    const std::size_t total = nrows * k;
+    if (pos + total * static_cast<std::size_t>(int_size) > buf.size())
+        throw ReadError("UGRID: unexpected end of file");
+    const char* base = buf.data() + pos;
+    // Fast path: no column permutation AND the dst element width equals the
+    // on-disk int width (true for connectivity, whose dtype is Int32/Int64 to
+    // match int_size). The block then copies verbatim; a single parallel pass
+    // applies the byte-swap (big-endian only) and the +shift in place.
+    if (!perm && dtype_size(dst.dtype()) == static_cast<std::size_t>(int_size)) {
+        std::memcpy(dst.data(), base, total * static_cast<std::size_t>(int_size));
+        detail::dispatch_dtype(dst.dtype(), [&]<class T>() {
+            T* d = dst.as<T>();
+            if (swap || shift != 0)
+                parallel_for_bw(total, [&](std::size_t i) {
+                    if (swap) swap_bytes(reinterpret_cast<char*>(d + i), int_size);
+                    d[i] = static_cast<T>(d[i] + shift);
+                });
+        });
+    } else {
+        // General strided path: dst column j <- source column perm[j] (or j),
+        // with dtype conversion (e.g. surface tags are Int64 for a 4-byte file).
+        detail::dispatch_dtype(dst.dtype(), [&]<class T>() {
+            T* d = dst.as<T>();
+            parallel_for_bw(nrows, [&](std::size_t r) {
+                for (std::size_t j = 0; j < k; ++j) {
+                    std::size_t sc = perm ? static_cast<std::size_t>(perm[j]) : j;
+                    char tmp[8];
+                    std::memcpy(tmp, base + (r * k + sc) * int_size,
+                                static_cast<std::size_t>(int_size));
+                    if (swap) swap_bytes(tmp, int_size);
+                    std::int64_t v;
+                    if (int_size == 4) {
+                        std::int32_t t;
+                        std::memcpy(&t, tmp, 4);
+                        v = t;
+                    } else {
+                        std::memcpy(&v, tmp, 8);
+                    }
+                    d[r * k + j] = static_cast<T>(v + shift);
+                }
+            });
+        });
+    }
+    pos += total * static_cast<std::size_t>(int_size);
 }
 
 // Volume element keywords, in UGRID write/read order, with node counts.
@@ -131,17 +223,21 @@ const VolSpec kVolume[] = {
 Mesh read_ugrid(const std::string& path) {
     UgridType ft = resolve_type(path);
 
-    // Buffer for ascii tokenizing.
+    // Slurp the whole file once (bulk seek+read), for both ascii tokenizing and
+    // binary in-memory decoding.
     std::ifstream in(path, std::ios::binary);
     if (!in) throw ReadError("Could not open file: " + path);
-
+    in.seekg(0, std::ios::end);
+    std::streamoff flen = in.tellg();
+    in.seekg(0, std::ios::beg);
     std::string buf;
-    std::size_t tok_pos = 0;
-    if (ft.ascii) {
-        buf.assign((std::istreambuf_iterator<char>(in)),
-                   std::istreambuf_iterator<char>());
+    if (flen > 0) {
+        buf.resize(static_cast<std::size_t>(flen));
+        in.read(buf.data(), flen);
     }
 
+    std::size_t tok_pos = 0;  // ascii tokenizer cursor
+    std::size_t bpos = 0;     // binary byte cursor
     const bool swap = ft.big_endian;  // host little-endian
 
     auto next_token = [&]() -> std::string {
@@ -157,11 +253,11 @@ Mesh read_ugrid(const std::string& path) {
     };
     auto next_int = [&]() -> std::int64_t {
         if (ft.ascii) return std::strtoll(next_token().c_str(), nullptr, 10);
-        return bin_read_int(in, ft.int_size, swap);
+        return buf_read_int(buf, bpos, ft.int_size, swap);
     };
     auto next_float = [&]() -> double {
         if (ft.ascii) return std::strtod(next_token().c_str(), nullptr);
-        return bin_read_float(in, ft.float_size, swap);
+        return buf_read_float(buf, bpos, ft.float_size, swap);
     };
     auto skip_marker = [&]() {
         if (ft.fortran) next_int();
@@ -184,12 +280,17 @@ Mesh read_ugrid(const std::string& path) {
     // Points (always 3 coordinates).
     Mesh mesh;
     mesh.points = NDArray(fdt, {static_cast<std::size_t>(npoints), 3});
-    for (std::int64_t i = 0; i < npoints * 3; ++i) {
-        double v = next_float();
-        if (fdt == DType::Float64)
-            mesh.points.as<double>()[i] = v;
-        else
-            mesh.points.as<float>()[i] = static_cast<float>(v);
+    if (ft.ascii) {
+        for (std::int64_t i = 0; i < npoints * 3; ++i) {
+            double v = next_float();
+            if (fdt == DType::Float64)
+                mesh.points.as<double>()[i] = v;
+            else
+                mesh.points.as<float>()[i] = static_cast<float>(v);
+        }
+    } else {
+        bulk_read_floats(buf, bpos, static_cast<std::size_t>(npoints) * 3, mesh.points,
+                         ft.float_size, swap);
     }
 
     auto store_int = [&](NDArray& a, std::int64_t i, std::int64_t v) {
@@ -209,7 +310,11 @@ Mesh read_ugrid(const std::string& path) {
         if (n == 0) continue;
         int k = surf[s].second;
         NDArray data(idt, {static_cast<std::size_t>(n), static_cast<std::size_t>(k)});
-        for (std::int64_t i = 0; i < n * k; ++i) store_int(data, i, next_int() - 1);
+        if (ft.ascii)
+            for (std::int64_t i = 0; i < n * k; ++i) store_int(data, i, next_int() - 1);
+        else
+            bulk_read_ints(buf, bpos, static_cast<std::size_t>(n),
+                           static_cast<std::size_t>(k), nullptr, data, ft.int_size, swap, -1);
         mesh.cells.emplace_back(surf[s].first, std::move(data));
     }
 
@@ -218,7 +323,11 @@ Mesh read_ugrid(const std::string& path) {
         std::int64_t n = surf_n[s];
         if (n == 0) continue;
         NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});
-        for (std::int64_t i = 0; i < n; ++i) ref.as<std::int64_t>()[i] = next_int();
+        if (ft.ascii)
+            for (std::int64_t i = 0; i < n; ++i) ref.as<std::int64_t>()[i] = next_int();
+        else
+            bulk_read_ints(buf, bpos, static_cast<std::size_t>(n), 1, nullptr, ref,
+                           ft.int_size, swap, 0);
         refs.push_back(std::move(ref));
     }
 
@@ -227,18 +336,21 @@ Mesh read_ugrid(const std::string& path) {
         std::int64_t n = counts[3 + vi];
         if (n == 0) continue;
         int k = kVolume[vi].nverts;
+        const bool is_pyramid = std::strcmp(kVolume[vi].type, "pyramid") == 0;
+        // ugrid -> meshio pyramid node order: out[:, [1, 0, 3, 4, 2]].
+        static const int pyramid_perm[5] = {1, 0, 3, 4, 2};
+        const int* perm = is_pyramid ? pyramid_perm : nullptr;
         NDArray data(idt, {static_cast<std::size_t>(n), static_cast<std::size_t>(k)});
-        for (std::int64_t i = 0; i < n; ++i) {
-            std::int64_t row[8];
-            for (int j = 0; j < k; ++j) row[j] = next_int() - 1;
-            if (std::string(kVolume[vi].type) == "pyramid") {
-                // ugrid -> meshio: out[:, [1, 0, 3, 4, 2]]
-                const int perm[5] = {1, 0, 3, 4, 2};
-                for (int j = 0; j < 5; ++j)
-                    store_int(data, i * 5 + j, row[perm[j]]);
-            } else {
-                for (int j = 0; j < k; ++j) store_int(data, i * k + j, row[j]);
+        if (ft.ascii) {
+            for (std::int64_t i = 0; i < n; ++i) {
+                std::int64_t row[8];
+                for (int j = 0; j < k; ++j) row[j] = next_int() - 1;
+                for (int j = 0; j < k; ++j)
+                    store_int(data, i * k + j, row[perm ? perm[j] : j]);
             }
+        } else {
+            bulk_read_ints(buf, bpos, static_cast<std::size_t>(n),
+                           static_cast<std::size_t>(k), perm, data, ft.int_size, swap, -1);
         }
         mesh.cells.emplace_back(kVolume[vi].type, std::move(data));
         // Volume elements carry zero ref tags.
@@ -359,8 +471,10 @@ void write_ugrid(const std::string& path, const Mesh& mesh) {
     }
 
     // ---- binary branch ----
-    auto wint = [&](std::int64_t v) { bin_write_int(os, v, ft.int_size, swap); };
-    auto wflt = [&](double v) { bin_write_float(os, v, ft.float_size, swap); };
+    // Assemble the whole file in one buffer, then a single os.write.
+    std::string out;
+    auto wint = [&](std::int64_t v) { buf_write_int(out, v, ft.int_size, swap); };
+    auto wflt = [&](double v) { buf_write_float(out, v, ft.float_size, swap); };
 
     // Fortran record-length markers; values are not validated on read, so we
     // emit each record's nominal byte length in the file representation.
@@ -370,6 +484,7 @@ void write_ugrid(const std::string& path, const Mesh& mesh) {
                    counts[5] * 6 + counts[6] * 8) *
                   ft.int_size;
     body_bytes += (counts[1] + counts[2]) * ft.int_size;  // surface tags
+    out.reserve(static_cast<std::size_t>(header_bytes + body_bytes) + 4 * ft.int_size);
 
     if (ft.fortran) wint(header_bytes);
     for (int i = 0; i < 7; ++i) wint(counts[i]);
@@ -416,6 +531,8 @@ void write_ugrid(const std::string& path, const Mesh& mesh) {
         }
     }
     if (ft.fortran) wint(body_bytes);
+
+    os.write(out.data(), static_cast<std::streamsize>(out.size()));
 }
 
 }  // namespace meshioplusplus
