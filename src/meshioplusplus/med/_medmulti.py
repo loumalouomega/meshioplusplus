@@ -282,7 +282,7 @@ def _write_med_multi(filename, meshes, mesh_names=None, med_version="4.1.0", **k
             "DES",
             _bytes_attr(
                 getattr(mesh, "description", ""),
-                fallback=np.bytes_("Mesh created with meshio"),
+                fallback=np.bytes_("Mesh created with meshio++"),
             ),
         )
         med_mesh.attrs.create("TYP", 0)

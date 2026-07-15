@@ -718,7 +718,7 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
     uni = getattr(mesh, "unit_coords", "")
     desc = getattr(mesh, "description", None)
     if not desc:
-        desc = "Mesh created with meshio"
+        desc = "Mesh created with meshio++"
     med_mesh.attrs.create(
         "UNT", np.bytes_(unt.encode("latin-1")) if unt else numpy_void_str
     )
