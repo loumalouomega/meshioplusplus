@@ -1,3 +1,21 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+
+// System includes
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -6,8 +24,10 @@
 #include <string>
 #include <vector>
 
+// External includes
 #include "pugixml.hpp"
 
+// Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"

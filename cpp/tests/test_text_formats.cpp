@@ -1,8 +1,24 @@
-// Round-trip tests for the plain-text single-signature formats:
-// medit, nastran, abaqus, avsucd, permas, tecplot, ugrid, netgen.
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 
+// External includes
 #include <gtest/gtest.h>
 
+// Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"

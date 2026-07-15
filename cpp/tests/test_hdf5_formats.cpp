@@ -1,9 +1,23 @@
-// Round-trip tests for the HDF5-backed formats. Compiled to nothing unless the
-// extension is built with MESHIOPLUSPLUS_HAS_HDF5 (else the Python fallback handles
-// these formats and there is no C++ path to test).
-
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+// External includes
 #include <gtest/gtest.h>
 
+// Project includes
 #include "mesh_fixtures.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5

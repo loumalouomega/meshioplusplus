@@ -1,9 +1,25 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
 
-#include "meshioplusplus/formats/exodus.hpp"
-
+// External includes
 #include <netcdf.h>
 
+// System includes
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -14,6 +30,8 @@
 #include <unordered_map>
 #include <vector>
 
+// Project includes
+#include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 

@@ -1,17 +1,52 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 #pragma once
-//
-// Cell-type metadata, ported 1:1 from the Python sources so C++ and Python
-// share a single definition:
-//   - num_nodes_per_cell  <- src/meshio/_common.py
-//   - topological_dimension <- src/meshio/_mesh.py
-//
-// See <https://github.com/nschloe/meshio/wiki/Node-ordering-in-cells>.
 
+/**
+ * @file types.hpp
+ * @brief Cell-type metadata tables, ported 1:1 from the Python reference so
+ * C++ and Python agree on a single definition.
+ *
+ * `num_nodes_per_cell()` is ported from `src/meshio/_common.py` and
+ * `topological_dimension()` from `src/meshio/_mesh.py`. Both are keyed by
+ * meshio's own cell-type name strings (e.g. `"triangle"`, `"tetra10"`,
+ * `"hexahedron20"`) rather than any per-format native name — each format
+ * module maps its own names to/from these before consulting these tables.
+ * See <https://github.com/nschloe/meshio/wiki/Node-ordering-in-cells> for
+ * the node-ordering convention these types assume.
+ */
+
+// System includes
 #include <string>
 #include <unordered_map>
 
 namespace meshioplusplus {
 
+/**
+ * @brief Table mapping a meshio cell-type name to its fixed node count.
+ *
+ * Lazily constructed once (function-local `static`) and returned by
+ * `const&`; only rectangular, fixed-node-count cell types appear here — cell
+ * types whose node count varies per cell (`"polygon"`, the VTK_LAGRANGE_*
+ * family) are represented via `CellBlock`'s ragged storage instead and are
+ * intentionally absent. Covers meshio's linear through high-order elements
+ * (e.g. `"line"` through `"line11"`, `"tetra"` through `"tetra286"`).
+ * @return Reference to the process-wide singleton lookup table.
+ */
 inline const std::unordered_map<std::string, int>& num_nodes_per_cell() {
     static const std::unordered_map<std::string, int> m = {
         {"vertex", 1},
@@ -94,6 +129,18 @@ inline const std::unordered_map<std::string, int>& num_nodes_per_cell() {
     return m;
 }
 
+/**
+ * @brief Table mapping a meshio cell-type name to its topological dimension
+ * (0 = vertex, 1 = line/curve, 2 = surface, 3 = volume).
+ *
+ * Lazily constructed once (function-local `static`) and returned by
+ * `const&`. Includes the standard meshio types plus the VTK Lagrange
+ * high-order family (`"VTK_LAGRANGE_CURVE"`, `..._TRIANGLE`,
+ * `..._QUADRILATERAL`, `..._TETRAHEDRON`, `..._HEXAHEDRON`, `..._WEDGE`,
+ * `..._PYRAMID`), which carry a variable node count per cell (see
+ * `vtk_common.hpp`'s `is_special_cell`) but still have a fixed dimension.
+ * @return Reference to the process-wide singleton lookup table.
+ */
 inline const std::unordered_map<std::string, int>& topological_dimension() {
     static const std::unordered_map<std::string, int> m = {
         {"line", 1},      {"polygon", 2},   {"triangle", 2},   {"quad", 2},

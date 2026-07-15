@@ -1,7 +1,22 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
-#include "meshioplusplus/formats/h5m.hpp"
-
+// System includes
 #include <ctime>
 #include <cstdint>
 #include <cstring>
@@ -9,6 +24,8 @@
 #include <unordered_map>
 #include <vector>
 
+// Project includes
+#include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"

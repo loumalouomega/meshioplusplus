@@ -1,5 +1,21 @@
-#include "meshioplusplus/formats/dolfin.hpp"
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 
+// System includes
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -8,9 +24,13 @@
 #include <string>
 #include <vector>
 
+// External includes
+#include "pugixml.hpp"
+
+// Project includes
+#include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
-#include "pugixml.hpp"
 
 namespace fs = std::filesystem;
 

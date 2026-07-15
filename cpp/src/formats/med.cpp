@@ -1,7 +1,22 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
-#include "meshioplusplus/formats/med.hpp"
-
+// System includes
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -13,16 +28,19 @@
 #include <utility>
 #include <vector>
 
+// External includes
+#ifdef MESHIOPLUSPLUS_HAS_EIGEN
+#include <Eigen/Dense>
+#endif
+
+// Project includes
+#include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
-
-#ifdef MESHIOPLUSPLUS_HAS_EIGEN
-#include <Eigen/Dense>
-#endif
 
 namespace meshioplusplus {
 

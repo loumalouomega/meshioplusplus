@@ -1,10 +1,40 @@
-#pragma once
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
 //
-// Shared reconstruction of meshio cell blocks from the VTK/VTU
-// connectivity + end-offsets + types representation. Used by the VTU reader and
-// the VTK 5.1 reader (which share this exact layout). Ported from
-// vtk_cells_from_data in _vtk_common.py.
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+#pragma once
 
+/**
+ * @file vtk_cells.hpp
+ * @brief Shared reconstruction of meshio cell blocks from the VTK/VTU
+ * connectivity + end-offsets + types representation.
+ *
+ * Both the VTU reader and the VTK 5.1 legacy reader store cells in the same
+ * layout — a flat `connectivity` array of node indices, an `offsets` array
+ * giving each cell's end position within it, and a `types` array giving each
+ * cell's VTK type id — so this header's `detail::reconstruct_cells` (ported
+ * from `vtk_cells_from_data` in `_vtk_common.py`) is the single place that
+ * turns that layout back into meshio's list-of-`CellBlock`s representation,
+ * grouping consecutive same-type runs and further splitting runs of
+ * variable-node-count types (polygon, VTK_LAGRANGE_*) by per-cell size.
+ * It leans heavily on `parallel_for_bw`/`parallel_copy_i64` (memory-gather
+ * and memory-fault-bound work) since reconstructing connectivity is pure
+ * data movement, not compute.
+ */
+
+// System includes
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +42,7 @@
 #include <string>
 #include <vector>
 
+// Project includes
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -21,9 +52,24 @@
 namespace meshioplusplus {
 namespace detail {
 
-// Copy `n` int64 in contiguous chunks across the bandwidth threads. The
-// destination is a fresh allocation, so most of the cost is first-touch page
-// faults — servicing them concurrently beats a single serial memcpy.
+/**
+ * @brief Copies `n` `int64_t` elements from `src` to `dst`, splitting the
+ * copy into large contiguous chunks run across `parallel_for_bw`'s
+ * bandwidth-capped threads.
+ *
+ * `dst` is assumed to be a fresh allocation, so most of the wall-clock cost
+ * is first-touch page faults (the OS zeroing/mapping pages on first write)
+ * rather than the memcpy itself — servicing those faults concurrently across
+ * a few threads beats one thread doing a single serial `memcpy`. Falls back
+ * to a single sequential `memcpy` when `n` doesn't even fill one 4 MiB chunk
+ * (`nchunks <= 1`). Uses `grain=1` so every chunk (already coarse at 512Ki
+ * elements) dispatches individually rather than being batched further by the
+ * default grain.
+ * @param dst Destination buffer, at least `n` elements, ideally freshly
+ *            allocated (unfaulted) memory.
+ * @param src Source buffer, at least `n` elements.
+ * @param n Number of `int64_t` elements to copy.
+ */
 inline void parallel_copy_i64(std::int64_t* dst, const std::int64_t* src, std::size_t n) {
     constexpr std::size_t kChunk = 1u << 19;  // 512Ki elements (4 MiB) per task
     const std::size_t nchunks = (n + kChunk - 1) / kChunk;
@@ -43,6 +89,17 @@ inline void parallel_copy_i64(std::int64_t* dst, const std::int64_t* src, std::s
         1);
 }
 
+/**
+ * @brief Extracts rows `[r0, r1)` of a 2-D (or column-vector) `NDArray` into
+ * a new, freshly-allocated `NDArray`.
+ *
+ * The output buffer is allocated via `NDArray::uninit` (skipping the
+ * zero-fill) since the single `memcpy` below fully overwrites it.
+ * @param a Source array; row size is `a.shape()[1]` if 2-D, else 1.
+ * @param r0 First row to include (inclusive).
+ * @param r1 One past the last row to include (exclusive).
+ * @return A new owning `NDArray` with `r1 - r0` rows, same dtype/row-width as `a`.
+ */
 inline NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
     std::size_t nc = a.shape().size() >= 2 ? a.shape()[1] : 1;
     std::size_t isz = dtype_size(a.dtype());
@@ -56,10 +113,47 @@ inline NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
     return out;
 }
 
-// `offsets` are end offsets (one per cell): offsets[i] is the index in
-// `connectivity` just past cell i's last node. `conn` is a raw pointer so the
-// caller can pass an int64 NDArray buffer directly (VTK 5.1 connectivity is
-// already vtktypeint64) without an intermediate to_int64 copy.
+/**
+ * @brief Reconstructs meshio `CellBlock`s (and the matching per-block
+ * `cell_data`) from the VTK/VTU flat connectivity + end-offsets + types
+ * representation.
+ *
+ * Ported from `vtk_cells_from_data` in `_vtk_common.py`; shared by the VTU
+ * reader and the VTK 5.1 legacy reader, which store cells identically.
+ * Walks `types` and groups consecutive cells of the same VTK type into a
+ * run; a run of a *fixed*-node-count type becomes one rectangular
+ * `CellBlock` (data gathered per-row via `vtk_to_meshio_order`, or
+ * block-copied via `parallel_copy_i64` when the run is contiguous in
+ * `conn` with no reordering needed); a run of a *variable*-node-count type
+ * (`is_special_cell`, e.g. polygon or VTK_LAGRANGE_*) is further split into
+ * sub-runs of a single common node count each, since meshio's `CellBlock`
+ * still requires a rectangular `(num_cells, n)` layout — each such sub-run
+ * is emitted as its own separate `CellBlock` sharing the same meshio type
+ * name. Matching slices of every array in `cell_data_raw` are appended to
+ * `out_cell_data` in lockstep with `out_cells`, via `slice_rows`.
+ *
+ * @param conn Flat node-index connectivity buffer. Passed as a raw
+ *             `int64_t*` (rather than an `NDArray`) so callers can hand in
+ *             an `NDArray`'s buffer directly — VTK 5.1 connectivity is
+ *             already `vtktypeint64` — without an intermediate
+ *             to-int64 copy.
+ * @param offsets End offsets, one per cell: `offsets[i]` is the index in
+ *                `conn` just past cell `i`'s last node (so cell `i`'s nodes
+ *                are `conn[offsets[i-1] .. offsets[i])`, with `offsets[-1]`
+ *                treated as 0).
+ * @param types VTK cell type id for each cell, same length as `offsets`.
+ * @param cell_data_raw Per-name cell-data arrays covering the whole mesh
+ *                      (all cells concatenated), to be re-sliced per output
+ *                      block.
+ * @param out_cells Appended to with one `CellBlock` per contiguous
+ *                  same-type (and, for special types, same-size) run.
+ * @param out_cell_data Appended to in lockstep with `out_cells`: for each
+ *                      name in `cell_data_raw`, one sliced `NDArray` per new
+ *                      block.
+ * @throws ReadError if a cell's VTK type id is 42 (polyhedron — unsupported
+ *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
+ *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
+ */
 inline void reconstruct_cells(
     const std::int64_t* conn, const std::vector<std::int64_t>& offsets,
     const std::vector<std::int64_t>& types,

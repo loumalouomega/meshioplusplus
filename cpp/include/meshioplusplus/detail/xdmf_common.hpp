@@ -1,21 +1,56 @@
-#pragma once
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
 //
-// XDMF type maps and cell-data raw<->blocks conversion, shared between the
-// XDMF format (xdmf.cpp) and the HMF format (hmf.cpp reuses XDMF's topology
-// names and raw cell-data layout). Ported from src/meshio/xdmf/common.py and
-// src/meshio/_common.py (raw_from_cell_data / cell_data_from_raw).
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+#pragma once
 
+/**
+ * @file xdmf_common.hpp
+ * @brief XDMF cell-type-name maps and cell-data raw<->blocks conversion,
+ * shared between the XDMF format implementation and HMF (which reuses
+ * XDMF's topology names and raw cell-data layout).
+ *
+ * Ported from `src/meshio/xdmf/common.py` and the `raw_from_cell_data` /
+ * `cell_data_from_raw` helpers in `src/meshio/_common.py`. XDMF (and HMF)
+ * store per-cell-type-block data as one array *per cell type name string* in
+ * the XML/XDMF Topology, and store cell_data for a mixed mesh as one
+ * concatenated raw array per data name (all cell blocks laid end-to-end)
+ * rather than one array per block — `concat_cell_data`/`split_raw_cell_data`
+ * are what let this header's callers go between meshio's per-block
+ * `cell_data` representation and that concatenated-raw representation.
+ */
+
+// System includes
 #include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+// Project includes
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
 namespace meshioplusplus {
 namespace xdmfcommon {
 
+/**
+ * @brief Maps a meshio cell-type name to its XDMF topology type name.
+ * @param t meshio cell-type name (e.g. `"triangle"`, `"tetra10"`).
+ * @return The corresponding XDMF `TopologyType` string (e.g. `"Triangle"`).
+ * @throws WriteError if `t` has no XDMF equivalent.
+ */
 inline const char* meshio_to_xdmf(const std::string& t) {
     static const std::unordered_map<std::string, const char*> m = {
         {"vertex", "Polyvertex"}, {"line", "Polyline"}, {"line3", "Edge_3"},
@@ -32,6 +67,16 @@ inline const char* meshio_to_xdmf(const std::string& t) {
     return it->second;
 }
 
+/**
+ * @brief Maps an XDMF topology type name to a meshio cell-type name.
+ *
+ * Accepts both the canonical XDMF spelling and common abbreviations some
+ * writers emit (e.g. both `"Hexahedron_20"` and `"Hex_20"` map to
+ * `"hexahedron20"`).
+ * @param t XDMF `TopologyType` string as found in the file.
+ * @return The corresponding meshio cell-type name.
+ * @throws ReadError if `t` is not a recognized topology type.
+ */
 inline std::string xdmf_to_meshio(const std::string& t) {
     static const std::unordered_map<std::string, std::string> m = {
         {"Polyvertex", "vertex"}, {"Polyline", "line"}, {"Edge_3", "line3"},
@@ -49,7 +94,18 @@ inline std::string xdmf_to_meshio(const std::string& t) {
     return it->second;
 }
 
-// raw_from_cell_data: concatenate one name's per-block arrays along axis 0.
+/**
+ * @brief Concatenates one cell-data name's per-block arrays along axis 0
+ * into a single raw array, matching Python's `raw_from_cell_data`.
+ *
+ * Used when writing XDMF/HMF cell data for a mixed-cell-type mesh: XDMF
+ * stores cell data as one flat array per data name (all blocks' rows
+ * back-to-back) rather than one array per block.
+ * @param blocks Per-cell-block arrays for one data name, in cell-block order;
+ *               must be non-empty and share dtype/trailing shape.
+ * @return A new array with the same trailing shape as `blocks.front()` and
+ *         first dimension equal to the sum of each block's row count.
+ */
 inline NDArray concat_cell_data(const std::vector<NDArray>& blocks) {
     std::size_t total_rows = 0;
     std::vector<std::size_t> shape = blocks.front().shape();
@@ -64,7 +120,18 @@ inline NDArray concat_cell_data(const std::vector<NDArray>& blocks) {
     return out;
 }
 
-// cell_data_from_raw: split a concatenated array by the per-block cell counts.
+/**
+ * @brief Splits a raw, whole-mesh cell-data array (as read from XDMF/HMF)
+ * back into one `NDArray` per cell block, matching Python's
+ * `cell_data_from_raw`.
+ *
+ * Inverse of `concat_cell_data`.
+ * @param raw The concatenated array covering every cell block's rows,
+ *            in cell-block order.
+ * @param sizes Row count of each cell block, in the same order the blocks
+ *              appear in `raw`; must sum to `raw`'s row count.
+ * @return One `NDArray` per entry in `sizes`, each holding that block's slice.
+ */
 inline std::vector<NDArray> split_raw_cell_data(const NDArray& raw,
                                                 const std::vector<std::size_t>& sizes) {
     std::size_t ncols = raw.ndim() >= 2 ? raw.shape()[1] : 1;

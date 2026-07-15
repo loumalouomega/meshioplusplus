@@ -1,5 +1,20 @@
-#include "meshioplusplus/formats/xdmf.hpp"
-
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+// System includes
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -11,10 +26,14 @@
 #include <unordered_map>
 #include <vector>
 
+// External includes
+#include "pugixml.hpp"
+
+// Project includes
+#include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
-#include "pugixml.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"

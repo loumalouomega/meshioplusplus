@@ -1,13 +1,41 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 #pragma once
-//
-// NDArray: a minimal typed, n-dimensional, contiguous (row-major) array.
-//
-// It is the storage primitive used by meshioplusplus::Mesh for points, cell
-// connectivity, and all data fields. An NDArray either *owns* its buffer
-// (the common case, e.g. data produced by a reader) or is a non-owning
-// *view* over external memory (used to wrap numpy buffers zero-copy when
-// writing). The binding layer converts between NDArray and numpy.
 
+/**
+ * @file ndarray.hpp
+ * @brief `NDArray`: a minimal typed, n-dimensional, contiguous (row-major)
+ * array — the storage primitive of `meshioplusplus::Mesh`.
+ *
+ * `NDArray` is used for points, cell connectivity, and every point/cell/field
+ * data array. It either *owns* its buffer (the common case: data produced by
+ * a reader) or is a non-owning *view* over externally-owned memory (used to
+ * wrap a numpy buffer zero-copy on the write path — see `py_to_mesh` in
+ * `bindings/np_conversions.hpp`). The binding layer converts between
+ * `NDArray` and numpy at the I/O boundary: owning buffers are moved into a
+ * capsule backing a writeable numpy array on read, and numpy buffers are
+ * wrapped as views (no copy) on write. `dtype()` records the element type
+ * with an internal `DType` enum rather than a template parameter, so
+ * `NDArray` can be stored uniformly (e.g. in `Mesh::cell_data`) regardless of
+ * the numpy dtype it came from; `as<T>()` reinterprets the raw buffer as `T`
+ * once the caller has determined (or asserted) the appropriate type.
+ */
+
+// System includes
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,13 +49,22 @@
 namespace meshioplusplus {
 
 namespace detail {
-// Allocator that leaves elements *default*-initialized rather than
-// value-initialized. For a trivial type like std::byte that means the buffer
-// is left uninitialized instead of zero-filled. NDArray uses it so a buffer it
-// is about to fully overwrite (reader outputs, reconstruction blocks) can skip
-// the zero-fill memset — which, for a fresh large allocation, is an entire
-// extra cold pass over just-faulted pages (numpy's calloc-backed arrays skip
-// it too). std::vector stays copyable, unlike a unique_ptr buffer.
+/**
+ * @brief Allocator that leaves elements *default*-initialized rather than
+ * value-initialized.
+ *
+ * For a trivial type like `std::byte` that means the buffer is left
+ * uninitialized instead of zero-filled. `NDArray` uses this (via `ByteBuf`)
+ * so a buffer it is about to fully overwrite (reader outputs, reconstruction
+ * blocks — see `NDArray::uninit`) can skip the zero-fill `memset`, which for
+ * a fresh large allocation is an entire extra cold pass over just-faulted
+ * pages (numpy's `calloc`-backed arrays skip it too, for the same reason).
+ * `std::vector` with this allocator stays copyable/movable like a normal
+ * vector, unlike a raw `unique_ptr` buffer, so `NDArray` can keep value
+ * semantics.
+ *
+ * @tparam T The element type being allocated (used as `std::byte` here).
+ */
 template <class T>
 struct no_init_allocator {
     using value_type = T;
@@ -61,6 +98,10 @@ struct no_init_allocator {
 };
 }  // namespace detail
 
+/**
+ * @brief Scalar element type of an `NDArray`, mirroring the numpy dtypes the
+ * binding layer converts to/from.
+ */
 enum class DType {
     Float32,
     Float64,
@@ -74,6 +115,11 @@ enum class DType {
     UInt64,
 };
 
+/**
+ * @brief Size in bytes of one element of the given dtype.
+ * @param dt The dtype to query.
+ * @return 1, 2, 4, or 8, matching the C++ scalar type `dt` represents.
+ */
 inline std::size_t dtype_size(DType dt) {
     switch (dt) {
         case DType::Float32: return 4;
@@ -90,7 +136,11 @@ inline std::size_t dtype_size(DType dt) {
     return 0;
 }
 
-// numpy dtype string (kind + itemsize), e.g. "f8", "i4".
+/**
+ * @brief numpy dtype string (kind + itemsize) for a `DType`, e.g. `"f8"`, `"i4"`.
+ * @param dt The dtype to convert.
+ * @return A numpy-style struct format code understood by `numpy.dtype(...)`.
+ */
 inline const char* dtype_numpy_str(DType dt) {
     switch (dt) {
         case DType::Float32: return "f4";
@@ -107,11 +157,29 @@ inline const char* dtype_numpy_str(DType dt) {
     return "f8";
 }
 
+/**
+ * @brief A minimal typed, n-dimensional, row-major contiguous array.
+ *
+ * `NDArray` is either *owning* (holds its own `ByteBuf`, freed on
+ * destruction) or a non-owning *view* over externally-managed memory
+ * (`view_ != nullptr`); `is_view()` distinguishes the two, and `data()`
+ * transparently returns whichever buffer is active. Views exist so the
+ * write path can wrap a numpy array's memory directly (see
+ * `bindings/np_conversions.hpp`'s `py_to_mesh`) without copying it into a
+ * C++-owned buffer; `make_owned()` is the escape hatch for turning a view
+ * into an owning copy when a buffer must outlive the memory it points to.
+ * There is no reference counting: a view's caller is responsible for
+ * keeping the underlying memory alive for the `NDArray`'s lifetime.
+ */
 class NDArray {
 public:
     NDArray() = default;
 
-    // Owning array, zero-initialised buffer of the right size.
+    /**
+     * @brief Constructs an owning array with a zero-initialized buffer.
+     * @param dt Element dtype.
+     * @param shape Row-major dimensions; total element count is their product.
+     */
     NDArray(DType dt, std::vector<std::size_t> shape)
         : dtype_(dt), shape_(std::move(shape)) {
         const std::size_t nb = nbytes();
@@ -119,8 +187,23 @@ public:
         std::memset(owned_.data(), 0, nb);  // explicit zero-fill
     }
 
-    // Owning array whose buffer is left *uninitialised* — only for callers that
-    // immediately overwrite every byte (reader outputs, reconstruction blocks).
+    /**
+     * @brief Constructs an owning array whose buffer is left *uninitialized*.
+     *
+     * Only safe for callers that immediately overwrite every byte — typical
+     * uses are reader outputs (the whole buffer is about to be filled from
+     * the parsed file) and cell-block reconstruction (e.g.
+     * `detail::reconstruct_cells` in `vtk_cells.hpp`). Skips both the extra
+     * allocator zero-fill and, more importantly, the cold first-touch page
+     * faults a `memset` would otherwise incur on a fresh large allocation —
+     * the same optimization numpy applies to its own `calloc`-avoidance path.
+     * Prefer the two-argument constructor whenever the buffer might not be
+     * fully overwritten.
+     *
+     * @param dt Element dtype.
+     * @param shape Row-major dimensions; total element count is their product.
+     * @return A new owning, uninitialized `NDArray`.
+     */
     static NDArray uninit(DType dt, std::vector<std::size_t> shape) {
         NDArray a;
         a.dtype_ = dt;
@@ -129,7 +212,19 @@ public:
         return a;
     }
 
-    // Non-owning view over external row-major memory (caller keeps it alive).
+    /**
+     * @brief Constructs a non-owning view over externally-owned row-major memory.
+     *
+     * Used to wrap a numpy array's buffer directly at the write boundary
+     * (zero-copy): the C++ writer reads through `ptr` but never frees it.
+     * @param dt Element dtype of the memory at `ptr`.
+     * @param shape Row-major dimensions describing how to interpret `ptr`.
+     * @param ptr Pointer to caller-owned memory; the caller must keep it
+     *            alive for at least the lifetime of the returned `NDArray`
+     *            (and of any `NDArray` copies/moves derived from it that
+     *            remain a view).
+     * @return A new non-owning `NDArray` view.
+     */
     static NDArray make_view(DType dt, std::vector<std::size_t> shape, std::byte* ptr) {
         NDArray a;
         a.dtype_ = dt;
@@ -141,19 +236,30 @@ public:
     DType dtype() const { return dtype_; }
     const std::vector<std::size_t>& shape() const { return shape_; }
     std::size_t ndim() const { return shape_.size(); }
+    /** @brief Whether this array is a non-owning view (vs. owning its buffer). */
     bool is_view() const { return view_ != nullptr; }
 
+    /** @brief Total element count (product of `shape()`), or 0 if `shape()` is empty. */
     std::size_t size() const {
         if (shape_.empty()) return 0;
         return std::accumulate(shape_.begin(), shape_.end(), std::size_t{1},
                                std::multiplies<std::size_t>());
     }
+    /** @brief Total buffer size in bytes: `size() * dtype_size(dtype())`. */
     std::size_t nbytes() const { return size() * dtype_size(dtype_); }
 
+    /** @brief Raw pointer to the active buffer (owned or view), for writing. */
     std::byte* data() { return view_ ? view_ : owned_.data(); }
+    /** @brief Raw pointer to the active buffer (owned or view), read-only. */
     const std::byte* data() const { return view_ ? view_ : owned_.data(); }
 
-    // Change the logical shape without touching the buffer (sizes must match).
+    /**
+     * @brief Changes the logical shape in place without touching the buffer.
+     *
+     * A no-op if the new shape's element count doesn't match the current
+     * one (the mismatched reshape is silently ignored rather than throwing).
+     * @param new_shape The desired row-major dimensions.
+     */
     void reshape(std::vector<std::size_t> new_shape) {
         std::size_t n = new_shape.empty()
                             ? 0
@@ -163,8 +269,14 @@ public:
         shape_ = std::move(new_shape);
     }
 
-    // Turn a view into an owning copy (no-op if already owning). Used before
-    // handing a buffer's lifetime to Python via a capsule.
+    /**
+     * @brief Turns a view into an owning copy in place; a no-op if already owning.
+     *
+     * Copies the viewed memory into a freshly-allocated owned buffer and
+     * clears the view pointer. Used before handing a buffer's lifetime over
+     * to Python via a capsule (`mesh_to_py`), where the destination `NDArray`
+     * must actually own the memory it hands off.
+     */
     void make_owned() {
         if (view_ == nullptr) return;
         const std::size_t nb = nbytes();
@@ -175,8 +287,15 @@ public:
         view_ = nullptr;
     }
 
+    /**
+     * @brief Reinterprets the raw buffer as a `T*`. No dtype check is performed
+     * — the caller must ensure `T` matches `dtype()`.
+     * @tparam T The scalar type to view the buffer as.
+     * @return Pointer to the first element, typed as `T`.
+     */
     template <typename T>
     T* as() { return reinterpret_cast<T*>(data()); }
+    /** @brief `const` overload of `as()`. */
     template <typename T>
     const T* as() const { return reinterpret_cast<const T*>(data()); }
 

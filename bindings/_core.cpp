@@ -1,12 +1,24 @@
-// pybind11 entry point for the meshio++ C++ core.
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
 //
-// Imported as ``meshioplusplus._core``. Exposes the cell-type tables,
-// exception translation to meshioplusplus.ReadError/WriteError, and (for
-// now) a roundtrip helper used to validate the zero-copy Mesh conversions.
-// Format readers and writers are registered here as they are ported.
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+// External includes
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+// Project includes
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/ansys.hpp"

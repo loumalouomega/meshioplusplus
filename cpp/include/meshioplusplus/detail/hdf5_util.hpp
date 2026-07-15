@@ -1,28 +1,70 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 #pragma once
-//
-// Shared HDF5 helpers for the HDF5-backed formats (CGNS, HMF, H5M, MED,
-// XDMF-HDF). Only available when the extension is built with MESHIOPLUSPLUS_HAS_HDF5;
-// the format sources are entirely #ifdef-guarded on that macro.
-//
-// Uses the version-stable classic C API with explicit-version names
-// (H5Gcreate2/H5Dcreate2/H5Acreate2, ...) so both HDF5 1.10 and 2.x compile.
+
+/**
+ * @file hdf5_util.hpp
+ * @brief Shared low-level HDF5 helpers used by every C++ format that stores
+ * data in an HDF5 container (MED, XDMF's `Format="HDF"` DataItems).
+ *
+ * Provides: an RAII handle wrapper (`Hid`) so every `H5*` resource is closed
+ * exactly once even under exceptions; dataset read/write helpers that
+ * translate between `meshioplusplus::DType` and HDF5's native/file types
+ * (matching what h5py writes on x86: little-endian file types via
+ * `file_type()`); scalar/string attribute helpers matching h5py's own
+ * variable-length UTF-8 convention; group link listing in both name order
+ * and (where the file tracks it) creation order, the latter needed where
+ * block order carries meaning (e.g. MED's `MAI` cell blocks, whose order
+ * must align with `cell_data`/`cell_sets`); and `SilenceErrors`, which
+ * suppresses HDF5's default stderr error-stack printing so failures surface
+ * only as the C++ exceptions this codebase converts them to (`ReadError`/
+ * `WriteError`). This entire header compiles to nothing when
+ * `MESHIOPLUSPLUS_HAS_HDF5` is not defined, i.e. when the build has no HDF5
+ * library — the HDF-dependent C++ code paths are then simply absent and
+ * callers fall back to the pure-Python (h5py-based) implementation.
+ */
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
+// External includes
 #include <hdf5.h>
 
+// System includes
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
 
+// Project includes
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
 namespace meshioplusplus {
 namespace h5 {
 
-// RAII wrapper for an hid_t with its closer function.
+/**
+ * @brief RAII wrapper for an HDF5 `hid_t` handle, paired with the `H5*Close`
+ * function that must release it.
+ *
+ * Move-only (copying an `hid_t` would double-close it): moving transfers
+ * ownership and leaves the source handle invalid (`id_ = -1`). Implicitly
+ * convertible to `hid_t` so it can be passed straight into `H5*` C API
+ * calls. `valid()` reports whether the handle is currently open (id `>= 0`).
+ */
 class Hid {
 public:
     using Closer = herr_t (*)(hid_t);
@@ -53,28 +95,60 @@ private:
     Closer closer_ = nullptr;
 };
 
+/**
+ * @brief Opens an existing HDF5 file read-only.
+ * @param path Filesystem path of the file to open.
+ * @return Owning `Hid` for the open file.
+ * @throws ReadError if the file cannot be opened.
+ */
 inline Hid open_file_read(const std::string& path) {
     Hid f(H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
     if (!f.valid()) throw ReadError("HDF5: could not open file " + path);
     return f;
 }
 
+/**
+ * @brief Creates a new HDF5 file, truncating any existing file at `path`.
+ * @param path Filesystem path of the file to create.
+ * @return Owning `Hid` for the new file.
+ * @throws WriteError if the file cannot be created.
+ */
 inline Hid create_file(const std::string& path) {
     Hid f(H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), H5Fclose);
     if (!f.valid()) throw WriteError("HDF5: could not create file " + path);
     return f;
 }
 
+/**
+ * @brief Whether a link named `name` exists directly under group/file `loc`.
+ * @param loc Group or file handle to look under.
+ * @param name Link name to test.
+ * @return `true` if the link exists.
+ */
 inline bool exists(hid_t loc, const std::string& name) {
     return H5Lexists(loc, name.c_str(), H5P_DEFAULT) > 0;
 }
 
+/**
+ * @brief Opens an existing HDF5 group.
+ * @param loc Parent group or file handle.
+ * @param name Name of the group to open.
+ * @return Owning `Hid` for the opened group.
+ * @throws ReadError if the group does not exist.
+ */
 inline Hid open_group(hid_t loc, const std::string& name) {
     Hid g(H5Gopen2(loc, name.c_str(), H5P_DEFAULT), H5Gclose);
     if (!g.valid()) throw ReadError("HDF5: missing group '" + name + "'");
     return g;
 }
 
+/**
+ * @brief Creates a new HDF5 group.
+ * @param loc Parent group or file handle.
+ * @param name Name of the group to create.
+ * @return Owning `Hid` for the new group.
+ * @throws WriteError if the group cannot be created.
+ */
 inline Hid create_group(hid_t loc, const std::string& name) {
     Hid g(H5Gcreate2(loc, name.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT),
           H5Gclose);
@@ -82,7 +156,14 @@ inline Hid create_group(hid_t loc, const std::string& name) {
     return g;
 }
 
-// meshio DType -> native in-memory HDF5 type (for H5Dread/H5Dwrite).
+/**
+ * @brief Maps a `meshioplusplus::DType` to the native in-memory HDF5 type used
+ * for `H5Dread`/`H5Dwrite` (host byte order/representation, not the
+ * on-disk file type — see `file_type()` for that).
+ * @param dt The dtype to convert.
+ * @return The matching `H5T_NATIVE_*` constant (defaults to
+ *         `H5T_NATIVE_DOUBLE` for an unrecognized/invalid `dt`).
+ */
 inline hid_t native_type(DType dt) {
     switch (dt) {
         case DType::Float32: return H5T_NATIVE_FLOAT;
@@ -99,7 +180,16 @@ inline hid_t native_type(DType dt) {
     return H5T_NATIVE_DOUBLE;
 }
 
-// meshio DType -> little-endian file type (matches what h5py writes on x86).
+/**
+ * @brief Maps a `meshioplusplus::DType` to the on-disk (file) HDF5 type to use
+ * when creating a dataset/attribute.
+ *
+ * Always little-endian (`H5T_*LE`), matching what h5py writes on x86, so
+ * files produced by the C++ writer are byte-for-byte compatible with the
+ * pure-Python/h5py writer's output.
+ * @param dt The dtype to convert.
+ * @return The matching `H5T_*LE` constant (defaults to `H5T_IEEE_F64LE`).
+ */
 inline hid_t file_type(DType dt) {
     switch (dt) {
         case DType::Float32: return H5T_IEEE_F32LE;
@@ -116,7 +206,13 @@ inline hid_t file_type(DType dt) {
     return H5T_IEEE_F64LE;
 }
 
-// Stored datatype of a dataset/attribute -> meshio DType.
+/**
+ * @brief Converts a stored HDF5 datatype (of a dataset or attribute) to the
+ * corresponding `meshioplusplus::DType`.
+ * @param type_id HDF5 type id, as returned e.g. by `H5Dget_type`.
+ * @return The matching `DType`.
+ * @throws ReadError if `type_id`'s class is neither float nor integer.
+ */
 inline DType dtype_from_h5(hid_t type_id) {
     H5T_class_t cls = H5Tget_class(type_id);
     std::size_t sz = H5Tget_size(type_id);
@@ -133,10 +229,21 @@ inline DType dtype_from_h5(hid_t type_id) {
     throw ReadError("HDF5: unsupported datatype class");
 }
 
-// Read a full dataset into an owning NDArray (shape + dtype from the file).
-// A dataset whose datatype is an ARRAY of a scalar type (h5py's "(n,) of
-// k-tuples" trick, used by H5M) is returned with the array dims appended to
-// the shape, i.e. as a plain (n, k) array.
+/**
+ * @brief Reads a full HDF5 dataset into a freshly-allocated, owning `NDArray`.
+ *
+ * The output shape and dtype are taken from the file. A dataset whose
+ * datatype is an `ARRAY` of a scalar type — h5py's "(n,) of k-tuples" trick,
+ * used e.g. by MED's `H5M` node coordinates — is unpacked into a plain
+ * `(n, k)` `NDArray` by appending the array dimensions to the dataset's
+ * shape, rather than exposed as a compound/array-typed element.
+ * A scalar (0-dimensional) dataset comes back with shape `{1}`.
+ *
+ * @param loc Group or file handle the dataset lives under.
+ * @param name Name of the dataset to read.
+ * @return A new owning `NDArray` holding the dataset's contents.
+ * @throws ReadError if the dataset is missing or the read fails.
+ */
 inline NDArray read_dataset(hid_t loc, const std::string& name) {
     Hid d(H5Dopen2(loc, name.c_str(), H5P_DEFAULT), H5Dclose);
     if (!d.valid()) throw ReadError("HDF5: missing dataset '" + name + "'");
@@ -180,8 +287,22 @@ inline NDArray read_dataset(hid_t loc, const std::string& name) {
     return out;
 }
 
-// Write a full dataset; gzip-compressed (chunked, chunk = full shape) when
-// `gzip_level >= 0` and the data is non-empty.
+/**
+ * @brief Writes a full dataset in one call, optionally gzip-compressed.
+ *
+ * When `gzip_level >= 0` and `arr` is non-empty, the dataset is created
+ * chunked with a single chunk spanning the whole shape and gzip deflate
+ * filtering enabled at that level; otherwise it is a plain contiguous
+ * dataset. Uses `file_type(arr.dtype())` for the on-disk type and
+ * `native_type(arr.dtype())` for the in-memory transfer type.
+ *
+ * @param loc Group or file handle to create the dataset under.
+ * @param name Name for the new dataset.
+ * @param arr Data to write; its shape and dtype determine the dataset's.
+ * @param gzip_level gzip compression level (0-9), or negative to disable
+ *                   compression (the default).
+ * @throws WriteError if the dataset cannot be created or the write fails.
+ */
 inline void write_dataset(hid_t loc, const std::string& name, const NDArray& arr,
                           int gzip_level = -1) {
     std::vector<hsize_t> hdims(arr.shape().begin(), arr.shape().end());
@@ -208,10 +329,23 @@ inline void write_dataset(hid_t loc, const std::string& name, const NDArray& arr
 
 // ---- attribute helpers ----
 
+/**
+ * @brief Whether an attribute named `name` exists on `loc`.
+ * @param loc Object (group/dataset/file) to check.
+ * @param name Attribute name to test.
+ * @return `true` if the attribute exists.
+ */
 inline bool has_attr(hid_t loc, const std::string& name) {
     return H5Aexists(loc, name.c_str()) > 0;
 }
 
+/**
+ * @brief Reads a scalar integer attribute.
+ * @param loc Object the attribute is attached to.
+ * @param name Attribute name.
+ * @return The attribute's value as `int64_t`.
+ * @throws ReadError if the attribute is missing or unreadable.
+ */
 inline std::int64_t read_attr_int(hid_t loc, const std::string& name) {
     Hid a(H5Aopen(loc, name.c_str(), H5P_DEFAULT), H5Aclose);
     if (!a.valid()) throw ReadError("HDF5: missing attribute '" + name + "'");
@@ -221,6 +355,14 @@ inline std::int64_t read_attr_int(hid_t loc, const std::string& name) {
     return v;
 }
 
+/**
+ * @brief Writes a scalar integer attribute.
+ * @param loc Object to attach the attribute to.
+ * @param name Attribute name.
+ * @param v Value to write.
+ * @param ftype On-disk integer type to store as (default `H5T_STD_I64LE`).
+ * @throws WriteError if the attribute cannot be created.
+ */
 inline void write_attr_int(hid_t loc, const std::string& name, std::int64_t v,
                            hid_t ftype = H5T_STD_I64LE) {
     Hid space(H5Screate(H5S_SCALAR), H5Sclose);
@@ -230,7 +372,18 @@ inline void write_attr_int(hid_t loc, const std::string& name, std::int64_t v,
     H5Awrite(a, H5T_NATIVE_INT64, &v);
 }
 
-// Read a string attribute (fixed or variable length).
+/**
+ * @brief Reads a string attribute, handling both variable- and fixed-length
+ * HDF5 string encodings.
+ *
+ * For a fixed-length (`NULLPAD`) string, reads into a same-sized buffer
+ * (converting to `NULLTERM` would truncate the last character to make room
+ * for a terminator) and then trims trailing NUL bytes and spaces.
+ * @param loc Object the attribute is attached to.
+ * @param name Attribute name.
+ * @return The attribute's value as a `std::string`.
+ * @throws ReadError if the attribute is missing or unreadable.
+ */
 inline std::string read_attr_string(hid_t loc, const std::string& name) {
     Hid a(H5Aopen(loc, name.c_str(), H5P_DEFAULT), H5Aclose);
     if (!a.valid()) throw ReadError("HDF5: missing attribute '" + name + "'");
@@ -263,7 +416,17 @@ inline std::string read_attr_string(hid_t loc, const std::string& name) {
     return out;
 }
 
-// Write a string attribute the way h5py does by default: variable-length UTF-8.
+/**
+ * @brief Writes a string attribute the way h5py does by default:
+ * variable-length, UTF-8-tagged.
+ *
+ * Matching h5py's convention keeps files produced by the C++ writer
+ * byte-for-byte compatible with the Python/h5py writer's output.
+ * @param loc Object to attach the attribute to.
+ * @param name Attribute name.
+ * @param value String value to write.
+ * @throws WriteError if the attribute cannot be created.
+ */
 inline void write_attr_string(hid_t loc, const std::string& name,
                               const std::string& value) {
     Hid space(H5Screate(H5S_SCALAR), H5Sclose);
@@ -276,7 +439,12 @@ inline void write_attr_string(hid_t loc, const std::string& name,
     H5Awrite(a, t, &p);
 }
 
-// List the link names of a group, in creation/alphabetical (native) order.
+/**
+ * @brief Lists the link (child) names directly under a group, in HDF5's
+ * default name-index iteration order.
+ * @param loc Group handle to list.
+ * @return Child link names, in name order.
+ */
 inline std::vector<std::string> group_links(hid_t loc) {
     H5G_info_t info;
     H5Gget_info(loc, &info);
@@ -293,9 +461,18 @@ inline std::vector<std::string> group_links(hid_t loc) {
     return names;
 }
 
-// Like group_links but in HDF5 link *creation* order when the group tracks it
-// (matching h5py iteration on track_order=True files); falls back to name
-// order otherwise. Needed where cell-block order is significant (e.g. MED).
+/**
+ * @brief Like `group_links`, but iterates in HDF5 link *creation* order when
+ * the group tracks it (matching h5py's iteration order on
+ * `track_order=True` files); silently falls back to name order otherwise.
+ *
+ * Needed wherever the order children were created in is semantically
+ * significant rather than incidental — e.g. MED's `MAI` cell-block groups,
+ * whose order must line up with the corresponding entries in `cell_data`/
+ * `cell_sets`, which are positional (not keyed by group name).
+ * @param loc Group handle to list.
+ * @return Child link names, in creation order if indexed, else name order.
+ */
 inline std::vector<std::string> group_links_crt(hid_t loc) {
     H5G_info_t info;
     H5Gget_info(loc, &info);
@@ -313,7 +490,16 @@ inline std::vector<std::string> group_links_crt(hid_t loc) {
     return names;
 }
 
-// Silence HDF5's default stderr error stack (we convert to exceptions).
+/**
+ * @brief RAII guard that silences HDF5's default stderr error-stack printing
+ * for its lifetime, restoring the previous handler on destruction.
+ *
+ * The library's own error reporting is redundant here since every failure
+ * this codebase cares about is converted to a `ReadError`/`WriteError`
+ * exception; without this guard, HDF5 would additionally dump a raw error
+ * stack to stderr on every recoverable failure (e.g. a probing "does this
+ * attribute exist" call that's expected to fail sometimes).
+ */
 struct SilenceErrors {
     SilenceErrors() {
         H5Eget_auto2(H5E_DEFAULT, &old_func_, &old_data_);

@@ -1,35 +1,82 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████                           
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███    
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███    
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░ 
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███    
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░     
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░                            
+//                                                                                                  
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
 #pragma once
-//
-// base64 + VTU binary DataArray encoding/decoding, matching meshio's Python
-// implementation so files roundtrip with the reference reader.
-//
-//   uncompressed: base64( header[UInt32 total_nbytes] + raw_data )
-//   zlib:         base64( header[nblocks, blocksize, last, csizes...] )
-//                 ++ base64( concat(zlib_block) )   (two separate encodings)
-//
-// The header dtype is UInt32 (meshio's default header_type). Host is assumed
-// little-endian.
 
+/**
+ * @file vtu_binary.hpp
+ * @brief Base64 and VTU "binary" `DataArray` codecs (raw and zlib-compressed),
+ * shared helpers behind the VTU (VTK XML) reader/writer's binary I/O.
+ *
+ * VTU's binary encoding wraps raw little-endian bytes (optionally
+ * zlib-deflated in fixed-size blocks) as base64 text inside the XML. This
+ * header provides both halves: plain base64 encode/decode
+ * (`b64encode`/`b64decode`), and the VTU-specific framing on top of it —
+ * `vtu_decode_uncompressed`/`vtu_encode_binary(zlib_compress=false)` for the
+ * uncompressed scheme (a little-endian byte-count header followed by raw
+ * data) and `vtu_decode_zlib`/`vtu_encode_binary(zlib_compress=true)` for the
+ * compressed block scheme (num_blocks / max_block_size / last_block_size
+ * header, then each block's compressed size, then the concatenated deflated
+ * blocks). zlib support is conditionally compiled on
+ * `MESHIOPLUSPLUS_HAS_ZLIB`; without it, the zlib-specific functions throw
+ * rather than compiling out entirely, since they're still callable — the
+ * absence is discovered at runtime and routes the caller to the Python
+ * fallback. Both directions parallelize per independent unit of work
+ * (base64 3-byte groups; zlib blocks) via `parallel_for`, since base64/zlib
+ * are genuinely compute-bound (unlike the memory-bandwidth-bound gather/
+ * byteswap work elsewhere, which uses `parallel_for_bw` instead).
+ */
+
+// System includes
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
 
+// External includes
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
 #include <zlib.h>
 #endif
 
+// Project includes
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 
+/** @brief The standard base64 alphabet (RFC 4648), indexed by 6-bit value. */
 inline const char* b64_table() {
     return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 }
 
+/**
+ * @brief Base64-encodes `len` bytes of `data`.
+ *
+ * Every full 3-byte input group maps to exactly 4 output characters at a
+ * fixed, independently-computable offset, so the output string is
+ * pre-sized once and each group is encoded directly into its slot via
+ * `parallel_for` — no synchronization or intermediate buffering needed. Any
+ * trailing 1- or 2-byte group is handled afterward, sequentially, with the
+ * standard `'='` padding.
+ * @param data Bytes to encode.
+ * @param len Number of bytes in `data`.
+ * @return The base64-encoded text, `'='`-padded to a multiple of 4 characters.
+ */
 inline std::string b64encode(const unsigned char* data, std::size_t len) {
     const char* tbl = b64_table();
     // Every 3-byte group maps to 4 output chars at a deterministic offset:
@@ -60,6 +107,18 @@ inline std::string b64encode(const unsigned char* data, std::size_t len) {
     return out;
 }
 
+/**
+ * @brief Base64-decodes `len` characters of `s`.
+ *
+ * Builds (and caches, in a function-local `static`) an inverse lookup table
+ * from ASCII byte to 6-bit value on first call. Silently skips `'='`
+ * padding and whitespace (`\n \r space \t`), and silently ignores any other
+ * character outside the base64 alphabet, rather than treating either as an
+ * error — VTU-embedded base64 can be split across lines.
+ * @param s Base64 text to decode (need not be NUL-terminated; length is explicit).
+ * @param len Number of characters in `s` to consider.
+ * @return The decoded raw bytes.
+ */
 inline std::vector<unsigned char> b64decode(const char* s, std::size_t len) {
     static int8_t inv[256];
     static bool init = false;
@@ -88,6 +147,14 @@ inline std::vector<unsigned char> b64decode(const char* s, std::size_t len) {
 }
 
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
+/**
+ * @brief Compresses one block with zlib's default `compress()` (a single
+ * deflate call, no streaming).
+ * @param src Bytes to compress.
+ * @param n Number of bytes in `src`.
+ * @return The compressed bytes (sized to zlib's actual output, not the bound).
+ * @throws WriteError if zlib does not return `Z_OK`.
+ */
 inline std::vector<unsigned char> zlib_compress_block(const unsigned char* src,
                                                       std::size_t n) {
     uLongf bound = compressBound(static_cast<uLong>(n));
@@ -99,6 +166,15 @@ inline std::vector<unsigned char> zlib_compress_block(const unsigned char* src,
     return out;
 }
 
+/**
+ * @brief Decompresses one zlib-compressed block whose decompressed size is
+ * already known.
+ * @param src Compressed bytes.
+ * @param n Number of compressed bytes in `src`.
+ * @param expected Exact expected decompressed size (from the VTU block header).
+ * @return The decompressed bytes.
+ * @throws ReadError if zlib does not return `Z_OK`.
+ */
 inline std::vector<unsigned char> zlib_decompress(const unsigned char* src,
                                                   std::size_t n,
                                                   std::size_t expected) {
@@ -111,6 +187,13 @@ inline std::vector<unsigned char> zlib_decompress(const unsigned char* src,
 }
 #endif  // MESHIOPLUSPLUS_HAS_ZLIB
 
+/**
+ * @brief Reads a little-endian unsigned integer of `isz` bytes from `p`.
+ * @param p Buffer to read from, at least `isz` bytes.
+ * @param isz Width in bytes of the integer to read (typically 4 or 8, the
+ *            VTU header_type item size).
+ * @return The decoded value, widened to `uint64_t`.
+ */
 inline std::uint64_t read_uint_le(const unsigned char* p, std::size_t isz) {
     std::uint64_t v = 0;
     for (std::size_t i = 0; i < isz; ++i)
@@ -118,8 +201,16 @@ inline std::uint64_t read_uint_le(const unsigned char* p, std::size_t isz) {
     return v;
 }
 
-// Decode an uncompressed VTU "binary" DataArray (base64 of header + raw data).
-// `hsz` is the header_type item size (4 for UInt32, 8 for UInt64).
+/**
+ * @brief Decodes an uncompressed VTU "binary" `DataArray`: base64 text of a
+ * little-endian byte-count header followed by the raw payload.
+ * @param text Base64-encoded DataArray text.
+ * @param len Length of `text` in characters.
+ * @param hsz `header_type` item size in bytes (4 for `UInt32`, 8 for `UInt64`).
+ * @return The decoded raw payload bytes (header stripped).
+ * @throws ReadError if the decoded data is shorter than the header, or
+ *         shorter than the header declares.
+ */
 inline std::vector<unsigned char> vtu_decode_uncompressed(const char* text,
                                                           std::size_t len,
                                                           std::size_t hsz) {
@@ -130,7 +221,32 @@ inline std::vector<unsigned char> vtu_decode_uncompressed(const char* text,
     return std::vector<unsigned char>(all.begin() + hsz, all.begin() + hsz + total);
 }
 
-// Decode a zlib-compressed VTU "binary" DataArray (block scheme).
+/**
+ * @brief Decodes a zlib-compressed VTU "binary" `DataArray` (the VTK block
+ * compression scheme).
+ *
+ * The format, all base64-encoded: a header of `num_blocks`, `max_block`,
+ * `last_block` (each `hsz` bytes), then `num_blocks` compressed-size
+ * entries, then the concatenated deflated blocks themselves (each block
+ * `max_block` bytes decompressed, except the last which is `last_block`).
+ * Decoded in three passes: decode just enough base64 to learn
+ * `num_blocks`, decode the rest of the header to get each block's
+ * compressed size, then base64-decode the block data. Input offsets are a
+ * cheap sequential prefix sum of the per-block compressed sizes; output
+ * offsets are `k * max_block` by construction, so with both known up front
+ * the per-block `inflate` calls are independent and run under
+ * `parallel_for` with `grain=1` (each ~32 KiB block is a full unit of
+ * inflate work, so per-block dispatch is exactly right — this is
+ * compute-bound work, unlike the memory-gather use of `parallel_for_bw`
+ * elsewhere).
+ *
+ * @param text Base64-encoded DataArray text.
+ * @param len Length of `text` in characters.
+ * @param hsz `header_type` item size in bytes (4 for `UInt32`, 8 for `UInt64`).
+ * @return The decoded, decompressed raw payload bytes (all blocks concatenated).
+ * @throws ReadError if built without `MESHIOPLUSPLUS_HAS_ZLIB`, or if the
+ *         header/data is truncated, or if any block fails to decompress.
+ */
 inline std::vector<unsigned char> vtu_decode_zlib(const char* text, std::size_t len,
                                                   std::size_t hsz) {
 #ifndef MESHIOPLUSPLUS_HAS_ZLIB
@@ -187,7 +303,28 @@ inline std::vector<unsigned char> vtu_decode_zlib(const char* text, std::size_t 
 #endif  // MESHIOPLUSPLUS_HAS_ZLIB
 }
 
-// Encode raw little-endian bytes as a VTU "binary" DataArray text.
+/**
+ * @brief Encodes raw little-endian bytes as a VTU "binary" `DataArray` text,
+ * either uncompressed or zlib-compressed (block scheme).
+ *
+ * Uncompressed (`zlib_compress == false`): a 4-byte little-endian length
+ * header followed by the raw bytes, base64-encoded as one unit.
+ *
+ * Compressed (`zlib_compress == true`): splits `data` into fixed 32 KiB
+ * blocks, deflates each independently under `parallel_for` with `grain=1`
+ * (each block is a full, sizeable unit of compute — one whole deflate call
+ * — so per-block dispatch is ideal; this is compute-bound, unlike the
+ * memory-gather work that uses `parallel_for_bw`), then emits the
+ * `num_blocks`/`max_block`/`last_block_size`/per-block-compressed-size
+ * header followed by the concatenated compressed blocks, all base64-encoded.
+ *
+ * @param data Raw bytes to encode (already in the file's target byte order).
+ * @param nbytes Number of bytes in `data`.
+ * @param zlib_compress Whether to zlib-compress (block scheme) or emit raw.
+ * @return The base64-encoded VTU `DataArray` text.
+ * @throws WriteError if `zlib_compress` is requested but the build lacks
+ *         `MESHIOPLUSPLUS_HAS_ZLIB`.
+ */
 inline std::string vtu_encode_binary(const unsigned char* data, std::size_t nbytes,
                                      bool zlib_compress) {
     if (!zlib_compress) {
