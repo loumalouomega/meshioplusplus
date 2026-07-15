@@ -51,8 +51,11 @@ jobs:
           # `objdump -T` show zero libstdc++/GLIBCXX/CXXABI deps and GLIBC capped at
           # 2.34 -> `auditwheel -v repair` succeeds -> installed the repaired wheel into
           # a clean venv and ran the full pytest suite: 1018 passed).
-          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
-          CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_34"
+          # cibuildwheel v2.21's built-in alias table doesn't include manylinux_2_34
+          # yet (it tried to pull the literal image name "manylinux_2_34" from Docker
+          # Hub and failed) - the full quay.io reference works regardless of alias table.
+          CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
+          CIBW_MANYLINUX_AARCH64_IMAGE: "quay.io/pypa/manylinux_2_34_aarch64"
           CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
           # AUTO's OpenMP preference is forced to SEQ here too: gcc-toolset-13's libgomp
           # has no static-link option GCC recognizes ("-static-libgomp" isn't a real GCC
