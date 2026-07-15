@@ -27,7 +27,7 @@ jobs:
           # runtime extras and the stdlib, exactly as the fallback shims intend.
           # The parallel backend is AUTO -> OpenMP (MSVC's built-in OpenMP on Windows,
           # libomp on macOS; delvewheel/delocate bundle it automatically). Linux wheels
-          # are forced to SEQ instead - see the manylinux_2_28 comment below.
+          # are forced to SEQ instead - see the manylinux_2_34 comment below.
           # macOS 13.3+ is required for std::format (its floating-point
           # formatting symbols live in the OS libc++ dylib).
           CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
@@ -36,31 +36,31 @@ jobs:
           # macOS: libomp gives Apple clang an OpenMP runtime (libc++ has no PSTL).
           CIBW_BEFORE_ALL_MACOS: "brew install libomp"
           # manylinux2014's stock compiler (devtoolset-10, GCC 10) has no <format>
-          # (needs GCC 13+ per the C++20 std::format requirement above). manylinux_2_28
-          # (AlmaLinux 8) ships gcc-toolset-13 as an installable SCL package.
-          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
-          CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_28"
+          # (needs GCC 13+ per the C++20 std::format requirement above).
+          # manylinux_2_28 (AlmaLinux 8, glibc 2.28) + gcc-toolset-13 was tried first:
+          # even with MESHIOPLUSPLUS_STATIC_RUNTIME statically linking libstdc++ (which
+          # `ldd`/`objdump -T` confirmed works - no more libstdc++.so.6 dependency),
+          # auditwheel still rejected the wheel for GLIBC_2.32-2.38 symbols pulled
+          # directly from libc.so.6/libm.so.6 - i.e. gcc-toolset-13's own runtime calls
+          # glibc functions newer than AlmaLinux 8 ships, and unlike libstdc++, glibc
+          # itself can't be statically linked away from a normal .so. manylinux_2_34
+          # (AlmaLinux 9, glibc 2.34) is a much closer match to what gcc-toolset-13
+          # actually targets, so no static-linking workaround should be needed there.
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
+          CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_34"
           CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
-          # gcc-toolset-13's libstdc++ is newer than manylinux_2_28's baseline, so the
-          # resulting .so pulls in versioned symbols auditwheel rejects unless libgcc/
-          # libstdc++ are statically linked into _core. LDFLAGS env-var seeding of
-          # CMake's *_LINKER_FLAGS was tried first and silently didn't reach this
-          # MODULE-type pybind11 target (confirmed via `ldd` still showing
-          # libstdc++.so.6) - MESHIOPLUSPLUS_STATIC_RUNTIME applies the flags directly
-          # via target_link_options in CMakeLists.txt instead.
           # AUTO's OpenMP preference is forced to SEQ here too: gcc-toolset-13's libgomp
           # has no static-link option GCC recognizes ("-static-libgomp" isn't a real GCC
           # flag, unlike -static-libgcc/-static-libstdc++), so it would stay a dynamic
-          # dependency and hit the same versioned-symbol rejection. These wheels already
-          # trade native HDF5/netCDF/zlib for portability (see above) - SEQ keeps that
-          # trade consistent; TBB/OpenMP builds remain available from source.
+          # dependency and could still hit a versioned-symbol rejection. These wheels
+          # already trade native HDF5/netCDF/zlib for portability (see above) - SEQ
+          # keeps that trade consistent; TBB/OpenMP builds remain available from source.
           CIBW_ENVIRONMENT_LINUX: >-
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON"
-          # -v surfaces which specific symbol/library trips the manylinux_2_28 policy
-          # check if the static-linking above still isn't enough, instead of auditwheel's
-          # generic "too-recent versioned symbols" message.
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ"
+          # -v surfaces which specific symbol/library trips the manylinux policy check,
+          # instead of auditwheel's generic "too-recent versioned symbols" message.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair -w {dest_dir} {wheel}"
           CIBW_ENVIRONMENT: >-
             CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
