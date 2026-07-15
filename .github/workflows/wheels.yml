@@ -19,7 +19,13 @@ jobs:
           submodules: recursive  # vendored Eigen (MED transpose)
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.21
+        # v2.21's manylinux alias table predates _2_34, and it hardcodes cp38 for its
+        # own before_all bootstrapping - manylinux_2_34 (AlmaLinux 9) doesn't ship
+        # cp38 (EOL'd Oct 2024), so that probe failed with "No such file or
+        # directory" before the actual build ever started. v3.1.0 added _2_34 alias
+        # support and v4.0.0 dropped cibuildwheel's own cp38 dependency; neither
+        # change affects us since CIBW_BUILD never targets cp38 wheels.
+        uses: pypa/cibuildwheel@v4.1.0
         env:
           # Portable wheels: the optional HDF5/netCDF/zlib native paths are
           # turned OFF, so the only build requirement is a C++20 compiler.
