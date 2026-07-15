@@ -121,13 +121,17 @@ void parallel_for_impl(std::size_t n, F& f, std::size_t grain, unsigned max_thre
                   });
     exc.rethrow_if_any();
 #elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    (void)grain;
     first_exception exc;
     const long long nn = static_cast<long long>(n);
     const int nt = max_threads ? std::min<int>(static_cast<int>(max_threads),
                                                omp_get_max_threads())
                                : omp_get_max_threads();
-#pragma omp parallel for schedule(static) num_threads(nt)
+    // Dynamic scheduling: on hybrid CPUs (P + E cores) a static split makes the
+    // slow cores stragglers while the fast ones idle at the join; moderately
+    // sized dynamic chunks self-balance with negligible dispatch overhead.
+    const long long chunk =
+        static_cast<long long>(std::max<std::size_t>(grain / 4, 256));
+#pragma omp parallel for schedule(dynamic, chunk) num_threads(nt)
     for (long long i = 0; i < nn; ++i) {
         exc.run([&] { f(static_cast<std::size_t>(i)); });
     }
