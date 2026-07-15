@@ -13,17 +13,29 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# scikit-build-core provides the right Python; locate the module-only component.
-find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
-find_package(pybind11 CONFIG REQUIRED)
+# The pybind11 extension is the default consumer of meshioplusplus_core_obj,
+# but non-Python consumers (the GoogleTest suite, the Emscripten/WASM target
+# below) must be configurable without ever locating a Python interpreter or
+# pybind11 -- e.g. under emcmake, where neither exists for the wasm32 target.
+option(MESHIOPLUSPLUS_BUILD_PYTHON "Build the pybind11 _core extension" ON)
+if(MESHIOPLUSPLUS_BUILD_PYTHON)
+  # scikit-build-core provides the right Python; locate the module-only component.
+  find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+  find_package(pybind11 CONFIG REQUIRED)
+endif()
 
 # ZLIB is optional too: without it the VTU zlib compression path falls back to
 # Python (whose zlib is always available in the stdlib). This keeps Windows CI
 # and wheels buildable with no system libraries.
 option(MESHIOPLUSPLUS_WITH_ZLIB "Build the C++ VTU zlib compression path" ON)
-if(MESHIOPLUSPLUS_WITH_ZLIB)
+if(MESHIOPLUSPLUS_WITH_ZLIB AND NOT EMSCRIPTEN)
   find_package(ZLIB QUIET)
 endif()
+# Under Emscripten there is no system zlib to find_package() -- the bundled
+# port (-sUSE_ZLIB=1) supplies both <zlib.h> and the implementation, but only
+# once that flag reaches the *compiler* invocation (not just the linker), so
+# it's applied directly to meshioplusplus_core_obj below instead of via
+# find_package/ZLIB::ZLIB.
 
 # Optional heavy dependencies. When absent, the corresponding format sources
 # compile to empty translation units (#ifdef-guarded) and the Python
@@ -74,7 +86,26 @@ target_include_directories(
   meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include
                          ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/pugixml)
 
-if(MESHIOPLUSPLUS_WITH_ZLIB AND ZLIB_FOUND)
+if(EMSCRIPTEN)
+  # Emscripten disables JS-catchable C++ exceptions by default (an uncaught
+  # exception calls abort() instead of unwinding into a JS Error) -- readers/
+  # writers here throw ReadError/WriteError routinely (e.g. on an unsupported
+  # construct), and bindings_js/js_bindings.cpp relies on those surfacing as
+  # normal catchable JS exceptions. -fwasm-exceptions enables the native Wasm
+  # exception-handling proposal (supported by all current browsers/Node),
+  # which is faster than the legacy JS-longjmp emulation and needs no
+  # separate -sDISABLE_EXCEPTION_CATCHING= linker flag. Applied PUBLIC so both
+  # the compile step (here) and whatever links these objects inherit it.
+  target_compile_options(meshioplusplus_core_obj PUBLIC "-fwasm-exceptions")
+  target_link_options(meshioplusplus_core_obj PUBLIC "-fwasm-exceptions")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_ZLIB AND EMSCRIPTEN)
+  message(STATUS "meshio++: VTU zlib compression enabled (Emscripten -sUSE_ZLIB=1 port)")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_ZLIB)
+  target_compile_options(meshioplusplus_core_obj PUBLIC "-sUSE_ZLIB=1")
+  target_link_options(meshioplusplus_core_obj PUBLIC "-sUSE_ZLIB=1")
+elseif(MESHIOPLUSPLUS_WITH_ZLIB AND ZLIB_FOUND)
   message(STATUS "meshio++: VTU zlib compression enabled")
   target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_ZLIB)
   target_link_libraries(meshioplusplus_core_obj PUBLIC ZLIB::ZLIB)
@@ -204,14 +235,52 @@ else()
 endif()
 message(STATUS "meshio++: parallel backend: ${_meshioplusplus_parallel}")
 
-# The pybind11 extension: bindings + the shared core object library.
-file(GLOB MESHIOPLUSPLUS_BINDING_SOURCES bindings/*.cpp)
-pybind11_add_module(_core ${MESHIOPLUSPLUS_BINDING_SOURCES})
-target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings)
-target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
+if(MESHIOPLUSPLUS_BUILD_PYTHON)
+  # The pybind11 extension: bindings + the shared core object library.
+  file(GLOB MESHIOPLUSPLUS_BINDING_SOURCES bindings/*.cpp)
+  pybind11_add_module(_core ${MESHIOPLUSPLUS_BINDING_SOURCES})
+  target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings)
+  target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
 
-# Land the extension next to the pure-Python package inside the wheel.
-install(TARGETS _core DESTINATION meshioplusplus)
+  # Land the extension next to the pure-Python package inside the wheel.
+  install(TARGETS _core DESTINATION meshioplusplus)
+endif()
+
+# --------------------------------------------------------------------------
+# WebAssembly build (Emscripten + embind), producing the @meshioplusplus/wasm
+# npm package's native artifact. EMSCRIPTEN is set automatically by CMake when
+# configured through emcmake; MESHIOPLUSPLUS_BUILD_WASM is the explicit,
+# documented opt-in on top of that (see build/configure-wasm.sh). This is
+# entirely independent of MESHIOPLUSPLUS_BUILD_PYTHON -- a wasm configure runs
+# with -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF since no Python/pybind11 exists for
+# the wasm32 target, and links the same meshioplusplus_core_obj the Python
+# extension and GoogleTest suite already share.
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_BUILD_WASM "Build the Emscripten/embind JS bindings" ${EMSCRIPTEN})
+if(MESHIOPLUSPLUS_BUILD_WASM)
+  if(NOT EMSCRIPTEN)
+    message(FATAL_ERROR
+      "meshio++: MESHIOPLUSPLUS_BUILD_WASM requires the Emscripten toolchain "
+      "(configure with emcmake, e.g. via build/configure-wasm.sh).")
+  endif()
+  file(GLOB MESHIOPLUSPLUS_JS_BINDING_SOURCES bindings_js/*.cpp)
+  add_executable(meshioplusplus_wasm ${MESHIOPLUSPLUS_JS_BINDING_SOURCES})
+  target_include_directories(meshioplusplus_wasm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings_js)
+  target_link_libraries(meshioplusplus_wasm PRIVATE meshioplusplus_core_obj)
+  # -sUSE_ZLIB=1 is not repeated here: meshioplusplus_core_obj already applies
+  # it PUBLIC (both compile and link) when MESHIOPLUSPLUS_WITH_ZLIB is on, and
+  # this target inherits it transitively via target_link_libraries above.
+  target_link_options(
+    meshioplusplus_wasm PRIVATE
+    "--bind"
+    "-sMODULARIZE=1"
+    "-sEXPORT_ES6=1"
+    "-sALLOW_MEMORY_GROWTH=1"
+    "-sFORCE_FILESYSTEM=1"
+    "-sEXPORTED_RUNTIME_METHODS=['FS']")
+  set_target_properties(meshioplusplus_wasm PROPERTIES OUTPUT_NAME "meshioplusplus_wasm"
+                                                        SUFFIX ".mjs")
+endif()
 
 # --------------------------------------------------------------------------
 # Optional standalone C++ tests (GoogleTest via CTest). OFF by default so that

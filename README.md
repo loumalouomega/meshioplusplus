@@ -4,6 +4,7 @@
 </p>
 
 [![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
+[![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm)
 [![Anaconda Cloud](https://anaconda.org/conda-forge/meshioplusplus/badges/version.svg?=style=flat-square)](https://anaconda.org/conda-forge/meshioplusplus/)
 [![Packaging status](https://repology.org/badge/tiny-repos/python:meshioplusplus.svg)](https://repology.org/project/python:meshioplusplus/versions)
 [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
@@ -254,6 +255,15 @@ You can also install meshio++ from [Anaconda](https://anaconda.org/conda-forge/m
 ```
 conda install -c conda-forge meshioplusplus
 ```
+
+For JavaScript / browser use, the C++ core also ships as a WebAssembly npm
+package covering 27 of the formats below:
+
+```
+npm install @meshioplusplus/wasm
+```
+
+See the [WebAssembly / JavaScript](https://<org>.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
 
 ### Testing
 

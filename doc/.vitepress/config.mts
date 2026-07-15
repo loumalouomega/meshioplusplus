@@ -48,6 +48,7 @@ export default defineConfig({
           { text: "XDMF time series", link: "/xdmf_time_series" },
           { text: "Extending meshio++", link: "/extending" },
           { text: "ParaView plugin", link: "/paraview_plugin" },
+          { text: "WebAssembly / JavaScript", link: "/wasm" },
           { text: "Benchmarks", link: "/benchmarks" },
         ],
       },

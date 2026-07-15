@@ -20,9 +20,13 @@ README.rst
 build/*
 !build/configure.sh
 !build/configure.bat
+!build/configure-wasm.sh
 build-tests/
 build-omp/
 build-tbb/
+# Emscripten build output copied into the npm package staging dir -- built by
+# build/configure-wasm.sh, not committed (mirrors build/* above).
+wasm/dist/
 # CMake FetchContent downloads (e.g. GoogleTest) land here inside a build dir
 _deps/
 dist/

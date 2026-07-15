@@ -1,0 +1,77 @@
+name: wasm
+
+on:
+  push:
+    branches: [main, port-to-c++]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, port-to-c++]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: wasm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-wasm:
+    name: Build + smoke-test (Emscripten)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # No submodules: this build always configures with
+        # -DMESHIOPLUSPLUS_WITH_HDF5=OFF (see build/configure-wasm.sh), so the
+        # vendored Eigen submodule (only used by MED, which needs HDF5) would
+        # sit unused -- CMake's EXISTS guard degrades gracefully when it's
+        # absent, same as any other source checkout without submodules.
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          # Pinned to the version verified locally; bump deliberately.
+          version: "6.0.3"
+
+      - name: Configure + build (WASM)
+        run: ./build/configure-wasm.sh --build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Smoke test
+        run: node wasm/test/smoke.mjs
+
+      - name: Package sanity check (npm pack --dry-run)
+        working-directory: wasm
+        run: npm pack --dry-run
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-package
+          path: wasm/
+          if-no-files-found: error
+
+  publish-npm:
+    name: Publish to npm
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@meshioplusplus/wasm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-package
+          path: wasm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        working-directory: wasm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

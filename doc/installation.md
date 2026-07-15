@@ -97,3 +97,20 @@ Notes:
 The C++ core logs through `std::format`-based helpers with source locations.
 Control verbosity with the `MESHIOPLUSPLUS_LOG_LEVEL` environment variable:
 `debug`, `info`, `warn` (default), `error`, or `off`.
+
+### JavaScript / WebAssembly
+
+The same C++ core also compiles to WebAssembly for use in the browser or
+Node.js, published as [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm)
+(`npm install @meshioplusplus/wasm`). Building it from source needs the
+[Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
+instead of a native compiler:
+
+```sh
+./build/configure-wasm.sh --build
+node wasm/test/smoke.mjs
+```
+
+See [WebAssembly / JavaScript](./wasm.md) for the full usage guide, the
+supported-format list (27 of the 35+ formats — the HDF5/netCDF-backed ones
+are not yet ported to WASM), and known v1 limitations.

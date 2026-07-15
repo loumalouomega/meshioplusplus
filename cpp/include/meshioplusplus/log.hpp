@@ -36,9 +36,13 @@
  *    environment variable: `"debug"`, `"info"`, `"warn"` (the default),
  *    `"error"`, or `"off"`. The variable is read exactly once (cached in a
  *    function-local `static`).
- *  - Messages are written to stderr through `std::osyncstream`, which
- *    guarantees that concurrent log calls (e.g. from bodies passed to
- *    `parallel_for`) never interleave mid-line.
+ *  - Messages are written to stderr through `std::osyncstream` where the
+ *    standard library provides it (guaranteeing concurrent log calls, e.g.
+ *    from bodies passed to `parallel_for`, never interleave mid-line); on
+ *    standard libraries that ship a `<syncstream>` header without actually
+ *    defining `std::osyncstream` (observed with Emscripten's non-threaded
+ *    libc++ -- `__cpp_lib_syncbuf` is unset there), a `std::mutex`-guarded
+ *    plain write to `std::cerr` gives the same serialization guarantee.
  *  - A filtered-out call costs a single branch: no formatting and no
  *    allocation happen unless the level passes the threshold.
  *  - There is no printf/`std::cerr` logging anywhere else in the codebase;
@@ -50,11 +54,16 @@
 #include <cstdlib>
 #include <format>
 #include <iostream>
+#include <mutex>
 #include <source_location>
 #include <string_view>
-#include <syncstream>
 #include <type_traits>
 #include <utility>
+#include <version>
+
+#if __has_include(<syncstream>)
+#include <syncstream>
+#endif
 
 namespace meshioplusplus {
 namespace log {
@@ -122,9 +131,15 @@ inline void write(Level lvl, std::string_view msg, const std::source_location& l
     std::string_view file = loc.file_name();
     if (auto p = file.find_last_of("/\\"); p != std::string_view::npos)
         file.remove_prefix(p + 1);
-    std::osyncstream(std::cerr) << std::format("meshio {} [{}:{}] {}\n",
-                                               names[static_cast<int>(lvl)], file,
-                                               loc.line(), msg);
+    std::string line = std::format("meshio {} [{}:{}] {}\n", names[static_cast<int>(lvl)], file,
+                                   loc.line(), msg);
+#if defined(__cpp_lib_syncbuf)
+    std::osyncstream(std::cerr) << line;
+#else
+    static std::mutex log_mutex;
+    std::lock_guard<std::mutex> lock(log_mutex);
+    std::cerr << line;
+#endif
 }
 
 /**
