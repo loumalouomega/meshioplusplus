@@ -688,7 +688,6 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
     # MED doesn't support compression,
     # <https://github.com/nschloe/meshio/issues/781#issuecomment-616438066>
     # compression = None
-
     # Use the specified MED version, default 4.1.0
     h5py.get_config().track_order = True
     mesh = _ensure_med_families(mesh)
