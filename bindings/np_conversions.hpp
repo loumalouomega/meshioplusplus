@@ -60,6 +60,7 @@
 #include <pybind11/stl.h>
 
 // Project includes
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
 
@@ -485,21 +486,22 @@ inline py::object mesh_to_py(meshioplusplus::Mesh&& m) {
         }
     }
 
+    // point_data/cell_data/field_data are unordered_map; iterate in sorted key
+    // order so the resulting Python dict has a deterministic key order.
     py::dict point_data;
-    for (auto& kv : m.point_data)
-        point_data[py::str(kv.first)] = numpy_from_ndarray(std::move(const_cast<meshioplusplus::NDArray&>(kv.second)));
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.point_data))
+        point_data[py::str(name)] = numpy_from_ndarray(std::move(m.point_data.at(name)));
 
     py::dict cell_data;
-    for (auto& kv : m.cell_data) {
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.cell_data)) {
         py::list lst;
-        for (auto& a : kv.second) lst.append(numpy_from_ndarray(std::move(a)));
-        cell_data[py::str(kv.first)] = lst;
+        for (auto& a : m.cell_data.at(name)) lst.append(numpy_from_ndarray(std::move(a)));
+        cell_data[py::str(name)] = lst;
     }
 
     py::dict field_data;
-    for (auto& kv : m.field_data)
-        field_data[py::str(kv.first)] =
-            numpy_from_ndarray(std::move(const_cast<meshioplusplus::NDArray&>(kv.second)));
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.field_data))
+        field_data[py::str(name)] = numpy_from_ndarray(std::move(m.field_data.at(name)));
 
     return MeshCls(points, cells, py::arg("point_data") = point_data,
                    py::arg("cell_data") = cell_data,

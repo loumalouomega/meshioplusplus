@@ -20,8 +20,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // External includes
@@ -180,7 +180,7 @@ Mesh read_vtu(const std::string& path) {
 
     Mesh mesh;
     std::vector<std::int64_t> conn, offsets, types;
-    std::map<std::string, NDArray> cell_data_raw;
+    std::unordered_map<std::string, NDArray> cell_data_raw;
 
     for (pugi::xml_node child : piece.children()) {
         std::string tag = child.name();

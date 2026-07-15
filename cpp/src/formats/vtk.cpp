@@ -26,6 +26,7 @@
 // Project includes
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -315,10 +316,10 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
     if (!mesh.point_data.empty()) {
         os << "POINT_DATA " << num_points << '\n';
         os << "FIELD FieldData " << mesh.point_data.size() << '\n';
-        for (const auto& kv : mesh.point_data) {
-            const NDArray& d = kv.second;
+        for (const auto& name : detail::sorted_keys(mesh.point_data)) {
+            const NDArray& d = mesh.point_data.at(name);
             std::size_t ncomp = cols(d);
-            write_field_block(os, kv.first, d.dtype(), ncomp,
+            write_field_block(os, name, d.dtype(), ncomp,
                               d.shape().empty() ? 0 : d.shape()[0], binary, {&d});
         }
     }
@@ -327,12 +328,12 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
     if (!mesh.cell_data.empty()) {
         os << "CELL_DATA " << total_cells << '\n';
         os << "FIELD FieldData " << mesh.cell_data.size() << '\n';
-        for (const auto& kv : mesh.cell_data) {
-            const auto& blocks = kv.second;
+        for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+            const auto& blocks = mesh.cell_data.at(name);
             if (blocks.empty()) continue;
             std::vector<const NDArray*> ptrs;
             for (const auto& b : blocks) ptrs.push_back(&b);
-            write_field_block(os, kv.first, blocks.front().dtype(),
+            write_field_block(os, name, blocks.front().dtype(),
                               cols(blocks.front()), total_cells, binary, ptrs);
         }
     }

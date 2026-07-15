@@ -23,7 +23,6 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
-#include <map>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -213,6 +212,7 @@ void write_tetgen(const std::string& path, const Mesh& mesh) {
         // mirroring meshioplusplus.tetgen.write.
         std::vector<std::string> attr_keys;
         for (const auto& kv : mesh.point_data) attr_keys.push_back(kv.first);
+        std::sort(attr_keys.begin(), attr_keys.end());  // deterministic column order
         std::vector<std::string> ref_keys;
         if (!attr_keys.empty()) {
             for (const auto& k : attr_keys)
@@ -271,6 +271,7 @@ void write_tetgen(const std::string& path, const Mesh& mesh) {
         // Cell-data attribute keys, with the first ":ref" key moved to front.
         std::vector<std::string> attr_keys;
         for (const auto& kv : mesh.cell_data) attr_keys.push_back(kv.first);
+        std::sort(attr_keys.begin(), attr_keys.end());  // deterministic column order
         if (!attr_keys.empty()) {
             std::string ref;
             for (const auto& k : attr_keys)

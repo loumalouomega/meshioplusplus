@@ -42,8 +42,8 @@
 
 // System includes
 #include <cstdint>
-#include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -131,9 +131,12 @@ struct Mesh {
     std::vector<CellBlock> cells;
 
     // Field data. cell_data holds one NDArray per cell block, in cells order.
-    std::map<std::string, NDArray> point_data;
-    std::map<std::string, std::vector<NDArray>> cell_data;
-    std::map<std::string, NDArray> field_data;
+    // These are unordered_map for O(1) name lookup; where key *order* is
+    // observable (Python dict order, on-disk field order) call
+    // detail::sorted_keys (map_order.hpp) at the consumption site.
+    std::unordered_map<std::string, NDArray> point_data;
+    std::unordered_map<std::string, std::vector<NDArray>> cell_data;
+    std::unordered_map<std::string, NDArray> field_data;
 
     /**
      * @brief Number of points in the mesh.

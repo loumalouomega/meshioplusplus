@@ -21,9 +21,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <map>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -189,7 +189,7 @@ Mesh read_vtk(const std::string& path) {
     NDArray conn_nd;
     const std::int64_t* conn_ptr = nullptr;
     bool conn_owned = false;  // conn_nd owns the int64 connectivity (VTK 5.1)
-    std::map<std::string, NDArray> cell_data_raw;
+    std::unordered_map<std::string, NDArray> cell_data_raw;
     std::string active;  // POINT_DATA or CELL_DATA
 
     while (!cur.eof()) {

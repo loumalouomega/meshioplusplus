@@ -31,6 +31,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/tecplot.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -315,11 +316,10 @@ void write_tecplot(const std::string& path, const Mesh& mesh) {
     int varrange0 = 3, varrange1 = 0;
     if (dim == 3) { variables.push_back("Z"); push_point_col(2); varrange0 += 1; }
 
-    for (const auto& kv : mesh.point_data) {
-        std::string k = kv.first;
+    for (const auto& k : detail::sorted_keys(mesh.point_data)) {
         std::string ku = upper(k);
         if (ku == "X" || ku == "Y" || ku == "Z") continue;
-        const NDArray& v = kv.second;
+        const NDArray& v = mesh.point_data.at(k);
         std::size_t ncomp = v.shape().size() >= 2 ? v.shape()[1] : 1;
         for (std::size_t c = 0; c < ncomp; ++c) {
             variables.push_back(ncomp == 1 ? k : k + "_" + std::to_string(c));
@@ -331,18 +331,19 @@ void write_tecplot(const std::string& path, const Mesh& mesh) {
     }
     bool have_cell_data = false;
     varrange1 = varrange0 - 1;
-    for (const auto& kv : mesh.cell_data) {
-        std::string k = kv.first, ku = upper(k);
+    for (const auto& k : detail::sorted_keys(mesh.cell_data)) {
+        std::string ku = upper(k);
         if (ku == "X" || ku == "Y" || ku == "Z") continue;
-        if (kv.second.empty()) continue;
+        const auto& cd_blocks = mesh.cell_data.at(k);
+        if (cd_blocks.empty()) continue;
         // concatenate the (single-type) blocks
-        const NDArray& first = kv.second.front();
+        const NDArray& first = cd_blocks.front();
         std::size_t ncomp = first.shape().size() >= 2 ? first.shape()[1] : 1;
         for (std::size_t c = 0; c < ncomp; ++c) {
             variables.push_back(ncomp == 1 ? k : k + "_" + std::to_string(c));
             std::vector<double> col;
             for (std::size_t b : blocks) {
-                const NDArray& vv = kv.second[b];
+                const NDArray& vv = cd_blocks[b];
                 for (std::size_t r = 0; r < vv.shape()[0]; ++r)
                     col.push_back(detail::read_double(vv, r * ncomp + c));
             }

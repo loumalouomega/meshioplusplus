@@ -26,9 +26,10 @@
 #include <format>
 #include <fstream>
 #include <map>
-#include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -406,15 +407,15 @@ std::array<double, 3> sub(const std::array<double, 3>& a, const std::array<doubl
 }
 
 std::size_t unique_node_count(const std::vector<Face>& faces) {
-    std::set<std::int64_t> s;
+    std::unordered_set<std::int64_t> s;
     for (const auto& f : faces)
         for (std::int64_t v : f) s.insert(v);
     return s.size();
 }
 
-std::map<std::int64_t, std::set<std::int64_t>> node_adjacency(
+std::unordered_map<std::int64_t, std::unordered_set<std::int64_t>> node_adjacency(
     const std::vector<Face>& faces) {
-    std::map<std::int64_t, std::set<std::int64_t>> adj;
+    std::unordered_map<std::int64_t, std::unordered_set<std::int64_t>> adj;
     for (const auto& f : faces) {
         std::size_t m = f.size();
         for (std::size_t i = 0; i < m; ++i) {
@@ -429,7 +430,7 @@ std::map<std::int64_t, std::set<std::int64_t>> node_adjacency(
 // Returns the ordered top ring, or empty if ambiguous.
 std::vector<std::int64_t> match_top(const Face& bottom, const std::vector<Face>& oriented) {
     auto adj = node_adjacency(oriented);
-    std::set<std::int64_t> base(bottom.begin(), bottom.end());
+    std::unordered_set<std::int64_t> base(bottom.begin(), bottom.end());
     std::vector<std::int64_t> top;
     for (std::int64_t b : bottom) {
         std::vector<std::int64_t> cand;
@@ -445,7 +446,7 @@ using P3 = std::vector<std::array<double, 3>>;
 
 Face build_tetra(const std::vector<Face>& oriented, const P3& P) {
     const Face& base = oriented[0];
-    std::set<std::int64_t> all;
+    std::unordered_set<std::int64_t> all;
     for (const auto& f : oriented)
         for (std::int64_t v : f) all.insert(v);
     for (std::int64_t v : base) all.erase(v);
@@ -463,7 +464,7 @@ Face build_pyramid(const std::vector<Face>& oriented, const P3& P) {
             quad = f;
             break;
         }
-    std::set<std::int64_t> all;
+    std::unordered_set<std::int64_t> all;
     for (const auto& f : oriented)
         for (std::int64_t v : f) all.insert(v);
     for (std::int64_t v : quad) all.erase(v);

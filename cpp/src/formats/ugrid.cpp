@@ -30,6 +30,7 @@
 // Project includes
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -468,11 +469,12 @@ void write_ugrid(const std::string& path, const Mesh& mesh) {
 
     // First int cell-data array, used for surface boundary tags.
     const std::vector<NDArray>* labels = nullptr;
-    for (const auto& kv : mesh.cell_data) {
-        if (kv.second.empty()) continue;
-        DType t = kv.second.front().dtype();
+    for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+        const auto& blocks = mesh.cell_data.at(name);
+        if (blocks.empty()) continue;
+        DType t = blocks.front().dtype();
         if (t != DType::Float32 && t != DType::Float64) {
-            labels = &kv.second;
+            labels = &blocks;
             break;
         }
     }

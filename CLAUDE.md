@@ -61,7 +61,11 @@ runs it, writes `results.csv`, and regenerates the plots in
 `doc/public/benchmarks/` (`benchmark_times`/`_speedup` = the bracket,
 `benchmark_scaling` = speedup vs mesh size) shown on `doc/benchmarks.md`. The needed extras
 (`pyvista matplotlib jupyter nbconvert ipykernel`) are installed into `.venv`
-with `uv pip install`.
+with `uv pip install`. `bench_hotpath.py` is a standalone (no-legacy) micro-bench
+for the C++ container hot paths — it round-trips a shared-vertex triangle grid
+through WKT and times the reader's per-vertex dedup; A/B a `main` build vs a branch
+by comparing its `min` (WKT read is parse-bound, so container-level effects sit near
+the machine's jitter floor).
 
 ## Architecture
 
@@ -74,6 +78,7 @@ with `uv pip install`.
 - `cpp/include/meshioplusplus/` headers (`ndarray.hpp`, `mesh.hpp`, `types.hpp`, `detail/*`, `formats/*`), `cpp/src/formats/*.cpp`, compiled with `bindings/_core.cpp` into `meshioplusplus._core`.
 - **Zero-copy at the I/O boundary**: readers return capsule-backed writeable numpy; writers view numpy memory (`bindings/np_conversions.hpp`). The conversion layer carries points/cells/point_data/cell_data/field_data, but **not** `mesh.info`, `cell_sets`, or `point_sets` — formats that need those either defer to Python or carry them out-of-band via a **side-channel struct** the binding `setattr`s onto the Python `Mesh` (e.g. `MedInfo`, `AnsysInfo` for `point_sets`/`cell_sets`, `OpenFoamInfo` for `cell_tags`).
 - **Ragged cell blocks**: `meshioplusplus::CellBlock` also holds optional ragged data — `polygon_rows` (1-level: jagged polygons) and `polyhedron_rows` (2-level: list of faces per cell) — for types that can't fit a rectangular `NDArray`. Zero-copy applies only to rectangular blocks; ragged blocks are **copied** across the boundary. `py_to_mesh`'s `allow_ragged` flag is **off by default** (so every rectangular-only writer keeps safely rejecting ragged meshes → Python fallback) and only the ragged-aware bindings (MED write) opt in.
+- **Container convention**: use `std::unordered_map`/`std::unordered_set` for name/id lookup and dedup tables (O(1), order-irrelevant) — the default. Reach for `std::map`/`std::set` **only** when sorted iteration order is itself relied on (see `su2` `tag_counts`, `openfoam` `by_n`, gmsh's `node_data`/`elem_data` staging locals). `Mesh::point_data`/`cell_data`/`field_data` are `unordered_map`, but their key order **is** observable — it drives Python dict key order and the on-disk field/variable order of writers (VTU, VTK, XDMF, Exodus, Tecplot, HMF, PLY, AVS-UCD, tetgen, h5m) plus "first int field" selectors (medit, ugrid, su2, netgen, avsucd). Every such site re-establishes the order explicitly via `detail::sorted_keys` (`detail/map_order.hpp`), so output stays byte-identical to sorted-`std::map` behavior. Never iterate those three maps directly for output — go through `sorted_keys`.
 - **Optional deps** (`CMakeLists.txt`): `MESHIOPLUSPLUS_WITH_HDF5`/`_NETCDF`/`_ZLIB`/`_EIGEN` options → `MESHIOPLUSPLUS_HAS_*` compile definitions and `_core.__has_hdf5__`/`__has_netcdf__` flags. `#ifdef`-guarded sources become empty TUs (or fall back to a plain loop) when off. Shared HDF5 helpers in `cpp/include/meshioplusplus/detail/hdf5_util.hpp`. **Eigen** is vendored as a git submodule at `cpp/third_party/eigen` (header-only; run `git submodule update --init` for source builds) and used for the MED Fortran↔C transpose (`med.cpp`, guarded by `MESHIOPLUSPLUS_HAS_EIGEN`); when the submodule is absent the code uses a hand-written transpose, so sdists without submodules still build.
 - **C++ standard: C++20** (pinned in `CMakeLists.txt` twice: `CMAKE_CXX_STANDARD` + `target_compile_features`). macOS needs deployment target ≥ 13.3 for `std::format` (set in `ci.yml`/`wheels.yml`).
 - **Logging** (`cpp/include/meshioplusplus/log.hpp`): `meshioplusplus::log::debug/info/warn/error("fmt {}", …)` — `std::format` (compile-time-checked) + `std::source_location`, thread-safe via `std::osyncstream`, filtered at runtime by the `MESHIOPLUSPLUS_LOG_LEVEL` env var (`debug|info|warn|error|off`, default `warn`). No printf/cerr elsewhere; errors remain exceptions.

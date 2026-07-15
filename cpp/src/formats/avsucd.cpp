@@ -21,7 +21,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <map>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -30,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/avsucd.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -244,27 +244,31 @@ void write_avsucd(const std::string& path, const Mesh& mesh) {
 
     // Material = first int cell_data array (avsucd:material if present).
     std::string mat_key;
-    for (const auto& kv : mesh.cell_data)
-        if (!kv.second.empty() && is_int_dtype(kv.second.front().dtype())) { mat_key = kv.first; break; }
+    for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+        const auto& blocks = mesh.cell_data.at(name);
+        if (!blocks.empty() && is_int_dtype(blocks.front().dtype())) { mat_key = name; break; }
+    }
 
     // Node/cell data breakdowns (excluding material).
     std::vector<std::pair<std::string, const NDArray*>> ndata;
     std::vector<int> nsize;
     std::size_t nsum = 0;
-    for (const auto& kv : mesh.point_data) {
-        int sz = kv.second.shape().size() >= 2 ? static_cast<int>(kv.second.shape()[1]) : 1;
-        ndata.emplace_back(kv.first, &kv.second);
+    for (const auto& name : detail::sorted_keys(mesh.point_data)) {
+        const NDArray& d = mesh.point_data.at(name);
+        int sz = d.shape().size() >= 2 ? static_cast<int>(d.shape()[1]) : 1;
+        ndata.emplace_back(name, &d);
         nsize.push_back(sz);
         nsum += sz;
     }
     std::vector<std::pair<std::string, const std::vector<NDArray>*>> cdata;
     std::vector<int> csize;
     std::size_t csum = 0;
-    for (const auto& kv : mesh.cell_data) {
-        if (kv.first == mat_key) continue;
-        int sz = (!kv.second.empty() && kv.second.front().shape().size() >= 2)
-                     ? static_cast<int>(kv.second.front().shape()[1]) : 1;
-        cdata.emplace_back(kv.first, &kv.second);
+    for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+        if (name == mat_key) continue;
+        const auto& blocks = mesh.cell_data.at(name);
+        int sz = (!blocks.empty() && blocks.front().shape().size() >= 2)
+                     ? static_cast<int>(blocks.front().shape()[1]) : 1;
+        cdata.emplace_back(name, &blocks);
         csize.push_back(sz);
         csum += sz;
     }

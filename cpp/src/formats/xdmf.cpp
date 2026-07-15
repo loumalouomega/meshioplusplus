@@ -31,6 +31,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -457,21 +458,23 @@ void write_xdmf(const std::string& path, const Mesh& mesh,
         w.add_data_item(topo, cd);
     }
 
-    // Point data
-    for (const auto& kv : mesh.point_data) {
+    // Point data (sorted key order for deterministic output)
+    for (const auto& name : detail::sorted_keys(mesh.point_data)) {
+        const NDArray& d = mesh.point_data.at(name);
         pugi::xml_node att = grid.append_child("Attribute");
-        att.append_attribute("Name") = kv.first.c_str();
-        att.append_attribute("AttributeType") = attribute_type(kv.second.shape()).c_str();
+        att.append_attribute("Name") = name.c_str();
+        att.append_attribute("AttributeType") = attribute_type(d.shape()).c_str();
         att.append_attribute("Center") = "Node";
-        w.add_data_item(att, kv.second);
+        w.add_data_item(att, d);
     }
 
     // Cell data (concatenated across blocks: raw_from_cell_data)
-    for (const auto& kv : mesh.cell_data) {
-        if (kv.second.empty()) continue;
-        NDArray raw = concat_cell_data(kv.second);
+    for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+        const auto& blocks = mesh.cell_data.at(name);
+        if (blocks.empty()) continue;
+        NDArray raw = concat_cell_data(blocks);
         pugi::xml_node att = grid.append_child("Attribute");
-        att.append_attribute("Name") = kv.first.c_str();
+        att.append_attribute("Name") = name.c_str();
         att.append_attribute("AttributeType") = attribute_type(raw.shape()).c_str();
         att.append_attribute("Center") = "Cell";
         w.add_data_item(att, raw);

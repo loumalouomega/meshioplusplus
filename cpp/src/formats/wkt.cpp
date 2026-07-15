@@ -20,10 +20,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <iterator>
-#include <map>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -43,6 +44,19 @@ std::vector<double> parse_point(const std::string& s) {
     return p;
 }
 
+// Hash for exact-value coordinate dedup. Uses std::hash<double> (which maps
+// +0.0 and -0.0 to the same hash, matching operator== equality) combined
+// boost-style, so equal coordinate vectors always hash equal.
+struct CoordHash {
+    std::size_t operator()(const std::vector<double>& v) const {
+        std::size_t h = v.size();
+        std::hash<double> hd;
+        for (double x : v)
+            h ^= hd(x) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
 }  // namespace
 
 Mesh read_wkt(const std::string& path) {
@@ -54,7 +68,8 @@ Mesh read_wkt(const std::string& path) {
     std::size_t tin = s.find("TIN");
     if (tin == std::string::npos) throw ReadError("Invalid WKT TIN");
 
-    std::map<std::vector<double>, std::int64_t> point_index;  // exact-value dedup
+    std::unordered_map<std::vector<double>, std::int64_t, CoordHash>
+        point_index;  // exact-value dedup
     std::vector<std::vector<double>> points;                  // insertion order
     std::vector<std::array<std::int64_t, 3>> tris;
 

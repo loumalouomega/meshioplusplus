@@ -29,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/netgen.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
@@ -336,11 +337,12 @@ void write_netgen(const std::string& path, const Mesh& mesh,
     if (it != mesh.cell_data.end()) {
         cells_index = &it->second;
     } else {
-        for (const auto& kv : mesh.cell_data) {
-            if (kv.second.empty()) continue;
-            DType t = kv.second.front().dtype();
+        for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+            const auto& blocks = mesh.cell_data.at(name);
+            if (blocks.empty()) continue;
+            DType t = blocks.front().dtype();
             if (t != DType::Float32 && t != DType::Float64) {
-                cells_index = &kv.second;
+                cells_index = &blocks;
                 break;
             }
         }

@@ -38,8 +38,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -157,9 +157,9 @@ inline NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
 inline void reconstruct_cells(
     const std::int64_t* conn, const std::vector<std::int64_t>& offsets,
     const std::vector<std::int64_t>& types,
-    const std::map<std::string, NDArray>& cell_data_raw,
+    const std::unordered_map<std::string, NDArray>& cell_data_raw,
     std::vector<CellBlock>& out_cells,
-    std::map<std::string, std::vector<NDArray>>& out_cell_data) {
+    std::unordered_map<std::string, std::vector<NDArray>>& out_cell_data) {
     const auto& vmap = vtk_to_meshio_type();
     const std::size_t ncells = types.size();
 

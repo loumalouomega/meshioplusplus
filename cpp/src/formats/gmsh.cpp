@@ -190,7 +190,7 @@ void store_value(NDArray& a, std::size_t i, double d) {
     }
 }
 
-void read_physical_names(Cursor& cur, std::map<std::string, NDArray>& field_data) {
+void read_physical_names(Cursor& cur, std::unordered_map<std::string, NDArray>& field_data) {
     std::int64_t num = std::stoll(trim(cur.read_line()));
     for (std::int64_t i = 0; i < num; ++i) {
         std::string line = cur.read_line();
@@ -298,7 +298,7 @@ void read_elements(Cursor& cur, bool is_ascii, std::vector<EBlock>& blocks) {
 
 // NodeData / ElementData
 void read_data(Cursor& cur, const std::string& tag, bool is_ascii,
-               std::map<std::string, NDArray>& out) {
+               std::unordered_map<std::string, NDArray>& out) {
     std::int64_t num_str = std::stoll(trim(cur.read_line()));
     std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
@@ -476,7 +476,7 @@ Mesh read_gmsh41_body(Cursor& cur, bool is_ascii, int data_size) {
     std::vector<std::int64_t> point_tags;
     std::vector<std::array<std::int64_t, 2>> dim_tags;
     std::vector<E41> eblocks;
-    std::map<std::string, NDArray> field_data, point_data, cell_data_raw;
+    std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
 
     while (!cur.eof()) {
         std::string line = cur.next_nonblank();
@@ -623,7 +623,7 @@ Mesh read_gmsh(const std::string& path) {
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<EBlock> eblocks;
-    std::map<std::string, NDArray> field_data, point_data, cell_data_raw;
+    std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
 
     while (!cur.eof()) {
         std::string line = cur.next_nonblank();
@@ -719,7 +719,7 @@ Mesh read_gmsh(const std::string& path) {
 
 namespace {
 
-void write_physical_names(std::ostream& os, const std::map<std::string, NDArray>& fd) {
+void write_physical_names(std::ostream& os, const std::unordered_map<std::string, NDArray>& fd) {
     std::vector<std::tuple<long long, long long, std::string>> sortable;  // dim, num, name
     for (const auto& kv : fd) {
         if (kv.second.size() < 2) continue;

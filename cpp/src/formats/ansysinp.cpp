@@ -494,15 +494,17 @@ void write_ansysinp(const std::string& path, const Mesh& mesh, const AnsysInfo& 
     f << buf;
 
     std::int64_t eid = 0;
-    // (block index, local index) -> element id
-    std::map<std::pair<std::size_t, std::size_t>, std::int64_t> loc_to_eid;
+    // Element ids are consecutive; block_eid_base[bi] is the (exclusive) base id
+    // of block bi, so element (bi, li) has id block_eid_base[bi] + 1 + li. This
+    // replaces a per-cell std::map lookup with a simple prefix sum.
+    std::vector<std::int64_t> block_eid_base(mesh.cells.size());
     for (std::size_t bi = 0; bi < mesh.cells.size(); ++bi) {
         const auto& b = mesh.cells[bi];
         int slot = slot_of(b.type);
         std::size_t nc = b.num_cells();
         std::size_t k = detail::cols(b.data);
         const std::int64_t eid_base = eid;  // element ids are consecutive
-        for (std::size_t li = 0; li < nc; ++li) loc_to_eid[{bi, li}] = eid_base + 1 + static_cast<std::int64_t>(li);
+        block_eid_base[bi] = eid_base;
         eid += static_cast<std::int64_t>(nc);
         // Format element rows in parallel, then stream sequentially.
         std::vector<std::string> rows(nc);
@@ -558,8 +560,9 @@ void write_ansysinp(const std::string& path, const Mesh& mesh, const AnsysInfo& 
         std::vector<std::int64_t> vals;
         for (std::size_t bi = 0; bi < kv.second.size(); ++bi)
             for (std::int64_t li : kv.second[bi]) {
-                auto it = loc_to_eid.find({bi, static_cast<std::size_t>(li)});
-                if (it != loc_to_eid.end()) vals.push_back(it->second);
+                if (bi < block_eid_base.size() &&
+                    static_cast<std::size_t>(li) < mesh.cells[bi].num_cells())
+                    vals.push_back(block_eid_base[bi] + 1 + li);
             }
         std::sort(vals.begin(), vals.end());
         std::snprintf(buf, sizeof(buf), "CMBLOCK,%s,ELEM,%9zu\n(8i10)\n", kv.first.c_str(),

@@ -21,7 +21,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -29,6 +28,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/medit.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -102,26 +102,30 @@ void store_coord(NDArray& a, std::size_t idx, double v) {
         a.as<double>()[idx] = v;
 }
 
-const NDArray* pick_first_int(const std::map<std::string, NDArray>& d) {
-    for (const auto& kv : d) {
-        DType t = kv.second.dtype();
+// Both pickers iterate in sorted key order so the "first int field" chosen is
+// stable regardless of the map's (unordered) storage order.
+const NDArray* pick_first_int(const std::unordered_map<std::string, NDArray>& d) {
+    for (const auto& name : detail::sorted_keys(d)) {
+        const NDArray& v = d.at(name);
+        DType t = v.dtype();
         if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 ||
             t == DType::Int64 || t == DType::UInt8 || t == DType::UInt16 ||
             t == DType::UInt32 || t == DType::UInt64)
-            return &kv.second;
+            return &v;
     }
     return nullptr;
 }
 
 const std::vector<NDArray>* pick_first_int_cell(
-    const std::map<std::string, std::vector<NDArray>>& d) {
-    for (const auto& kv : d) {
-        if (kv.second.empty()) continue;
-        DType t = kv.second.front().dtype();
+    const std::unordered_map<std::string, std::vector<NDArray>>& d) {
+    for (const auto& name : detail::sorted_keys(d)) {
+        const std::vector<NDArray>& v = d.at(name);
+        if (v.empty()) continue;
+        DType t = v.front().dtype();
         if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 ||
             t == DType::Int64 || t == DType::UInt8 || t == DType::UInt16 ||
             t == DType::UInt32 || t == DType::UInt64)
-            return &kv.second;
+            return &v;
     }
     return nullptr;
 }

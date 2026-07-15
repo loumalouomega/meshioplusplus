@@ -29,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/ply.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -342,8 +343,10 @@ void write_ply(const std::string& path, const Mesh& mesh, bool binary) {
 
     // Scalar point data only (PLY can't store multidimensional vertex data here).
     std::vector<std::pair<std::string, const NDArray*>> pd;
-    for (const auto& kv : mesh.point_data)
-        if (kv.second.shape().size() <= 1) pd.emplace_back(kv.first, &kv.second);
+    for (const auto& name : detail::sorted_keys(mesh.point_data)) {
+        const NDArray& d = mesh.point_data.at(name);
+        if (d.shape().size() <= 1) pd.emplace_back(name, &d);
+    }
 
     const char* legal[] = {"vertex", "line", "triangle", "quad", "polygon"};
     auto is_legal = [&](const std::string& t) {

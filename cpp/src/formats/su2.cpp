@@ -31,6 +31,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/su2.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -259,12 +260,13 @@ void write_su2(const std::string& path, const Mesh& mesh) {
 
     // Boundary markers from su2:tag (first int cell_data).
     std::string tag_key;
-    for (const auto& kv : mesh.cell_data) {
-        if (kv.second.empty()) continue;
-        DType t = kv.second.front().dtype();
+    for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+        const auto& blocks = mesh.cell_data.at(name);
+        if (blocks.empty()) continue;
+        DType t = blocks.front().dtype();
         if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 ||
             t == DType::Int64 || t == DType::UInt8 || t == DType::UInt16 ||
-            t == DType::UInt32 || t == DType::UInt64) { tag_key = kv.first; break; }
+            t == DType::UInt32 || t == DType::UInt64) { tag_key = name; break; }
     }
 
     // Collect unique tags (with total counts) over boundary cell blocks.

@@ -32,6 +32,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/exodus.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -532,14 +533,16 @@ void write_exodus(const std::string& path, const Mesh& mesh) {
                   "name_nod_var", true);
         }
         std::size_t k = 0;
-        for (const auto& kv : mesh.point_data) {
+        // Sorted key order: assigns the on-disk variable index (slot k) and
+        // name deterministically, independent of the map's storage order.
+        for (const auto& name : detail::sorted_keys(mesh.point_data)) {
             std::size_t start[2] = {k, 0};
-            std::size_t count[2] = {1, std::min<std::size_t>(kv.first.size(), 33)};
+            std::size_t count[2] = {1, std::min<std::size_t>(name.size(), 33)};
             if (count[1] > 0)
-                check(nc_put_vara_text(ncid, name_var, start, count, kv.first.c_str()),
+                check(nc_put_vara_text(ncid, name_var, start, count, name.c_str()),
                       "name_nod_var", true);
 
-            const NDArray& data = kv.second;
+            const NDArray& data = mesh.point_data.at(name);
             std::vector<int> dims = {d_time};
             for (std::size_t i = 0; i < data.shape().size(); ++i) {
                 std::string dn = "dim_nod_var" + std::to_string(k) + std::to_string(i);

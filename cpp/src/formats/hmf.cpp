@@ -24,6 +24,7 @@
 // Project includes
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -115,15 +116,16 @@ void write_hmf(const std::string& path, const Mesh& mesh, int gzip_level) {
         h5::write_attr_string(d, "TopologyType", xdmfcommon::meshio_to_xdmf(cb.type));
     }
 
-    // NodeAttributes / CellAttributes
+    // NodeAttributes / CellAttributes (sorted key order for deterministic output)
     h5::Hid na = h5::create_group(grid, "NodeAttributes");
-    for (const auto& kv : mesh.point_data)
-        h5::write_dataset(na, kv.first, kv.second, gzip_level);
+    for (const auto& name : detail::sorted_keys(mesh.point_data))
+        h5::write_dataset(na, name, mesh.point_data.at(name), gzip_level);
 
     h5::Hid ca = h5::create_group(grid, "CellAttributes");
-    for (const auto& kv : mesh.cell_data) {
-        if (kv.second.empty()) continue;
-        h5::write_dataset(ca, kv.first, xdmfcommon::concat_cell_data(kv.second),
+    for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+        const auto& blocks = mesh.cell_data.at(name);
+        if (blocks.empty()) continue;
+        h5::write_dataset(ca, name, xdmfcommon::concat_cell_data(blocks),
                           gzip_level);
     }
 }

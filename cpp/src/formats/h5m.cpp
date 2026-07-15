@@ -27,6 +27,7 @@
 // Project includes
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -170,7 +171,8 @@ void write_h5m(const std::string& path, const Mesh& mesh, bool add_global_ids,
 
     // point data (+ auto GLOBAL_ID)
     std::vector<std::pair<std::string, const NDArray*>> pd;
-    for (const auto& kv : mesh.point_data) pd.emplace_back(kv.first, &kv.second);
+    for (const auto& name : detail::sorted_keys(mesh.point_data))
+        pd.emplace_back(name, &mesh.point_data.at(name));
     NDArray gids;
     if (add_global_ids && mesh.point_data.find("GLOBAL_ID") == mesh.point_data.end()) {
         gids = NDArray(DType::Int64, {mesh.num_points()});

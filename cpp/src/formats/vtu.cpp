@@ -25,6 +25,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/vtu.hpp"
+#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -190,10 +191,10 @@ void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib
 
     if (!mesh.point_data.empty()) {
         os << "<PointData>\n";
-        for (const auto& kv : mesh.point_data) {
-            const NDArray& d = kv.second;
+        for (const auto& name : detail::sorted_keys(mesh.point_data)) {
+            const NDArray& d = mesh.point_data.at(name);
             int ncomp = (d.shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
-            da_header(vtu_type_str(d.dtype()), kv.first, ncomp);
+            da_header(vtu_type_str(d.dtype()), name, ncomp);
             if (binary)
                 emit_bin(reinterpret_cast<const unsigned char*>(d.data()), d.nbytes());
             else
@@ -205,12 +206,12 @@ void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib
 
     if (!mesh.cell_data.empty()) {
         os << "<CellData>\n";
-        for (const auto& kv : mesh.cell_data) {
-            const auto& blocks = kv.second;
+        for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
+            const auto& blocks = mesh.cell_data.at(name);
             if (blocks.empty()) continue;
             const NDArray& first = blocks.front();
             int ncomp = (first.shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
-            da_header(vtu_type_str(first.dtype()), kv.first, ncomp);
+            da_header(vtu_type_str(first.dtype()), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
                 for (const auto& blk : blocks) {
