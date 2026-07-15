@@ -35,6 +35,16 @@ jobs:
           CIBW_ARCHS_MACOS: "x86_64 arm64"
           # macOS: libomp gives Apple clang an OpenMP runtime (libc++ has no PSTL).
           CIBW_BEFORE_ALL_MACOS: "brew install libomp"
+          # manylinux2014's stock compiler (devtoolset-10, GCC 10) has no <format>
+          # (needs GCC 13+ per the C++20 std::format requirement above). manylinux_2_28
+          # (AlmaLinux 8) ships gcc-toolset-13 as an installable SCL package.
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
+          CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_28"
+          CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
+          CIBW_ENVIRONMENT_LINUX: >-
+            CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
+            CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
           CIBW_ENVIRONMENT: >-
             CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
             MACOSX_DEPLOYMENT_TARGET="13.3"
