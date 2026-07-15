@@ -216,10 +216,11 @@ write / ~5× read**, and mixed-topology **XDMF read ~10×**. The binary and HDF5
 formats that used to be *slower* — VTK/Gmsh binary, UGRID, and MED — are now at
 or above parity after an optimisation pass (bulk-buffered binary I/O,
 single-instruction `bswap` endianness conversion, a real parallel backend, an
-Eigen-backed MED transpose, and **zero-copy cell reconstruction** that moves
-the connectivity buffer straight into the mesh); single-cell-type binary
-**reads** now match or beat numpy's `fromfile` (Gmsh ~1.7×, VTK ~1.3×). Output
-stays byte-identical throughout.
+Eigen-backed MED transpose, **zero-copy cell reconstruction** that moves the
+connectivity buffer straight into the mesh, and uninitialised reader buffers +
+thread-parallel block copies so nothing is written twice); binary **reads** now
+match or beat numpy's `fromfile` — Gmsh ~1.7×, single-type VTK ~1.45×, and even
+mixed-topology VTK ~1.1×. Output stays byte-identical throughout.
 
 The speedup is per-element: text/parallel formats climb out of the small-mesh
 regime and plateau (large meshes realise the full speedup):

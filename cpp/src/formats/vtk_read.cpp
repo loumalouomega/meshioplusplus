@@ -76,7 +76,7 @@ struct Cursor {
 
     // Read `count` values of dtype `dt`, ascii or big-endian binary.
     NDArray read_values(DType dt, std::size_t count, bool is_ascii) {
-        NDArray a(dt, {count});
+        NDArray a = NDArray::uninit(dt, {count});  // every element written below
         const std::size_t isz = dtype_size(dt);
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);

@@ -34,11 +34,13 @@ largest exactly where pure-Python is slowest — **text/ASCII formats**:
   reader decodes straight from the slurped buffer into an owning array that is
   *moved* into the cell block (no copy): ~1.4× write, **~1.8× read**.
 - **VTK binary** — writes at parity (fused gather+byte-swap, one `write`). Reads
-  now **beat** pure-Python on single-cell-type meshes (~1.3×) because the
-  connectivity `NDArray` is moved straight into the cell block instead of being
-  copied during reconstruction, and endianness conversion uses single-instruction
-  `bswap` intrinsics; mixed-topology meshes fall back to per-run block copies and
-  land just under (~0.85×, up from ~0.4× originally).
+  now **beat** pure-Python both on single-cell-type meshes (~1.45×, the
+  connectivity `NDArray` is moved straight into the cell block) and on
+  mixed-topology meshes (**~1.1×** on the bracket, up from ~0.4× originally):
+  reader output buffers skip the zero-fill they immediately overwrite, and the
+  per-type block copy is chunked across threads so its first-touch page faults
+  are serviced concurrently. Endianness conversion uses single-instruction
+  `bswap` intrinsics throughout.
 
 For **plain binary dumps**, pure-Python meshio streams the whole array through
 numpy's `fromfile`/`tofile` at C speed — a high bar — but with the redundant

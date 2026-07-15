@@ -12,10 +12,54 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <numeric>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace meshioplusplus {
+
+namespace detail {
+// Allocator that leaves elements *default*-initialized rather than
+// value-initialized. For a trivial type like std::byte that means the buffer
+// is left uninitialized instead of zero-filled. NDArray uses it so a buffer it
+// is about to fully overwrite (reader outputs, reconstruction blocks) can skip
+// the zero-fill memset — which, for a fresh large allocation, is an entire
+// extra cold pass over just-faulted pages (numpy's calloc-backed arrays skip
+// it too). std::vector stays copyable, unlike a unique_ptr buffer.
+template <class T>
+struct no_init_allocator {
+    using value_type = T;
+    no_init_allocator() = default;
+    template <class U>
+    no_init_allocator(const no_init_allocator<U>&) noexcept {}
+    template <class U>
+    struct rebind {
+        using other = no_init_allocator<U>;
+    };
+    T* allocate(std::size_t n) { return std::allocator<T>{}.allocate(n); }
+    void deallocate(T* p, std::size_t n) { std::allocator<T>{}.deallocate(p, n); }
+    // Default-init (no zeroing) for the no-arg case resize() uses; forward
+    // everything else so the vector still behaves normally.
+    template <class U>
+    void construct(U* p) noexcept(std::is_nothrow_default_constructible_v<U>) {
+        ::new (static_cast<void*>(p)) U;
+    }
+    template <class U, class... Args>
+    void construct(U* p, Args&&... args) {
+        ::new (static_cast<void*>(p)) U(std::forward<Args>(args)...);
+    }
+    template <class U>
+    bool operator==(const no_init_allocator<U>&) const noexcept {
+        return true;
+    }
+    template <class U>
+    bool operator!=(const no_init_allocator<U>&) const noexcept {
+        return false;
+    }
+};
+}  // namespace detail
 
 enum class DType {
     Float32,
@@ -70,7 +114,19 @@ public:
     // Owning array, zero-initialised buffer of the right size.
     NDArray(DType dt, std::vector<std::size_t> shape)
         : dtype_(dt), shape_(std::move(shape)) {
-        owned_.resize(nbytes());
+        const std::size_t nb = nbytes();
+        owned_.resize(nb);  // uninitialised (no_init_allocator)
+        std::memset(owned_.data(), 0, nb);  // explicit zero-fill
+    }
+
+    // Owning array whose buffer is left *uninitialised* — only for callers that
+    // immediately overwrite every byte (reader outputs, reconstruction blocks).
+    static NDArray uninit(DType dt, std::vector<std::size_t> shape) {
+        NDArray a;
+        a.dtype_ = dt;
+        a.shape_ = std::move(shape);
+        a.owned_.resize(a.nbytes());  // no memset
+        return a;
     }
 
     // Non-owning view over external row-major memory (caller keeps it alive).
@@ -111,8 +167,10 @@ public:
     // handing a buffer's lifetime to Python via a capsule.
     void make_owned() {
         if (view_ == nullptr) return;
-        std::vector<std::byte> buf(nbytes());
-        std::memcpy(buf.data(), view_, nbytes());
+        const std::size_t nb = nbytes();
+        ByteBuf buf;
+        buf.resize(nb);  // uninitialised; fully overwritten by the memcpy below
+        std::memcpy(buf.data(), view_, nb);
         owned_ = std::move(buf);
         view_ = nullptr;
     }
@@ -123,9 +181,10 @@ public:
     const T* as() const { return reinterpret_cast<const T*>(data()); }
 
 private:
+    using ByteBuf = std::vector<std::byte, detail::no_init_allocator<std::byte>>;
     DType dtype_ = DType::Float64;
     std::vector<std::size_t> shape_;
-    std::vector<std::byte> owned_;
+    ByteBuf owned_;
     std::byte* view_ = nullptr;
 };
 

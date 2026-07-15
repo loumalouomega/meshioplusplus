@@ -5,6 +5,7 @@
 // the VTK 5.1 reader (which share this exact layout). Ported from
 // vtk_cells_from_data in _vtk_common.py.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -20,6 +21,28 @@
 namespace meshioplusplus {
 namespace detail {
 
+// Copy `n` int64 in contiguous chunks across the bandwidth threads. The
+// destination is a fresh allocation, so most of the cost is first-touch page
+// faults — servicing them concurrently beats a single serial memcpy.
+inline void parallel_copy_i64(std::int64_t* dst, const std::int64_t* src, std::size_t n) {
+    constexpr std::size_t kChunk = 1u << 19;  // 512Ki elements (4 MiB) per task
+    const std::size_t nchunks = (n + kChunk - 1) / kChunk;
+    if (nchunks <= 1) {
+        std::memcpy(dst, src, n * sizeof(std::int64_t));
+        return;
+    }
+    // grain=1: each chunk is already coarse (4 MiB), so dispatch per chunk —
+    // otherwise the default grain (2048) would run these few chunks serially.
+    parallel_for_bw(
+        nchunks,
+        [&](std::size_t c) {
+            const std::size_t off = c * kChunk;
+            const std::size_t len = std::min(kChunk, n - off);
+            std::memcpy(dst + off, src + off, len * sizeof(std::int64_t));
+        },
+        1);
+}
+
 inline NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
     std::size_t nc = a.shape().size() >= 2 ? a.shape()[1] : 1;
     std::size_t isz = dtype_size(a.dtype());
@@ -27,7 +50,7 @@ inline NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
     std::vector<std::size_t> shape = a.shape();
     if (shape.empty()) shape = {0};
     shape[0] = r1 - r0;
-    NDArray out(a.dtype(), shape);
+    NDArray out = NDArray::uninit(a.dtype(), shape);  // fully overwritten below
     if (r1 > r0)
         std::memcpy(out.data(), a.data() + r0 * rowbytes, (r1 - r0) * rowbytes);
     return out;
@@ -81,7 +104,7 @@ inline void reconstruct_cells(
                 while (j < sizes.size() && sizes[j] == sizes[i]) ++j;
                 std::int64_t sz = sizes[i];
                 std::size_t m = j - i;
-                NDArray data(DType::Int64, {m, static_cast<std::size_t>(sz)});
+                NDArray data = NDArray::uninit(DType::Int64, {m, static_cast<std::size_t>(sz)});
                 std::int64_t* out = data.as<std::int64_t>();
                 const std::size_t ii = i;
                 // Contiguous uniform-size sub-run -> block memcpy.
@@ -92,8 +115,8 @@ inline void reconstruct_cells(
                         sub_first + static_cast<std::int64_t>(r + 1) * sz)
                         sub_regular = false;
                 if (sub_regular) {
-                    std::memcpy(out, conn + sub_first,
-                                m * static_cast<std::size_t>(sz) * sizeof(std::int64_t));
+                    parallel_copy_i64(out, conn + sub_first,
+                                      m * static_cast<std::size_t>(sz));
                 } else {
                     parallel_for_bw(m, [&](std::size_t r) {
                         std::int64_t endoff = offsets[start + ii + r];
@@ -113,7 +136,7 @@ inline void reconstruct_cells(
             int n = nit->second;
             std::vector<int> order = vtk_to_meshio_order(vtk_type);
             std::size_t m = end - start;
-            NDArray data(DType::Int64, {m, static_cast<std::size_t>(n)});
+            NDArray data = NDArray::uninit(DType::Int64, {m, static_cast<std::size_t>(n)});
             std::int64_t* out = data.as<std::int64_t>();
             const int* ord = order.empty() ? nullptr : order.data();
             const std::size_t ss = start;
@@ -127,8 +150,8 @@ inline void reconstruct_cells(
                                                                          static_cast<std::size_t>(n)))
                     regular = false;
             if (!ord && regular) {
-                std::memcpy(out, conn + first,
-                            m * static_cast<std::size_t>(n) * sizeof(std::int64_t));
+                // Contiguous slice -> parallel block copy (fault-bound).
+                parallel_copy_i64(out, conn + first, m * static_cast<std::size_t>(n));
             } else {
                 parallel_for_bw(m, [&](std::size_t r) {
                     std::int64_t endoff = offsets[ss + r];
