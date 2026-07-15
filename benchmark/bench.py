@@ -26,6 +26,7 @@ if LEGACY_SRC not in sys.path:
     sys.path.insert(0, LEGACY_SRC)
 
 import meshio as legacy  # noqa: E402  (import after sys.path tweak)
+
 import meshioplusplus as pp  # noqa: E402
 
 
