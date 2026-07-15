@@ -32,6 +32,7 @@ doc/_build/
 .coverage
 .tox/
 foo.vtk
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 # Jupyter
 .ipynb_checkpoints/
