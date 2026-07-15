@@ -37,15 +37,20 @@ jobs:
           CIBW_BEFORE_ALL_MACOS: "brew install libomp"
           # manylinux2014's stock compiler (devtoolset-10, GCC 10) has no <format>
           # (needs GCC 13+ per the C++20 std::format requirement above).
-          # manylinux_2_28 (AlmaLinux 8, glibc 2.28) + gcc-toolset-13 was tried first:
-          # even with MESHIOPLUSPLUS_STATIC_RUNTIME statically linking libstdc++ (which
-          # `ldd`/`objdump -T` confirmed works - no more libstdc++.so.6 dependency),
-          # auditwheel still rejected the wheel for GLIBC_2.32-2.38 symbols pulled
-          # directly from libc.so.6/libm.so.6 - i.e. gcc-toolset-13's own runtime calls
-          # glibc functions newer than AlmaLinux 8 ships, and unlike libstdc++, glibc
-          # itself can't be statically linked away from a normal .so. manylinux_2_34
-          # (AlmaLinux 9, glibc 2.34) is a much closer match to what gcc-toolset-13
-          # actually targets, so no static-linking workaround should be needed there.
+          # manylinux_2_28 (AlmaLinux 8, glibc 2.28) + gcc-toolset-13 was tried first and
+          # never fully worked: even with MESHIOPLUSPLUS_STATIC_RUNTIME, auditwheel still
+          # rejected the wheel for GLIBC_2.32-2.38 symbols pulled directly from
+          # libc.so.6/libm.so.6 - gcc-toolset-13's own runtime calls glibc functions
+          # newer than AlmaLinux 8 ships, and unlike libstdc++, glibc can't be statically
+          # linked out of a normal .so. manylinux_2_34 (AlmaLinux 9, glibc 2.34) is a
+          # much closer match to what gcc-toolset-13 actually targets, but even there
+          # MESHIOPLUSPLUS_STATIC_RUNTIME is still required for the GLIBCXX/CXXABI side
+          # (libstdc++'s SONAME version tracks the compiler, not the target glibc, so
+          # gcc-toolset-13 always wants GLIBCXX_3.4.32 regardless of image).
+          # Verified end-to-end in a real manylinux_2_34 container (build -> `ldd`/
+          # `objdump -T` show zero libstdc++/GLIBCXX/CXXABI deps and GLIBC capped at
+          # 2.34 -> `auditwheel -v repair` succeeds -> installed the repaired wheel into
+          # a clean venv and ran the full pytest suite: 1018 passed).
           CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
           CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_34"
           CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
@@ -58,7 +63,7 @@ jobs:
           CIBW_ENVIRONMENT_LINUX: >-
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON"
           # -v surfaces which specific symbol/library trips the manylinux policy check,
           # instead of auditwheel's generic "too-recent versioned symbols" message.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair -w {dest_dir} {wheel}"
