@@ -25,9 +25,9 @@ jobs:
           # turned OFF, so the only build requirement is a C++20 compiler.
           # HDF5/netCDF formats and VTU zlib work through the h5py/netCDF4
           # runtime extras and the stdlib, exactly as the fallback shims intend.
-          # The parallel backend is AUTO -> OpenMP (libgomp on manylinux, MSVC's
-          # built-in OpenMP on Windows, libomp on macOS); auditwheel / delocate /
-          # delvewheel bundle the OpenMP runtime into the wheel automatically.
+          # The parallel backend is AUTO -> OpenMP (MSVC's built-in OpenMP on Windows,
+          # libomp on macOS; delvewheel/delocate bundle it automatically). Linux wheels
+          # are forced to SEQ instead - see the manylinux_2_28 comment below.
           # macOS 13.3+ is required for std::format (its floating-point
           # formatting symbols live in the OS libc++ dylib).
           CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
@@ -41,16 +41,20 @@ jobs:
           CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
           CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_28"
           CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
-          # gcc-toolset-13's libstdc++/libgomp are newer than manylinux_2_28's baseline,
-          # so the resulting .so pulls in versioned symbols auditwheel rejects unless
-          # libgcc/libstdc++/libgomp (the OpenMP runtime the AUTO parallel backend
-          # links against) are statically linked in (LDFLAGS seeds CMake's
-          # *_LINKER_FLAGS).
+          # gcc-toolset-13's libstdc++ is newer than manylinux_2_28's baseline, so the
+          # resulting .so pulls in versioned symbols auditwheel rejects unless libgcc/
+          # libstdc++ are statically linked in (LDFLAGS seeds CMake's *_LINKER_FLAGS).
+          # AUTO's OpenMP preference is forced to SEQ here too: gcc-toolset-13's libgomp
+          # has no static-link option GCC recognizes ("-static-libgomp" isn't a real GCC
+          # flag, unlike -static-libgcc/-static-libstdc++), so it would stay a dynamic
+          # dependency and hit the same versioned-symbol rejection. These wheels already
+          # trade native HDF5/netCDF/zlib for portability (see above) - SEQ keeps that
+          # trade consistent; TBB/OpenMP builds remain available from source.
           CIBW_ENVIRONMENT_LINUX: >-
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
-            LDFLAGS="-static-libgcc -static-libstdc++ -static-libgomp"
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
+            LDFLAGS="-static-libgcc -static-libstdc++"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ"
           # -v surfaces which specific symbol/library trips the manylinux_2_28 policy
           # check if the static-linking above still isn't enough, instead of auditwheel's
           # generic "too-recent versioned symbols" message.
