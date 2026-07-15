@@ -86,6 +86,19 @@ emcmake cmake $GENERATOR \
     -DMESHIOPLUSPLUS_WITH_NETCDF=OFF \
     -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB"
 
+if [ "$WITH_ZLIB" = "ON" ]; then
+    echo
+    echo "== warming Emscripten zlib port cache =="
+    # -sUSE_ZLIB=1 makes every translation unit trigger a build of the
+    # bundled zlib port on first use. Left to a parallel `-j` build, Ninja's
+    # dependency-scan step (emscan-deps) launches many em++ invocations at
+    # once, and on a cold cache they race to build/lock that same port,
+    # aborting with "attempt to lock the cache while a parent process is
+    # holding the lock (sanity)". Building it once, single-threaded, up
+    # front avoids the race entirely.
+    embuilder build zlib
+fi
+
 echo
 echo "== next steps =="
 echo "  emmake cmake --build \"$BUILD_DIR\" -j"
