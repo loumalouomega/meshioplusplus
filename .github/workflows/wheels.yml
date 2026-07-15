@@ -41,14 +41,20 @@ jobs:
           CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
           CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_28"
           CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
-          # gcc-toolset-13's libstdc++ is newer than manylinux_2_28's baseline, so the
-          # resulting .so pulls in versioned symbols auditwheel rejects unless libgcc/
-          # libstdc++ are statically linked in (LDFLAGS seeds CMake's *_LINKER_FLAGS).
+          # gcc-toolset-13's libstdc++/libgomp are newer than manylinux_2_28's baseline,
+          # so the resulting .so pulls in versioned symbols auditwheel rejects unless
+          # libgcc/libstdc++/libgomp (the OpenMP runtime the AUTO parallel backend
+          # links against) are statically linked in (LDFLAGS seeds CMake's
+          # *_LINKER_FLAGS).
           CIBW_ENVIRONMENT_LINUX: >-
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
-            LDFLAGS="-static-libgcc -static-libstdc++"
+            LDFLAGS="-static-libgcc -static-libstdc++ -static-libgomp"
             CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
+          # -v surfaces which specific symbol/library trips the manylinux_2_28 policy
+          # check if the static-linking above still isn't enough, instead of auditwheel's
+          # generic "too-recent versioned symbols" message.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair -v -w {dest_dir} {wheel}"
           CIBW_ENVIRONMENT: >-
             CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
             MACOSX_DEPLOYMENT_TARGET="13.3"
