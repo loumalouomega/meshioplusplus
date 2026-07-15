@@ -1,0 +1,69 @@
+{
+  // See https://go.microsoft.com/fwlink/?LinkId=733558
+  // for the documentation about the tasks.json format
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build: Python extension (editable install)",
+      "detail": "Rebuild meshioplusplus._core in-place (uv venv, HDF5+zlib on; netCDF off — this machine's static libnetcdf.a fails to link against OpenMPI HDF5).",
+      "type": "shell",
+      "command": "CMAKE_ARGS=\"-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON\" uv pip install --python .venv --no-build-isolation -e .",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Test: pytest (all)",
+      "detail": "Run the full Python test suite.",
+      "type": "shell",
+      "command": ".venv/bin/pytest tests/ -q",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: pytest (current file)",
+      "detail": "Run pytest on the file open in the active editor.",
+      "type": "shell",
+      "command": ".venv/bin/pytest '${file}' -q",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "C++: Configure + build tests",
+      "detail": "Configure (OpenMP backend, netCDF off — see Python build task note) and build the GoogleTest suite into build/cpp-release.",
+      "type": "shell",
+      "command": "./build/configure.sh --backend OPENMP --tests --build --without-netcdf",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "C++: Run tests (ctest)",
+      "detail": "Run the GoogleTest/CTest suite (requires 'C++: Configure + build tests' first).",
+      "type": "shell",
+      "command": "ctest --test-dir build/cpp-release --output-on-failure",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "problemMatcher": [],
+      "dependsOn": ["C++: Configure + build tests"]
+    }
+  ]
+}

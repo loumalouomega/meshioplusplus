@@ -15,7 +15,20 @@
 .cache/
 MANIFEST
 README.rst
-build/
+# Ignore build artifacts but keep the tracked configure scripts
+# (an ignored *directory* cannot have re-included children, so use build/*).
+build/*
+!build/configure.sh
+!build/configure.bat
+!build/configure-wasm.sh
+build-tests/
+build-omp/
+build-tbb/
+# Emscripten build output copied into the npm package staging dir -- built by
+# build/configure-wasm.sh, not committed (mirrors build/* above).
+wasm/dist/
+# CMake FetchContent downloads (e.g. GoogleTest) land here inside a build dir
+_deps/
 dist/
 doc/_build/
 *.egg-info/
@@ -23,4 +36,7 @@ doc/_build/
 .coverage
 .tox/
 foo.vtk
-.vscode/
+.vscode/*
+!.vscode/tasks.json
+# Jupyter
+.ipynb_checkpoints/

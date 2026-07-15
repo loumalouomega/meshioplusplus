@@ -3,7 +3,7 @@ import pathlib
 import numpy as np
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -41,8 +41,8 @@ netgen_meshes = [PERIODIC_1D, PERIODIC_2D, PERIODIC_3D]
 def test(mesh, suffix, tmp_path):
     helpers.write_read(
         tmp_path,
-        meshio.netgen.write,
-        meshio.netgen.read,
+        meshioplusplus.netgen.write,
+        meshioplusplus.netgen.read,
         mesh,
         1.0e-13,
         extension=suffix,
@@ -90,11 +90,11 @@ expected_field_data = {
 
 @pytest.mark.parametrize("netgen_mesh", [PERIODIC_1D, PERIODIC_2D, PERIODIC_3D])
 def test_advanced(netgen_mesh, tmp_path):
-    mesh = meshio.read(str(netgen_mesh_directory / netgen_mesh))
+    mesh = meshioplusplus.read(str(netgen_mesh_directory / netgen_mesh))
 
     p = tmp_path / f"{netgen_mesh}_out.vol"
     mesh.write(p)
-    mesh_out = meshio.read(p)
+    mesh_out = meshioplusplus.read(p)
 
     assert np.all(
         mesh.info["netgen:identifications"] == expected_identifications[netgen_mesh]

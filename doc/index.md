@@ -1,15 +1,51 @@
-# meshio Documentation
+---
+layout: home
 
-meshio is a Python library for reading and writing unstructured mesh files. It supports over 30 formats and provides a single unified data model so you can convert between any of them.
+hero:
+  name: meshio++
+  text: I/O for many mesh formats
+  tagline: One unified mesh data model, 35+ file formats, a fast C++ core with pure-Python fallbacks.
+  image:
+    src: /logo-icon.svg
+    alt: meshio++
+  actions:
+    - theme: brand
+      text: Quickstart
+      link: /quickstart
+    - theme: alt
+      text: Supported formats
+      link: /formats
+    - theme: alt
+      text: GitHub
+      link: https://github.com/<org>/meshioplusplus
 
-## Contents
+features:
+  - title: 35+ formats
+    details: Read and write VTK, VTU, XDMF, Gmsh, MED, Exodus, CGNS, Abaqus, Nastran, UNV, COMSOL, FLUX, and many more — all through a single API.
+  - title: Unified data model
+    details: A single Mesh object (points, cells, point/cell data, field data, sets) bridges every format, so conversion is one call.
+  - title: Fast C++ core
+    details: A pybind11 extension with zero-copy numpy at the I/O boundary and optional HDF5/netCDF acceleration — with pure-Python fallbacks everywhere.
+---
 
-- [Installation](installation.md) — install options, optional dependencies
-- [Quickstart](quickstart.md) — reading, writing, and converting meshes in a few lines
-- [Mesh data model](mesh_data_model.md) — `Mesh`, `CellBlock`, points, cells, data fields, sets
-- [Cell types](cell_types.md) — all supported element types and their node counts
-- [Supported formats](formats.md) — full table of formats, extensions, read/write support, and format-specific options
-- [CLI reference](cli.md) — `meshio convert`, `info`, `ascii`, `binary`, `compress`, `decompress`
-- [XDMF time series](xdmf_time_series.md) — writing and reading temporal simulation data
-- [Extending meshio](extending.md) — registering custom formats, adding a new built-in format
-- [ParaView plugin](paraview_plugin.md) — loading meshio-supported files directly in ParaView
+## What is meshio++?
+
+meshio++ reads and writes unstructured mesh files. It supports over 35 formats and
+provides one unified [data model](./mesh_data_model.md) so you can convert between
+any of them, from the command line or from Python:
+
+```python
+import meshioplusplus
+
+mesh = meshioplusplus.read("input.msh")   # format inferred from the extension
+mesh.write("output.vtu")
+```
+
+```sh
+meshioplusplus convert input.msh output.vtu
+meshioplusplus info input.xdmf
+```
+
+See the [Quickstart](./quickstart.md) to get going, the
+[Supported formats](./formats.md) table for the full list and per-format options,
+and the [CLI reference](./cli.md) for the command-line tools.

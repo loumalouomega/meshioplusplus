@@ -3,7 +3,7 @@ import pathlib  # Ensure pathlib is imported at the top
 import numpy as np
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -34,7 +34,9 @@ from . import helpers
     ],
 )
 def test_io(mesh, tmp_path):
-    helpers.write_read(tmp_path, meshio.mdpa.write, meshio.mdpa.read, mesh, 1.0e-15)
+    helpers.write_read(
+        tmp_path, meshioplusplus.mdpa.write, meshioplusplus.mdpa.read, mesh, 1.0e-15
+    )
 
 
 def test_read_model_part_data():
@@ -63,8 +65,8 @@ End Elements
     import pathlib
     import tempfile
 
-    # from meshio.mdpa import _mdpa # No longer directly calling read_buffer
-    # Create a temporary file to use with meshio.mdpa.read
+    # from meshioplusplus.mdpa import _mdpa # No longer directly calling read_buffer
+    # Create a temporary file to use with meshioplusplus.mdpa.read
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".mdpa") as tmpfile:
         tmpfile.write(mdpa_content)
         tmp_file_path = pathlib.Path(tmpfile.name)
@@ -73,7 +75,7 @@ End Elements
     # though the warning is visibly emitted to stderr.
     # Proceeding without pytest.warns for this specific case.
     # The core functionality being tested is the parsing of ModelPartData.
-    mesh = meshio.mdpa.read(tmp_file_path)
+    mesh = meshioplusplus.mdpa.read(tmp_file_path)
 
     # Clean up the temporary file
     tmp_file_path.unlink()
@@ -98,7 +100,7 @@ def test_generic_io(tmp_path):
 def test_write_from_gmsh(tmp_path):
     fg = tmp_path / "test.msh"
     fg.write_text(msh_mesh)
-    m = meshio.read(fg, "gmsh")
+    m = meshioplusplus.read(fg, "gmsh")
     fk = tmp_path / "test.mdpa"
     m.write(fk, "mdpa")
     mdpa_mesh = fk.read_text().split("\n")
@@ -149,11 +151,11 @@ End Nodes
     # as the order or exact message might slightly vary based on processing.
     # A more robust way would be to collect all warnings and check subsets.
     # with pytest.warns(UserWarning) as record: # Check that at least one UserWarning is raised for the bad lines
-    #    mesh = meshio.mdpa.read(test_file)
-    # Note: pytest.warns is not reliably capturing warnings emitted by meshio.mdpa.read here,
+    #    mesh = meshioplusplus.mdpa.read(test_file)
+    # Note: pytest.warns is not reliably capturing warnings emitted by meshioplusplus.mdpa.read here,
     # though the warnings are confirmed to be emitted to stderr.
     # Proceeding without direct pytest.warns capture for this test.
-    mesh = meshio.mdpa.read(test_file)
+    mesh = meshioplusplus.mdpa.read(test_file)
 
     # Check that specific warnings occurred (content matching)
     # This is more robust than relying on the order or count of all warnings.
@@ -237,7 +239,7 @@ End Nodes
     test_file = tmp_path / "test_properties.mdpa"
     test_file.write_text(mdpa_content_properties)
 
-    mesh = meshio.mdpa.read(test_file)
+    mesh = meshioplusplus.mdpa.read(test_file)
 
     # Check Properties 1
     assert "properties_1" in mesh.field_data
@@ -309,7 +311,7 @@ End NodalData
     test_file = tmp_path / "test_nodal_data.mdpa"
     test_file.write_text(mdpa_content_nodal_data)
 
-    mesh = meshio.mdpa.read(test_file)
+    mesh = meshioplusplus.mdpa.read(test_file)
 
     assert len(mesh.points) == 4
 
@@ -399,7 +401,7 @@ End ConditionalData
     test_file = tmp_path / "test_elem_cond_data.mdpa"
     test_file.write_text(mdpa_content_elem_cond_data)
 
-    mesh = meshio.mdpa.read(test_file)
+    mesh = meshioplusplus.mdpa.read(test_file)
 
     assert len(mesh.points) == 6
     assert len(mesh.cells) == 3  # Triangles, Quads, Lines (Conditions)
@@ -515,7 +517,7 @@ End Mesh
 
     # Note: pytest.warns does not reliably capture the warning for invalid mesh_id here,
     # though it's confirmed to be emitted to stderr.
-    mesh = meshio.mdpa.read(test_file)
+    mesh = meshioplusplus.mdpa.read(test_file)
 
     assert "meshes" in mesh.misc_data
     parsed_meshes = mesh.misc_data["meshes"]
@@ -613,7 +615,7 @@ End SubModelPart // OuterRegion
 """
     test_file = tmp_path / "test_smp_data.mdpa"
     test_file.write_text(mdpa_content_smp_data)
-    mesh = meshio.mdpa.read(test_file)
+    mesh = meshioplusplus.mdpa.read(test_file)
 
     assert "submodelpart_info" in mesh.misc_data
     smp_info = mesh.misc_data["submodelpart_info"]
@@ -760,17 +762,19 @@ End SubModelPart
     test_file = tmp_path / "roundtrip.mdpa"
     test_file.write_text(mdpa_complex_content)
 
-    mesh1 = meshio.mdpa.read(test_file)
+    mesh1 = meshioplusplus.mdpa.read(test_file)
 
     # Write to string
     import io
 
     written_buffer = io.BytesIO()  # Use BytesIO as writer expects binary stream
-    meshio.mdpa.write(written_buffer, mesh1)
+    meshioplusplus.mdpa.write(written_buffer, mesh1)
     written_mdpa_bytes = written_buffer.getvalue()
 
     # Read again
-    mesh2 = meshio.mdpa.read(io.BytesIO(written_mdpa_bytes))  # Pass BytesIO to reader
+    mesh2 = meshioplusplus.mdpa.read(
+        io.BytesIO(written_mdpa_bytes)
+    )  # Pass BytesIO to reader
 
     # Compare points
     np.testing.assert_allclose(mesh1.points, mesh2.points, atol=1e-15)
@@ -1302,9 +1306,7 @@ Begin SubModelPart Fluid
     End SubModelPartConditions
 End SubModelPart
 
-""".split(
-    "\n"
-)
+""".split("\n")
 
 
 # Path to the new test file for comprehensive geometry reading
@@ -1318,7 +1320,7 @@ GEOMETRIES_MINIMAL_TEST_FILE = (
 
 def test_read_geometries():
     """Test reading a .mdpa file with various Geometries blocks."""
-    mesh = meshio.read(GEOMETRIES_READ_TEST_FILE)
+    mesh = meshioplusplus.read(GEOMETRIES_READ_TEST_FILE)
 
     # Check points
     expected_points = np.array(
@@ -1397,13 +1399,13 @@ def test_read_geometries():
 
 def test_roundtrip_geometries_comprehensive(tmp_path):
     """Test writing and reading back a comprehensive .mdpa file with Geometries blocks."""
-    mesh1 = meshio.read(GEOMETRIES_READ_TEST_FILE)
+    mesh1 = meshioplusplus.read(GEOMETRIES_READ_TEST_FILE)
 
     # Define a path for the output file
     output_file = tmp_path / "roundtrip_geometries_comprehensive_output.mdpa"
 
-    meshio.mdpa.write(output_file, mesh1)
-    mesh2 = meshio.mdpa.read(output_file)
+    meshioplusplus.mdpa.write(output_file, mesh1)
+    mesh2 = meshioplusplus.mdpa.read(output_file)
 
     # Compare points
     np.testing.assert_allclose(mesh1.points, mesh2.points, atol=1e-15)
@@ -1432,13 +1434,13 @@ def test_roundtrip_geometries_comprehensive(tmp_path):
 
 def test_roundtrip_geometries_minimal(tmp_path):
     """Test writing and reading back a minimal .mdpa file with Geometries."""
-    mesh1 = meshio.read(GEOMETRIES_MINIMAL_TEST_FILE)
+    mesh1 = meshioplusplus.read(GEOMETRIES_MINIMAL_TEST_FILE)
 
     # Define a path for the output file
     output_file = tmp_path / "roundtrip_geometries_minimal_output.mdpa"
 
-    meshio.mdpa.write(output_file, mesh1)
-    mesh2 = meshio.mdpa.read(output_file)
+    meshioplusplus.mdpa.write(output_file, mesh1)
+    mesh2 = meshioplusplus.mdpa.read(output_file)
 
     # Compare points
     np.testing.assert_allclose(mesh1.points, mesh2.points, atol=1e-15)
@@ -1485,16 +1487,16 @@ def test_write_manual_geometries(tmp_path):
 
     # Case 1: No explicit IDs provided, writer should assign sequentially
     geometries1 = [
-        meshio.CellBlock("triangle", np.array([[0, 1, 2]])),
-        meshio.CellBlock("line", np.array([[0, 3], [1, 4]])),
+        meshioplusplus.CellBlock("triangle", np.array([[0, 1, 2]])),
+        meshioplusplus.CellBlock("line", np.array([[0, 3], [1, 4]])),
     ]
-    mesh1 = meshio.Mesh(points, [])
+    mesh1 = meshioplusplus.Mesh(points, [])
     mesh1.geometries_block = geometries1
 
     # Use a unique filename for this sub-test to avoid interference if run in parallel or reused tmp_path
     file1_path = tmp_path / "manual_geoms_sequential_ids.mdpa"
-    meshio.mdpa.write(file1_path, mesh1)
-    mesh1_readback = meshio.mdpa.read(file1_path)
+    meshioplusplus.mdpa.write(file1_path, mesh1)
+    mesh1_readback = meshioplusplus.mdpa.read(file1_path)
 
     assert (
         hasattr(mesh1_readback, "geometries_block")
@@ -1529,8 +1531,8 @@ def test_write_manual_geometries(tmp_path):
 
     # Case 2: Explicit IDs provided via misc_data
     geometries2 = [
-        meshio.CellBlock("quad", np.array([[0, 1, 2, 3]])),
-        meshio.CellBlock("vertex", np.array([[4]])),
+        meshioplusplus.CellBlock("quad", np.array([[0, 1, 2, 3]])),
+        meshioplusplus.CellBlock("vertex", np.array([[4]])),
     ]
     # Note: MDPA types Point2D/Point3D map to 'vertex'.
     # Ensure mapping dicts have 'vertex'.
@@ -1538,13 +1540,13 @@ def test_write_manual_geometries(tmp_path):
     # And _meshio_to_kratos_geometry_type has "vertex": "Point3D" (or "Point2D")
 
     manual_ids_info = [(55, "quad", 0), (77, "vertex", 0)]
-    mesh2 = meshio.Mesh(points, [])
+    mesh2 = meshioplusplus.Mesh(points, [])
     mesh2.geometries_block = geometries2
     mesh2.misc_data = {"mdpa_geometry_ids_info": manual_ids_info}
 
     file2_path = tmp_path / "manual_geoms_explicit_ids.mdpa"
-    meshio.mdpa.write(file2_path, mesh2)
-    mesh2_readback = meshio.mdpa.read(file2_path)
+    meshioplusplus.mdpa.write(file2_path, mesh2)
+    mesh2_readback = meshioplusplus.mdpa.read(file2_path)
 
     assert (
         hasattr(mesh2_readback, "geometries_block")
@@ -1620,7 +1622,7 @@ EDGE_CASES_FILE = (
 
 def test_roundtrip_submodelparts_hierarchical(tmp_path):
     """Test roundtrip for a file with hierarchical SubModelParts and their data."""
-    mesh1 = meshio.read(SUBMODELPARTS_HIERARCHICAL_FILE)
+    mesh1 = meshioplusplus.read(SUBMODELPARTS_HIERARCHICAL_FILE)
 
     # Verify initial read
     assert "submodelpart_info" in mesh1.misc_data
@@ -1636,8 +1638,8 @@ def test_roundtrip_submodelparts_hierarchical(tmp_path):
     )  # 1,4 -> 0,3
 
     output_file = tmp_path / "roundtrip_smp_hierarchical.mdpa"
-    meshio.mdpa.write(output_file, mesh1)
-    mesh2 = meshio.mdpa.read(output_file)
+    meshioplusplus.mdpa.write(output_file, mesh1)
+    mesh2 = meshioplusplus.mdpa.read(output_file)
 
     # Basic checks
     np.testing.assert_allclose(mesh1.points, mesh2.points, atol=1e-15)
@@ -1655,7 +1657,7 @@ def test_roundtrip_submodelparts_hierarchical(tmp_path):
 
 def test_roundtrip_mesh_blocks(tmp_path):
     """Test roundtrip for a file with Mesh blocks and their data."""
-    mesh1 = meshio.read(MESH_BLOCKS_FILE)
+    mesh1 = meshioplusplus.read(MESH_BLOCKS_FILE)
 
     # Verify initial read
     assert "meshes" in mesh1.misc_data
@@ -1684,8 +1686,8 @@ def test_roundtrip_mesh_blocks(tmp_path):
     )
 
     output_file = tmp_path / "roundtrip_mesh_blocks.mdpa"
-    meshio.mdpa.write(output_file, mesh1)
-    mesh2 = meshio.mdpa.read(output_file)
+    meshioplusplus.mdpa.write(output_file, mesh1)
+    mesh2 = meshioplusplus.mdpa.read(output_file)
 
     # Basic checks
     np.testing.assert_allclose(mesh1.points, mesh2.points, atol=1e-15)
@@ -1702,7 +1704,7 @@ def test_roundtrip_mesh_blocks(tmp_path):
 
 def test_roundtrip_tables_varied(tmp_path):
     """Test roundtrip for a file with top-level and nested Tables."""
-    mesh1 = meshio.read(TABLES_VARIED_FILE)
+    mesh1 = meshioplusplus.read(TABLES_VARIED_FILE)
 
     # Verify initial read
     assert "table_10" in mesh1.field_data  # Top-level table
@@ -1725,8 +1727,8 @@ def test_roundtrip_tables_varied(tmp_path):
     assert mesh1.field_data["properties_200"]["YOUNG_MODULUS"] == 2.0e11
 
     output_file = tmp_path / "roundtrip_tables_varied.mdpa"
-    meshio.mdpa.write(output_file, mesh1)
-    mesh2 = meshio.mdpa.read(output_file)
+    meshioplusplus.mdpa.write(output_file, mesh1)
+    mesh2 = meshioplusplus.mdpa.read(output_file)
 
     # Basic checks
     np.testing.assert_allclose(mesh1.points, mesh2.points, atol=1e-15)
@@ -1738,7 +1740,7 @@ def test_roundtrip_tables_varied(tmp_path):
 
 def test_elements_permutations_read():
     """Test reading elements with Kratos-specific node ordering (H20, H27)."""
-    mesh = meshio.read(ELEMENTS_PERMUTATIONS_FILE)
+    mesh = meshioplusplus.read(ELEMENTS_PERMUTATIONS_FILE)
 
     assert len(mesh.points) == 27
     assert len(mesh.cells) == 2  # One H20, one H27
@@ -1768,7 +1770,7 @@ def test_elements_permutations_read():
 
 def test_elements_permutations_roundtrip(tmp_path):
     """Test roundtrip for elements with Kratos-specific node ordering."""
-    mesh1 = meshio.read(ELEMENTS_PERMUTATIONS_FILE)
+    mesh1 = meshioplusplus.read(ELEMENTS_PERMUTATIONS_FILE)
 
     # The data in mesh1.cells should be in VTK order.
     # The writer will convert it back to Kratos order for the file.
@@ -1776,8 +1778,8 @@ def test_elements_permutations_roundtrip(tmp_path):
     # So, mesh1.cells should be identical to mesh2.cells.
 
     output_file = tmp_path / "roundtrip_permutations.mdpa"
-    meshio.mdpa.write(output_file, mesh1)
-    mesh2 = meshio.mdpa.read(output_file)
+    meshioplusplus.mdpa.write(output_file, mesh1)
+    mesh2 = meshioplusplus.mdpa.read(output_file)
 
     np.testing.assert_allclose(mesh1.points, mesh2.points, atol=1e-15)
     assert len(mesh1.cells) == len(mesh2.cells)
@@ -1797,7 +1799,7 @@ def test_read_edge_cases(tmp_path):
     empty_content = "// This is an empty MDPA file\n// Only comments here.\n"
     empty_file = tmp_path / "empty.mdpa"
     empty_file.write_text(empty_content)
-    mesh_empty = meshio.read(empty_file)
+    mesh_empty = meshioplusplus.read(empty_file)
     assert len(mesh_empty.points) == 0
     assert not mesh_empty.cells
     assert not mesh_empty.geometries_block  # Check geometries too
@@ -1809,7 +1811,7 @@ def test_read_edge_cases(tmp_path):
     nodes_only_content = "Begin Nodes\n1 0 0 0\n2 1 1 1\nEnd Nodes\n"
     nodes_only_file = tmp_path / "nodes_only.mdpa"
     nodes_only_file.write_text(nodes_only_content)
-    mesh_nodes_only = meshio.read(nodes_only_file)
+    mesh_nodes_only = meshioplusplus.read(nodes_only_file)
     assert len(mesh_nodes_only.points) == 2
     np.testing.assert_allclose(mesh_nodes_only.points, np.array([[0, 0, 0], [1, 1, 1]]))
     assert not mesh_nodes_only.cells
@@ -1817,7 +1819,7 @@ def test_read_edge_cases(tmp_path):
 
     # Case 3: Elements without explicit Properties block (should use/create Properties 0)
     # Content from EDGE_CASES_FILE covers this and more.
-    mesh_edges = meshio.read(EDGE_CASES_FILE)
+    mesh_edges = meshioplusplus.read(EDGE_CASES_FILE)
 
     # Check nodes from EDGE_CASES_FILE
     assert len(mesh_edges.points) == 2
@@ -1879,13 +1881,13 @@ def test_read_edge_cases(tmp_path):
 
 
 def test_empty_file_write_read(tmp_path):
-    """Test writing an empty meshio.Mesh object and reading it back."""
-    empty_mesh = meshio.Mesh(points=[], cells=[])
+    """Test writing an empty meshioplusplus.Mesh object and reading it back."""
+    empty_mesh = meshioplusplus.Mesh(points=[], cells=[])
 
     output_file = tmp_path / "empty_mesh_written.mdpa"
-    meshio.mdpa.write(output_file, empty_mesh)
+    meshioplusplus.mdpa.write(output_file, empty_mesh)
 
-    read_back_mesh = meshio.read(output_file)
+    read_back_mesh = meshioplusplus.read(output_file)
 
     assert len(read_back_mesh.points) == 0
     assert not read_back_mesh.cells
@@ -1929,7 +1931,7 @@ def test_reference_file(filename, ref_num_points, ref_cells_info, ref_geoms_info
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "mdpa" / filename
 
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
     assert len(mesh.points) == ref_num_points
     assert len(mesh.cells) == len(ref_cells_info)
     for cell_block in mesh.cells:

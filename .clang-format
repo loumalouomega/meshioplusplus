@@ -1,0 +1,19 @@
+---
+# Codifies the C++ style already in use across cpp/, bindings/, bindings_js/
+# (K&R braces, 4-space indent, no tabs). Does not apply to cpp/third_party
+# (vendored dependencies) or any fetched build directory.
+BasedOnStyle: Google
+Language: Cpp
+IndentWidth: 4
+UseTab: Never
+ColumnLimit: 100
+BreakBeforeBraces: Attach
+AccessModifierOffset: -4
+NamespaceIndentation: None
+PointerAlignment: Left
+ReferenceAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+SortIncludes: Never
+DerivePointerAlignment: false

@@ -1,21 +1,21 @@
 # CLI Reference
 
-The `meshio` command-line tool is installed alongside the Python package.
+The `meshioplusplus` command-line tool is installed alongside the Python package.
 
 ```
-meshio --version
-meshio --help
-meshio <subcommand> --help
+meshioplusplus --version
+meshioplusplus --help
+meshioplusplus <subcommand> --help
 ```
 
 ---
 
-## meshio convert
+## meshioplusplus convert
 
 Convert a mesh file from one format to another.
 
 ```
-meshio convert [options] INFILE OUTFILE
+meshioplusplus convert [options] INFILE OUTFILE
 ```
 
 | Option | Short | Description |
@@ -30,20 +30,20 @@ meshio convert [options] INFILE OUTFILE
 **Examples:**
 
 ```sh
-meshio convert mesh.msh mesh.vtu
-meshio convert -i gmsh -o vtk mesh.msh mesh.vtk
-meshio convert --ascii mesh.msh mesh.vtu
-meshio convert --sets-to-int-data mesh.inp mesh.xdmf
+meshioplusplus convert mesh.msh mesh.vtu
+meshioplusplus convert -i gmsh -o vtk mesh.msh mesh.vtk
+meshioplusplus convert --ascii mesh.msh mesh.vtu
+meshioplusplus convert --sets-to-int-data mesh.inp mesh.xdmf
 ```
 
 ---
 
-## meshio info
+## meshioplusplus info
 
 Print a summary of a mesh file.
 
 ```
-meshio info [options] INFILE
+meshioplusplus info [options] INFILE
 ```
 
 | Option | Short | Description |
@@ -55,17 +55,17 @@ Output includes: number of points, cell blocks and their types/counts, point/cel
 **Example:**
 
 ```sh
-meshio info mesh.msh
+meshioplusplus info mesh.msh
 ```
 
 ---
 
-## meshio compress
+## meshioplusplus compress
 
 Compress the data in a mesh file (formats that support compression, e.g. VTU).
 
 ```
-meshio compress [options] INFILE
+meshioplusplus compress [options] INFILE
 ```
 
 | Option | Short | Description |
@@ -74,12 +74,12 @@ meshio compress [options] INFILE
 
 ---
 
-## meshio decompress
+## meshioplusplus decompress
 
 Decompress the data in a mesh file.
 
 ```
-meshio decompress [options] INFILE
+meshioplusplus decompress [options] INFILE
 ```
 
 | Option | Short | Description |
@@ -88,12 +88,12 @@ meshio decompress [options] INFILE
 
 ---
 
-## meshio ascii
+## meshioplusplus ascii
 
 Convert a mesh file to its ASCII representation (in-place).
 
 ```
-meshio ascii [options] INFILE
+meshioplusplus ascii [options] INFILE
 ```
 
 | Option | Short | Description |
@@ -102,12 +102,12 @@ meshio ascii [options] INFILE
 
 ---
 
-## meshio binary
+## meshioplusplus binary
 
 Convert a mesh file to its binary representation (in-place).
 
 ```
-meshio binary [options] INFILE
+meshioplusplus binary [options] INFILE
 ```
 
 | Option | Short | Description |
@@ -118,6 +118,6 @@ meshio binary [options] INFILE
 
 ## Format names
 
-The `--input-format` and `--output-format` options accept any of the registered format names. The full list is shown by `meshio convert --help`. Common values:
+The `--input-format` and `--output-format` options accept any of the registered format names. The full list is shown by `meshioplusplus convert --help`. Common values:
 
 `abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `permas`, `ply`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtu`, `wkt`, `xdmf`

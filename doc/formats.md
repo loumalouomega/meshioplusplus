@@ -2,67 +2,97 @@
 
 ## Format table
 
+Each format name links to a detailed reference page (structure, options, data
+mapping, and the C++ vs Python behaviour).
+
 | Format name | Extensions | Read | Write | Extra dependencies |
 |-------------|-----------|------|-------|--------------------|
-| `abaqus` | `.inp` | ✓ | ✓ | — |
-| `ansys` | `.msh` | ✓ | ✓ | — |
-| `avsucd` | `.avs` | ✓ | ✓ | — |
-| `cgns` | `.cgns` | ✓ | ✓ | `h5py` |
-| `dolfin-xml` | `.xml` | ✓ | ✓ | — |
-| `exodus` | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
-| `flac3d` | `.f3grid` | ✓ | ✓ | — |
-| `gmsh` / `gmsh22` | `.msh` | ✓ | ✓ | — |
-| `h5m` | `.h5m` | ✓ | ✓ | `h5py` |
-| `hmf` | `.hmf` | ✓ | ✓ | `h5py` |
-| `mdpa` | `.mdpa` | ✓ | ✓ | — |
-| `med` | `.med` | ✓ | ✓ | `h5py` |
-| `medit` | `.mesh`, `.meshb` | ✓ | ✓ | — |
-| `nastran` | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — |
-| `netgen` | `.vol`, `.vol.gz` | ✓ | ✓ | — |
-| `neuroglancer` | (no extension) | ✓ | ✓ | — |
-| `obj` | `.obj` | ✓ | ✓ | — |
-| `off` | `.off` | ✓ | ✓ | — |
-| `permas` | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
-| `ply` | `.ply` | ✓ | ✓ | — |
-| `stl` | `.stl` | ✓ | ✓ | — |
-| `su2` | `.su2` | ✓ | ✓ | — |
-| `svg` | `.svg` | — | ✓ | — |
-| `tecplot` | `.dat`, `.tec` | ✓ | ✓ | — |
-| `tetgen` | `.ele` / `.node` | ✓ | ✓ | — |
-| `ugrid` | `.ugrid` | ✓ | ✓ | — |
-| `vtk` / `vtk42` / `vtk51` | `.vtk` | ✓ | ✓ | — |
-| `vtu` | `.vtu` | ✓ | ✓ | — |
-| `wkt` | `.wkt` | ✓ | ✓ | — |
-| `xdmf` | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
+| [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — |
+| [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — |
+| [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — |
+| [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — |
+| [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` |
+| [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — |
+| [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
+| [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — |
+| [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — |
+| [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — |
+| [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — |
+| [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
+| [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
+| [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — |
+| [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` |
+| [`medit`](./formats/medit.md) | `.mesh`, `.meshb` | ✓ | ✓ | — |
+| [`mfm`](./formats/mfm.md) | `.mfm` | ✓ | ✓ | — |
+| [`mphtxt`](./formats/mphtxt.md) | `.mphtxt` | ✓ | ✓ | — |
+| [`nastran`](./formats/nastran.md) | `.bdf`, `.fem`, `.nas` | ✓ | ✓ | — |
+| [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — |
+| [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — |
+| [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — |
+| [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — |
+| [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | — | — |
+| [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
+| [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — |
+| [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — |
+| [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — |
+| [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — |
+| [`tecplot`](./formats/tecplot.md) | `.dat`, `.tec` | ✓ | ✓ | — |
+| [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — |
+| [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — |
+| [`unv`](./formats/unv.md) | `.unv` | ✓ | ✓ | — |
+| [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
+| [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
+| [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
+| [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
 
-**Note on `.msh`:** Both `ansys` and `gmsh` use `.msh`. When reading, meshio tries `ansys` first, then `gmsh`. Specify `file_format` explicitly to avoid ambiguity.
+**Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When writing without an explicit `file_format`, meshio++ picks `gmsh` if the mesh carries gmsh-native tags (`gmsh:physical`/`gmsh:geometrical`/`gmsh:dim_tags`) or MED-derived tags (`cell_tags`/`point_tags`/`med:*`), else falls back to the first registered candidate (`ansys`). When reading, meshio++ tries the registered formats in order and uses the first that parses the file. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity either way.
+
+**Note on `.inp`:** `abaqus` and `ansysInp` both use `.inp`. `abaqus` is registered first, so plain extension-based dispatch resolves to Abaqus by default; pass `file_format="ansysInp"` (or call `meshioplusplus.ansysInp.read`/`write` directly) to select the Ansys/APDL reader for a `.inp` file.
 
 **Note on `tetgen`:** The format spans two files (`.node` + `.ele`). It cannot be read from or written to a buffer.
 
 **Note on `svg`:** Write-only, 2D meshes only.
 
+**Note on `openfoam`:** Read-only; a directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file.
+
+**Note on `mfm`:** Single element type per file (non-hybrid), linear elements only.
+
+**Note on FEconv-derived formats (`unv`, `mfm`, `freefem`, `mphtxt`, `flux`):** These readers/writers were implemented against the [FEconv](https://github.com/victorsndvg/FEconv) format documentation. `unv` handles the parabolic mid-node "sandwich" ordering and maps permanent groups (dataset 2467) to `point_sets`/`cell_sets`; `mphtxt` and `flux` round-trip per-element region references as `cell_data` (`mphtxt:geom`, `pf3:ref`). Node orderings for higher-order elements round-trip losslessly but may differ from the originating tool's internal ordering for some element types.
+
+---
+
+## Native acceleration and fallbacks
+
+meshio++ ships a C++ core (`meshioplusplus._core`, built with pybind11 + scikit-build-core). Most formats read and write through the C++ core with zero-copy numpy at the I/O boundary; each has a pure-Python fallback that is used automatically when the C++ path can't handle a file or when the extension was built without an optional dependency:
+
+- **HDF5** (`cgns`, `h5m`, `hmf`, `med`, and XDMF `data_format="HDF"`) — C++ when built with `MESHIOPLUSPLUS_WITH_HDF5`, otherwise `h5py`. For `med`, the C++ core covers the mesh-representation part (points, tags, families, metadata, node orientation, `POG` ragged polygons) and defers the field/bitmask/gmsh-bridging/multi-mesh constructs to the Python reference; see [`med.md`](./formats/med.md#quirks-limitations).
+- **netCDF** (`exodus`) — C++ when built with `MESHIOPLUSPLUS_WITH_NETCDF`, otherwise `netCDF4`.
+- **zlib** (VTU zlib compression) — C++ when built with `MESHIOPLUSPLUS_WITH_ZLIB`, otherwise the Python stdlib.
+
+Behaviour and file compatibility are identical either way; the native paths are only faster. Install the optional runtime deps with `pip install meshioplusplus[all]`.
+
 ---
 
 ## Format-specific write options
 
-All writers are called as `meshio.write(filename, mesh, file_format=..., **kwargs)` or `mesh.write(filename, **kwargs)`. The `**kwargs` depend on the format.
+All writers are called as `meshioplusplus.write(filename, mesh, file_format=..., **kwargs)` or `mesh.write(filename, **kwargs)`. The `**kwargs` depend on the format.
 
 ### Gmsh (`.msh`)
 
 ```python
-meshio.gmsh.write(filename, mesh,
+meshioplusplus.gmsh.write(filename, mesh,
     fmt_version="4.1",   # "2.2", "4.0", or "4.1"
     binary=True,
     float_fmt=".16e",
 )
 ```
 
-Use `file_format="gmsh22"` to write version 2.2 via the generic `meshio.write`.
+Use `file_format="gmsh22"` to write version 2.2 via the generic `meshioplusplus.write`.
 
 ### VTU (`.vtu`)
 
 ```python
-meshio.vtu.write(filename, mesh,
+meshioplusplus.vtu.write(filename, mesh,
     binary=True,
     compression="zlib",   # "zlib", "lzma", or None
     header_type=None,     # "UInt32" or "UInt64"
@@ -72,7 +102,7 @@ meshio.vtu.write(filename, mesh,
 ### VTK (`.vtk`)
 
 ```python
-meshio.vtk.write(filename, mesh,
+meshioplusplus.vtk.write(filename, mesh,
     binary=True,
     # For version selection use file_format="vtk42" or "vtk51"
 )
@@ -83,19 +113,19 @@ meshio.vtk.write(filename, mesh,
 ### XDMF (`.xdmf`, `.xmf`)
 
 ```python
-meshio.xdmf.write(filename, mesh,
+meshioplusplus.xdmf.write(filename, mesh,
     data_format="HDF",        # "HDF", "XML", or "Binary"
     compression="gzip",       # h5py compression filter (HDF only)
     compression_opts=4,       # compression level
 )
 ```
 
-With `data_format="HDF"`, meshio writes a companion `.h5` file alongside the `.xdmf`. With `"XML"`, all data is embedded in the XML. With `"Binary"`, data is written to separate `.bin` files.
+With `data_format="HDF"`, meshio++ writes a companion `.h5` file alongside the `.xdmf`. With `"XML"`, all data is embedded in the XML. With `"Binary"`, data is written to separate `.bin` files.
 
 ### Medit (`.mesh`)
 
 ```python
-meshio.medit.write(filename, mesh,
+meshioplusplus.medit.write(filename, mesh,
     float_fmt=".16e",
 )
 ```
@@ -103,7 +133,7 @@ meshio.medit.write(filename, mesh,
 ### PLY (`.ply`)
 
 ```python
-meshio.ply.write(filename, mesh,
+meshioplusplus.ply.write(filename, mesh,
     binary=True,
 )
 ```
@@ -111,7 +141,7 @@ meshio.ply.write(filename, mesh,
 ### STL (`.stl`)
 
 ```python
-meshio.stl.write(filename, mesh,
+meshioplusplus.stl.write(filename, mesh,
     binary=False,
 )
 ```
@@ -119,16 +149,29 @@ meshio.stl.write(filename, mesh,
 ### MED (`.med`)
 
 ```python
-meshio.med.write(filename, mesh,
-    compression="gzip",
-    compression_opts=4,
+meshioplusplus.med.write(filename, mesh,
+    med_version="4.1.0",   # MAJ.MIN.REL written to INFOS_GENERALES
 )
 ```
+
+MED does not support compression. `meshioplusplus.med.read_med_multi`/
+`write_med_multi` read/write files containing several meshes — see
+[`med.md`](./formats/med.md).
+
+### AnsysInp (`.cdb`, `.inp`)
+
+`meshioplusplus.ansysInp.read(filename)` / `meshioplusplus.ansysInp.write(filename, mesh)` —
+no extra options. See the [`.inp` note](#format-table) above for the
+Abaqus extension collision.
+
+### OpenFOAM (`.foam`, read-only)
+
+`meshioplusplus.openfoam.read(filename)` — no extra options, no writer.
 
 ### CGNS (`.cgns`)
 
 ```python
-meshio.cgns.write(filename, mesh,
+meshioplusplus.cgns.write(filename, mesh,
     compression="gzip",
     compression_opts=4,
 )
@@ -137,7 +180,7 @@ meshio.cgns.write(filename, mesh,
 ### Nastran (`.bdf`)
 
 ```python
-meshio.nastran.write(filename, mesh,
+meshioplusplus.nastran.write(filename, mesh,
     point_format="fixed-large",   # or "fixed-small", "free"
     cell_format="fixed-small",
 )
@@ -146,7 +189,7 @@ meshio.nastran.write(filename, mesh,
 ### FLAC3D (`.f3grid`)
 
 ```python
-meshio.flac3d.write(filename, mesh,
+meshioplusplus.flac3d.write(filename, mesh,
     float_fmt=".16e",
     binary=False,
 )
@@ -154,22 +197,22 @@ meshio.flac3d.write(filename, mesh,
 
 ### SU2 (`.su2`)
 
-`meshio.su2.write(filename, mesh)` — no extra options.
+`meshioplusplus.su2.write(filename, mesh)` — no extra options.
 
 ### AVS-UCD (`.avs`)
 
-`meshio.avsucd.write(filename, mesh)` — no extra options.
+`meshioplusplus.avsucd.write(filename, mesh)` — no extra options.
 
 ### Abaqus (`.inp`)
 
-`meshio.abaqus.write(filename, mesh)` — no extra options.
+`meshioplusplus.abaqus.write(filename, mesh)` — no extra options.
 
 ### DOLFIN-XML (`.xml`)
 
-`meshio.dolfin.write(filename, mesh)` — no extra options.
+`meshioplusplus.dolfin.write(filename, mesh)` — no extra options.
 
 ---
 
 ## CLI format names
 
-When using `meshio convert -o <format>`, use one of the format names from the first column of the table above (e.g. `gmsh`, `gmsh22`, `vtk`, `vtk42`, `vtu`, `xdmf`, …).
+When using `meshioplusplus convert -o <format>`, use one of the format names from the first column of the table above (e.g. `gmsh`, `gmsh22`, `vtk`, `vtk42`, `vtu`, `xdmf`, …).

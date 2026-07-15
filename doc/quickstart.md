@@ -3,11 +3,11 @@
 ## Reading a mesh
 
 ```python
-import meshio
+import meshioplusplus
 
-mesh = meshio.read("mesh.msh")
+mesh = meshioplusplus.read("mesh.msh")
 # or explicitly specify the format:
-mesh = meshio.read("mesh.msh", file_format="gmsh")
+mesh = meshioplusplus.read("mesh.msh", file_format="gmsh")
 ```
 
 `read` accepts a file path (string or `os.PathLike`) or an open file buffer. When a buffer is used, `file_format` is required.
@@ -36,7 +36,7 @@ mesh.write("out.vtk", file_format="vtk")
 
 ```python
 import numpy as np
-import meshio
+import meshioplusplus
 
 points = np.array([
     [0.0, 0.0, 0.0],
@@ -51,7 +51,7 @@ cells = [
     ("quad",     np.array([[1, 4, 5, 2]])),
 ]
 
-mesh = meshio.Mesh(
+mesh = meshioplusplus.Mesh(
     points,
     cells,
     point_data={"temperature": np.array([0.3, -1.2, 0.5, 0.7, 0.0, -3.0])},
@@ -63,28 +63,28 @@ mesh.write("result.vtu")
 The shorthand `write_points_cells` skips constructing a `Mesh` object:
 
 ```python
-meshio.write_points_cells("result.vtu", points, cells,
+meshioplusplus.write_points_cells("result.vtu", points, cells,
                            point_data={"temperature": ...})
 ```
 
 ## Quick format conversion
 
 ```python
-mesh = meshio.read("input.msh")
+mesh = meshioplusplus.read("input.msh")
 mesh.write("output.vtu")
 ```
 
 Or from the command line:
 
 ```sh
-meshio convert input.msh output.vtu
+meshioplusplus convert input.msh output.vtu
 ```
 
 ## Inspecting a mesh
 
 ```python
 print(mesh)
-# <meshio mesh object>
+# <meshio++ mesh object>
 #   Number of points: 6
 #   Number of cells:
 #     triangle: 2

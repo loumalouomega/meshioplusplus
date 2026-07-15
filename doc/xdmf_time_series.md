@@ -1,6 +1,6 @@
 # XDMF Time Series
 
-XDMF is the only format in meshio with built-in support for temporal (time series) data. The mesh topology is written once; field data is written per time step.
+XDMF is the only format in meshio++ with built-in support for temporal (time series) data. The mesh topology is written once; field data is written per time step.
 
 Requires `h5py` when using the default `data_format="HDF"`.
 
@@ -9,9 +9,9 @@ Requires `h5py` when using the default `data_format="HDF"`.
 ## Writing a time series
 
 ```python
-import meshio
+import meshioplusplus
 
-with meshio.xdmf.TimeSeriesWriter("simulation.xdmf") as writer:
+with meshioplusplus.xdmf.TimeSeriesWriter("simulation.xdmf") as writer:
     writer.write_points_cells(points, cells)
     for t, phi in time_steps:
         writer.write_data(t, point_data={"phi": phi})
@@ -39,7 +39,7 @@ Write field data for one time step `t` (a float). Both `point_data` and `cell_da
 ## Reading a time series
 
 ```python
-with meshio.xdmf.TimeSeriesReader("simulation.xdmf") as reader:
+with meshioplusplus.xdmf.TimeSeriesReader("simulation.xdmf") as reader:
     points, cells = reader.read_points_cells()
     for k in range(reader.num_steps):
         t, point_data, cell_data = reader.read_data(k)

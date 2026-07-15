@@ -3,7 +3,7 @@ import pathlib
 import numpy as np
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -18,7 +18,9 @@ this_dir = pathlib.Path(__file__).resolve().parent
 
 @pytest.mark.parametrize("mesh", test_set)
 def test(mesh, tmp_path):
-    helpers.write_read(tmp_path, meshio.su2.write, meshio.su2.read, mesh, 1.0e-15)
+    helpers.write_read(
+        tmp_path, meshioplusplus.su2.write, meshioplusplus.su2.read, mesh, 1.0e-15
+    )
 
 
 @pytest.mark.parametrize(
@@ -30,7 +32,7 @@ def test_structured(
 ):
     filename = this_dir / "meshes" / "su2" / filename
 
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
 
     assert sum(len(block.data) for block in mesh.cells) == ref_num_cells
     assert len(mesh.points) == ref_num_points

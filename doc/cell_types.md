@@ -1,6 +1,6 @@
 # Cell Types
 
-meshio uses its own canonical type names. Every format reader maps native element names to these; every writer maps them back.
+meshio++ uses its own canonical type names. Every format reader maps native element names to these; every writer maps them back.
 
 Node ordering follows the VTK convention where available. See the [meshio wiki](https://github.com/nschloe/meshio/wiki/Node-ordering-in-cells) for diagrams.
 

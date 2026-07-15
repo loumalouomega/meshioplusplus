@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
 
 [project]
-name = "meshio"
-version = "5.3.5"
-description = "I/O for many mesh formats"
+name = "meshioplusplus"
+version = "6.0.0"
+description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {file = "LICENSE.txt"}
+license = {file = "LICENSE"}
 keywords = [
   "mesh",
   "file formats",
@@ -18,8 +18,8 @@ keywords = [
   "finite elements"
 ]
 authors = [
-  {email = "nico.schloemer@gmail.com"},
-  {name = "Nico Schlömer"}
+  {email = "tote1989@gmail.com"},
+  {name = "Vicente Mataix Ferrándiz"}
 ]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -50,16 +50,30 @@ all = [
 ]
 
 [project.urls]
-homepage = "https://github.com/nschloe/meshio"
-code = "https://github.com/nschloe/meshio"
-issues = "https://github.com/nschloe/meshio/issues"
+homepage = "https://github.com/<org>/meshioplusplus"
+code = "https://github.com/<org>/meshioplusplus"
+issues = "https://github.com/<org>/meshioplusplus/issues"
 
-[project.entry-points.console_scripts]
-meshio = "meshio._cli:main"
+[project.scripts]
+meshioplusplus = "meshioplusplus._cli:main"
+
+[tool.scikit-build]
+# scikit-build-core drives the CMake build of the meshioplusplus._core
+# extension and bundles it next to the pure-Python package (src layout).
+minimum-version = "0.8"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/meshioplusplus"]
+cmake.version = ">=3.15"
+cmake.build-type = "Release"
+
+[tool.scikit-build.editable]
+# Rebuild the extension automatically on import during development.
+rebuild = true
+verbose = false
 
 [tool.isort]
 profile = "black"
 
 # [options.data_files]
 # share/paraview-5.9/plugins =
-#     tools/paraview-meshio-plugin.py
+#     tools/paraview-meshioplusplus-plugin.py

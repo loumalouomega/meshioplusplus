@@ -1,0 +1,5 @@
+# LaTeX build artifacts (the committed .pdf/.svg/.png assets are kept).
+*.aux
+*.log
+*.out
+*.build.log

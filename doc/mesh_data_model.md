@@ -2,7 +2,7 @@
 
 ## Mesh
 
-`meshio.Mesh` is the central object. All format readers produce one; all writers consume one.
+`meshioplusplus.Mesh` is the central object. All format readers produce one; all writers consume one.
 
 ```python
 class Mesh:
@@ -20,7 +20,7 @@ class Mesh:
 Constructor signature:
 
 ```python
-meshio.Mesh(
+meshioplusplus.Mesh(
     points,
     cells,                    # list of CellBlock or (type, data) tuples, or a dict
     point_data=None,
@@ -41,7 +41,7 @@ Represents a homogeneous group of cells, all of the same element type.
 
 ```python
 class CellBlock:
-    type: str               # meshio cell type name, e.g. "triangle", "tetra10"
+    type: str               # meshio++ cell type name, e.g. "triangle", "tetra10"
     data: np.ndarray        # shape (num_cells, nodes_per_cell), int indices into points
     tags: list[str]         # optional labels
     dim: int                # topological dimension (0–3)
@@ -86,14 +86,14 @@ arr = mesh.get_cell_data("material", "triangle")
 # Copy
 mesh2 = mesh.copy()
 
-# Read / write (equivalent to meshio.read / meshio.write)
-mesh = meshio.Mesh.read("file.msh")   # deprecated; use meshio.read()
+# Read / write (equivalent to meshioplusplus.read / meshioplusplus.write)
+mesh = meshioplusplus.Mesh.read("file.msh")   # deprecated; use meshioplusplus.read()
 mesh.write("out.vtk")
 ```
 
 ## Converting sets ↔ data
 
-Some formats only support sets (named groups), others only support integer arrays. meshio provides conversion helpers:
+Some formats only support sets (named groups), others only support integer arrays. meshio++ provides conversion helpers:
 
 ```python
 # Flatten point/cell sets into integer-valued data arrays
@@ -105,7 +105,7 @@ mesh.point_data_to_sets("groups")
 mesh.cell_data_to_sets("material")
 ```
 
-The CLI `meshio convert` exposes `--sets-to-int-data` and `--int-data-to-sets` for the same operations.
+The CLI `meshioplusplus convert` exposes `--sets-to-int-data` and `--int-data-to-sets` for the same operations.
 
 ## gmsh_periodic
 
@@ -115,4 +115,4 @@ Only populated when reading Gmsh files that contain a `$Periodic` section. The v
 [edim, (slave_tag, master_tag), affine_transform_or_None, [[slave_node, master_node], ...]]
 ```
 
-Roundtrips back into a Gmsh file correctly when passed through `meshio.gmsh.write`.
+Roundtrips back into a Gmsh file correctly when passed through `meshioplusplus.gmsh.write`.

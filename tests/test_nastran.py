@@ -4,7 +4,7 @@ import pathlib
 import numpy as np
 import pytest
 
-import meshio
+import meshioplusplus
 
 from . import helpers
 
@@ -27,7 +27,11 @@ from . import helpers
 )
 def test(mesh, tmp_path):
     helpers.write_read(
-        tmp_path, meshio.nastran.write, meshio.nastran.read, mesh, 1.0e-13
+        tmp_path,
+        meshioplusplus.nastran.write,
+        meshioplusplus.nastran.read,
+        mesh,
+        1.0e-13,
     )
 
 
@@ -36,7 +40,7 @@ def test_reference_file(filename):
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "nastran" / filename
 
-    mesh = meshio.read(filename)
+    mesh = meshioplusplus.read(filename)
 
     # points
     assert np.isclose(mesh.points.sum(), 16.5316866)
@@ -62,7 +66,7 @@ def test_long_format():
         "ENDDATA\n"
     )
 
-    mesh = meshio.read(filename, "nastran")
+    mesh = meshioplusplus.read(filename, "nastran")
 
     # points
     assert len(mesh.points) == 1
