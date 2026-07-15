@@ -242,6 +242,16 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
   target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings)
   target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
 
+  # Off by default: only manylinux wheel builds (paired with a newer-than-image
+  # GCC, e.g. gcc-toolset-13 on manylinux_2_28) need this, to keep the .so's
+  # GLIBCXX/CXXABI/GLIBC symbol requirements within the target policy's floor.
+  # LDFLAGS env-var seeding of CMAKE_MODULE_LINKER_FLAGS was tried first and
+  # silently didn't apply to this MODULE target, hence targeting it directly.
+  option(MESHIOPLUSPLUS_STATIC_RUNTIME "Statically link libgcc/libstdc++ into _core (portable manylinux wheels)" OFF)
+  if(MESHIOPLUSPLUS_STATIC_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options(_core PRIVATE -static-libgcc -static-libstdc++)
+  endif()
+
   # Land the extension next to the pure-Python package inside the wheel.
   install(TARGETS _core DESTINATION meshioplusplus)
 endif()
