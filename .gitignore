@@ -12,6 +12,12 @@
 *.xdmf
 *.xmf
 *.xml
+# The compiled pybind11 extension (built in-place by `pip install -e .` /
+# scikit-build-core editable installs) - a stray committed copy of this once
+# got bundled into every manylinux wheel via wheel.packages, silently
+# reintroducing whatever toolchain built it regardless of the actual CI build.
+src/meshioplusplus/*.so
+src/meshioplusplus/*.pyd
 .cache/
 MANIFEST
 README.rst
