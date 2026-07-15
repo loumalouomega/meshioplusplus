@@ -58,7 +58,7 @@ jobs:
           # -v surfaces which specific symbol/library trips the manylinux_2_28 policy
           # check if the static-linking above still isn't enough, instead of auditwheel's
           # generic "too-recent versioned symbols" message.
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair -v -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair -w {dest_dir} {wheel}"
           CIBW_ENVIRONMENT: >-
             CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
             MACOSX_DEPLOYMENT_TARGET="13.3"
