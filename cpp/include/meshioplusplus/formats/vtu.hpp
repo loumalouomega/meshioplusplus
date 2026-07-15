@@ -67,8 +67,8 @@ namespace meshioplusplus {
  * arrays), and `<FieldData>`. 2D points are silently padded to 3D. Byte
  * order is always declared `LittleEndian`.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @param binary true for base64-encoded binary DataArrays, false for inline
  *        ascii text
  * @param zlib true additionally zlib-compresses binary DataArrays in
@@ -79,7 +79,7 @@ namespace meshioplusplus {
  * @note cell_data key handled specially: `cell_sets` become extra
  *       `<CellData>` arrays (VTU has no native set concept).
  */
-void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib);
+void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
 
 /**
  * @brief Read a `.vtu` file.
@@ -89,7 +89,7 @@ void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib
  * binary, or zlib-compressed binary `DataArray` payloads per the encoding
  * described above.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh
  * @throws ReadError if the file uses lzma compression, an `<AppendedData>`
  *         section, more than one `<Piece>`, polyhedron cells, or a
@@ -98,6 +98,6 @@ void write_vtu(const std::string& path, const Mesh& mesh, bool binary, bool zlib
  * @note `<FieldData>` -> `mesh.field_data`; `<PointData>`/`<CellData>` map
  *       generically to `point_data`/`cell_data`.
  */
-Mesh read_vtu(const std::string& path);
+Mesh read_vtu(const std::string& rPath);
 
 }  // namespace meshioplusplus

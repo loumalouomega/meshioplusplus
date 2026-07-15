@@ -70,34 +70,34 @@ TEST(Med, Basic) {
         return meshioplusplus::read_med(p, info);
     };
     mt::roundtrip(w, r, mt::tri_mesh(), ".med");
-    mt::roundtrip(w, r, mt::tet_mesh(), ".med");   // exercises node perm
-    mt::roundtrip(w, r, mt::hex_mesh(), ".med");   // exercises node perm
+    mt::roundtrip(w, r, mt::tet_mesh(), ".med");  // exercises node perm
+    mt::roundtrip(w, r, mt::hex_mesh(), ".med");  // exercises node perm
 }
 
 TEST(Med, MetadataAndFamilies) {
     std::string p = mt::temp_path(".med");
     meshioplusplus::MedInfo win;
-    win.mesh_name = "mymesh";
-    win.description = "hello";
-    win.unit_coords = "mm";
-    win.cell_tags[-1] = {"top"};
-    win.cell_tag_groups[-1] = "FAM_-1_top";
+    win.mMeshName = "mymesh";
+    win.mDescription = "hello";
+    win.mUnitCoords = "mm";
+    win.mCellTags[-1] = {"top"};
+    win.mCellTagGroups[-1] = "FAM_-1_top";
 
     meshioplusplus::Mesh m = mt::tri_mesh();
     // one cell_tags block matching the single triangle block
-    meshioplusplus::NDArray tag(meshioplusplus::DType::Int64, {m.cells[0].num_cells()});
-    for (std::size_t i = 0; i < m.cells[0].num_cells(); ++i)
-        tag.as<std::int64_t>()[i] = -1;
-    m.cell_data["cell_tags"] = {tag};
+    meshioplusplus::NDArray tag(meshioplusplus::DType::Int64, {m.mCells[0].NumCells()});
+    for (std::size_t i = 0; i < m.mCells[0].NumCells(); ++i)
+        tag.As<std::int64_t>()[i] = -1;
+    m.mCellData["cell_tags"] = {tag};
 
     meshioplusplus::write_med(p, m, win);
     meshioplusplus::MedInfo rout;
     meshioplusplus::Mesh out = meshioplusplus::read_med(p, rout);
-    EXPECT_EQ(rout.mesh_name, "mymesh");
-    EXPECT_EQ(rout.description, "hello");
-    EXPECT_EQ(rout.unit_coords, "mm");
-    ASSERT_TRUE(rout.cell_tags.count(-1));
-    EXPECT_EQ(rout.cell_tags[-1], (std::vector<std::string>{"top"}));
+    EXPECT_EQ(rout.mMeshName, "mymesh");
+    EXPECT_EQ(rout.mDescription, "hello");
+    EXPECT_EQ(rout.mUnitCoords, "mm");
+    ASSERT_TRUE(rout.mCellTags.count(-1));
+    EXPECT_EQ(rout.mCellTags[-1], (std::vector<std::string>{"top"}));
     std::error_code ec;
     std::filesystem::remove(p, ec);
 }
@@ -105,22 +105,20 @@ TEST(Med, MetadataAndFamilies) {
 TEST(Med, RaggedPolygons) {
     std::string p = mt::temp_path(".med");
     meshioplusplus::Mesh m;
-    m.points = mt::points_from(
-        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}});
+    m.mPoints = mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}});
     meshioplusplus::CellBlock cb;
-    cb.type = "polygon";
-    cb.polygon_rows = {{0, 1, 2}, {1, 3, 4, 2, 5}};  // a tri and a 5-gon
-    m.cells.push_back(std::move(cb));
+    cb.mType = "polygon";
+    cb.mPolygonRows = {{0, 1, 2}, {1, 3, 4, 2, 5}};  // a tri and a 5-gon
+    m.mCells.push_back(std::move(cb));
 
     meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
     meshioplusplus::MedInfo info;
     meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
-    ASSERT_EQ(out.cells.size(), 1u);
-    EXPECT_EQ(out.cells[0].type, "polygon");
-    ASSERT_EQ(out.cells[0].polygon_rows.size(), 2u);
-    EXPECT_EQ(out.cells[0].polygon_rows[0], (std::vector<std::int64_t>{0, 1, 2}));
-    EXPECT_EQ(out.cells[0].polygon_rows[1],
-              (std::vector<std::int64_t>{1, 3, 4, 2, 5}));
+    ASSERT_EQ(out.mCells.size(), 1u);
+    EXPECT_EQ(out.mCells[0].mType, "polygon");
+    ASSERT_EQ(out.mCells[0].mPolygonRows.size(), 2u);
+    EXPECT_EQ(out.mCells[0].mPolygonRows[0], (std::vector<std::int64_t>{0, 1, 2}));
+    EXPECT_EQ(out.mCells[0].mPolygonRows[1], (std::vector<std::int64_t>{1, 3, 4, 2, 5}));
     std::error_code ec;
     std::filesystem::remove(p, ec);
 }

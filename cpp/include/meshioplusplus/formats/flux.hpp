@@ -56,13 +56,13 @@ namespace meshioplusplus {
  * "max nodes per element" and "max integration points" fields are hardcoded
  * to `20` regardless of actual mesh content.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write (hybrid/multi-type meshes are supported)
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write (hybrid/multi-type meshes are supported)
  * @throws WriteError if a cell block's type has no entry in the meshio++ ->
  *         `desc3` table
  * @note reads/writes `cell_data["pf3:ref"]`
  */
-void write_flux(const std::string& path, const Mesh& mesh);
+void write_flux(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a FLUX .pf3 file.
@@ -72,7 +72,7 @@ void write_flux(const std::string& path, const Mesh& mesh);
  * connectivity, `desc3` selecting the meshio++ type) and `nnod` coordinate
  * rows, with no node-order permutation applied.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["pf3:ref"]` set from each
  *         element's region-reference field
  * @throws ReadError if the file can't be opened, the element/coordinate
@@ -81,6 +81,6 @@ void write_flux(const std::string& path, const Mesh& mesh);
  * @note region *names* (which FLUX may store separately) are never read —
  *       only the numeric per-element reference in `cell_data["pf3:ref"]`
  */
-Mesh read_flux(const std::string& path);
+Mesh read_flux(const std::string& rPath);
 
 }  // namespace meshioplusplus

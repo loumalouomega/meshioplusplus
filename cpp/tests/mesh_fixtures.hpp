@@ -73,37 +73,39 @@ using meshioplusplus::NDArray;
 /**
  * @brief Build a `Float64` `NDArray` of point coordinates from a nested vector.
  *
- * @param pts One row per point, each an equal-length sequence of
+ * @param rPts One row per point, each an equal-length sequence of
  *            coordinates (2 for 2-D fixtures, 3 for 3-D ones). If empty,
  *            the resulting array has 0 rows and a default dimensionality
  *            of 3.
- * @return An owning `NDArray` of shape `{pts.size(), pts[0].size()}` and
- *         dtype `Float64`, laid out row-major matching `pts`.
+ * @return An owning `NDArray` of shape `{rPts.size(), rPts[0].size()}` and
+ *         dtype `Float64`, laid out row-major matching `rPts`.
  */
-inline NDArray points_from(const std::vector<std::vector<double>>& pts) {
-    std::size_t n = pts.size();
-    std::size_t d = n ? pts[0].size() : 3;
+inline NDArray points_from(const std::vector<std::vector<double>>& rPts) {
+    std::size_t n = rPts.size();
+    std::size_t d = n ? rPts[0].size() : 3;
     NDArray a(DType::Float64, {n, d});
     for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t j = 0; j < d; ++j) a.as<double>()[i * d + j] = pts[i][j];
+        for (std::size_t j = 0; j < d; ++j)
+            a.As<double>()[i * d + j] = rPts[i][j];
     return a;
 }
 
 /**
  * @brief Build an `Int64` `NDArray` of cell connectivity from a nested vector.
  *
- * @param rows One row per cell, each an equal-length sequence of point
+ * @param rRows One row per cell, each an equal-length sequence of point
  *             indices (node count per cell for the target cell type). If
  *             empty, the resulting array has 0 rows and 0 columns.
- * @return An owning `NDArray` of shape `{rows.size(), rows[0].size()}` and
- *         dtype `Int64`, laid out row-major matching `rows`.
+ * @return An owning `NDArray` of shape `{rRows.size(), rRows[0].size()}` and
+ *         dtype `Int64`, laid out row-major matching `rRows`.
  */
-inline NDArray conn_from(const std::vector<std::vector<std::int64_t>>& rows) {
-    std::size_t n = rows.size();
-    std::size_t k = n ? rows[0].size() : 0;
+inline NDArray conn_from(const std::vector<std::vector<std::int64_t>>& rRows) {
+    std::size_t n = rRows.size();
+    std::size_t k = n ? rRows[0].size() : 0;
     NDArray a(DType::Int64, {n, k});
     for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t j = 0; j < k; ++j) a.as<std::int64_t>()[i * k + j] = rows[i][j];
+        for (std::size_t j = 0; j < k; ++j)
+            a.As<std::int64_t>()[i * k + j] = rRows[i][j];
     return a;
 }
 
@@ -111,22 +113,22 @@ inline NDArray conn_from(const std::vector<std::vector<std::int64_t>>& rows) {
  * @brief Build a single-cell-block `Mesh` from point and connectivity literals.
  *
  * Convenience wrapper combining `points_from` and `conn_from`: sets
- * `m.points` and appends exactly one `CellBlock` of the given `type`. Used
+ * `m.mPoints` and appends exactly one `CellBlock` of the given `type`. Used
  * by every single-cell-type fixture below (`tri_mesh`, `tet_mesh`, etc.);
  * multi-block fixtures (e.g. `tri_quad_mesh`) build the `Mesh` by hand
  * instead since they need more than one block.
  *
  * @param pts Point coordinates, as for `points_from`.
- * @param type The meshio++ cell type name for the single block (e.g.
+ * @param rType The meshio++ cell type name for the single block (e.g.
  *             `"triangle"`, `"tetra10"`).
  * @param cells Cell connectivity rows, as for `conn_from`.
- * @return A `Mesh` with `points` set and one `cells` block of `type`.
+ * @return A `Mesh` with `mPoints` set and one `mCells` block of `rType`.
  */
-inline Mesh make_mesh(std::vector<std::vector<double>> pts, const std::string& type,
+inline Mesh make_mesh(std::vector<std::vector<double>> pts, const std::string& rType,
                       std::vector<std::vector<std::int64_t>> cells) {
     Mesh m;
-    m.points = points_from(pts);
-    m.cells.emplace_back(type, conn_from(cells));
+    m.mPoints = points_from(pts);
+    m.mCells.emplace_back(rType, conn_from(cells));
     return m;
 }
 
@@ -158,17 +160,15 @@ inline Mesh tri_mesh() {
  * @return A single-block `triangle` `Mesh` with 2-D points.
  */
 inline Mesh tri_mesh_2d() {
-    return make_mesh({{0, 0}, {1, 0}, {1, 1}, {0, 1}}, "triangle",
-                     {{0, 1, 2}, {0, 2, 3}});
+    return make_mesh({{0, 0}, {1, 0}, {1, 1}, {0, 1}}, "triangle", {{0, 1, 2}, {0, 2, 3}});
 }
 /**
  * @brief A fixture with 2 `"quad"` cells over 6 points (3-D coordinates, z=0).
  * @return A single-block `quad` `Mesh`.
  */
 inline Mesh quad_mesh() {
-    return make_mesh(
-        {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {2, 1, 0}, {1, 1, 0}, {0, 1, 0}}, "quad",
-        {{0, 1, 4, 5}, {1, 2, 3, 4}});
+    return make_mesh({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {2, 1, 0}, {1, 1, 0}, {0, 1, 0}}, "quad",
+                     {{0, 1, 4, 5}, {1, 2, 3, 4}});
 }
 /**
  * @brief A fixture with 2 `"tetra"` cells (5 points, one raised out of the
@@ -177,32 +177,25 @@ inline Mesh quad_mesh() {
  * @return A single-block `tetra` `Mesh`.
  */
 inline Mesh tet_mesh() {
-    return make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5, 0.5, 0.5}},
-                     "tetra", {{0, 1, 2, 4}, {0, 2, 3, 4}});
+    return make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5, 0.5, 0.5}}, "tetra",
+                     {{0, 1, 2, 4}, {0, 2, 3, 4}});
 }
 /**
  * @brief A single unit-cube `"hexahedron"` cell (8 points).
  * @return A single-block `hexahedron` `Mesh`.
  */
 inline Mesh hex_mesh() {
-    return make_mesh({{0, 0, 0},
-                      {1, 0, 0},
-                      {1, 1, 0},
-                      {0, 1, 0},
-                      {0, 0, 1},
-                      {1, 0, 1},
-                      {1, 1, 1},
-                      {0, 1, 1}},
-                     "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
+    return make_mesh(
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}},
+        "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
 }
 /**
  * @brief A single triangular-prism `"wedge"` cell (6 points).
  * @return A single-block `wedge` `Mesh`.
  */
 inline Mesh wedge_mesh() {
-    return make_mesh(
-        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}}, "wedge",
-        {{0, 1, 2, 3, 4, 5}});
+    return make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}}, "wedge",
+                     {{0, 1, 2, 3, 4, 5}});
 }
 /**
  * @brief A single 2nd-order `"triangle6"` cell: 3 corner points plus 3
@@ -211,13 +204,9 @@ inline Mesh wedge_mesh() {
  * @return A single-block `triangle6` `Mesh`.
  */
 inline Mesh triangle6_mesh() {
-    return make_mesh({{0, 0, 0},
-                      {1, 0, 0},
-                      {1, 1, 0},
-                      {0.5, 0.25, 0},
-                      {1.25, 0.5, 0},
-                      {0.25, 0.75, 0}},
-                     "triangle6", {{0, 1, 2, 3, 4, 5}});
+    return make_mesh(
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0.5, 0.25, 0}, {1.25, 0.5, 0}, {0.25, 0.75, 0}},
+        "triangle6", {{0, 1, 2, 3, 4, 5}});
 }
 /**
  * @brief A single 2nd-order `"quad8"` cell: 4 corner points plus 4 mid-edge
@@ -244,7 +233,8 @@ inline Mesh quad8_mesh() {
  */
 inline Mesh tet10_mesh() {
     std::vector<std::vector<double>> p;
-    for (int i = 0; i < 10; ++i) p.push_back({0.1 * i, 0.2 * i + 0.05, 0.3 * i + 0.01});
+    for (int i = 0; i < 10; ++i)
+        p.push_back({0.1 * i, 0.2 * i + 0.05, 0.3 * i + 0.01});
     return make_mesh(p, "tetra10", {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}});
 }
 /**
@@ -254,9 +244,11 @@ inline Mesh tet10_mesh() {
  */
 inline Mesh hex20_mesh() {
     std::vector<std::vector<double>> p;
-    for (int i = 0; i < 20; ++i) p.push_back({0.11 * i, 0.07 * i, 0.03 * i});
+    for (int i = 0; i < 20; ++i)
+        p.push_back({0.11 * i, 0.07 * i, 0.03 * i});
     std::vector<std::int64_t> row(20);
-    for (int i = 0; i < 20; ++i) row[i] = i;
+    for (int i = 0; i < 20; ++i)
+        row[i] = i;
     return make_mesh(p, "hexahedron20", {row});
 }
 /**
@@ -269,11 +261,11 @@ inline Mesh hex20_mesh() {
  */
 inline Mesh tri_quad_mesh() {
     Mesh m;
-    m.points = points_from(
-        {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 1, 0}, {2, 1, 0}, {1, 1, 0}, {0, 1, 0}});
-    m.cells.emplace_back("triangle", conn_from({{0, 1, 5}, {0, 5, 6}}));
-    m.cells.emplace_back("quad", conn_from({{1, 2, 4, 5}}));
-    m.cells.emplace_back("triangle", conn_from({{2, 3, 4}}));
+    m.mPoints =
+        points_from({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 1, 0}, {2, 1, 0}, {1, 1, 0}, {0, 1, 0}});
+    m.mCells.emplace_back("triangle", conn_from({{0, 1, 5}, {0, 5, 6}}));
+    m.mCells.emplace_back("quad", conn_from({{1, 2, 4, 5}}));
+    m.mCells.emplace_back("triangle", conn_from({{2, 3, 4}}));
     return m;
 }
 
@@ -288,15 +280,15 @@ inline Mesh tri_quad_mesh() {
  * distinct paths across calls within the same test binary run, which is
  * sufficient for `roundtrip()`'s write-then-read-then-delete usage.
  *
- * @param suffix File suffix/extension to append (e.g. `".vtk"`), including
+ * @param rSuffix File suffix/extension to append (e.g. `".vtk"`), including
  *               the leading dot if desired.
  * @return An absolute path of the form
  *         `<temp_dir>/meshio_cpp_<counter><suffix>`.
  */
-inline std::string temp_path(const std::string& suffix) {
+inline std::string temp_path(const std::string& rSuffix) {
     static std::atomic<unsigned> counter{0};
     auto dir = std::filesystem::temp_directory_path();
-    return (dir / ("meshio_cpp_" + std::to_string(counter++) + suffix)).string();
+    return (dir / ("meshio_cpp_" + std::to_string(counter++) + rSuffix)).string();
 }
 
 /**
@@ -304,7 +296,7 @@ inline std::string temp_path(const std::string& suffix) {
  *        rows}` for order-insensitive comparison.
  *
  * Grouping by type into a `std::multiset` (rather than comparing
- * `Mesh::cells` block-by-block/row-by-row in original order) makes the
+ * `Mesh::mCells` block-by-block/row-by-row in original order) makes the
  * comparison robust to formats that split or merge same-type blocks on
  * read (e.g. a writer emitting two separate `"triangle"` blocks that a
  * reader recombines into one, or vice versa) - as long as the *set* of
@@ -312,22 +304,21 @@ inline std::string temp_path(const std::string& suffix) {
  * Node order *within* a single cell's row is preserved and does matter (a
  * cell with permuted node order is a different row).
  *
- * @param m The mesh to summarize.
+ * @param rM The mesh to summarize.
  * @return A map from cell type name to a multiset of that type's
  *         connectivity rows (as `std::int64_t` vectors), pooled across all
- *         of `m`'s blocks of that type.
+ *         of `rM`'s blocks of that type.
  */
-inline std::map<std::string, std::multiset<std::vector<std::int64_t>>> cell_rows(
-    const Mesh& m) {
+inline std::map<std::string, std::multiset<std::vector<std::int64_t>>> cell_rows(const Mesh& rM) {
     std::map<std::string, std::multiset<std::vector<std::int64_t>>> out;
-    for (const auto& cb : m.cells) {
-        std::size_t n = cb.num_cells();
-        std::size_t k = meshioplusplus::detail::cols(cb.data);
+    for (const auto& cb : rM.mCells) {
+        std::size_t n = cb.NumCells();
+        std::size_t k = meshioplusplus::detail::cols(cb.mData);
         for (std::size_t r = 0; r < n; ++r) {
             std::vector<std::int64_t> row(k);
             for (std::size_t j = 0; j < k; ++j)
-                row[j] = meshioplusplus::detail::read_int(cb.data, r * k + j);
-            out[cb.type].insert(std::move(row));
+                row[j] = meshioplusplus::detail::read_int(cb.mData, r * k + j);
+            out[cb.mType].insert(std::move(row));
         }
     }
     return out;
@@ -337,26 +328,26 @@ inline std::map<std::string, std::multiset<std::vector<std::int64_t>>> cell_rows
  * @brief GoogleTest assertion: check that two meshes' point coordinates agree
  *        within a tolerance, allowing for 2-D -> 3-D padding.
  *
- * Asserts equal point counts (`ASSERT_EQ`, fatal) and that `out`'s point
- * dimensionality is at least `in`'s (`ASSERT_GE`, fatal) - some formats
+ * Asserts equal point counts (`ASSERT_EQ`, fatal) and that `rOut`'s point
+ * dimensionality is at least `rIn`'s (`ASSERT_GE`, fatal) - some formats
  * always write 3-D points even when the input was 2-D, padding with an
  * implicit zero z-coordinate, but never truncate 3-D down to 2-D. Only the
  * first `din` (the input's dimensionality) components of each point are
  * then compared (`EXPECT_NEAR`, non-fatal so all mismatches are reported).
  *
- * @param in The reference (pre-round-trip) mesh.
- * @param out The mesh produced by writing `in` and reading it back.
+ * @param rIn The reference (pre-round-trip) mesh.
+ * @param rOut The mesh produced by writing `rIn` and reading it back.
  * @param atol Absolute tolerance for the per-component `EXPECT_NEAR` check.
  */
-inline void expect_points_close(const Mesh& in, const Mesh& out, double atol) {
-    ASSERT_EQ(in.num_points(), out.num_points());
-    std::size_t din = meshioplusplus::detail::cols(in.points);
-    std::size_t dout = meshioplusplus::detail::cols(out.points);
+inline void expect_points_close(const Mesh& rIn, const Mesh& rOut, double atol) {
+    ASSERT_EQ(rIn.NumPoints(), rOut.NumPoints());
+    std::size_t din = meshioplusplus::detail::cols(rIn.mPoints);
+    std::size_t dout = meshioplusplus::detail::cols(rOut.mPoints);
     ASSERT_GE(dout, din);  // formats may pad 2D -> 3D, never truncate
-    for (std::size_t i = 0; i < in.num_points(); ++i)
+    for (std::size_t i = 0; i < rIn.NumPoints(); ++i)
         for (std::size_t j = 0; j < din; ++j) {
-            double a = meshioplusplus::detail::read_double(in.points, i * din + j);
-            double b = meshioplusplus::detail::read_double(out.points, i * dout + j);
+            double a = meshioplusplus::detail::read_double(rIn.mPoints, i * din + j);
+            double b = meshioplusplus::detail::read_double(rOut.mPoints, i * dout + j);
             EXPECT_NEAR(a, b, atol) << "point " << i << " comp " << j;
         }
 }
@@ -372,15 +363,15 @@ inline void expect_points_close(const Mesh& in, const Mesh& out, double atol) {
  * failures). This is the top-level check every `roundtrip()` call ends
  * with.
  *
- * @param in The reference (pre-round-trip) mesh.
- * @param out The mesh produced by writing `in` and reading it back.
+ * @param rIn The reference (pre-round-trip) mesh.
+ * @param rOut The mesh produced by writing `rIn` and reading it back.
  * @param atol Absolute tolerance forwarded to `expect_points_close`
  *             (default `1e-12`; format-specific tests widen it for
  *             formats with lossy/lower-precision storage).
  */
-inline void expect_mesh_eq(const Mesh& in, const Mesh& out, double atol = 1e-12) {
-    expect_points_close(in, out, atol);
-    EXPECT_EQ(cell_rows(in), cell_rows(out));
+inline void expect_mesh_eq(const Mesh& rIn, const Mesh& rOut, double atol = 1e-12) {
+    expect_points_close(rIn, rOut, atol);
+    EXPECT_EQ(cell_rows(rIn), cell_rows(rOut));
 }
 
 /** @brief A format writer: `(path, mesh) -> void`, writes `mesh` to `path`. */
@@ -392,8 +383,8 @@ using Reader = std::function<Mesh(const std::string&)>;
  * @brief Write -> read -> compare, then remove the temp file(s); the standard
  *        per-format-test round-trip pattern.
  *
- * Generates a temp path (`temp_path(suffix)`), calls `writer(path, mesh)`,
- * then `reader(path)`, and asserts the result matches `mesh` via
+ * Generates a temp path (`temp_path(suffix)`), calls `rWriter(path, rMesh)`,
+ * then `rReader(path)`, and asserts the result matches `rMesh` via
  * `expect_mesh_eq`. The temp file is removed afterward regardless of
  * whether the comparison assertions passed (`std::filesystem::remove` with
  * an `std::error_code` overload, so a failed cleanup does not itself throw
@@ -409,20 +400,20 @@ using Reader = std::function<Mesh(const std::string&)>;
  *     mt::tri_mesh(), ".vtk");
  * @endcode
  *
- * @param writer Callable writing a `Mesh` to a file path.
- * @param reader Callable reading a `Mesh` back from a file path.
- * @param mesh The fixture mesh to round-trip (e.g. `mt::tri_mesh()`).
- * @param suffix File suffix/extension for the generated temp path (e.g.
+ * @param rWriter Callable writing a `Mesh` to a file path.
+ * @param rReader Callable reading a `Mesh` back from a file path.
+ * @param rMesh The fixture mesh to round-trip (e.g. `mt::tri_mesh()`).
+ * @param rSuffix File suffix/extension for the generated temp path (e.g.
  *               `".vtk"`).
  * @param atol Absolute point-coordinate tolerance forwarded to
  *             `expect_mesh_eq` (default `1e-12`).
  */
-inline void roundtrip(const Writer& writer, const Reader& reader, const Mesh& mesh,
-                      const std::string& suffix, double atol = 1e-12) {
-    std::string path = temp_path(suffix);
-    writer(path, mesh);
-    Mesh out = reader(path);
-    expect_mesh_eq(mesh, out, atol);
+inline void roundtrip(const Writer& rWriter, const Reader& rReader, const Mesh& rMesh,
+                      const std::string& rSuffix, double atol = 1e-12) {
+    std::string path = temp_path(rSuffix);
+    rWriter(path, rMesh);
+    Mesh out = rReader(path);
+    expect_mesh_eq(rMesh, out, atol);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

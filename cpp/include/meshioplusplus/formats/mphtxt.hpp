@@ -59,14 +59,14 @@ namespace meshioplusplus {
  * per block); parameter and up/down-link sections are always written
  * empty/zero.
  *
- * @param path filesystem path to the .mphtxt file to create/overwrite
- * @param mesh the mesh to write
+ * @param rPath filesystem path to the .mphtxt file to create/overwrite
+ * @param rMesh the mesh to write
  * @throws WriteError on a cell type with no COMSOL equivalent (the C++
  *         writer raises here, forcing the Python fallback, whereas the
  *         Python writer merely warns and skips the type)
  * @note reads `cell_data["mphtxt:geom"]` if present
  */
-void write_mphtxt(const std::string& path, const Mesh& mesh);
+void write_mphtxt(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a COMSOL text mesh (.mphtxt) file into a Mesh.
@@ -78,11 +78,11 @@ void write_mphtxt(const std::string& path, const Mesh& mesh);
  * permutation. Element parameter values and up/down topology-link pairs
  * are discarded.
  *
- * @param path filesystem path to the .mphtxt file to read
+ * @param rPath filesystem path to the .mphtxt file to read
  * @return the read Mesh, with `cell_data["mphtxt:geom"]` populated (one
  *         array per cell block) from each element's geometric entity index
  * @throws ReadError on a malformed file or an unrecognized COMSOL type name
  */
-Mesh read_mphtxt(const std::string& path);
+Mesh read_mphtxt(const std::string& rPath);
 
 }  // namespace meshioplusplus

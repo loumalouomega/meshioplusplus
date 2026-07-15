@@ -55,11 +55,11 @@ namespace meshioplusplus {
  * 0), vertex coordinate rows, then one `3 i j k` row per triangle. Only
  * `triangle` cells are representable.
  *
- * @param path filesystem path to the .off file to create/overwrite
- * @param mesh the mesh to write (triangle cells only)
+ * @param rPath filesystem path to the .off file to create/overwrite
+ * @param rMesh the mesh to write (triangle cells only)
  * @throws WriteError on any non-triangle cell type
  */
-void write_off(const std::string& path, const Mesh& mesh);
+void write_off(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a Geomview OFF (.off) file into a Mesh.
@@ -68,13 +68,13 @@ void write_off(const std::string& path, const Mesh& mesh);
  * (edge count discarded), then `nverts` coordinate rows and `nfaces`
  * triangle rows (each row's leading count must be exactly 3).
  *
- * @param path filesystem path to the .off file to read
+ * @param rPath filesystem path to the .off file to read
  * @return the read Mesh (points + a single `triangle` cell block only —
  *         no point_data/cell_data/field_data)
  * @throws ReadError if the first line isn't `"OFF"`, or any face row's
  *         leading vertex count isn't 3 ("Can only read triangular faces")
  */
-Mesh read_off(const std::string& path);
+Mesh read_off(const std::string& rPath);
 
 /**
  * @brief Write a Mesh to a Wavefront OBJ (.obj) file.
@@ -84,13 +84,13 @@ Mesh read_off(const std::string& path);
  * (triangle/quad/polygon), 1-based indices. Group (`g`) lines are emitted
  * per distinct value found in `cell_data["obj:group_ids"]`, if present.
  *
- * @param path filesystem path to the .obj file to create/overwrite
- * @param mesh the mesh to write
+ * @param rPath filesystem path to the .obj file to create/overwrite
+ * @param rMesh the mesh to write
  * @throws WriteError on an unsupported cell type
  * @note reads `point_data["obj:vn"]`, `point_data["obj:vt"]`,
  *       `cell_data["obj:group_ids"]` if present
  */
-void write_obj(const std::string& path, const Mesh& mesh);
+void write_obj(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a Wavefront OBJ (.obj) file into a Mesh.
@@ -105,13 +105,13 @@ void write_obj(const std::string& path, const Mesh& mesh);
  * -1 for faces before any `g` line); only the id survives, not the name.
  * Empty trailing groups are dropped after the full file is scanned.
  *
- * @param path filesystem path to the .obj file to read
+ * @param rPath filesystem path to the .obj file to read
  * @return the read Mesh, with `point_data["obj:vn"]` (if any `vn` lines
  *         were seen), `point_data["obj:vt"]` (if any `vt` lines were
  *         seen), and `cell_data["obj:group_ids"]` (one int array per cell
  *         block, the originating group id, `-1` if before the first `g`)
  * @throws ReadError on a malformed file
  */
-Mesh read_obj(const std::string& path);
+Mesh read_obj(const std::string& rPath);
 
 }  // namespace meshioplusplus

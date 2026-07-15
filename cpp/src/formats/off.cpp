@@ -33,18 +33,21 @@ namespace meshioplusplus {
 
 namespace {
 
-std::string strip(const std::string& s) {
-    std::size_t b = 0, e = s.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
-    return s.substr(b, e - b);
+std::string strip(const std::string& rS) {
+    std::size_t b = 0, e = rS.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
+        ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
+        --e;
+    return rS.substr(b, e - b);
 }
 
 }  // namespace
 
-Mesh read_off(const std::string& path) {
-    std::ifstream in(path);
-    if (!in) throw ReadError("Could not open file: " + path);
+Mesh read_off(const std::string& rPath) {
+    std::ifstream in(rPath);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
 
     std::string line;
     if (!std::getline(in, line) || strip(line) != "OFF")
@@ -64,38 +67,44 @@ Mesh read_off(const std::string& path) {
     cs >> num_verts >> num_faces >> num_edges;
 
     Mesh mesh;
-    mesh.points = NDArray(DType::Float64, {static_cast<std::size_t>(num_verts), 3});
-    double* pp = mesh.points.as<double>();
+    mesh.mPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num_verts), 3});
+    double* pp = mesh.mPoints.As<double>();
     for (long long i = 0; i < num_verts * 3; ++i) {
-        if (!(in >> pp[i])) throw ReadError("OFF: not enough vertex coordinates");
+        if (!(in >> pp[i]))
+            throw ReadError("OFF: not enough vertex coordinates");
     }
 
     NDArray cells(DType::Int64, {static_cast<std::size_t>(num_faces), 3});
-    std::int64_t* cp = cells.as<std::int64_t>();
+    std::int64_t* cp = cells.As<std::int64_t>();
     for (long long f = 0; f < num_faces; ++f) {
         long long n;
-        if (!(in >> n)) throw ReadError("OFF: not enough faces");
-        if (n != 3) throw ReadError("OFF: can only read triangular faces");
+        if (!(in >> n))
+            throw ReadError("OFF: not enough faces");
+        if (n != 3)
+            throw ReadError("OFF: can only read triangular faces");
         in >> cp[f * 3 + 0] >> cp[f * 3 + 1] >> cp[f * 3 + 2];
     }
-    mesh.cells.emplace_back("triangle", std::move(cells));
+    mesh.mCells.emplace_back("triangle", std::move(cells));
     return mesh;
 }
 
-void write_off(const std::string& path, const Mesh& mesh) {
-    std::ofstream os(path, std::ios::binary);
-    if (!os) throw WriteError("Could not open file for writing: " + path);
+void write_off(const std::string& rPath, const Mesh& rMesh) {
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t num_points = mesh.num_points();
-    const std::size_t dim = mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
 
     // Gather triangles (OFF supports triangles only).
     std::vector<std::int64_t> tri;
     std::size_t ntri = 0;
-    for (const auto& cb : mesh.cells) {
-        if (cb.type != "triangle") continue;
-        for (std::size_t r = 0; r < cb.num_cells(); ++r) {
-            for (int k = 0; k < 3; ++k) tri.push_back(detail::read_int(cb.data, r * 3 + k));
+    for (const auto& cb : rMesh.mCells) {
+        if (cb.mType != "triangle")
+            continue;
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            for (int k = 0; k < 3; ++k)
+                tri.push_back(detail::read_int(cb.mData, r * 3 + k));
             ++ntri;
         }
     }
@@ -105,9 +114,9 @@ void write_off(const std::string& path, const Mesh& mesh) {
 
     char buf[96];
     for (std::size_t r = 0; r < num_points; ++r) {
-        double x = (0 < dim) ? detail::read_double(mesh.points, r * dim + 0) : 0.0;
-        double y = (1 < dim) ? detail::read_double(mesh.points, r * dim + 1) : 0.0;
-        double z = (2 < dim) ? detail::read_double(mesh.points, r * dim + 2) : 0.0;
+        double x = (0 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 0) : 0.0;
+        double y = (1 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 1) : 0.0;
+        double z = (2 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 2) : 0.0;
         std::snprintf(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }

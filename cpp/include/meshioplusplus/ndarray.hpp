@@ -28,10 +28,10 @@
  * `bindings/np_conversions.hpp`). The binding layer converts between
  * `NDArray` and numpy at the I/O boundary: owning buffers are moved into a
  * capsule backing a writeable numpy array on read, and numpy buffers are
- * wrapped as views (no copy) on write. `dtype()` records the element type
+ * wrapped as views (no copy) on write. `Dtype()` records the element type
  * with an internal `DType` enum rather than a template parameter, so
- * `NDArray` can be stored uniformly (e.g. in `Mesh::cell_data`) regardless of
- * the numpy dtype it came from; `as<T>()` reinterprets the raw buffer as `T`
+ * `NDArray` can be stored uniformly (e.g. in `Mesh::mCellData`) regardless of
+ * the numpy dtype it came from; `As<T>()` reinterprets the raw buffer as `T`
  * once the caller has determined (or asserted) the appropriate type.
  */
 
@@ -56,7 +56,7 @@ namespace detail {
  * For a trivial type like `std::byte` that means the buffer is left
  * uninitialized instead of zero-filled. `NDArray` uses this (via `ByteBuf`)
  * so a buffer it is about to fully overwrite (reader outputs, reconstruction
- * blocks — see `NDArray::uninit`) can skip the zero-fill `memset`, which for
+ * blocks — see `NDArray::Uninit`) can skip the zero-fill `memset`, which for
  * a fresh large allocation is an entire extra cold pass over just-faulted
  * pages (numpy's `calloc`-backed arrays skip it too, for the same reason).
  * `std::vector` with this allocator stays copyable/movable like a normal
@@ -64,35 +64,40 @@ namespace detail {
  * semantics.
  *
  * @tparam T The element type being allocated (used as `std::byte` here).
+ *
+ * @note The member names below (`value_type`, `allocate`, `deallocate`,
+ * `construct`, `rebind`, `operator==`/`operator!=`) are fixed by the C++
+ * standard library's Allocator named requirements and must keep these exact
+ * spellings regardless of naming convention.
  */
 template <class T>
-struct no_init_allocator {
+struct NoInitAllocator {
     using value_type = T;
-    no_init_allocator() = default;
+    NoInitAllocator() = default;
     template <class U>
-    no_init_allocator(const no_init_allocator<U>&) noexcept {}
+    NoInitAllocator(const NoInitAllocator<U>&) noexcept {}
     template <class U>
     struct rebind {
-        using other = no_init_allocator<U>;
+        using other = NoInitAllocator<U>;
     };
     T* allocate(std::size_t n) { return std::allocator<T>{}.allocate(n); }
-    void deallocate(T* p, std::size_t n) { std::allocator<T>{}.deallocate(p, n); }
+    void deallocate(T* pPtr, std::size_t n) { std::allocator<T>{}.deallocate(pPtr, n); }
     // Default-init (no zeroing) for the no-arg case resize() uses; forward
     // everything else so the vector still behaves normally.
     template <class U>
-    void construct(U* p) noexcept(std::is_nothrow_default_constructible_v<U>) {
-        ::new (static_cast<void*>(p)) U;
+    void construct(U* pPtr) noexcept(std::is_nothrow_default_constructible_v<U>) {
+        ::new (static_cast<void*>(pPtr)) U;
     }
     template <class U, class... Args>
-    void construct(U* p, Args&&... args) {
-        ::new (static_cast<void*>(p)) U(std::forward<Args>(args)...);
+    void construct(U* pPtr, Args&&... args) {
+        ::new (static_cast<void*>(pPtr)) U(std::forward<Args>(args)...);
     }
     template <class U>
-    bool operator==(const no_init_allocator<U>&) const noexcept {
+    bool operator==(const NoInitAllocator<U>&) const noexcept {
         return true;
     }
     template <class U>
-    bool operator!=(const no_init_allocator<U>&) const noexcept {
+    bool operator!=(const NoInitAllocator<U>&) const noexcept {
         return false;
     }
 };
@@ -122,16 +127,22 @@ enum class DType {
  */
 inline std::size_t dtype_size(DType dt) {
     switch (dt) {
-        case DType::Float32: return 4;
-        case DType::Float64: return 8;
+        case DType::Float32:
+            return 4;
+        case DType::Float64:
+            return 8;
         case DType::Int8:
-        case DType::UInt8: return 1;
+        case DType::UInt8:
+            return 1;
         case DType::Int16:
-        case DType::UInt16: return 2;
+        case DType::UInt16:
+            return 2;
         case DType::Int32:
-        case DType::UInt32: return 4;
+        case DType::UInt32:
+            return 4;
         case DType::Int64:
-        case DType::UInt64: return 8;
+        case DType::UInt64:
+            return 8;
     }
     return 0;
 }
@@ -143,16 +154,26 @@ inline std::size_t dtype_size(DType dt) {
  */
 inline const char* dtype_numpy_str(DType dt) {
     switch (dt) {
-        case DType::Float32: return "f4";
-        case DType::Float64: return "f8";
-        case DType::Int8: return "i1";
-        case DType::Int16: return "i2";
-        case DType::Int32: return "i4";
-        case DType::Int64: return "i8";
-        case DType::UInt8: return "u1";
-        case DType::UInt16: return "u2";
-        case DType::UInt32: return "u4";
-        case DType::UInt64: return "u8";
+        case DType::Float32:
+            return "f4";
+        case DType::Float64:
+            return "f8";
+        case DType::Int8:
+            return "i1";
+        case DType::Int16:
+            return "i2";
+        case DType::Int32:
+            return "i4";
+        case DType::Int64:
+            return "i8";
+        case DType::UInt8:
+            return "u1";
+        case DType::UInt16:
+            return "u2";
+        case DType::UInt32:
+            return "u4";
+        case DType::UInt64:
+            return "u8";
     }
     return "f8";
 }
@@ -162,11 +183,11 @@ inline const char* dtype_numpy_str(DType dt) {
  *
  * `NDArray` is either *owning* (holds its own `ByteBuf`, freed on
  * destruction) or a non-owning *view* over externally-managed memory
- * (`view_ != nullptr`); `is_view()` distinguishes the two, and `data()`
+ * (`mView != nullptr`); `IsView()` distinguishes the two, and `Data()`
  * transparently returns whichever buffer is active. Views exist so the
  * write path can wrap a numpy array's memory directly (see
  * `bindings/np_conversions.hpp`'s `py_to_mesh`) without copying it into a
- * C++-owned buffer; `make_owned()` is the escape hatch for turning a view
+ * C++-owned buffer; `MakeOwned()` is the escape hatch for turning a view
  * into an owning copy when a buffer must outlive the memory it points to.
  * There is no reference counting: a view's caller is responsible for
  * keeping the underlying memory alive for the `NDArray`'s lifetime.
@@ -180,11 +201,10 @@ public:
      * @param dt Element dtype.
      * @param shape Row-major dimensions; total element count is their product.
      */
-    NDArray(DType dt, std::vector<std::size_t> shape)
-        : dtype_(dt), shape_(std::move(shape)) {
-        const std::size_t nb = nbytes();
-        owned_.resize(nb);  // uninitialised (no_init_allocator)
-        std::memset(owned_.data(), 0, nb);  // explicit zero-fill
+    NDArray(DType dt, std::vector<std::size_t> shape) : mDtype(dt), mShape(std::move(shape)) {
+        const std::size_t nb = Nbytes();
+        mOwned.resize(nb);                  // uninitialised (NoInitAllocator)
+        std::memset(mOwned.data(), 0, nb);  // explicit zero-fill
     }
 
     /**
@@ -204,11 +224,11 @@ public:
      * @param shape Row-major dimensions; total element count is their product.
      * @return A new owning, uninitialized `NDArray`.
      */
-    static NDArray uninit(DType dt, std::vector<std::size_t> shape) {
+    static NDArray Uninit(DType dt, std::vector<std::size_t> shape) {
         NDArray a;
-        a.dtype_ = dt;
-        a.shape_ = std::move(shape);
-        a.owned_.resize(a.nbytes());  // no memset
+        a.mDtype = dt;
+        a.mShape = std::move(shape);
+        a.mOwned.resize(a.Nbytes());  // no memset
         return a;
     }
 
@@ -216,42 +236,43 @@ public:
      * @brief Constructs a non-owning view over externally-owned row-major memory.
      *
      * Used to wrap a numpy array's buffer directly at the write boundary
-     * (zero-copy): the C++ writer reads through `ptr` but never frees it.
-     * @param dt Element dtype of the memory at `ptr`.
-     * @param shape Row-major dimensions describing how to interpret `ptr`.
-     * @param ptr Pointer to caller-owned memory; the caller must keep it
+     * (zero-copy): the C++ writer reads through `pPtr` but never frees it.
+     * @param dt Element dtype of the memory at `pPtr`.
+     * @param shape Row-major dimensions describing how to interpret `pPtr`.
+     * @param pPtr Pointer to caller-owned memory; the caller must keep it
      *            alive for at least the lifetime of the returned `NDArray`
      *            (and of any `NDArray` copies/moves derived from it that
      *            remain a view).
      * @return A new non-owning `NDArray` view.
      */
-    static NDArray make_view(DType dt, std::vector<std::size_t> shape, std::byte* ptr) {
+    static NDArray MakeView(DType dt, std::vector<std::size_t> shape, std::byte* pPtr) {
         NDArray a;
-        a.dtype_ = dt;
-        a.shape_ = std::move(shape);
-        a.view_ = ptr;
+        a.mDtype = dt;
+        a.mShape = std::move(shape);
+        a.mView = pPtr;
         return a;
     }
 
-    DType dtype() const { return dtype_; }
-    const std::vector<std::size_t>& shape() const { return shape_; }
-    std::size_t ndim() const { return shape_.size(); }
+    DType Dtype() const { return mDtype; }
+    const std::vector<std::size_t>& Shape() const { return mShape; }
+    std::size_t Ndim() const { return mShape.size(); }
     /** @brief Whether this array is a non-owning view (vs. owning its buffer). */
-    bool is_view() const { return view_ != nullptr; }
+    bool IsView() const { return mView != nullptr; }
 
-    /** @brief Total element count (product of `shape()`), or 0 if `shape()` is empty. */
-    std::size_t size() const {
-        if (shape_.empty()) return 0;
-        return std::accumulate(shape_.begin(), shape_.end(), std::size_t{1},
+    /** @brief Total element count (product of `Shape()`), or 0 if `Shape()` is empty. */
+    std::size_t Size() const {
+        if (mShape.empty())
+            return 0;
+        return std::accumulate(mShape.begin(), mShape.end(), std::size_t{1},
                                std::multiplies<std::size_t>());
     }
-    /** @brief Total buffer size in bytes: `size() * dtype_size(dtype())`. */
-    std::size_t nbytes() const { return size() * dtype_size(dtype_); }
+    /** @brief Total buffer size in bytes: `Size() * dtype_size(Dtype())`. */
+    std::size_t Nbytes() const { return Size() * dtype_size(mDtype); }
 
     /** @brief Raw pointer to the active buffer (owned or view), for writing. */
-    std::byte* data() { return view_ ? view_ : owned_.data(); }
+    std::byte* Data() { return mView ? mView : mOwned.data(); }
     /** @brief Raw pointer to the active buffer (owned or view), read-only. */
-    const std::byte* data() const { return view_ ? view_ : owned_.data(); }
+    const std::byte* Data() const { return mView ? mView : mOwned.data(); }
 
     /**
      * @brief Changes the logical shape in place without touching the buffer.
@@ -260,13 +281,14 @@ public:
      * one (the mismatched reshape is silently ignored rather than throwing).
      * @param new_shape The desired row-major dimensions.
      */
-    void reshape(std::vector<std::size_t> new_shape) {
+    void Reshape(std::vector<std::size_t> new_shape) {
         std::size_t n = new_shape.empty()
                             ? 0
-                            : std::accumulate(new_shape.begin(), new_shape.end(),
-                                              std::size_t{1}, std::multiplies<std::size_t>());
-        if (n != size()) return;  // ignore inconsistent reshape
-        shape_ = std::move(new_shape);
+                            : std::accumulate(new_shape.begin(), new_shape.end(), std::size_t{1},
+                                              std::multiplies<std::size_t>());
+        if (n != Size())
+            return;  // ignore inconsistent reshape
+        mShape = std::move(new_shape);
     }
 
     /**
@@ -277,34 +299,39 @@ public:
      * to Python via a capsule (`mesh_to_py`), where the destination `NDArray`
      * must actually own the memory it hands off.
      */
-    void make_owned() {
-        if (view_ == nullptr) return;
-        const std::size_t nb = nbytes();
+    void MakeOwned() {
+        if (mView == nullptr)
+            return;
+        const std::size_t nb = Nbytes();
         ByteBuf buf;
         buf.resize(nb);  // uninitialised; fully overwritten by the memcpy below
-        std::memcpy(buf.data(), view_, nb);
-        owned_ = std::move(buf);
-        view_ = nullptr;
+        std::memcpy(buf.data(), mView, nb);
+        mOwned = std::move(buf);
+        mView = nullptr;
     }
 
     /**
      * @brief Reinterprets the raw buffer as a `T*`. No dtype check is performed
-     * — the caller must ensure `T` matches `dtype()`.
+     * — the caller must ensure `T` matches `Dtype()`.
      * @tparam T The scalar type to view the buffer as.
      * @return Pointer to the first element, typed as `T`.
      */
     template <typename T>
-    T* as() { return reinterpret_cast<T*>(data()); }
-    /** @brief `const` overload of `as()`. */
+    T* As() {
+        return reinterpret_cast<T*>(Data());
+    }
+    /** @brief `const` overload of `As()`. */
     template <typename T>
-    const T* as() const { return reinterpret_cast<const T*>(data()); }
+    const T* As() const {
+        return reinterpret_cast<const T*>(Data());
+    }
 
 private:
-    using ByteBuf = std::vector<std::byte, detail::no_init_allocator<std::byte>>;
-    DType dtype_ = DType::Float64;
-    std::vector<std::size_t> shape_;
-    ByteBuf owned_;
-    std::byte* view_ = nullptr;
+    using ByteBuf = std::vector<std::byte, detail::NoInitAllocator<std::byte>>;
+    DType mDtype = DType::Float64;
+    std::vector<std::size_t> mShape;
+    ByteBuf mOwned;
+    std::byte* mView = nullptr;
 };
 
 }  // namespace meshioplusplus

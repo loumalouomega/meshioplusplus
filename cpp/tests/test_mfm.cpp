@@ -33,13 +33,27 @@ void mfm_roundtrip(const mt::Mesh& mesh) {
 
 }  // namespace
 
-TEST(Mfm, Line) { mfm_roundtrip(mt::line_mesh()); }
-TEST(Mfm, Triangle) { mfm_roundtrip(mt::tri_mesh()); }
-TEST(Mfm, Triangle2D) { mfm_roundtrip(mt::tri_mesh_2d()); }
-TEST(Mfm, Quad) { mfm_roundtrip(mt::quad_mesh()); }
-TEST(Mfm, Tetra) { mfm_roundtrip(mt::tet_mesh()); }
-TEST(Mfm, Hexahedron) { mfm_roundtrip(mt::hex_mesh()); }
-TEST(Mfm, Wedge) { mfm_roundtrip(mt::wedge_mesh()); }
+TEST(Mfm, Line) {
+    mfm_roundtrip(mt::line_mesh());
+}
+TEST(Mfm, Triangle) {
+    mfm_roundtrip(mt::tri_mesh());
+}
+TEST(Mfm, Triangle2D) {
+    mfm_roundtrip(mt::tri_mesh_2d());
+}
+TEST(Mfm, Quad) {
+    mfm_roundtrip(mt::quad_mesh());
+}
+TEST(Mfm, Tetra) {
+    mfm_roundtrip(mt::tet_mesh());
+}
+TEST(Mfm, Hexahedron) {
+    mfm_roundtrip(mt::hex_mesh());
+}
+TEST(Mfm, Wedge) {
+    mfm_roundtrip(mt::wedge_mesh());
+}
 
 TEST(Mfm, RejectsMixedTypes) {
     std::string path = mt::temp_path(".mfm");

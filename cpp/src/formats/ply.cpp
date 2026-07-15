@@ -38,121 +38,172 @@ namespace meshioplusplus {
 
 namespace {
 
-DType ply_to_dtype(const std::string& s) {
-    if (s == "char" || s == "int8") return DType::Int8;
-    if (s == "uchar" || s == "uint8") return DType::UInt8;
-    if (s == "short" || s == "int16") return DType::Int16;
-    if (s == "ushort" || s == "uint16") return DType::UInt16;
-    if (s == "int" || s == "int32") return DType::Int32;
-    if (s == "uint" || s == "uint32") return DType::UInt32;
-    if (s == "int64") return DType::Int64;
-    if (s == "uint64") return DType::UInt64;
-    if (s == "float" || s == "float32") return DType::Float32;
-    if (s == "double" || s == "float64") return DType::Float64;
-    throw ReadError("PLY: unknown property type '" + s + "'");
+DType ply_to_dtype(const std::string& rS) {
+    if (rS == "char" || rS == "int8")
+        return DType::Int8;
+    if (rS == "uchar" || rS == "uint8")
+        return DType::UInt8;
+    if (rS == "short" || rS == "int16")
+        return DType::Int16;
+    if (rS == "ushort" || rS == "uint16")
+        return DType::UInt16;
+    if (rS == "int" || rS == "int32")
+        return DType::Int32;
+    if (rS == "uint" || rS == "uint32")
+        return DType::UInt32;
+    if (rS == "int64")
+        return DType::Int64;
+    if (rS == "uint64")
+        return DType::UInt64;
+    if (rS == "float" || rS == "float32")
+        return DType::Float32;
+    if (rS == "double" || rS == "float64")
+        return DType::Float64;
+    throw ReadError("PLY: unknown property type '" + rS + "'");
 }
 
 const char* dtype_to_ply(DType dt) {
     switch (dt) {
-        case DType::Int8: return "int8";
-        case DType::Int16: return "int16";
-        case DType::Int32: return "int32";
-        case DType::Int64: return "int64";
-        case DType::UInt8: return "uint8";
-        case DType::UInt16: return "uint16";
-        case DType::UInt32: return "uint32";
-        case DType::UInt64: return "uint64";
-        case DType::Float32: return "float";
-        case DType::Float64: return "double";
+        case DType::Int8:
+            return "int8";
+        case DType::Int16:
+            return "int16";
+        case DType::Int32:
+            return "int32";
+        case DType::Int64:
+            return "int64";
+        case DType::UInt8:
+            return "uint8";
+        case DType::UInt16:
+            return "uint16";
+        case DType::UInt32:
+            return "uint32";
+        case DType::UInt64:
+            return "uint64";
+        case DType::Float32:
+            return "float";
+        case DType::Float64:
+            return "double";
     }
     return "double";
 }
 
 std::string cell_type_from_count(std::size_t n) {
     switch (n) {
-        case 1: return "vertex";
-        case 2: return "line";
-        case 3: return "triangle";
-        case 4: return "quad";
-        default: return "polygon";
+        case 1:
+            return "vertex";
+        case 2:
+            return "line";
+        case 3:
+            return "triangle";
+        case 4:
+            return "quad";
+        default:
+            return "polygon";
     }
 }
 
-std::string trim(const std::string& s) {
-    std::size_t b = 0, e = s.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
-    return s.substr(b, e - b);
+std::string trim(const std::string& rS) {
+    std::size_t b = 0, e = rS.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
+        ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
+        --e;
+    return rS.substr(b, e - b);
 }
 
 struct VProp {
-    std::string name;
-    DType dtype;
+    std::string mName;
+    DType mDtype;
 };
 
 // Read one scalar of `dt` from the buffer at pos into NDArray element idx,
 // byte-swapping when the file is big-endian.
-void rd_into(NDArray& a, std::size_t idx, const std::string& buf, std::size_t& pos,
-             bool big) {
-    std::size_t isz = dtype_size(a.dtype());
-    unsigned char* dst = reinterpret_cast<unsigned char*>(a.data()) + idx * isz;
-    if (pos + isz > buf.size()) throw ReadError("PLY binary truncated");
+void rd_into(NDArray& rA, std::size_t idx, const std::string& rBuf, std::size_t& rPos, bool big) {
+    std::size_t isz = dtype_size(rA.Dtype());
+    unsigned char* dst = reinterpret_cast<unsigned char*>(rA.Data()) + idx * isz;
+    if (rPos + isz > rBuf.size())
+        throw ReadError("PLY binary truncated");
     if (big)
         for (std::size_t b = 0; b < isz; ++b)
-            dst[b] = static_cast<unsigned char>(buf[pos + isz - 1 - b]);
+            dst[b] = static_cast<unsigned char>(rBuf[rPos + isz - 1 - b]);
     else
-        std::memcpy(dst, buf.data() + pos, isz);
-    pos += isz;
+        std::memcpy(dst, rBuf.data() + rPos, isz);
+    rPos += isz;
 }
 
-std::int64_t rd_int_val(const std::string& buf, std::size_t& pos, DType dt, bool big) {
+std::int64_t rd_int_val(const std::string& rBuf, std::size_t& rPos, DType dt, bool big) {
     NDArray t(dt, {1});
-    rd_into(t, 0, buf, pos, big);
+    rd_into(t, 0, rBuf, rPos, big);
     return detail::read_int(t, 0);
 }
 
-void store_scalar(NDArray& a, std::size_t idx, double dval, std::int64_t ival,
-                  bool isflt) {
-    switch (a.dtype()) {
-        case DType::Float32: a.as<float>()[idx] = static_cast<float>(dval); break;
-        case DType::Float64: a.as<double>()[idx] = dval; break;
-        case DType::Int8: a.as<std::int8_t>()[idx] = static_cast<std::int8_t>(ival); break;
-        case DType::Int16: a.as<std::int16_t>()[idx] = static_cast<std::int16_t>(ival); break;
-        case DType::Int32: a.as<std::int32_t>()[idx] = static_cast<std::int32_t>(ival); break;
-        case DType::Int64: a.as<std::int64_t>()[idx] = ival; break;
-        case DType::UInt8: a.as<std::uint8_t>()[idx] = static_cast<std::uint8_t>(ival); break;
-        case DType::UInt16: a.as<std::uint16_t>()[idx] = static_cast<std::uint16_t>(ival); break;
-        case DType::UInt32: a.as<std::uint32_t>()[idx] = static_cast<std::uint32_t>(ival); break;
-        case DType::UInt64: a.as<std::uint64_t>()[idx] = static_cast<std::uint64_t>(ival); break;
+void store_scalar(NDArray& rA, std::size_t idx, double dval, std::int64_t ival, bool isflt) {
+    switch (rA.Dtype()) {
+        case DType::Float32:
+            rA.As<float>()[idx] = static_cast<float>(dval);
+            break;
+        case DType::Float64:
+            rA.As<double>()[idx] = dval;
+            break;
+        case DType::Int8:
+            rA.As<std::int8_t>()[idx] = static_cast<std::int8_t>(ival);
+            break;
+        case DType::Int16:
+            rA.As<std::int16_t>()[idx] = static_cast<std::int16_t>(ival);
+            break;
+        case DType::Int32:
+            rA.As<std::int32_t>()[idx] = static_cast<std::int32_t>(ival);
+            break;
+        case DType::Int64:
+            rA.As<std::int64_t>()[idx] = ival;
+            break;
+        case DType::UInt8:
+            rA.As<std::uint8_t>()[idx] = static_cast<std::uint8_t>(ival);
+            break;
+        case DType::UInt16:
+            rA.As<std::uint16_t>()[idx] = static_cast<std::uint16_t>(ival);
+            break;
+        case DType::UInt32:
+            rA.As<std::uint32_t>()[idx] = static_cast<std::uint32_t>(ival);
+            break;
+        case DType::UInt64:
+            rA.As<std::uint64_t>()[idx] = static_cast<std::uint64_t>(ival);
+            break;
     }
     (void)isflt;
 }
 
 }  // namespace
 
-Mesh read_ply(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) throw ReadError("Could not open file: " + path);
-    std::string buf((std::istreambuf_iterator<char>(in)),
-                    std::istreambuf_iterator<char>());
+Mesh read_ply(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
+    std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     std::size_t pos = 0;
 
     auto read_line = [&]() -> std::string {
         std::size_t start = pos;
-        while (pos < buf.size() && buf[pos] != '\n') ++pos;
+        while (pos < buf.size() && buf[pos] != '\n')
+            ++pos;
         std::string line = buf.substr(start, pos - start);
-        if (pos < buf.size()) ++pos;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (pos < buf.size())
+            ++pos;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
         return line;
     };
     auto next_sig = [&]() -> std::string {
         while (true) {
             std::string l = trim(read_line());
-            if (!l.empty() && l.rfind("comment", 0) != 0) return l;
+            if (!l.empty() && l.rfind("comment", 0) != 0)
+                return l;
         }
     };
 
-    if (trim(read_line()) != "ply") throw ReadError("Expected 'ply'");
+    if (trim(read_line()) != "ply")
+        throw ReadError("Expected 'ply'");
     std::string fmt = next_sig();
     bool is_binary, big = false;
     if (fmt == "format ascii 1.0")
@@ -225,7 +276,8 @@ Mesh read_ply(const std::string& path) {
 
     // Vertex properties -> per-property arrays.
     std::vector<NDArray> vcols;
-    for (const auto& vp : vprops) vcols.emplace_back(vp.dtype, std::vector<std::size_t>{num_verts});
+    for (const auto& vp : vprops)
+        vcols.emplace_back(vp.mDtype, std::vector<std::size_t>{num_verts});
 
     if (is_binary) {
         // Fixed-width records: property c of vertex i sits at a closed-form
@@ -234,16 +286,15 @@ Mesh read_ply(const std::string& path) {
         std::vector<std::size_t> coff(vprops.size());
         for (std::size_t c = 0; c < vprops.size(); ++c) {
             coff[c] = stride;
-            stride += dtype_size(vprops[c].dtype);
+            stride += dtype_size(vprops[c].mDtype);
         }
         if (pos + num_verts * stride > buf.size())
             throw ReadError("PLY binary truncated");
         const std::size_t start = pos;
         parallel_for(num_verts, [&](std::size_t i) {
             for (std::size_t c = 0; c < vprops.size(); ++c) {
-                const std::size_t isz = dtype_size(vcols[c].dtype());
-                unsigned char* dst =
-                    reinterpret_cast<unsigned char*>(vcols[c].data()) + i * isz;
+                const std::size_t isz = dtype_size(vcols[c].Dtype());
+                unsigned char* dst = reinterpret_cast<unsigned char*>(vcols[c].Data()) + i * isz;
                 const std::size_t src = start + i * stride + coff[c];
                 if (big)
                     for (std::size_t b = 0; b < isz; ++b)
@@ -260,7 +311,7 @@ Mesh read_ply(const std::string& path) {
             for (std::size_t c = 0; c < vprops.size(); ++c) {
                 std::string t;
                 rs >> t;
-                if (detail::is_float_dtype(vcols[c].dtype()))
+                if (detail::is_float_dtype(vcols[c].Dtype()))
                     store_scalar(vcols[c], i, std::strtod(t.c_str(), nullptr), 0, true);
                 else
                     store_scalar(vcols[c], i, 0.0, std::strtoll(t.c_str(), nullptr, 10), false);
@@ -272,24 +323,28 @@ Mesh read_ply(const std::string& path) {
     // Assemble points from x/y/z; the rest become point_data.
     std::vector<std::size_t> xyz(3, SIZE_MAX);
     for (std::size_t c = 0; c < vprops.size(); ++c) {
-        if (vprops[c].name == "x") xyz[0] = c;
-        else if (vprops[c].name == "y") xyz[1] = c;
-        else if (vprops[c].name == "z") xyz[2] = c;
+        if (vprops[c].mName == "x")
+            xyz[0] = c;
+        else if (vprops[c].mName == "y")
+            xyz[1] = c;
+        else if (vprops[c].mName == "z")
+            xyz[2] = c;
     }
     std::size_t ndim = 0;
-    for (std::size_t k = 0; k < 3; ++k) if (xyz[k] != SIZE_MAX) ++ndim;
-    DType pdt = (xyz[0] != SIZE_MAX) ? vcols[xyz[0]].dtype() : DType::Float64;
-    mesh.points = NDArray(pdt, {num_verts, ndim});
+    for (std::size_t k = 0; k < 3; ++k)
+        if (xyz[k] != SIZE_MAX)
+            ++ndim;
+    DType pdt = (xyz[0] != SIZE_MAX) ? vcols[xyz[0]].Dtype() : DType::Float64;
+    mesh.mPoints = NDArray(pdt, {num_verts, ndim});
     for (std::size_t i = 0; i < num_verts; ++i)
         for (std::size_t k = 0; k < ndim; ++k)
-            store_scalar(mesh.points, i * ndim + k,
-                         detail::read_double(vcols[xyz[k]], i),
-                         detail::read_int(vcols[xyz[k]], i),
-                         detail::is_float_dtype(pdt));
+            store_scalar(mesh.mPoints, i * ndim + k, detail::read_double(vcols[xyz[k]], i),
+                         detail::read_int(vcols[xyz[k]], i), detail::is_float_dtype(pdt));
     for (std::size_t c = 0; c < vprops.size(); ++c) {
-        const std::string& nm = vprops[c].name;
-        if (nm == "x" || nm == "y" || nm == "z") continue;
-        mesh.point_data.emplace(nm, std::move(vcols[c]));
+        const std::string& nm = vprops[c].mName;
+        if (nm == "x" || nm == "y" || nm == "z")
+            continue;
+        mesh.mPointData.emplace(nm, std::move(vcols[c]));
     }
 
     // Faces -> cell blocks grouped by consecutive vertex count.
@@ -298,10 +353,11 @@ Mesh read_ply(const std::string& path) {
         std::vector<std::int64_t> cur_conn;
         std::size_t cur_count = 0;
         auto flush = [&]() {
-            if (cur_count == 0) return;
+            if (cur_count == 0)
+                return;
             NDArray data(DType::Int64, {cur_count, cur_n});
-            std::memcpy(data.data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
-            mesh.cells.emplace_back(cell_type_from_count(cur_n), std::move(data));
+            std::memcpy(data.Data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
+            mesh.mCells.emplace_back(cell_type_from_count(cur_n), std::move(data));
             cur_conn.clear();
             cur_count = 0;
         };
@@ -311,14 +367,16 @@ Mesh read_ply(const std::string& path) {
             if (is_binary) {
                 n = static_cast<std::size_t>(rd_int_val(buf, pos, face_count_dt, big));
                 idx.resize(n);
-                for (std::size_t j = 0; j < n; ++j) idx[j] = rd_int_val(buf, pos, face_index_dt, big);
+                for (std::size_t j = 0; j < n; ++j)
+                    idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
                 std::istringstream rs(read_line());
                 long long cnt;
                 rs >> cnt;
                 n = static_cast<std::size_t>(cnt);
                 idx.resize(n);
-                for (std::size_t j = 0; j < n; ++j) rs >> idx[j];
+                for (std::size_t j = 0; j < n; ++j)
+                    rs >> idx[j];
             }
             if (n != cur_n) {
                 flush();
@@ -333,29 +391,34 @@ Mesh read_ply(const std::string& path) {
     return mesh;
 }
 
-void write_ply(const std::string& path, const Mesh& mesh, bool binary) {
-    std::ofstream os(path, std::ios::binary);
-    if (!os) throw WriteError("Could not open file for writing: " + path);
+void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t num_points = mesh.num_points();
-    const std::size_t dim = mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
     const std::size_t ncoord = std::min<std::size_t>(dim, 3);
 
     // Scalar point data only (PLY can't store multidimensional vertex data here).
     std::vector<std::pair<std::string, const NDArray*>> pd;
-    for (const auto& name : detail::sorted_keys(mesh.point_data)) {
-        const NDArray& d = mesh.point_data.at(name);
-        if (d.shape().size() <= 1) pd.emplace_back(name, &d);
+    for (const auto& name : detail::sorted_keys(rMesh.mPointData)) {
+        const NDArray& d = rMesh.mPointData.at(name);
+        if (d.Shape().size() <= 1)
+            pd.emplace_back(name, &d);
     }
 
     const char* legal[] = {"vertex", "line", "triangle", "quad", "polygon"};
     auto is_legal = [&](const std::string& t) {
-        for (auto* l : legal) if (t == l) return true;
+        for (auto* l : legal)
+            if (t == l)
+                return true;
         return false;
     };
     std::size_t num_cells = 0;
-    for (const auto& cb : mesh.cells)
-        if (is_legal(cb.type)) num_cells += cb.num_cells();
+    for (const auto& cb : rMesh.mCells)
+        if (is_legal(cb.mType))
+            num_cells += cb.NumCells();
 
     os << "ply\n";
     os << (binary ? "format binary_little_endian 1.0\n" : "format ascii 1.0\n");
@@ -363,36 +426,37 @@ void write_ply(const std::string& path, const Mesh& mesh, bool binary) {
     os << "element vertex " << num_points << "\n";
     const char* dim_names[3] = {"x", "y", "z"};
     for (std::size_t k = 0; k < ncoord; ++k)
-        os << "property " << dtype_to_ply(mesh.points.dtype()) << " " << dim_names[k] << "\n";
+        os << "property " << dtype_to_ply(rMesh.mPoints.Dtype()) << " " << dim_names[k] << "\n";
     for (auto& p : pd)
-        os << "property " << dtype_to_ply(p.second->dtype()) << " " << p.first << "\n";
+        os << "property " << dtype_to_ply(p.second->Dtype()) << " " << p.first << "\n";
     if (num_cells > 0) {
         os << "element face " << num_cells << "\n";
         os << "property list uint8 int32 vertex_indices\n";
     }
     os << "end_header\n";
 
-    const std::size_t pisz = dtype_size(mesh.points.dtype());
+    const std::size_t pisz = dtype_size(rMesh.mPoints.Dtype());
     if (binary) {
         // Interleaved vertex records: coords then scalar point data.
         for (std::size_t i = 0; i < num_points; ++i) {
             for (std::size_t k = 0; k < ncoord; ++k)
-                os.write(reinterpret_cast<const char*>(mesh.points.data()) +
-                             (i * dim + k) * pisz,
+                os.write(reinterpret_cast<const char*>(rMesh.mPoints.Data()) + (i * dim + k) * pisz,
                          pisz);
             for (auto& p : pd) {
-                std::size_t isz = dtype_size(p.second->dtype());
-                os.write(reinterpret_cast<const char*>(p.second->data()) + i * isz, isz);
+                std::size_t isz = dtype_size(p.second->Dtype());
+                os.write(reinterpret_cast<const char*>(p.second->Data()) + i * isz, isz);
             }
         }
-        for (const auto& cb : mesh.cells) {
-            if (!is_legal(cb.type)) continue;
-            std::size_t n = cb.data.shape().size() >= 2 ? cb.data.shape()[1] : 1;
-            for (std::size_t r = 0; r < cb.num_cells(); ++r) {
+        for (const auto& cb : rMesh.mCells) {
+            if (!is_legal(cb.mType))
+                continue;
+            std::size_t n = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 std::uint8_t cnt = static_cast<std::uint8_t>(n);
                 os.write(reinterpret_cast<const char*>(&cnt), 1);
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::int32_t v = static_cast<std::int32_t>(detail::read_int(cb.data, r * n + j));
+                    std::int32_t v =
+                        static_cast<std::int32_t>(detail::read_int(cb.mData, r * n + j));
                     os.write(reinterpret_cast<const char*>(&v), 4);
                 }
             }
@@ -402,13 +466,15 @@ void write_ply(const std::string& path, const Mesh& mesh, bool binary) {
         for (std::size_t i = 0; i < num_points; ++i) {
             std::string row;
             for (std::size_t k = 0; k < ncoord; ++k) {
-                if (k) row += " ";
-                std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(mesh.points, i * dim + k));
+                if (k)
+                    row += " ";
+                std::snprintf(buf, sizeof(buf), "%.17g",
+                              detail::read_double(rMesh.mPoints, i * dim + k));
                 row += buf;
             }
             for (auto& p : pd) {
                 row += " ";
-                if (detail::is_float_dtype(p.second->dtype())) {
+                if (detail::is_float_dtype(p.second->Dtype())) {
                     std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(*p.second, i));
                     row += buf;
                 } else {
@@ -417,13 +483,14 @@ void write_ply(const std::string& path, const Mesh& mesh, bool binary) {
             }
             os << row << "\n";
         }
-        for (const auto& cb : mesh.cells) {
-            if (!is_legal(cb.type)) continue;
-            std::size_t n = cb.data.shape().size() >= 2 ? cb.data.shape()[1] : 1;
-            for (std::size_t r = 0; r < cb.num_cells(); ++r) {
+        for (const auto& cb : rMesh.mCells) {
+            if (!is_legal(cb.mType))
+                continue;
+            std::size_t n = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 os << n;
                 for (std::size_t j = 0; j < n; ++j)
-                    os << " " << detail::read_int(cb.data, r * n + j);
+                    os << " " << detail::read_int(cb.mData, r * n + j);
                 os << "\n";
             }
         }

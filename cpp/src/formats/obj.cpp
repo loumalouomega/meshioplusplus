@@ -35,33 +35,37 @@ namespace meshioplusplus {
 namespace {
 
 struct FaceBlock {
-    std::size_t size = 0;
-    std::vector<std::int64_t> idx;  // flat, 0-based
-    std::vector<std::int64_t> gids;
-    std::size_t count = 0;
+    std::size_t mSize = 0;
+    std::vector<std::int64_t> mIdx;  // flat, 0-based
+    std::vector<std::int64_t> mGids;
+    std::size_t mCount = 0;
 };
 
 std::string cell_type_for(std::size_t n) {
-    if (n == 3) return "triangle";
-    if (n == 4) return "quad";
+    if (n == 3)
+        return "triangle";
+    if (n == 4)
+        return "quad";
     return "polygon";
 }
 
-NDArray make_point_data(const std::vector<std::vector<double>>& rows) {
-    std::size_t n = rows.size();
-    std::size_t nc = n ? rows[0].size() : 0;
+NDArray make_point_data(const std::vector<std::vector<double>>& rRows) {
+    std::size_t n = rRows.size();
+    std::size_t nc = n ? rRows[0].size() : 0;
     NDArray a(DType::Float64, {n, nc});
-    double* p = a.as<double>();
+    double* p = a.As<double>();
     for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t j = 0; j < nc; ++j) p[i * nc + j] = rows[i][j];
+        for (std::size_t j = 0; j < nc; ++j)
+            p[i * nc + j] = rRows[i][j];
     return a;
 }
 
 }  // namespace
 
-Mesh read_obj(const std::string& path) {
-    std::ifstream in(path);
-    if (!in) throw ReadError("Could not open file: " + path);
+Mesh read_obj(const std::string& rPath) {
+    std::ifstream in(rPath);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
 
     std::vector<std::array<double, 3>> points;
     std::vector<std::vector<double>> vn, vt;
@@ -72,9 +76,12 @@ Mesh read_obj(const std::string& path) {
     while (std::getline(in, line)) {
         // strip
         std::size_t b = 0, e = line.size();
-        while (b < e && std::isspace(static_cast<unsigned char>(line[b]))) ++b;
-        while (e > b && std::isspace(static_cast<unsigned char>(line[e - 1]))) --e;
-        if (b == e || line[b] == '#') continue;
+        while (b < e && std::isspace(static_cast<unsigned char>(line[b])))
+            ++b;
+        while (e > b && std::isspace(static_cast<unsigned char>(line[e - 1])))
+            --e;
+        if (b == e || line[b] == '#')
+            continue;
 
         std::istringstream iss(line.substr(b, e - b));
         std::string tag;
@@ -86,12 +93,14 @@ Mesh read_obj(const std::string& path) {
         } else if (tag == "vn") {
             std::vector<double> row;
             double x;
-            while (iss >> x) row.push_back(x);
+            while (iss >> x)
+                row.push_back(x);
             vn.push_back(row);
         } else if (tag == "vt") {
             std::vector<double> row;
             double x;
-            while (iss >> x) row.push_back(x);
+            while (iss >> x)
+                row.push_back(x);
             vt.push_back(row);
         } else if (tag == "f") {
             std::vector<std::int64_t> dat;
@@ -102,16 +111,17 @@ Mesh read_obj(const std::string& path) {
                 dat.push_back(static_cast<std::int64_t>(std::stoll(num)) - 1);
             }
             std::size_t sz = dat.size();
-            if (blocks.empty() || (blocks.back().count > 0 && blocks.back().size != sz)) {
+            if (blocks.empty() || (blocks.back().mCount > 0 && blocks.back().mSize != sz)) {
                 FaceBlock fb;
-                fb.size = sz;
+                fb.mSize = sz;
                 blocks.push_back(std::move(fb));
             }
             FaceBlock& cur = blocks.back();
-            if (cur.count == 0) cur.size = sz;
-            cur.idx.insert(cur.idx.end(), dat.begin(), dat.end());
-            cur.gids.push_back(group_id);
-            ++cur.count;
+            if (cur.mCount == 0)
+                cur.mSize = sz;
+            cur.mIdx.insert(cur.mIdx.end(), dat.begin(), dat.end());
+            cur.mGids.push_back(group_id);
+            ++cur.mCount;
         } else if (tag == "g") {
             FaceBlock fb;
             blocks.push_back(std::move(fb));
@@ -123,64 +133,73 @@ Mesh read_obj(const std::string& path) {
     // Drop empty blocks (e.g. from trailing 'g').
     std::vector<FaceBlock> nonempty;
     for (auto& fb : blocks)
-        if (fb.count > 0) nonempty.push_back(std::move(fb));
+        if (fb.mCount > 0)
+            nonempty.push_back(std::move(fb));
 
     Mesh mesh;
     std::size_t np = points.size();
-    mesh.points = NDArray(DType::Float64, {np, 3});
-    double* pp = mesh.points.as<double>();
+    mesh.mPoints = NDArray(DType::Float64, {np, 3});
+    double* pp = mesh.mPoints.As<double>();
     for (std::size_t i = 0; i < np; ++i)
-        for (int c = 0; c < 3; ++c) pp[i * 3 + c] = points[i][c];
+        for (int c = 0; c < 3; ++c)
+            pp[i * 3 + c] = points[i][c];
 
-    if (!vt.empty()) mesh.point_data.emplace("obj:vt", make_point_data(vt));
-    if (!vn.empty()) mesh.point_data.emplace("obj:vn", make_point_data(vn));
+    if (!vt.empty())
+        mesh.mPointData.emplace("obj:vt", make_point_data(vt));
+    if (!vn.empty())
+        mesh.mPointData.emplace("obj:vn", make_point_data(vn));
 
     if (!nonempty.empty()) {
         std::vector<NDArray> gid_blocks;
         for (auto& fb : nonempty) {
-            NDArray data(DType::Int64, {fb.count, fb.size});
-            std::int64_t* dp = data.as<std::int64_t>();
-            for (std::size_t i = 0; i < fb.idx.size(); ++i) dp[i] = fb.idx[i];
-            mesh.cells.emplace_back(cell_type_for(fb.size), std::move(data));
+            NDArray data(DType::Int64, {fb.mCount, fb.mSize});
+            std::int64_t* dp = data.As<std::int64_t>();
+            for (std::size_t i = 0; i < fb.mIdx.size(); ++i)
+                dp[i] = fb.mIdx[i];
+            mesh.mCells.emplace_back(cell_type_for(fb.mSize), std::move(data));
 
-            NDArray g(DType::Int64, {fb.count});
-            std::int64_t* gp = g.as<std::int64_t>();
-            for (std::size_t i = 0; i < fb.count; ++i) gp[i] = fb.gids[i];
+            NDArray g(DType::Int64, {fb.mCount});
+            std::int64_t* gp = g.As<std::int64_t>();
+            for (std::size_t i = 0; i < fb.mCount; ++i)
+                gp[i] = fb.mGids[i];
             gid_blocks.push_back(std::move(g));
         }
-        mesh.cell_data.emplace("obj:group_ids", std::move(gid_blocks));
+        mesh.mCellData.emplace("obj:group_ids", std::move(gid_blocks));
     }
     return mesh;
 }
 
-void write_obj(const std::string& path, const Mesh& mesh) {
-    for (const auto& cb : mesh.cells)
-        if (cb.type != "triangle" && cb.type != "quad" && cb.type != "polygon")
-            throw WriteError("Wavefront .obj files can only contain triangle, quad, "
-                             "or polygon cells.");
+void write_obj(const std::string& rPath, const Mesh& rMesh) {
+    for (const auto& cb : rMesh.mCells)
+        if (cb.mType != "triangle" && cb.mType != "quad" && cb.mType != "polygon")
+            throw WriteError(
+                "Wavefront .obj files can only contain triangle, quad, "
+                "or polygon cells.");
 
-    std::ofstream os(path, std::ios::binary);
-    if (!os) throw WriteError("Could not open file for writing: " + path);
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t num_points = mesh.num_points();
-    const std::size_t dim = mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
 
     os << "# Created by meshio++ (C++ core)\n";
     char buf[96];
     for (std::size_t r = 0; r < num_points; ++r) {
-        double x = (0 < dim) ? detail::read_double(mesh.points, r * dim + 0) : 0.0;
-        double y = (1 < dim) ? detail::read_double(mesh.points, r * dim + 1) : 0.0;
-        double z = (2 < dim) ? detail::read_double(mesh.points, r * dim + 2) : 0.0;
+        double x = (0 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 0) : 0.0;
+        double y = (1 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 1) : 0.0;
+        double z = (2 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 2) : 0.0;
         std::snprintf(buf, sizeof(buf), "v %.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
 
     auto write_pd = [&](const char* key, const char* tag) {
-        auto it = mesh.point_data.find(key);
-        if (it == mesh.point_data.end()) return;
+        auto it = rMesh.mPointData.find(key);
+        if (it == rMesh.mPointData.end())
+            return;
         const NDArray& d = it->second;
-        std::size_t nc = d.shape().size() >= 2 ? d.shape()[1] : 1;
-        for (std::size_t r = 0; r < (d.shape().empty() ? 0 : d.shape()[0]); ++r) {
+        std::size_t nc = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
+        for (std::size_t r = 0; r < (d.Shape().empty() ? 0 : d.Shape()[0]); ++r) {
             os << tag;
             for (std::size_t c = 0; c < nc; ++c) {
                 std::snprintf(buf, sizeof(buf), " %.17g", detail::read_double(d, r * nc + c));
@@ -192,12 +211,12 @@ void write_obj(const std::string& path, const Mesh& mesh) {
     write_pd("obj:vn", "vn");
     write_pd("obj:vt", "vt");
 
-    for (const auto& cb : mesh.cells) {
-        std::size_t k = cb.data.shape().size() >= 2 ? cb.data.shape()[1] : 1;
-        for (std::size_t r = 0; r < cb.num_cells(); ++r) {
+    for (const auto& cb : rMesh.mCells) {
+        std::size_t k = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             os << 'f';
             for (std::size_t j = 0; j < k; ++j)
-                os << ' ' << (detail::read_int(cb.data, r * k + j) + 1);
+                os << ' ' << (detail::read_int(cb.mData, r * k + j) + 1);
             os << '\n';
         }
     }

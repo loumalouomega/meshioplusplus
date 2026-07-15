@@ -74,14 +74,14 @@ namespace meshioplusplus {
  * Refuses (via the shim) meshes carrying `mesh.info` entries or non-empty
  * `field_data`, and never handles the `.vol.gz` suffix.
  *
- * @param path filesystem path to the .vol file to create/overwrite
- * @param mesh the mesh to write
- * @param float_fmt coordinate format string (e.g. `".16e"`)
+ * @param rPath filesystem path to the .vol file to create/overwrite
+ * @param rMesh the mesh to write
+ * @param rFloatFmt coordinate format string (e.g. `".16e"`)
  * @throws WriteError on an unsupported cell type, mixed content this path
  *         doesn't implement, or a `.gz` path
  * @note reads `cell_data["netgen:index"]` if present
  */
-void write_netgen(const std::string& path, const Mesh& mesh, const std::string& float_fmt);
+void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
 
 /**
  * @brief Read a Netgen neutral mesh (.vol) file into a Mesh, ascii,
@@ -94,7 +94,7 @@ void write_netgen(const std::string& path, const Mesh& mesh, const std::string& 
  * node permutation. The single per-element region marker becomes
  * `cell_data["netgen:index"]`.
  *
- * @param path filesystem path to the .vol file to read
+ * @param rPath filesystem path to the .vol file to read
  * @return the read Mesh, with `cell_data["netgen:index"]` populated
  * @throws ReadError on `identifications`/`identificationtypes`,
  *         `materials`/`bcnames`/`cd2names`/`cd3names`, the two-line
@@ -102,6 +102,6 @@ void write_netgen(const std::string& path, const Mesh& mesh, const std::string& 
  *         a `.gz` path, or a malformed file — all of which route to the
  *         Python fallback
  */
-Mesh read_netgen(const std::string& path);
+Mesh read_netgen(const std::string& rPath);
 
 }  // namespace meshioplusplus

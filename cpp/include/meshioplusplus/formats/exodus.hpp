@@ -54,14 +54,14 @@ namespace meshioplusplus {
  * `tetra`), and point_data/cell_data as `vals_nod_var`/`vals_elem_var`
  * variables.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @throws WriteError if a cell block's type has no entry in the meshio++ ->
  *         Exodus type table, or if the connectivity dtype is unsupported
  * @note the shim only attempts this C++ path when `mesh.point_sets` is
  *       empty — the C++ writer has no support for Exodus node sets at all
  */
-void write_exodus(const std::string& path, const Mesh& mesh);
+void write_exodus(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read an Exodus II (netCDF classic) file.
@@ -79,7 +79,7 @@ void write_exodus(const std::string& path, const Mesh& mesh);
  * read (a warning is emitted if more exist, matching a known ParaView writer
  * limitation).
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh, with `mesh.point_sets` from node sets (1-based in
  *         file) and `mesh.info` from `info_records`/`qa_records`
  * @throws ReadError if a variable has an unsupported netCDF type, point-data
@@ -92,7 +92,7 @@ void write_exodus(const std::string& path, const Mesh& mesh);
  * @note point_data keys ending X/Y/Z or _R/_Z may be recombined into vector
  *       arrays; cell_data is split per cell block by node count
  */
-Mesh read_exodus(const std::string& path);
+Mesh read_exodus(const std::string& rPath);
 
 }  // namespace meshioplusplus
 

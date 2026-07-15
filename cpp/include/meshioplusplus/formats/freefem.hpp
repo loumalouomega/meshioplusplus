@@ -53,16 +53,16 @@ namespace meshioplusplus {
  * `repr()` precision in the Python writer — same effective precision,
  * different string form).
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
- * @throws WriteError if `mesh` is not 2D or 3D, or if it contains a cell
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @throws WriteError if `rMesh` is not 2D or 3D, or if it contains a cell
  *         type other than the two appropriate for its dimension (forcing
  *         the Python fallback, which performs a warn-and-skip instead of
  *         hard-failing)
  * @note reads/writes `point_data["freefem:ref"]` and
  *       `cell_data["freefem:ref"]`
  */
-void write_freefem(const std::string& path, const Mesh& mesh);
+void write_freefem(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a FreeFem++ .msh file.
@@ -72,7 +72,7 @@ void write_freefem(const std::string& path, const Mesh& mesh);
  * `n_el2` boundary-element rows (1-based connectivity, dimension-dependent
  * types as described in the file-level doc comment).
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh, with `point_data["freefem:ref"]` (per-vertex label)
  *         and `cell_data["freefem:ref"]` (per-element label, one array per
  *         cell block)
@@ -80,6 +80,6 @@ void write_freefem(const std::string& path, const Mesh& mesh);
  *         integers, the inferred vertex dimension isn't 2 or 3, or a
  *         vertex/element section is truncated
  */
-Mesh read_freefem(const std::string& path);
+Mesh read_freefem(const std::string& rPath);
 
 }  // namespace meshioplusplus

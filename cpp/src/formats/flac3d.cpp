@@ -39,22 +39,27 @@ namespace meshioplusplus {
 namespace {
 
 // meshio type -> simplified FLAC3D base type (zone = 3D, face = 2D), or "".
-std::string zone_key(const std::string& t) {
-    static const std::unordered_map<std::string, std::string> m = {
-        {"tetra", "tetra"},        {"tetra10", "tetra"},
-        {"pyramid", "pyramid"},    {"pyramid13", "pyramid"},
-        {"wedge", "wedge"},        {"wedge12", "wedge"},
-        {"wedge15", "wedge"},      {"wedge18", "wedge"},
-        {"hexahedron", "hexahedron"}, {"hexahedron20", "hexahedron"},
-        {"hexahedron24", "hexahedron"}, {"hexahedron27", "hexahedron"}};
-    auto it = m.find(t);
+std::string zone_key(const std::string& rT) {
+    static const std::unordered_map<std::string, std::string> m = {{"tetra", "tetra"},
+                                                                   {"tetra10", "tetra"},
+                                                                   {"pyramid", "pyramid"},
+                                                                   {"pyramid13", "pyramid"},
+                                                                   {"wedge", "wedge"},
+                                                                   {"wedge12", "wedge"},
+                                                                   {"wedge15", "wedge"},
+                                                                   {"wedge18", "wedge"},
+                                                                   {"hexahedron", "hexahedron"},
+                                                                   {"hexahedron20", "hexahedron"},
+                                                                   {"hexahedron24", "hexahedron"},
+                                                                   {"hexahedron27", "hexahedron"}};
+    auto it = m.find(rT);
     return it == m.end() ? std::string() : it->second;
 }
-std::string face_key(const std::string& t) {
+std::string face_key(const std::string& rT) {
     static const std::unordered_map<std::string, std::string> m = {
         {"triangle", "triangle"}, {"triangle6", "triangle"}, {"triangle7", "triangle"},
         {"quad", "quad"},         {"quad8", "quad"},         {"quad9", "quad"}};
-    auto it = m.find(t);
+    auto it = m.find(rT);
     return it == m.end() ? std::string() : it->second;
 }
 
@@ -65,97 +70,113 @@ const std::unordered_map<int, std::string>& numnodes_type(int dim) {
     return dim == 3 ? z : fc;
 }
 
-const char* flac3d_type(const std::string& key) {
-    if (key == "triangle") return "T3";
-    if (key == "quad") return "Q4";
-    if (key == "tetra") return "T4";
-    if (key == "pyramid") return "P5";
-    if (key == "wedge") return "W6";
+const char* flac3d_type(const std::string& rKey) {
+    if (rKey == "triangle")
+        return "T3";
+    if (rKey == "quad")
+        return "Q4";
+    if (rKey == "tetra")
+        return "T4";
+    if (rKey == "pyramid")
+        return "P5";
+    if (rKey == "wedge")
+        return "W6";
     return "B8";  // hexahedron
 }
 
-const std::vector<int>& f2m_order(const std::string& key) {
+const std::vector<int>& f2m_order(const std::string& rKey) {
     static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"triangle", {0, 1, 2}}, {"quad", {0, 1, 2, 3}}, {"tetra", {0, 1, 2, 3}},
-        {"pyramid", {0, 1, 4, 2, 3}}, {"wedge", {0, 1, 3, 2, 4, 5}},
-        {"hexahedron", {0, 1, 4, 2, 3, 6, 7, 5}}};
-    return m.at(key);
+        {"triangle", {0, 1, 2}},       {"quad", {0, 1, 2, 3}},
+        {"tetra", {0, 1, 2, 3}},       {"pyramid", {0, 1, 4, 2, 3}},
+        {"wedge", {0, 1, 3, 2, 4, 5}}, {"hexahedron", {0, 1, 4, 2, 3, 6, 7, 5}}};
+    return m.at(rKey);
 }
-const std::vector<int>& m2f_order(const std::string& key) {
+const std::vector<int>& m2f_order(const std::string& rKey) {
     static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"triangle", {0, 1, 2}}, {"quad", {0, 1, 2, 3}}, {"tetra", {0, 1, 2, 3}},
-        {"pyramid", {0, 1, 3, 4, 2}}, {"wedge", {0, 1, 3, 2, 4, 5}},
-        {"hexahedron", {0, 1, 3, 4, 2, 7, 5, 6}}};
-    return m.at(key);
+        {"triangle", {0, 1, 2}},       {"quad", {0, 1, 2, 3}},
+        {"tetra", {0, 1, 2, 3}},       {"pyramid", {0, 1, 3, 4, 2}},
+        {"wedge", {0, 1, 3, 2, 4, 5}}, {"hexahedron", {0, 1, 3, 4, 2, 7, 5, 6}}};
+    return m.at(rKey);
 }
-const std::vector<int>& m2f_order2(const std::string& key) {
+const std::vector<int>& m2f_order2(const std::string& rKey) {
     static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"tetra", {0, 2, 1, 3}}, {"pyramid", {0, 3, 1, 4, 2}},
-        {"wedge", {0, 2, 3, 1, 5, 4}}, {"hexahedron", {0, 3, 1, 4, 2, 5, 7, 6}}};
-    return m.at(key);
+        {"tetra", {0, 2, 1, 3}},
+        {"pyramid", {0, 3, 1, 4, 2}},
+        {"wedge", {0, 2, 3, 1, 5, 4}},
+        {"hexahedron", {0, 3, 1, 4, 2, 5, 7, 6}}};
+    return m.at(rKey);
 }
 
 // little-endian binary scalar I/O (host assumed little-endian)
-std::uint32_t ru32(std::istream& in) {
+std::uint32_t ru32(std::istream& rIn) {
     std::uint32_t v;
-    in.read(reinterpret_cast<char*>(&v), 4);
-    if (in.gcount() != 4) throw ReadError("FLAC3D: unexpected end of file");
+    rIn.read(reinterpret_cast<char*>(&v), 4);
+    if (rIn.gcount() != 4)
+        throw ReadError("FLAC3D: unexpected end of file");
     return v;
 }
-double rf64(std::istream& in) {
+double rf64(std::istream& rIn) {
     double v;
-    in.read(reinterpret_cast<char*>(&v), 8);
-    if (in.gcount() != 8) throw ReadError("FLAC3D: unexpected end of file");
+    rIn.read(reinterpret_cast<char*>(&v), 8);
+    if (rIn.gcount() != 8)
+        throw ReadError("FLAC3D: unexpected end of file");
     return v;
 }
-void wu32(std::ostream& os, std::uint32_t v) {
-    os.write(reinterpret_cast<const char*>(&v), 4);
+void wu32(std::ostream& rOs, std::uint32_t v) {
+    rOs.write(reinterpret_cast<const char*>(&v), 4);
 }
-void wf64(std::ostream& os, double v) { os.write(reinterpret_cast<const char*>(&v), 8); }
+void wf64(std::ostream& rOs, double v) {
+    rOs.write(reinterpret_cast<const char*>(&v), 8);
+}
 
 // Accumulating raw cell block: meshio node order will be applied later.
 struct RawBlock {
-    std::string type;                              // meshio type
-    std::vector<std::vector<std::int64_t>> rows;   // 0-based point indices
+    std::string mType;                             // meshio type
+    std::vector<std::vector<std::int64_t>> mRows;  // 0-based point indices
 };
 
-void add_cell(std::vector<RawBlock>& blocks, const std::string& type,
+void add_cell(std::vector<RawBlock>& rBlocks, const std::string& rType,
               std::vector<std::int64_t>&& cell) {
-    if (blocks.empty() || blocks.back().type != type)
-        blocks.push_back(RawBlock{type, {}});
-    blocks.back().rows.push_back(std::move(cell));
+    if (rBlocks.empty() || rBlocks.back().mType != rType)
+        rBlocks.push_back(RawBlock{rType, {}});
+    rBlocks.back().mRows.push_back(std::move(cell));
 }
 
-std::vector<std::string> split_ws(const std::string& s) {
+std::vector<std::string> split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(s);
+    std::istringstream iss(rS);
     std::string t;
-    while (iss >> t) out.push_back(t);
+    while (iss >> t)
+        out.push_back(t);
     return out;
 }
 
 }  // namespace
 
-Mesh read_flac3d(const std::string& path) {
+Mesh read_flac3d(const std::string& rPath) {
     // Sniff binary (a null byte in the first 8 bytes).
     bool binary = false;
     {
-        std::ifstream sniff(path, std::ios::binary);
-        if (!sniff) throw ReadError("Could not open file: " + path);
+        std::ifstream sniff(rPath, std::ios::binary);
+        if (!sniff)
+            throw ReadError("Could not open file: " + rPath);
         char block[8] = {0};
         sniff.read(block, 8);
         std::streamsize got = sniff.gcount();
         for (std::streamsize i = 0; i < got; ++i)
-            if (block[i] == '\0') { binary = true; break; }
+            if (block[i] == '\0') {
+                binary = true;
+                break;
+            }
     }
 
-    std::vector<double> points;            // flat xyz
+    std::vector<double> points;                                // flat xyz
     std::unordered_map<std::int64_t, std::int64_t> point_ids;  // file id -> index
     std::vector<RawBlock> z_blocks, f_blocks;
     std::vector<std::int64_t> z_ids, f_ids;
 
     if (binary) {
-        std::ifstream in(path, std::ios::binary);
+        std::ifstream in(rPath, std::ios::binary);
         char hdr[8];
         in.read(hdr, 8);  // unknown header
         std::uint32_t num_nodes = ru32(in);
@@ -180,7 +201,8 @@ Mesh read_flac3d(const std::string& path) {
                 std::vector<std::int64_t> cell(nv);
                 for (std::uint32_t j = 0; j < nv; ++j)
                     cell[j] = point_ids.at(ru32(in));
-                if (nv == 7) cell.push_back(cell.back());
+                if (nv == 7)
+                    cell.push_back(cell.back());
                 auto it = tmap.find(static_cast<int>(cell.size()));
                 if (it == tmap.end())
                     throw ReadError("FLAC3D: bad cell node count");
@@ -192,11 +214,12 @@ Mesh read_flac3d(const std::string& path) {
                 throw ReadError("FLAC3D: cell groups handled by Python fallback");
         }
     } else {
-        std::ifstream in(path, std::ios::binary);
+        std::ifstream in(rPath, std::ios::binary);
         std::string line;
         while (std::getline(in, line)) {
             std::vector<std::string> s = split_ws(line);
-            if (s.empty()) continue;
+            if (s.empty())
+                continue;
             if (s[0] == "G") {
                 std::int64_t pid = std::strtoll(s[1].c_str(), nullptr, 10);
                 point_ids[pid] = static_cast<std::int64_t>(points.size() / 3);
@@ -209,12 +232,19 @@ Mesh read_flac3d(const std::string& path) {
                 std::vector<std::int64_t> cell;
                 for (std::size_t j = 3; j < s.size(); ++j)
                     cell.push_back(point_ids.at(std::strtoll(s[j].c_str(), nullptr, 10)));
-                if (is_b7) cell.push_back(cell.back());
+                if (is_b7)
+                    cell.push_back(cell.back());
                 const auto& tmap = numnodes_type(dim);
                 auto it = tmap.find(static_cast<int>(cell.size()));
-                if (it == tmap.end()) throw ReadError("FLAC3D: bad cell node count");
-                if (dim == 3) { z_ids.push_back(cid); add_cell(z_blocks, it->second, std::move(cell)); }
-                else { f_ids.push_back(cid); add_cell(f_blocks, it->second, std::move(cell)); }
+                if (it == tmap.end())
+                    throw ReadError("FLAC3D: bad cell node count");
+                if (dim == 3) {
+                    z_ids.push_back(cid);
+                    add_cell(z_blocks, it->second, std::move(cell));
+                } else {
+                    f_ids.push_back(cid);
+                    add_cell(f_blocks, it->second, std::move(cell));
+                }
             } else if (s[0] == "ZGROUP" || s[0] == "FGROUP") {
                 throw ReadError("FLAC3D: cell groups handled by Python fallback");
             }
@@ -225,22 +255,22 @@ Mesh read_flac3d(const std::string& path) {
     // Assemble: faces first, then zones (matching the Python reader).
     Mesh mesh;
     const std::int64_t npoints = static_cast<std::int64_t>(points.size() / 3);
-    mesh.points = NDArray(DType::Float64, {static_cast<std::size_t>(npoints), 3});
-    std::memcpy(mesh.points.data(), points.data(), points.size() * sizeof(double));
+    mesh.mPoints = NDArray(DType::Float64, {static_cast<std::size_t>(npoints), 3});
+    std::memcpy(mesh.mPoints.Data(), points.data(), points.size() * sizeof(double));
 
     std::vector<std::size_t> block_sizes;
     auto emit = [&](std::vector<RawBlock>& blocks) {
         for (auto& b : blocks) {
-            const std::vector<int>& ord = f2m_order(zone_key(b.type).empty()
-                                                        ? face_key(b.type)
-                                                        : zone_key(b.type));
-            std::size_t n = b.rows.size();
+            const std::vector<int>& ord =
+                f2m_order(zone_key(b.mType).empty() ? face_key(b.mType) : zone_key(b.mType));
+            std::size_t n = b.mRows.size();
             std::size_t k = ord.size();
             NDArray data(DType::Int64, {n, k});
-            std::int64_t* dp = data.as<std::int64_t>();
+            std::int64_t* dp = data.As<std::int64_t>();
             for (std::size_t r = 0; r < n; ++r)
-                for (std::size_t j = 0; j < k; ++j) dp[r * k + j] = b.rows[r][ord[j]];
-            mesh.cells.emplace_back(b.type, std::move(data));
+                for (std::size_t j = 0; j < k; ++j)
+                    dp[r * k + j] = b.mRows[r][ord[j]];
+            mesh.mCells.emplace_back(b.mType, std::move(data));
             block_sizes.push_back(n);
         }
     };
@@ -248,22 +278,25 @@ Mesh read_flac3d(const std::string& path) {
     emit(z_blocks);
 
     // Global cell ids -> cell_data["cell_ids"], split per block.
-    if (!mesh.cells.empty()) {
+    if (!mesh.mCells.empty()) {
         std::int64_t z_offset = static_cast<std::int64_t>(f_ids.size());
         std::vector<std::int64_t> all_ids;
         all_ids.reserve(f_ids.size() + z_ids.size());
-        for (auto v : f_ids) all_ids.push_back(v);
-        for (auto v : z_ids) all_ids.push_back(v + z_offset);
+        for (auto v : f_ids)
+            all_ids.push_back(v);
+        for (auto v : z_ids)
+            all_ids.push_back(v + z_offset);
 
         std::vector<NDArray> id_blocks;
         std::size_t off = 0;
         for (std::size_t sz : block_sizes) {
             NDArray a(DType::Int64, {sz});
-            for (std::size_t r = 0; r < sz; ++r) a.as<std::int64_t>()[r] = all_ids[off + r];
+            for (std::size_t r = 0; r < sz; ++r)
+                a.As<std::int64_t>()[r] = all_ids[off + r];
             off += sz;
             id_blocks.push_back(std::move(a));
         }
-        mesh.cell_data.emplace("cell_ids", std::move(id_blocks));
+        mesh.mCellData.emplace("cell_ids", std::move(id_blocks));
     }
 
     return mesh;
@@ -273,17 +306,17 @@ namespace {
 
 // Reorder one zone cell to FLAC3D order, choosing the right-handed permutation
 // via the scalar triple product of the first four ordered corners.
-std::vector<std::int64_t> zone_cell_flac3d(const NDArray& points, const NDArray& data,
-                                           std::size_t row, const std::string& key) {
-    const std::vector<int>& o1 = m2f_order(key);
-    const std::vector<int>& o2 = m2f_order2(key);
-    const std::size_t ncols = detail::cols(data);
+std::vector<std::int64_t> zone_cell_flac3d(const NDArray& rPoints, const NDArray& rData,
+                                           std::size_t row, const std::string& rKey) {
+    const std::vector<int>& o1 = m2f_order(rKey);
+    const std::vector<int>& o2 = m2f_order2(rKey);
+    const std::size_t ncols = detail::cols(rData);
 
     auto node = [&](int local) -> std::int64_t {
-        return detail::read_int(data, row * ncols + local);
+        return detail::read_int(rData, row * ncols + local);
     };
     auto coord = [&](std::int64_t p, int c) -> double {
-        return detail::read_double(points, static_cast<std::size_t>(p) * 3 + c);
+        return detail::read_double(rPoints, static_cast<std::size_t>(p) * 3 + c);
     };
 
     // first four corners in FLAC3D order
@@ -301,27 +334,30 @@ std::vector<std::int64_t> zone_cell_flac3d(const NDArray& points, const NDArray&
 
     const std::vector<int>& ord = (det > 0) ? o1 : o2;
     std::vector<std::int64_t> out(ord.size());
-    for (std::size_t j = 0; j < ord.size(); ++j) out[j] = node(ord[j]);
+    for (std::size_t j = 0; j < ord.size(); ++j)
+        out[j] = node(ord[j]);
     return out;
 }
 
 }  // namespace
 
-void write_flac3d(const std::string& path, const Mesh& mesh,
-                  const std::string& float_fmt, bool binary) {
+void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
+                  bool binary) {
     // Split blocks by FLAC3D category.
     std::vector<std::size_t> zone_idx, face_idx;
-    for (std::size_t i = 0; i < mesh.cells.size(); ++i) {
-        if (!zone_key(mesh.cells[i].type).empty()) zone_idx.push_back(i);
-        else if (!face_key(mesh.cells[i].type).empty()) face_idx.push_back(i);
+    for (std::size_t i = 0; i < rMesh.mCells.size(); ++i) {
+        if (!zone_key(rMesh.mCells[i].mType).empty())
+            zone_idx.push_back(i);
+        else if (!face_key(rMesh.mCells[i].mType).empty())
+            face_idx.push_back(i);
     }
 
-    std::ofstream f(path, std::ios::binary);
-    if (!f) throw WriteError("Could not open file for writing: " + path);
+    std::ofstream f(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t npts = mesh.num_points();
-    const std::size_t pdim =
-        mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
+    const std::size_t npts = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
 
     if (binary) {
         wu32(f, 1375135718u);
@@ -332,48 +368,51 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
             wu32(f, static_cast<std::uint32_t>(i + 1));
             for (int c = 0; c < 3; ++c)
                 wf64(f, c < static_cast<int>(pdim)
-                            ? detail::read_double(mesh.points, i * pdim + c)
+                            ? detail::read_double(rMesh.mPoints, i * pdim + c)
                             : 0.0);
         }
         std::uint32_t gid = 0;
         // zones
         std::uint32_t nz = 0;
-        for (auto i : zone_idx) nz += static_cast<std::uint32_t>(mesh.cells[i].num_cells());
+        for (auto i : zone_idx)
+            nz += static_cast<std::uint32_t>(rMesh.mCells[i].NumCells());
         wu32(f, nz);
         for (auto i : zone_idx) {
-            const CellBlock& cb = mesh.cells[i];
-            std::string key = zone_key(cb.type);
-            std::size_t n = cb.num_cells();
+            const CellBlock& cb = rMesh.mCells[i];
+            std::string key = zone_key(cb.mType);
+            std::size_t n = cb.NumCells();
             // Right-handed reorder per row is independent -> compute in
             // parallel, then stream sequentially.
             std::vector<std::vector<std::int64_t>> zcells(n);
             parallel_for(n, [&](std::size_t r) {
-                zcells[r] = zone_cell_flac3d(mesh.points, cb.data, r, key);
+                zcells[r] = zone_cell_flac3d(rMesh.mPoints, cb.mData, r, key);
             });
             for (std::size_t r = 0; r < n; ++r) {
                 const auto& cell = zcells[r];
                 wu32(f, ++gid);
                 wu32(f, static_cast<std::uint32_t>(cell.size()));
-                for (auto v : cell) wu32(f, static_cast<std::uint32_t>(v + 1));
+                for (auto v : cell)
+                    wu32(f, static_cast<std::uint32_t>(v + 1));
             }
         }
         wu32(f, 0u);  // zone groups
         // faces
         std::uint32_t nf = 0;
-        for (auto i : face_idx) nf += static_cast<std::uint32_t>(mesh.cells[i].num_cells());
+        for (auto i : face_idx)
+            nf += static_cast<std::uint32_t>(rMesh.mCells[i].NumCells());
         wu32(f, nf);
         for (auto i : face_idx) {
-            const CellBlock& cb = mesh.cells[i];
-            std::string key = face_key(cb.type);
+            const CellBlock& cb = rMesh.mCells[i];
+            std::string key = face_key(cb.mType);
             const std::vector<int>& ord = m2f_order(key);
-            std::size_t n = cb.num_cells();
-            std::size_t ncols = detail::cols(cb.data);
+            std::size_t n = cb.NumCells();
+            std::size_t ncols = detail::cols(cb.mData);
             for (std::size_t r = 0; r < n; ++r) {
                 wu32(f, ++gid);
                 wu32(f, static_cast<std::uint32_t>(ord.size()));
                 for (int local : ord)
                     wu32(f, static_cast<std::uint32_t>(
-                                detail::read_int(cb.data, r * ncols + local) + 1));
+                                detail::read_int(cb.mData, r * ncols + local) + 1));
             }
         }
         wu32(f, 0u);  // face groups
@@ -387,10 +426,9 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
     for (std::size_t i = 0; i < npts; ++i) {
         f << "G\t" << (i + 1) << "\t";
         for (int c = 0; c < 3; ++c) {
-            double v = c < static_cast<int>(pdim)
-                           ? detail::read_double(mesh.points, i * pdim + c)
-                           : 0.0;
-            std::snprintf(buf, sizeof(buf), ("%" + float_fmt).c_str(), v);
+            double v =
+                c < static_cast<int>(pdim) ? detail::read_double(rMesh.mPoints, i * pdim + c) : 0.0;
+            std::snprintf(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
             f << buf << (c == 2 ? '\n' : '\t');
         }
     }
@@ -398,19 +436,20 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
     std::int64_t gid = 0;
     f << "* ZONES\n";
     for (auto i : zone_idx) {
-        const CellBlock& cb = mesh.cells[i];
-        std::string key = zone_key(cb.type);
+        const CellBlock& cb = rMesh.mCells[i];
+        std::string key = zone_key(cb.mType);
         const char* abbr = flac3d_type(key);
-        std::size_t n = cb.num_cells();
+        std::size_t n = cb.NumCells();
         // Right-handed reorder per row is independent -> compute in parallel,
         // then stream sequentially.
         std::vector<std::vector<std::int64_t>> zcells(n);
         parallel_for(n, [&](std::size_t r) {
-            zcells[r] = zone_cell_flac3d(mesh.points, cb.data, r, key);
+            zcells[r] = zone_cell_flac3d(rMesh.mPoints, cb.mData, r, key);
         });
         for (std::size_t r = 0; r < n; ++r) {
             f << "Z " << abbr << " " << (++gid);
-            for (auto v : zcells[r]) f << " " << (v + 1);
+            for (auto v : zcells[r])
+                f << " " << (v + 1);
             f << "\n";
         }
     }
@@ -418,16 +457,16 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
 
     f << "* FACES\n";
     for (auto i : face_idx) {
-        const CellBlock& cb = mesh.cells[i];
-        std::string key = face_key(cb.type);
+        const CellBlock& cb = rMesh.mCells[i];
+        std::string key = face_key(cb.mType);
         const char* abbr = flac3d_type(key);
         const std::vector<int>& ord = m2f_order(key);
-        std::size_t n = cb.num_cells();
-        std::size_t ncols = detail::cols(cb.data);
+        std::size_t n = cb.NumCells();
+        std::size_t ncols = detail::cols(cb.mData);
         for (std::size_t r = 0; r < n; ++r) {
             f << "F " << abbr << " " << (++gid);
             for (int local : ord)
-                f << " " << (detail::read_int(cb.data, r * ncols + local) + 1);
+                f << " " << (detail::read_int(cb.mData, r * ncols + local) + 1);
             f << "\n";
         }
     }

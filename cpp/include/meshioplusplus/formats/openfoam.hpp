@@ -77,7 +77,7 @@ struct OpenFoamInfo {
      * names through the same family mechanism used for Gmsh physical
      * groups (see doc/formats/med.md).
      */
-    std::map<std::int64_t, std::vector<std::string>> cell_tags;
+    std::map<std::int64_t, std::vector<std::string>> mCellTags;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh
@@ -98,8 +98,8 @@ struct OpenFoamInfo {
  * resolve are silently skipped (logged as a warning count) rather than
  * demoted to a general polyhedron.
  *
- * @param path a `.foam` file, case directory, or polyMesh directory
- * @param info output side-channel struct populated with boundary-patch
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rInfo output side-channel struct populated with boundary-patch
  *        family ids and names (see #OpenFoamInfo)
  * @return the read Mesh: points, volume + boundary cell blocks,
  *         `cell_data["cell_tags"]` (0 for volume blocks, a per-patch
@@ -112,6 +112,6 @@ struct OpenFoamInfo {
  *         callers (the Python shim) catch this and retry with the
  *         pure-Python reader
  */
-Mesh read_openfoam(const std::string& path, OpenFoamInfo& info);
+Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
 
 }  // namespace meshioplusplus

@@ -66,8 +66,8 @@ inline std::uint32_t bswap32(std::uint32_t v) {
 #elif defined(__GNUC__) || defined(__clang__)
     return __builtin_bswap32(v);
 #else
-    return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
-           ((v & 0x00FF0000u) >> 8) | ((v & 0xFF000000u) >> 24);
+    return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) | ((v & 0x00FF0000u) >> 8) |
+           ((v & 0xFF000000u) >> 24);
 #endif
 }
 
@@ -102,41 +102,44 @@ inline std::uint64_t bswap64(std::uint64_t v) {
  *          degrades to a plain copy, since a single byte has no order to
  *          reverse).
  */
-inline void bswap_copy(char* dst, const char* src, int n) {
+inline void bswap_copy(char* pDst, const char* pSrc, int n) {
     switch (n) {
         case 8: {
             std::uint64_t v;
-            std::memcpy(&v, src, 8);
+            std::memcpy(&v, pSrc, 8);
             v = bswap64(v);
-            std::memcpy(dst, &v, 8);
+            std::memcpy(pDst, &v, 8);
             break;
         }
         case 4: {
             std::uint32_t v;
-            std::memcpy(&v, src, 4);
+            std::memcpy(&v, pSrc, 4);
             v = bswap32(v);
-            std::memcpy(dst, &v, 4);
+            std::memcpy(pDst, &v, 4);
             break;
         }
         case 2: {
             std::uint16_t v;
-            std::memcpy(&v, src, 2);
+            std::memcpy(&v, pSrc, 2);
             v = bswap16(v);
-            std::memcpy(dst, &v, 2);
+            std::memcpy(pDst, &v, 2);
             break;
         }
         default:  // n == 1 (or unexpected): plain copy
-            if (dst != src) std::memcpy(dst, src, static_cast<std::size_t>(n));
+            if (pDst != pSrc)
+                std::memcpy(pDst, pSrc, static_cast<std::size_t>(n));
             break;
     }
 }
 
 /**
  * @brief In-place variant of `bswap_copy`: reverses `n` bytes at `p`.
- * @param p Buffer to reverse in place, at least `n` bytes.
+ * @param pP Buffer to reverse in place, at least `n` bytes.
  * @param n Element width in bytes: 1, 2, 4, or 8.
  */
-inline void bswap_inplace(char* p, int n) { bswap_copy(p, p, n); }
+inline void bswap_inplace(char* pP, int n) {
+    bswap_copy(pP, pP, n);
+}
 
 }  // namespace detail
 }  // namespace meshioplusplus

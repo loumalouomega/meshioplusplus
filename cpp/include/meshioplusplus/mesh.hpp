@@ -54,65 +54,65 @@ namespace meshioplusplus {
 /**
  * @brief One homogeneous block of cells of a single meshio cell type.
  *
- * Mirrors a Python `meshio.CellBlock`. Most blocks are *rectangular*: `data`
+ * Mirrors a Python `meshio.CellBlock`. Most blocks are *rectangular*: `mData`
  * is a `(num_cells, nodes_per_cell)` integer `NDArray` of node indices.
  * Some formats, however, produce cells that cannot be described by a fixed
  * nodes-per-cell count, so `CellBlock` also carries two optional *ragged*
  * (jagged) representations:
  *
- *  - `polygon_rows` — 1-level ragged: a `"polygon"` block whose cells have
+ *  - `mPolygonRows` — 1-level ragged: a `"polygon"` block whose cells have
  *    varying node counts (e.g. MED POG Voronoi meshes). Row `i` is the list
  *    of node ids for cell `i`.
- *  - `polyhedron_rows` — 2-level ragged: a `"polyhedron"` block. Cell `i` is
+ *  - `mPolyhedronRows` — 2-level ragged: a `"polyhedron"` block. Cell `i` is
  *    a list of faces, each face itself a list of node ids.
  *
- * Exactly one of `data`, `polygon_rows`, `polyhedron_rows` is populated per
- * block (see `is_ragged()`); the unused members are left empty, so ordinary
+ * Exactly one of `mData`, `mPolygonRows`, `mPolyhedronRows` is populated per
+ * block (see `IsRagged()`); the unused members are left empty, so ordinary
  * rectangular blocks (the overwhelming majority) are unaffected. Zero-copy
  * numpy conversion at the binding boundary only applies to the rectangular
- * `data` case — ragged blocks are always *copied* across the boundary, and
+ * `mData` case — ragged blocks are always *copied* across the boundary, and
  * `py_to_mesh`'s `allow_ragged` flag is off by default so a rectangular-only
  * writer given a ragged mesh safely throws and triggers the Python fallback;
  * only ragged-aware bindings (e.g. MED write) opt in.
  */
 struct CellBlock {
-    std::string type;                  // meshio cell type, e.g. "triangle"
-    NDArray data;                      // (num_cells, nodes_per_cell), integer dtype
-    std::vector<std::string> tags;
+    std::string mType;  // meshio cell type, e.g. "triangle"
+    NDArray mData;      // (num_cells, nodes_per_cell), integer dtype
+    std::vector<std::string> mTags;
 
     // Ragged (jagged) representations, used only for cell types whose rows do
-    // not fit a rectangular buffer. Exactly one of `data` / `polygon_rows` /
-    // `polyhedron_rows` is populated per block; the two ragged members are
+    // not fit a rectangular buffer. Exactly one of `mData` / `mPolygonRows` /
+    // `mPolyhedronRows` is populated per block; the two ragged members are
     // empty for every rectangular block (all rectangular formats unaffected).
     //
-    //  * polygon_rows    — 1-level ragged: a "polygon" block whose cells have
+    //  * mPolygonRows    — 1-level ragged: a "polygon" block whose cells have
     //                      varying node counts (e.g. MED POG Voronoi meshes).
-    //                      Row i = polygon_rows[i] = node ids of cell i.
-    //  * polyhedron_rows — 2-level ragged: a "polyhedron" block. Cell i is a
+    //                      Row i = mPolygonRows[i] = node ids of cell i.
+    //  * mPolyhedronRows — 2-level ragged: a "polyhedron" block. Cell i is a
     //                      list of faces; each face is a list of node ids.
-    std::vector<std::vector<std::int64_t>> polygon_rows;
-    std::vector<std::vector<std::vector<std::int64_t>>> polyhedron_rows;
+    std::vector<std::vector<std::int64_t>> mPolygonRows;
+    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronRows;
 
     CellBlock() = default;
-    CellBlock(std::string t, NDArray d) : type(std::move(t)), data(std::move(d)) {}
+    CellBlock(std::string t, NDArray d) : mType(std::move(t)), mData(std::move(d)) {}
 
     /**
      * @brief Whether this block uses one of the ragged representations.
-     * @return `true` iff `polygon_rows` or `polyhedron_rows` is non-empty.
+     * @return `true` iff `mPolygonRows` or `mPolyhedronRows` is non-empty.
      */
-    bool is_ragged() const {
-        return !polygon_rows.empty() || !polyhedron_rows.empty();
-    }
+    bool IsRagged() const { return !mPolygonRows.empty() || !mPolyhedronRows.empty(); }
 
     /**
      * @brief Number of cells in this block, whichever representation is active.
-     * @return `polygon_rows.size()`, else `polyhedron_rows.size()`, else the
-     *         first dimension of `data` (0 if `data` has no shape).
+     * @return `mPolygonRows.size()`, else `mPolyhedronRows.size()`, else the
+     *         first dimension of `mData` (0 if `mData` has no shape).
      */
-    std::size_t num_cells() const {
-        if (!polygon_rows.empty()) return polygon_rows.size();
-        if (!polyhedron_rows.empty()) return polyhedron_rows.size();
-        return data.shape().empty() ? 0 : data.shape()[0];
+    std::size_t NumCells() const {
+        if (!mPolygonRows.empty())
+            return mPolygonRows.size();
+        if (!mPolyhedronRows.empty())
+            return mPolyhedronRows.size();
+        return mData.Shape().empty() ? 0 : mData.Shape()[0];
     }
 };
 
@@ -127,24 +127,22 @@ struct CellBlock {
  * when needed, through a per-format side-channel struct instead).
  */
 struct Mesh {
-    NDArray points;                                         // (num_points, dim)
-    std::vector<CellBlock> cells;
+    NDArray mPoints;  // (num_points, dim)
+    std::vector<CellBlock> mCells;
 
-    // Field data. cell_data holds one NDArray per cell block, in cells order.
+    // Field data. mCellData holds one NDArray per cell block, in mCells order.
     // These are unordered_map for O(1) name lookup; where key *order* is
     // observable (Python dict order, on-disk field order) call
     // detail::sorted_keys (map_order.hpp) at the consumption site.
-    std::unordered_map<std::string, NDArray> point_data;
-    std::unordered_map<std::string, std::vector<NDArray>> cell_data;
-    std::unordered_map<std::string, NDArray> field_data;
+    std::unordered_map<std::string, NDArray> mPointData;
+    std::unordered_map<std::string, std::vector<NDArray>> mCellData;
+    std::unordered_map<std::string, NDArray> mFieldData;
 
     /**
      * @brief Number of points in the mesh.
-     * @return The first dimension of `points.shape()`, or 0 if unset.
+     * @return The first dimension of `mPoints.Shape()`, or 0 if unset.
      */
-    std::size_t num_points() const {
-        return points.shape().empty() ? 0 : points.shape()[0];
-    }
+    std::size_t NumPoints() const { return mPoints.Shape().empty() ? 0 : mPoints.Shape()[0]; }
 };
 
 }  // namespace meshioplusplus

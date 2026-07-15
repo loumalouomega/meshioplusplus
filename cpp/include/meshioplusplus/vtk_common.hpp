@@ -107,8 +107,9 @@ inline const std::unordered_map<std::string, int>& meshio_to_vtk_type() {
  * @return `result[j]` = the meshio-order index to place at VTK-order
  *         position `j`; empty if the ordering is already identical.
  */
-inline std::vector<int> meshio_to_vtk_order(const std::string& meshio_type) {
-    if (meshio_type == "wedge") return {0, 2, 1, 3, 5, 4};
+inline std::vector<int> meshio_to_vtk_order(const std::string& rMeshioType) {
+    if (rMeshioType == "wedge")
+        return {0, 2, 1, 3, 5, 4};
     return {};
 }
 
@@ -125,23 +126,48 @@ inline std::vector<int> meshio_to_vtk_order(const std::string& meshio_type) {
  */
 inline const std::unordered_map<int, std::string>& vtk_to_meshio_type() {
     static const std::unordered_map<int, std::string> m = {
-        {0, "empty"},        {1, "vertex"},     {3, "line"},
-        {5, "triangle"},     {7, "polygon"},    {8, "pixel"},
-        {9, "quad"},         {10, "tetra"},     {12, "hexahedron"},
-        {13, "wedge"},       {14, "pyramid"},   {15, "penta_prism"},
-        {16, "hexa_prism"},  {21, "line3"},     {22, "triangle6"},
-        {23, "quad8"},       {24, "tetra10"},   {25, "hexahedron20"},
-        {26, "wedge15"},     {27, "pyramid13"}, {28, "quad9"},
-        {29, "hexahedron27"},{30, "quad6"},     {31, "wedge12"},
-        {32, "wedge18"},     {33, "hexahedron24"}, {34, "triangle7"},
-        {35, "line4"},       {42, "polyhedron"},
-        {68, "VTK_LAGRANGE_CURVE"},        {69, "VTK_LAGRANGE_TRIANGLE"},
-        {70, "VTK_LAGRANGE_QUADRILATERAL"},{71, "VTK_LAGRANGE_TETRAHEDRON"},
-        {72, "VTK_LAGRANGE_HEXAHEDRON"},   {73, "VTK_LAGRANGE_WEDGE"},
+        {0, "empty"},
+        {1, "vertex"},
+        {3, "line"},
+        {5, "triangle"},
+        {7, "polygon"},
+        {8, "pixel"},
+        {9, "quad"},
+        {10, "tetra"},
+        {12, "hexahedron"},
+        {13, "wedge"},
+        {14, "pyramid"},
+        {15, "penta_prism"},
+        {16, "hexa_prism"},
+        {21, "line3"},
+        {22, "triangle6"},
+        {23, "quad8"},
+        {24, "tetra10"},
+        {25, "hexahedron20"},
+        {26, "wedge15"},
+        {27, "pyramid13"},
+        {28, "quad9"},
+        {29, "hexahedron27"},
+        {30, "quad6"},
+        {31, "wedge12"},
+        {32, "wedge18"},
+        {33, "hexahedron24"},
+        {34, "triangle7"},
+        {35, "line4"},
+        {42, "polyhedron"},
+        {68, "VTK_LAGRANGE_CURVE"},
+        {69, "VTK_LAGRANGE_TRIANGLE"},
+        {70, "VTK_LAGRANGE_QUADRILATERAL"},
+        {71, "VTK_LAGRANGE_TETRAHEDRON"},
+        {72, "VTK_LAGRANGE_HEXAHEDRON"},
+        {73, "VTK_LAGRANGE_WEDGE"},
         {74, "VTK_LAGRANGE_PYRAMID"},
-        {75, "VTK_BEZIER_CURVE"},          {76, "VTK_BEZIER_TRIANGLE"},
-        {77, "VTK_BEZIER_QUADRILATERAL"},  {78, "VTK_BEZIER_TETRAHEDRON"},
-        {79, "VTK_BEZIER_HEXAHEDRON"},     {80, "VTK_BEZIER_WEDGE"},
+        {75, "VTK_BEZIER_CURVE"},
+        {76, "VTK_BEZIER_TRIANGLE"},
+        {77, "VTK_BEZIER_QUADRILATERAL"},
+        {78, "VTK_BEZIER_TETRAHEDRON"},
+        {79, "VTK_BEZIER_HEXAHEDRON"},
+        {80, "VTK_BEZIER_WEDGE"},
         {81, "VTK_BEZIER_PYRAMID"},
     };
     return m;
@@ -159,7 +185,8 @@ inline const std::unordered_map<int, std::string>& vtk_to_meshio_type() {
  *         position `j`; empty if the ordering is already identical.
  */
 inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
-    if (vtk_type == 13) return {0, 2, 1, 3, 5, 4};
+    if (vtk_type == 13)
+        return {0, 2, 1, 3, 5, 4};
     return {};
 }
 
@@ -175,8 +202,8 @@ inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
  * @param meshio_type The meshio cell-type name to test.
  * @return `true` if `meshio_type` needs offsets-based reconstruction.
  */
-inline bool is_special_cell(const std::string& meshio_type) {
-    return meshio_type == "polygon" || meshio_type.rfind("VTK_LAGRANGE_", 0) == 0;
+inline bool is_special_cell(const std::string& rMeshioType) {
+    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0;
 }
 
 }  // namespace meshioplusplus

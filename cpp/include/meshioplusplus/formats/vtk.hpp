@@ -74,8 +74,8 @@ namespace meshioplusplus {
  * `wedge` cells are permuted `[0,2,1,3,5,4]` to VTK's node order; every other
  * type is written in meshio++'s natural order.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @param binary true for big-endian binary numeric data, false for ascii
  * @param v51 true selects the version 5.1 `OFFSETS`+`CONNECTIVITY` `CELLS`
  *        layout, false selects the legacy 4.2 interleaved `[n,p0,...]`
@@ -86,7 +86,7 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `SCALARS`/`VECTORS`/
  *       `TENSORS`/`FIELD` blocks; no reserved key names.
  */
-void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51);
+void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v51);
 
 /**
  * @brief Read a VTK legacy file.
@@ -98,7 +98,7 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
  * discarded (only to advance the file cursor correctly). `LOOKUP_TABLE`
  * entries after a `SCALARS` line are consumed but discarded.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh
  * @throws ReadError if `DATASET` is anything other than
  *         `UNSTRUCTURED_GRID` (structured points/grid, rectilinear grid all
@@ -109,6 +109,6 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
  *       `TENSORS`/`FIELD` blocks; `point_sets`/`cell_sets` round-trip as
  *       extra data arrays (5.1 files only), same convention as VTU.
  */
-Mesh read_vtk(const std::string& path);
+Mesh read_vtk(const std::string& rPath);
 
 }  // namespace meshioplusplus

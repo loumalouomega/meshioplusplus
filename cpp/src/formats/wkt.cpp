@@ -36,11 +36,12 @@ namespace meshioplusplus {
 
 namespace {
 
-std::vector<double> parse_point(const std::string& s) {
+std::vector<double> parse_point(const std::string& rS) {
     std::vector<double> p;
-    std::istringstream iss(s);
+    std::istringstream iss(rS);
     std::string tok;
-    while (iss >> tok) p.push_back(std::strtod(tok.c_str(), nullptr));
+    while (iss >> tok)
+        p.push_back(std::strtod(tok.c_str(), nullptr));
     return p;
 }
 
@@ -48,10 +49,10 @@ std::vector<double> parse_point(const std::string& s) {
 // +0.0 and -0.0 to the same hash, matching operator== equality) combined
 // boost-style, so equal coordinate vectors always hash equal.
 struct CoordHash {
-    std::size_t operator()(const std::vector<double>& v) const {
-        std::size_t h = v.size();
+    std::size_t operator()(const std::vector<double>& rV) const {
+        std::size_t h = rV.size();
         std::hash<double> hd;
-        for (double x : v)
+        for (double x : rV)
             h ^= hd(x) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         return h;
     }
@@ -59,18 +60,20 @@ struct CoordHash {
 
 }  // namespace
 
-Mesh read_wkt(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) throw ReadError("Could not open file: " + path);
+Mesh read_wkt(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
     std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 
     // Must be a TIN.
     std::size_t tin = s.find("TIN");
-    if (tin == std::string::npos) throw ReadError("Invalid WKT TIN");
+    if (tin == std::string::npos)
+        throw ReadError("Invalid WKT TIN");
 
     std::unordered_map<std::vector<double>, std::int64_t, CoordHash>
-        point_index;  // exact-value dedup
-    std::vector<std::vector<double>> points;                  // insertion order
+        point_index;                          // exact-value dedup
+    std::vector<std::vector<double>> points;  // insertion order
     std::vector<std::array<std::int64_t, 3>> tris;
 
     // Each triangle's linestring lives at parenthesis depth 3
@@ -85,9 +88,15 @@ Mesh read_wkt(const std::string& path) {
             char c = s[i];
             if (c == '(') {
                 ++depth;
-                if (depth == 3) { capturing = true; cur.clear(); }
+                if (depth == 3) {
+                    capturing = true;
+                    cur.clear();
+                }
             } else if (c == ')') {
-                if (depth == 3) { capturing = false; triangle_strs.push_back(cur); }
+                if (depth == 3) {
+                    capturing = false;
+                    triangle_strs.push_back(cur);
+                }
                 --depth;
             } else if (capturing) {
                 cur += c;
@@ -101,8 +110,8 @@ Mesh read_wkt(const std::string& path) {
         std::size_t start = 0;
         while (start <= inner.size()) {
             std::size_t comma = inner.find(',', start);
-            std::string part = inner.substr(
-                start, comma == std::string::npos ? std::string::npos : comma - start);
+            std::string part =
+                inner.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
             std::vector<double> pt = parse_point(part);
             if (!pt.empty()) {
                 auto it = point_index.find(pt);
@@ -116,7 +125,8 @@ Mesh read_wkt(const std::string& path) {
                 }
                 idxs.push_back(id);
             }
-            if (comma == std::string::npos) break;
+            if (comma == std::string::npos)
+                break;
             start = comma + 1;
         }
 
@@ -128,37 +138,42 @@ Mesh read_wkt(const std::string& path) {
     // Points: all must share a dimensionality.
     std::size_t dim = points.empty() ? 3 : points.front().size();
     for (const auto& p : points)
-        if (p.size() != dim) throw ReadError("WKT points have mixed dimensionality");
+        if (p.size() != dim)
+            throw ReadError("WKT points have mixed dimensionality");
 
     Mesh mesh;
-    mesh.points = NDArray(DType::Float64, {points.size(), dim});
-    double* pp = mesh.points.as<double>();
+    mesh.mPoints = NDArray(DType::Float64, {points.size(), dim});
+    double* pp = mesh.mPoints.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
-        for (std::size_t j = 0; j < dim; ++j) pp[i * dim + j] = points[i][j];
+        for (std::size_t j = 0; j < dim; ++j)
+            pp[i * dim + j] = points[i][j];
 
     NDArray data(DType::Int64, {tris.size(), 3});
-    std::int64_t* dp = data.as<std::int64_t>();
+    std::int64_t* dp = data.As<std::int64_t>();
     for (std::size_t i = 0; i < tris.size(); ++i)
-        for (int j = 0; j < 3; ++j) dp[i * 3 + j] = tris[i][j];
-    mesh.cells.emplace_back("triangle", std::move(data));
+        for (int j = 0; j < 3; ++j)
+            dp[i * 3 + j] = tris[i][j];
+    mesh.mCells.emplace_back("triangle", std::move(data));
 
     return mesh;
 }
 
-void write_wkt(const std::string& path, const Mesh& mesh) {
-    std::ofstream f(path, std::ios::binary);
-    if (!f) throw WriteError("Could not open file for writing: " + path);
+void write_wkt(const std::string& rPath, const Mesh& rMesh) {
+    std::ofstream f(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t dim =
-        mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
+    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
 
     auto point_str = [&](std::int64_t p) {
         std::string out;
         char buf[32];
         for (std::size_t j = 0; j < dim; ++j) {
-            std::snprintf(buf, sizeof(buf), "%.17g",
-                          detail::read_double(mesh.points, static_cast<std::size_t>(p) * dim + j));
-            if (j) out += " ";
+            std::snprintf(
+                buf, sizeof(buf), "%.17g",
+                detail::read_double(rMesh.mPoints, static_cast<std::size_t>(p) * dim + j));
+            if (j)
+                out += " ";
             out += buf;
         }
         return out;
@@ -166,17 +181,18 @@ void write_wkt(const std::string& path, const Mesh& mesh) {
 
     f << "TIN (";
     std::string joiner;
-    for (const auto& cb : mesh.cells) {
-        if (cb.type != "triangle") continue;
-        const std::size_t ncols = detail::cols(cb.data);
-        const std::size_t n = cb.num_cells();
+    for (const auto& cb : rMesh.mCells) {
+        if (cb.mType != "triangle")
+            continue;
+        const std::size_t ncols = detail::cols(cb.mData);
+        const std::size_t n = cb.NumCells();
         for (std::size_t r = 0; r < n; ++r) {
-            std::int64_t a = detail::read_int(cb.data, r * ncols + 0);
-            std::int64_t b = detail::read_int(cb.data, r * ncols + 1);
-            std::int64_t c = detail::read_int(cb.data, r * ncols + 2);
+            std::int64_t a = detail::read_int(cb.mData, r * ncols + 0);
+            std::int64_t b = detail::read_int(cb.mData, r * ncols + 1);
+            std::int64_t c = detail::read_int(cb.mData, r * ncols + 2);
             std::string sa = point_str(a);
-            f << joiner << "((" << sa << ", " << point_str(b) << ", " << point_str(c)
-              << ", " << sa << "))";
+            f << joiner << "((" << sa << ", " << point_str(b) << ", " << point_str(c) << ", " << sa
+              << "))";
             joiner = ", ";
         }
     }

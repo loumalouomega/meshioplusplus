@@ -65,16 +65,16 @@ namespace detail {
  * (`nchunks <= 1`). Uses `grain=1` so every chunk (already coarse at 512Ki
  * elements) dispatches individually rather than being batched further by the
  * default grain.
- * @param dst Destination buffer, at least `n` elements, ideally freshly
+ * @param pDst Destination buffer, at least `n` elements, ideally freshly
  *            allocated (unfaulted) memory.
- * @param src Source buffer, at least `n` elements.
+ * @param pSrc Source buffer, at least `n` elements.
  * @param n Number of `int64_t` elements to copy.
  */
-inline void parallel_copy_i64(std::int64_t* dst, const std::int64_t* src, std::size_t n) {
+inline void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n) {
     constexpr std::size_t kChunk = 1u << 19;  // 512Ki elements (4 MiB) per task
     const std::size_t nchunks = (n + kChunk - 1) / kChunk;
     if (nchunks <= 1) {
-        std::memcpy(dst, src, n * sizeof(std::int64_t));
+        std::memcpy(pDst, pSrc, n * sizeof(std::int64_t));
         return;
     }
     // grain=1: each chunk is already coarse (4 MiB), so dispatch per chunk —
@@ -84,7 +84,7 @@ inline void parallel_copy_i64(std::int64_t* dst, const std::int64_t* src, std::s
         [&](std::size_t c) {
             const std::size_t off = c * kChunk;
             const std::size_t len = std::min(kChunk, n - off);
-            std::memcpy(dst + off, src + off, len * sizeof(std::int64_t));
+            std::memcpy(pDst + off, pSrc + off, len * sizeof(std::int64_t));
         },
         1);
 }
@@ -93,23 +93,24 @@ inline void parallel_copy_i64(std::int64_t* dst, const std::int64_t* src, std::s
  * @brief Extracts rows `[r0, r1)` of a 2-D (or column-vector) `NDArray` into
  * a new, freshly-allocated `NDArray`.
  *
- * The output buffer is allocated via `NDArray::uninit` (skipping the
+ * The output buffer is allocated via `NDArray::Uninit` (skipping the
  * zero-fill) since the single `memcpy` below fully overwrites it.
- * @param a Source array; row size is `a.shape()[1]` if 2-D, else 1.
+ * @param rA Source array; row size is `rA.Shape()[1]` if 2-D, else 1.
  * @param r0 First row to include (inclusive).
  * @param r1 One past the last row to include (exclusive).
- * @return A new owning `NDArray` with `r1 - r0` rows, same dtype/row-width as `a`.
+ * @return A new owning `NDArray` with `r1 - r0` rows, same dtype/row-width as `rA`.
  */
-inline NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
-    std::size_t nc = a.shape().size() >= 2 ? a.shape()[1] : 1;
-    std::size_t isz = dtype_size(a.dtype());
+inline NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
+    std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    std::size_t isz = dtype_size(rA.Dtype());
     std::size_t rowbytes = nc * isz;
-    std::vector<std::size_t> shape = a.shape();
-    if (shape.empty()) shape = {0};
+    std::vector<std::size_t> shape = rA.Shape();
+    if (shape.empty())
+        shape = {0};
     shape[0] = r1 - r0;
-    NDArray out = NDArray::uninit(a.dtype(), shape);  // fully overwritten below
+    NDArray out = NDArray::Uninit(rA.Dtype(), shape);  // fully overwritten below
     if (r1 > r0)
-        std::memcpy(out.data(), a.data() + r0 * rowbytes, (r1 - r0) * rowbytes);
+        std::memcpy(out.Data(), rA.Data() + r0 * rowbytes, (r1 - r0) * rowbytes);
     return out;
 }
 
@@ -132,48 +133,48 @@ inline NDArray slice_rows(const NDArray& a, std::size_t r0, std::size_t r1) {
  * name. Matching slices of every array in `cell_data_raw` are appended to
  * `out_cell_data` in lockstep with `out_cells`, via `slice_rows`.
  *
- * @param conn Flat node-index connectivity buffer. Passed as a raw
+ * @param pConn Flat node-index connectivity buffer. Passed as a raw
  *             `int64_t*` (rather than an `NDArray`) so callers can hand in
  *             an `NDArray`'s buffer directly — VTK 5.1 connectivity is
  *             already `vtktypeint64` — without an intermediate
  *             to-int64 copy.
- * @param offsets End offsets, one per cell: `offsets[i]` is the index in
- *                `conn` just past cell `i`'s last node (so cell `i`'s nodes
- *                are `conn[offsets[i-1] .. offsets[i])`, with `offsets[-1]`
+ * @param rOffsets End offsets, one per cell: `rOffsets[i]` is the index in
+ *                `pConn` just past cell `i`'s last node (so cell `i`'s nodes
+ *                are `pConn[rOffsets[i-1] .. rOffsets[i])`, with `rOffsets[-1]`
  *                treated as 0).
- * @param types VTK cell type id for each cell, same length as `offsets`.
- * @param cell_data_raw Per-name cell-data arrays covering the whole mesh
+ * @param rTypes VTK cell type id for each cell, same length as `rOffsets`.
+ * @param rCellDataRaw Per-name cell-data arrays covering the whole mesh
  *                      (all cells concatenated), to be re-sliced per output
  *                      block.
- * @param out_cells Appended to with one `CellBlock` per contiguous
+ * @param rOutCells Appended to with one `CellBlock` per contiguous
  *                  same-type (and, for special types, same-size) run.
- * @param out_cell_data Appended to in lockstep with `out_cells`: for each
- *                      name in `cell_data_raw`, one sliced `NDArray` per new
+ * @param rOutCellData Appended to in lockstep with `rOutCells`: for each
+ *                      name in `rCellDataRaw`, one sliced `NDArray` per new
  *                      block.
  * @throws ReadError if a cell's VTK type id is 42 (polyhedron — unsupported
  *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
  *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
  */
-inline void reconstruct_cells(
-    const std::int64_t* conn, const std::vector<std::int64_t>& offsets,
-    const std::vector<std::int64_t>& types,
-    const std::unordered_map<std::string, NDArray>& cell_data_raw,
-    std::vector<CellBlock>& out_cells,
-    std::unordered_map<std::string, std::vector<NDArray>>& out_cell_data) {
+inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                              const std::vector<std::int64_t>& rTypes,
+                              const std::unordered_map<std::string, NDArray>& rCellDataRaw,
+                              std::vector<CellBlock>& rOutCells,
+                              std::unordered_map<std::string, std::vector<NDArray>>& rOutCellData) {
     const auto& vmap = vtk_to_meshio_type();
-    const std::size_t ncells = types.size();
+    const std::size_t ncells = rTypes.size();
 
     auto add_cd = [&](std::size_t start, std::size_t end) {
-        for (const auto& kv : cell_data_raw)
-            out_cell_data[kv.first].push_back(slice_rows(kv.second, start, end));
+        for (const auto& kv : rCellDataRaw)
+            rOutCellData[kv.first].push_back(slice_rows(kv.second, start, end));
     };
 
     std::size_t start = 0;
     while (start < ncells) {
         std::size_t end = start + 1;
-        while (end < ncells && types[end] == types[start]) ++end;
+        while (end < ncells && rTypes[end] == rTypes[start])
+            ++end;
 
-        int vtk_type = static_cast<int>(types[start]);
+        int vtk_type = static_cast<int>(rTypes[start]);
         if (vtk_type == 42)
             throw ReadError("polyhedron cells are not supported by the C++ reader");
         auto it = vmap.find(vtk_type);
@@ -183,11 +184,12 @@ inline void reconstruct_cells(
         const std::string& meshio_type = it->second;
 
         if (is_special_cell(meshio_type)) {
-            std::int64_t first_node = (start == 0) ? 0 : offsets[start - 1];
+            std::int64_t first_node = (start == 0) ? 0 : rOffsets[start - 1];
             std::vector<std::int64_t> start_cn;
             start_cn.reserve(end - start + 1);
             start_cn.push_back(first_node);
-            for (std::size_t i = start; i < end; ++i) start_cn.push_back(offsets[i]);
+            for (std::size_t i = start; i < end; ++i)
+                start_cn.push_back(rOffsets[i]);
             std::vector<std::int64_t> sizes(end - start);
             for (std::size_t i = 0; i < sizes.size(); ++i)
                 sizes[i] = start_cn[i + 1] - start_cn[i];
@@ -195,31 +197,31 @@ inline void reconstruct_cells(
             std::size_t i = 0;
             while (i < sizes.size()) {
                 std::size_t j = i;
-                while (j < sizes.size() && sizes[j] == sizes[i]) ++j;
+                while (j < sizes.size() && sizes[j] == sizes[i])
+                    ++j;
                 std::int64_t sz = sizes[i];
                 std::size_t m = j - i;
-                NDArray data = NDArray::uninit(DType::Int64, {m, static_cast<std::size_t>(sz)});
-                std::int64_t* out = data.as<std::int64_t>();
+                NDArray data = NDArray::Uninit(DType::Int64, {m, static_cast<std::size_t>(sz)});
+                std::int64_t* out = data.As<std::int64_t>();
                 const std::size_t ii = i;
                 // Contiguous uniform-size sub-run -> block memcpy.
                 const std::int64_t sub_first = start_cn[ii];
                 bool sub_regular = true;
                 for (std::size_t r = 0; sub_regular && r < m; ++r)
-                    if (offsets[start + ii + r] !=
+                    if (rOffsets[start + ii + r] !=
                         sub_first + static_cast<std::int64_t>(r + 1) * sz)
                         sub_regular = false;
                 if (sub_regular) {
-                    parallel_copy_i64(out, conn + sub_first,
-                                      m * static_cast<std::size_t>(sz));
+                    parallel_copy_i64(out, pConn + sub_first, m * static_cast<std::size_t>(sz));
                 } else {
                     parallel_for_bw(m, [&](std::size_t r) {
-                        std::int64_t endoff = offsets[start + ii + r];
+                        std::int64_t endoff = rOffsets[start + ii + r];
                         std::int64_t base = endoff - sz;
                         for (std::int64_t c = 0; c < sz; ++c)
-                            out[r * sz + c] = conn[base + c];
+                            out[r * sz + c] = pConn[base + c];
                     });
                 }
-                out_cells.emplace_back(meshio_type, std::move(data));
+                rOutCells.emplace_back(meshio_type, std::move(data));
                 add_cd(start + i, start + j);
                 i = j;
             }
@@ -230,33 +232,33 @@ inline void reconstruct_cells(
             int n = nit->second;
             std::vector<int> order = vtk_to_meshio_order(vtk_type);
             std::size_t m = end - start;
-            NDArray data = NDArray::uninit(DType::Int64, {m, static_cast<std::size_t>(n)});
-            std::int64_t* out = data.as<std::int64_t>();
+            NDArray data = NDArray::Uninit(DType::Int64, {m, static_cast<std::size_t>(n)});
+            std::int64_t* out = data.As<std::int64_t>();
             const int* ord = order.empty() ? nullptr : order.data();
             const std::size_t ss = start;
             // Regular run (offsets advance by exactly n per cell) with identity
             // node order -> the run's connectivity is one contiguous slice:
             // block memcpy instead of a per-row gather.
-            const std::int64_t first = (ss == 0) ? 0 : offsets[ss - 1];
+            const std::int64_t first = (ss == 0) ? 0 : rOffsets[ss - 1];
             bool regular = true;
             for (std::size_t r = 0; regular && r < m; ++r)
-                if (offsets[ss + r] != first + static_cast<std::int64_t>((r + 1) *
-                                                                         static_cast<std::size_t>(n)))
+                if (rOffsets[ss + r] !=
+                    first + static_cast<std::int64_t>((r + 1) * static_cast<std::size_t>(n)))
                     regular = false;
             if (!ord && regular) {
                 // Contiguous slice -> parallel block copy (fault-bound).
-                parallel_copy_i64(out, conn + first, m * static_cast<std::size_t>(n));
+                parallel_copy_i64(out, pConn + first, m * static_cast<std::size_t>(n));
             } else {
                 parallel_for_bw(m, [&](std::size_t r) {
-                    std::int64_t endoff = offsets[ss + r];
+                    std::int64_t endoff = rOffsets[ss + r];
                     std::int64_t base = endoff - n;
                     for (int j = 0; j < n; ++j) {
                         int col = ord ? ord[j] : j;
-                        out[r * n + j] = conn[base + col];
+                        out[r * n + j] = pConn[base + col];
                     }
                 });
             }
-            out_cells.emplace_back(meshio_type, std::move(data));
+            rOutCells.emplace_back(meshio_type, std::move(data));
             add_cd(start, end);
         }
         start = end;

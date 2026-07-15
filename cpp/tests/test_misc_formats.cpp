@@ -74,9 +74,9 @@ TEST(Wkt, TriangleGeometry) {
     std::string path = mt::temp_path(".wkt");
     meshioplusplus::write_wkt(path, in);
     mt::Mesh out = meshioplusplus::read_wkt(path);
-    ASSERT_EQ(out.cells.size(), 1u);
-    EXPECT_EQ(out.cells[0].type, "triangle");
-    EXPECT_EQ(out.cells[0].num_cells(), 2u);
+    ASSERT_EQ(out.mCells.size(), 1u);
+    EXPECT_EQ(out.mCells[0].mType, "triangle");
+    EXPECT_EQ(out.mCells[0].NumCells(), 2u);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

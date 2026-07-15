@@ -37,9 +37,8 @@ namespace {
 
 const std::unordered_map<std::string, std::string>& h5m_to_meshio() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"Edge2", "line"},    {"Hex8", "hexahedron"}, {"Prism6", "wedge"},
-        {"Pyramid5", "pyramid"}, {"Quad4", "quad"},   {"Tri3", "triangle"},
-        {"Tet4", "tetra"}};
+        {"Edge2", "line"}, {"Hex8", "hexahedron"}, {"Prism6", "wedge"}, {"Pyramid5", "pyramid"},
+        {"Quad4", "quad"}, {"Tri3", "triangle"},   {"Tet4", "tetra"}};
     return m;
 }
 
@@ -47,9 +46,8 @@ const std::unordered_map<std::string, std::string>& h5m_to_meshio() {
 h5::Hid make_elem_enum() {
     h5::Hid t(H5Tenum_create(H5T_NATIVE_INT), H5Tclose);
     const std::pair<const char*, int> members[] = {
-        {"Edge", 1},    {"Tri", 2},   {"Quad", 3},       {"Polygon", 4},
-        {"Tet", 5},     {"Pyramid", 6}, {"Prism", 7},    {"Knife", 8},
-        {"Hex", 9},     {"Polyhedron", 10}};
+        {"Edge", 1},    {"Tri", 2},   {"Quad", 3},  {"Polygon", 4}, {"Tet", 5},
+        {"Pyramid", 6}, {"Prism", 7}, {"Knife", 8}, {"Hex", 9},     {"Polyhedron", 10}};
     for (const auto& mv : members) {
         int v = mv.second;
         H5Tenum_insert(t, mv.first, &v);
@@ -65,7 +63,8 @@ void write_history(hid_t loc, int gzip_level) {
     std::vector<std::string> items = {"meshioplusplus.h5m", "cpp-core", stamp};
 
     std::size_t maxlen = 1;
-    for (const auto& s : items) maxlen = std::max(maxlen, s.size());
+    for (const auto& s : items)
+        maxlen = std::max(maxlen, s.size());
     h5::Hid st(H5Tcopy(H5T_C_S1), H5Tclose);
     H5Tset_size(st, maxlen);
     H5Tset_strpad(st, H5T_STR_NULLPAD);
@@ -77,8 +76,7 @@ void write_history(hid_t loc, int gzip_level) {
         H5Pset_chunk(dcpl, 1, dims);
         H5Pset_deflate(dcpl, static_cast<unsigned>(gzip_level));
     }
-    h5::Hid d(H5Dcreate2(loc, "history", st, space, H5P_DEFAULT, dcpl, H5P_DEFAULT),
-              H5Dclose);
+    h5::Hid d(H5Dcreate2(loc, "history", st, space, H5P_DEFAULT, dcpl, H5P_DEFAULT), H5Dclose);
     std::vector<char> buf(items.size() * maxlen, '\0');
     for (std::size_t i = 0; i < items.size(); ++i)
         std::memcpy(buf.data() + i * maxlen, items[i].data(), items[i].size());
@@ -86,42 +84,41 @@ void write_history(hid_t loc, int gzip_level) {
 }
 
 // Write a point-data tag: 1-D directly, 2-D as (n,) of k-tuples (array dtype).
-void write_tag_dataset(hid_t loc, const std::string& name, const NDArray& arr,
-                       int gzip_level) {
-    if (arr.ndim() <= 1) {
-        h5::write_dataset(loc, name, arr, gzip_level);
+void write_tag_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int gzip_level) {
+    if (rArr.Ndim() <= 1) {
+        h5::write_dataset(loc, rName, rArr, gzip_level);
         return;
     }
-    hsize_t n = arr.shape()[0];
-    hsize_t k = arr.shape()[1];
-    h5::Hid ft(H5Tarray_create2(h5::file_type(arr.dtype()), 1, &k), H5Tclose);
-    h5::Hid mt(H5Tarray_create2(h5::native_type(arr.dtype()), 1, &k), H5Tclose);
+    hsize_t n = rArr.Shape()[0];
+    hsize_t k = rArr.Shape()[1];
+    h5::Hid ft(H5Tarray_create2(h5::file_type(rArr.Dtype()), 1, &k), H5Tclose);
+    h5::Hid mt(H5Tarray_create2(h5::native_type(rArr.Dtype()), 1, &k), H5Tclose);
     h5::Hid space(H5Screate_simple(1, &n, nullptr), H5Sclose);
     h5::Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
     if (gzip_level >= 0 && n > 0) {
         H5Pset_chunk(dcpl, 1, &n);
         H5Pset_deflate(dcpl, static_cast<unsigned>(gzip_level));
     }
-    h5::Hid d(H5Dcreate2(loc, name.c_str(), ft, space, H5P_DEFAULT, dcpl, H5P_DEFAULT),
-              H5Dclose);
-    if (n > 0) H5Dwrite(d, mt, H5S_ALL, H5S_ALL, H5P_DEFAULT, arr.data());
+    h5::Hid d(H5Dcreate2(loc, rName.c_str(), ft, space, H5P_DEFAULT, dcpl, H5P_DEFAULT), H5Dclose);
+    if (n > 0)
+        H5Dwrite(d, mt, H5S_ALL, H5S_ALL, H5P_DEFAULT, rArr.Data());
 }
 
 }  // namespace
 
-Mesh read_h5m(const std::string& path) {
+Mesh read_h5m(const std::string& rPath) {
     h5::SilenceErrors silence;
-    h5::Hid f = h5::open_file_read(path);
+    h5::Hid f = h5::open_file_read(rPath);
     h5::Hid tstt = h5::open_group(f, "tstt");
 
     Mesh mesh;
     h5::Hid nodes = h5::open_group(tstt, "nodes");
-    mesh.points = h5::read_dataset(nodes, "coordinates");
+    mesh.mPoints = h5::read_dataset(nodes, "coordinates");
 
     if (h5::exists(nodes, "tags")) {
         h5::Hid tags = h5::open_group(nodes, "tags");
         for (const std::string& name : h5::group_links(tags))
-            mesh.point_data.emplace(name, h5::read_dataset(tags, name));
+            mesh.mPointData.emplace(name, h5::read_dataset(tags, name));
     }
 
     if (h5::exists(tstt, "elements")) {
@@ -133,16 +130,25 @@ Mesh read_h5m(const std::string& path) {
             h5::Hid g = h5::open_group(elements, h5m_type);
             NDArray conn = h5::read_dataset(g, "connectivity");
             // h5m indices are 1-based.
-            for (std::size_t i = 0; i < conn.size(); ++i) {
-                switch (conn.dtype()) {
-                    case DType::Int32: conn.as<std::int32_t>()[i] -= 1; break;
-                    case DType::Int64: conn.as<std::int64_t>()[i] -= 1; break;
-                    case DType::UInt32: conn.as<std::uint32_t>()[i] -= 1; break;
-                    case DType::UInt64: conn.as<std::uint64_t>()[i] -= 1; break;
-                    default: throw ReadError("H5M: unexpected connectivity dtype");
+            for (std::size_t i = 0; i < conn.Size(); ++i) {
+                switch (conn.Dtype()) {
+                    case DType::Int32:
+                        conn.As<std::int32_t>()[i] -= 1;
+                        break;
+                    case DType::Int64:
+                        conn.As<std::int64_t>()[i] -= 1;
+                        break;
+                    case DType::UInt32:
+                        conn.As<std::uint32_t>()[i] -= 1;
+                        break;
+                    case DType::UInt64:
+                        conn.As<std::uint64_t>()[i] -= 1;
+                        break;
+                    default:
+                        throw ReadError("H5M: unexpected connectivity dtype");
                 }
             }
-            mesh.cells.emplace_back(it->second, std::move(conn));
+            mesh.mCells.emplace_back(it->second, std::move(conn));
         }
     }
     // Element tags (cell data) and sets are not read (matching the Python reader).
@@ -150,34 +156,33 @@ Mesh read_h5m(const std::string& path) {
     return mesh;
 }
 
-void write_h5m(const std::string& path, const Mesh& mesh, bool add_global_ids,
-               int gzip_level) {
+void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids, int gzip_level) {
     h5::SilenceErrors silence;
-    h5::Hid f = h5::create_file(path);
+    h5::Hid f = h5::create_file(rPath);
     h5::Hid tstt = h5::create_group(f, "tstt");
 
     std::int64_t global_id = 1;  // h5m base index
 
     // nodes
     h5::Hid nodes = h5::create_group(tstt, "nodes");
-    h5::write_dataset(nodes, "coordinates", mesh.points, gzip_level);
+    h5::write_dataset(nodes, "coordinates", rMesh.mPoints, gzip_level);
     {
         h5::Hid d(H5Dopen2(nodes, "coordinates", H5P_DEFAULT), H5Dclose);
         h5::write_attr_int(d, "start_id", global_id);
     }
-    global_id += static_cast<std::int64_t>(mesh.num_points());
+    global_id += static_cast<std::int64_t>(rMesh.NumPoints());
 
     h5::Hid tstt_tags = h5::create_group(tstt, "tags");
 
     // point data (+ auto GLOBAL_ID)
     std::vector<std::pair<std::string, const NDArray*>> pd;
-    for (const auto& name : detail::sorted_keys(mesh.point_data))
-        pd.emplace_back(name, &mesh.point_data.at(name));
+    for (const auto& name : detail::sorted_keys(rMesh.mPointData))
+        pd.emplace_back(name, &rMesh.mPointData.at(name));
     NDArray gids;
-    if (add_global_ids && mesh.point_data.find("GLOBAL_ID") == mesh.point_data.end()) {
-        gids = NDArray(DType::Int64, {mesh.num_points()});
-        for (std::size_t i = 0; i < mesh.num_points(); ++i)
-            gids.as<std::int64_t>()[i] = static_cast<std::int64_t>(i) + 1;
+    if (add_global_ids && rMesh.mPointData.find("GLOBAL_ID") == rMesh.mPointData.end()) {
+        gids = NDArray(DType::Int64, {rMesh.NumPoints()});
+        for (std::size_t i = 0; i < rMesh.NumPoints(); ++i)
+            gids.As<std::int64_t>()[i] = static_cast<std::int64_t>(i) + 1;
         pd.emplace_back("GLOBAL_ID", &gids);
     }
 
@@ -188,13 +193,12 @@ void write_h5m(const std::string& path, const Mesh& mesh, bool add_global_ids,
             // Global tag entry: committed datatype + dense-class attribute.
             h5::Hid g = h5::create_group(tstt_tags, kv.first);
             h5::Hid t = [&]() -> h5::Hid {
-                if (kv.second->ndim() >= 2) {
-                    hsize_t k = kv.second->shape()[1];
-                    return h5::Hid(
-                        H5Tarray_create2(h5::file_type(kv.second->dtype()), 1, &k),
-                        H5Tclose);
+                if (kv.second->Ndim() >= 2) {
+                    hsize_t k = kv.second->Shape()[1];
+                    return h5::Hid(H5Tarray_create2(h5::file_type(kv.second->Dtype()), 1, &k),
+                                   H5Tclose);
                 }
-                return h5::Hid(H5Tcopy(h5::file_type(kv.second->dtype())), H5Tclose);
+                return h5::Hid(H5Tcopy(h5::file_type(kv.second->Dtype())), H5Tclose);
             }();
             H5Tcommit2(g, "type", t, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
             h5::write_attr_int(g, "class", 2);
@@ -208,33 +212,44 @@ void write_h5m(const std::string& path, const Mesh& mesh, bool add_global_ids,
 
     write_history(tstt, gzip_level);
 
-    struct H5mType { const char* name; int type; };
+    struct H5mType {
+        const char* mName;
+        int mType;
+    };
     static const std::unordered_map<std::string, H5mType> meshio_to_h5m = {
         {"line", {"Edge2", 1}}, {"triangle", {"Tri3", 2}}, {"tetra", {"Tet4", 5}}};
 
-    for (const auto& cb : mesh.cells) {
-        auto it = meshio_to_h5m.find(cb.type);
+    for (const auto& cb : rMesh.mCells) {
+        auto it = meshio_to_h5m.find(cb.mType);
         if (it == meshio_to_h5m.end())
             continue;  // unsupported type: skipped with a warning in Python
-        h5::Hid g = h5::create_group(elements, it->second.name);
+        h5::Hid g = h5::create_group(elements, it->second.mName);
         {
             h5::Hid space(H5Screate(H5S_SCALAR), H5Sclose);
-            h5::Hid a(H5Acreate2(g, "element_type", elem_dt, space, H5P_DEFAULT,
-                                 H5P_DEFAULT),
+            h5::Hid a(H5Acreate2(g, "element_type", elem_dt, space, H5P_DEFAULT, H5P_DEFAULT),
                       H5Aclose);
-            int v = it->second.type;
+            int v = it->second.mType;
             H5Awrite(a, elem_dt, &v);
         }
         // 1-based connectivity, preserving the integer dtype.
-        NDArray conn(cb.data.dtype(), cb.data.shape());
-        for (std::size_t i = 0; i < cb.data.size(); ++i) {
-            std::int64_t v = detail::read_int(cb.data, i) + 1;
-            switch (conn.dtype()) {
-                case DType::Int32: conn.as<std::int32_t>()[i] = static_cast<std::int32_t>(v); break;
-                case DType::Int64: conn.as<std::int64_t>()[i] = v; break;
-                case DType::UInt32: conn.as<std::uint32_t>()[i] = static_cast<std::uint32_t>(v); break;
-                case DType::UInt64: conn.as<std::uint64_t>()[i] = static_cast<std::uint64_t>(v); break;
-                default: throw WriteError("H5M: unexpected connectivity dtype");
+        NDArray conn(cb.mData.Dtype(), cb.mData.Shape());
+        for (std::size_t i = 0; i < cb.mData.Size(); ++i) {
+            std::int64_t v = detail::read_int(cb.mData, i) + 1;
+            switch (conn.Dtype()) {
+                case DType::Int32:
+                    conn.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
+                    break;
+                case DType::Int64:
+                    conn.As<std::int64_t>()[i] = v;
+                    break;
+                case DType::UInt32:
+                    conn.As<std::uint32_t>()[i] = static_cast<std::uint32_t>(v);
+                    break;
+                case DType::UInt64:
+                    conn.As<std::uint64_t>()[i] = static_cast<std::uint64_t>(v);
+                    break;
+                default:
+                    throw WriteError("H5M: unexpected connectivity dtype");
             }
         }
         h5::write_dataset(g, "connectivity", conn, gzip_level);
@@ -242,7 +257,7 @@ void write_h5m(const std::string& path, const Mesh& mesh, bool add_global_ids,
             h5::Hid d(H5Dopen2(g, "connectivity", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "start_id", global_id);
         }
-        global_id += static_cast<std::int64_t>(cb.num_cells());
+        global_id += static_cast<std::int64_t>(cb.NumCells());
     }
     // Cell data is not written: the Python writer's cell-data path is broken
     // upstream (iterates a list as a dict) and the reader ignores element tags.

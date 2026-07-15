@@ -64,9 +64,9 @@ namespace meshioplusplus {
  * first-three-edge-vectors scalar triple product (the right-handed
  * reorder). Emits `* ZONES` before `* FACES` in the ASCII layout.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
- * @param float_fmt coordinate format string (ASCII only; ignored for
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @param rFloatFmt coordinate format string (ASCII only; ignored for
  *        binary)
  * @param binary write the binary FLAC3D layout (`true`) or ASCII (`false`)
  * @throws WriteError if a file cannot be opened for writing
@@ -75,8 +75,8 @@ namespace meshioplusplus {
  *       which also hardcodes group slots (`SLOT 1` ASCII / `"Default"`
  *       binary) rather than preserving an original slot name
  */
-void write_flac3d(const std::string& path, const Mesh& mesh,
-                  const std::string& float_fmt, bool binary);
+void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
+                  bool binary);
 
 /**
  * @brief Read a FLAC3D .f3grid file (ASCII or binary), gridpoints and
@@ -89,7 +89,7 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
  * fixed FLAC3D -> meshio++ node-order permutation per type and expanding
  * degenerate 7-node "B7" hexahedra to 8 nodes.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["cell_ids"]` set to each cell's
  *         original FLAC3D global id (split per block, faces numbered before
  *         zones)
@@ -102,6 +102,6 @@ void write_flac3d(const std::string& path, const Mesh& mesh,
  * @note point_data/field_data are never produced; `cell_data["cell_ids"]` is
  *       the only key this reader sets
  */
-Mesh read_flac3d(const std::string& path);
+Mesh read_flac3d(const std::string& rPath);
 
 }  // namespace meshioplusplus

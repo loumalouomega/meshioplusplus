@@ -24,11 +24,9 @@
 
 namespace {
 void rt(const mt::Mesh& mesh, const std::string& data_format) {
-    mt::roundtrip(
-        [&](const std::string& p, const mt::Mesh& m) {
-            meshioplusplus::write_xdmf(p, m, data_format, -1);
-        },
-        [](const std::string& p) { return meshioplusplus::read_xdmf(p); }, mesh, ".xdmf");
+    mt::roundtrip([&](const std::string& p,
+                      const mt::Mesh& m) { meshioplusplus::write_xdmf(p, m, data_format, -1); },
+                  [](const std::string& p) { return meshioplusplus::read_xdmf(p); }, mesh, ".xdmf");
 }
 }  // namespace
 

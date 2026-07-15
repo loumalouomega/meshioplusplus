@@ -35,14 +35,12 @@ namespace {
 // Write a minimal single-hex ASCII polyMesh case; return the case dir.
 fs::path make_hex_case() {
     static std::atomic<unsigned> counter{0};
-    fs::path base = fs::temp_directory_path() /
-                    ("meshio_of_" + std::to_string(counter++));
+    fs::path base = fs::temp_directory_path() / ("meshio_of_" + std::to_string(counter++));
     fs::path poly = base / "constant" / "polyMesh";
     fs::create_directories(poly);
 
     auto hdr = [](const std::string& cls, const std::string& obj) {
-        return "FoamFile\n{\n format ascii;\n class " + cls + ";\n object " + obj +
-               ";\n}\n";
+        return "FoamFile\n{\n format ascii;\n class " + cls + ";\n object " + obj + ";\n}\n";
     };
 
     std::ofstream(poly / "points")
@@ -53,8 +51,7 @@ fs::path make_hex_case() {
         << hdr("faceList", "faces")
         << "6\n(\n4(0 3 2 1)\n4(4 5 6 7)\n4(0 1 5 4)\n4(2 3 7 6)\n4(1 2 6 "
            "5)\n4(0 4 7 3)\n)\n";
-    std::ofstream(poly / "owner")
-        << hdr("labelList", "owner") << "6\n(\n0\n0\n0\n0\n0\n0\n)\n";
+    std::ofstream(poly / "owner") << hdr("labelList", "owner") << "6\n(\n0\n0\n0\n0\n0\n0\n)\n";
     std::ofstream(poly / "boundary")
         << hdr("polyBoundaryMesh", "boundary")
         << "3\n(\nbottom { type wall; nFaces 1; startFace 0; }\ntop { type "
@@ -72,17 +69,19 @@ TEST(OpenFoam, SingleHexAscii) {
     meshioplusplus::OpenFoamInfo info;
     meshioplusplus::Mesh mesh = meshioplusplus::read_openfoam((base / "case.foam").string(), info);
 
-    EXPECT_EQ(mesh.num_points(), 8u);
+    EXPECT_EQ(mesh.NumPoints(), 8u);
     bool has_hex = false;
     std::size_t nquad = 0;
-    for (const auto& cb : mesh.cells) {
-        if (cb.type == "hexahedron") has_hex = true;
-        if (cb.type == "quad") nquad += cb.num_cells();
+    for (const auto& cb : mesh.mCells) {
+        if (cb.mType == "hexahedron")
+            has_hex = true;
+        if (cb.mType == "quad")
+            nquad += cb.NumCells();
     }
     EXPECT_TRUE(has_hex);
     EXPECT_EQ(nquad, 6u);
     // 3 boundary patches -> 3 negative family tags.
-    EXPECT_EQ(info.cell_tags.size(), 3u);
+    EXPECT_EQ(info.mCellTags.size(), 3u);
 
     std::error_code ec;
     fs::remove_all(base, ec);
@@ -93,7 +92,7 @@ TEST(OpenFoam, ResolveViaCaseDir) {
     meshioplusplus::OpenFoamInfo info;
     // Pass the case directory itself (not the .foam file).
     meshioplusplus::Mesh mesh = meshioplusplus::read_openfoam(base.string(), info);
-    EXPECT_EQ(mesh.num_points(), 8u);
+    EXPECT_EQ(mesh.NumPoints(), 8u);
     std::error_code ec;
     fs::remove_all(base, ec);
 }

@@ -60,18 +60,28 @@ inline bool is_float_dtype(DType dt) {
  * @param i Flat (linear) element index into `a`'s buffer.
  * @return `a`'s `i`-th element converted to `double`.
  */
-inline double read_double(const NDArray& a, std::size_t i) {
-    switch (a.dtype()) {
-        case DType::Float32: return static_cast<double>(a.as<float>()[i]);
-        case DType::Float64: return a.as<double>()[i];
-        case DType::Int8: return static_cast<double>(a.as<std::int8_t>()[i]);
-        case DType::Int16: return static_cast<double>(a.as<std::int16_t>()[i]);
-        case DType::Int32: return static_cast<double>(a.as<std::int32_t>()[i]);
-        case DType::Int64: return static_cast<double>(a.as<std::int64_t>()[i]);
-        case DType::UInt8: return static_cast<double>(a.as<std::uint8_t>()[i]);
-        case DType::UInt16: return static_cast<double>(a.as<std::uint16_t>()[i]);
-        case DType::UInt32: return static_cast<double>(a.as<std::uint32_t>()[i]);
-        case DType::UInt64: return static_cast<double>(a.as<std::uint64_t>()[i]);
+inline double read_double(const NDArray& rA, std::size_t i) {
+    switch (rA.Dtype()) {
+        case DType::Float32:
+            return static_cast<double>(rA.As<float>()[i]);
+        case DType::Float64:
+            return rA.As<double>()[i];
+        case DType::Int8:
+            return static_cast<double>(rA.As<std::int8_t>()[i]);
+        case DType::Int16:
+            return static_cast<double>(rA.As<std::int16_t>()[i]);
+        case DType::Int32:
+            return static_cast<double>(rA.As<std::int32_t>()[i]);
+        case DType::Int64:
+            return static_cast<double>(rA.As<std::int64_t>()[i]);
+        case DType::UInt8:
+            return static_cast<double>(rA.As<std::uint8_t>()[i]);
+        case DType::UInt16:
+            return static_cast<double>(rA.As<std::uint16_t>()[i]);
+        case DType::UInt32:
+            return static_cast<double>(rA.As<std::uint32_t>()[i]);
+        case DType::UInt64:
+            return static_cast<double>(rA.As<std::uint64_t>()[i]);
     }
     return 0.0;
 }
@@ -86,17 +96,26 @@ inline double read_double(const NDArray& a, std::size_t i) {
  * @param i Flat (linear) element index into `a`'s buffer.
  * @return `a`'s `i`-th element converted to `int64_t`.
  */
-inline std::int64_t read_int(const NDArray& a, std::size_t i) {
-    switch (a.dtype()) {
-        case DType::Int8: return a.as<std::int8_t>()[i];
-        case DType::Int16: return a.as<std::int16_t>()[i];
-        case DType::Int32: return a.as<std::int32_t>()[i];
-        case DType::Int64: return a.as<std::int64_t>()[i];
-        case DType::UInt8: return a.as<std::uint8_t>()[i];
-        case DType::UInt16: return a.as<std::uint16_t>()[i];
-        case DType::UInt32: return a.as<std::uint32_t>()[i];
-        case DType::UInt64: return static_cast<std::int64_t>(a.as<std::uint64_t>()[i]);
-        default: return static_cast<std::int64_t>(read_double(a, i));
+inline std::int64_t read_int(const NDArray& rA, std::size_t i) {
+    switch (rA.Dtype()) {
+        case DType::Int8:
+            return rA.As<std::int8_t>()[i];
+        case DType::Int16:
+            return rA.As<std::int16_t>()[i];
+        case DType::Int32:
+            return rA.As<std::int32_t>()[i];
+        case DType::Int64:
+            return rA.As<std::int64_t>()[i];
+        case DType::UInt8:
+            return rA.As<std::uint8_t>()[i];
+        case DType::UInt16:
+            return rA.As<std::uint16_t>()[i];
+        case DType::UInt32:
+            return rA.As<std::uint32_t>()[i];
+        case DType::UInt64:
+            return static_cast<std::int64_t>(rA.As<std::uint64_t>()[i]);
+        default:
+            return static_cast<std::int64_t>(read_double(rA, i));
     }
 }
 
@@ -105,8 +124,8 @@ inline std::int64_t read_int(const NDArray& a, std::size_t i) {
  * @param a Array to query.
  * @return `a.shape()[0]`, or 0 if `a` has no shape.
  */
-inline std::size_t rows(const NDArray& a) {
-    return a.shape().empty() ? 0 : a.shape()[0];
+inline std::size_t rows(const NDArray& rA) {
+    return rA.Shape().empty() ? 0 : rA.Shape()[0];
 }
 
 /**
@@ -115,8 +134,8 @@ inline std::size_t rows(const NDArray& a) {
  * @param a Array to query.
  * @return `a.shape()[1]` if `a` has at least 2 dimensions, else 1.
  */
-inline std::size_t cols(const NDArray& a) {
-    return a.shape().size() >= 2 ? a.shape()[1] : 1;
+inline std::size_t cols(const NDArray& rA) {
+    return rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
 }
 
 /**
@@ -144,16 +163,26 @@ inline std::size_t cols(const NDArray& a) {
 template <class F>
 decltype(auto) dispatch_dtype(DType dt, F&& f) {
     switch (dt) {
-        case DType::Float32: return f.template operator()<float>();
-        case DType::Float64: return f.template operator()<double>();
-        case DType::Int8: return f.template operator()<std::int8_t>();
-        case DType::Int16: return f.template operator()<std::int16_t>();
-        case DType::Int32: return f.template operator()<std::int32_t>();
-        case DType::Int64: return f.template operator()<std::int64_t>();
-        case DType::UInt8: return f.template operator()<std::uint8_t>();
-        case DType::UInt16: return f.template operator()<std::uint16_t>();
-        case DType::UInt32: return f.template operator()<std::uint32_t>();
-        case DType::UInt64: return f.template operator()<std::uint64_t>();
+        case DType::Float32:
+            return f.template operator()<float>();
+        case DType::Float64:
+            return f.template operator()<double>();
+        case DType::Int8:
+            return f.template operator()<std::int8_t>();
+        case DType::Int16:
+            return f.template operator()<std::int16_t>();
+        case DType::Int32:
+            return f.template operator()<std::int32_t>();
+        case DType::Int64:
+            return f.template operator()<std::int64_t>();
+        case DType::UInt8:
+            return f.template operator()<std::uint8_t>();
+        case DType::UInt16:
+            return f.template operator()<std::uint16_t>();
+        case DType::UInt32:
+            return f.template operator()<std::uint32_t>();
+        case DType::UInt64:
+            return f.template operator()<std::uint64_t>();
     }
     return f.template operator()<double>();  // unreachable
 }

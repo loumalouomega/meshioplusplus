@@ -69,11 +69,11 @@ namespace meshioplusplus {
  * line (required for this writer's own output to be read back by
  * #read_nastran). 2D points are force-promoted to 3D with a warning.
  *
- * @param path filesystem path to the .bdf/.fem/.nas file to create/overwrite
- * @param mesh the mesh to write
+ * @param rPath filesystem path to the .bdf/.fem/.nas file to create/overwrite
+ * @param rMesh the mesh to write
  * @throws WriteError on an unsupported cell type
  */
-void write_nastran(const std::string& path, const Mesh& mesh);
+void write_nastran(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a Nastran bulk-data file into a Mesh — only accepts files
@@ -86,7 +86,7 @@ void write_nastran(const std::string& path, const Mesh& mesh);
  * `wedge15`. `CBAR`/`CBEAM`/`CBUSH`/`CBUSH1D`/`CGAP` cards only keep their
  * first 2 node ids (a 3rd orientation/grid-id field is discarded).
  *
- * @param path filesystem path to the .bdf/.fem/.nas file to read
+ * @param rPath filesystem path to the .bdf/.fem/.nas file to read
  * @return the read Mesh
  * @throws ReadError if the file's first `$` comment line is not exactly
  *         `"meshioplusplus-cpp-nastran"` (routes real-world Nastran files
@@ -95,6 +95,6 @@ void write_nastran(const std::string& path, const Mesh& mesh);
  *       the Python reference, which populates `"nastran:ref"` from the
  *       optional GRID/element reference field)
  */
-Mesh read_nastran(const std::string& path);
+Mesh read_nastran(const std::string& rPath);
 
 }  // namespace meshioplusplus

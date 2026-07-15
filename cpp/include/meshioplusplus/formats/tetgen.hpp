@@ -61,14 +61,14 @@ namespace meshioplusplus {
  * from cell_data the same way. Only `tetra` cells are written; each tetra
  * block gets its own `.ele` numbering restarting at 0.
  *
- * @param path filesystem path to either the `.node` or `.ele` sibling
- * @param mesh the mesh to write (must contain only `tetra` cells)
+ * @param rPath filesystem path to either the `.node` or `.ele` sibling
+ * @param rMesh the mesh to write (must contain only `tetra` cells)
  * @throws WriteError if either output file cannot be opened, or the mesh
  *         contains non-tetra cells
  * @note point_data keys produced: `"tetgen:attr{k}"`, `"tetgen:ref"`,
  *       `"tetgen:ref2"`, ...; cell_data keys: `"tetgen:ref"`, `"tetgen:ref2"`, ...
  */
-void write_tetgen(const std::string& path, const Mesh& mesh);
+void write_tetgen(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a TetGen `.node`/`.ele` file pair.
@@ -78,7 +78,7 @@ void write_tetgen(const std::string& path, const Mesh& mesh);
  * requires strictly consecutive indices; `.ele` connectivity is rebased by
  * the same amount.
  *
- * @param path filesystem path to either the `.node` or `.ele` sibling
+ * @param rPath filesystem path to either the `.node` or `.ele` sibling
  * @return the read Mesh (a single `tetra` CellBlock)
  * @throws ReadError if the sibling file is missing, `dim != 3`, or node
  *         indices are non-consecutive from the detected base
@@ -87,6 +87,6 @@ void write_tetgen(const std::string& path, const Mesh& mesh);
  *       columns); cell_data key: `"tetgen:ref"`/... (region attribute
  *       columns, one array per column since TetGen has one cell block).
  */
-Mesh read_tetgen(const std::string& path);
+Mesh read_tetgen(const std::string& rPath);
 
 }  // namespace meshioplusplus

@@ -31,7 +31,12 @@
  * the existing pybind11 layer already treats ragged cell blocks: "just copy,
  * it's fine"). `NDArray`/`CellBlock`/`Mesh` are therefore kept entirely
  * internal; JS only ever sees plain objects of typed arrays (see
- * `meshToVal`/`valToMesh` below for the exact shape).
+ * `mesh_to_val`/`val_to_mesh` below for the exact shape). Note: the
+ * JS-facing names bound below (`"readMesh"`, `"writeMesh"`, ...) are string
+ * literals independent of the C++ function names/symbols on the other side
+ * of each `emscripten::function(...)` call, so this file's internal C++
+ * identifiers can follow the project's snake_case free-function convention
+ * without changing the JS API surface.
  *
  * Format scope (v1): the 26 formats with no HDF5/netCDF dependency, plus
  * XDMF's XML/Binary data path (not its HDF variant). CGNS/H5M/HMF/MED/Exodus
@@ -118,31 +123,34 @@ using meshioplusplus::NDArray;
 // own backing store immediately, so the returned val outlives the view).
 // ---------------------------------------------------------------------
 
-val float64ArrayFrom(const double* data, std::size_t n) {
+val float64_array_from(const double* pData, std::size_t n) {
     val arr = val::global("Float64Array").new_(n);
-    arr.call<void>("set", val(emscripten::typed_memory_view(n, data)));
+    arr.call<void>("set", val(emscripten::typed_memory_view(n, pData)));
     return arr;
 }
 
-val int32ArrayFrom(const std::int32_t* data, std::size_t n) {
+val int32_array_from(const std::int32_t* pData, std::size_t n) {
     val arr = val::global("Int32Array").new_(n);
-    arr.call<void>("set", val(emscripten::typed_memory_view(n, data)));
+    arr.call<void>("set", val(emscripten::typed_memory_view(n, pData)));
     return arr;
 }
 
-std::size_t cols_of(const NDArray& a) { return a.shape().size() >= 2 ? a.shape()[1] : 1; }
+std::size_t cols_of(const NDArray& rA) {
+    return rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+}
 
 // Any-dtype NDArray -> Float64Array (upcasts ints / lower-precision floats;
 // every point/data array in the JS API is double-precision for simplicity).
-val ndarrayToFloat64Array(const NDArray& a) {
-    return meshioplusplus::detail::dispatch_dtype(a.dtype(), [&]<class T>() -> val {
+val ndarray_to_float64_array(const NDArray& rA) {
+    return meshioplusplus::detail::dispatch_dtype(rA.Dtype(), [&]<class T>() -> val {
         if constexpr (std::is_same_v<T, double>) {
-            return float64ArrayFrom(a.as<double>(), a.size());
+            return float64_array_from(rA.As<double>(), rA.Size());
         } else {
-            std::vector<double> tmp(a.size());
-            const T* src = a.as<T>();
-            for (std::size_t i = 0; i < a.size(); ++i) tmp[i] = static_cast<double>(src[i]);
-            return float64ArrayFrom(tmp.data(), tmp.size());
+            std::vector<double> tmp(rA.Size());
+            const T* src = rA.As<T>();
+            for (std::size_t i = 0; i < rA.Size(); ++i)
+                tmp[i] = static_cast<double>(src[i]);
+            return float64_array_from(tmp.data(), tmp.size());
         }
     });
 }
@@ -151,13 +159,14 @@ val ndarrayToFloat64Array(const NDArray& a) {
 // Int32Array. Node/point counts for any mesh a browser can reasonably handle
 // fit comfortably in 32 bits; Int32Array is far more JS-ergonomic than
 // BigInt64Array for typical mesh-processing consumer code.
-val ndarrayToInt32Array(const NDArray& a) {
-    std::vector<std::int32_t> tmp(a.size());
-    meshioplusplus::detail::dispatch_dtype(a.dtype(), [&]<class T>() {
-        const T* src = a.as<T>();
-        for (std::size_t i = 0; i < a.size(); ++i) tmp[i] = static_cast<std::int32_t>(src[i]);
+val ndarray_to_int32_array(const NDArray& rA) {
+    std::vector<std::int32_t> tmp(rA.Size());
+    meshioplusplus::detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
+        const T* src = rA.As<T>();
+        for (std::size_t i = 0; i < rA.Size(); ++i)
+            tmp[i] = static_cast<std::int32_t>(src[i]);
     });
-    return int32ArrayFrom(tmp.data(), tmp.size());
+    return int32_array_from(tmp.data(), tmp.size());
 }
 
 /**
@@ -173,41 +182,41 @@ val ndarrayToInt32Array(const NDArray& a) {
  * @throws meshioplusplus::ReadError if any cell block is ragged (polygon/
  *   polyhedron with varying node counts) -- not supported by the v1 JS API.
  */
-val meshToVal(const Mesh& mesh) {
+val mesh_to_val(const Mesh& rMesh) {
     val out = val::object();
-    out.set("points", ndarrayToFloat64Array(mesh.points));
-    out.set("dim", static_cast<int>(cols_of(mesh.points)));
+    out.set("points", ndarray_to_float64_array(rMesh.mPoints));
+    out.set("dim", static_cast<int>(cols_of(rMesh.mPoints)));
 
     val cells = val::array();
-    for (const auto& cb : mesh.cells) {
-        if (cb.is_ragged())
-            throw meshioplusplus::ReadError(
-                "meshio++ (wasm): ragged cell blocks ('" + cb.type +
-                "') are not supported by the JS API yet");
+    for (const auto& cb : rMesh.mCells) {
+        if (cb.IsRagged())
+            throw meshioplusplus::ReadError("meshio++ (wasm): ragged cell blocks ('" + cb.mType +
+                                            "') are not supported by the JS API yet");
         val block = val::object();
-        block.set("type", cb.type);
-        block.set("data", ndarrayToInt32Array(cb.data));
-        block.set("nodesPerCell", static_cast<int>(cols_of(cb.data)));
+        block.set("type", cb.mType);
+        block.set("data", ndarray_to_int32_array(cb.mData));
+        block.set("nodesPerCell", static_cast<int>(cols_of(cb.mData)));
         cells.call<void>("push", block);
     }
     out.set("cells", cells);
 
     val point_data = val::object();
-    for (const auto& kv : mesh.point_data)
-        point_data.set(kv.first, ndarrayToFloat64Array(kv.second));
+    for (const auto& kv : rMesh.mPointData)
+        point_data.set(kv.first, ndarray_to_float64_array(kv.second));
     out.set("point_data", point_data);
 
     val cell_data = val::object();
-    for (const auto& kv : mesh.cell_data) {
+    for (const auto& kv : rMesh.mCellData) {
         val blocks = val::array();
-        for (const auto& arr : kv.second) blocks.call<void>("push", ndarrayToFloat64Array(arr));
+        for (const auto& arr : kv.second)
+            blocks.call<void>("push", ndarray_to_float64_array(arr));
         cell_data.set(kv.first, blocks);
     }
     out.set("cell_data", cell_data);
 
     val field_data = val::object();
-    for (const auto& kv : mesh.field_data)
-        field_data.set(kv.first, ndarrayToFloat64Array(kv.second));
+    for (const auto& kv : rMesh.mFieldData)
+        field_data.set(kv.first, ndarray_to_float64_array(kv.second));
     out.set("field_data", field_data);
 
     return out;
@@ -217,27 +226,27 @@ val meshToVal(const Mesh& mesh) {
 // `emscripten::vecFromJSArray` copies once into a std::vector; the second
 // copy into the NDArray's own buffer is unavoidable without exposing
 // NDArray's internals to JS, which the file-level design deliberately avoids.
-NDArray float64NDArrayFromVal(const val& jsArr, std::vector<std::size_t> shape) {
-    std::vector<double> tmp = emscripten::vecFromJSArray<double>(jsArr);
-    NDArray out = NDArray::uninit(DType::Float64, std::move(shape));
-    std::copy(tmp.begin(), tmp.end(), out.as<double>());
+NDArray float64_ndarray_from_val(const val& rJsArr, std::vector<std::size_t> shape) {
+    std::vector<double> tmp = emscripten::vecFromJSArray<double>(rJsArr);
+    NDArray out = NDArray::Uninit(DType::Float64, std::move(shape));
+    std::copy(tmp.begin(), tmp.end(), out.As<double>());
     return out;
 }
 
-NDArray int64NDArrayFromVal(const val& jsArr, std::vector<std::size_t> shape) {
-    std::vector<std::int64_t> tmp = emscripten::vecFromJSArray<std::int64_t>(jsArr);
-    NDArray out = NDArray::uninit(DType::Int64, std::move(shape));
-    std::copy(tmp.begin(), tmp.end(), out.as<std::int64_t>());
+NDArray int64_ndarray_from_val(const val& rJsArr, std::vector<std::size_t> shape) {
+    std::vector<std::int64_t> tmp = emscripten::vecFromJSArray<std::int64_t>(rJsArr);
+    NDArray out = NDArray::Uninit(DType::Int64, std::move(shape));
+    std::copy(tmp.begin(), tmp.end(), out.As<std::int64_t>());
     return out;
 }
 
-std::vector<std::string> jsObjectKeys(const val& obj) {
-    val keys = val::global("Object").call<val>("keys", obj);
+std::vector<std::string> js_object_keys(const val& rObj) {
+    val keys = val::global("Object").call<val>("keys", rObj);
     return emscripten::vecFromJSArray<std::string>(keys);
 }
 
 /**
- * @brief Convert a plain JS mesh object (see `meshToVal`'s shape) into a C++
+ * @brief Convert a plain JS mesh object (see `mesh_to_val`'s shape) into a C++
  * `Mesh`, for `writeMesh`/`convert`.
  *
  * @throws meshioplusplus::WriteError on malformed input (points/cell-block
@@ -246,58 +255,58 @@ std::vector<std::string> jsObjectKeys(const val& obj) {
  *   express them in the flat typed-array shape) -- mirrors
  *   `py_to_mesh`'s `allow_ragged=false` default.
  */
-Mesh valToMesh(const val& obj) {
+Mesh val_to_mesh(const val& rObj) {
     Mesh mesh;
-    val pointsVal = obj["points"];
-    auto dim = obj["dim"].as<std::size_t>();
-    auto nptsLen = pointsVal["length"].as<std::size_t>();
-    if (dim == 0 || nptsLen % dim != 0)
+    val points_val = rObj["points"];
+    auto dim = rObj["dim"].as<std::size_t>();
+    auto npts_len = points_val["length"].as<std::size_t>();
+    if (dim == 0 || npts_len % dim != 0)
         throw meshioplusplus::WriteError("meshio++ (wasm): points length is not a multiple of dim");
-    mesh.points = float64NDArrayFromVal(pointsVal, {nptsLen / dim, dim});
+    mesh.mPoints = float64_ndarray_from_val(points_val, {npts_len / dim, dim});
 
-    val cells = obj["cells"];
+    val cells = rObj["cells"];
     auto ncells = cells["length"].as<unsigned>();
     for (unsigned i = 0; i < ncells; ++i) {
         val block = cells[i];
         std::string type = block["type"].as<std::string>();
-        auto nodesPerCell = block["nodesPerCell"].as<std::size_t>();
-        val dataVal = block["data"];
-        auto dataLen = dataVal["length"].as<std::size_t>();
-        if (nodesPerCell == 0 || dataLen % nodesPerCell != 0)
+        auto nodes_per_cell = block["nodesPerCell"].as<std::size_t>();
+        val data_val = block["data"];
+        auto data_len = data_val["length"].as<std::size_t>();
+        if (nodes_per_cell == 0 || data_len % nodes_per_cell != 0)
             throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                              "' data length is not a multiple of nodesPerCell");
-        mesh.cells.emplace_back(
-            type, int64NDArrayFromVal(dataVal, {dataLen / nodesPerCell, nodesPerCell}));
+        mesh.mCells.emplace_back(
+            type, int64_ndarray_from_val(data_val, {data_len / nodes_per_cell, nodes_per_cell}));
     }
 
-    if (obj.hasOwnProperty("point_data")) {
-        val pd = obj["point_data"];
-        for (const std::string& name : jsObjectKeys(pd)) {
+    if (rObj.hasOwnProperty("point_data")) {
+        val pd = rObj["point_data"];
+        for (const std::string& name : js_object_keys(pd)) {
             val arr = pd[name];
-            mesh.point_data.emplace(
-                name, float64NDArrayFromVal(arr, {arr["length"].as<std::size_t>()}));
+            mesh.mPointData.emplace(
+                name, float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
         }
     }
-    if (obj.hasOwnProperty("cell_data")) {
-        val cd = obj["cell_data"];
-        for (const std::string& name : jsObjectKeys(cd)) {
-            val blocksVal = cd[name];
-            auto nb = blocksVal["length"].as<unsigned>();
+    if (rObj.hasOwnProperty("cell_data")) {
+        val cd = rObj["cell_data"];
+        for (const std::string& name : js_object_keys(cd)) {
+            val blocks_val = cd[name];
+            auto nb = blocks_val["length"].as<unsigned>();
             std::vector<NDArray> blocks;
             blocks.reserve(nb);
             for (unsigned b = 0; b < nb; ++b) {
-                val arr = blocksVal[b];
-                blocks.push_back(float64NDArrayFromVal(arr, {arr["length"].as<std::size_t>()}));
+                val arr = blocks_val[b];
+                blocks.push_back(float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
             }
-            mesh.cell_data.emplace(name, std::move(blocks));
+            mesh.mCellData.emplace(name, std::move(blocks));
         }
     }
-    if (obj.hasOwnProperty("field_data")) {
-        val fd = obj["field_data"];
-        for (const std::string& name : jsObjectKeys(fd)) {
+    if (rObj.hasOwnProperty("field_data")) {
+        val fd = rObj["field_data"];
+        for (const std::string& name : js_object_keys(fd)) {
             val arr = fd[name];
-            mesh.field_data.emplace(
-                name, float64NDArrayFromVal(arr, {arr["length"].as<std::size_t>()}));
+            mesh.mFieldData.emplace(
+                name, float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
         }
     }
     return mesh;
@@ -364,7 +373,8 @@ const std::map<std::string, ReadFn>& readers() {
 const std::map<std::string, WriteFn>& writers() {
     static const std::map<std::string, WriteFn> m = {
         {"abaqus", meshioplusplus::write_abaqus},
-        {"ansys", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
+        {"ansys", [](const std::string& p,
+                     const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
         {"avsucd", meshioplusplus::write_avsucd},
         {"dolfin", meshioplusplus::write_dolfin},
         {"flac3d",
@@ -373,26 +383,38 @@ const std::map<std::string, WriteFn>& writers() {
          }},
         {"flux", meshioplusplus::write_flux},
         {"freefem", meshioplusplus::write_freefem},
-        {"gmsh", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
+        {"gmsh", [](const std::string& p,
+                    const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
         {"medit", meshioplusplus::write_medit_ascii},
-        {"mfm", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
+        {"mfm",
+         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
         {"mphtxt", meshioplusplus::write_mphtxt},
         {"nastran", meshioplusplus::write_nastran},
-        {"netgen", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_netgen(p, mm, ".16e"); }},
+        {"netgen",
+         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_netgen(p, mm, ".16e"); }},
         {"obj", meshioplusplus::write_obj},
         {"off", meshioplusplus::write_off},
         {"permas", meshioplusplus::write_permas},
-        {"ply", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_ply(p, mm, /*binary=*/true); }},
-        {"stl", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_stl(p, mm, /*binary=*/false); }},
+        {"ply", [](const std::string& p,
+                   const Mesh& mm) { meshioplusplus::write_ply(p, mm, /*binary=*/true); }},
+        {"stl", [](const std::string& p,
+                   const Mesh& mm) { meshioplusplus::write_stl(p, mm, /*binary=*/false); }},
         {"su2", meshioplusplus::write_su2},
         {"tecplot", meshioplusplus::write_tecplot},
         {"tetgen", meshioplusplus::write_tetgen},
         {"ugrid", meshioplusplus::write_ugrid},
         {"unv", meshioplusplus::write_unv},
-        {"vtk", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true); }},
-        {"vtu", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/true); }},
+        {"vtk",
+         [](const std::string& p, const Mesh& mm) {
+             meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
+         }},
+        {"vtu",
+         [](const std::string& p, const Mesh& mm) {
+             meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/true);
+         }},
         {"wkt", meshioplusplus::write_wkt},
-        {"xdmf", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xdmf(p, mm, "XML"); }},
+        {"xdmf",
+         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xdmf(p, mm, "XML"); }},
         {"ansysinp",
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets from JS in v1
@@ -409,30 +431,30 @@ const std::map<std::string, WriteFn>& writers() {
 // select ansys/freefem (.msh) or ansysinp (.inp) instead.
 const std::map<std::string, std::string>& extension_defaults() {
     static const std::map<std::string, std::string> m = {
-        {".inp", "abaqus"},    {".avs", "avsucd"}, {".xml", "dolfin"}, {".f3grid", "flac3d"},
-        {".pf3", "flux"},      {".mesh", "medit"}, {".mfm", "mfm"},    {".mphtxt", "mphtxt"},
-        {".bdf", "nastran"},   {".nas", "nastran"}, {".fem", "nastran"}, {".vol", "netgen"},
-        {".obj", "obj"},       {".off", "off"},     {".post", "permas"}, {".dato", "permas"},
-        {".ply", "ply"},       {".stl", "stl"},     {".su2", "su2"},    {".dat", "tecplot"},
-        {".tec", "tecplot"},   {".ele", "tetgen"},  {".node", "tetgen"}, {".ugrid", "ugrid"},
-        {".unv", "unv"},       {".vtk", "vtk"},     {".vtu", "vtu"},    {".wkt", "wkt"},
-        {".xdmf", "xdmf"},     {".xmf", "xdmf"},    {".msh", "gmsh"},
+        {".inp", "abaqus"},  {".avs", "avsucd"},  {".xml", "dolfin"},  {".f3grid", "flac3d"},
+        {".pf3", "flux"},    {".mesh", "medit"},  {".mfm", "mfm"},     {".mphtxt", "mphtxt"},
+        {".bdf", "nastran"}, {".nas", "nastran"}, {".fem", "nastran"}, {".vol", "netgen"},
+        {".obj", "obj"},     {".off", "off"},     {".post", "permas"}, {".dato", "permas"},
+        {".ply", "ply"},     {".stl", "stl"},     {".su2", "su2"},     {".dat", "tecplot"},
+        {".tec", "tecplot"}, {".ele", "tetgen"},  {".node", "tetgen"}, {".ugrid", "ugrid"},
+        {".unv", "unv"},     {".vtk", "vtk"},     {".vtu", "vtu"},     {".wkt", "wkt"},
+        {".xdmf", "xdmf"},   {".xmf", "xdmf"},    {".msh", "gmsh"},
     };
     return m;
 }
 
-std::string extension_of(const std::string& path) {
-    auto pos = path.find_last_of('.');
-    return pos == std::string::npos ? "" : path.substr(pos);
+std::string extension_of(const std::string& rPath) {
+    auto pos = rPath.find_last_of('.');
+    return pos == std::string::npos ? "" : rPath.substr(pos);
 }
 
-std::string resolve_format(const std::string& path, const std::string& format) {
-    if (!format.empty()) return format;
-    auto it = extension_defaults().find(extension_of(path));
+std::string resolve_format(const std::string& rPath, const std::string& rFormat) {
+    if (!rFormat.empty())
+        return rFormat;
+    auto it = extension_defaults().find(extension_of(rPath));
     if (it == extension_defaults().end())
-        throw meshioplusplus::ReadError(
-            "meshio++ (wasm): cannot infer format from '" + path +
-            "' -- pass an explicit format argument");
+        throw meshioplusplus::ReadError("meshio++ (wasm): cannot infer format from '" + rPath +
+                                        "' -- pass an explicit format argument");
     return it->second;
 }
 
@@ -444,8 +466,8 @@ std::string resolve_format(const std::string& path, const std::string& format) {
 // plain JS throw at that call site, which propagates normally to the caller
 // of the exported function (the standard documented technique for surfacing
 // a readable message across the boundary).
-[[noreturn]] void throwJsError(const std::string& msg) {
-    EM_ASM({ throw new Error(UTF8ToString($0)); }, msg.c_str());
+[[noreturn]] void throw_js_error(const std::string& rMsg) {
+    EM_ASM({ throw new Error(UTF8ToString($0)); }, rMsg.c_str());
     __builtin_unreachable();  // EM_ASM's throw never returns; satisfies -Wreturn-type
 }
 
@@ -453,13 +475,13 @@ std::string resolve_format(const std::string& path, const std::string& format) {
 // WriteError (or other std::exception) becomes a proper JS Error instead of
 // a message-less WebAssembly.Exception at the JS boundary.
 template <class F>
-auto withJsErrors(F&& f) -> decltype(f()) {
+auto with_js_errors(F&& f) -> decltype(f()) {
     try {
         return f();
     } catch (const std::exception& e) {
-        throwJsError(e.what());
+        throw_js_error(e.what());
     } catch (...) {
-        throwJsError("meshio++ (wasm): unknown error");
+        throw_js_error("meshio++ (wasm): unknown error");
     }
 }
 
@@ -470,41 +492,41 @@ auto withJsErrors(F&& f) -> decltype(f()) {
 
 /**
  * @brief Read a mesh file from the Emscripten virtual filesystem.
- * @param path virtual FS path (write the bytes there first via `Module.FS`).
- * @param format explicit format key (see `extension_defaults()`), or "" to
- *   infer from `path`'s extension.
- * @return a plain JS mesh object (see `meshToVal`).
+ * @param rPath virtual FS path (write the bytes there first via `Module.FS`).
+ * @param rFormat explicit format key (see `extension_defaults()`), or "" to
+ *   infer from `rPath`'s extension.
+ * @return a plain JS mesh object (see `mesh_to_val`).
  * @throws meshioplusplus::ReadError on an unknown/unsupported format or a
  *   malformed file.
  */
-val readMesh(const std::string& path, const std::string& format) {
-    return withJsErrors([&]() -> val {
-        std::string fmt = resolve_format(path, format);
+val read_mesh(const std::string& rPath, const std::string& rFormat) {
+    return with_js_errors([&]() -> val {
+        std::string fmt = resolve_format(rPath, rFormat);
         auto it = readers().find(fmt);
         if (it == readers().end())
-            throw meshioplusplus::ReadError(
-                "meshio++ (wasm): unknown or unsupported format '" + fmt + "'");
-        return meshToVal(it->second(path));
+            throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported format '" +
+                                            fmt + "'");
+        return mesh_to_val(it->second(rPath));
     });
 }
 
 /**
  * @brief Write a mesh object to the Emscripten virtual filesystem.
- * @param path virtual FS path to write (read the bytes back out via
+ * @param rPath virtual FS path to write (read the bytes back out via
  *   `Module.FS` afterward).
- * @param meshObj a plain JS mesh object (see `meshToVal`'s shape).
- * @param format explicit format key, or "" to infer from `path`'s extension.
+ * @param rMeshObj a plain JS mesh object (see `mesh_to_val`'s shape).
+ * @param rFormat explicit format key, or "" to infer from `rPath`'s extension.
  * @throws meshioplusplus::WriteError on an unknown/write-unsupported format
  *   or malformed input.
  */
-void writeMesh(const std::string& path, const val& meshObj, const std::string& format) {
-    withJsErrors([&]() {
-        std::string fmt = resolve_format(path, format);
+void write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat) {
+    with_js_errors([&]() {
+        std::string fmt = resolve_format(rPath, rFormat);
         auto it = writers().find(fmt);
         if (it == writers().end())
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported format '" + fmt + "'");
-        it->second(path, valToMesh(meshObj));
+        it->second(rPath, val_to_mesh(rMeshObj));
     });
 }
 
@@ -513,11 +535,11 @@ void writeMesh(const std::string& path, const val& meshObj, const std::string& f
  * virtual FS), without round-tripping through a JS object. Mirrors the CLI's
  * `convert` subcommand.
  */
-void convert(const std::string& inPath, const std::string& inFormat, const std::string& outPath,
-            const std::string& outFormat) {
-    withJsErrors([&]() {
-        std::string rfmt = resolve_format(inPath, inFormat);
-        std::string wfmt = resolve_format(outPath, outFormat);
+void convert(const std::string& rInPath, const std::string& rInFormat, const std::string& rOutPath,
+             const std::string& rOutFormat) {
+    with_js_errors([&]() {
+        std::string rfmt = resolve_format(rInPath, rInFormat);
+        std::string wfmt = resolve_format(rOutPath, rOutFormat);
         auto rit = readers().find(rfmt);
         auto wit = writers().find(wfmt);
         if (rit == readers().end())
@@ -525,32 +547,33 @@ void convert(const std::string& inPath, const std::string& inFormat, const std::
                 "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'");
         if (wit == writers().end())
             throw meshioplusplus::WriteError(
-                "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt +
-                "'");
-        wit->second(outPath, rit->second(inPath));
+                "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'");
+        wit->second(rOutPath, rit->second(rInPath));
     });
 }
 
 /** @brief The shared `num_nodes_per_cell` metadata table, as a plain JS object. */
-val numNodesPerCellJs() {
+val num_nodes_per_cell_js() {
     val out = val::object();
-    for (const auto& kv : meshioplusplus::num_nodes_per_cell()) out.set(kv.first, kv.second);
+    for (const auto& kv : meshioplusplus::num_nodes_per_cell())
+        out.set(kv.first, kv.second);
     return out;
 }
 
 /** @brief The shared `topological_dimension` metadata table, as a plain JS object. */
-val topologicalDimensionJs() {
+val topological_dimension_js() {
     val out = val::object();
-    for (const auto& kv : meshioplusplus::topological_dimension()) out.set(kv.first, kv.second);
+    for (const auto& kv : meshioplusplus::topological_dimension())
+        out.set(kv.first, kv.second);
     return out;
 }
 
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
-    emscripten::function("readMesh", &readMesh);
-    emscripten::function("writeMesh", &writeMesh);
+    emscripten::function("readMesh", &read_mesh);
+    emscripten::function("writeMesh", &write_mesh);
     emscripten::function("convert", &convert);
-    emscripten::function("numNodesPerCell", &numNodesPerCellJs);
-    emscripten::function("topologicalDimension", &topologicalDimensionJs);
+    emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
+    emscripten::function("topologicalDimension", &topological_dimension_js);
 }

@@ -63,13 +63,13 @@ namespace meshioplusplus {
  * FEBRICK), then FEBLOCK-packed coordinate/point_data/cell_data columns
  * (data wrapped at 20 values per line) and 1-based connectivity.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @throws WriteError if the mesh contains **more than one** distinct cell
  *         type (the Python fallback handles that case by degrading
  *         everything into one FEQUADRILATERAL/FEBRICK zone)
  */
-void write_tecplot(const std::string& path, const Mesh& mesh);
+void write_tecplot(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a Tecplot ASCII file's first FE zone.
@@ -79,7 +79,7 @@ void write_tecplot(const std::string& path, const Mesh& mesh);
  * FEPOINT data body and 1-based connectivity. Any zones after the first are
  * silently ignored.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh
  * @throws ReadError if `X`/`x` is missing, the zone header uses an
  *         unsupported `F=`/`ZONETYPE=` combination, or the header/data
@@ -89,6 +89,6 @@ void write_tecplot(const std::string& path, const Mesh& mesh);
  * @note point_data/cell_data keys are the raw Tecplot variable names (no
  *       prefix); `X`/`Y`/`Z` are reserved for coordinates.
  */
-Mesh read_tecplot(const std::string& path);
+Mesh read_tecplot(const std::string& rPath);
 
 }  // namespace meshioplusplus

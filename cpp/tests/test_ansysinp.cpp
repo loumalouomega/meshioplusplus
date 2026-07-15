@@ -48,19 +48,25 @@ void roundtrip_plain(const meshioplusplus::Mesh& mesh, const std::string& suffix
 
 }  // namespace
 
-TEST(AnsysInp, TetraRoundtrip) { roundtrip_plain(mt::tet_mesh(), ".inp"); }
-TEST(AnsysInp, HexRoundtrip) { roundtrip_plain(mt::hex_mesh(), ".inp"); }
-TEST(AnsysInp, HybridRoundtrip) { roundtrip_plain(mt::tri_quad_mesh(), ".inp"); }
+TEST(AnsysInp, TetraRoundtrip) {
+    roundtrip_plain(mt::tet_mesh(), ".inp");
+}
+TEST(AnsysInp, HexRoundtrip) {
+    roundtrip_plain(mt::hex_mesh(), ".inp");
+}
+TEST(AnsysInp, HybridRoundtrip) {
+    roundtrip_plain(mt::tri_quad_mesh(), ".inp");
+}
 
 TEST(AnsysInp, SetsRoundtrip) {
     meshioplusplus::Mesh mesh = mt::tri_quad_mesh();  // blocks: triangle, quad, triangle
     std::string path = mt::temp_path(".inp");
 
     AnsysInfo win;
-    win.point_sets["CORNERS"] = {0, 1, 6};
-    // cell_sets: one list per cell block (3 blocks). Select cell 0 of the first
+    win.mPointSets["CORNERS"] = {0, 1, 6};
+    // mCellSets: one list per cell block (3 blocks). Select cell 0 of the first
     // triangle block and cell 0 of the quad block.
-    win.cell_sets["SOME"] = {{0}, {0}, {}};
+    win.mCellSets["SOME"] = {{0}, {0}, {}};
 
     write_ansysinp(path, mesh, win);
 
@@ -68,15 +74,16 @@ TEST(AnsysInp, SetsRoundtrip) {
     meshioplusplus::Mesh out = read_ansysinp(path, rout);
     mt::expect_mesh_eq(mesh, out);
 
-    ASSERT_TRUE(rout.point_sets.count("CORNERS"));
-    std::vector<std::int64_t> ps = rout.point_sets["CORNERS"];
+    ASSERT_TRUE(rout.mPointSets.count("CORNERS"));
+    std::vector<std::int64_t> ps = rout.mPointSets["CORNERS"];
     std::sort(ps.begin(), ps.end());
     EXPECT_EQ(ps, (std::vector<std::int64_t>{0, 1, 6}));
 
-    ASSERT_TRUE(rout.cell_sets.count("SOME"));
+    ASSERT_TRUE(rout.mCellSets.count("SOME"));
     // 2 element ids selected in total across the blocks.
     std::size_t total = 0;
-    for (const auto& blk : rout.cell_sets["SOME"]) total += blk.size();
+    for (const auto& blk : rout.mCellSets["SOME"])
+        total += blk.size();
     EXPECT_EQ(total, 2u);
 
     std::error_code ec;
@@ -85,8 +92,8 @@ TEST(AnsysInp, SetsRoundtrip) {
 
 TEST(AnsysInp, UnknownTypeThrows) {
     meshioplusplus::Mesh m;
-    m.points = mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
-    m.cells.emplace_back("polygon", mt::conn_from({{0, 1, 2}}));
+    m.mPoints = mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
+    m.mCells.emplace_back("polygon", mt::conn_from({{0, 1, 2}}));
     AnsysInfo info;
     std::string path = mt::temp_path(".inp");
     EXPECT_THROW(write_ansysinp(path, m, info), meshioplusplus::WriteError);

@@ -47,7 +47,7 @@ namespace meshioplusplus {
  */
 struct ReadError : std::runtime_error {
     ReadError() : std::runtime_error("") {}
-    explicit ReadError(const std::string& msg) : std::runtime_error(msg) {}
+    explicit ReadError(const std::string& rMsg) : std::runtime_error(rMsg) {}
 };
 
 /**
@@ -60,7 +60,7 @@ struct ReadError : std::runtime_error {
  */
 struct WriteError : std::runtime_error {
     WriteError() : std::runtime_error("") {}
-    explicit WriteError(const std::string& msg) : std::runtime_error(msg) {}
+    explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
 };
 
 }  // namespace meshioplusplus

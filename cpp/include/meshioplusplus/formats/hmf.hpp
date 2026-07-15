@@ -66,7 +66,7 @@ namespace meshioplusplus {
  *        written datasets
  * @throws WriteError on an unsupported cell type or mesh layout
  */
-void write_hmf(const std::string& path, const Mesh& mesh, int gzip_level);
+void write_hmf(const std::string& rPath, const Mesh& rMesh, int gzip_level);
 
 /**
  * @brief Read a meshio++ HMF (.hmf) HDF5 container into a Mesh.
@@ -87,7 +87,7 @@ void write_hmf(const std::string& path, const Mesh& mesh, int gzip_level);
  * @throws ReadError if `GeometryType` is not one of "X"/"XY"/"XYZ", or on a
  *         malformed/unsupported HDF5 layout
  */
-Mesh read_hmf(const std::string& path);
+Mesh read_hmf(const std::string& rPath);
 
 }  // namespace meshioplusplus
 

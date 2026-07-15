@@ -29,7 +29,7 @@
  * report which one is active. Iterations passed to `parallel_for` must be
  * independent (no cross-iteration state) since they may run concurrently in
  * any order; the first exception thrown by any iteration is captured and
- * rethrown once the parallel region has joined (via `detail::first_exception`),
+ * rethrown once the parallel region has joined (via `detail::FirstException`),
  * so callers see ordinary C++ exception semantics rather than `std::terminate`
  * or a lost exception.
  *
@@ -130,31 +130,32 @@ namespace detail {
  *
  * Iterations run on multiple threads cannot let a C++ exception escape
  * across the parallelism boundary (OpenMP/TBB would `std::terminate`), so
- * each backend wraps its per-iteration body in `run()`, which catches
+ * each backend wraps its per-iteration body in `Run()`, which catches
  * everything and records only the *first* exception (subsequent ones from
- * other threads are discarded — `raised_` is a one-shot latch via
+ * other threads are discarded — `mRaised` is a one-shot latch via
  * `std::atomic_flag`). After the parallel region has fully joined, the
- * caller calls `rethrow_if_any()` to surface that exception on the calling
+ * caller calls `RethrowIfAny()` to surface that exception on the calling
  * thread with normal C++ semantics.
  */
-class first_exception {
+class FirstException {
 public:
     template <class Body>
-    void run(Body&& body) noexcept {
+    void Run(Body&& body) noexcept {
         try {
             body();
         } catch (...) {
-            if (!raised_.test_and_set(std::memory_order_acq_rel))
-                eptr_ = std::current_exception();
+            if (!mRaised.test_and_set(std::memory_order_acq_rel))
+                mEptr = std::current_exception();
         }
     }
-    void rethrow_if_any() {
-        if (eptr_) std::rethrow_exception(eptr_);
+    void RethrowIfAny() {
+        if (mEptr)
+            std::rethrow_exception(mEptr);
     }
 
 private:
-    std::atomic_flag raised_ = ATOMIC_FLAG_INIT;
-    std::exception_ptr eptr_;
+    std::atomic_flag mRaised = ATOMIC_FLAG_INIT;
+    std::exception_ptr mEptr;
 };
 
 /**
@@ -183,24 +184,25 @@ private:
  *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
  *    unused (cast to `void` to silence warnings).
  *
- * Every branch funnels per-iteration exceptions through a `first_exception`
+ * Every branch funnels per-iteration exceptions through a `FirstException`
  * so exactly one is rethrown after the region joins.
  *
  * @tparam F Callable invoked as `f(std::size_t i)` for each `i` in `[0, n)`.
  * @param n Number of iterations.
- * @param f The per-iteration body (iterations must be independent).
+ * @param rF The per-iteration body (iterations must be independent).
  * @param grain Minimum unit of work per dispatched chunk/task.
  * @param max_threads Cap on threads used (0 = no cap, use all available).
  */
 template <class F>
-void parallel_for_impl(std::size_t n, F& f, std::size_t grain, unsigned max_threads) {
+void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_threads) {
 #if defined(MESHIOPLUSPLUS_PARALLEL_STL)
     struct Chunk {
-        std::size_t begin, end;
+        std::size_t mBegin, mEnd;
     };
     const std::size_t hw = std::max<std::size_t>(1, std::thread::hardware_concurrency());
     std::size_t max_chunks = hw * 4;
-    if (max_threads) max_chunks = std::min<std::size_t>(max_chunks, max_threads);
+    if (max_threads)
+        max_chunks = std::min<std::size_t>(max_chunks, max_threads);
     const std::size_t by_grain = (n + grain - 1) / grain;
     const std::size_t nchunks = std::max<std::size_t>(1, std::min(max_chunks, by_grain));
     const std::size_t per = (n + nchunks - 1) / nchunks;
@@ -208,20 +210,20 @@ void parallel_for_impl(std::size_t n, F& f, std::size_t grain, unsigned max_thre
     // not qualify on all implementations), so iterate a small chunk table.
     std::vector<Chunk> chunks;
     chunks.reserve(nchunks);
-    for (std::size_t b = 0; b < n; b += per) chunks.push_back({b, std::min(b + per, n)});
-    first_exception exc;
-    std::for_each(std::execution::par, chunks.begin(), chunks.end(),
-                  [&](const Chunk& c) {
-                      exc.run([&] {
-                          for (std::size_t i = c.begin; i < c.end; ++i) f(i);
-                      });
-                  });
-    exc.rethrow_if_any();
+    for (std::size_t b = 0; b < n; b += per)
+        chunks.push_back({b, std::min(b + per, n)});
+    FirstException exc;
+    std::for_each(std::execution::par, chunks.begin(), chunks.end(), [&](const Chunk& c) {
+        exc.Run([&] {
+            for (std::size_t i = c.mBegin; i < c.mEnd; ++i)
+                rF(i);
+        });
+    });
+    exc.RethrowIfAny();
 #elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    first_exception exc;
+    FirstException exc;
     const long long nn = static_cast<long long>(n);
-    const int nt = max_threads ? std::min<int>(static_cast<int>(max_threads),
-                                               omp_get_max_threads())
+    const int nt = max_threads ? std::min<int>(static_cast<int>(max_threads), omp_get_max_threads())
                                : omp_get_max_threads();
     // Dynamic scheduling: on hybrid CPUs (P + E cores) a static split makes the
     // slow cores stragglers while the fast ones idle at the join; moderately
@@ -232,16 +234,17 @@ void parallel_for_impl(std::size_t n, F& f, std::size_t grain, unsigned max_thre
     const long long chunk = static_cast<long long>(std::max<std::size_t>(grain / 4, 1));
 #pragma omp parallel for schedule(dynamic, chunk) num_threads(nt)
     for (long long i = 0; i < nn; ++i) {
-        exc.run([&] { f(static_cast<std::size_t>(i)); });
+        exc.Run([&] { rF(static_cast<std::size_t>(i)); });
     }
-    exc.rethrow_if_any();
+    exc.RethrowIfAny();
 #elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-    first_exception exc;
+    FirstException exc;
     auto body = [&] {
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0, n, grain),
                           [&](const tbb::blocked_range<std::size_t>& r) {
-                              exc.run([&] {
-                                  for (std::size_t i = r.begin(); i != r.end(); ++i) f(i);
+                              exc.Run([&] {
+                                  for (std::size_t i = r.begin(); i != r.end(); ++i)
+                                      rF(i);
                               });
                           });
     };
@@ -251,11 +254,12 @@ void parallel_for_impl(std::size_t n, F& f, std::size_t grain, unsigned max_thre
     } else {
         body();
     }
-    exc.rethrow_if_any();
+    exc.RethrowIfAny();
 #else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
     (void)grain;
     (void)max_threads;
-    for (std::size_t i = 0; i < n; ++i) f(i);
+    for (std::size_t i = 0; i < n; ++i)
+        rF(i);
 #endif
 }
 
@@ -292,9 +296,11 @@ void parallel_for_impl(std::size_t n, F& f, std::size_t grain, unsigned max_thre
 template <class F>
 void parallel_for(std::size_t n, F&& f, std::size_t grain = parallel_grain_default,
                   unsigned max_threads = 0) {
-    if (n == 0) return;
+    if (n == 0)
+        return;
     if (n <= grain) {
-        for (std::size_t i = 0; i < n; ++i) f(i);
+        for (std::size_t i = 0; i < n; ++i)
+            f(i);
         return;
     }
     detail::parallel_for_impl(n, f, grain, max_threads);

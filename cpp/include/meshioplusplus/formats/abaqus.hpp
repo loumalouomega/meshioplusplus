@@ -57,8 +57,8 @@ namespace meshioplusplus {
  * one `*ELEMENT, TYPE=<abaqus_type>` block per cell block, translating each
  * meshio++ cell type through the Abaqus element-name table.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @throws WriteError if a cell block's type has no Abaqus element-name
  *         mapping (`"Abaqus writer: unsupported cell type ..."`)
  * @note the shim only attempts this C++ path when `float_fmt == ".16e"`,
@@ -66,7 +66,7 @@ namespace meshioplusplus {
  *       `cell_sets` — anything else falls back to the Python writer, which
  *       also supports `translate_cell_names=False` (verbatim type strings).
  */
-void write_abaqus(const std::string& path, const Mesh& mesh);
+void write_abaqus(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read an Abaqus .inp file (`*NODE`/`*ELEMENT` only).
@@ -77,7 +77,7 @@ void write_abaqus(const std::string& path, const Mesh& mesh);
  * case-sensitively as written (a leniency the plain-dict Python reader does
  * not have).
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh (no point_data/cell_data/field_data — this reader
  *         never populates them)
  * @throws ReadError if the file can't be opened, an `*ELEMENT` card has no
@@ -87,6 +87,6 @@ void write_abaqus(const std::string& path, const Mesh& mesh);
  *         (always deferred to the Python fallback, which supports them,
  *         including `GENERATE` ranges and recursive `*ELSET` references)
  */
-Mesh read_abaqus(const std::string& path);
+Mesh read_abaqus(const std::string& rPath);
 
 }  // namespace meshioplusplus

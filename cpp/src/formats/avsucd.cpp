@@ -39,22 +39,22 @@ namespace {
 
 const std::unordered_map<std::string, std::string>& meshio_to_avsucd_type() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"vertex", "pt"},   {"line", "line"},   {"triangle", "tri"},
-        {"quad", "quad"},   {"tetra", "tet"},   {"pyramid", "pyr"},
-        {"wedge", "prism"}, {"hexahedron", "hex"},
+        {"vertex", "pt"}, {"line", "line"},   {"triangle", "tri"}, {"quad", "quad"},
+        {"tetra", "tet"}, {"pyramid", "pyr"}, {"wedge", "prism"},  {"hexahedron", "hex"},
     };
     return m;
 }
 const std::unordered_map<std::string, std::string>& avsucd_to_meshio_type() {
     static const std::unordered_map<std::string, std::string> m = [] {
         std::unordered_map<std::string, std::string> r;
-        for (const auto& kv : meshio_to_avsucd_type()) r[kv.second] = kv.first;
+        for (const auto& kv : meshio_to_avsucd_type())
+            r[kv.second] = kv.first;
         return r;
     }();
     return m;
 }
 // meshio -> avsucd column order (empty = identity).
-const std::vector<int>& meshio_to_avsucd_order(const std::string& t) {
+const std::vector<int>& meshio_to_avsucd_order(const std::string& rT) {
     static const std::unordered_map<std::string, std::vector<int>> m = {
         {"tetra", {0, 1, 3, 2}},
         {"pyramid", {4, 0, 1, 2, 3}},
@@ -62,10 +62,10 @@ const std::vector<int>& meshio_to_avsucd_order(const std::string& t) {
         {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}},
     };
     static const std::vector<int> empty;
-    auto it = m.find(t);
+    auto it = m.find(rT);
     return it == m.end() ? empty : it->second;
 }
-const std::vector<int>& avsucd_to_meshio_order(const std::string& t) {
+const std::vector<int>& avsucd_to_meshio_order(const std::string& rT) {
     static const std::unordered_map<std::string, std::vector<int>> m = {
         {"tetra", {0, 1, 3, 2}},
         {"pyramid", {1, 2, 3, 4, 0}},
@@ -73,37 +73,41 @@ const std::vector<int>& avsucd_to_meshio_order(const std::string& t) {
         {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}},
     };
     static const std::vector<int> empty;
-    auto it = m.find(t);
+    auto it = m.find(rT);
     return it == m.end() ? empty : it->second;
 }
 
 bool is_int_dtype(DType t) {
-    return t == DType::Int8 || t == DType::Int16 || t == DType::Int32 ||
-           t == DType::Int64 || t == DType::UInt8 || t == DType::UInt16 ||
-           t == DType::UInt32 || t == DType::UInt64;
+    return t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
+           t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64;
 }
 
-std::vector<std::string> tokens(const std::string& s) {
+std::vector<std::string> tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(s);
+    std::istringstream iss(rS);
     std::string t;
-    while (iss >> t) out.push_back(t);
+    while (iss >> t)
+        out.push_back(t);
     return out;
 }
 
 }  // namespace
 
-Mesh read_avsucd(const std::string& path) {
-    std::ifstream in(path);
-    if (!in) throw ReadError("Could not open file: " + path);
+Mesh read_avsucd(const std::string& rPath) {
+    std::ifstream in(rPath);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
     std::string l;
     while (std::getline(in, l)) {
-        if (!l.empty() && l.back() == '\r') l.pop_back();
+        if (!l.empty() && l.back() == '\r')
+            l.pop_back();
         std::string t = l;
         std::size_t b = t.find_first_not_of(" \t");
-        if (b == std::string::npos) continue;            // blank
-        if (t[b] == '#') continue;                       // comment
+        if (b == std::string::npos)
+            continue;  // blank
+        if (t[b] == '#')
+            continue;  // comment
         lines.push_back(l);
     }
     std::size_t li = 0;
@@ -116,17 +120,24 @@ Mesh read_avsucd(const std::string& path) {
 
     Mesh mesh;
     std::unordered_map<std::int64_t, std::int64_t> point_ids;
-    mesh.points = NDArray(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
-    double* pp = mesh.points.as<double>();
+    mesh.mPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num_nodes), 3});
+    double* pp = mesh.mPoints.As<double>();
     for (long long i = 0; i < num_nodes; ++i) {
         auto t = tokens(lines.at(li++));
         point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
-        for (int c = 0; c < 3; ++c) pp[i * 3 + c] = std::strtod(t[1 + c].c_str(), nullptr);
+        for (int c = 0; c < 3; ++c)
+            pp[i * 3 + c] = std::strtod(t[1 + c].c_str(), nullptr);
     }
 
     // Cells, grouped by consecutive type.
     std::unordered_map<std::int64_t, std::int64_t> cell_ids;
-    struct Blk { std::string type; int n; std::vector<std::int64_t> conn; std::vector<std::int64_t> mat; std::size_t count = 0; };
+    struct Blk {
+        std::string mType;
+        int mN;
+        std::vector<std::int64_t> mConn;
+        std::vector<std::int64_t> mMat;
+        std::size_t mCount = 0;
+    };
     std::vector<Blk> blocks;
     for (long long c = 0; c < num_cells; ++c) {
         auto t = tokens(lines.at(li++));
@@ -137,33 +148,37 @@ Mesh read_avsucd(const std::string& path) {
             throw ReadError("AVS-UCD: unknown cell type '" + t[2] + "'");
         const std::string& mtype = it->second;
         int n = static_cast<int>(t.size()) - 3;
-        if (blocks.empty() || blocks.back().type != mtype) {
-            Blk b; b.type = mtype; b.n = n; blocks.push_back(std::move(b));
+        if (blocks.empty() || blocks.back().mType != mtype) {
+            Blk b;
+            b.mType = mtype;
+            b.mN = n;
+            blocks.push_back(std::move(b));
         }
         Blk& blk = blocks.back();
         for (int j = 0; j < n; ++j)
-            blk.conn.push_back(point_ids.at(std::strtoll(t[3 + j].c_str(), nullptr, 10)));
-        blk.mat.push_back(mat);
+            blk.mConn.push_back(point_ids.at(std::strtoll(t[3 + j].c_str(), nullptr, 10)));
+        blk.mMat.push_back(mat);
         cell_ids[cid] = c;
-        ++blk.count;
+        ++blk.mCount;
     }
 
     std::vector<NDArray> material_blocks;
     for (auto& blk : blocks) {
-        const std::vector<int>& perm = avsucd_to_meshio_order(blk.type);
-        NDArray data(DType::Int64, {blk.count, static_cast<std::size_t>(blk.n)});
-        std::int64_t* dp = data.as<std::int64_t>();
-        for (std::size_t r = 0; r < blk.count; ++r)
-            for (int j = 0; j < blk.n; ++j) {
+        const std::vector<int>& perm = avsucd_to_meshio_order(blk.mType);
+        NDArray data(DType::Int64, {blk.mCount, static_cast<std::size_t>(blk.mN)});
+        std::int64_t* dp = data.As<std::int64_t>();
+        for (std::size_t r = 0; r < blk.mCount; ++r)
+            for (int j = 0; j < blk.mN; ++j) {
                 int src = perm.empty() ? j : perm[j];
-                dp[r * blk.n + j] = blk.conn[r * blk.n + src];
+                dp[r * blk.mN + j] = blk.mConn[r * blk.mN + src];
             }
-        mesh.cells.emplace_back(blk.type, std::move(data));
-        NDArray m(DType::Int64, {blk.count});
-        for (std::size_t r = 0; r < blk.count; ++r) m.as<std::int64_t>()[r] = blk.mat[r];
+        mesh.mCells.emplace_back(blk.mType, std::move(data));
+        NDArray m(DType::Int64, {blk.mCount});
+        for (std::size_t r = 0; r < blk.mCount; ++r)
+            m.As<std::int64_t>()[r] = blk.mMat[r];
         material_blocks.push_back(std::move(m));
     }
-    mesh.cell_data.emplace("avsucd:material", std::move(material_blocks));
+    mesh.mCellData.emplace("avsucd:material", std::move(material_blocks));
 
     // Reads a data section into name -> (num_entities, size) arrays.
     auto read_data = [&](long long num_entities,
@@ -172,7 +187,8 @@ Mesh read_avsucd(const std::string& path) {
         auto h = tokens(lines.at(li++));
         int narr = std::stoi(h[0]);
         std::vector<int> sizes(narr);
-        for (int i = 0; i < narr; ++i) sizes[i] = std::stoi(h[1 + i]);
+        for (int i = 0; i < narr; ++i)
+            sizes[i] = std::stoi(h[1 + i]);
         for (int i = 0; i < narr; ++i) {
             std::string lbl = lines.at(li++);
             std::size_t comma = lbl.find(',');
@@ -180,13 +196,16 @@ Mesh read_avsucd(const std::string& path) {
             // strip + replace spaces with underscore
             std::string clean;
             for (char ch : name) {
-                if (ch == ' ') clean += '_';
-                else if (!std::isspace(static_cast<unsigned char>(ch))) clean += ch;
+                if (ch == ' ')
+                    clean += '_';
+                else if (!std::isspace(static_cast<unsigned char>(ch)))
+                    clean += ch;
             }
             names.push_back(clean);
             arrays.emplace_back(DType::Float64,
                                 sizes[i] == 1 ? std::vector<std::size_t>{(std::size_t)num_entities}
-                                              : std::vector<std::size_t>{(std::size_t)num_entities, (std::size_t)sizes[i]});
+                                              : std::vector<std::size_t>{(std::size_t)num_entities,
+                                                                         (std::size_t)sizes[i]});
         }
         for (long long e = 0; e < num_entities; ++e) {
             auto t = tokens(lines.at(li++));
@@ -194,7 +213,8 @@ Mesh read_avsucd(const std::string& path) {
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {
                 for (int c = 0; c < sizes[i]; ++c)
-                    arrays[i].as<double>()[eid * sizes[i] + c] = std::strtod(t[j++].c_str(), nullptr);
+                    arrays[i].As<double>()[eid * sizes[i] + c] =
+                        std::strtod(t[j++].c_str(), nullptr);
             }
         }
     };
@@ -204,7 +224,7 @@ Mesh read_avsucd(const std::string& path) {
         std::vector<NDArray> arrays;
         read_data(num_nodes, point_ids, names, arrays);
         for (std::size_t i = 0; i < names.size(); ++i)
-            mesh.point_data.emplace(names[i], std::move(arrays[i]));
+            mesh.mPointData.emplace(names[i], std::move(arrays[i]));
     }
     if (num_cell_data > 0) {
         std::vector<std::string> names;
@@ -213,49 +233,53 @@ Mesh read_avsucd(const std::string& path) {
         // split each into per-block arrays
         for (std::size_t i = 0; i < names.size(); ++i) {
             const NDArray& a = arrays[i];
-            std::size_t nc = a.shape().size() >= 2 ? a.shape()[1] : 1;
-            std::size_t isz = dtype_size(a.dtype());
+            std::size_t nc = a.Shape().size() >= 2 ? a.Shape()[1] : 1;
+            std::size_t isz = dtype_size(a.Dtype());
             std::vector<NDArray> per_block;
             std::size_t offset = 0;
             for (auto& blk : blocks) {
-                std::vector<std::size_t> shp = (nc == 1)
-                    ? std::vector<std::size_t>{blk.count}
-                    : std::vector<std::size_t>{blk.count, nc};
+                std::vector<std::size_t> shp = (nc == 1) ? std::vector<std::size_t>{blk.mCount}
+                                                         : std::vector<std::size_t>{blk.mCount, nc};
                 NDArray out(DType::Float64, shp);
-                std::memcpy(out.data(), a.data() + offset * nc * isz, blk.count * nc * isz);
+                std::memcpy(out.Data(), a.Data() + offset * nc * isz, blk.mCount * nc * isz);
                 per_block.push_back(std::move(out));
-                offset += blk.count;
+                offset += blk.mCount;
             }
-            mesh.cell_data.emplace(names[i], std::move(per_block));
+            mesh.mCellData.emplace(names[i], std::move(per_block));
         }
     }
 
     return mesh;
 }
 
-void write_avsucd(const std::string& path, const Mesh& mesh) {
-    std::ofstream os(path);
-    if (!os) throw WriteError("Could not open file for writing: " + path);
+void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
+    std::ofstream os(rPath);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t num_nodes = mesh.num_points();
-    const std::size_t dim = mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
+    const std::size_t num_nodes = rMesh.NumPoints();
+    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
     std::size_t num_cells = 0;
-    for (const auto& cb : mesh.cells) num_cells += cb.num_cells();
+    for (const auto& cb : rMesh.mCells)
+        num_cells += cb.NumCells();
 
     // Material = first int cell_data array (avsucd:material if present).
     std::string mat_key;
-    for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
-        const auto& blocks = mesh.cell_data.at(name);
-        if (!blocks.empty() && is_int_dtype(blocks.front().dtype())) { mat_key = name; break; }
+    for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
+        const auto& blocks = rMesh.mCellData.at(name);
+        if (!blocks.empty() && is_int_dtype(blocks.front().Dtype())) {
+            mat_key = name;
+            break;
+        }
     }
 
     // Node/cell data breakdowns (excluding material).
     std::vector<std::pair<std::string, const NDArray*>> ndata;
     std::vector<int> nsize;
     std::size_t nsum = 0;
-    for (const auto& name : detail::sorted_keys(mesh.point_data)) {
-        const NDArray& d = mesh.point_data.at(name);
-        int sz = d.shape().size() >= 2 ? static_cast<int>(d.shape()[1]) : 1;
+    for (const auto& name : detail::sorted_keys(rMesh.mPointData)) {
+        const NDArray& d = rMesh.mPointData.at(name);
+        int sz = d.Shape().size() >= 2 ? static_cast<int>(d.Shape()[1]) : 1;
         ndata.emplace_back(name, &d);
         nsize.push_back(sz);
         nsum += sz;
@@ -263,11 +287,13 @@ void write_avsucd(const std::string& path, const Mesh& mesh) {
     std::vector<std::pair<std::string, const std::vector<NDArray>*>> cdata;
     std::vector<int> csize;
     std::size_t csum = 0;
-    for (const auto& name : detail::sorted_keys(mesh.cell_data)) {
-        if (name == mat_key) continue;
-        const auto& blocks = mesh.cell_data.at(name);
-        int sz = (!blocks.empty() && blocks.front().shape().size() >= 2)
-                     ? static_cast<int>(blocks.front().shape()[1]) : 1;
+    for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
+        if (name == mat_key)
+            continue;
+        const auto& blocks = rMesh.mCellData.at(name);
+        int sz = (!blocks.empty() && blocks.front().Shape().size() >= 2)
+                     ? static_cast<int>(blocks.front().Shape()[1])
+                     : 1;
         cdata.emplace_back(name, &blocks);
         csize.push_back(sz);
         csum += sz;
@@ -280,7 +306,8 @@ void write_avsucd(const std::string& path, const Mesh& mesh) {
     for (std::size_t i = 0; i < num_nodes; ++i) {
         os << (i + 1);
         for (int c = 0; c < 3; ++c) {
-            double v = (std::size_t(c) < dim) ? detail::read_double(mesh.points, i * dim + c) : 0.0;
+            double v =
+                (std::size_t(c) < dim) ? detail::read_double(rMesh.mPoints, i * dim + c) : 0.0;
             std::snprintf(buf, sizeof(buf), " %.17g", v);
             os << buf;
         }
@@ -289,21 +316,22 @@ void write_avsucd(const std::string& path, const Mesh& mesh) {
 
     // Cells
     std::size_t gi = 0;
-    for (std::size_t bi = 0; bi < mesh.cells.size(); ++bi) {
-        const CellBlock& cb = mesh.cells[bi];
-        auto it = meshio_to_avsucd_type().find(cb.type);
+    for (std::size_t bi = 0; bi < rMesh.mCells.size(); ++bi) {
+        const CellBlock& cb = rMesh.mCells[bi];
+        auto it = meshio_to_avsucd_type().find(cb.mType);
         if (it == meshio_to_avsucd_type().end())
-            throw WriteError("AVS-UCD writer: unsupported cell type " + cb.type);
-        const std::vector<int>& perm = meshio_to_avsucd_order(cb.type);
-        std::size_t n = cb.data.shape().size() >= 2 ? cb.data.shape()[1] : 1;
+            throw WriteError("AVS-UCD writer: unsupported cell type " + cb.mType);
+        const std::vector<int>& perm = meshio_to_avsucd_order(cb.mType);
+        std::size_t n = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
         const NDArray* mat = nullptr;
-        if (!mat_key.empty()) mat = &mesh.cell_data.at(mat_key)[bi];
-        for (std::size_t r = 0; r < cb.num_cells(); ++r) {
+        if (!mat_key.empty())
+            mat = &rMesh.mCellData.at(mat_key)[bi];
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             std::int64_t m = mat ? detail::read_int(*mat, r) : 0;
             os << (gi + 1) << " " << m << " " << it->second;
             for (std::size_t j = 0; j < n; ++j) {
                 std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                os << " " << (detail::read_int(cb.data, r * n + src) + 1);
+                os << " " << (detail::read_int(cb.mData, r * n + src) + 1);
             }
             os << "\n";
             ++gi;
@@ -315,9 +343,11 @@ void write_avsucd(const std::string& path, const Mesh& mesh) {
                              const std::vector<std::string>& names,
                              auto value_at /* (idx, comp) -> double */) {
         os << sizes.size();
-        for (int s : sizes) os << " " << s;
+        for (int s : sizes)
+            os << " " << s;
         os << "\n";
-        for (const auto& nm : names) os << nm << ", real\n";
+        for (const auto& nm : names)
+            os << nm << ", real\n";
         for (std::size_t e = 0; e < num_entities; ++e) {
             os << (e + 1);
             for (std::size_t a = 0; a < sizes.size(); ++a)
@@ -331,7 +361,8 @@ void write_avsucd(const std::string& path, const Mesh& mesh) {
 
     if (nsum > 0) {
         std::vector<std::string> names;
-        for (auto& p : ndata) names.push_back(p.first);
+        for (auto& p : ndata)
+            names.push_back(p.first);
         write_section(num_nodes, nsize, names, [&](std::size_t a, std::size_t e, int c) {
             const NDArray* arr = ndata[a].second;
             std::size_t sz = static_cast<std::size_t>(nsize[a]);
@@ -340,15 +371,17 @@ void write_avsucd(const std::string& path, const Mesh& mesh) {
     }
     if (csum > 0) {
         std::vector<std::string> names;
-        for (auto& p : cdata) names.push_back(p.first);
+        for (auto& p : cdata)
+            names.push_back(p.first);
         // Flatten each cell-data name across blocks for global indexing.
         write_section(num_cells, csize, names, [&](std::size_t a, std::size_t e, int c) {
             const std::vector<NDArray>& blocks = *cdata[a].second;
             std::size_t sz = static_cast<std::size_t>(csize[a]);
             std::size_t idx = e;
             for (const auto& blk : blocks) {
-                std::size_t bcount = blk.shape().empty() ? 0 : blk.shape()[0];
-                if (idx < bcount) return detail::read_double(blk, idx * sz + c);
+                std::size_t bcount = blk.Shape().empty() ? 0 : blk.Shape()[0];
+                if (idx < bcount)
+                    return detail::read_double(blk, idx * sz + c);
                 idx -= bcount;
             }
             return 0.0;

@@ -55,8 +55,8 @@ namespace meshioplusplus {
  * flat 1-based node ids), converting 0-based to 1-based indices while
  * preserving the connectivity array's integer dtype.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write — only its `"tetra"` cell block (if any) is
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write — only its `"tetra"` cell block (if any) is
  *        emitted; any other cell type present is silently ignored, not
  *        warned
  * @param gzip_level HDF5 gzip compression level applied to every dataset
@@ -65,7 +65,7 @@ namespace meshioplusplus {
  *        used to write
  * @throws WriteError if the connectivity array's dtype is unsupported
  */
-void write_cgns(const std::string& path, const Mesh& mesh, int gzip_level);
+void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level);
 
 /**
  * @brief Read a CGNS/HDF5 file written by @ref write_cgns (or a compatible
@@ -74,7 +74,7 @@ void write_cgns(const std::string& path, const Mesh& mesh, int gzip_level);
  * Reads `Base/Zone1/GridCoordinates` and `GridElements`, converting 1-based
  * connectivity to 0-based.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh (points + one `"tetra"` cell block; no point_data/
  *         cell_data/field_data)
  * @throws ReadError if `"Base"` or `"Base/Zone1"` is missing ("Malformed
@@ -82,7 +82,7 @@ void write_cgns(const std::string& path, const Mesh& mesh, int gzip_level);
  *         connectivity doesn't reshape to exactly 4 columns per cell ("Can
  *         only read tetrahedra."), or the connectivity dtype is unsupported
  */
-Mesh read_cgns(const std::string& path);
+Mesh read_cgns(const std::string& rPath);
 
 }  // namespace meshioplusplus
 

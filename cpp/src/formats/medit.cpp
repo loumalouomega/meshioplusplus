@@ -39,21 +39,20 @@ namespace {
 // medit element keyword -> (meshio type, nodes per cell)
 const std::unordered_map<std::string, std::pair<std::string, int>>& medit_to_meshio() {
     static const std::unordered_map<std::string, std::pair<std::string, int>> m = {
-        {"Edges", {"line", 2}},          {"Triangles", {"triangle", 3}},
-        {"Quadrilaterals", {"quad", 4}}, {"Tetrahedra", {"tetra", 4}},
-        {"Prisms", {"wedge", 6}},        {"Pyramids", {"pyramid", 5}},
-        {"Hexahedra", {"hexahedron", 8}},{"Hexaedra", {"hexahedron", 8}},
+        {"Edges", {"line", 2}},           {"Triangles", {"triangle", 3}},
+        {"Quadrilaterals", {"quad", 4}},  {"Tetrahedra", {"tetra", 4}},
+        {"Prisms", {"wedge", 6}},         {"Pyramids", {"pyramid", 5}},
+        {"Hexahedra", {"hexahedron", 8}}, {"Hexaedra", {"hexahedron", 8}},
     };
     return m;
 }
 
 // meshio type -> (medit keyword, nodes per cell), write order.
-const std::vector<std::pair<std::string, std::pair<std::string, int>>>&
-meshio_to_medit() {
+const std::vector<std::pair<std::string, std::pair<std::string, int>>>& meshio_to_medit() {
     static const std::vector<std::pair<std::string, std::pair<std::string, int>>> m = {
-        {"line", {"Edges", 2}},          {"triangle", {"Triangles", 3}},
-        {"quad", {"Quadrilaterals", 4}}, {"tetra", {"Tetrahedra", 4}},
-        {"wedge", {"Prisms", 6}},        {"pyramid", {"Pyramids", 5}},
+        {"line", {"Edges", 2}},           {"triangle", {"Triangles", 3}},
+        {"quad", {"Quadrilaterals", 4}},  {"tetra", {"Tetrahedra", 4}},
+        {"wedge", {"Prisms", 6}},         {"pyramid", {"Pyramids", 5}},
         {"hexahedron", {"Hexahedra", 8}},
     };
     return m;
@@ -61,19 +60,20 @@ meshio_to_medit() {
 
 // Whitespace/comment-skipping tokenizer over the whole file.
 struct Tokenizer {
-    const std::string& buf;
-    std::size_t pos = 0;
-    explicit Tokenizer(const std::string& b) : buf(b) {}
+    const std::string& mBuf;
+    std::size_t mPos = 0;
+    explicit Tokenizer(const std::string& rB) : mBuf(rB) {}
 
-    bool eof() const { return pos >= buf.size(); }
+    bool eof() const { return mPos >= mBuf.size(); }
 
     void skip_ws() {
-        while (pos < buf.size()) {
-            char c = buf[pos];
+        while (mPos < mBuf.size()) {
+            char c = mBuf[mPos];
             if (c == '#') {  // comment to end of line
-                while (pos < buf.size() && buf[pos] != '\n') ++pos;
+                while (mPos < mBuf.size() && mBuf[mPos] != '\n')
+                    ++mPos;
             } else if (std::isspace(static_cast<unsigned char>(c))) {
-                ++pos;
+                ++mPos;
             } else {
                 break;
             }
@@ -81,50 +81,51 @@ struct Tokenizer {
     }
     std::string next() {
         skip_ws();
-        std::size_t start = pos;
-        while (pos < buf.size() && !std::isspace(static_cast<unsigned char>(buf[pos])) &&
-               buf[pos] != '#')
-            ++pos;
-        return buf.substr(start, pos - start);
+        std::size_t start = mPos;
+        while (mPos < mBuf.size() && !std::isspace(static_cast<unsigned char>(mBuf[mPos])) &&
+               mBuf[mPos] != '#')
+            ++mPos;
+        return mBuf.substr(start, mPos - start);
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
     double next_double() { return std::strtod(next().c_str(), nullptr); }
     void skip_line() {
-        while (pos < buf.size() && buf[pos] != '\n') ++pos;
-        if (pos < buf.size()) ++pos;
+        while (mPos < mBuf.size() && mBuf[mPos] != '\n')
+            ++mPos;
+        if (mPos < mBuf.size())
+            ++mPos;
     }
 };
 
-void store_coord(NDArray& a, std::size_t idx, double v) {
-    if (a.dtype() == DType::Float32)
-        a.as<float>()[idx] = static_cast<float>(v);
+void store_coord(NDArray& rA, std::size_t idx, double v) {
+    if (rA.Dtype() == DType::Float32)
+        rA.As<float>()[idx] = static_cast<float>(v);
     else
-        a.as<double>()[idx] = v;
+        rA.As<double>()[idx] = v;
 }
 
 // Both pickers iterate in sorted key order so the "first int field" chosen is
 // stable regardless of the map's (unordered) storage order.
-const NDArray* pick_first_int(const std::unordered_map<std::string, NDArray>& d) {
-    for (const auto& name : detail::sorted_keys(d)) {
-        const NDArray& v = d.at(name);
-        DType t = v.dtype();
-        if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 ||
-            t == DType::Int64 || t == DType::UInt8 || t == DType::UInt16 ||
-            t == DType::UInt32 || t == DType::UInt64)
+const NDArray* pick_first_int(const std::unordered_map<std::string, NDArray>& rD) {
+    for (const auto& name : detail::sorted_keys(rD)) {
+        const NDArray& v = rD.at(name);
+        DType t = v.Dtype();
+        if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
+            t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64)
             return &v;
     }
     return nullptr;
 }
 
 const std::vector<NDArray>* pick_first_int_cell(
-    const std::unordered_map<std::string, std::vector<NDArray>>& d) {
-    for (const auto& name : detail::sorted_keys(d)) {
-        const std::vector<NDArray>& v = d.at(name);
-        if (v.empty()) continue;
-        DType t = v.front().dtype();
-        if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 ||
-            t == DType::Int64 || t == DType::UInt8 || t == DType::UInt16 ||
-            t == DType::UInt32 || t == DType::UInt64)
+    const std::unordered_map<std::string, std::vector<NDArray>>& rD) {
+    for (const auto& name : detail::sorted_keys(rD)) {
+        const std::vector<NDArray>& v = rD.at(name);
+        if (v.empty())
+            continue;
+        DType t = v.front().Dtype();
+        if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
+            t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64)
             return &v;
     }
     return nullptr;
@@ -132,11 +133,11 @@ const std::vector<NDArray>* pick_first_int_cell(
 
 }  // namespace
 
-Mesh read_medit_ascii(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) throw ReadError("Could not open file: " + path);
-    std::string buf((std::istreambuf_iterator<char>(in)),
-                    std::istreambuf_iterator<char>());
+Mesh read_medit_ascii(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
+    std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     Tokenizer tok(buf);
 
     int dim = 0;
@@ -149,21 +150,23 @@ Mesh read_medit_ascii(const std::string& path) {
 
     while (!tok.eof()) {
         std::string kw = tok.next();
-        if (kw.empty()) break;
+        if (kw.empty())
+            break;
         if (kw == "MeshVersionFormatted") {
             std::int64_t v = tok.next_int();
             coord_dtype = (v <= 1) ? DType::Float32 : DType::Float64;
         } else if (kw == "Dimension") {
             dim = static_cast<int>(tok.next_int());
         } else if (kw == "Vertices") {
-            if (dim <= 0) throw ReadError("Medit: Dimension before Vertices");
+            if (dim <= 0)
+                throw ReadError("Medit: Dimension before Vertices");
             std::int64_t n = tok.next_int();
-            mesh.points = NDArray(coord_dtype, {static_cast<std::size_t>(n),
-                                                static_cast<std::size_t>(dim)});
+            mesh.mPoints =
+                NDArray(coord_dtype, {static_cast<std::size_t>(n), static_cast<std::size_t>(dim)});
             point_ref.resize(n);
             for (std::int64_t i = 0; i < n; ++i) {
                 for (int c = 0; c < dim; ++c)
-                    store_coord(mesh.points, i * dim + c, tok.next_double());
+                    store_coord(mesh.mPoints, i * dim + c, tok.next_double());
                 point_ref[i] = static_cast<std::int64_t>(tok.next_double());
             }
             have_points = true;
@@ -172,44 +175,52 @@ Mesh read_medit_ascii(const std::string& path) {
             const std::string& type = info.first;
             int k = info.second;
             std::int64_t n = tok.next_int();
-            NDArray data(DType::Int64, {static_cast<std::size_t>(n),
-                                        static_cast<std::size_t>(k)});
+            NDArray data(DType::Int64, {static_cast<std::size_t>(n), static_cast<std::size_t>(k)});
             NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});
-            std::int64_t* dp = data.as<std::int64_t>();
-            std::int64_t* rp = ref.as<std::int64_t>();
+            std::int64_t* dp = data.As<std::int64_t>();
+            std::int64_t* rp = ref.As<std::int64_t>();
             for (std::int64_t i = 0; i < n; ++i) {
-                for (int j = 0; j < k; ++j) dp[i * k + j] = tok.next_int() - 1;
+                for (int j = 0; j < k; ++j)
+                    dp[i * k + j] = tok.next_int() - 1;
                 rp[i] = tok.next_int();
             }
-            mesh.cells.emplace_back(type, std::move(data));
-            mesh.cell_data["medit:ref"].push_back(std::move(ref));
+            mesh.mCells.emplace_back(type, std::move(data));
+            mesh.mCellData["medit:ref"].push_back(std::move(ref));
         } else if (kw == "Corners") {
             std::int64_t n = tok.next_int();
-            for (std::int64_t i = 0; i < n; ++i) tok.next();
+            for (std::int64_t i = 0; i < n; ++i)
+                tok.next();
         } else if (kw == "Normals") {
             std::int64_t n = tok.next_int();
-            for (std::int64_t i = 0; i < n * dim; ++i) tok.next();
+            for (std::int64_t i = 0; i < n * dim; ++i)
+                tok.next();
         } else if (kw == "NormalAtVertices") {
             std::int64_t n = tok.next_int();
-            for (std::int64_t i = 0; i < n * 2; ++i) tok.next();
+            for (std::int64_t i = 0; i < n * 2; ++i)
+                tok.next();
         } else if (kw == "SubDomainFromMesh") {
             std::int64_t n = tok.next_int();
-            for (std::int64_t i = 0; i < n * 4; ++i) tok.next();
+            for (std::int64_t i = 0; i < n * 4; ++i)
+                tok.next();
         } else if (kw == "VertexOnGeometricVertex") {
             std::int64_t n = tok.next_int();
-            for (std::int64_t i = 0; i < n * 2; ++i) tok.next();
+            for (std::int64_t i = 0; i < n * 2; ++i)
+                tok.next();
         } else if (kw == "VertexOnGeometricEdge") {
             std::int64_t n = tok.next_int();
-            for (std::int64_t i = 0; i < n * 3; ++i) tok.next();
+            for (std::int64_t i = 0; i < n * 3; ++i)
+                tok.next();
         } else if (kw == "EdgeOnGeometricEdge") {
             std::int64_t n = tok.next_int();
-            for (std::int64_t i = 0; i < n * 2; ++i) tok.next();
+            for (std::int64_t i = 0; i < n * 2; ++i)
+                tok.next();
         } else if (kw == "Identifier" || kw == "Geometry") {
             tok.skip_line();
-        } else if (kw == "RequiredVertices" || kw == "TangentAtVertices" ||
-                   kw == "Tangents" || kw == "Ridges") {
+        } else if (kw == "RequiredVertices" || kw == "TangentAtVertices" || kw == "Tangents" ||
+                   kw == "Ridges") {
             std::int64_t n = tok.next_int();
-            for (std::int64_t i = 0; i < n; ++i) tok.next();
+            for (std::int64_t i = 0; i < n; ++i)
+                tok.next();
         } else if (kw == "End") {
             break;
         } else {
@@ -217,32 +228,36 @@ Mesh read_medit_ascii(const std::string& path) {
         }
     }
 
-    if (!have_points) throw ReadError("Medit: expected Vertices");
+    if (!have_points)
+        throw ReadError("Medit: expected Vertices");
 
     NDArray pr(DType::Int64, {point_ref.size()});
-    for (std::size_t i = 0; i < point_ref.size(); ++i) pr.as<std::int64_t>()[i] = point_ref[i];
-    mesh.point_data.emplace("medit:ref", std::move(pr));
+    for (std::size_t i = 0; i < point_ref.size(); ++i)
+        pr.As<std::int64_t>()[i] = point_ref[i];
+    mesh.mPointData.emplace("medit:ref", std::move(pr));
     return mesh;
 }
 
-void write_medit_ascii(const std::string& path, const Mesh& mesh) {
-    std::ofstream os(path, std::ios::binary);
-    if (!os) throw WriteError("Could not open file for writing: " + path);
+void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t n = mesh.num_points();
-    const std::size_t d = mesh.points.shape().size() >= 2 ? mesh.points.shape()[1] : 0;
-    int version = (mesh.points.dtype() == DType::Float32) ? 1 : 2;
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t d = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    int version = (rMesh.mPoints.Dtype() == DType::Float32) ? 1 : 2;
 
     os << "MeshVersionFormatted " << version << "\n";
     os << "Dimension " << d << "\n";
 
     // Vertices
     os << "\nVertices\n" << n << "\n";
-    const NDArray* vlabels = pick_first_int(mesh.point_data);
+    const NDArray* vlabels = pick_first_int(rMesh.mPointData);
     char buf[64];
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t c = 0; c < d; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.16e ", detail::read_double(mesh.points, i * d + c));
+            std::snprintf(buf, sizeof(buf), "%.16e ",
+                          detail::read_double(rMesh.mPoints, i * d + c));
             os << buf;
         }
         std::int64_t lab = vlabels ? detail::read_int(*vlabels, i) : 1;
@@ -250,20 +265,21 @@ void write_medit_ascii(const std::string& path, const Mesh& mesh) {
     }
 
     // Cells, grouped by medit element keyword.
-    const std::vector<NDArray>* clabels = pick_first_int_cell(mesh.cell_data);
+    const std::vector<NDArray>* clabels = pick_first_int_cell(rMesh.mCellData);
     for (const auto& mk : meshio_to_medit()) {
         const std::string& mtype = mk.first;
         const std::string& kw = mk.second.first;
         int k = mk.second.second;
-        for (std::size_t ci = 0; ci < mesh.cells.size(); ++ci) {
-            const CellBlock& cb = mesh.cells[ci];
-            if (cb.type != mtype) continue;
-            std::size_t count = cb.num_cells();
+        for (std::size_t ci = 0; ci < rMesh.mCells.size(); ++ci) {
+            const CellBlock& cb = rMesh.mCells[ci];
+            if (cb.mType != mtype)
+                continue;
+            std::size_t count = cb.NumCells();
             os << "\n" << kw << "\n" << count << "\n";
             const NDArray* lab = (clabels && ci < clabels->size()) ? &(*clabels)[ci] : nullptr;
             for (std::size_t r = 0; r < count; ++r) {
                 for (int j = 0; j < k; ++j)
-                    os << (detail::read_int(cb.data, r * static_cast<std::size_t>(k) + j) + 1)
+                    os << (detail::read_int(cb.mData, r * static_cast<std::size_t>(k) + j) + 1)
                        << " ";
                 std::int64_t l = lab ? detail::read_int(*lab, r) : 1;
                 os << l << "\n";

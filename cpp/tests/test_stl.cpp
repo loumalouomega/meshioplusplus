@@ -32,9 +32,9 @@ void stl_roundtrip(const mt::Mesh& mesh, bool binary) {
     meshioplusplus::write_stl(path, mesh, binary);
     mt::Mesh out = meshioplusplus::read_stl(path);
 
-    ASSERT_EQ(out.cells.size(), 1u);
-    EXPECT_EQ(out.cells[0].type, "triangle");
-    EXPECT_EQ(out.cells[0].num_cells(), mesh.cells[0].num_cells());
+    ASSERT_EQ(out.mCells.size(), 1u);
+    EXPECT_EQ(out.mCells[0].mType, "triangle");
+    EXPECT_EQ(out.mCells[0].NumCells(), mesh.mCells[0].NumCells());
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -42,8 +42,12 @@ void stl_roundtrip(const mt::Mesh& mesh, bool binary) {
 
 }  // namespace
 
-TEST(Stl, TriMeshAscii) { stl_roundtrip(mt::tri_mesh(), false); }
-TEST(Stl, TriMeshBinary) { stl_roundtrip(mt::tri_mesh(), true); }
+TEST(Stl, TriMeshAscii) {
+    stl_roundtrip(mt::tri_mesh(), false);
+}
+TEST(Stl, TriMeshBinary) {
+    stl_roundtrip(mt::tri_mesh(), true);
+}
 
 TEST(Stl, GeometryPreserved) {
     // Verify the triangle vertex coordinates survive a round-trip.
@@ -52,8 +56,8 @@ TEST(Stl, GeometryPreserved) {
     meshioplusplus::write_stl(path, in, false);
     mt::Mesh out = meshioplusplus::read_stl(path);
     // both meshes describe the same 2 triangles over the unit square
-    EXPECT_EQ(out.cells[0].num_cells(), 2u);
-    EXPECT_GE(out.num_points(), 3u);
+    EXPECT_EQ(out.mCells[0].NumCells(), 2u);
+    EXPECT_GE(out.NumPoints(), 3u);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

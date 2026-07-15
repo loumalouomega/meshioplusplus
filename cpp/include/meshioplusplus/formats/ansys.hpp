@@ -60,15 +60,15 @@ namespace meshioplusplus {
  * int32 or `3012` int64). No face (`13`) sections, and no `mixed`/polyhedral
  * cell support, are ever emitted.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @param binary write node/cell bodies as binary (`true`, `20xx`/`30xx`
  *        prefixed sections) or ASCII (`false`)
  * @throws WriteError if `mesh` is not 2D or 3D, or if a cell block's type
  *         has no entry in the meshio++ -> Ansys type-code map ("illegal
  *         cell type")
  */
-void write_ansys(const std::string& path, const Mesh& mesh, bool binary);
+void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Read a Fluent .msh file.
@@ -78,10 +78,10 @@ void write_ansys(const std::string& path, const Mesh& mesh, bool binary);
  * line, binary a raw float32/float64 block), and `(<pfx>12 ...)` cell
  * sections (dead zones -> no cells; `mixed` zones structurally skipped, body
  * not decoded). All hexadecimal header/body integers are converted; the
- * result is one flat `Mesh.cells` list with the first point-zone's `first`
+ * result is one flat `Mesh.mCells` list with the first point-zone's `first`
  * index subtracted from every connectivity array.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh (point_data/cell_data/field_data always empty)
  * @throws ReadError if the file can't be opened, a section header is
  *         malformed or truncated, a cell zone's `element-type` isn't one of
@@ -95,6 +95,6 @@ void write_ansys(const std::string& path, const Mesh& mesh, bool binary);
  *       carries no per-node/per-cell field values, only geometry and zone
  *       structure
  */
-Mesh read_ansys(const std::string& path);
+Mesh read_ansys(const std::string& rPath);
 
 }  // namespace meshioplusplus

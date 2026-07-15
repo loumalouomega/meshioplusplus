@@ -43,10 +43,11 @@ namespace detail {
  * @return The keys of @p m sorted ascending.
  */
 template <class Map>
-std::vector<typename Map::key_type> sorted_keys(const Map& m) {
+std::vector<typename Map::key_type> sorted_keys(const Map& rM) {
     std::vector<typename Map::key_type> keys;
-    keys.reserve(m.size());
-    for (const auto& kv : m) keys.push_back(kv.first);
+    keys.reserve(rM.size());
+    for (const auto& kv : rM)
+        keys.push_back(kv.first);
     std::sort(keys.begin(), keys.end());
     return keys;
 }

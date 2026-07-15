@@ -72,11 +72,11 @@ namespace meshioplusplus {
  * `[0,6,1,7,2,8,9,10,11,3,12,4,13,5,14]`. Ends with `$END STRUCTURE` /
  * `$EXIT COMPONENT` / `$FIN`.
  *
- * @param path filesystem path to the .post/.dato file to create/overwrite
- * @param mesh the mesh to write
+ * @param rPath filesystem path to the .post/.dato file to create/overwrite
+ * @param rMesh the mesh to write
  * @throws WriteError on an unsupported cell type
  */
-void write_permas(const std::string& path, const Mesh& mesh);
+void write_permas(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a PERMAS (.post/.dato) file into a Mesh.
@@ -92,12 +92,12 @@ void write_permas(const std::string& path, const Mesh& mesh);
  * node order for `triangle6`/`tetra10`/`quad9`/`wedge15` without external
  * correction).
  *
- * @param path filesystem path to the .post/.dato file to read
+ * @param rPath filesystem path to the .post/.dato file to read
  * @return the read Mesh (no point_data/cell_data/field_data — PERMAS
  *         carries none)
  * @throws ReadError on a malformed file (e.g. an unrecognized element
  *         type, or a continuation line with no terminating non-`!` line)
  */
-Mesh read_permas(const std::string& path);
+Mesh read_permas(const std::string& rPath);
 
 }  // namespace meshioplusplus

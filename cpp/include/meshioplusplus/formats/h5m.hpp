@@ -63,16 +63,15 @@ namespace meshioplusplus {
  * plus a registry entry under `tstt/tags/<name>`. `cell_data` is never
  * written by this function.
  *
- * @param path filesystem path to the .h5m file to create/overwrite
- * @param mesh the mesh to write
+ * @param rPath filesystem path to the .h5m file to create/overwrite
+ * @param rMesh the mesh to write
  * @param add_global_ids if true, write a conventional `GLOBAL_ID` node tag
  *        (values `1..n`) when the mesh doesn't already carry one
  * @param gzip_level HDF5 gzip compression level (0 = none) applied to the
  *        written datasets
  * @throws WriteError on an unsupported layout
  */
-void write_h5m(const std::string& path, const Mesh& mesh, bool add_global_ids,
-               int gzip_level);
+void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids, int gzip_level);
 
 /**
  * @brief Read a MOAB H5M (.h5m) file into a Mesh.
@@ -86,11 +85,11 @@ void write_h5m(const std::string& path, const Mesh& mesh, bool add_global_ids,
  * and the `sets` group are ignored entirely (MOAB supports them; this
  * reader does not read them).
  *
- * @param path filesystem path to the .h5m file to read
+ * @param rPath filesystem path to the .h5m file to read
  * @return the read Mesh (points, cells, point_data only — no cell_data)
  * @throws ReadError on a malformed/unsupported HDF5 layout
  */
-Mesh read_h5m(const std::string& path);
+Mesh read_h5m(const std::string& rPath);
 
 }  // namespace meshioplusplus
 

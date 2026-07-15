@@ -87,7 +87,8 @@ PYBIND11_MODULE(_core, m) {
     // Translate C++ I/O errors to the existing Python exception classes.
     py::register_exception_translator([](std::exception_ptr p) {
         try {
-            if (p) std::rethrow_exception(p);
+            if (p)
+                std::rethrow_exception(p);
         } catch (const meshioplusplus::ReadError& e) {
             py::object exc = py::module_::import("meshioplusplus").attr("ReadError");
             PyErr_SetString(exc.ptr(), e.what());
@@ -109,20 +110,19 @@ PYBIND11_MODULE(_core, m) {
         "_roundtrip",
         [](py::object pymesh, bool allow_ragged) {
             meshioplusplus_py::PyMeshRefs refs;
-            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
-                                                     /*lenient_field_data=*/false,
-                                                     allow_ragged);
+            meshioplusplus::Mesh cpp =
+                meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                              /*lenient_field_data=*/false, allow_ragged);
             return meshioplusplus_py::mesh_to_py(std::move(cpp));
         },
         py::arg("pymesh"), py::arg("allow_ragged") = false);
 
     // VTU writer (ascii / binary / zlib), zero-copy input from the Python mesh.
-    m.def("vtu_write",
-          [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
-              meshioplusplus_py::PyMeshRefs refs;
-              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-              meshioplusplus::write_vtu(path, cpp, binary, zlib);
-          });
+    m.def("vtu_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::write_vtu(path, cpp, binary, zlib);
+    });
 
     // VTU reader -> Python mesh (zero-copy capsule-backed arrays).
     m.def("vtu_read", [](const std::string& path) {
@@ -130,12 +130,11 @@ PYBIND11_MODULE(_core, m) {
     });
 
     // VTK writer (version 5.1 or 4.2; ascii or big-endian binary).
-    m.def("vtk_write",
-          [](const std::string& path, py::object pymesh, bool binary, bool v51) {
-              meshioplusplus_py::PyMeshRefs refs;
-              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-              meshioplusplus::write_vtk(path, cpp, binary, v51);
-          });
+    m.def("vtk_write", [](const std::string& path, py::object pymesh, bool binary, bool v51) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::write_vtk(path, cpp, binary, v51);
+    });
 
     // VTK 5.1 reader -> Python mesh (zero-copy capsule-backed arrays).
     m.def("vtk_read", [](const std::string& path) {
@@ -278,46 +277,43 @@ PYBIND11_MODULE(_core, m) {
 
     // XDMF writer / reader (.xdmf/.xmf) — XML/Binary always; HDF when built
     // with HDF5.
-    m.def("xdmf_write",
-          [](const std::string& path, py::object pymesh, const std::string& data_format,
-             int gzip_level) {
-              meshioplusplus_py::PyMeshRefs refs;
-              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-              meshioplusplus::write_xdmf(path, cpp, data_format, gzip_level);
-          },
-          py::arg("path"), py::arg("mesh"), py::arg("data_format"),
-          py::arg("gzip_level") = -1);
+    m.def(
+        "xdmf_write",
+        [](const std::string& path, py::object pymesh, const std::string& data_format,
+           int gzip_level) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::write_xdmf(path, cpp, data_format, gzip_level);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("data_format"), py::arg("gzip_level") = -1);
     m.def("xdmf_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_xdmf(path));
     });
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     // CGNS writer / reader (.cgns).
-    m.def("cgns_write",
-          [](const std::string& path, py::object pymesh, int gzip_level) {
-              meshioplusplus_py::PyMeshRefs refs;
-              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-              meshioplusplus::write_cgns(path, cpp, gzip_level);
-          });
+    m.def("cgns_write", [](const std::string& path, py::object pymesh, int gzip_level) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::write_cgns(path, cpp, gzip_level);
+    });
     m.def("cgns_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_cgns(path));
     });
 
     // HMF writer / reader (.hmf).
-    m.def("hmf_write",
-          [](const std::string& path, py::object pymesh, int gzip_level) {
-              meshioplusplus_py::PyMeshRefs refs;
-              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-              meshioplusplus::write_hmf(path, cpp, gzip_level);
-          });
+    m.def("hmf_write", [](const std::string& path, py::object pymesh, int gzip_level) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::write_hmf(path, cpp, gzip_level);
+    });
     m.def("hmf_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_hmf(path));
     });
 
     // MOAB h5m writer / reader (.h5m).
     m.def("h5m_write",
-          [](const std::string& path, py::object pymesh, bool add_global_ids,
-             int gzip_level) {
+          [](const std::string& path, py::object pymesh, bool add_global_ids, int gzip_level) {
               meshioplusplus_py::PyMeshRefs refs;
               meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
               meshioplusplus::write_h5m(path, cpp, add_global_ids, gzip_level);
@@ -329,52 +325,52 @@ PYBIND11_MODULE(_core, m) {
     // MED/Salome writer / reader (.med). point_tags/cell_tags are custom Mesh
     // attributes and med:nom is a list of string-lists, so they travel outside
     // the Mesh conversion layer.
-    m.def(
-        "med_write",
-        [](const std::string& path, py::object pymesh,
-           std::map<std::int64_t, std::vector<std::string>> point_tags,
-           std::map<std::int64_t, std::vector<std::string>> cell_tags,
-           std::vector<std::vector<std::string>> med_nom, std::string mesh_name,
-           std::string description, std::string unit_time, std::string unit_coords,
-           std::map<std::int64_t, std::string> point_tag_groups,
-           std::map<std::int64_t, std::string> cell_tag_groups,
-           std::string med_version) {
-            meshioplusplus_py::PyMeshRefs refs;
-            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
-                                                     /*lenient_field_data=*/true,
-                                                     /*allow_ragged=*/true);
-            meshioplusplus::MedInfo info;
-            info.point_tags = std::move(point_tags);
-            info.cell_tags = std::move(cell_tags);
-            info.med_nom = std::move(med_nom);
-            info.mesh_name = mesh_name.empty() ? "mesh" : std::move(mesh_name);
-            info.description = std::move(description);
-            info.unit_time = std::move(unit_time);
-            info.unit_coords = std::move(unit_coords);
-            info.point_tag_groups = std::move(point_tag_groups);
-            info.cell_tag_groups = std::move(cell_tag_groups);
-            meshioplusplus::write_med(path, cpp, info, med_version);
-        });
+    m.def("med_write",
+          [](const std::string& path, py::object pymesh,
+             std::map<std::int64_t, std::vector<std::string>> point_tags,
+             std::map<std::int64_t, std::vector<std::string>> cell_tags,
+             std::vector<std::vector<std::string>> med_nom, std::string mesh_name,
+             std::string description, std::string unit_time, std::string unit_coords,
+             std::map<std::int64_t, std::string> point_tag_groups,
+             std::map<std::int64_t, std::string> cell_tag_groups, std::string med_version) {
+              meshioplusplus_py::PyMeshRefs refs;
+              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                       /*lenient_field_data=*/true,
+                                                                       /*allow_ragged=*/true);
+              meshioplusplus::MedInfo info;
+              info.mPointTags = std::move(point_tags);
+              info.mCellTags = std::move(cell_tags);
+              info.mMedNom = std::move(med_nom);
+              info.mMeshName = mesh_name.empty() ? "mesh" : std::move(mesh_name);
+              info.mDescription = std::move(description);
+              info.mUnitTime = std::move(unit_time);
+              info.mUnitCoords = std::move(unit_coords);
+              info.mPointTagGroups = std::move(point_tag_groups);
+              info.mCellTagGroups = std::move(cell_tag_groups);
+              meshioplusplus::write_med(path, cpp, info, med_version);
+          });
     m.def("med_read", [](const std::string& path) {
         meshioplusplus::MedInfo info;
         py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_med(path, info));
         py::dict ptags, ctags, pgroups, cgroups;
-        for (const auto& kv : info.point_tags) ptags[py::int_(kv.first)] = kv.second;
-        for (const auto& kv : info.cell_tags) ctags[py::int_(kv.first)] = kv.second;
-        for (const auto& kv : info.point_tag_groups)
+        for (const auto& kv : info.mPointTags)
+            ptags[py::int_(kv.first)] = kv.second;
+        for (const auto& kv : info.mCellTags)
+            ctags[py::int_(kv.first)] = kv.second;
+        for (const auto& kv : info.mPointTagGroups)
             pgroups[py::int_(kv.first)] = kv.second;
-        for (const auto& kv : info.cell_tag_groups)
+        for (const auto& kv : info.mCellTagGroups)
             cgroups[py::int_(kv.first)] = kv.second;
         pymesh.attr("point_tags") = ptags;
         pymesh.attr("cell_tags") = ctags;
         pymesh.attr("point_tag_groups") = pgroups;
         pymesh.attr("cell_tag_groups") = cgroups;
-        pymesh.attr("mesh_name") = info.mesh_name;
-        pymesh.attr("description") = info.description;
-        pymesh.attr("unit_time") = info.unit_time;
-        pymesh.attr("unit_coords") = info.unit_coords;
-        if (!info.med_nom.empty())
-            pymesh.attr("field_data")[py::str("med:nom")] = py::cast(info.med_nom);
+        pymesh.attr("mesh_name") = info.mMeshName;
+        pymesh.attr("description") = info.mDescription;
+        pymesh.attr("unit_time") = info.mUnitTime;
+        pymesh.attr("unit_coords") = info.mUnitCoords;
+        if (!info.mMedNom.empty())
+            pymesh.attr("field_data")[py::str("med:nom")] = py::cast(info.mMedNom);
         return pymesh;
     });
 #endif
@@ -419,22 +415,23 @@ PYBIND11_MODULE(_core, m) {
               meshioplusplus_py::PyMeshRefs refs;
               meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
               meshioplusplus::AnsysInfo info;
-              info.point_sets = std::move(point_sets);
-              info.cell_sets = std::move(cell_sets);
+              info.mPointSets = std::move(point_sets);
+              info.mCellSets = std::move(cell_sets);
               meshioplusplus::write_ansysinp(path, cpp, info);
           });
     m.def("ansysinp_read", [](const std::string& path) {
         meshioplusplus::AnsysInfo info;
-        py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansysinp(path, info));
+        py::object pymesh =
+            meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansysinp(path, info));
         py::dict psets, csets;
-        for (const auto& kv : info.point_sets)
+        for (const auto& kv : info.mPointSets)
             psets[py::str(kv.first)] = py::array_t<std::int64_t>(
                 static_cast<py::ssize_t>(kv.second.size()), kv.second.data());
-        for (const auto& kv : info.cell_sets) {
+        for (const auto& kv : info.mCellSets) {
             py::list blocks;
             for (const auto& blk : kv.second)
-                blocks.append(py::array_t<std::int64_t>(
-                    static_cast<py::ssize_t>(blk.size()), blk.data()));
+                blocks.append(
+                    py::array_t<std::int64_t>(static_cast<py::ssize_t>(blk.size()), blk.data()));
             csets[py::str(kv.first)] = blocks;
         }
         pymesh.attr("point_sets") = psets;
@@ -446,9 +443,11 @@ PYBIND11_MODULE(_core, m) {
     // mesh.cell_tags, carried through the OpenFoamInfo side-channel.
     m.def("openfoam_read", [](const std::string& path) {
         meshioplusplus::OpenFoamInfo info;
-        py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_openfoam(path, info));
+        py::object pymesh =
+            meshioplusplus_py::mesh_to_py(meshioplusplus::read_openfoam(path, info));
         py::dict ctags;
-        for (const auto& kv : info.cell_tags) ctags[py::int_(kv.first)] = kv.second;
+        for (const auto& kv : info.mCellTags)
+            ctags[py::int_(kv.first)] = kv.second;
         pymesh.attr("cell_tags") = ctags;
         pymesh.attr("point_tags") = py::dict();
         return pymesh;
@@ -473,13 +472,12 @@ PYBIND11_MODULE(_core, m) {
     });
 
     // FLAC3D writer / reader (.f3grid, ascii + binary, common path).
-    m.def("flac3d_write",
-          [](const std::string& path, py::object pymesh, const std::string& float_fmt,
-             bool binary) {
-              meshioplusplus_py::PyMeshRefs refs;
-              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-              meshioplusplus::write_flac3d(path, cpp, float_fmt, binary);
-          });
+    m.def("flac3d_write", [](const std::string& path, py::object pymesh,
+                             const std::string& float_fmt, bool binary) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::write_flac3d(path, cpp, float_fmt, binary);
+    });
     m.def("flac3d_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_flac3d(path));
     });

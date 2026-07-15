@@ -65,14 +65,14 @@ namespace meshioplusplus {
  */
 struct AnsysInfo {
     /** Component name -> node indices (0-based), from `CMBLOCK ...,NODE`. */
-    std::map<std::string, std::vector<std::int64_t>> point_sets;
+    std::map<std::string, std::vector<std::int64_t>> mPointSets;
     /**
      * Component name -> per-cell-block lists of local cell indices
      * (0-based), one inner list per mesh cell block in block order (the
      * order blocks were first encountered while reading `EBLOCK`), from
      * `CMBLOCK ...,ELEM`.
      */
-    std::map<std::string, std::vector<std::vector<std::int64_t>>> cell_sets;
+    std::map<std::string, std::vector<std::vector<std::int64_t>>> mCellSets;
 };
 
 /**
@@ -84,8 +84,8 @@ struct AnsysInfo {
  * matching the exclusion list (known keywords, `KEYWORD,` syntax, `!`/`/`
  * comments) stops a block's row-reading loop early.
  *
- * @param path filesystem path to read
- * @param[out] info receives `CMBLOCK` point/cell sets (0-based indices),
+ * @param rPath filesystem path to read
+ * @param[out] rInfo receives `CMBLOCK` point/cell sets (0-based indices),
  *        keyed by component name
  * @return the read Mesh (no point_data/cell_data/field_data — only
  *         geometry, connectivity, and named sets are represented)
@@ -94,7 +94,7 @@ struct AnsysInfo {
  *         appears before any base value, or an `EBLOCK` row's (family,
  *         node-count) pair has no meshio++ type mapping
  */
-Mesh read_ansysinp(const std::string& path, AnsysInfo& info);
+Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo);
 
 /**
  * @brief Write `mesh` (plus `info`'s named sets) as an Ansys MAPDL
@@ -108,14 +108,14 @@ Mesh read_ansysinp(const std::string& path, AnsysInfo& info);
  * with the fixed reverse element-type-id map from the file-level doc
  * comment.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
- * @param info point/cell sets to emit as `CMBLOCK` components
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @param rInfo point/cell sets to emit as `CMBLOCK` components
  * @throws WriteError if a cell block's meshio++ type has no entry in the
  *         reverse element-type map ("Unhandled meshio type")
  * @note point_sets/cell_sets travel via `info`, not via `mesh` — the Python
  *       binding setattrs them onto/from the Mesh object separately
  */
-void write_ansysinp(const std::string& path, const Mesh& mesh, const AnsysInfo& info);
+void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo& rInfo);
 
 }  // namespace meshioplusplus

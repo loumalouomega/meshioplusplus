@@ -24,21 +24,24 @@
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 
-#define SIMPLE_RT(WRITER, READER, MESH, SUFFIX)                                   \
-    mt::roundtrip([](const std::string& p, const mt::Mesh& m) { WRITER(p, m); },  \
+#define SIMPLE_RT(WRITER, READER, MESH, SUFFIX)                                  \
+    mt::roundtrip([](const std::string& p, const mt::Mesh& m) { WRITER(p, m); }, \
                   [](const std::string& p) { return READER(p); }, MESH, SUFFIX)
 
 TEST(FreeFem, Basic) {
-    SIMPLE_RT(meshioplusplus::write_freefem, meshioplusplus::read_freefem, mt::tri_mesh_2d(), ".msh");
+    SIMPLE_RT(meshioplusplus::write_freefem, meshioplusplus::read_freefem, mt::tri_mesh_2d(),
+              ".msh");
     SIMPLE_RT(meshioplusplus::write_freefem, meshioplusplus::read_freefem, mt::tri_mesh(), ".msh");
     SIMPLE_RT(meshioplusplus::write_freefem, meshioplusplus::read_freefem, mt::tet_mesh(), ".msh");
 }
 
 TEST(Mphtxt, Basic) {
     SIMPLE_RT(meshioplusplus::write_mphtxt, meshioplusplus::read_mphtxt, mt::tri_mesh(), ".mphtxt");
-    SIMPLE_RT(meshioplusplus::write_mphtxt, meshioplusplus::read_mphtxt, mt::quad_mesh(), ".mphtxt");
+    SIMPLE_RT(meshioplusplus::write_mphtxt, meshioplusplus::read_mphtxt, mt::quad_mesh(),
+              ".mphtxt");
     SIMPLE_RT(meshioplusplus::write_mphtxt, meshioplusplus::read_mphtxt, mt::hex_mesh(), ".mphtxt");
-    SIMPLE_RT(meshioplusplus::write_mphtxt, meshioplusplus::read_mphtxt, mt::tri_quad_mesh(), ".mphtxt");
+    SIMPLE_RT(meshioplusplus::write_mphtxt, meshioplusplus::read_mphtxt, mt::tri_quad_mesh(),
+              ".mphtxt");
 }
 
 TEST(Flux, Basic) {

@@ -69,15 +69,15 @@ namespace meshioplusplus {
  * parabolic types, and always writing a placeholder `0 0 0` beam
  * orientation record for line/line3 elements.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @throws WriteError if the mesh carries `point_sets`/`cell_sets` (no
  *         dataset-2467 writer in C++ — the shim falls back to Python) or
  *         contains an unsupported cell type
  * @note reads `cell_data["unv:pid"]` for the per-element property id
  *       (defaults to `1` if absent).
  */
-void write_unv(const std::string& path, const Mesh& mesh);
+void write_unv(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a UNV file's node (2411) and element (2412) datasets.
@@ -87,7 +87,7 @@ void write_unv(const std::string& path, const Mesh& mesh);
  * records into typed cell blocks using the FE-descriptor table and the
  * sandwich-order permutation for parabolic types.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh
  * @throws ReadError if the file contains a 2467/2477 (permanent group) or a
  *         field (2414/55/56/57) dataset — the shim then falls back to the
@@ -95,6 +95,6 @@ void write_unv(const std::string& path, const Mesh& mesh);
  * @note cell_data key produced: `"unv:pid"` (element property id, dataset-
  *       2412 record-1 field 2).
  */
-Mesh read_unv(const std::string& path);
+Mesh read_unv(const std::string& rPath);
 
 }  // namespace meshioplusplus

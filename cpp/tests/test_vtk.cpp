@@ -24,9 +24,9 @@
 
 namespace {
 void rt(const mt::Mesh& mesh, bool binary, bool v51) {
-    mt::roundtrip(
-        [=](const std::string& p, const mt::Mesh& m) { meshioplusplus::write_vtk(p, m, binary, v51); },
-        [](const std::string& p) { return meshioplusplus::read_vtk(p); }, mesh, ".vtk");
+    mt::roundtrip([=](const std::string& p,
+                      const mt::Mesh& m) { meshioplusplus::write_vtk(p, m, binary, v51); },
+                  [](const std::string& p) { return meshioplusplus::read_vtk(p); }, mesh, ".vtk");
 }
 }  // namespace
 
@@ -43,5 +43,9 @@ TEST(Vtk, V42Ascii) {
     rt(mt::tri_mesh(), false, false);
     rt(mt::tet_mesh(), false, false);
 }
-TEST(Vtk, V42Binary) { rt(mt::quad_mesh(), true, false); }
-TEST(Vtk, Hybrid) { rt(mt::tri_quad_mesh(), false, true); }
+TEST(Vtk, V42Binary) {
+    rt(mt::quad_mesh(), true, false);
+}
+TEST(Vtk, Hybrid) {
+    rt(mt::tri_quad_mesh(), false, true);
+}

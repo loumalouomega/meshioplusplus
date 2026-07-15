@@ -76,31 +76,41 @@ namespace meshioplusplus_py {
  * `meshioplusplus::DType` models; anything else (e.g. complex, object,
  * bool, string dtypes) is unsupported by the C++ core.
  *
- * @param dt A numpy dtype, as obtained from `py::array::dtype()`.
+ * @param rDt A numpy dtype, as obtained from `py::array::dtype()`.
  * @return The matching `meshioplusplus::DType` enumerator.
  * @throws meshioplusplus::WriteError if the dtype's (kind, itemsize) pair
  *         has no C++-side representation.
  */
-inline meshioplusplus::DType dtype_from_numpy(const py::dtype& dt) {
-    const char kind = dt.kind();
-    const py::ssize_t isz = dt.itemsize();
+inline meshioplusplus::DType dtype_from_numpy(const py::dtype& rDt) {
+    const char kind = rDt.kind();
+    const py::ssize_t isz = rDt.itemsize();
     using meshioplusplus::DType;
     if (kind == 'f') {
-        if (isz == 4) return DType::Float32;
-        if (isz == 8) return DType::Float64;
+        if (isz == 4)
+            return DType::Float32;
+        if (isz == 8)
+            return DType::Float64;
     } else if (kind == 'i') {
-        if (isz == 1) return DType::Int8;
-        if (isz == 2) return DType::Int16;
-        if (isz == 4) return DType::Int32;
-        if (isz == 8) return DType::Int64;
+        if (isz == 1)
+            return DType::Int8;
+        if (isz == 2)
+            return DType::Int16;
+        if (isz == 4)
+            return DType::Int32;
+        if (isz == 8)
+            return DType::Int64;
     } else if (kind == 'u') {
-        if (isz == 1) return DType::UInt8;
-        if (isz == 2) return DType::UInt16;
-        if (isz == 4) return DType::UInt32;
-        if (isz == 8) return DType::UInt64;
+        if (isz == 1)
+            return DType::UInt8;
+        if (isz == 2)
+            return DType::UInt16;
+        if (isz == 4)
+            return DType::UInt32;
+        if (isz == 8)
+            return DType::UInt64;
     }
-    throw meshioplusplus::WriteError(std::string("Unsupported numpy dtype '") + dt.kind() +
-                             std::to_string(isz) + "' for the meshio++ C++ core");
+    throw meshioplusplus::WriteError(std::string("Unsupported numpy dtype '") + rDt.kind() +
+                                     std::to_string(isz) + "' for the meshio++ C++ core");
 }
 
 /**
@@ -115,43 +125,43 @@ inline meshioplusplus::DType dtype_from_numpy(const py::dtype& dt) {
  * moment the local C++ variable holding it goes out of scope, silently
  * dangling the view.
  *
- * `PyMeshRefs::keep` exists to prevent exactly that: every `py::array` that
- * ends up backing a view is additionally pushed onto `keep`, which the
+ * `PyMeshRefs::mKeep` exists to prevent exactly that: every `py::array` that
+ * ends up backing a view is additionally pushed onto `mKeep`, which the
  * caller (typically a format-binding function in `bindings/_core.cpp`)
  * keeps alive on its stack for the full duration it uses the resulting
  * `meshioplusplus::Mesh` (i.e. for the whole write call). Once that scope
  * ends, the mesh's views must not be dereferenced anymore.
  *
- * @note This is a value type with a single public member (`keep`) rather
+ * @note This is a value type with a single public member (`mKeep`) rather
  *       than an opaque handle so callers can simply declare one on the
  *       stack alongside the `Mesh` they build with `py_to_mesh`.
  */
 struct PyMeshRefs {
-    std::vector<py::array> keep;
+    std::vector<py::array> mKeep;
 };
 
 /**
  * @brief Build a non-owning `meshioplusplus::NDArray` view over a numpy array's buffer.
  *
  * Reads the numpy array's dtype and shape and wraps its raw data pointer in
- * `meshioplusplus::NDArray::make_view`. This performs **no copy**: the
+ * `meshioplusplus::NDArray::MakeView`. This performs **no copy**: the
  * returned `NDArray` aliases `a`'s memory directly, so `a` (or whichever
  * `py::array` owns the same buffer) must outlive every use of the view -
  * see `PyMeshRefs`, which is how callers of this function keep that
  * guarantee.
  *
- * @param a A C-contiguous numpy array (callers are expected to have already
+ * @param rA A C-contiguous numpy array (callers are expected to have already
  *          run it through `ensure_contiguous`, which also normalizes byte
  *          order, so the raw bytes can be reinterpreted directly by dtype).
- * @return An `NDArray` view (`is_view() == true`) sharing `a`'s buffer.
+ * @return An `NDArray` view (`IsView() == true`) sharing `rA`'s buffer.
  */
-inline meshioplusplus::NDArray view_from_numpy(const py::array& a) {
-    meshioplusplus::DType dt = dtype_from_numpy(a.dtype());
-    std::vector<std::size_t> shape(static_cast<std::size_t>(a.ndim()));
-    for (py::ssize_t i = 0; i < a.ndim(); ++i)
-        shape[static_cast<std::size_t>(i)] = static_cast<std::size_t>(a.shape(i));
-    auto* ptr = reinterpret_cast<std::byte*>(const_cast<void*>(a.data()));
-    return meshioplusplus::NDArray::make_view(dt, std::move(shape), ptr);
+inline meshioplusplus::NDArray view_from_numpy(const py::array& rA) {
+    meshioplusplus::DType dt = dtype_from_numpy(rA.dtype());
+    std::vector<std::size_t> shape(static_cast<std::size_t>(rA.ndim()));
+    for (py::ssize_t i = 0; i < rA.ndim(); ++i)
+        shape[static_cast<std::size_t>(i)] = static_cast<std::size_t>(rA.shape(i));
+    auto* ptr = reinterpret_cast<std::byte*>(const_cast<void*>(rA.data()));
+    return meshioplusplus::NDArray::MakeView(dt, std::move(shape), ptr);
 }
 
 /**
@@ -174,17 +184,18 @@ inline meshioplusplus::NDArray view_from_numpy(const py::array& a) {
  *
  * Either normalization step may allocate a new array; in that case (and in
  * the common case where none was needed) the resulting `py::array` is
- * pushed onto `refs.keep` so it outlives any `NDArray` view built from it.
+ * pushed onto `rRefs.mKeep` so it outlives any `NDArray` view built from it.
  *
  * @param obj An array-like Python object (numpy array or anything
  *            `py::array::ensure` can convert).
- * @param refs Keepalive list the resulting array is appended to.
+ * @param rRefs Keepalive list the resulting array is appended to.
  * @return A C-contiguous, native-byte-order `py::array`.
  * @throws meshioplusplus::WriteError if `obj` cannot be interpreted as an array.
  */
-inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& refs) {
+inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& rRefs) {
     py::array a = py::array::ensure(obj, py::array::c_style | py::array::forcecast);
-    if (!a) throw meshioplusplus::WriteError("Expected an array-like object");
+    if (!a)
+        throw meshioplusplus::WriteError("Expected an array-like object");
     // Normalize to native byte order so the typed views read correctly. numpy
     // dtype.byteorder is '=' native, '|' n/a, '<' little, '>' big. Host is
     // assumed little-endian (x86/ARM64).
@@ -194,7 +205,7 @@ inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& refs) {
         py::object newdt = a.dtype().attr("newbyteorder")("=");
         a = py::array::ensure(a.attr("astype")(newdt), py::array::c_style);
     }
-    refs.keep.push_back(a);
+    rRefs.mKeep.push_back(a);
     return a;
 }
 
@@ -210,34 +221,36 @@ inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& refs) {
  * The nesting depth depends on the cell type name:
  *  - A `"polyhedron"`-prefixed block is 2-level: a list of cells, each a
  *    list of faces, each a sequence of node ids -> populates
- *    `CellBlock::polyhedron_rows`.
+ *    `CellBlock::mPolyhedronRows`.
  *  - Any other ragged block (a `"polygon"` block with varying node counts
  *    per cell) is 1-level: a list of cells, each a sequence of node ids ->
- *    populates `CellBlock::polygon_rows`.
+ *    populates `CellBlock::mPolygonRows`.
  *
  * @param type The meshio++ cell type name (e.g. `"polygon"`,
  *             `"polyhedron4"`); consumed by move into the returned block.
  * @param data_obj The Python `cells[i].data` list for this block.
- * @return A `CellBlock` with `type` set and exactly one of
- *         `polygon_rows`/`polyhedron_rows` populated (owned copies).
+ * @return A `CellBlock` with `mType` set and exactly one of
+ *         `mPolygonRows`/`mPolyhedronRows` populated (owned copies).
  */
-inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type,
-                                                  py::handle data_obj) {
+inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type, py::handle data_obj) {
     meshioplusplus::CellBlock cb;
-    cb.type = std::move(type);
+    cb.mType = std::move(type);
     auto to_ids = [](py::handle seq) {
         std::vector<std::int64_t> ids;
-        for (py::handle v : seq) ids.push_back(py::cast<std::int64_t>(v));
+        for (py::handle v : seq)
+            ids.push_back(py::cast<std::int64_t>(v));
         return ids;
     };
-    if (cb.type.rfind("polyhedron", 0) == 0) {
+    if (cb.mType.rfind("polyhedron", 0) == 0) {
         for (py::handle cell : data_obj) {
             std::vector<std::vector<std::int64_t>> faces;
-            for (py::handle face : cell) faces.push_back(to_ids(face));
-            cb.polyhedron_rows.push_back(std::move(faces));
+            for (py::handle face : cell)
+                faces.push_back(to_ids(face));
+            cb.mPolyhedronRows.push_back(std::move(faces));
         }
     } else {
-        for (py::handle row : data_obj) cb.polygon_rows.push_back(to_ids(row));
+        for (py::handle row : data_obj)
+            cb.mPolygonRows.push_back(to_ids(row));
     }
     return cb;
 }
@@ -253,13 +266,13 @@ inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type,
  * already holds - no bytes are copied for the rectangular case. Each source
  * `py::array` is first passed through `ensure_contiguous` (which may itself
  * allocate a fresh, C-contiguous/native-byte-order array when the input
- * isn't already one) and is kept alive via `refs` for as long as the
+ * isn't already one) and is kept alive via `rRefs` for as long as the
  * returned `Mesh`'s views are used; see `PyMeshRefs`.
  *
  * @param pymesh A Python `meshioplusplus.Mesh` instance (as a `py::handle`;
  *               its `points`, `cells`, `point_data`, `cell_data` and
  *               `field_data` attributes are read).
- * @param refs Keepalive list; every numpy array backing a view built here
+ * @param rRefs Keepalive list; every numpy array backing a view built here
  *             is appended to it. Must outlive the returned `Mesh`.
  * @param lenient_field_data When `false` (default), every `field_data`
  *             entry is coerced to a numeric array via `ensure_contiguous`,
@@ -284,19 +297,18 @@ inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type,
  *             (which always copies, since ragged data has no rectangular
  *             buffer to view into).
  * @return A `meshioplusplus::Mesh` whose rectangular array members alias
- *         Python-owned memory (valid only while `refs` is alive) and whose
+ *         Python-owned memory (valid only while `rRefs` is alive) and whose
  *         ragged cell blocks (if any, and if `allow_ragged`) own independent
  *         copies.
  * @throws meshioplusplus::WriteError if a ragged block is encountered while
  *         `allow_ragged` is `false`, or if any array cannot be coerced to a
  *         supported dtype/shape.
  */
-inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs,
-                               bool lenient_field_data = false,
-                               bool allow_ragged = false) {
+inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& rRefs,
+                                       bool lenient_field_data = false, bool allow_ragged = false) {
     meshioplusplus::Mesh m;
 
-    m.points = view_from_numpy(ensure_contiguous(pymesh.attr("points"), refs));
+    m.mPoints = view_from_numpy(ensure_contiguous(pymesh.attr("points"), rRefs));
 
     for (py::handle cb : pymesh.attr("cells")) {
         std::string type = py::cast<std::string>(cb.attr("type"));
@@ -309,27 +321,27 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs,
                     "ragged (polyhedron / jagged polygon) cell blocks are not "
                     "handled by this C++ format");
             }
-            m.cells.push_back(ragged_cellblock_from_py(std::move(type), data_obj));
+            m.mCells.push_back(ragged_cellblock_from_py(std::move(type), data_obj));
             continue;
         }
-        py::array d = ensure_contiguous(data_obj, refs);
-        m.cells.emplace_back(std::move(type), view_from_numpy(d));
+        py::array d = ensure_contiguous(data_obj, rRefs);
+        m.mCells.emplace_back(std::move(type), view_from_numpy(d));
     }
 
     for (auto item : pymesh.attr("point_data").cast<py::dict>()) {
         std::string name = py::cast<std::string>(item.first);
-        py::array d = ensure_contiguous(item.second, refs);
-        m.point_data.emplace(std::move(name), view_from_numpy(d));
+        py::array d = ensure_contiguous(item.second, rRefs);
+        m.mPointData.emplace(std::move(name), view_from_numpy(d));
     }
 
     for (auto item : pymesh.attr("cell_data").cast<py::dict>()) {
         std::string name = py::cast<std::string>(item.first);
         std::vector<meshioplusplus::NDArray> blocks;
         for (py::handle a : py::reinterpret_borrow<py::object>(item.second)) {
-            py::array d = ensure_contiguous(a, refs);
+            py::array d = ensure_contiguous(a, rRefs);
             blocks.push_back(view_from_numpy(d));
         }
-        m.cell_data.emplace(std::move(name), std::move(blocks));
+        m.mCellData.emplace(std::move(name), std::move(blocks));
     }
 
     py::object fd = pymesh.attr("field_data");
@@ -338,14 +350,14 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs,
             std::string name = py::cast<std::string>(item.first);
             if (lenient_field_data) {
                 try {
-                    py::array d = ensure_contiguous(item.second, refs);
-                    m.field_data.emplace(std::move(name), view_from_numpy(d));
+                    py::array d = ensure_contiguous(item.second, rRefs);
+                    m.mFieldData.emplace(std::move(name), view_from_numpy(d));
                 } catch (...) {
                     // non-numeric entry: handled by the caller's side-channel
                 }
             } else {
-                py::array d = ensure_contiguous(item.second, refs);
-                m.field_data.emplace(std::move(name), view_from_numpy(d));
+                py::array d = ensure_contiguous(item.second, rRefs);
+                m.mFieldData.emplace(std::move(name), view_from_numpy(d));
             }
         }
     }
@@ -360,15 +372,15 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs,
  * instead of copying `arr`'s data into a fresh numpy array, ownership of the
  * buffer is transferred to Python.
  *
- * Mechanics: `arr` is moved onto the heap, `make_owned()` is called on it so
+ * Mechanics: `arr` is moved onto the heap, `MakeOwned()` is called on it so
  * it holds (or already holds, if it wasn't a view) an independently
  * allocated buffer it is responsible for freeing, and that heap-allocated
  * `NDArray*` is wrapped in a `py::capsule` whose destructor `delete`s it.
  * The returned `py::array` is constructed directly over the `NDArray`'s
  * data pointer with the capsule as its owner, so:
- *  - No element is copied by this function itself (`make_owned()` only
+ *  - No element is copied by this function itself (`MakeOwned()` only
  *    copies if `arr` was still a view over someone else's memory - see
- *    `NDArray::make_owned`).
+ *    `NDArray::MakeOwned`).
  *  - The numpy array is writeable and remains valid for exactly as long as
  *    Python holds a reference to it; once the last reference drops, the
  *    capsule destructor deletes the heap `NDArray`, freeing the buffer.
@@ -383,21 +395,20 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& refs,
  */
 inline py::array numpy_from_ndarray(meshioplusplus::NDArray&& arr) {
     auto* heap = new meshioplusplus::NDArray(std::move(arr));
-    heap->make_owned();
-    py::capsule owner(heap, [](void* p) {
-        delete reinterpret_cast<meshioplusplus::NDArray*>(p);
-    });
+    heap->MakeOwned();
+    py::capsule owner(heap, [](void* p) { delete reinterpret_cast<meshioplusplus::NDArray*>(p); });
 
-    std::vector<py::ssize_t> shape(heap->shape().begin(), heap->shape().end());
+    std::vector<py::ssize_t> shape(heap->Shape().begin(), heap->Shape().end());
     std::vector<py::ssize_t> strides(shape.size());
-    const py::ssize_t itemsize = static_cast<py::ssize_t>(meshioplusplus::dtype_size(heap->dtype()));
+    const py::ssize_t itemsize =
+        static_cast<py::ssize_t>(meshioplusplus::dtype_size(heap->Dtype()));
     py::ssize_t s = itemsize;
     for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
         strides[static_cast<std::size_t>(i)] = s;
         s *= (shape[static_cast<std::size_t>(i)] == 0 ? 1 : shape[static_cast<std::size_t>(i)]);
     }
-    return py::array(py::dtype(meshioplusplus::dtype_numpy_str(heap->dtype())), shape, strides,
-                     heap->data(), owner);
+    return py::array(py::dtype(meshioplusplus::dtype_numpy_str(heap->Dtype())), shape, strides,
+                     heap->Data(), owner);
 }
 
 /**
@@ -408,19 +419,19 @@ inline py::array numpy_from_ndarray(meshioplusplus::NDArray&& arr) {
  * (via `std::memcpy` into freshly allocated `py::array_t<std::int64_t>`
  * objects) rather than adopted zero-copy the way `numpy_from_ndarray` does
  * for rectangular blocks:
- *  - For a jagged polygon block (`cb.polygon_rows` non-empty): a Python
+ *  - For a jagged polygon block (`cb.mPolygonRows` non-empty): a Python
  *    list of 1-D int64 numpy arrays, one per cell.
- *  - For a polyhedron block (`cb.polyhedron_rows` non-empty): a Python list
+ *  - For a polyhedron block (`cb.mPolyhedronRows` non-empty): a Python list
  *    of cells, each itself a list of 1-D int64 numpy arrays, one per face.
  *
  * This matches exactly what `meshioplusplus.Mesh`/`CellBlock` expect to
  * store for these cell types on the Python side (kept as a Python list,
  * never coerced into a rectangular ndarray).
  *
- * @param cb A `CellBlock` for which `cb.is_ragged()` is `true`.
+ * @param rCb A `CellBlock` for which `rCb.IsRagged()` is `true`.
  * @return A `py::object` (a `py::list`) as described above.
  */
-inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& cb) {
+inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& rCb) {
     auto ids_to_arr = [](const std::vector<std::int64_t>& ids) {
         py::array_t<std::int64_t> a(static_cast<py::ssize_t>(ids.size()));
         if (!ids.empty())
@@ -428,14 +439,16 @@ inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& cb) {
         return a;
     };
     py::list out;
-    if (!cb.polyhedron_rows.empty()) {
-        for (const auto& cell : cb.polyhedron_rows) {
+    if (!rCb.mPolyhedronRows.empty()) {
+        for (const auto& cell : rCb.mPolyhedronRows) {
             py::list faces;
-            for (const auto& face : cell) faces.append(ids_to_arr(face));
+            for (const auto& face : cell)
+                faces.append(ids_to_arr(face));
             out.append(faces);
         }
     } else {
-        for (const auto& row : cb.polygon_rows) out.append(ids_to_arr(row));
+        for (const auto& row : rCb.mPolygonRows)
+            out.append(ids_to_arr(row));
     }
     return out;
 }
@@ -446,10 +459,10 @@ inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& cb) {
  *
  * This is the read-side counterpart of `py_to_mesh`. `m` is consumed by
  * move (`meshioplusplus::Mesh&&`) and every rectangular array member
- * (`points`, each rectangular cell block's `data`, and every
+ * (`mPoints`, each rectangular cell block's `mData`, and every
  * point_data/cell_data/field_data array) is handed to Python via
  * `numpy_from_ndarray`, which transfers buffer ownership to numpy through a
- * capsule rather than copying. Ragged cell blocks (`cb.is_ragged()`) are
+ * capsule rather than copying. Ragged cell blocks (`cb.IsRagged()`) are
  * the one exception: they have no rectangular buffer to adopt, so they are
  * copied into Python lists via `ragged_data_to_py`.
  *
@@ -474,38 +487,38 @@ inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& cb) {
 inline py::object mesh_to_py(meshioplusplus::Mesh&& m) {
     py::object MeshCls = py::module_::import("meshioplusplus").attr("Mesh");
 
-    py::array points = numpy_from_ndarray(std::move(m.points));
+    py::array points = numpy_from_ndarray(std::move(m.mPoints));
 
     py::list cells;
-    for (auto& cb : m.cells) {
-        if (cb.is_ragged()) {
-            cells.append(py::make_tuple(py::str(cb.type), ragged_data_to_py(cb)));
+    for (auto& cb : m.mCells) {
+        if (cb.IsRagged()) {
+            cells.append(py::make_tuple(py::str(cb.mType), ragged_data_to_py(cb)));
         } else {
             cells.append(
-                py::make_tuple(py::str(cb.type), numpy_from_ndarray(std::move(cb.data))));
+                py::make_tuple(py::str(cb.mType), numpy_from_ndarray(std::move(cb.mData))));
         }
     }
 
     // point_data/cell_data/field_data are unordered_map; iterate in sorted key
     // order so the resulting Python dict has a deterministic key order.
     py::dict point_data;
-    for (const auto& name : meshioplusplus::detail::sorted_keys(m.point_data))
-        point_data[py::str(name)] = numpy_from_ndarray(std::move(m.point_data.at(name)));
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.mPointData))
+        point_data[py::str(name)] = numpy_from_ndarray(std::move(m.mPointData.at(name)));
 
     py::dict cell_data;
-    for (const auto& name : meshioplusplus::detail::sorted_keys(m.cell_data)) {
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.mCellData)) {
         py::list lst;
-        for (auto& a : m.cell_data.at(name)) lst.append(numpy_from_ndarray(std::move(a)));
+        for (auto& a : m.mCellData.at(name))
+            lst.append(numpy_from_ndarray(std::move(a)));
         cell_data[py::str(name)] = lst;
     }
 
     py::dict field_data;
-    for (const auto& name : meshioplusplus::detail::sorted_keys(m.field_data))
-        field_data[py::str(name)] = numpy_from_ndarray(std::move(m.field_data.at(name)));
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.mFieldData))
+        field_data[py::str(name)] = numpy_from_ndarray(std::move(m.mFieldData.at(name)));
 
     return MeshCls(points, cells, py::arg("point_data") = point_data,
-                   py::arg("cell_data") = cell_data,
-                   py::arg("field_data") = field_data);
+                   py::arg("cell_data") = cell_data, py::arg("field_data") = field_data);
 }
 
 }  // namespace meshioplusplus_py

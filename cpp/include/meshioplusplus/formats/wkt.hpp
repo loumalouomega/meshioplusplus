@@ -51,11 +51,11 @@ namespace meshioplusplus {
  * triangle's first point to close the ring). Only `triangle` cells are
  * representable; no point_data/cell_data is emitted (WKT carries none).
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write (only `triangle` cells contribute)
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write (only `triangle` cells contribute)
  * @throws WriteError on an unopenable output path
  */
-void write_wkt(const std::string& path, const Mesh& mesh);
+void write_wkt(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a WKT TIN file into a single-`triangle`-block Mesh.
@@ -64,12 +64,12 @@ void write_wkt(const std::string& path, const Mesh& mesh);
  * de-duplicating points by exact value in first-occurrence order and
  * dropping each ring's repeated closing point.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh (points plus a single `triangle` CellBlock; no
  *         point_data/cell_data/field_data)
  * @throws ReadError if a ring's last point does not equal its first (not a
  *         closed linestring), or the file doesn't parse as `TIN (...)`
  */
-Mesh read_wkt(const std::string& path);
+Mesh read_wkt(const std::string& rPath);
 
 }  // namespace meshioplusplus

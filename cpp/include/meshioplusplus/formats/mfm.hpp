@@ -58,14 +58,14 @@ namespace meshioplusplus {
  * subdomain array from `cell_data["mfm:ref"]` (defaulting to all-ones if
  * absent).
  *
- * @param path filesystem path to the .mfm file to create/overwrite
- * @param mesh the mesh to write (must be single-cell-type, linear)
- * @param float_fmt coordinate format string (e.g. `".16e"`)
+ * @param rPath filesystem path to the .mfm file to create/overwrite
+ * @param rMesh the mesh to write (must be single-cell-type, linear)
+ * @param rFloatFmt coordinate format string (e.g. `".16e"`)
  * @throws WriteError if the mesh has more than one cell type, a
  *         higher-order cell type, or is otherwise unsupported
  * @note reads `cell_data["mfm:ref"]` if present
  */
-void write_mfm(const std::string& path, const Mesh& mesh, const std::string& float_fmt);
+void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
 
 /**
  * @brief Read an MFM (.mfm) file into a Mesh.
@@ -77,13 +77,13 @@ void write_mfm(const std::string& path, const Mesh& mesh, const std::string& flo
  * vertex coordinates, and reads the per-element subdomain array into
  * `cell_data["mfm:ref"]`.
  *
- * @param path filesystem path to the .mfm file to read
+ * @param rPath filesystem path to the .mfm file to read
  * @return the read Mesh, single cell block, with `cell_data["mfm:ref"]`
  *         populated from the file's `nsd` array
  * @throws ReadError if `lnn != lnv` (would imply a second-order element),
  *         `nnod != nver`, or the `(lnv, lne, lnf)` triple doesn't match a
  *         known linear type
  */
-Mesh read_mfm(const std::string& path);
+Mesh read_mfm(const std::string& rPath);
 
 }  // namespace meshioplusplus

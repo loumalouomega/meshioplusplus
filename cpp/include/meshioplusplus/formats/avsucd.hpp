@@ -58,14 +58,14 @@ namespace meshioplusplus {
  * point_data arrays become additional labeled data sections. 2D points are
  * promoted to 3D. Floats use `%.17g` for points and `%.14e` for data.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @throws WriteError if a cell block's type has no AVS-UCD type-name mapping
  * @note reads/writes `cell_data["avsucd:material"]`; other point_data/
  *       cell_data names pass through as-is (post-strip(), spaces replaced
  *       with underscores — not reversible)
  */
-void write_avsucd(const std::string& path, const Mesh& mesh);
+void write_avsucd(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read an AVS-UCD .avs file.
@@ -76,12 +76,12 @@ void write_avsucd(const std::string& path, const Mesh& mesh);
  * cell_data array back into per-block pieces using cumulative block-length
  * offsets (assumes blocks are contiguous in read order).
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["avsucd:material"]` set from each
  *         cell row's material id
  * @throws ReadError if the file can't be opened or a cell row names an
  *         unknown AVS-UCD type
  */
-Mesh read_avsucd(const std::string& path);
+Mesh read_avsucd(const std::string& rPath);
 
 }  // namespace meshioplusplus

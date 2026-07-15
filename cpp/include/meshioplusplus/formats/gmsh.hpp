@@ -72,8 +72,8 @@ namespace meshioplusplus {
  * meshio++ node-order permutation for `tetra10`/`hexahedron20`/
  * `hexahedron27`/`wedge15`/`pyramid13`.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @param binary write node/element bodies as binary (`true`, with the
  *        endianness-detection integer) or ASCII (`false`)
  * @throws WriteError if a cell block's type has no Gmsh type-code mapping
@@ -82,7 +82,7 @@ namespace meshioplusplus {
  * @note the shim only attempts this C++ path when `float_fmt == ".16e"` and
  *       `mesh.gmsh_periodic` is unset
  */
-void write_gmsh22(const std::string& path, const Mesh& mesh, bool binary);
+void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Write `mesh` to `path` as a Gmsh 4.1 .msh file (ascii or binary).
@@ -92,8 +92,8 @@ void write_gmsh22(const std::string& path, const Mesh& mesh, bool binary);
  * one cell type cannot be written this way (Gmsh 4.1 requires `$Entities`
  * to disambiguate cell-to-entity assignment for mixed meshes).
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @param binary write node/element bodies as binary (`true`) or ASCII
  *        (`false`)
  * @throws WriteError if `mesh` has more than one cell type (since
@@ -104,7 +104,7 @@ void write_gmsh22(const std::string& path, const Mesh& mesh, bool binary);
  *       write carrying `gmsh:dim_tags` or periodic data always goes through
  *       Python instead
  */
-void write_gmsh41(const std::string& path, const Mesh& mesh, bool binary);
+void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Read a Gmsh .msh file (versions 2.2 and 4.1 only).
@@ -114,7 +114,7 @@ void write_gmsh41(const std::string& path, const Mesh& mesh, bool binary);
  * permutation where needed), and, for 4.1, `$Entities`/per-entity node and
  * element blocks with node-tag->index remapping.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["gmsh:physical"]`/
  *         `cell_data["gmsh:geometrical"]` from the first two element tags,
  *         `point_data["gmsh:dim_tags"]` and `cell_sets["gmsh:bounding_entities"]`
@@ -126,6 +126,6 @@ void write_gmsh41(const std::string& path, const Mesh& mesh, bool binary);
  * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
  *       Python fallback does, for files containing `$Periodic`
  */
-Mesh read_gmsh(const std::string& path);
+Mesh read_gmsh(const std::string& rPath);
 
 }  // namespace meshioplusplus

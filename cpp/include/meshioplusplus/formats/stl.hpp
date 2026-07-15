@@ -59,14 +59,14 @@ namespace meshioplusplus {
  * otherwise normals are computed per-facet from the cross product of two
  * edge vectors.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write (only triangle cells are emitted)
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write (only triangle cells are emitted)
  * @param binary true for the 80-byte-header + 50-byte-record binary layout,
  *        false for the `solid`/`facet`/`endfacet` ascii layout
  * @throws WriteError on an unopenable output path
  * @note cell_data key produced/consumed: `"facet_normals"`.
  */
-void write_stl(const std::string& path, const Mesh& mesh, bool binary);
+void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Read an STL file, auto-detecting ascii vs. binary.
@@ -78,12 +78,12 @@ void write_stl(const std::string& path, const Mesh& mesh, bool binary);
  * that only inspects the last 3 whitespace-separated tokens per line
  * (discarding any leading keyword such as `vertex`).
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh (a single `triangle` CellBlock, or none if the file
  *         has zero triangles); points are float64 for ascii input, float32
  *         for binary input
  * @throws ReadError on a malformed/truncated file
  */
-Mesh read_stl(const std::string& path);
+Mesh read_stl(const std::string& rPath);
 
 }  // namespace meshioplusplus

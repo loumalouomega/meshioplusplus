@@ -91,13 +91,19 @@ enum class Level : int { Debug = 0, Info = 1, Warn = 2, Error = 3, Off = 4 };
 inline Level threshold() {
     static const Level lvl = [] {
         const char* env = std::getenv("MESHIOPLUSPLUS_LOG_LEVEL");
-        if (env == nullptr) return Level::Warn;
+        if (env == nullptr)
+            return Level::Warn;
         std::string_view s(env);
-        if (s == "debug") return Level::Debug;
-        if (s == "info") return Level::Info;
-        if (s == "warn" || s == "warning") return Level::Warn;
-        if (s == "error") return Level::Error;
-        if (s == "off" || s == "none") return Level::Off;
+        if (s == "debug")
+            return Level::Debug;
+        if (s == "info")
+            return Level::Info;
+        if (s == "warn" || s == "warning")
+            return Level::Warn;
+        if (s == "error")
+            return Level::Error;
+        if (s == "off" || s == "none")
+            return Level::Off;
         return Level::Warn;
     }();
     return lvl;
@@ -124,15 +130,15 @@ inline bool enabled(Level lvl) {
  * @param lvl The severity to label the line with.
  * @param msg The already-formatted message body.
  * @param loc The call site to report (normally the caller's, captured via
- *            `format_with_location`).
+ *            `FormatWithLocation`).
  */
-inline void write(Level lvl, std::string_view msg, const std::source_location& loc) {
+inline void write(Level lvl, std::string_view msg, const std::source_location& rLoc) {
     constexpr std::string_view names[] = {"debug", "info", "warning", "error"};
-    std::string_view file = loc.file_name();
+    std::string_view file = rLoc.file_name();
     if (auto p = file.find_last_of("/\\"); p != std::string_view::npos)
         file.remove_prefix(p + 1);
-    std::string line = std::format("meshio {} [{}:{}] {}\n", names[static_cast<int>(lvl)], file,
-                                   loc.line(), msg);
+    std::string line =
+        std::format("meshio {} [{}:{}] {}\n", names[static_cast<int>(lvl)], file, rLoc.line(), msg);
 #if defined(__cpp_lib_syncbuf)
     std::osyncstream(std::cerr) << line;
 #else
@@ -159,14 +165,14 @@ inline void write(Level lvl, std::string_view msg, const std::source_location& l
  * @tparam Args The types of the format arguments, used to validate `fmt`.
  */
 template <class... Args>
-struct format_with_location {
-    std::format_string<Args...> fmt;
-    std::source_location loc;
+struct FormatWithLocation {
+    std::format_string<Args...> mFmt;
+    std::source_location mLoc;
 
     template <class S>
-    consteval format_with_location(  // NOLINT(google-explicit-constructor)
-        const S& s, std::source_location l = std::source_location::current())
-        : fmt(s), loc(l) {}
+    consteval FormatWithLocation(  // NOLINT(google-explicit-constructor)
+        const S& rS, std::source_location l = std::source_location::current())
+        : mFmt(rS), mLoc(l) {}
 };
 
 /**
@@ -178,9 +184,10 @@ struct format_with_location {
  * @param args Values substituted into `f`.
  */
 template <class... Args>
-void debug(format_with_location<std::type_identity_t<Args>...> f, Args&&... args) {
-    if (!enabled(Level::Debug)) return;
-    write(Level::Debug, std::format(f.fmt, std::forward<Args>(args)...), f.loc);
+void debug(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
+    if (!enabled(Level::Debug))
+        return;
+    write(Level::Debug, std::format(f.mFmt, std::forward<Args>(args)...), f.mLoc);
 }
 
 /**
@@ -192,9 +199,10 @@ void debug(format_with_location<std::type_identity_t<Args>...> f, Args&&... args
  * @param args Values substituted into `f`.
  */
 template <class... Args>
-void info(format_with_location<std::type_identity_t<Args>...> f, Args&&... args) {
-    if (!enabled(Level::Info)) return;
-    write(Level::Info, std::format(f.fmt, std::forward<Args>(args)...), f.loc);
+void info(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
+    if (!enabled(Level::Info))
+        return;
+    write(Level::Info, std::format(f.mFmt, std::forward<Args>(args)...), f.mLoc);
 }
 
 /**
@@ -208,9 +216,10 @@ void info(format_with_location<std::type_identity_t<Args>...> f, Args&&... args)
  * @param args Values substituted into `f`.
  */
 template <class... Args>
-void warn(format_with_location<std::type_identity_t<Args>...> f, Args&&... args) {
-    if (!enabled(Level::Warn)) return;
-    write(Level::Warn, std::format(f.fmt, std::forward<Args>(args)...), f.loc);
+void warn(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
+    if (!enabled(Level::Warn))
+        return;
+    write(Level::Warn, std::format(f.mFmt, std::forward<Args>(args)...), f.mLoc);
 }
 
 /**
@@ -225,9 +234,10 @@ void warn(format_with_location<std::type_identity_t<Args>...> f, Args&&... args)
  * @param args Values substituted into `f`.
  */
 template <class... Args>
-void error(format_with_location<std::type_identity_t<Args>...> f, Args&&... args) {
-    if (!enabled(Level::Error)) return;
-    write(Level::Error, std::format(f.fmt, std::forward<Args>(args)...), f.loc);
+void error(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
+    if (!enabled(Level::Error))
+        return;
+    write(Level::Error, std::format(f.mFmt, std::forward<Args>(args)...), f.mLoc);
 }
 
 }  // namespace log

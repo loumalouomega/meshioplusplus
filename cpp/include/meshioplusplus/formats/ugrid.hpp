@@ -74,7 +74,7 @@ namespace meshioplusplus {
  * @note cell_data key consumed: the first integer-typed array (used as
  *       `"ugrid:ref"` boundary tags on the surface blocks).
  */
-void write_ugrid(const std::string& path, const Mesh& mesh);
+void write_ugrid(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a UGRID file, flavour taken from `path`'s penultimate suffix.
@@ -95,6 +95,6 @@ void write_ugrid(const std::string& path, const Mesh& mesh);
  *       block (real boundary tags for triangle/quad, all-zero for the
  *       volume types).
  */
-Mesh read_ugrid(const std::string& path);
+Mesh read_ugrid(const std::string& rPath);
 
 }  // namespace meshioplusplus

@@ -66,13 +66,13 @@ namespace meshioplusplus {
  * cell types are written; other types are skipped with a warning.
  * Multi-dimensional point_data is silently filtered.
  *
- * @param path filesystem path to write
- * @param mesh the mesh to write
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
  * @param binary true for `binary_little_endian`/`binary_big_endian`
  *        (host-endian) output, false for `format ascii 1.0`
  * @throws WriteError on an unopenable output path
  */
-void write_ply(const std::string& path, const Mesh& mesh, bool binary);
+void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Read a PLY file (ascii or binary, either endianness).
@@ -83,13 +83,13 @@ void write_ply(const std::string& path, const Mesh& mesh, bool binary);
  * run. `obj_info` header lines (a MeshLab convention) are skipped without
  * being parsed.
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh
  * @throws ReadError if a face carries list-typed vertex properties or extra
  *         (non-index) face properties beyond `vertex_indices` — the shim
  *         then falls back to the Python reader, which does support those.
  * @note point_data keys are the raw PLY property names (no `ply:` prefix).
  */
-Mesh read_ply(const std::string& path);
+Mesh read_ply(const std::string& rPath);
 
 }  // namespace meshioplusplus

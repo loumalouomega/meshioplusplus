@@ -74,10 +74,10 @@ namespace meshioplusplus {
  * `X`/`XY` per point dimension), `<Attribute>` elements for point_data/
  * cell_data, with DataItem payloads stored per `data_format`.
  *
- * @param path filesystem path to write (companion `.h5`/`.bin` sibling
+ * @param rPath filesystem path to write (companion `.h5`/`.bin` sibling
  *        files are written alongside it for `"HDF"`/`"Binary"`)
- * @param mesh the mesh to write
- * @param data_format one of `"XML"` (inline text), `"Binary"` (external raw
+ * @param rMesh the mesh to write
+ * @param rDataFormat one of `"XML"` (inline text), `"Binary"` (external raw
  *        sibling files), or `"HDF"` (companion `.h5` file, requires an
  *        HDF5-enabled build)
  * @param gzip_level gzip compression level for `"HDF"` DataItems; `-1`
@@ -89,8 +89,8 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `<Attribute Center="Node"|
  *       "Cell">` elements, keyed by the raw attribute name.
  */
-void write_xdmf(const std::string& path, const Mesh& mesh,
-                const std::string& data_format, int gzip_level = -1);
+void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
+                int gzip_level = -1);
 
 /**
  * @brief Read an XDMF3 file's first `<Grid>`.
@@ -100,7 +100,7 @@ void write_xdmf(const std::string& path, const Mesh& mesh,
  * according to its `Format` (`XML` inline, `Binary` external file, or `HDF`
  * companion dataset when built with HDF5 support).
  *
- * @param path filesystem path to read
+ * @param rPath filesystem path to read
  * @return the read Mesh
  * @throws ReadError if the file is XDMF2 (`Version="2.x"`), uses a
  *         `Reference` DataItem attribute, an XDMF2 `Information` field-data
@@ -110,6 +110,6 @@ void write_xdmf(const std::string& path, const Mesh& mesh,
  *         then falls back to the Python/`h5py` reader.
  * @note `<Attribute>` elements map generically to `point_data`/`cell_data`.
  */
-Mesh read_xdmf(const std::string& path);
+Mesh read_xdmf(const std::string& rPath);
 
 }  // namespace meshioplusplus
