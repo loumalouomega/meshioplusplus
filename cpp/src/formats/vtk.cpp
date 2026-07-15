@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -47,13 +48,13 @@ void ascii_double(std::ostream& os, double v) {
 // Byte-swap a whole array into a big-endian buffer (elements independent ->
 // parallel), for a single os.write instead of per-element stream calls.
 std::vector<unsigned char> be_buffer(const NDArray& a) {
-    const std::size_t isz = dtype_size(a.dtype());
+    const int isz = static_cast<int>(dtype_size(a.dtype()));
     const std::size_t n = a.size();
-    const auto* src = reinterpret_cast<const unsigned char*>(a.data());
-    std::vector<unsigned char> buf(n * isz);
+    const auto* src = reinterpret_cast<const char*>(a.data());
+    std::vector<unsigned char> buf(n * static_cast<std::size_t>(isz));
+    auto* dst = reinterpret_cast<char*>(buf.data());
     parallel_for_bw(n, [&](std::size_t i) {
-        for (std::size_t b = 0; b < isz; ++b)
-            buf[i * isz + b] = src[i * isz + (isz - 1 - b)];
+        detail::bswap_copy(dst + i * isz, src + i * isz, isz);
     });
     return buf;
 }
@@ -62,12 +63,12 @@ std::vector<unsigned char> be_buffer(const NDArray& a) {
 // (replaces per-element os.put stream calls for the CELLS/OFFSETS/... sections).
 template <class T>
 void write_be(std::ostream& os, const std::vector<T>& v) {
-    constexpr std::size_t isz = sizeof(T);
-    std::vector<unsigned char> buf(v.size() * isz);
-    const auto* src = reinterpret_cast<const unsigned char*>(v.data());
+    constexpr int isz = static_cast<int>(sizeof(T));
+    std::vector<unsigned char> buf(v.size() * sizeof(T));
+    const auto* src = reinterpret_cast<const char*>(v.data());
+    auto* dst = reinterpret_cast<char*>(buf.data());
     parallel_for_bw(v.size(), [&](std::size_t i) {
-        for (std::size_t b = 0; b < isz; ++b)
-            buf[i * isz + b] = src[i * isz + (isz - 1 - b)];
+        detail::bswap_copy(dst + i * sizeof(T), src + i * sizeof(T), isz);
     });
     os.write(reinterpret_cast<const char*>(buf.data()),
              static_cast<std::streamsize>(buf.size()));
@@ -75,8 +76,16 @@ void write_be(std::ostream& os, const std::vector<T>& v) {
 
 // Store the low `bytes` bytes of v into dst in big-endian order.
 inline void be_store(unsigned char* dst, std::uint64_t v, std::size_t bytes) {
-    for (std::size_t b = 0; b < bytes; ++b)
-        dst[b] = static_cast<unsigned char>(v >> (8 * (bytes - 1 - b)));
+    if (bytes == 8) {
+        std::uint64_t be = detail::bswap64(v);
+        std::memcpy(dst, &be, 8);
+    } else if (bytes == 4) {
+        std::uint32_t be = detail::bswap32(static_cast<std::uint32_t>(v));
+        std::memcpy(dst, &be, 4);
+    } else {
+        for (std::size_t b = 0; b < bytes; ++b)
+            dst[b] = static_cast<unsigned char>(v >> (8 * (bytes - 1 - b)));
+    }
 }
 
 // Fused gather + big-endian store of one connectivity block: reads each
@@ -153,13 +162,14 @@ void write_vtk(const std::string& path, const Mesh& mesh, bool binary, bool v51)
     os << "POINTS " << num_points << ' ' << vtk_dtype_str(mesh.points.dtype()) << '\n';
     if (binary) {
         // Pre-sized padded buffer, parallel byte-swap, then one write.
-        const auto* src = reinterpret_cast<const unsigned char*>(mesh.points.data());
+        const auto* src = reinterpret_cast<const char*>(mesh.points.data());
         std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
+        auto* dst = reinterpret_cast<char*>(buf.data());
+        const int isz = static_cast<int>(pt_isz);
         parallel_for_bw(num_points, [&](std::size_t r) {
             for (std::size_t c = 0; c < dim && c < 3; ++c)
-                for (std::size_t b = 0; b < pt_isz; ++b)
-                    buf[(r * 3 + c) * pt_isz + b] =
-                        src[(r * dim + c) * pt_isz + (pt_isz - 1 - b)];
+                detail::bswap_copy(dst + (r * 3 + c) * pt_isz,
+                                   src + (r * dim + c) * pt_isz, isz);
         });
         os.write(reinterpret_cast<const char*>(buf.data()),
                  static_cast<std::streamsize>(buf.size()));

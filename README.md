@@ -210,14 +210,16 @@ cells).
 <img alt="meshio vs meshio++ speedup on example.msh" src="benchmark/plots/benchmark_speedup.svg" width="85%">
 
 meshio++'s biggest wins are the parallel and text paths: **VTU binary+zlib
-~12× write** (the zlib blocks run across cores via an OpenMP backend), **VTU
-ASCII ~7× write / ~5× read**, and mixed-topology **XDMF read ~10×**. The binary
-and HDF5 formats that used to be *slower* — VTK/Gmsh binary and MED — are now at
-or above parity after an optimisation pass (bulk-buffered binary I/O, a real
-parallel backend, an Eigen-backed MED transpose, and **zero-copy cell
-reconstruction** that moves the connectivity buffer straight into the mesh);
-single-cell-type binary **reads** now match or beat numpy's `fromfile`
-(Gmsh read ~1.8×, VTK read ~1.0–1.1×). Output stays byte-identical throughout.
+~16× write** (the zlib blocks run across cores via an OpenMP backend with
+dynamic scheduling — hybrid P+E-core CPUs load-balance too), **VTU ASCII ~7×
+write / ~5× read**, and mixed-topology **XDMF read ~10×**. The binary and HDF5
+formats that used to be *slower* — VTK/Gmsh binary, UGRID, and MED — are now at
+or above parity after an optimisation pass (bulk-buffered binary I/O,
+single-instruction `bswap` endianness conversion, a real parallel backend, an
+Eigen-backed MED transpose, and **zero-copy cell reconstruction** that moves
+the connectivity buffer straight into the mesh); single-cell-type binary
+**reads** now match or beat numpy's `fromfile` (Gmsh ~1.7×, VTK ~1.3×). Output
+stays byte-identical throughout.
 
 The speedup is per-element: text/parallel formats climb out of the small-mesh
 regime and plateau (large meshes realise the full speedup):

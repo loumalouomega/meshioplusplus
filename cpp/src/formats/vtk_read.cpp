@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -95,13 +96,12 @@ struct Cursor {
             }
         } else {
             if (pos + count * isz > buf.size()) throw ReadError("VTK binary truncated");
-            unsigned char* out = reinterpret_cast<unsigned char*>(a.data());
-            // Element offsets are i*isz -> byte-swap in parallel.
-            const std::size_t start = pos;
+            char* out = reinterpret_cast<char*>(a.data());
+            // Element offsets are i*isz -> byte-swap in parallel (bswap intrinsic).
+            const char* src = buf.data() + pos;
+            const int w = static_cast<int>(isz);
             parallel_for_bw(count, [&](std::size_t i) {
-                for (std::size_t b = 0; b < isz; ++b)
-                    out[i * isz + b] = static_cast<unsigned char>(
-                        buf[start + i * isz + (isz - 1 - b)]);
+                detail::bswap_copy(out + i * isz, src + i * isz, w);
             });
             pos += count * isz;
         }

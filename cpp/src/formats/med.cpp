@@ -64,24 +64,8 @@ const std::unordered_map<std::string, std::vector<int>>& med_node_perm() {
     return m;
 }
 
-// Apply the column permutation to a (n, k) integer cell array (returns a new
-// array). No-op for types without a perm. Rows are independent -> parallel.
-NDArray reorder_med_cells(const std::string& cell_type, const NDArray& data) {
-    auto it = med_node_perm().find(cell_type);
-    if (it == med_node_perm().end()) return data;
-    const std::vector<int>& perm = it->second;
-    std::size_t n = detail::rows(data), k = detail::cols(data);
-    if (k != perm.size()) return data;
-    NDArray out(data.dtype(), {n, k});
-    detail::dispatch_dtype(data.dtype(), [&]<class T>() {
-        const T* src = data.as<T>();
-        T* dst = out.as<T>();
-        parallel_for_bw(n, [&](std::size_t i) {
-            for (std::size_t c = 0; c < k; ++c) dst[i * k + c] = src[i * k + perm[c]];
-        });
-    });
-    return out;
-}
+// (The former reorder_med_cells pass is fused into flatten_f/unflatten_f via
+// their optional `perm` argument — one pass instead of two on both read+write.)
 
 const std::unordered_map<std::string, std::string>& med_to_meshio() {
     static const std::unordered_map<std::string, std::string> m = [] {
@@ -114,16 +98,19 @@ void write_attr_double(hid_t loc, const std::string& name, double v) {
 }
 
 // Fortran-order (n, k) -> flat column-major buffer, applying `shift` to
-// integer dtypes. Pure index transpose (memory-bandwidth bound).
-NDArray flatten_f(const NDArray& a, std::int64_t shift) {
+// integer dtypes and (fused, same pass) an optional column permutation `perm`
+// (the meshio->MED node reorder). Pure index transpose (memory-bandwidth bound).
+NDArray flatten_f(const NDArray& a, std::int64_t shift,
+                  const std::vector<int>* perm = nullptr) {
     const std::size_t n = detail::rows(a);
     const std::size_t k = detail::cols(a);
+    const int* p = (perm && perm->size() == k) ? perm->data() : nullptr;
     NDArray out(a.dtype(), {n * k});
     detail::dispatch_dtype(a.dtype(), [&]<class T>() {
         const T* src = a.as<T>();
         T* dst = out.as<T>();
 #ifdef MESHIOPLUSPLUS_HAS_EIGEN
-        if (shift == 0) {
+        if (!p && shift == 0) {
             // (n,k) row-major -> (n,k) col-major = Eigen storage-order convert.
             using RM = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
             using CM = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>;
@@ -134,10 +121,11 @@ NDArray flatten_f(const NDArray& a, std::int64_t shift) {
         const T s = static_cast<T>(shift);
         parallel_for_bw(n, [&](std::size_t i) {
             for (std::size_t c = 0; c < k; ++c) {
+                std::size_t sc = p ? static_cast<std::size_t>(p[c]) : c;
                 if constexpr (std::is_floating_point_v<T>)
-                    dst[c * n + i] = src[i * k + c];
+                    dst[c * n + i] = src[i * k + sc];
                 else
-                    dst[c * n + i] = static_cast<T>(src[i * k + c] + s);
+                    dst[c * n + i] = static_cast<T>(src[i * k + sc] + s);
             }
         });
     });
@@ -547,8 +535,12 @@ void write_med(const std::string& path, const Mesh& mesh, const MedInfo& info,
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.num_cells()));
         } else {
             warn_unconverted_3d(cb.type);
-            NDArray reordered = reorder_med_cells(cb.type, cb.data);
-            NDArray nod = flatten_f(reordered, +1);
+            // Fuse the meshio->MED node reorder with the Fortran transpose
+            // (shift +1) into a single pass (mirrors the read side).
+            auto pit = med_node_perm().find(cb.type);
+            const std::vector<int>* perm =
+                (pit != med_node_perm().end()) ? &pit->second : nullptr;
+            NDArray nod = flatten_f(cb.data, +1, perm);
             h5::write_dataset(g, "NOD", nod);
             h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);

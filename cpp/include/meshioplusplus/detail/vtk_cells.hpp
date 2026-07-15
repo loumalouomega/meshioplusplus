@@ -84,11 +84,24 @@ inline void reconstruct_cells(
                 NDArray data(DType::Int64, {m, static_cast<std::size_t>(sz)});
                 std::int64_t* out = data.as<std::int64_t>();
                 const std::size_t ii = i;
-                parallel_for_bw(m, [&](std::size_t r) {
-                    std::int64_t endoff = offsets[start + ii + r];
-                    std::int64_t base = endoff - sz;
-                    for (std::int64_t c = 0; c < sz; ++c) out[r * sz + c] = conn[base + c];
-                });
+                // Contiguous uniform-size sub-run -> block memcpy.
+                const std::int64_t sub_first = start_cn[ii];
+                bool sub_regular = true;
+                for (std::size_t r = 0; sub_regular && r < m; ++r)
+                    if (offsets[start + ii + r] !=
+                        sub_first + static_cast<std::int64_t>(r + 1) * sz)
+                        sub_regular = false;
+                if (sub_regular) {
+                    std::memcpy(out, conn + sub_first,
+                                m * static_cast<std::size_t>(sz) * sizeof(std::int64_t));
+                } else {
+                    parallel_for_bw(m, [&](std::size_t r) {
+                        std::int64_t endoff = offsets[start + ii + r];
+                        std::int64_t base = endoff - sz;
+                        for (std::int64_t c = 0; c < sz; ++c)
+                            out[r * sz + c] = conn[base + c];
+                    });
+                }
                 out_cells.emplace_back(meshio_type, std::move(data));
                 add_cd(start + i, start + j);
                 i = j;
@@ -104,14 +117,28 @@ inline void reconstruct_cells(
             std::int64_t* out = data.as<std::int64_t>();
             const int* ord = order.empty() ? nullptr : order.data();
             const std::size_t ss = start;
-            parallel_for_bw(m, [&](std::size_t r) {
-                std::int64_t endoff = offsets[ss + r];
-                std::int64_t base = endoff - n;
-                for (int j = 0; j < n; ++j) {
-                    int col = ord ? ord[j] : j;
-                    out[r * n + j] = conn[base + col];
-                }
-            });
+            // Regular run (offsets advance by exactly n per cell) with identity
+            // node order -> the run's connectivity is one contiguous slice:
+            // block memcpy instead of a per-row gather.
+            const std::int64_t first = (ss == 0) ? 0 : offsets[ss - 1];
+            bool regular = true;
+            for (std::size_t r = 0; regular && r < m; ++r)
+                if (offsets[ss + r] != first + static_cast<std::int64_t>((r + 1) *
+                                                                         static_cast<std::size_t>(n)))
+                    regular = false;
+            if (!ord && regular) {
+                std::memcpy(out, conn + first,
+                            m * static_cast<std::size_t>(n) * sizeof(std::int64_t));
+            } else {
+                parallel_for_bw(m, [&](std::size_t r) {
+                    std::int64_t endoff = offsets[ss + r];
+                    std::int64_t base = endoff - n;
+                    for (int j = 0; j < n; ++j) {
+                        int col = ord ? ord[j] : j;
+                        out[r * n + j] = conn[base + col];
+                    }
+                });
+            }
             out_cells.emplace_back(meshio_type, std::move(data));
             add_cd(start, end);
         }

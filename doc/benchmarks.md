@@ -21,8 +21,9 @@ meshio++ moves the parsing/serialising hot loops into C++, so the win is
 largest exactly where pure-Python is slowest — **text/ASCII formats**:
 
 - **VTU binary + zlib** — the zlib block compression parallelises across cores
-  (the C++ core defaults to an **OpenMP** backend), so this is now the biggest
-  win: **~12× write** on the bracket (~16× on a larger cube), ~2× read.
+  (the C++ core defaults to an **OpenMP** backend with dynamic scheduling, which
+  also load-balances hybrid P+E-core CPUs), so this is the biggest win:
+  **~16× write**, ~2.3× read.
 - **VTU ASCII** — the C++ number formatter and parser are several times faster
   than the Python/numpy text path (~7× write, ~5× read).
 - **XDMF read** — much faster on mixed-topology meshes (~10× on the bracket),
@@ -33,10 +34,11 @@ largest exactly where pure-Python is slowest — **text/ASCII formats**:
   reader decodes straight from the slurped buffer into an owning array that is
   *moved* into the cell block (no copy): ~1.4× write, **~1.8× read**.
 - **VTK binary** — writes at parity (fused gather+byte-swap, one `write`). Reads
-  now **beat** pure-Python on single-cell-type meshes (~1.0–1.1×) because the
+  now **beat** pure-Python on single-cell-type meshes (~1.3×) because the
   connectivity `NDArray` is moved straight into the cell block instead of being
-  copied during reconstruction; mixed-topology meshes fall back to a gather and
-  land a little below (~0.8×, still up from ~0.4× before).
+  copied during reconstruction, and endianness conversion uses single-instruction
+  `bswap` intrinsics; mixed-topology meshes fall back to per-run block copies and
+  land just under (~0.85×, up from ~0.4× originally).
 
 For **plain binary dumps**, pure-Python meshio streams the whole array through
 numpy's `fromfile`/`tofile` at C speed — a high bar — but with the redundant

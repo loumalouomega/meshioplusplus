@@ -129,8 +129,10 @@ void parallel_for_impl(std::size_t n, F& f, std::size_t grain, unsigned max_thre
     // Dynamic scheduling: on hybrid CPUs (P + E cores) a static split makes the
     // slow cores stragglers while the fast ones idle at the join; moderately
     // sized dynamic chunks self-balance with negligible dispatch overhead.
-    const long long chunk =
-        static_cast<long long>(std::max<std::size_t>(grain / 4, 256));
+    // grain/4 keeps dispatch rare for fine-grained loops while honouring
+    // explicitly coarse loops (e.g. the VTU zlib blocks pass grain=1: each
+    // iteration is a whole compress, so per-iteration dispatch is ideal).
+    const long long chunk = static_cast<long long>(std::max<std::size_t>(grain / 4, 1));
 #pragma omp parallel for schedule(dynamic, chunk) num_threads(nt)
     for (long long i = 0; i < nn; ++i) {
         exc.run([&] { f(static_cast<std::size_t>(i)); });
