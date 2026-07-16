@@ -15,4 +15,4 @@ Most formats have a detailed specification somewhere online. Make sure to post a
 
 **Did I help**
 
-If I was able to resolve your problem, consider [sponsoring](https://github.com/sponsors/nschloe) my work on meshio++, or [buy me a coffee](https://ko-fi.com/nschloe) to say thanks.
+If I was able to resolve your problem, consider [buy me a coffee](https://ko-fi.com/vicentemataixferrandiz) to say thanks.
