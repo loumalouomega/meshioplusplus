@@ -45,7 +45,8 @@ std::string header_value(const std::string& rText, const std::string& rKey) {
     while (p < rText.size() && (rText[p] == ' ' || rText[p] == '\t'))
         ++p;
     std::size_t e = p;
-    while (e < rText.size() && rText[e] != ' ' && rText[e] != '\t' && rText[e] != '#')
+    while (e < rText.size() && rText[e] != ' ' && rText[e] != '\t' && rText[e] != '#' &&
+           rText[e] != '\r' && rText[e] != '\n')
         ++e;
     return rText.substr(p, e - p);
 }
@@ -58,8 +59,14 @@ Mesh read_dex(const std::string& rPath) {
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
     std::string line;
-    while (std::getline(in, line))
+    while (std::getline(in, line)) {
+        // Files written in text mode on Windows use CRLF; the file is opened
+        // in binary mode here (no newline translation) and std::getline only
+        // splits on '\n', so strip a trailing '\r' explicitly.
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
         lines.push_back(line);
+    }
 
     // header = first two non-empty lines
     std::vector<std::string> header;
