@@ -20,7 +20,10 @@
 # netCDF are also off unconditionally: porting them to WASM is a separate,
 # much larger undertaking (see doc/wasm.md) -- the CGNS/H5M/HMF/MED/Exodus
 # formats are simply absent from bindings_js/js_bindings.cpp's dispatch
-# tables regardless of these flags.
+# tables regardless of these flags. The mesh backend is pinned to NATIVE
+# (-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE): the fastest in-memory structure —
+# canonical Float64/Int64 storage means the embind boundary's typed arrays
+# convert with no dtype dispatch, and the JS API shape is unchanged.
 
 set -eu
 
@@ -82,6 +85,7 @@ emcmake cmake $GENERATOR \
     -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
     -DMESHIOPLUSPLUS_BUILD_WASM=ON \
     -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ \
+    -DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE \
     -DMESHIOPLUSPLUS_WITH_HDF5=OFF \
     -DMESHIOPLUSPLUS_WITH_NETCDF=OFF \
     -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB"

@@ -19,6 +19,7 @@ set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "SOURCE_DIR=%%~fI"
 
 set "BACKEND=STL"
+set "MESH_BACKEND=MESHIO"
 set "BUILD_TYPE=Release"
 set "WITH_HDF5=OFF"
 set "WITH_NETCDF=OFF"
@@ -31,6 +32,7 @@ set "TBB_DIR="
 :parse
 if "%~1"=="" goto endparse
 if /I "%~1"=="--backend"        set "BACKEND=%~2" & shift & shift & goto parse
+if /I "%~1"=="--mesh-backend"   set "MESH_BACKEND=%~2" & shift & shift & goto parse
 if /I "%~1"=="--build-type"     set "BUILD_TYPE=%~2" & shift & shift & goto parse
 if /I "%~1"=="--with-hdf5"      set "WITH_HDF5=ON" & shift & goto parse
 if /I "%~1"=="--without-hdf5"   set "WITH_HDF5=OFF" & shift & goto parse
@@ -57,7 +59,16 @@ if "%PYTHON_EXE%"=="" (
     )
 )
 
-set "BUILD_DIR=%SCRIPT_DIR%cpp-%BUILD_TYPE%"
+rem Non-MESHIO mesh backends get their own build tree and no Python extension
+rem (the pybind11 boundary requires MESHIO).
+set "BUILD_PYTHON=ON"
+set "TREE_SUFFIX="
+if /I not "%MESH_BACKEND%"=="MESHIO" (
+    set "BUILD_PYTHON=OFF"
+    set "TREE_SUFFIX=-%MESH_BACKEND%"
+)
+
+set "BUILD_DIR=%SCRIPT_DIR%cpp-%BUILD_TYPE%%TREE_SUFFIX%"
 
 set "EXTRA="
 for /f "delims=" %%P in ('"%PYTHON_EXE%" -c "import pybind11; print(pybind11.get_cmake_dir())" 2^>nul') do set "EXTRA=-Dpybind11_DIR=%%P"
@@ -68,6 +79,7 @@ echo   source:    %SOURCE_DIR%
 echo   build:     %BUILD_DIR%
 echo   type:      %BUILD_TYPE%
 echo   backend:   %BACKEND%
+echo   mesh:      %MESH_BACKEND% (Python extension: %BUILD_PYTHON%)
 echo   HDF5:      %WITH_HDF5%   netCDF: %WITH_NETCDF%   zlib: %WITH_ZLIB%
 echo   tests:     %TESTS%
 echo   python:    %PYTHON_EXE%
@@ -75,6 +87,8 @@ echo.
 
 cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DMESHIOPLUSPLUS_PARALLEL_BACKEND=%BACKEND% ^
+    -DMESHIOPLUSPLUS_MESH_BACKEND=%MESH_BACKEND% ^
+    -DMESHIOPLUSPLUS_BUILD_PYTHON=%BUILD_PYTHON% ^
     -DMESHIOPLUSPLUS_WITH_HDF5=%WITH_HDF5% ^
     -DMESHIOPLUSPLUS_WITH_NETCDF=%WITH_NETCDF% ^
     -DMESHIOPLUSPLUS_WITH_ZLIB=%WITH_ZLIB% ^
@@ -102,6 +116,8 @@ exit /b 0
 :usage
 echo Usage: configure.bat [options]
 echo   --backend ^<SEQ^|STL^|OPENMP^|TBB^>  parallel backend (default: STL)
+echo   --mesh-backend ^<MESHIO^|NATIVE^|KRATOS^>  mesh backend (default: MESHIO;
+echo                                    NATIVE/KRATOS disable the Python extension)
 echo   --build-type ^<type^>             CMake build type (default: Release)
 echo   --with-hdf5 / --without-hdf5     HDF5-backed formats (default: off on Windows)
 echo   --with-netcdf / --without-netcdf
