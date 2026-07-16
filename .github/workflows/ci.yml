@@ -178,6 +178,12 @@ jobs:
     name: Coverage (Python + C++)
     needs: [lint]
     runs-on: ubuntu-latest
+    # The `secrets` context is not allowed in step-level `if:` expressions
+    # (referencing it there makes the whole workflow file invalid and GitHub
+    # runs NOTHING — zero checks on the PR). Hoist the token into a job-level
+    # env var, which step `if:`s may test via the `env` context.
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -244,12 +250,12 @@ jobs:
       # silently-dropped upload is what leaves the README badge stuck on
       # "unknown".
       - name: Warn if CODECOV_TOKEN is unset
-        if: ${{ secrets.CODECOV_TOKEN == '' }}
+        if: ${{ env.CODECOV_TOKEN == '' }}
         run: |
           echo "::warning title=Coverage not uploaded::CODECOV_TOKEN is not set, so coverage was measured but not uploaded and the README badge will stay 'unknown'. Enable the repo on codecov.io and add the CODECOV_TOKEN secret."
 
       - name: Upload Python coverage
-        if: ${{ secrets.CODECOV_TOKEN != '' }}
+        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -258,7 +264,7 @@ jobs:
           fail_ci_if_error: true
 
       - name: Upload C++ coverage
-        if: ${{ secrets.CODECOV_TOKEN != '' }}
+        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
