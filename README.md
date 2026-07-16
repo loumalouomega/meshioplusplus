@@ -1,29 +1,24 @@
 <p align="center">
-  <a href="https://github.com/<org>/meshioplusplus"><img alt="meshio++" src="logo/logo-with-text.svg" width="60%"></a>
+  <a href="https://github.com/loumalouomega/meshioplusplus"><img alt="meshio++" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/logo/logo-with-text.svg" width="60%"></a>
   <p align="center">I/O for mesh files.</p>
 </p>
 
 [![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
 [![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm)
-[![Anaconda Cloud](https://anaconda.org/conda-forge/meshioplusplus/badges/version.svg?=style=flat-square)](https://anaconda.org/conda-forge/meshioplusplus/)
-[![Packaging status](https://repology.org/badge/tiny-repos/python:meshioplusplus.svg)](https://repology.org/project/python:meshioplusplus/versions)
 [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
 
-[![GitHub stars](https://img.shields.io/github/stars/<org>/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/<org>/meshioplusplus)
-[![Downloads](https://pepy.tech/badge/meshioplusplus/month?style=flat-square)](https://pepy.tech/project/meshioplusplus)
+[![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus)
+[![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
 
-<!--[![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)-->
-
-[![gh-actions](https://img.shields.io/github/workflow/status/<org>/meshioplusplus/ci?style=flat-square)](https://github.com/<org>/meshioplusplus/actions?query=workflow%3Aci)
-[![codecov](https://img.shields.io/codecov/c/github/<org>/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/<org>/meshioplusplus)
-[![LGTM](https://img.shields.io/lgtm/grade/python/github/<org>/meshioplusplus.svg?style=flat-square)](https://lgtm.com/projects/g/<org>/meshioplusplus)
+[![gh-actions](https://img.shields.io/github/actions/workflow/status/loumalouomega/meshioplusplus/ci.yml?branch=main&style=flat-square)](https://github.com/loumalouomega/meshioplusplus/actions?query=workflow%3Aci)
+[![codecov](https://img.shields.io/codecov/c/github/loumalouomega/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/loumalouomega/meshioplusplus)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black)
 
 There are various mesh formats available for representing unstructured meshes.
 meshio++ can read and write all of the following and smoothly converts between them:
 
-> [Abaqus](http://abaqus.software.polimi.it/v6.14/index.html) (`.inp`),
+> [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
 > ANSYS msh (`.msh`),
 > [Ansys/APDL coded database](https://www.ansys.com) (`.cdb`, `.inp`),
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
@@ -35,6 +30,7 @@ meshio++ can read and write all of the following and smoothly converts between t
 > [FLUX](https://www.altair.com/flux/) (`.pf3`),
 > [FreeFem++](https://freefem.org/) (`.msh`),
 > [H5M](https://www.mcs.anl.gov/~fathom/moab-docs/h5mmain.html) (`.h5m`),
+> [HMF](https://loumalouomega.github.io/meshioplusplus/formats/hmf) (`.hmf`, experimental, meshio++-specific),
 > [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`),
 > [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
@@ -42,7 +38,7 @@ meshio++ can read and write all of the following and smoothly converts between t
 > [Modulef MFM](https://github.com/victorsndvg/FEconv) (`.mfm`),
 > [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) (bulk data, `.bdf`, `.fem`, `.nas`),
 > [Netgen](https://github.com/ngsolve/netgen) (`.vol`, `.vol.gz`),
-> [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/neuroglancer/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
+> [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
 > [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#File-formats) (format versions 2.2, 4.0, and 4.1, `.msh`),
 > [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) (`.obj`),
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
@@ -60,24 +56,21 @@ meshio++ can read and write all of the following and smoothly converts between t
 > [WKT](https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry) ([TIN](https://en.wikipedia.org/wiki/Triangulated_irregular_network)) (`.wkt`),
 > [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) (`.xdmf`, `.xmf`).
 
-([Here's a little survey](https://forms.gle/PSeNb3N3gv3wbEus8) on which formats are actually
-used.)
-
 meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and
 writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF
-acceleration and a **selectable parallel backend** (STL parallel algorithms by default;
-OpenMP or TBB via `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`). Every format has a pure-Python
-fallback, so behaviour and file compatibility are identical whether or not the native
-libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS)
-or `build/configure.bat` (Windows). Full docs (install, data model, per-format options,
-CLI) live at
-[the documentation site](https://<org>.github.io/meshioplusplus/) (sources under [`doc/`](doc/)).
+acceleration and a **selectable parallel backend** (`AUTO` by default — prefers OpenMP,
+then STL+TBB, then sequential; override with `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`).
+Every format has a pure-Python fallback, so behaviour and file compatibility are
+identical whether or not the native libraries are present. For a standalone C++ build
+use `build/configure.sh` (Linux/macOS) or `build/configure.bat` (Windows). Full docs
+(install, data model, per-format options, CLI) live at
+[the documentation site](https://loumalouomega.github.io/meshioplusplus/)
+(sources under [`doc/`](https://github.com/loumalouomega/meshioplusplus/tree/main/doc)).
 
-Install with one of
+Install with
 
 ```
 pip install meshioplusplus[all]
-conda install -c conda-forge meshioplusplus
 ```
 
 (`[all]` pulls in all optional dependencies. By default, meshio++ only uses numpy.)
@@ -198,14 +191,15 @@ You can now open all meshio++-supported files in ParaView.
 
 ### Benchmarks
 
-How much does the C++ core help? The [`benchmark/`](benchmark/) folder times
+How much does the C++ core help? The
+[`benchmark/`](https://github.com/loumalouomega/meshioplusplus/tree/main/benchmark) folder times
 read/write conversions against the original pure-Python
 [meshio](https://github.com/nschloe/meshio) on the formats both support (same
 in-memory mesh, same machine). The headline input is the bundled
-[`example.msh`](example/example.msh) — a real Gmsh bracket (~52k nodes, ~293k
+[`example.msh`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/example.msh) — a real Gmsh bracket (~52k nodes, ~293k
 cells).
 
-<img alt="meshio vs meshio++ speedup on example.msh" src="benchmark/plots/benchmark_speedup.svg" width="85%">
+<img alt="meshio vs meshio++ speedup on example.msh" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/benchmark/plots/benchmark_speedup.svg" width="85%">
 
 meshio++'s biggest wins are the parallel and text paths: **VTU binary+zlib
 ~16× write** (the zlib blocks run across cores via an OpenMP backend with
@@ -223,11 +217,11 @@ mixed-topology VTK ~1.1×. Output stays byte-identical throughout.
 The speedup is per-element: text/parallel formats climb out of the small-mesh
 regime and plateau (large meshes realise the full speedup):
 
-<img alt="speedup vs mesh size" src="benchmark/plots/benchmark_scaling.svg" width="85%">
+<img alt="speedup vs mesh size" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/benchmark/plots/benchmark_scaling.svg" width="85%">
 
 Full methodology and a reproducible notebook are on the
-[Benchmarks](https://<org>.github.io/meshioplusplus/benchmarks) doc page (source:
-[`benchmark/01_benchmark.ipynb`](benchmark/01_benchmark.ipynb)).
+[Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source:
+[`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/01_benchmark.ipynb)).
 
 ### Installation
 
@@ -247,27 +241,22 @@ and can be pulled in by
 pip install meshioplusplus[all]
 ```
 
-You can also install meshio++ from [Anaconda](https://anaconda.org/conda-forge/meshioplusplus):
-
-```
-conda install -c conda-forge meshioplusplus
-```
-
 For JavaScript / browser use, the C++ core also ships as a WebAssembly npm
-package covering 27 of the formats below:
+package covering 29 of the formats above:
 
 ```
 npm install @meshioplusplus/wasm
 ```
 
-See the [WebAssembly / JavaScript](https://<org>.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
+See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
 
 ### Testing
 
-To run the meshio++ unit tests, check out this repository and type
+To run the meshio++ unit tests, check out this repository, install it with the test
+extras, and type
 
 ```
-tox
+pytest tests/
 ```
 
 ### License

@@ -1,11 +1,11 @@
 # @meshioplusplus/wasm
 
-[meshio++](https://github.com/<org>/meshioplusplus) mesh I/O, compiled to
+[meshio++](https://github.com/loumalouomega/meshioplusplus) mesh I/O, compiled to
 WebAssembly. Read and write 27 mesh file formats (VTK, VTU, Gmsh, STL, OBJ,
 Nastran, and more) in the browser or Node.js.
 
 Full docs, the format-support table, and known v1 limitations:
-[doc/wasm.md](https://<org>.github.io/meshioplusplus/wasm).
+[doc/wasm.md](https://loumalouomega.github.io/meshioplusplus/wasm).
 
 ## Install
 
@@ -36,6 +36,6 @@ meshio.writeMesh("/example.msh", mesh, "gmsh"); // .msh needs an explicit
                                                  // ansys/freefem instead
 ```
 
-See [doc/wasm.md](https://<org>.github.io/meshioplusplus/wasm) for the mesh
+See [doc/wasm.md](https://loumalouomega.github.io/meshioplusplus/wasm) for the mesh
 object shape, the full list of supported formats, and format-selection rules
 for ambiguous extensions (`.msh`, `.inp`).

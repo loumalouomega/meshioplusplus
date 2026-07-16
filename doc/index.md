@@ -17,7 +17,7 @@ hero:
       link: /formats
     - theme: alt
       text: GitHub
-      link: https://github.com/<org>/meshioplusplus
+      link: https://github.com/loumalouomega/meshioplusplus
 
 features:
   - title: 35+ formats

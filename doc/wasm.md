@@ -65,8 +65,9 @@ file contains one, and there is no way to construct one for `writeMesh`.
 
 ## Format support
 
-The WASM build ships the 26 formats with no HDF5/netCDF dependency, plus
-XDMF's XML/Binary data path (not its HDF variant):
+The WASM build ships the 28 formats with no HDF5/netCDF dependency, plus
+XDMF's XML/Binary data path (not its HDF variant) — 29 readable formats in
+total, 28 writable (`openfoam` is read-only):
 
 `abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `dolfin-xml`, `flac3d`,
 `flux`, `freefem`, `gmsh`, `medit`, `mfm`, `mphtxt`, `nastran`, `netgen`,

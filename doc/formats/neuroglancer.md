@@ -1,6 +1,6 @@
 # Neuroglancer precomputed (no extension)
 
-The [Neuroglancer precomputed](https://github.com/google/neuroglancer/tree/master/src/neuroglancer/datasource/precomputed#mesh-representation-of-segmented-object-surfaces)
+The [Neuroglancer precomputed](https://github.com/google/neuroglancer/tree/master/src/datasource/precomputed#mesh-representation-of-segmented-object-surfaces)
 mesh representation for segmented object surfaces: a small binary format (a
 vertex count, the vertex coordinates, then the triangle indices).
 

@@ -31,14 +31,14 @@
   ],
   "license": "MIT",
   "author": "Vicente Mataix Ferrandiz",
-  "homepage": "https://github.com/<org>/meshioplusplus",
+  "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/<org>/meshioplusplus.git",
+    "url": "git+https://github.com/loumalouomega/meshioplusplus.git",
     "directory": "wasm"
   },
   "bugs": {
-    "url": "https://github.com/<org>/meshioplusplus/issues"
+    "url": "https://github.com/loumalouomega/meshioplusplus/issues"
   },
   "publishConfig": {
     "access": "public"

@@ -50,9 +50,9 @@ all = [
 ]
 
 [project.urls]
-homepage = "https://github.com/<org>/meshioplusplus"
-code = "https://github.com/<org>/meshioplusplus"
-issues = "https://github.com/<org>/meshioplusplus/issues"
+homepage = "https://github.com/loumalouomega/meshioplusplus"
+code = "https://github.com/loumalouomega/meshioplusplus"
+issues = "https://github.com/loumalouomega/meshioplusplus/issues"
 
 [project.scripts]
 meshioplusplus = "meshioplusplus._cli:main"

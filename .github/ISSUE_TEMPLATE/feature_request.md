@@ -6,7 +6,7 @@ labels: Needs triage
 assignees: ''
 ---
 
-Consider posting in https://github.com/<org>/meshioplusplus/discussions for feedback before raising a feature request.
+Consider posting in https://github.com/loumalouomega/meshioplusplus/discussions for feedback before raising a feature request.
 
 **How would you improve meshio++?**
 

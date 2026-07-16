@@ -1,6 +1,6 @@
 # Abaqus (`.inp`)
 
-The [Abaqus](http://abaqus.software.polimi.it/v6.14/index.html) input-deck
+The [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) input-deck
 format: keyword-driven ASCII (`*NODE`, `*ELEMENT`, `*NSET`, `*ELSET`,
 `*INCLUDE`, …).
 

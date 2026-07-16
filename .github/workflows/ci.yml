@@ -116,15 +116,112 @@ jobs:
       - name: Install meshio++ and test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-codeblocks pytest-cov h5py netCDF4
+          pip install pytest pytest-codeblocks h5py netCDF4
           pip install . --verbose
 
+      # Coverage is not collected here -- the dedicated `coverage` job below
+      # owns it, so this matrix stays focused on cross-platform correctness.
       - name: Run tests
-        run: pytest tests/ --codeblocks --cov meshioplusplus --cov-report xml --cov-report term
+        run: pytest tests/ --codeblocks
 
-      - name: Upload coverage
-        if: matrix.python-version == '3.12' && runner.os == 'Linux'
-        uses: codecov/codecov-action@v4
+  # --------------------------------------------------------------------------
+  # Coverage for BOTH layers, in one job so a single lcov capture sees the C++
+  # core as exercised by the GoogleTest binary AND by the Python test-suite
+  # (most C++ format code is reached through the pybind11 shims, so measuring
+  # only the gtest binary would badly under-report it).
+  #
+  # This works because pyproject.toml pins a persistent
+  # `build-dir = "build/{wheel_tag}"`: the .gcno/.gcda files survive the pip
+  # build instead of being discarded with a temporary directory.
+  # --------------------------------------------------------------------------
+  coverage:
+    name: Coverage (Python + C++)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive  # vendored Eigen (MED transpose)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install native libraries and lcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov
+
+      - name: Install build and test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja
+
+      - name: Build and run the C++ tests (instrumented)
+        run: |
+          cmake -S . -B build-cpp-cov -G Ninja \
+            -DMESHIOPLUSPLUS_COVERAGE=ON \
+            -DMESHIOPLUSPLUS_BUILD_TESTS=ON \
+            -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DPython_EXECUTABLE=$(which python)
+          cmake --build build-cpp-cov
+          ctest --test-dir build-cpp-cov --output-on-failure
+
+      # SKBUILD_CMAKE_BUILD_TYPE overrides pyproject's `cmake.build-type =
+      # "Release"`; -O0 keeps the gcov line mapping honest.
+      - name: Build instrumented _core and run the Python tests
+        env:
+          CMAKE_ARGS: >-
+            -DMESHIOPLUSPLUS_COVERAGE=ON
+            -DMESHIOPLUSPLUS_WITH_HDF5=ON
+            -DMESHIOPLUSPLUS_WITH_NETCDF=ON
+            -DMESHIOPLUSPLUS_WITH_ZLIB=ON
+          SKBUILD_CMAKE_BUILD_TYPE: Debug
+        run: |
+          pip install --no-build-isolation -e . --verbose
+          pytest tests/ --codeblocks --cov meshioplusplus --cov-report xml --cov-report term
+
+      # lcov 2.x (ubuntu-latest) is strict about gcov edge cases that are not
+      # actionable here -- notably `mismatch` from TUs compiled once but linked
+      # into two binaries, and `unused` from the --remove patterns.
+      - name: Capture C++ coverage
+        run: |
+          lcov --capture --gcov-tool gcov \
+               --directory build-cpp-cov --directory build \
+               --output-file cpp-coverage.info \
+               --ignore-errors mismatch,unused,empty,gcov,negative
+          lcov --remove cpp-coverage.info \
+               '*/cpp/third_party/*' '*/_deps/*' '/usr/*' \
+               --output-file cpp-coverage.info \
+               --ignore-errors unused
+          lcov --list cpp-coverage.info
+
+      # The uploads are skipped outright until CODECOV_TOKEN is configured, so a
+      # repo without it still gets the tests + the lcov summary above rather than
+      # a red build. Once the token exists they are fail-loud on purpose: a
+      # silently-dropped upload is what leaves the README badge stuck on
+      # "unknown".
+      - name: Warn if CODECOV_TOKEN is unset
+        if: ${{ secrets.CODECOV_TOKEN == '' }}
+        run: |
+          echo "::warning title=Coverage not uploaded::CODECOV_TOKEN is not set, so coverage was measured but not uploaded and the README badge will stay 'unknown'. Enable the repo on codecov.io and add the CODECOV_TOKEN secret."
+
+      - name: Upload Python coverage
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-        continue-on-error: true
+          files: ./coverage.xml
+          flags: python
+          fail_ci_if_error: true
+
+      - name: Upload C++ coverage
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./cpp-coverage.info
+          flags: cpp
+          fail_ci_if_error: true

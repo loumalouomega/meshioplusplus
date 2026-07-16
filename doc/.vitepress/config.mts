@@ -4,7 +4,7 @@ import { defineConfig } from "vitepress";
 export default defineConfig({
   title: "meshio++",
   description: "I/O for many mesh formats",
-  // Project site served from https://<org>.github.io/meshioplusplus/
+  // Project site served from https://loumalouomega.github.io/meshioplusplus/
   base: "/meshioplusplus/",
   lastUpdated: true,
   ignoreDeadLinks: true,
@@ -98,13 +98,13 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: "github", link: "https://github.com/<org>/meshioplusplus" },
+      { icon: "github", link: "https://github.com/loumalouomega/meshioplusplus" },
     ],
 
     search: { provider: "local" },
 
     editLink: {
-      pattern: "https://github.com/<org>/meshioplusplus/edit/main/doc/:path",
+      pattern: "https://github.com/loumalouomega/meshioplusplus/edit/main/doc/:path",
     },
 
     footer: {

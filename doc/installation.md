@@ -21,16 +21,10 @@ This pulls in:
 | `h5py` | CGNS, H5M, HMF, MED, XDMF (HDF data format) |
 | `netCDF4` | Exodus |
 
-## Conda
-
-```
-conda install -c conda-forge meshioplusplus
-```
-
 ## Development install
 
 ```
-git clone https://github.com/<org>/meshioplusplus.git
+git clone https://github.com/loumalouomega/meshioplusplus.git
 cd meshioplusplus
 pip install -e ".[all]"
 ```
@@ -41,7 +35,7 @@ Run the test suite with:
 pytest tests/
 ```
 
-or via tox (tests against Python 3.8 and 3.12):
+or via tox (tests against Python 3.9 and 3.12):
 
 ```
 tox
@@ -77,7 +71,8 @@ The C++ core parallelizes its hot loops through a compile-time-selected
 backend (`meshioplusplus::parallel_for`):
 
 ```
--DMESHIOPLUSPLUS_PARALLEL_BACKEND=STL      # default: C++17 parallel algorithms
+-DMESHIOPLUSPLUS_PARALLEL_BACKEND=AUTO     # default: OpenMP, else STL(+TBB), else SEQ
+-DMESHIOPLUSPLUS_PARALLEL_BACKEND=STL      # C++17 parallel algorithms
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=TBB
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ      # sequential
@@ -85,8 +80,13 @@ backend (`meshioplusplus::parallel_for`):
 
 Notes:
 
+- `AUTO` (the default) prefers OpenMP because it is the portable choice — libgomp
+  on manylinux, built into MSVC, libomp on macOS — and needs no TBB. It falls back
+  to the STL backend, then to sequential.
 - With GCC/libstdc++ the STL backend requires TBB (`apt install libtbb-dev`);
   when TBB is unusable, CMake warns and falls back to the sequential backend.
+  This is why `AUTO` does not pick STL first: without TBB it runs sequentially.
+- `_core.__parallel_backend__` reports the backend actually compiled in.
 - MSVC's STL backend needs nothing extra; Apple's libc++ has no parallel STL
   (use OpenMP via `brew install libomp`, or SEQ).
 - The design is open to new backends (Kokkos, …): one CMake branch plus one

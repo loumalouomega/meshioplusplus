@@ -1,1 +1,47 @@
 comment: no
+
+# Coverage arrives from the `coverage` job in .github/workflows/ci.yml as two
+# uploads: the Python package (coverage.xml, pytest-cov) and the C++20 core
+# (cpp-coverage.info, lcov). Both are produced in the same job, so the C++
+# numbers include the format code reached through the pybind11 shims rather
+# than only what the GoogleTest binary touches.
+flags:
+  python:
+    paths:
+      - src/meshioplusplus/
+    carryforward: false
+  cpp:
+    paths:
+      - cpp/
+      - bindings/
+    carryforward: false
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...90"
+  status:
+    # Informational until a baseline settles: report the delta on PRs, but do
+    # not block merges on it.
+    project:
+      default:
+        informational: true
+      python:
+        flags: [python]
+        informational: true
+      cpp:
+        flags: [cpp]
+        informational: true
+    patch:
+      default:
+        informational: true
+
+ignore:
+  - "tests/"
+  - "cpp/tests/"
+  - "benchmark/"
+  - "cpp/third_party/"
+  - "doc/"
+  - "example/"
+  - "logo/"
+  - "tools/"

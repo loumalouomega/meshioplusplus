@@ -3,7 +3,7 @@
 
 This document only describes _breaking_ changes in meshio++. If you are interested in bug
 fixes, enhancements etc., best follow [the meshio++ project on
-GitHub](https://github.com/<org>/meshioplusplus).
+GitHub](https://github.com/loumalouomega/meshioplusplus).
 
 ## v6.0.0 (2026-07-14)
 

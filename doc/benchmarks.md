@@ -2,18 +2,18 @@
 
 How does the meshio++ C++ core compare with the original pure-Python
 [meshio](https://github.com/nschloe/meshio)? The
-[`benchmark/`](https://github.com/<org>/meshioplusplus/tree/main/benchmark)
+[`benchmark/`](https://github.com/loumalouomega/meshioplusplus/tree/main/benchmark)
 folder times read and write conversions on the formats that **both** libraries
 support, on the same in-memory mesh.
 
 Both libraries expose an identical `Mesh` / `read` / `write` API, so the harness
-([`benchmark/bench.py`](https://github.com/<org>/meshioplusplus/blob/main/benchmark/bench.py))
+([`benchmark/bench.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/bench.py))
 hands one geometry to each and times it. The legacy pure-Python meshio is
 imported from source (it needs no build); meshio++ is the installed package. The
 headline input is the bundled **`example.msh`** — a real Gmsh mesh of a
 mechanical bracket (~52k nodes, ~293k cells, mixed triangles + tetrahedra).
 Reproduce everything with
-[`benchmark/01_benchmark.ipynb`](https://github.com/<org>/meshioplusplus/blob/main/benchmark/01_benchmark.ipynb).
+[`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/01_benchmark.ipynb).
 
 ## Where the C++ core helps (and where it doesn't)
 

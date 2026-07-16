@@ -100,6 +100,27 @@ if(EMSCRIPTEN)
   target_link_options(meshioplusplus_core_obj PUBLIC "-fwasm-exceptions")
 endif()
 
+# --------------------------------------------------------------------------
+# gcov/lcov instrumentation for the coverage CI job. OFF by default, so a
+# normal `pip install` never pays for it. Applied PUBLIC so every consumer of
+# these objects (_core, meshioplusplus_tests) is instrumented and emits into
+# the same .gcno/.gcda set -- that is what lets one lcov capture cover the C++
+# core as exercised by BOTH the GoogleTest binary and the pytest suite.
+# -fprofile-update=atomic is required: meshioplusplus::parallel_for runs the
+# instrumented loops on several threads, and the default non-atomic counter
+# updates race and silently under-count.
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_COVERAGE "Instrument the C++ core for gcov/lcov coverage" OFF)
+if(MESHIOPLUSPLUS_COVERAGE)
+  if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_COVERAGE needs GCC or Clang, got ${CMAKE_CXX_COMPILER_ID}")
+  endif()
+  message(STATUS "meshio++: coverage instrumentation ON (--coverage, -O0)")
+  target_compile_options(meshioplusplus_core_obj PUBLIC
+                         --coverage -O0 -g -fprofile-update=atomic)
+  target_link_options(meshioplusplus_core_obj PUBLIC --coverage)
+endif()
+
 if(MESHIOPLUSPLUS_WITH_ZLIB AND EMSCRIPTEN)
   message(STATUS "meshio++: VTU zlib compression enabled (Emscripten -sUSE_ZLIB=1 port)")
   target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_ZLIB)
@@ -157,8 +178,11 @@ endif()
 # --------------------------------------------------------------------------
 # Parallel backend for meshioplusplus::parallel_for (cpp/include/meshioplusplus/parallel.hpp).
 # Selected at configure time; exactly one MESHIOPLUSPLUS_PARALLEL_* macro is defined:
+#   AUTO   - (default) OpenMP if available, else STL, else SEQ. Prefers OpenMP
+#            because it is portable and needs no TBB; STL without TBB would
+#            silently run sequentially.
 #   SEQ    - sequential (always available)
-#   STL    - C++17 std::execution::par (default). Built into MSVC's STL; on
+#   STL    - C++17 std::execution::par. Built into MSVC's STL; on
 #            libstdc++ it requires TBB - probed below, with an automatic
 #            fallback to SEQ (warning) when unusable (e.g. Apple libc++).
 #   OPENMP - #pragma omp parallel for (hard error if OpenMP is missing)
