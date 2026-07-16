@@ -26,6 +26,8 @@ features:
     details: A single Mesh object (points, cells, point/cell data, field data, sets) bridges every format, so conversion is one call.
   - title: Fast C++ core
     details: A pybind11 extension with zero-copy numpy at the I/O boundary and optional HDF5/netCDF acceleration — with pure-Python fallbacks everywhere.
+  - title: Swappable mesh backends
+    details: Standalone C++ builds choose the in-memory structure at compile time — the meshio-mirroring default, a fastest-possible native layout (used by the WASM build), or a Kratos Multiphysics-style ModelPart with a header-only bridge.
 ---
 
 ## What is meshio++?

@@ -65,6 +65,26 @@ build\configure.bat --backend STL --tests --build         # Windows
 They create a CMake tree under `build/cpp-<build-type>` and print the follow-up
 build/ctest commands.
 
+### Mesh backends
+
+Standalone C++ builds can swap the in-memory mesh structure itself with
+`--mesh-backend` (CMake: `MESHIOPLUSPLUS_MESH_BACKEND`):
+
+```
+./build/configure.sh --mesh-backend NATIVE --tests --build   # fastest pure-C++ structure
+./build/configure.sh --mesh-backend KRATOS --tests --build   # Kratos-style ModelPart
+```
+
+- `MESHIO` (default) — mirrors the Python `meshio.Mesh`; **required** when the
+  pybind11 extension is built (PyPI wheels always use it).
+- `NATIVE` — canonical Float64/Int64 storage, `CellType` enum, CSR ragged
+  blocks; the WebAssembly build uses it.
+- `KRATOS` — a Kratos-Multiphysics-style `ModelPart` behind the same API, with
+  a header-only bridge to the real `Kratos::ModelPart`.
+
+All formats work identically under every backend. See
+[C++ mesh backends](cpp_backends.md) for the full story.
+
 ### Parallelism
 
 The C++ core parallelizes its hot loops through a compile-time-selected
