@@ -142,18 +142,19 @@ Mesh read_wkt(const std::string& rPath) {
             throw ReadError("WKT points have mixed dimensionality");
 
     Mesh mesh;
-    mesh.mPoints = NDArray(DType::Float64, {points.size(), dim});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64, {points.size(), dim});
+    double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
         for (std::size_t j = 0; j < dim; ++j)
             pp[i * dim + j] = points[i][j];
+    mesh.AssignPoints(std::move(pts));
 
     NDArray data(DType::Int64, {tris.size(), 3});
     std::int64_t* dp = data.As<std::int64_t>();
     for (std::size_t i = 0; i < tris.size(); ++i)
         for (int j = 0; j < 3; ++j)
             dp[i * 3 + j] = tris[i][j];
-    mesh.mCells.emplace_back("triangle", std::move(data));
+    mesh.AddCellBlock("triangle", std::move(data));
 
     return mesh;
 }
@@ -163,15 +164,15 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
 
     auto point_str = [&](std::int64_t p) {
         std::string out;
         char buf[32];
         for (std::size_t j = 0; j < dim; ++j) {
-            std::snprintf(
-                buf, sizeof(buf), "%.17g",
-                detail::read_double(rMesh.mPoints, static_cast<std::size_t>(p) * dim + j));
+            std::snprintf(buf, sizeof(buf), "%.17g",
+                          detail::read_double(points, static_cast<std::size_t>(p) * dim + j));
             if (j)
                 out += " ";
             out += buf;
@@ -181,15 +182,16 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 
     f << "TIN (";
     std::string joiner;
-    for (const auto& cb : rMesh.mCells) {
-        if (cb.mType != "triangle")
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.Type() != "triangle")
             continue;
-        const std::size_t ncols = detail::cols(cb.mData);
+        const NDArray& conn = cb.Conn();
+        const std::size_t ncols = detail::cols(conn);
         const std::size_t n = cb.NumCells();
         for (std::size_t r = 0; r < n; ++r) {
-            std::int64_t a = detail::read_int(cb.mData, r * ncols + 0);
-            std::int64_t b = detail::read_int(cb.mData, r * ncols + 1);
-            std::int64_t c = detail::read_int(cb.mData, r * ncols + 2);
+            std::int64_t a = detail::read_int(conn, r * ncols + 0);
+            std::int64_t b = detail::read_int(conn, r * ncols + 1);
+            std::int64_t c = detail::read_int(conn, r * ncols + 2);
             std::string sa = point_str(a);
             f << joiner << "((" << sa << ", " << point_str(b) << ", " << point_str(c) << ", " << sa
               << "))";

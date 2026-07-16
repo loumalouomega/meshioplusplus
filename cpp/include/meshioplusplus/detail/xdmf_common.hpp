@@ -40,6 +40,7 @@
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
 namespace meshioplusplus {
@@ -129,22 +130,27 @@ inline std::string xdmf_to_meshio(const std::string& rT) {
  * Used when writing XDMF/HMF cell data for a mixed-cell-type mesh: XDMF
  * stores cell data as one flat array per data name (all blocks' rows
  * back-to-back) rather than one array per block.
- * @param blocks Per-cell-block arrays for one data name, in cell-block order;
- *               must be non-empty and share dtype/trailing shape.
- * @return A new array with the same trailing shape as `blocks.front()` and
+ * @param rMesh The mesh whose cell data to concatenate.
+ * @param rName The cell-data name; must have at least one block, all blocks
+ *              sharing dtype/trailing shape.
+ * @return A new array with the same trailing shape as the first block and
  *         first dimension equal to the sum of each block's row count.
  */
-inline NDArray concat_cell_data(const std::vector<NDArray>& rBlocks) {
+inline NDArray concat_cell_data(const Mesh& rMesh, const std::string& rName) {
+    const std::size_t nblocks = rMesh.CellDataNumBlocks(rName);
     std::size_t total_rows = 0;
-    std::vector<std::size_t> shape = rBlocks.front().Shape();
-    for (const auto& b : rBlocks)
-        total_rows += b.Shape().empty() ? 0 : b.Shape()[0];
+    std::vector<std::size_t> shape = rMesh.CellData(rName, 0).Shape();
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto& bshape = rMesh.CellData(rName, b).Shape();
+        total_rows += bshape.empty() ? 0 : bshape[0];
+    }
     shape[0] = total_rows;
-    NDArray out(rBlocks.front().Dtype(), shape);
+    NDArray out(rMesh.CellData(rName, 0).Dtype(), shape);
     std::size_t off = 0;
-    for (const auto& b : rBlocks) {
-        std::memcpy(out.Data() + off, b.Data(), b.Nbytes());
-        off += b.Nbytes();
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const NDArray& blk = rMesh.CellData(rName, b);
+        std::memcpy(out.Data() + off, blk.Data(), blk.Nbytes());
+        off += blk.Nbytes();
     }
     return out;
 }

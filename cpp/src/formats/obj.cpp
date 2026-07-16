@@ -138,16 +138,17 @@ Mesh read_obj(const std::string& rPath) {
 
     Mesh mesh;
     std::size_t np = points.size();
-    mesh.mPoints = NDArray(DType::Float64, {np, 3});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64, {np, 3});
+    double* pp = pts.As<double>();
     for (std::size_t i = 0; i < np; ++i)
         for (int c = 0; c < 3; ++c)
             pp[i * 3 + c] = points[i][c];
+    mesh.AssignPoints(std::move(pts));
 
     if (!vt.empty())
-        mesh.mPointData.emplace("obj:vt", make_point_data(vt));
+        mesh.AddPointData("obj:vt", make_point_data(vt));
     if (!vn.empty())
-        mesh.mPointData.emplace("obj:vn", make_point_data(vn));
+        mesh.AddPointData("obj:vn", make_point_data(vn));
 
     if (!nonempty.empty()) {
         std::vector<NDArray> gid_blocks;
@@ -156,7 +157,7 @@ Mesh read_obj(const std::string& rPath) {
             std::int64_t* dp = data.As<std::int64_t>();
             for (std::size_t i = 0; i < fb.mIdx.size(); ++i)
                 dp[i] = fb.mIdx[i];
-            mesh.mCells.emplace_back(cell_type_for(fb.mSize), std::move(data));
+            mesh.AddCellBlock(cell_type_for(fb.mSize), std::move(data));
 
             NDArray g(DType::Int64, {fb.mCount});
             std::int64_t* gp = g.As<std::int64_t>();
@@ -164,14 +165,14 @@ Mesh read_obj(const std::string& rPath) {
                 gp[i] = fb.mGids[i];
             gid_blocks.push_back(std::move(g));
         }
-        mesh.mCellData.emplace("obj:group_ids", std::move(gid_blocks));
+        mesh.AddCellData("obj:group_ids", std::move(gid_blocks));
     }
     return mesh;
 }
 
 void write_obj(const std::string& rPath, const Mesh& rMesh) {
-    for (const auto& cb : rMesh.mCells)
-        if (cb.mType != "triangle" && cb.mType != "quad" && cb.mType != "polygon")
+    for (const auto cb : rMesh.CellRange())
+        if (cb.Type() != "triangle" && cb.Type() != "quad" && cb.Type() != "polygon")
             throw WriteError(
                 "Wavefront .obj files can only contain triangle, quad, "
                 "or polygon cells.");
@@ -180,24 +181,24 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
+    const NDArray& points = rMesh.Points();
     const std::size_t num_points = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t dim = rMesh.PointDim();
 
     os << "# Created by meshio++ (C++ core)\n";
     char buf[96];
     for (std::size_t r = 0; r < num_points; ++r) {
-        double x = (0 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 0) : 0.0;
-        double y = (1 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 1) : 0.0;
-        double z = (2 < dim) ? detail::read_double(rMesh.mPoints, r * dim + 2) : 0.0;
+        double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
+        double y = (1 < dim) ? detail::read_double(points, r * dim + 1) : 0.0;
+        double z = (2 < dim) ? detail::read_double(points, r * dim + 2) : 0.0;
         std::snprintf(buf, sizeof(buf), "v %.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
 
     auto write_pd = [&](const char* key, const char* tag) {
-        auto it = rMesh.mPointData.find(key);
-        if (it == rMesh.mPointData.end())
+        if (!rMesh.HasPointData(key))
             return;
-        const NDArray& d = it->second;
+        const NDArray& d = rMesh.PointData(key);
         std::size_t nc = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
         for (std::size_t r = 0; r < (d.Shape().empty() ? 0 : d.Shape()[0]); ++r) {
             os << tag;
@@ -211,12 +212,13 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     write_pd("obj:vn", "vn");
     write_pd("obj:vt", "vt");
 
-    for (const auto& cb : rMesh.mCells) {
-        std::size_t k = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& conn = cb.Conn();
+        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             os << 'f';
             for (std::size_t j = 0; j < k; ++j)
-                os << ' ' << (detail::read_int(cb.mData, r * k + j) + 1);
+                os << ' ' << (detail::read_int(conn, r * k + j) + 1);
             os << '\n';
         }
     }

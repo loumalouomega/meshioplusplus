@@ -25,7 +25,6 @@
 
 // Project includes
 #include "meshioplusplus/formats/vtu.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -88,8 +87,8 @@ void ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
 }  // namespace
 
 void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
-    for (const auto& cb : rMesh.mCells) {
-        if (cb.mType.rfind("polyhedron", 0) == 0)
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.Type().rfind("polyhedron", 0) == 0)
             throw WriteError("C++ VTU writer does not support polyhedron cells");
     }
 
@@ -97,12 +96,13 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
+    const NDArray& points = rMesh.Points();
     const std::size_t num_points = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
-    const std::size_t pt_isz = dtype_size(rMesh.mPoints.Dtype());
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t pt_isz = dtype_size(points.Dtype());
 
     std::size_t total_cells = 0;
-    for (const auto& cb : rMesh.mCells)
+    for (const auto cb : rMesh.CellRange())
         total_cells += cb.NumCells();
 
     const char* fmt = binary ? "binary" : "ascii";
@@ -130,12 +130,12 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
     // Points (3 components; pad 2D with zero z).
     os << "<Points>\n";
-    da_header(vtu_type_str(rMesh.mPoints.Dtype()), "Points", 3);
+    da_header(vtu_type_str(points.Dtype()), "Points", 3);
     if (binary) {
         // Pre-sized buffer (zero-filled -> the padded z stays 0), indexed
         // byte writes -> parallel over points.
         std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
-        const auto* src = reinterpret_cast<const unsigned char*>(rMesh.mPoints.Data());
+        const auto* src = reinterpret_cast<const unsigned char*>(points.Data());
         parallel_for(num_points, [&](std::size_t r) {
             for (std::size_t c = 0; c < dim && c < 3; ++c)
                 std::memcpy(buf.data() + (r * 3 + c) * pt_isz, src + (r * dim + c) * pt_isz,
@@ -145,34 +145,35 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
     } else {
         for (std::size_t r = 0; r < num_points; ++r)
             for (std::size_t c = 0; c < 3; ++c)
-                ascii_double(os, (c < dim) ? read_double(rMesh.mPoints, r * dim + c) : 0.0);
+                ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
     }
     os << "</DataArray>\n</Points>\n";
 
-    if (!rMesh.mCells.empty()) {
+    if (rMesh.NumCellBlocks() != 0) {
         // Build connectivity / offsets / types (Int64) into pre-sized arrays.
         // Per-block offsets are closed-form (conn_base + (r+1)*k), so rows are
         // independent and each block fills in parallel.
         const auto& tmap = meshio_to_vtk_type();
         std::size_t total_conn = 0, ncells = 0;
-        for (const auto& cb : rMesh.mCells) {
-            total_conn += cb.NumCells() * cols(cb.mData);
+        for (const auto cb : rMesh.CellRange()) {
+            total_conn += cb.NumCells() * cols(cb.Conn());
             ncells += cb.NumCells();
         }
         std::vector<std::int64_t> connectivity(total_conn), offsets(ncells), types(ncells);
         std::size_t conn_base = 0, cell_base = 0;
-        for (const auto& cb : rMesh.mCells) {
+        for (const auto cb : rMesh.CellRange()) {
+            const NDArray& conn = cb.Conn();
             const std::size_t nc = cb.NumCells();
-            const std::size_t k = cols(cb.mData);
-            std::vector<int> order = meshio_to_vtk_order(cb.mType);
-            auto it = tmap.find(cb.mType);
+            const std::size_t k = cols(conn);
+            std::vector<int> order = meshio_to_vtk_order(cb.Type());
+            auto it = tmap.find(cb.Type());
             if (it == tmap.end())
-                throw WriteError("Unknown cell type for VTU: " + cb.mType);
+                throw WriteError("Unknown cell type for VTU: " + cb.Type());
             const std::int64_t vtk_type = it->second;
             parallel_for(nc, [&](std::size_t r) {
                 for (std::size_t j = 0; j < k; ++j) {
                     std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    connectivity[conn_base + r * k + j] = read_int(cb.mData, r * k + col);
+                    connectivity[conn_base + r * k + j] = read_int(conn, r * k + col);
                 }
                 offsets[cell_base + r] = static_cast<std::int64_t>(conn_base + (r + 1) * k);
                 types[cell_base + r] = vtk_type;
@@ -200,10 +201,10 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
         os << "</Cells>\n";
     }
 
-    if (!rMesh.mPointData.empty()) {
+    if (rMesh.NumPointData() != 0) {
         os << "<PointData>\n";
-        for (const auto& name : detail::sorted_keys(rMesh.mPointData)) {
-            const NDArray& d = rMesh.mPointData.at(name);
+        for (const auto& name : rMesh.PointDataNames()) {
+            const NDArray& d = rMesh.PointData(name);
             int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
             da_header(vtu_type_str(d.Dtype()), name, ncomp);
             if (binary)
@@ -215,25 +216,26 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
         os << "</PointData>\n";
     }
 
-    if (!rMesh.mCellData.empty()) {
+    if (rMesh.NumCellData() != 0) {
         os << "<CellData>\n";
-        for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
-            const auto& blocks = rMesh.mCellData.at(name);
-            if (blocks.empty())
+        for (const auto& name : rMesh.CellDataNames()) {
+            const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
+            if (nblocks == 0)
                 continue;
-            const NDArray& first = blocks.front();
+            const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
             da_header(vtu_type_str(first.Dtype()), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
-                for (const auto& blk : blocks) {
+                for (std::size_t bi = 0; bi < nblocks; ++bi) {
+                    const NDArray& blk = rMesh.CellData(name, bi);
                     const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
                     buf.insert(buf.end(), p, p + blk.Nbytes());
                 }
                 emit_bin(buf.data(), buf.size());
             } else {
-                for (const auto& blk : blocks)
-                    ascii_ndarray(os, blk);
+                for (std::size_t bi = 0; bi < nblocks; ++bi)
+                    ascii_ndarray(os, rMesh.CellData(name, bi));
             }
             os << "</DataArray>\n";
         }

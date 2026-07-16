@@ -233,7 +233,7 @@ Mesh read_vtu(const std::string& rPath) {
             if (nc <= 0)
                 nc = 3;
             pts.Reshape({num_points, static_cast<std::size_t>(nc)});
-            mesh.mPoints = std::move(pts);
+            mesh.AssignPoints(std::move(pts));
         } else if (tag == "Cells") {
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
@@ -255,7 +255,7 @@ Mesh read_vtu(const std::string& rPath) {
                 NDArray arr = read_data_array(da, compression, hsz, nc);
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-                mesh.mPointData.emplace(name, std::move(arr));
+                mesh.AddPointData(name, std::move(arr));
             }
         } else if (tag == "CellData") {
             for (pugi::xml_node da : child.children("DataArray")) {
@@ -269,8 +269,7 @@ Mesh read_vtu(const std::string& rPath) {
         }
     }
 
-    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh.mCells,
-                              mesh.mCellData);
+    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
     return mesh;
 }
 

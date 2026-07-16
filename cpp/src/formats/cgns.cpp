@@ -19,6 +19,7 @@
 // System includes
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -51,13 +52,14 @@ Mesh read_cgns(const std::string& rPath) {
 
     const std::size_t n = x.Shape().empty() ? 0 : x.Shape()[0];
     Mesh mesh;
-    mesh.mPoints = NDArray(DType::Float64, {n, 3});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64, {n, 3});
+    double* pp = pts.As<double>();
     for (std::size_t i = 0; i < n; ++i) {
         pp[i * 3 + 0] = detail::read_double(x, i);
         pp[i * 3 + 1] = detail::read_double(y, i);
         pp[i * 3 + 2] = detail::read_double(z, i);
     }
+    mesh.AssignPoints(std::move(pts));
 
     h5::Hid elems = h5::open_group(zone, "GridElements");
     h5::Hid rng = h5::open_group(elems, "ElementRange");
@@ -95,7 +97,7 @@ Mesh read_cgns(const std::string& rPath) {
                 throw ReadError("CGNS: unexpected connectivity dtype");
         }
     }
-    mesh.mCells.emplace_back("tetra", std::move(cells));
+    mesh.AddCellBlock("tetra", std::move(cells));
     return mesh;
 }
 
@@ -103,10 +105,10 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     h5::SilenceErrors silence;
 
     // Locate the tetra block (mirroring the Python writer, which only emits tetra).
-    const CellBlock* tet = nullptr;
-    for (const auto& cb : rMesh.mCells)
-        if (cb.mType == "tetra") {
-            tet = &cb;
+    std::optional<Mesh::CellView> tet;
+    for (const auto cb : rMesh.CellRange())
+        if (cb.Type() == "tetra") {
+            tet = cb;
             break;
         }
 
@@ -115,17 +117,17 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     h5::Hid zone = h5::create_group(base, "Zone1");
     h5::Hid coords = h5::create_group(zone, "GridCoordinates");
 
+    const NDArray& points = rMesh.Points();
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t d = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t d = rMesh.PointDim();
 
     const char* names[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
     for (int c = 0; c < 3; ++c) {
         h5::Hid g = h5::create_group(coords, names[c]);
-        NDArray col(rMesh.mPoints.Dtype(), {n});
+        NDArray col(points.Dtype(), {n});
         for (std::size_t i = 0; i < n; ++i) {
-            double v = (static_cast<std::size_t>(c) < d)
-                           ? detail::read_double(rMesh.mPoints, i * d + c)
-                           : 0.0;
+            double v =
+                (static_cast<std::size_t>(c) < d) ? detail::read_double(points, i * d + c) : 0.0;
             if (col.Dtype() == DType::Float32)
                 col.As<float>()[i] = static_cast<float>(v);
             else
@@ -138,16 +140,17 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     h5::Hid rng = h5::create_group(elems, "ElementRange");
     h5::Hid conn = h5::create_group(elems, "ElementConnectivity");
     if (tet) {
+        const NDArray& tconn = tet->Conn();
         const std::size_t nc = tet->NumCells();
-        const std::size_t k = detail::cols(tet->mData);
+        const std::size_t k = detail::cols(tconn);
         NDArray range(DType::Int64, {2});
         range.As<std::int64_t>()[0] = 1;
         range.As<std::int64_t>()[1] = static_cast<std::int64_t>(nc);
         h5::write_dataset(rng, " data", range, gzip_level);
 
-        NDArray flat(tet->mData.Dtype(), {nc * k});
+        NDArray flat(tconn.Dtype(), {nc * k});
         for (std::size_t i = 0; i < nc * k; ++i) {
-            std::int64_t v = detail::read_int(tet->mData, i) + 1;
+            std::int64_t v = detail::read_int(tconn, i) + 1;
             switch (flat.Dtype()) {
                 case DType::Int32:
                     flat.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);

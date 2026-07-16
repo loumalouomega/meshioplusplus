@@ -70,9 +70,10 @@ Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
 
     Mesh mesh;
     std::size_t num_unique = point_bytes.size() / (3 * isz);
-    mesh.mPoints = NDArray(dt, {num_unique, 3});
+    NDArray pts(dt, {num_unique, 3});
     if (!point_bytes.empty())
-        std::memcpy(mesh.mPoints.Data(), point_bytes.data(), point_bytes.size());
+        std::memcpy(pts.Data(), point_bytes.data(), point_bytes.size());
+    mesh.AssignPoints(std::move(pts));
 
     std::size_t ntri = nverts / 3;
     // An empty STL has no cells (match the Python reader, which returns no
@@ -84,12 +85,12 @@ Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
     std::int64_t* cp = cells.As<std::int64_t>();
     for (std::size_t i = 0; i < ntri * 3; ++i)
         cp[i] = idx[i];
-    mesh.mCells.emplace_back("triangle", std::move(cells));
+    mesh.AddCellBlock("triangle", std::move(cells));
 
     if (pNormalBytes && !pNormalBytes->empty()) {
         NDArray nrm(DType::Float64, {ntri, 3});
         std::memcpy(nrm.Data(), pNormalBytes->data(), pNormalBytes->size());
-        mesh.mCellData["facet_normals"].push_back(std::move(nrm));
+        mesh.AppendCellData("facet_normals", std::move(nrm));
     }
     return mesh;
 }
@@ -189,29 +190,30 @@ namespace {
 
 void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTris,
                       std::vector<std::array<double, 3>>& rNormals) {
-    const auto& cd = rMesh.mCellData.find("facet_normals");
-    bool have_normals = cd != rMesh.mCellData.end();
-    std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 3;
+    const bool have_normals = rMesh.HasCellData("facet_normals");
+    const std::size_t normal_blocks = have_normals ? rMesh.CellDataNumBlocks("facet_normals") : 0;
+    const NDArray& points = rMesh.Points();
+    std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 3;
 
     std::size_t block = 0;
-    for (const auto& cb : rMesh.mCells) {
-        if (cb.mType != "triangle") {
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.Type() != "triangle") {
             ++block;
             continue;
         }
         std::size_t nc = cb.NumCells();
+        const NDArray& conn = cb.Conn();
         const NDArray* nrm = nullptr;
-        if (have_normals && block < cd->second.size())
-            nrm = &cd->second[block];
+        if (have_normals && block < normal_blocks)
+            nrm = &rMesh.CellData("facet_normals", block);
         for (std::size_t r = 0; r < nc; ++r) {
             std::array<double, 9> tri{};
             double v[3][3];
             for (int k = 0; k < 3; ++k) {
-                std::int64_t pi = detail::read_int(cb.mData, r * 3 + k);
+                std::int64_t pi = detail::read_int(conn, r * 3 + k);
                 for (int c = 0; c < 3; ++c)
-                    v[k][c] = (std::size_t(c) < dim)
-                                  ? detail::read_double(rMesh.mPoints, pi * dim + c)
-                                  : 0.0;
+                    v[k][c] =
+                        (std::size_t(c) < dim) ? detail::read_double(points, pi * dim + c) : 0.0;
                 tri[k * 3 + 0] = v[k][0];
                 tri[k * 3 + 1] = v[k][1];
                 tri[k * 3 + 2] = v[k][2];

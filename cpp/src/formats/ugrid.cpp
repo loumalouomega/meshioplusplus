@@ -30,7 +30,6 @@
 // Project includes
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -364,19 +363,19 @@ Mesh read_ugrid(const std::string& rPath) {
 
     // Points (always 3 coordinates).
     Mesh mesh;
-    mesh.mPoints = NDArray(fdt, {static_cast<std::size_t>(npoints), 3});
+    NDArray pts(fdt, {static_cast<std::size_t>(npoints), 3});
     if (ft.mAscii) {
         for (std::int64_t i = 0; i < npoints * 3; ++i) {
             double v = next_float();
             if (fdt == DType::Float64)
-                mesh.mPoints.As<double>()[i] = v;
+                pts.As<double>()[i] = v;
             else
-                mesh.mPoints.As<float>()[i] = static_cast<float>(v);
+                pts.As<float>()[i] = static_cast<float>(v);
         }
     } else {
-        bulk_read_floats(in, static_cast<std::size_t>(npoints) * 3, mesh.mPoints, ft.mFloatSize,
-                         swap);
+        bulk_read_floats(in, static_cast<std::size_t>(npoints) * 3, pts, ft.mFloatSize, swap);
     }
+    mesh.AssignPoints(std::move(pts));
 
     auto store_int = [&](NDArray& a, std::int64_t i, std::int64_t v) {
         if (idt == DType::Int64)
@@ -402,7 +401,7 @@ Mesh read_ugrid(const std::string& rPath) {
         else
             bulk_read_ints(in, static_cast<std::size_t>(n), static_cast<std::size_t>(k), nullptr,
                            data, ft.mIntSize, swap, -1);
-        mesh.mCells.emplace_back(surf[s].first, std::move(data));
+        mesh.AddCellBlock(surf[s].first, std::move(data));
     }
 
     // Surface boundary tags -> ugrid:ref.
@@ -442,7 +441,7 @@ Mesh read_ugrid(const std::string& rPath) {
             bulk_read_ints(in, static_cast<std::size_t>(n), static_cast<std::size_t>(k), perm, data,
                            ft.mIntSize, swap, -1);
         }
-        mesh.mCells.emplace_back(kVolume[vi].mType, std::move(data));
+        mesh.AddCellBlock(kVolume[vi].mType, std::move(data));
         // Volume elements carry zero ref tags.
         NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});
         std::memset(ref.Data(), 0, ref.Nbytes());
@@ -451,7 +450,7 @@ Mesh read_ugrid(const std::string& rPath) {
 
     skip_marker();  // end of second Fortran record
 
-    mesh.mCellData.emplace("ugrid:ref", std::move(refs));
+    mesh.AddCellData("ugrid:ref", std::move(refs));
     return mesh;
 }
 
@@ -466,8 +465,9 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
 
     // Resolve the single block index for each UGRID-known cell type.
     std::map<std::string, int> block_of;  // type -> index in mesh.cells
-    for (std::size_t i = 0; i < rMesh.mCells.size(); ++i) {
-        const std::string& t = rMesh.mCells[i].mType;
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
+        const auto cb = rMesh.Cells(i);
+        const std::string& t = cb.Type();
         bool known = (t == "triangle" || t == "quad" || t == "tetra" || t == "pyramid" ||
                       t == "wedge" || t == "hexahedron");
         if (!known)
@@ -479,7 +479,7 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
 
     auto count_of = [&](const char* t) -> std::int64_t {
         auto it = block_of.find(t);
-        return it == block_of.end() ? 0 : detail::rows(rMesh.mCells[it->second].mData);
+        return it == block_of.end() ? 0 : detail::rows(rMesh.Cells(it->second).Conn());
     };
 
     const std::int64_t npoints = static_cast<std::int64_t>(rMesh.NumPoints());
@@ -492,19 +492,19 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
                               count_of("hexahedron")};
 
     // First int cell-data array, used for surface boundary tags.
-    const std::vector<NDArray>* labels = nullptr;
-    for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
-        const auto& blocks = rMesh.mCellData.at(name);
-        if (blocks.empty())
+    std::string labels_name;
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) == 0)
             continue;
-        DType t = blocks.front().Dtype();
+        DType t = rMesh.CellData(name, 0).Dtype();
         if (t != DType::Float32 && t != DType::Float64) {
-            labels = &blocks;
+            labels_name = name;
             break;
         }
     }
 
-    const std::size_t ncols = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 3;
+    const NDArray& points = rMesh.Points();
+    const std::size_t ncols = points.Shape().size() >= 2 ? points.Shape()[1] : 3;
 
     // ---- ascii branch ----
     if (ft.mAscii) {
@@ -514,7 +514,7 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
         for (std::int64_t i = 0; i < npoints; ++i) {
             for (std::size_t c = 0; c < ncols; ++c) {
                 std::snprintf(fbuf, sizeof(fbuf), "%.16g",
-                              detail::read_double(rMesh.mPoints, i * ncols + c));
+                              detail::read_double(points, i * ncols + c));
                 os << fbuf << (c + 1 == ncols ? '\n' : ' ');
             }
         }
@@ -522,12 +522,13 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
         for (int s = 0; s < 2; ++s) {
             if (count_of(surf[s].first) == 0)
                 continue;
-            const CellBlock& cb = rMesh.mCells[block_of[surf[s].first]];
+            const auto cb = rMesh.Cells(block_of[surf[s].first]);
+            const NDArray& conn = cb.Conn();
             int k = surf[s].second;
-            std::int64_t n = detail::rows(cb.mData);
+            std::int64_t n = detail::rows(conn);
             for (std::int64_t i = 0; i < n; ++i)
                 for (int j = 0; j < k; ++j)
-                    os << (detail::read_int(cb.mData, i * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
+                    os << (detail::read_int(conn, i * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
         }
         for (int s = 0; s < 2; ++s) {
             const char* t = surf[s].first;
@@ -535,9 +536,11 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
             if (n == 0)
                 continue;
             int bi = block_of[t];
-            const NDArray* lab = (labels && static_cast<std::size_t>(bi) < labels->size())
-                                     ? &(*labels)[bi]
-                                     : nullptr;
+            const NDArray* lab =
+                (!labels_name.empty() &&
+                 static_cast<std::size_t>(bi) < rMesh.CellDataNumBlocks(labels_name))
+                    ? &rMesh.CellData(labels_name, bi)
+                    : nullptr;
             for (std::int64_t i = 0; i < n; ++i)
                 os << (lab ? detail::read_int(*lab, i) : 1) << '\n';
         }
@@ -545,19 +548,19 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
             const char* t = kVolume[vi].mType;
             if (count_of(t) == 0)
                 continue;
-            const CellBlock& cb = rMesh.mCells[block_of[t]];
+            const auto cb = rMesh.Cells(block_of[t]);
+            const NDArray& conn = cb.Conn();
             int k = kVolume[vi].mNverts;
-            std::int64_t n = detail::rows(cb.mData);
+            std::int64_t n = detail::rows(conn);
             for (std::int64_t i = 0; i < n; ++i) {
                 if (std::string(t) == "pyramid") {
                     const int perm[5] = {1, 0, 4, 2, 3};  // meshio -> ugrid
                     for (int j = 0; j < 5; ++j)
-                        os << (detail::read_int(cb.mData, i * 5 + perm[j]) + 1)
+                        os << (detail::read_int(conn, i * 5 + perm[j]) + 1)
                            << (j + 1 == 5 ? '\n' : ' ');
                 } else {
                     for (int j = 0; j < k; ++j)
-                        os << (detail::read_int(cb.mData, i * k + j) + 1)
-                           << (j + 1 == k ? '\n' : ' ');
+                        os << (detail::read_int(conn, i * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
                 }
             }
         }
@@ -599,7 +602,7 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
 
     if (ft.mFortran)
         put_int(body_bytes);
-    bulk_write_floats(out.data() + off, rMesh.mPoints, static_cast<std::size_t>(npoints) * ncols,
+    bulk_write_floats(out.data() + off, points, static_cast<std::size_t>(npoints) * ncols,
                       ft.mFloatSize, swap);
     off += static_cast<std::size_t>(npoints) * ncols * fs;
 
@@ -608,9 +611,10 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
         std::int64_t n = count_of(surf[s].first);
         if (n == 0)
             continue;
-        const CellBlock& cb = rMesh.mCells[block_of[surf[s].first]];
+        const auto cb = rMesh.Cells(block_of[surf[s].first]);
+        const NDArray& conn = cb.Conn();
         const std::size_t k = static_cast<std::size_t>(surf[s].second);
-        bulk_write_ints(out.data() + off, cb.mData, static_cast<std::size_t>(n), k, nullptr,
+        bulk_write_ints(out.data() + off, conn, static_cast<std::size_t>(n), k, nullptr,
                         ft.mIntSize, swap, +1);
         off += static_cast<std::size_t>(n) * k * is;
     }
@@ -620,8 +624,10 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
         if (n == 0)
             continue;
         int bi = block_of[t];
-        const NDArray* lab =
-            (labels && static_cast<std::size_t>(bi) < labels->size()) ? &(*labels)[bi] : nullptr;
+        const NDArray* lab = (!labels_name.empty() &&
+                              static_cast<std::size_t>(bi) < rMesh.CellDataNumBlocks(labels_name))
+                                 ? &rMesh.CellData(labels_name, bi)
+                                 : nullptr;
         char* base = out.data() + off;
         const std::size_t nz = static_cast<std::size_t>(n);
         if (lab) {
@@ -645,11 +651,12 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
         std::int64_t n = count_of(t);
         if (n == 0)
             continue;
-        const CellBlock& cb = rMesh.mCells[block_of[t]];
+        const auto cb = rMesh.Cells(block_of[t]);
+        const NDArray& conn = cb.Conn();
         const std::size_t k = static_cast<std::size_t>(kVolume[vi].mNverts);
         const int* perm = (std::strcmp(t, "pyramid") == 0) ? pyramid_perm_w : nullptr;
-        bulk_write_ints(out.data() + off, cb.mData, static_cast<std::size_t>(n), k, perm,
-                        ft.mIntSize, swap, +1);
+        bulk_write_ints(out.data() + off, conn, static_cast<std::size_t>(n), k, perm, ft.mIntSize,
+                        swap, +1);
         off += static_cast<std::size_t>(n) * k * is;
     }
     if (ft.mFortran)

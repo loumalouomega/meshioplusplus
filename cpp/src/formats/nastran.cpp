@@ -161,7 +161,8 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t dim = rMesh.PointDim();
+    const NDArray& points = rMesh.Points();
 
     os << "$ " << kSentinel << "\n";
     os << "BEGIN BULK\n";
@@ -171,7 +172,7 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t i = 0; i < n; ++i) {
         double xyz[3] = {0, 0, 0};
         for (std::size_t c = 0; c < dim && c < 3; ++c)
-            xyz[c] = detail::read_double(rMesh.mPoints, i * dim + c);
+            xyz[c] = detail::read_double(points, i * dim + c);
         std::string sx = nastran_float(xyz[0]), sy = nastran_float(xyz[1]),
                     sz = nastran_float(xyz[2]);
         std::snprintf(buf, sizeof(buf), "GRID*   %-16d%-16s%16s%16s\n*       %16s\n",
@@ -182,19 +183,20 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
     // Cells: fixed-small element cards (8-char fields), with + continuations.
     const auto& m2n = meshio_to_nastran();
     std::size_t cell_id = 0;
-    for (const auto& cb : rMesh.mCells) {
-        auto it = m2n.find(cb.mType);
+    for (const auto cb : rMesh.CellRange()) {
+        auto it = m2n.find(cb.Type());
         if (it == m2n.end())
-            throw WriteError("Nastran writer: unsupported cell type " + cb.mType);
+            throw WriteError("Nastran writer: unsupported cell type " + cb.Type());
         std::string ntype = it->second;
-        std::size_t k = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+        const NDArray& conn = cb.Conn();
+        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         const std::vector<int>& perm = reorder_meshio_to_nastran(ntype);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             ++cell_id;
             std::vector<long long> nodes(k);
             for (std::size_t j = 0; j < k; ++j) {
                 std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                nodes[j] = detail::read_int(cb.mData, r * k + src) + 1;
+                nodes[j] = detail::read_int(conn, r * k + src) + 1;
             }
             // first line: type, id, ref, up to 6 nodes
             std::snprintf(buf, sizeof(buf), "%-8s%-8d%-8s", ntype.c_str(),
@@ -341,11 +343,12 @@ Mesh read_nastran(const std::string& rPath) {
     }
 
     // Points + remap.
-    mesh.mPoints = NDArray(DType::Float64, {pts.size(), 3});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray points(DType::Float64, {pts.size(), 3});
+    double* pp = points.As<double>();
     for (std::size_t r = 0; r < pts.size(); ++r)
         for (int c = 0; c < 3; ++c)
             pp[r * 3 + c] = pts[r][c];
+    mesh.AssignPoints(std::move(points));
 
     for (auto& blk : blocks) {
         NDArray data(DType::Int64, {blk.mCount, static_cast<std::size_t>(blk.mN)});
@@ -356,7 +359,7 @@ Mesh read_nastran(const std::string& rPath) {
                 throw ReadError("Nastran: unknown node id");
             dp[idx] = it->second;
         }
-        mesh.mCells.emplace_back(blk.mType, std::move(data));
+        mesh.AddCellBlock(blk.mType, std::move(data));
     }
     return mesh;
 }

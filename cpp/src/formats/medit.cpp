@@ -28,7 +28,6 @@
 
 // Project includes
 #include "meshioplusplus/formats/medit.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -105,10 +104,10 @@ void store_coord(NDArray& rA, std::size_t idx, double v) {
 }
 
 // Both pickers iterate in sorted key order so the "first int field" chosen is
-// stable regardless of the map's (unordered) storage order.
-const NDArray* pick_first_int(const std::unordered_map<std::string, NDArray>& rD) {
-    for (const auto& name : detail::sorted_keys(rD)) {
-        const NDArray& v = rD.at(name);
+// stable regardless of the backend's storage order.
+const NDArray* pick_first_int(const Mesh& rMesh) {
+    for (const auto& name : rMesh.PointDataNames()) {
+        const NDArray& v = rMesh.PointData(name);
         DType t = v.Dtype();
         if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
             t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64)
@@ -117,18 +116,17 @@ const NDArray* pick_first_int(const std::unordered_map<std::string, NDArray>& rD
     return nullptr;
 }
 
-const std::vector<NDArray>* pick_first_int_cell(
-    const std::unordered_map<std::string, std::vector<NDArray>>& rD) {
-    for (const auto& name : detail::sorted_keys(rD)) {
-        const std::vector<NDArray>& v = rD.at(name);
-        if (v.empty())
+// Name of the first (sorted) integer cell-data field, or "" if none.
+std::string pick_first_int_cell(const Mesh& rMesh) {
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) == 0)
             continue;
-        DType t = v.front().Dtype();
+        DType t = rMesh.CellData(name, 0).Dtype();
         if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
             t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64)
-            return &v;
+            return name;
     }
-    return nullptr;
+    return "";
 }
 
 }  // namespace
@@ -161,14 +159,14 @@ Mesh read_medit_ascii(const std::string& rPath) {
             if (dim <= 0)
                 throw ReadError("Medit: Dimension before Vertices");
             std::int64_t n = tok.next_int();
-            mesh.mPoints =
-                NDArray(coord_dtype, {static_cast<std::size_t>(n), static_cast<std::size_t>(dim)});
+            NDArray pts(coord_dtype, {static_cast<std::size_t>(n), static_cast<std::size_t>(dim)});
             point_ref.resize(n);
             for (std::int64_t i = 0; i < n; ++i) {
                 for (int c = 0; c < dim; ++c)
-                    store_coord(mesh.mPoints, i * dim + c, tok.next_double());
+                    store_coord(pts, i * dim + c, tok.next_double());
                 point_ref[i] = static_cast<std::int64_t>(tok.next_double());
             }
+            mesh.AssignPoints(std::move(pts));
             have_points = true;
         } else if (e2m.count(kw)) {
             const auto& info = e2m.at(kw);
@@ -184,8 +182,8 @@ Mesh read_medit_ascii(const std::string& rPath) {
                     dp[i * k + j] = tok.next_int() - 1;
                 rp[i] = tok.next_int();
             }
-            mesh.mCells.emplace_back(type, std::move(data));
-            mesh.mCellData["medit:ref"].push_back(std::move(ref));
+            mesh.AddCellBlock(type, std::move(data));
+            mesh.AppendCellData("medit:ref", std::move(ref));
         } else if (kw == "Corners") {
             std::int64_t n = tok.next_int();
             for (std::int64_t i = 0; i < n; ++i)
@@ -234,7 +232,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
     NDArray pr(DType::Int64, {point_ref.size()});
     for (std::size_t i = 0; i < point_ref.size(); ++i)
         pr.As<std::int64_t>()[i] = point_ref[i];
-    mesh.mPointData.emplace("medit:ref", std::move(pr));
+    mesh.AddPointData("medit:ref", std::move(pr));
     return mesh;
 }
 
@@ -243,21 +241,22 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
+    const NDArray& points = rMesh.Points();
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t d = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
-    int version = (rMesh.mPoints.Dtype() == DType::Float32) ? 1 : 2;
+    const std::size_t d = rMesh.PointDim();
+    int version = (points.Dtype() == DType::Float32) ? 1 : 2;
 
     os << "MeshVersionFormatted " << version << "\n";
     os << "Dimension " << d << "\n";
 
     // Vertices
     os << "\nVertices\n" << n << "\n";
-    const NDArray* vlabels = pick_first_int(rMesh.mPointData);
+    const NDArray* vlabels = pick_first_int(rMesh);
     char buf[64];
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t c = 0; c < d; ++c) {
             std::snprintf(buf, sizeof(buf), "%.16e ",
-                          detail::read_double(rMesh.mPoints, i * d + c));
+                          detail::read_double(points, i * d + c));
             os << buf;
         }
         std::int64_t lab = vlabels ? detail::read_int(*vlabels, i) : 1;
@@ -265,21 +264,24 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
     }
 
     // Cells, grouped by medit element keyword.
-    const std::vector<NDArray>* clabels = pick_first_int_cell(rMesh.mCellData);
+    const std::string clabel_key = pick_first_int_cell(rMesh);
     for (const auto& mk : meshio_to_medit()) {
         const std::string& mtype = mk.first;
         const std::string& kw = mk.second.first;
         int k = mk.second.second;
-        for (std::size_t ci = 0; ci < rMesh.mCells.size(); ++ci) {
-            const CellBlock& cb = rMesh.mCells[ci];
-            if (cb.mType != mtype)
+        for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+            const auto cb = rMesh.Cells(ci);
+            if (cb.Type() != mtype)
                 continue;
             std::size_t count = cb.NumCells();
             os << "\n" << kw << "\n" << count << "\n";
-            const NDArray* lab = (clabels && ci < clabels->size()) ? &(*clabels)[ci] : nullptr;
+            const NDArray* lab = (!clabel_key.empty() && ci < rMesh.CellDataNumBlocks(clabel_key))
+                                     ? &rMesh.CellData(clabel_key, ci)
+                                     : nullptr;
+            const NDArray& conn = cb.Conn();
             for (std::size_t r = 0; r < count; ++r) {
                 for (int j = 0; j < k; ++j)
-                    os << (detail::read_int(cb.mData, r * static_cast<std::size_t>(k) + j) + 1)
+                    os << (detail::read_int(conn, r * static_cast<std::size_t>(k) + j) + 1)
                        << " ";
                 std::int64_t l = lab ? detail::read_int(*lab, r) : 1;
                 os << l << "\n";

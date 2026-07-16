@@ -107,31 +107,31 @@ Mesh read_mfm(const std::string& rPath) {
     pos += nel * lnv;
 
     Mesh mesh;
-    mesh.mPoints =
-        NDArray(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     need(static_cast<std::size_t>(nver) * dim);
     for (long long i = 0; i < nver * dim; ++i)
-        mesh.mPoints.As<double>()[i] = std::strtod(tok[pos++].c_str(), nullptr);
+        pts.As<double>()[i] = std::strtod(tok[pos++].c_str(), nullptr);
+    mesh.AssignPoints(std::move(pts));
 
     NDArray ref(DType::Int64, {static_cast<std::size_t>(nel)});
     need(static_cast<std::size_t>(nel));
     for (long long i = 0; i < nel; ++i)
         ref.As<std::int64_t>()[i] = std::strtoll(tok[pos++].c_str(), nullptr, 10);
 
-    mesh.mCells.emplace_back(cell_type, std::move(data));
+    mesh.AddCellBlock(cell_type, std::move(data));
     std::vector<NDArray> refs;
     refs.push_back(std::move(ref));
-    mesh.mCellData.emplace("mfm:ref", std::move(refs));
+    mesh.AddCellData("mfm:ref", std::move(refs));
     return mesh;
 }
 
 void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt) {
     // Single element type only.
     std::string cell_type;
-    for (const auto& cb : rMesh.mCells) {
+    for (const auto cb : rMesh.CellRange()) {
         if (cell_type.empty())
-            cell_type = cb.mType;
-        else if (cb.mType != cell_type)
+            cell_type = cb.Type();
+        else if (cb.Type() != cell_type)
             throw WriteError("MFM can only write a single element type");
     }
     if (cell_type.empty())
@@ -148,20 +148,20 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
     const int lnv = (*topo)[0], lne = (*topo)[1], lnf = (*topo)[2], lnn = lnv;
 
     std::size_t nel = 0;
-    for (const auto& cb : rMesh.mCells)
+    for (const auto cb : rMesh.CellRange())
         nel += cb.NumCells();
     const std::size_t nver = rMesh.NumPoints();
-    const int dim =
-        rMesh.mPoints.Shape().size() >= 2 ? static_cast<int>(rMesh.mPoints.Shape()[1]) : 0;
+    const int dim = static_cast<int>(rMesh.PointDim());
 
     // subdomain
     std::vector<std::int64_t> nsd(nel, 1);
-    auto it = rMesh.mCellData.find("mfm:ref");
-    if (it != rMesh.mCellData.end()) {
+    if (rMesh.HasCellData("mfm:ref")) {
         std::size_t p = 0;
-        for (const auto& blk : it->second)
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks("mfm:ref"); ++b) {
+            const NDArray& blk = rMesh.CellData("mfm:ref", b);
             for (std::size_t i = 0; i < blk.Size() && p < nel; ++i)
                 nsd[p++] = detail::read_int(blk, i);
+        }
     }
 
     std::ofstream f(rPath, std::ios::binary);
@@ -171,12 +171,13 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
       << " " << lnf << "\n";
 
     // connectivity (1-based)
-    for (const auto& cb : rMesh.mCells) {
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& conn = cb.Conn();
         std::size_t n = cb.NumCells();
-        std::size_t k = detail::cols(cb.mData);
+        std::size_t k = detail::cols(conn);
         for (std::size_t r = 0; r < n; ++r) {
             for (std::size_t j = 0; j < k; ++j)
-                f << (detail::read_int(cb.mData, r * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
+                f << (detail::read_int(conn, r * k + j) + 1) << (j + 1 == k ? '\n' : ' ');
         }
     }
     // zero reference arrays
@@ -191,12 +192,13 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
         zeros(lne);
     zeros(lnv);
     // coordinates
+    const NDArray& points = rMesh.Points();
     std::string fmt = "%" + rFloatFmt;
     char buf[64];
     for (std::size_t i = 0; i < nver; ++i)
         for (int c = 0; c < dim; ++c) {
             std::snprintf(buf, sizeof(buf), fmt.c_str(),
-                          detail::read_double(rMesh.mPoints, i * dim + c));
+                          detail::read_double(points, i * dim + c));
             f << buf << (c + 1 == dim ? '\n' : ' ');
         }
     // subdomain

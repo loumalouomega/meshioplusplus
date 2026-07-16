@@ -29,7 +29,6 @@
 
 // Project includes
 #include "meshioplusplus/formats/netgen.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
@@ -276,12 +275,13 @@ Mesh read_netgen(const std::string& rPath) {
     }
 
     Mesh mesh;
-    mesh.mPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num_points),
-                                            static_cast<std::size_t>(dimension)});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64,
+                {static_cast<std::size_t>(num_points), static_cast<std::size_t>(dimension)});
+    double* pp = pts.As<double>();
     for (std::int64_t i = 0; i < num_points; ++i)
         for (int j = 0; j < dimension; ++j)
             pp[i * dimension + j] = raw_points[i * 3 + j];
+    mesh.AssignPoints(std::move(pts));
 
     std::vector<NDArray> index_blocks;
     for (auto& b : blocks) {
@@ -293,25 +293,25 @@ Mesh read_netgen(const std::string& rPath) {
         for (std::size_t r = 0; r < n; ++r)
             for (std::size_t j = 0; j < k; ++j)
                 dp[r * k + j] = b.mRows[r][pmap[j]] - 1;
-        mesh.mCells.emplace_back(b.mType, std::move(data));
+        mesh.AddCellBlock(b.mType, std::move(data));
 
         NDArray idx(DType::Int64, {n});
         for (std::size_t r = 0; r < n; ++r)
             idx.As<std::int64_t>()[r] = b.mIndex[r];
         index_blocks.push_back(std::move(idx));
     }
-    mesh.mCellData.emplace("netgen:index", std::move(index_blocks));
+    mesh.AddCellData("netgen:index", std::move(index_blocks));
 
     return mesh;
 }
 
 namespace {
 
-void write_block(std::ostream& rOs, const CellBlock& rCb, const NDArray* pIndex) {
-    if (rCb.NumCells() == 0)
+void write_block(std::ostream& rOs, Mesh::CellView cb, const NDArray* pIndex) {
+    if (cb.NumCells() == 0)
         return;
-    int dim = topo_dim(rCb.mType);
-    const std::vector<int>& pmap = m2n_pmap().at(rCb.mType);
+    int dim = topo_dim(cb.Type());
+    const std::vector<int>& pmap = m2n_pmap().at(cb.Type());
     const int np = static_cast<int>(pmap.size());
 
     std::vector<std::int64_t> pre, post;
@@ -329,14 +329,15 @@ void write_block(std::ostream& rOs, const CellBlock& rCb, const NDArray* pIndex)
         pre = {1, np};
     }
 
-    const std::size_t n = rCb.NumCells();
+    const NDArray& conn = cb.Conn();
+    const std::size_t n = cb.NumCells();
     for (std::size_t r = 0; r < n; ++r) {
         std::vector<std::int64_t> cols;
         cols.reserve(pre.size() + np + post.size());
         for (auto v : pre)
             cols.push_back(v);
         for (int j = 0; j < np; ++j)
-            cols.push_back(detail::read_int(rCb.mData, r * np + pmap[j]) + 1);
+            cols.push_back(detail::read_int(conn, r * np + pmap[j]) + 1);
         for (auto v : post)
             cols.push_back(v);
         if (pIndex)
@@ -354,35 +355,36 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const int dimension =
-        rMesh.mPoints.Shape().size() >= 2 ? static_cast<int>(rMesh.mPoints.Shape()[1]) : 3;
+    const NDArray& points = rMesh.Points();
+    const int dimension = points.Shape().size() >= 2 ? static_cast<int>(points.Shape()[1]) : 3;
 
     // Pick the single integer cell index, preferring "netgen:index".
-    const std::vector<NDArray>* cells_index = nullptr;
-    auto it = rMesh.mCellData.find("netgen:index");
-    if (it != rMesh.mCellData.end()) {
-        cells_index = &it->second;
+    bool have_index = false;
+    std::string index_key;
+    if (rMesh.HasCellData("netgen:index")) {
+        have_index = true;
+        index_key = "netgen:index";
     } else {
-        for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
-            const auto& blocks = rMesh.mCellData.at(name);
-            if (blocks.empty())
+        for (const auto& name : rMesh.CellDataNames()) {
+            if (rMesh.CellDataNumBlocks(name) == 0)
                 continue;
-            DType t = blocks.front().Dtype();
+            DType t = rMesh.CellData(name, 0).Dtype();
             if (t != DType::Float32 && t != DType::Float64) {
-                cells_index = &blocks;
+                have_index = true;
+                index_key = name;
                 break;
             }
         }
     }
     auto index_for = [&](std::size_t ci) -> const NDArray* {
-        if (!cells_index || ci >= cells_index->size())
+        if (!have_index || ci >= rMesh.CellDataNumBlocks(index_key))
             return nullptr;
-        return &(*cells_index)[ci];
+        return &rMesh.CellData(index_key, ci);
     };
 
     std::int64_t per_dim[4] = {0, 0, 0, 0};
-    for (const auto& cb : rMesh.mCells) {
-        int d = topo_dim(cb.mType);
+    for (const auto cb : rMesh.CellRange()) {
+        int d = topo_dim(cb.Type());
         if (d >= 0 && d <= 3)
             per_dim[d] += static_cast<std::int64_t>(cb.NumCells());
     }
@@ -394,22 +396,22 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
 
     f << "\n# surfnr    bcnr   domin  domout      np      p1      p2      p3\n";
     f << "surfaceelements\n" << per_dim[2] << "\n";
-    for (std::size_t ci = 0; ci < rMesh.mCells.size(); ++ci)
-        if (topo_dim(rMesh.mCells[ci].mType) == 2)
-            write_block(f, rMesh.mCells[ci], index_for(ci));
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci)
+        if (topo_dim(rMesh.Cells(ci).Type()) == 2)
+            write_block(f, rMesh.Cells(ci), index_for(ci));
 
     f << "\n#  matnr      np      p1      p2      p3      p4\n";
     f << "volumeelements\n" << per_dim[3] << "\n";
-    for (std::size_t ci = 0; ci < rMesh.mCells.size(); ++ci)
-        if (topo_dim(rMesh.mCells[ci].mType) == 3)
-            write_block(f, rMesh.mCells[ci], index_for(ci));
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci)
+        if (topo_dim(rMesh.Cells(ci).Type()) == 3)
+            write_block(f, rMesh.Cells(ci), index_for(ci));
 
     f << "\n# surfid  0   p1   p2   trignum1    trignum2   domin/surfnr1    "
          "domout/surfnr2   ednr1   dist1   ednr2   dist2\n";
     f << "edgesegmentsgi2\n" << per_dim[1] << "\n";
-    for (std::size_t ci = 0; ci < rMesh.mCells.size(); ++ci)
-        if (topo_dim(rMesh.mCells[ci].mType) == 1)
-            write_block(f, rMesh.mCells[ci], index_for(ci));
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci)
+        if (topo_dim(rMesh.Cells(ci).Type()) == 1)
+            write_block(f, rMesh.Cells(ci), index_for(ci));
 
     f << "\n#          X             Y             Z\n";
     f << "points\n" << rMesh.NumPoints() << "\n";
@@ -418,8 +420,7 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
     const std::size_t npts = rMesh.NumPoints();
     for (std::size_t i = 0; i < npts; ++i) {
         for (int j = 0; j < 3; ++j) {
-            double v =
-                (j < dimension) ? detail::read_double(rMesh.mPoints, i * dimension + j) : 0.0;
+            double v = (j < dimension) ? detail::read_double(points, i * dimension + j) : 0.0;
             std::snprintf(buf, sizeof(buf), fmt.c_str(), v);
             f << buf << (j == 2 ? '\n' : ' ');
         }
@@ -427,9 +428,9 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
 
     f << "\n#          pnum             index\n";
     f << "pointelements\n" << per_dim[0] << "\n";
-    for (std::size_t ci = 0; ci < rMesh.mCells.size(); ++ci)
-        if (topo_dim(rMesh.mCells[ci].mType) == 0)
-            write_block(f, rMesh.mCells[ci], index_for(ci));
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci)
+        if (topo_dim(rMesh.Cells(ci).Type()) == 0)
+            write_block(f, rMesh.Cells(ci), index_for(ci));
 
     f << "\nendmesh\n";
 }

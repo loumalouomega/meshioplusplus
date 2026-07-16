@@ -27,7 +27,6 @@
 // Project includes
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -113,12 +112,12 @@ Mesh read_h5m(const std::string& rPath) {
 
     Mesh mesh;
     h5::Hid nodes = h5::open_group(tstt, "nodes");
-    mesh.mPoints = h5::read_dataset(nodes, "coordinates");
+    mesh.AssignPoints(h5::read_dataset(nodes, "coordinates"));
 
     if (h5::exists(nodes, "tags")) {
         h5::Hid tags = h5::open_group(nodes, "tags");
         for (const std::string& name : h5::group_links(tags))
-            mesh.mPointData.emplace(name, h5::read_dataset(tags, name));
+            mesh.AddPointData(name, h5::read_dataset(tags, name));
     }
 
     if (h5::exists(tstt, "elements")) {
@@ -148,7 +147,7 @@ Mesh read_h5m(const std::string& rPath) {
                         throw ReadError("H5M: unexpected connectivity dtype");
                 }
             }
-            mesh.mCells.emplace_back(it->second, std::move(conn));
+            mesh.AddCellBlock(it->second, std::move(conn));
         }
     }
     // Element tags (cell data) and sets are not read (matching the Python reader).
@@ -165,7 +164,7 @@ void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids,
 
     // nodes
     h5::Hid nodes = h5::create_group(tstt, "nodes");
-    h5::write_dataset(nodes, "coordinates", rMesh.mPoints, gzip_level);
+    h5::write_dataset(nodes, "coordinates", rMesh.Points(), gzip_level);
     {
         h5::Hid d(H5Dopen2(nodes, "coordinates", H5P_DEFAULT), H5Dclose);
         h5::write_attr_int(d, "start_id", global_id);
@@ -176,10 +175,10 @@ void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids,
 
     // point data (+ auto GLOBAL_ID)
     std::vector<std::pair<std::string, const NDArray*>> pd;
-    for (const auto& name : detail::sorted_keys(rMesh.mPointData))
-        pd.emplace_back(name, &rMesh.mPointData.at(name));
+    for (const auto& name : rMesh.PointDataNames())
+        pd.emplace_back(name, &rMesh.PointData(name));
     NDArray gids;
-    if (add_global_ids && rMesh.mPointData.find("GLOBAL_ID") == rMesh.mPointData.end()) {
+    if (add_global_ids && !rMesh.HasPointData("GLOBAL_ID")) {
         gids = NDArray(DType::Int64, {rMesh.NumPoints()});
         for (std::size_t i = 0; i < rMesh.NumPoints(); ++i)
             gids.As<std::int64_t>()[i] = static_cast<std::int64_t>(i) + 1;
@@ -219,8 +218,8 @@ void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids,
     static const std::unordered_map<std::string, H5mType> meshio_to_h5m = {
         {"line", {"Edge2", 1}}, {"triangle", {"Tri3", 2}}, {"tetra", {"Tet4", 5}}};
 
-    for (const auto& cb : rMesh.mCells) {
-        auto it = meshio_to_h5m.find(cb.mType);
+    for (const auto cb : rMesh.CellRange()) {
+        auto it = meshio_to_h5m.find(cb.Type());
         if (it == meshio_to_h5m.end())
             continue;  // unsupported type: skipped with a warning in Python
         h5::Hid g = h5::create_group(elements, it->second.mName);
@@ -232,9 +231,10 @@ void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids,
             H5Awrite(a, elem_dt, &v);
         }
         // 1-based connectivity, preserving the integer dtype.
-        NDArray conn(cb.mData.Dtype(), cb.mData.Shape());
-        for (std::size_t i = 0; i < cb.mData.Size(); ++i) {
-            std::int64_t v = detail::read_int(cb.mData, i) + 1;
+        const NDArray& cconn = cb.Conn();
+        NDArray conn(cconn.Dtype(), cconn.Shape());
+        for (std::size_t i = 0; i < cconn.Size(); ++i) {
+            std::int64_t v = detail::read_int(cconn, i) + 1;
             switch (conn.Dtype()) {
                 case DType::Int32:
                     conn.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);

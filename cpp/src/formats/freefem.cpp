@@ -68,17 +68,17 @@ Mesh read_freefem(const std::string& rPath) {
         throw ReadError("FreeFem: bad vertex dimension");
 
     Mesh mesh;
-    mesh.mPoints =
-        NDArray(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     NDArray pref(DType::Int64, {static_cast<std::size_t>(nver)});
     for (std::int64_t i = 0; i < nver; ++i) {
         if (i > 0 && !next_tokens(in, tok))
             throw ReadError("FreeFem: truncated vertices");
         for (int c = 0; c < dim; ++c)
-            mesh.mPoints.As<double>()[i * dim + c] = std::strtod(tok[c].c_str(), nullptr);
+            pts.As<double>()[i * dim + c] = std::strtod(tok[c].c_str(), nullptr);
         pref.As<std::int64_t>()[i] = std::strtoll(tok[dim].c_str(), nullptr, 10);
     }
-    mesh.mPointData.emplace("freefem:ref", std::move(pref));
+    mesh.AssignPoints(std::move(pts));
+    mesh.AddPointData("freefem:ref", std::move(pref));
 
     const char* t1 = dim == 2 ? "triangle" : "tetra";
     const int lnv1 = dim == 2 ? 3 : 4;
@@ -99,20 +99,19 @@ Mesh read_freefem(const std::string& rPath) {
                     std::strtoll(tok[j].c_str(), nullptr, 10) - 1;
             ref.As<std::int64_t>()[k] = std::strtoll(tok[lnv].c_str(), nullptr, 10);
         }
-        mesh.mCells.emplace_back(type, std::move(data));
+        mesh.AddCellBlock(type, std::move(data));
         cell_refs.push_back(std::move(ref));
     };
     read_block(n1, t1, lnv1);
     read_block(n2, t2, lnv2);
     if (!cell_refs.empty())
-        mesh.mCellData.emplace("freefem:ref", std::move(cell_refs));
+        mesh.AddCellData("freefem:ref", std::move(cell_refs));
 
     return mesh;
 }
 
 void write_freefem(const std::string& rPath, const Mesh& rMesh) {
-    const int dim =
-        rMesh.mPoints.Shape().size() >= 2 ? static_cast<int>(rMesh.mPoints.Shape()[1]) : 0;
+    const int dim = static_cast<int>(rMesh.PointDim());
     if (dim != 2 && dim != 3)
         throw WriteError("FreeFem: can only write 2D/3D meshes");
 
@@ -121,30 +120,30 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
 
     // Reject unsupported cell types so the shim falls back to Python (which
     // warns and skips). This keeps behaviour identical to the reference impl.
-    for (const auto& cb : rMesh.mCells)
-        if (cb.mType != t1 && cb.mType != t2)
-            throw WriteError("FreeFem: unsupported cell type " + cb.mType);
+    for (const auto cb : rMesh.CellRange())
+        if (cb.Type() != t1 && cb.Type() != t2)
+            throw WriteError("FreeFem: unsupported cell type " + cb.Type());
 
-    auto ref_it = rMesh.mCellData.find("freefem:ref");
+    const bool has_ref = rMesh.HasCellData("freefem:ref");
 
     struct Row {
-        const CellBlock* mCb;
+        Mesh::CellView mCb;
         const NDArray* mRef;
     };
     std::vector<Row> b1, b2;
-    for (std::size_t i = 0; i < rMesh.mCells.size(); ++i) {
-        const NDArray* ref = (ref_it != rMesh.mCellData.end() && i < ref_it->second.size())
-                                 ? &ref_it->second[i]
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
+        const NDArray* ref = (has_ref && i < rMesh.CellDataNumBlocks("freefem:ref"))
+                                 ? &rMesh.CellData("freefem:ref", i)
                                  : nullptr;
-        if (rMesh.mCells[i].mType == t1)
-            b1.push_back({&rMesh.mCells[i], ref});
+        if (rMesh.Cells(i).Type() == t1)
+            b1.push_back({rMesh.Cells(i), ref});
         else
-            b2.push_back({&rMesh.mCells[i], ref});
+            b2.push_back({rMesh.Cells(i), ref});
     }
     auto count = [](const std::vector<Row>& b) {
         std::size_t n = 0;
         for (const auto& r : b)
-            n += r.mCb->NumCells();
+            n += r.mCb.NumCells();
         return n;
     };
 
@@ -155,27 +154,26 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t nver = rMesh.NumPoints();
     f << nver << " " << count(b1) << " " << count(b2) << "\n";
 
-    const NDArray* pref = nullptr;
-    auto pit = rMesh.mPointData.find("freefem:ref");
-    if (pit != rMesh.mPointData.end())
-        pref = &pit->second;
+    const NDArray* pref = rMesh.HasPointData("freefem:ref") ? &rMesh.PointData("freefem:ref")
+                                                            : nullptr;
 
+    const NDArray& points = rMesh.Points();
     char buf[32];
     for (std::size_t i = 0; i < nver; ++i) {
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.16e",
-                          detail::read_double(rMesh.mPoints, i * dim + c));
+            std::snprintf(buf, sizeof(buf), "%.16e", detail::read_double(points, i * dim + c));
             f << buf << " ";
         }
         f << (pref ? detail::read_int(*pref, i) : 0) << "\n";
     }
     auto write_block = [&](const std::vector<Row>& b, int lnv) {
         for (const auto& r : b) {
-            std::size_t n = r.mCb->NumCells();
-            std::size_t k = detail::cols(r.mCb->mData);
+            std::size_t n = r.mCb.NumCells();
+            const NDArray& conn = r.mCb.Conn();
+            std::size_t k = detail::cols(conn);
             for (std::size_t rr = 0; rr < n; ++rr) {
                 for (int j = 0; j < lnv && static_cast<std::size_t>(j) < k; ++j)
-                    f << (detail::read_int(r.mCb->mData, rr * k + j) + 1) << " ";
+                    f << (detail::read_int(conn, rr * k + j) + 1) << " ";
                 f << (r.mRef ? detail::read_int(*r.mRef, rr) : 0) << "\n";
             }
         }

@@ -195,16 +195,17 @@ Mesh read_permas(const std::string& rPath) {
             for (std::size_t r = 0; r < rows.size(); ++r)
                 for (std::size_t j = 0; j < k; ++j)
                     dp[r * k + j] = rows[r][j];
-            mesh.mCells.emplace_back(cell_type, std::move(data));
+            mesh.AddCellBlock(cell_type, std::move(data));
         }
         // all other keywords (NSET/ESET/...) are ignored
     }
 
     std::int64_t npoints = static_cast<std::int64_t>(point_gids.size());
-    mesh.mPoints = NDArray(DType::Float64, {static_cast<std::size_t>(npoints), ncoord});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), ncoord});
+    double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
         pp[i] = points[i];
+    mesh.AssignPoints(std::move(pts));
 
     return mesh;
 }
@@ -215,7 +216,8 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t npts = rMesh.NumPoints();
-    const std::size_t pdim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t pdim = rMesh.PointDim();
+    const NDArray& points = rMesh.Points();
 
     f << "!PERMAS DataFile Version 18.0\n";
     f << "!written by meshio++ (C++ core)\n";
@@ -227,7 +229,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
         f << (i + 1);
         for (int c = 0; c < 3; ++c) {
             double v =
-                c < static_cast<int>(pdim) ? detail::read_double(rMesh.mPoints, i * pdim + c) : 0.0;
+                c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
             std::snprintf(buf, sizeof(buf), "%.17g", v);
             f << " " << buf;
         }
@@ -235,24 +237,25 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
     }
 
     std::int64_t eid = 0;
-    for (const auto& cb : rMesh.mCells) {
-        auto tit = meshio_to_permas().find(cb.mType);
+    for (const auto cb : rMesh.CellRange()) {
+        auto tit = meshio_to_permas().find(cb.Type());
         if (tit == meshio_to_permas().end())
-            throw WriteError("PERMAS: unsupported cell type " + cb.mType);
+            throw WriteError("PERMAS: unsupported cell type " + cb.Type());
         f << "!\n";
         f << "$ELEMENT TYPE=" << tit->second << "\n";
-        const std::vector<int>* reorder = write_reorder(cb.mType);
-        const std::size_t ncols = detail::cols(cb.mData);
+        const std::vector<int>* reorder = write_reorder(cb.Type());
+        const NDArray& conn = cb.Conn();
+        const std::size_t ncols = detail::cols(conn);
         const std::size_t nc = cb.NumCells();
         for (std::size_t r = 0; r < nc; ++r) {
             ++eid;
             f << eid;
             if (reorder) {
                 for (int local : *reorder)
-                    f << " " << (detail::read_int(cb.mData, r * ncols + local) + 1);
+                    f << " " << (detail::read_int(conn, r * ncols + local) + 1);
             } else {
                 for (std::size_t j = 0; j < ncols; ++j)
-                    f << " " << (detail::read_int(cb.mData, r * ncols + j) + 1);
+                    f << " " << (detail::read_int(conn, r * ncols + j) + 1);
             }
             f << "\n";
         }

@@ -24,7 +24,6 @@
 // Project includes
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -70,7 +69,7 @@ Mesh read_hmf(const std::string& rPath) {
             std::string gt = h5::read_attr_string(d, "GeometryType");
             if (gt != "X" && gt != "XY" && gt != "XYZ")
                 throw ReadError("HMF: unexpected GeometryType " + gt);
-            mesh.mPoints = h5::read_dataset(grid, key);
+            mesh.AssignPoints(h5::read_dataset(grid, key));
         } else if (key == "CellAttributes") {
             h5::Hid g = h5::open_group(grid, key);
             for (const std::string& name : h5::group_links(g))
@@ -78,20 +77,20 @@ Mesh read_hmf(const std::string& rPath) {
         } else if (key == "NodeAttributes") {
             h5::Hid g = h5::open_group(grid, key);
             for (const std::string& name : h5::group_links(g))
-                mesh.mPointData.emplace(name, h5::read_dataset(g, name));
+                mesh.AddPointData(name, h5::read_dataset(g, name));
         } else {
             throw ReadError("HMF: unexpected entry " + key);
         }
     }
 
     for (auto& kv : cells)
-        mesh.mCells.emplace_back(std::move(kv.first), std::move(kv.second));
+        mesh.AddCellBlock(std::move(kv.first), std::move(kv.second));
 
     std::vector<std::size_t> sizes;
-    for (const auto& cb : mesh.mCells)
+    for (const auto cb : mesh.CellRange())
         sizes.push_back(cb.NumCells());
     for (auto& kv : cell_data_raw)
-        mesh.mCellData.emplace(kv.first, xdmfcommon::split_raw_cell_data(kv.second, sizes));
+        mesh.AddCellData(kv.first, xdmfcommon::split_raw_cell_data(kv.second, sizes));
 
     return mesh;
 }
@@ -108,32 +107,31 @@ void write_hmf(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
 
     // Geometry
     {
-        h5::write_dataset(grid, "Geometry", rMesh.mPoints, gzip_level);
+        h5::write_dataset(grid, "Geometry", rMesh.Points(), gzip_level);
         h5::Hid d(H5Dopen2(grid, "Geometry", H5P_DEFAULT), H5Dclose);
-        const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+        const std::size_t dim = rMesh.PointDim();
         h5::write_attr_string(d, "GeometryType", std::string("XYZ").substr(0, dim));
     }
 
     // Topology{k}
-    for (std::size_t k = 0; k < rMesh.mCells.size(); ++k) {
-        const CellBlock& cb = rMesh.mCells[k];
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+        const auto cb = rMesh.Cells(k);
         std::string name = "Topology" + std::to_string(k);
-        h5::write_dataset(grid, name, cb.mData, gzip_level);
+        h5::write_dataset(grid, name, cb.Conn(), gzip_level);
         h5::Hid d(H5Dopen2(grid, name.c_str(), H5P_DEFAULT), H5Dclose);
-        h5::write_attr_string(d, "TopologyType", xdmfcommon::meshio_to_xdmf(cb.mType));
+        h5::write_attr_string(d, "TopologyType", xdmfcommon::meshio_to_xdmf(cb.Type()));
     }
 
     // NodeAttributes / CellAttributes (sorted key order for deterministic output)
     h5::Hid na = h5::create_group(grid, "NodeAttributes");
-    for (const auto& name : detail::sorted_keys(rMesh.mPointData))
-        h5::write_dataset(na, name, rMesh.mPointData.at(name), gzip_level);
+    for (const auto& name : rMesh.PointDataNames())
+        h5::write_dataset(na, name, rMesh.PointData(name), gzip_level);
 
     h5::Hid ca = h5::create_group(grid, "CellAttributes");
-    for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
-        const auto& blocks = rMesh.mCellData.at(name);
-        if (blocks.empty())
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) == 0)
             continue;
-        h5::write_dataset(ca, name, xdmfcommon::concat_cell_data(blocks), gzip_level);
+        h5::write_dataset(ca, name, xdmfcommon::concat_cell_data(rMesh, name), gzip_level);
     }
 }
 

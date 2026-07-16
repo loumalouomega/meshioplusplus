@@ -26,7 +26,6 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
-using meshioplusplus::CellBlock;
 using meshioplusplus::DType;
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;
@@ -74,40 +73,50 @@ TEST(NDArray, ViewBecomesOwnedCopy) {
 
 TEST(Mesh, CountsAndCellBlock) {
     Mesh m;
-    m.mPoints = NDArray(DType::Float64, {5, 3});
+    m.AssignPoints(NDArray(DType::Float64, {5, 3}));
     EXPECT_EQ(m.NumPoints(), 5u);
-    m.mCells.emplace_back("tetra", NDArray(DType::Int64, {2, 4}));
-    EXPECT_EQ(m.mCells.size(), 1u);
-    EXPECT_EQ(m.mCells[0].mType, "tetra");
-    EXPECT_EQ(m.mCells[0].NumCells(), 2u);
+    EXPECT_EQ(m.PointDim(), 3u);
+    m.AddCellBlock("tetra", NDArray(DType::Int64, {2, 4}));
+    EXPECT_EQ(m.NumCellBlocks(), 1u);
+    EXPECT_EQ(m.Cells(0).Type(), "tetra");
+    EXPECT_EQ(m.Cells(0).NumCells(), 2u);
+    EXPECT_EQ(m.Cells(0).NodesPerCell(), 4u);
     Mesh empty;
     EXPECT_EQ(empty.NumPoints(), 0u);
+    EXPECT_EQ(empty.NumCellBlocks(), 0u);
 }
 
 TEST(Mesh, RaggedCellBlocks) {
+    Mesh m;
+    m.AssignPoints(NDArray(DType::Float64, {8, 3}));
+
     // 1-level ragged (jagged polygon): cells with varying node counts.
-    CellBlock poly;
-    poly.mType = "polygon";
-    poly.mPolygonRows = {{0, 1, 2}, {1, 2, 3, 4, 5}};
+    m.AddPolygonBlock("polygon", {{0, 1, 2}, {1, 2, 3, 4, 5}});
+    const auto poly = m.Cells(0);
     EXPECT_TRUE(poly.IsRagged());
+    EXPECT_FALSE(poly.IsPolyhedron());
     EXPECT_EQ(poly.NumCells(), 2u);
-    EXPECT_EQ(poly.mPolygonRows[1].size(), 5u);
+    EXPECT_EQ(poly.RowSize(1), 5u);
+    EXPECT_EQ(poly.Row(0)[2], 2);
 
     // 2-level ragged (polyhedron): each cell is a list of faces.
-    CellBlock poh;
-    poh.mType = "polyhedron4";
-    poh.mPolyhedronRows = {
-        {{1, 2, 5}, {1, 2, 7}, {1, 5, 7}, {2, 5, 7}},
-        {{2, 5, 6}, {2, 6, 7}, {2, 5, 7}, {5, 6, 7}},
-    };
+    m.AddPolyhedronBlock("polyhedron4", {
+                                            {{1, 2, 5}, {1, 2, 7}, {1, 5, 7}, {2, 5, 7}},
+                                            {{2, 5, 6}, {2, 6, 7}, {2, 5, 7}, {5, 6, 7}},
+                                        });
+    const auto poh = m.Cells(1);
     EXPECT_TRUE(poh.IsRagged());
+    EXPECT_TRUE(poh.IsPolyhedron());
     EXPECT_EQ(poh.NumCells(), 2u);
-    EXPECT_EQ(poh.mPolyhedronRows[0].size(), 4u);  // 4 faces
+    EXPECT_EQ(poh.NumFaces(0), 4u);  // 4 faces
+    const auto face = poh.Face(1, 3);
+    EXPECT_EQ(face.second, 3u);
+    EXPECT_EQ(face.first[0], 5);
 
     // A rectangular block is not ragged.
-    CellBlock tri("triangle", NDArray(DType::Int64, {3, 3}));
-    EXPECT_FALSE(tri.IsRagged());
-    EXPECT_EQ(tri.NumCells(), 3u);
+    m.AddCellBlock("triangle", NDArray(DType::Int64, {3, 3}));
+    EXPECT_FALSE(m.Cells(2).IsRagged());
+    EXPECT_EQ(m.Cells(2).NumCells(), 3u);
 }
 
 TEST(Exceptions, ReadWriteErrorMessages) {

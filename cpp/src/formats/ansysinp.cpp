@@ -402,10 +402,11 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
     // ---- build mesh ----
     Mesh mesh;
     std::size_t npts = coords.size();
-    mesh.mPoints = NDArray(DType::Float64, {npts, 3});
+    NDArray pts(DType::Float64, {npts, 3});
     for (std::size_t k = 0; k < npts; ++k)
         for (std::size_t j = 0; j < 3; ++j)
-            mesh.mPoints.As<double>()[k * 3 + j] = coords[k][j];
+            pts.As<double>()[k * 3 + j] = coords[k][j];
+    mesh.AssignPoints(std::move(pts));
 
     std::unordered_map<std::int64_t, std::int64_t> nid_to_index;
     for (std::size_t k = 0; k < node_id.size(); ++k)
@@ -449,7 +450,7 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
         for (std::size_t r = 0; r < nc; ++r)
             for (std::size_t c = 0; c < k; ++c)
                 data.As<std::int64_t>()[r * k + c] = blk[r][c];
-        mesh.mCells.emplace_back(t, std::move(data));
+        mesh.AddCellBlock(t, std::move(data));
     }
 
     // point/cell sets (side-channel)
@@ -478,8 +479,9 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     if (!f)
         throw WriteError("Could not open ansysInp file for writing: " + rPath);
 
-    std::size_t npts = rMesh.mPoints.Shape().empty() ? 0 : rMesh.mPoints.Shape()[0];
-    std::size_t dim = rMesh.mPoints.Shape().size() > 1 ? rMesh.mPoints.Shape()[1] : 3;
+    const NDArray& points = rMesh.Points();
+    std::size_t npts = rMesh.NumPoints();
+    std::size_t dim = points.Shape().size() > 1 ? points.Shape()[1] : 3;
 
     // element-type slots, first-seen order
     std::vector<std::pair<std::string, int>> type_slot;
@@ -491,10 +493,10 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
         type_slot.emplace_back(t, s);
         return s;
     };
-    for (const auto& b : rMesh.mCells) {
-        if (from_meshio(b.mType) < 0)
-            throw WriteError("Unhandled meshio type: " + b.mType);
-        slot_of(b.mType);
+    for (const auto b : rMesh.CellRange()) {
+        if (from_meshio(b.Type()) < 0)
+            throw WriteError("Unhandled meshio type: " + b.Type());
+        slot_of(b.Type());
     }
 
     f << "/PREP7\n";
@@ -510,9 +512,9 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
         std::vector<std::string> rows(npts);
         parallel_for(npts, [&](std::size_t k) {
             char b1[32], b2[80];
-            double x = dim > 0 ? detail::read_double(rMesh.mPoints, k * dim + 0) : 0.0;
-            double y = dim > 1 ? detail::read_double(rMesh.mPoints, k * dim + 1) : 0.0;
-            double z = dim > 2 ? detail::read_double(rMesh.mPoints, k * dim + 2) : 0.0;
+            double x = dim > 0 ? detail::read_double(points, k * dim + 0) : 0.0;
+            double y = dim > 1 ? detail::read_double(points, k * dim + 1) : 0.0;
+            double z = dim > 2 ? detail::read_double(points, k * dim + 2) : 0.0;
             std::snprintf(b1, sizeof(b1), "%9zu%9d%9d", k + 1, 0, 0);
             std::snprintf(b2, sizeof(b2), "% .13E% .13E% .13E\n", x, y, z);
             rows[k] = std::string(b1) + b2;
@@ -523,7 +525,7 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     f << "N,R5.3,LOC,      -1,\n";
 
     std::size_t ntot = 0;
-    for (const auto& b : rMesh.mCells)
+    for (const auto b : rMesh.CellRange())
         ntot += b.NumCells();
     std::snprintf(buf, sizeof(buf), "EBLOCK,19,SOLID,%zu,%zu\n(19i9)\n", ntot, ntot);
     f << buf;
@@ -532,12 +534,13 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     // Element ids are consecutive; block_eid_base[bi] is the (exclusive) base id
     // of block bi, so element (bi, li) has id block_eid_base[bi] + 1 + li. This
     // replaces a per-cell std::map lookup with a simple prefix sum.
-    std::vector<std::int64_t> block_eid_base(rMesh.mCells.size());
-    for (std::size_t bi = 0; bi < rMesh.mCells.size(); ++bi) {
-        const auto& b = rMesh.mCells[bi];
-        int slot = slot_of(b.mType);
+    std::vector<std::int64_t> block_eid_base(rMesh.NumCellBlocks());
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const auto b = rMesh.Cells(bi);
+        const NDArray& conn = b.Conn();
+        int slot = slot_of(b.Type());
         std::size_t nc = b.NumCells();
-        std::size_t k = detail::cols(b.mData);
+        std::size_t k = detail::cols(conn);
         const std::int64_t eid_base = eid;  // element ids are consecutive
         block_eid_base[bi] = eid_base;
         eid += static_cast<std::int64_t>(nc);
@@ -548,7 +551,7 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
             std::string& row = rows[li];
             std::vector<std::int64_t> nodes(k);
             for (std::size_t c = 0; c < k; ++c)
-                nodes[c] = detail::read_int(b.mData, li * k + c) + 1;
+                nodes[c] = detail::read_int(conn, li * k + c) + 1;
             std::vector<std::int64_t> first = {1,
                                                slot,
                                                1,
@@ -605,7 +608,7 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
         for (std::size_t bi = 0; bi < kv.second.size(); ++bi)
             for (std::int64_t li : kv.second[bi]) {
                 if (bi < block_eid_base.size() &&
-                    static_cast<std::size_t>(li) < rMesh.mCells[bi].NumCells())
+                    static_cast<std::size_t>(li) < rMesh.Cells(bi).NumCells())
                     vals.push_back(block_eid_base[bi] + 1 + li);
             }
         std::sort(vals.begin(), vals.end());

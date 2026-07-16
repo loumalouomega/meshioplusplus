@@ -209,10 +209,11 @@ Mesh read_unv(const std::string& rPath) {
 
     Mesh mesh;
     const std::size_t np = points.size();
-    mesh.mPoints = NDArray(DType::Float64, {np, dim});
+    NDArray pts(DType::Float64, {np, dim});
     for (std::size_t r = 0; r < np; ++r)
         for (std::size_t c = 0; c < dim && c < points[r].size(); ++c)
-            mesh.mPoints.As<double>()[r * dim + c] = points[r][c];
+            pts.As<double>()[r * dim + c] = points[r][c];
+    mesh.AssignPoints(std::move(pts));
 
     std::vector<NDArray> pids;
     for (auto& g : groups) {
@@ -222,14 +223,14 @@ Mesh read_unv(const std::string& rPath) {
         for (std::size_t r = 0; r < ne; ++r)
             for (std::size_t j = 0; j < k; ++j)
                 data.As<std::int64_t>()[r * k + j] = g.mRows[r][j];
-        mesh.mCells.emplace_back(g.mType, std::move(data));
+        mesh.AddCellBlock(g.mType, std::move(data));
         NDArray pd(DType::Int64, {ne});
         for (std::size_t r = 0; r < ne; ++r)
             pd.As<std::int64_t>()[r] = g.mPid[r];
         pids.push_back(std::move(pd));
     }
     if (!pids.empty())
-        mesh.mCellData.emplace("unv:pid", std::move(pids));
+        mesh.AddCellData("unv:pid", std::move(pids));
     return mesh;
 }
 
@@ -239,7 +240,8 @@ void write_unv(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t np = rMesh.NumPoints();
-    const std::size_t pdim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t pdim = rMesh.PointDim();
+    const NDArray& points = rMesh.Points();
 
     // 2411 nodes
     f << "    -1\n  2411\n";
@@ -249,7 +251,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh) {
         f << buf;
         for (int c = 0; c < 3; ++c) {
             double v =
-                c < static_cast<int>(pdim) ? detail::read_double(rMesh.mPoints, k * pdim + c) : 0.0;
+                c < static_cast<int>(pdim) ? detail::read_double(points, k * pdim + c) : 0.0;
             std::snprintf(buf, sizeof(buf), "%25.16E", v);
             f << buf;
         }
@@ -259,19 +261,20 @@ void write_unv(const std::string& rPath, const Mesh& rMesh) {
 
     // 2412 elements
     f << "    -1\n  2412\n";
-    auto pid_it = rMesh.mCellData.find("unv:pid");
+    const bool has_pid = rMesh.HasCellData("unv:pid");
     std::int64_t label = 0;
-    for (std::size_t bi = 0; bi < rMesh.mCells.size(); ++bi) {
-        const CellBlock& cb = rMesh.mCells[bi];
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const auto cb = rMesh.Cells(bi);
+        const NDArray& conn = cb.Conn();
         int desc;
         bool beam;
-        if (!meshio_descriptor(cb.mType, desc, beam))
-            throw WriteError("UNV: unsupported cell type " + cb.mType);
-        const std::vector<int>* nd = nd_perm(cb.mType);
-        std::size_t ncols = detail::cols(cb.mData);
+        if (!meshio_descriptor(cb.Type(), desc, beam))
+            throw WriteError("UNV: unsupported cell type " + cb.Type());
+        const std::vector<int>* nd = nd_perm(cb.Type());
+        std::size_t ncols = detail::cols(conn);
         std::size_t nrows = cb.NumCells();
-        const NDArray* pid = (pid_it != rMesh.mCellData.end() && bi < pid_it->second.size())
-                                 ? &pid_it->second[bi]
+        const NDArray* pid = (has_pid && bi < rMesh.CellDataNumBlocks("unv:pid"))
+                                 ? &rMesh.CellData("unv:pid", bi)
                                  : nullptr;
         for (std::size_t r = 0; r < nrows; ++r) {
             ++label;
@@ -285,7 +288,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh) {
             // reorder meshio -> UNV, 1-based, 8 per line
             std::vector<std::int64_t> unv(ncols);
             for (std::size_t j = 0; j < ncols; ++j) {
-                std::int64_t node = detail::read_int(cb.mData, r * ncols + j) + 1;
+                std::int64_t node = detail::read_int(conn, r * ncols + j) + 1;
                 if (nd)
                     unv[j] = 0;  // filled below
                 else
@@ -293,7 +296,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh) {
             }
             if (nd)
                 for (std::size_t j = 0; j < ncols; ++j)
-                    unv[j] = detail::read_int(cb.mData, r * ncols + (*nd)[j]) + 1;
+                    unv[j] = detail::read_int(conn, r * ncols + (*nd)[j]) + 1;
             for (std::size_t j = 0; j < ncols; ++j) {
                 std::snprintf(buf, sizeof(buf), "%10lld", static_cast<long long>(unv[j]));
                 f << buf;

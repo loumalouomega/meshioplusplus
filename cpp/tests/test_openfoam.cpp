@@ -72,10 +72,10 @@ TEST(OpenFoam, SingleHexAscii) {
     EXPECT_EQ(mesh.NumPoints(), 8u);
     bool has_hex = false;
     std::size_t nquad = 0;
-    for (const auto& cb : mesh.mCells) {
-        if (cb.mType == "hexahedron")
+    for (const auto cb : mesh.CellRange()) {
+        if (cb.Type() == "hexahedron")
             has_hex = true;
-        if (cb.mType == "quad")
+        if (cb.Type() == "quad")
             nquad += cb.NumCells();
     }
     EXPECT_TRUE(has_hex);
