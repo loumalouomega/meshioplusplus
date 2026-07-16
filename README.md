@@ -250,6 +250,27 @@ npm install @meshioplusplus/wasm
 
 See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
 
+### C++ mesh backends
+
+Standalone C++ builds (no Python) can swap the in-memory mesh structure at
+compile time via `MESHIOPLUSPLUS_MESH_BACKEND` — every format works
+identically under each backend:
+
+- **MESHIO** (default; the Python extension and PyPI wheels always use it) —
+  mirrors the Python `meshio.Mesh`;
+- **NATIVE** — the fastest pure-C++ structure (canonical Float64/Int64
+  storage, cell-type enum, CSR ragged blocks); the WebAssembly build uses it;
+- **KRATOS** — a [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos)-style
+  `ModelPart` (Nodes/Elements/Conditions/SubModelParts) plus a header-only
+  templated bridge that populates a real `Kratos::ModelPart` with no Kratos
+  build dependency.
+
+```
+./build/configure.sh --mesh-backend NATIVE --tests --build
+```
+
+See the [C++ mesh backends](https://loumalouomega.github.io/meshioplusplus/cpp_backends) doc page.
+
 ### Testing
 
 To run the meshio++ unit tests, check out this repository, install it with the test

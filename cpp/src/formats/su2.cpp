@@ -31,7 +31,6 @@
 
 // Project includes
 #include "meshioplusplus/formats/su2.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -194,13 +193,14 @@ Mesh read_su2(const std::string& rPath) {
                 throw ReadError("SU2: invalid NDIME");
         } else if (name == "NPOIN") {
             std::size_t npoin = static_cast<std::size_t>(std::stoll(tokens(rest)[0]));
-            mesh.mPoints = NDArray(DType::Float64, {npoin, static_cast<std::size_t>(dim)});
-            double* pp = mesh.mPoints.As<double>();
+            NDArray pts(DType::Float64, {npoin, static_cast<std::size_t>(dim)});
+            double* pp = pts.As<double>();
             for (std::size_t i = 0; i < npoin; ++i) {
                 auto t = tokens(lines.at(li++));
                 for (int c = 0; c < dim; ++c)
                     pp[i * dim + c] = std::strtod(t[c].c_str(), nullptr);
             }
+            mesh.AssignPoints(std::move(pts));
         } else if (name == "NELEM") {
             std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
             read_elem_block(lines, li, ne, 0, blocks);
@@ -252,12 +252,12 @@ Mesh read_su2(const std::string& rPath) {
             continue;  // merged-away or empty
         NDArray data(DType::Int64, {b.mCount, static_cast<std::size_t>(b.mN)});
         std::memcpy(data.Data(), b.mConn.data(), b.mConn.size() * sizeof(std::int64_t));
-        mesh.mCells.emplace_back(b.mType, std::move(data));
+        mesh.AddCellBlock(b.mType, std::move(data));
         NDArray tg(DType::Int32, {b.mCount});
         std::memcpy(tg.Data(), b.mTag.data(), b.mTag.size() * sizeof(std::int32_t));
         tags.push_back(std::move(tg));
     }
-    mesh.mCellData.emplace("su2:tag", std::move(tags));
+    mesh.AddCellData("su2:tag", std::move(tags));
     return mesh;
 }
 
@@ -266,7 +266,8 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
     const std::size_t npoin = rMesh.NumPoints();
 
     os << "NDIME= " << dim << "\n";
@@ -280,7 +281,7 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
             std::string& row = rows[i];
             for (std::size_t c = 0; c < dim; ++c) {
                 std::snprintf(buf, sizeof(buf), "%.16e",
-                              detail::read_double(rMesh.mPoints, i * dim + c));
+                              detail::read_double(points, i * dim + c));
                 row += buf;
                 row += (c + 1 == dim ? '\n' : ' ');
             }
@@ -300,30 +301,30 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
 
     // Volume cells.
     std::size_t nelem = 0;
-    for (const auto& cb : rMesh.mCells)
-        if (in(vtypes, cb.mType))
+    for (const auto cb : rMesh.CellRange())
+        if (in(vtypes, cb.Type()))
             nelem += cb.NumCells();
     os << "NELEM= " << nelem << "\n";
-    for (const auto& cb : rMesh.mCells) {
-        if (!in(vtypes, cb.mType))
+    for (const auto cb : rMesh.CellRange()) {
+        if (!in(vtypes, cb.Type()))
             continue;
-        int st = meshio_to_su2(cb.mType);
-        std::size_t k = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+        int st = meshio_to_su2(cb.Type());
+        const NDArray& conn = cb.Conn();
+        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             os << st;
             for (std::size_t j = 0; j < k; ++j)
-                os << " " << detail::read_int(cb.mData, r * k + j);
+                os << " " << detail::read_int(conn, r * k + j);
             os << "\n";
         }
     }
 
     // Boundary markers from su2:tag (first int cell_data).
     std::string tag_key;
-    for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
-        const auto& blocks = rMesh.mCellData.at(name);
-        if (blocks.empty())
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) == 0)
             continue;
-        DType t = blocks.front().Dtype();
+        DType t = rMesh.CellData(name, 0).Dtype();
         if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
             t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64) {
             tag_key = name;
@@ -333,14 +334,14 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
 
     // Collect unique tags (with total counts) over boundary cell blocks.
     std::map<std::int64_t, std::size_t> tag_counts;
-    for (std::size_t bi = 0; bi < rMesh.mCells.size(); ++bi) {
-        const CellBlock& cb = rMesh.mCells[bi];
-        if (!in(btypes, cb.mType))
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const auto cb = rMesh.Cells(bi);
+        if (!in(btypes, cb.Type()))
             continue;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             std::int64_t tg = 1;
             if (!tag_key.empty())
-                tg = detail::read_int(rMesh.mCellData.at(tag_key)[bi], r);
+                tg = detail::read_int(rMesh.CellData(tag_key, bi), r);
             ++tag_counts[tg];
         }
     }
@@ -350,21 +351,22 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
         std::int64_t tag = tc.first;
         os << "MARKER_TAG= " << tag << "\n";
         os << "MARKER_ELEMS= " << tc.second << "\n";
-        for (std::size_t bi = 0; bi < rMesh.mCells.size(); ++bi) {
-            const CellBlock& cb = rMesh.mCells[bi];
-            if (!in(btypes, cb.mType))
+        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+            const auto cb = rMesh.Cells(bi);
+            if (!in(btypes, cb.Type()))
                 continue;
-            int st = meshio_to_su2(cb.mType);
-            std::size_t k = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+            int st = meshio_to_su2(cb.Type());
+            const NDArray& conn = cb.Conn();
+            std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 std::int64_t tg = 1;
                 if (!tag_key.empty())
-                    tg = detail::read_int(rMesh.mCellData.at(tag_key)[bi], r);
+                    tg = detail::read_int(rMesh.CellData(tag_key, bi), r);
                 if (tg != tag)
                     continue;
                 os << st;
                 for (std::size_t j = 0; j < k; ++j)
-                    os << " " << detail::read_int(cb.mData, r * k + j);
+                    os << " " << detail::read_int(conn, r * k + j);
                 os << "\n";
             }
         }

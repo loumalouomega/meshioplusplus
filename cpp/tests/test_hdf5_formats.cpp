@@ -85,10 +85,11 @@ TEST(Med, MetadataAndFamilies) {
 
     meshioplusplus::Mesh m = mt::tri_mesh();
     // one cell_tags block matching the single triangle block
-    meshioplusplus::NDArray tag(meshioplusplus::DType::Int64, {m.mCells[0].NumCells()});
-    for (std::size_t i = 0; i < m.mCells[0].NumCells(); ++i)
+    const std::size_t ntri = m.Cells(0).NumCells();
+    meshioplusplus::NDArray tag(meshioplusplus::DType::Int64, {ntri});
+    for (std::size_t i = 0; i < ntri; ++i)
         tag.As<std::int64_t>()[i] = -1;
-    m.mCellData["cell_tags"] = {tag};
+    m.AddCellData("cell_tags", {std::move(tag)});
 
     meshioplusplus::write_med(p, m, win);
     meshioplusplus::MedInfo rout;
@@ -105,20 +106,22 @@ TEST(Med, MetadataAndFamilies) {
 TEST(Med, RaggedPolygons) {
     std::string p = mt::temp_path(".med");
     meshioplusplus::Mesh m;
-    m.mPoints = mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}});
-    meshioplusplus::CellBlock cb;
-    cb.mType = "polygon";
-    cb.mPolygonRows = {{0, 1, 2}, {1, 3, 4, 2, 5}};  // a tri and a 5-gon
-    m.mCells.push_back(std::move(cb));
+    m.AssignPoints(
+        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}}));
+    m.AddPolygonBlock("polygon", {{0, 1, 2}, {1, 3, 4, 2, 5}});  // a tri and a 5-gon
 
     meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
     meshioplusplus::MedInfo info;
     meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
-    ASSERT_EQ(out.mCells.size(), 1u);
-    EXPECT_EQ(out.mCells[0].mType, "polygon");
-    ASSERT_EQ(out.mCells[0].mPolygonRows.size(), 2u);
-    EXPECT_EQ(out.mCells[0].mPolygonRows[0], (std::vector<std::int64_t>{0, 1, 2}));
-    EXPECT_EQ(out.mCells[0].mPolygonRows[1], (std::vector<std::int64_t>{1, 3, 4, 2, 5}));
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    const auto cb = out.Cells(0);
+    EXPECT_EQ(cb.Type(), "polygon");
+    ASSERT_TRUE(cb.IsRagged());
+    ASSERT_EQ(cb.NumCells(), 2u);
+    EXPECT_EQ(std::vector<std::int64_t>(cb.Row(0), cb.Row(0) + cb.RowSize(0)),
+              (std::vector<std::int64_t>{0, 1, 2}));
+    EXPECT_EQ(std::vector<std::int64_t>(cb.Row(1), cb.Row(1) + cb.RowSize(1)),
+              (std::vector<std::int64_t>{1, 3, 4, 2, 5}));
     std::error_code ec;
     std::filesystem::remove(p, ec);
 }

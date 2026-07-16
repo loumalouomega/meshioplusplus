@@ -31,7 +31,10 @@
  *
  * Everything in this header lives in the `mt` namespace (short for "mesh
  * test") to keep it out of the way of the `meshioplusplus` production
- * namespace it pulls types from (`Mesh`, `CellBlock`, `NDArray`, `DType`).
+ * namespace it pulls types from (`Mesh`, `NDArray`, `DType`). Meshes are
+ * built and inspected exclusively through the uniform format-facing API
+ * (see `mesh_api.hpp`) so the whole suite compiles under every mesh
+ * backend.
  */
 
 // System includes
@@ -54,7 +57,6 @@
 
 namespace mt {
 
-using meshioplusplus::CellBlock;
 using meshioplusplus::DType;
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;
@@ -112,8 +114,8 @@ inline NDArray conn_from(const std::vector<std::vector<std::int64_t>>& rRows) {
 /**
  * @brief Build a single-cell-block `Mesh` from point and connectivity literals.
  *
- * Convenience wrapper combining `points_from` and `conn_from`: sets
- * `m.mPoints` and appends exactly one `CellBlock` of the given `type`. Used
+ * Convenience wrapper combining `points_from` and `conn_from`: assigns the
+ * points and appends exactly one cell block of the given `type`. Used
  * by every single-cell-type fixture below (`tri_mesh`, `tet_mesh`, etc.);
  * multi-block fixtures (e.g. `tri_quad_mesh`) build the `Mesh` by hand
  * instead since they need more than one block.
@@ -122,13 +124,13 @@ inline NDArray conn_from(const std::vector<std::vector<std::int64_t>>& rRows) {
  * @param rType The meshio++ cell type name for the single block (e.g.
  *             `"triangle"`, `"tetra10"`).
  * @param cells Cell connectivity rows, as for `conn_from`.
- * @return A `Mesh` with `mPoints` set and one `mCells` block of `rType`.
+ * @return A `Mesh` with points set and one cell block of `rType`.
  */
 inline Mesh make_mesh(std::vector<std::vector<double>> pts, const std::string& rType,
                       std::vector<std::vector<std::int64_t>> cells) {
     Mesh m;
-    m.mPoints = points_from(pts);
-    m.mCells.emplace_back(rType, conn_from(cells));
+    m.AssignPoints(points_from(pts));
+    m.AddCellBlock(rType, conn_from(cells));
     return m;
 }
 
@@ -261,11 +263,11 @@ inline Mesh hex20_mesh() {
  */
 inline Mesh tri_quad_mesh() {
     Mesh m;
-    m.mPoints =
-        points_from({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 1, 0}, {2, 1, 0}, {1, 1, 0}, {0, 1, 0}});
-    m.mCells.emplace_back("triangle", conn_from({{0, 1, 5}, {0, 5, 6}}));
-    m.mCells.emplace_back("quad", conn_from({{1, 2, 4, 5}}));
-    m.mCells.emplace_back("triangle", conn_from({{2, 3, 4}}));
+    m.AssignPoints(
+        points_from({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 1, 0}, {2, 1, 0}, {1, 1, 0}, {0, 1, 0}}));
+    m.AddCellBlock("triangle", conn_from({{0, 1, 5}, {0, 5, 6}}));
+    m.AddCellBlock("quad", conn_from({{1, 2, 4, 5}}));
+    m.AddCellBlock("triangle", conn_from({{2, 3, 4}}));
     return m;
 }
 
@@ -296,7 +298,7 @@ inline std::string temp_path(const std::string& rSuffix) {
  *        rows}` for order-insensitive comparison.
  *
  * Grouping by type into a `std::multiset` (rather than comparing
- * `Mesh::mCells` block-by-block/row-by-row in original order) makes the
+ * cell blocks block-by-block/row-by-row in original order) makes the
  * comparison robust to formats that split or merge same-type blocks on
  * read (e.g. a writer emitting two separate `"triangle"` blocks that a
  * reader recombines into one, or vice versa) - as long as the *set* of
@@ -311,14 +313,15 @@ inline std::string temp_path(const std::string& rSuffix) {
  */
 inline std::map<std::string, std::multiset<std::vector<std::int64_t>>> cell_rows(const Mesh& rM) {
     std::map<std::string, std::multiset<std::vector<std::int64_t>>> out;
-    for (const auto& cb : rM.mCells) {
+    for (const auto cb : rM.CellRange()) {
+        const NDArray& conn = cb.Conn();
         std::size_t n = cb.NumCells();
-        std::size_t k = meshioplusplus::detail::cols(cb.mData);
+        std::size_t k = meshioplusplus::detail::cols(conn);
         for (std::size_t r = 0; r < n; ++r) {
             std::vector<std::int64_t> row(k);
             for (std::size_t j = 0; j < k; ++j)
-                row[j] = meshioplusplus::detail::read_int(cb.mData, r * k + j);
-            out[cb.mType].insert(std::move(row));
+                row[j] = meshioplusplus::detail::read_int(conn, r * k + j);
+            out[cb.Type()].insert(std::move(row));
         }
     }
     return out;
@@ -341,13 +344,15 @@ inline std::map<std::string, std::multiset<std::vector<std::int64_t>>> cell_rows
  */
 inline void expect_points_close(const Mesh& rIn, const Mesh& rOut, double atol) {
     ASSERT_EQ(rIn.NumPoints(), rOut.NumPoints());
-    std::size_t din = meshioplusplus::detail::cols(rIn.mPoints);
-    std::size_t dout = meshioplusplus::detail::cols(rOut.mPoints);
+    const NDArray& pin = rIn.Points();
+    const NDArray& pout = rOut.Points();
+    std::size_t din = meshioplusplus::detail::cols(pin);
+    std::size_t dout = meshioplusplus::detail::cols(pout);
     ASSERT_GE(dout, din);  // formats may pad 2D -> 3D, never truncate
     for (std::size_t i = 0; i < rIn.NumPoints(); ++i)
         for (std::size_t j = 0; j < din; ++j) {
-            double a = meshioplusplus::detail::read_double(rIn.mPoints, i * din + j);
-            double b = meshioplusplus::detail::read_double(rOut.mPoints, i * dout + j);
+            double a = meshioplusplus::detail::read_double(pin, i * din + j);
+            double b = meshioplusplus::detail::read_double(pout, i * dout + j);
             EXPECT_NEAR(a, b, atol) << "point " << i << " comp " << j;
         }
 }

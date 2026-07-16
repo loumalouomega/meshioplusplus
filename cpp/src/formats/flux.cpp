@@ -152,14 +152,15 @@ Mesh read_flux(const std::string& rPath) {
             ctok.push_back(w);
     }
     Mesh mesh;
-    mesh.mPoints =
-        NDArray(DType::Float64, {static_cast<std::size_t>(nnod), static_cast<std::size_t>(dim)});
+    NDArray pts(DType::Float64,
+                {static_cast<std::size_t>(nnod), static_cast<std::size_t>(dim)});
     std::size_t cp = 0;
     for (long long i = 0; i < nnod; ++i) {
         ++cp;  // node index
         for (long long j = 0; j < dim; ++j)
-            mesh.mPoints.As<double>()[i * dim + j] = std::strtod(ctok[cp++].c_str(), nullptr);
+            pts.As<double>()[i * dim + j] = std::strtod(ctok[cp++].c_str(), nullptr);
     }
+    mesh.AssignPoints(std::move(pts));
 
     std::vector<NDArray> refs;
     for (auto& g : groups) {
@@ -169,14 +170,14 @@ Mesh read_flux(const std::string& rPath) {
         for (std::size_t r = 0; r < ne; ++r)
             for (std::size_t j = 0; j < k; ++j)
                 data.As<std::int64_t>()[r * k + j] = g.mRows[r][j];
-        mesh.mCells.emplace_back(g.mType, std::move(data));
+        mesh.AddCellBlock(g.mType, std::move(data));
         NDArray rf(DType::Int64, {ne});
         for (std::size_t r = 0; r < ne; ++r)
             rf.As<std::int64_t>()[r] = g.mRef[r];
         refs.push_back(std::move(rf));
     }
     if (!refs.empty())
-        mesh.mCellData.emplace("pf3:ref", std::move(refs));
+        mesh.AddCellData("pf3:ref", std::move(refs));
     return mesh;
 }
 
@@ -185,24 +186,24 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const int dim =
-        rMesh.mPoints.Shape().size() >= 2 ? static_cast<int>(rMesh.mPoints.Shape()[1]) : 0;
+    const int dim = static_cast<int>(rMesh.PointDim());
     long long counts[4] = {0, 0, 0, 0};  // by topological dim
     std::vector<std::size_t> blocks;
-    for (std::size_t k = 0; k < rMesh.mCells.size(); ++k) {
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+        const auto cb = rMesh.Cells(k);
         std::array<int, 3> d;
-        if (!meshio_to_desc(rMesh.mCells[k].mType, d))
-            throw WriteError("pf3: unsupported cell type " + rMesh.mCells[k].mType);
-        auto it = topological_dimension().find(rMesh.mCells[k].mType);
+        if (!meshio_to_desc(cb.Type(), d))
+            throw WriteError("pf3: unsupported cell type " + cb.Type());
+        auto it = topological_dimension().find(cb.Type());
         int td = it == topological_dimension().end() ? 3 : it->second;
-        counts[td] += static_cast<long long>(rMesh.mCells[k].NumCells());
+        counts[td] += static_cast<long long>(cb.NumCells());
         blocks.push_back(k);
     }
     long long nel = 0;
     for (auto k : blocks)
-        nel += static_cast<long long>(rMesh.mCells[k].NumCells());
+        nel += static_cast<long long>(rMesh.Cells(k).NumCells());
 
-    auto ref_it = rMesh.mCellData.find("pf3:ref");
+    const bool has_ref = rMesh.HasCellData("pf3:ref");
 
     char buf[128];
     f << " File converted with meshio++ (C++ core)\n";
@@ -231,12 +232,13 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
 
     long long eid = 0;
     for (auto k : blocks) {
-        const CellBlock& cb = rMesh.mCells[k];
+        const auto cb = rMesh.Cells(k);
         std::array<int, 3> d;
-        meshio_to_desc(cb.mType, d);
-        int lnn = static_cast<int>(detail::cols(cb.mData));
-        const NDArray* ref = (ref_it != rMesh.mCellData.end() && k < ref_it->second.size())
-                                 ? &ref_it->second[k]
+        meshio_to_desc(cb.Type(), d);
+        const NDArray& conn = cb.Conn();
+        int lnn = static_cast<int>(detail::cols(conn));
+        const NDArray* ref = (has_ref && k < rMesh.CellDataNumBlocks("pf3:ref"))
+                                 ? &rMesh.CellData("pf3:ref", k)
                                  : nullptr;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             ++eid;
@@ -246,7 +248,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
             f << buf;
             for (int j = 0; j < lnn; ++j) {
                 std::snprintf(buf, sizeof(buf), "%8lld",
-                              static_cast<long long>(detail::read_int(cb.mData, r * lnn + j) + 1));
+                              static_cast<long long>(detail::read_int(conn, r * lnn + j) + 1));
                 f << buf;
             }
             f << "\n";
@@ -254,12 +256,12 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
     }
 
     f << " COORDONNEES DES NOEUDS\n";
+    const NDArray& points = rMesh.Points();
     for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
         std::snprintf(buf, sizeof(buf), "%8zu", i + 1);
         f << buf;
         for (int j = 0; j < dim; ++j) {
-            std::snprintf(buf, sizeof(buf), " %.16g",
-                          detail::read_double(rMesh.mPoints, i * dim + j));
+            std::snprintf(buf, sizeof(buf), " %.16g", detail::read_double(points, i * dim + j));
             f << buf;
         }
         f << "\n";

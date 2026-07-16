@@ -7,6 +7,7 @@
 #                                           # HDF5/netCDF/zlib auto-detected
 #   ./configure.sh --backend OPENMP --tests --build
 #   ./configure.sh --backend TBB --tbb-dir /opt/intel/oneapi/tbb/latest/lib/cmake/tbb
+#   ./configure.sh --mesh-backend NATIVE --tests --build   # standalone, no Python
 #
 # The equivalent Python-package install is printed at the end.
 
@@ -16,6 +17,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR=$(dirname -- "$SCRIPT_DIR")
 
 BACKEND="STL"
+MESH_BACKEND="MESHIO"
 BUILD_TYPE="Release"
 WITH_HDF5="ON"
 WITH_NETCDF="ON"
@@ -29,6 +31,10 @@ usage() {
     cat <<EOF
 Usage: $0 [options]
   --backend <SEQ|STL|OPENMP|TBB>  parallel backend (default: STL)
+  --mesh-backend <MESHIO|NATIVE|KRATOS>
+                                  in-memory mesh backend (default: MESHIO).
+                                  NATIVE/KRATOS imply -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+                                  (the pybind11 extension requires MESHIO)
   --build-type <type>             CMake build type (default: Release)
   --with-hdf5 / --without-hdf5    HDF5-backed formats (default: on, auto-detected)
   --with-netcdf / --without-netcdf
@@ -44,6 +50,7 @@ EOF
 while [ $# -gt 0 ]; do
     case "$1" in
         --backend) BACKEND="$2"; shift 2 ;;
+        --mesh-backend) MESH_BACKEND=$(echo "$2" | tr '[:lower:]' '[:upper:]'); shift 2 ;;
         --build-type) BUILD_TYPE="$2"; shift 2 ;;
         --with-hdf5) WITH_HDF5="ON"; shift ;;
         --without-hdf5) WITH_HDF5="OFF"; shift ;;
@@ -69,7 +76,15 @@ if [ -z "$PYTHON_EXE" ]; then
     fi
 fi
 
-BUILD_DIR="$SCRIPT_DIR/cpp-$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')"
+# Non-MESHIO backends get their own build tree (and no Python extension).
+BUILD_PYTHON="ON"
+TREE_SUFFIX=""
+if [ "$MESH_BACKEND" != "MESHIO" ]; then
+    BUILD_PYTHON="OFF"
+    TREE_SUFFIX="-$(echo "$MESH_BACKEND" | tr '[:upper:]' '[:lower:]')"
+fi
+
+BUILD_DIR="$SCRIPT_DIR/cpp-$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')$TREE_SUFFIX"
 
 GENERATOR=""
 if command -v ninja >/dev/null 2>&1; then
@@ -80,6 +95,8 @@ set -- \
     -S "$SOURCE_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DMESHIOPLUSPLUS_PARALLEL_BACKEND="$BACKEND" \
+    -DMESHIOPLUSPLUS_MESH_BACKEND="$MESH_BACKEND" \
+    -DMESHIOPLUSPLUS_BUILD_PYTHON="$BUILD_PYTHON" \
     -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
     -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
     -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB" \
@@ -100,6 +117,7 @@ echo "  source:    $SOURCE_DIR"
 echo "  build:     $BUILD_DIR"
 echo "  type:      $BUILD_TYPE"
 echo "  backend:   $BACKEND"
+echo "  mesh:      $MESH_BACKEND (Python extension: $BUILD_PYTHON)"
 echo "  HDF5:      $WITH_HDF5   netCDF: $WITH_NETCDF   zlib: $WITH_ZLIB"
 echo "  tests:     $TESTS"
 echo "  python:    $PYTHON_EXE"
@@ -115,9 +133,14 @@ if [ "$TESTS" = "ON" ]; then
     echo "  ctest --test-dir \"$BUILD_DIR\" --output-on-failure"
 fi
 echo
-echo "Python package (editable) with the same options:"
-echo "  CMAKE_ARGS=\"-DMESHIOPLUSPLUS_PARALLEL_BACKEND=$BACKEND -DMESHIOPLUSPLUS_WITH_HDF5=$WITH_HDF5 -DMESHIOPLUSPLUS_WITH_NETCDF=$WITH_NETCDF -DMESHIOPLUSPLUS_WITH_ZLIB=$WITH_ZLIB\" \\"
-echo "    pip install --no-build-isolation -e \"$SOURCE_DIR\""
+if [ "$MESH_BACKEND" = "MESHIO" ]; then
+    echo "Python package (editable) with the same options:"
+    echo "  CMAKE_ARGS=\"-DMESHIOPLUSPLUS_PARALLEL_BACKEND=$BACKEND -DMESHIOPLUSPLUS_WITH_HDF5=$WITH_HDF5 -DMESHIOPLUSPLUS_WITH_NETCDF=$WITH_NETCDF -DMESHIOPLUSPLUS_WITH_ZLIB=$WITH_ZLIB\" \\"
+    echo "    pip install --no-build-isolation -e \"$SOURCE_DIR\""
+else
+    echo "Note: the $MESH_BACKEND mesh backend is standalone-C++ only; the Python"
+    echo "package always uses MESHIO (PyPI wheels are unaffected)."
+fi
 
 if [ "$DO_BUILD" = "yes" ]; then
     echo

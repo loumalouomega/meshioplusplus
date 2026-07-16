@@ -305,17 +305,18 @@ Mesh read_ansys(const std::string& rPath) {
         first_point_index_overall = 0;
 
     Mesh mesh;
-    mesh.mPoints = NDArray(DType::Float64, {static_cast<std::size_t>(npoints), dim});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), dim});
+    double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
         pp[i] = points[i];
+    mesh.AssignPoints(std::move(pts));
 
     for (auto& rc : cells) {
         NDArray data(DType::Int64, {rc.mRows, rc.mCols});
         std::int64_t* dp = data.As<std::int64_t>();
         for (std::size_t k = 0; k < rc.mData.size(); ++k)
             dp[k] = rc.mData[k] - first_point_index_overall;
-        mesh.mCells.emplace_back(rc.mType, std::move(data));
+        mesh.AddCellBlock(rc.mType, std::move(data));
     }
 
     return mesh;
@@ -327,7 +328,8 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t npoints = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
     if (dim != 2 && dim != 3)
         throw WriteError("ANSYS: can only write dimension 2 or 3");
 
@@ -345,7 +347,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
     fh << hbuf;
 
     std::size_t total_cells = 0;
-    for (const auto& cb : rMesh.mCells)
+    for (const auto cb : rMesh.CellRange())
         total_cells += cb.NumCells();
     std::snprintf(hbuf, sizeof(hbuf), "(12 (0 1 %zx 0))\n", total_cells);
     fh << hbuf;
@@ -358,7 +360,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
     if (binary) {
         for (std::size_t i = 0; i < npoints; ++i)
             for (std::size_t c = 0; c < dim; ++c) {
-                double v = detail::read_double(rMesh.mPoints, i * dim + c);
+                double v = detail::read_double(points, i * dim + c);
                 fh.write(reinterpret_cast<const char*>(&v), 8);
             }
         fh << "\n)";
@@ -368,7 +370,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         for (std::size_t i = 0; i < npoints; ++i) {
             for (std::size_t c = 0; c < dim; ++c) {
                 std::snprintf(cbuf, sizeof(cbuf), "%.16e",
-                              detail::read_double(rMesh.mPoints, i * dim + c));
+                              detail::read_double(points, i * dim + c));
                 fh << cbuf << (c + 1 == dim ? "" : " ");
             }
             fh << "\n";
@@ -378,15 +380,16 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
     // Cells
     std::size_t first_index = 0;
-    for (const auto& cb : rMesh.mCells) {
-        auto it = meshio_to_ansys.find(cb.mType);
+    for (const auto cb : rMesh.CellRange()) {
+        auto it = meshio_to_ansys.find(cb.Type());
         if (it == meshio_to_ansys.end())
-            throw WriteError("ANSYS: illegal cell type '" + cb.mType + "'");
+            throw WriteError("ANSYS: illegal cell type '" + cb.Type() + "'");
         int ansys_type = it->second;
         std::size_t n = cb.NumCells();
-        std::size_t ncols = detail::cols(cb.mData);
+        const NDArray& conn = cb.Conn();
+        std::size_t ncols = detail::cols(conn);
         std::size_t last_index = first_index + n - 1;
-        bool is_i32 = (cb.mData.Dtype() == DType::Int32);
+        bool is_i32 = (conn.Dtype() == DType::Int32);
         const char* ckey = binary ? (is_i32 ? "2012" : "3012") : "12";
         std::snprintf(hbuf, sizeof(hbuf), "(%s (1 %zx %zx 1 %d)(\n", ckey, first_index, last_index,
                       ansys_type);
@@ -394,7 +397,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         if (binary) {
             for (std::size_t r = 0; r < n; ++r)
                 for (std::size_t c = 0; c < ncols; ++c) {
-                    std::int64_t v = detail::read_int(cb.mData, r * ncols + c) + 1;
+                    std::int64_t v = detail::read_int(conn, r * ncols + c) + 1;
                     if (is_i32) {
                         std::int32_t v32 = static_cast<std::int32_t>(v);
                         fh.write(reinterpret_cast<const char*>(&v32), 4);
@@ -408,9 +411,9 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
             char cbuf[24];
             for (std::size_t r = 0; r < n; ++r) {
                 for (std::size_t c = 0; c < ncols; ++c) {
-                    std::snprintf(cbuf, sizeof(cbuf), "%llx",
-                                  static_cast<unsigned long long>(
-                                      detail::read_int(cb.mData, r * ncols + c) + 1));
+                    std::snprintf(
+                        cbuf, sizeof(cbuf), "%llx",
+                        static_cast<unsigned long long>(detail::read_int(conn, r * ncols + c) + 1));
                     fh << cbuf << (c + 1 == ncols ? "" : " ");
                 }
                 fh << "\n";

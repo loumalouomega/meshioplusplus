@@ -235,7 +235,7 @@ Mesh read_abaqus(const std::string& rPath) {
                         throw ReadError("Abaqus: unknown node id");
                     dp[r * n + j] = pit->second;
                 }
-            mesh.mCells.emplace_back(mtype, std::move(data));
+            mesh.AddCellBlock(mtype, std::move(data));
         } else if (kw == "NSET" || kw == "ELSET" || kw == "INCLUDE") {
             throw ReadError("Abaqus " + kw + " not supported by the C++ reader");
         } else {
@@ -250,11 +250,12 @@ Mesh read_abaqus(const std::string& rPath) {
         if (dim == 0)
             dim = 3;
     }
-    mesh.mPoints = NDArray(DType::Float64, {pts.size(), dim});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray points(DType::Float64, {pts.size(), dim});
+    double* pp = points.As<double>();
     for (std::size_t r = 0; r < pts.size(); ++r)
         for (std::size_t c = 0; c < dim; ++c)
             pp[r * dim + c] = (c < pts[r].size()) ? pts[r][c] : 0.0;
+    mesh.AssignPoints(std::move(points));
 
     return mesh;
 }
@@ -265,7 +266,8 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
 
     os << "*HEADING\n";
     os << "Abaqus DataFile Version 6.14\n";
@@ -281,7 +283,7 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
             row = std::to_string(i + 1);
             for (std::size_t c = 0; c < dim; ++c) {
                 std::snprintf(buf, sizeof(buf), ", %.16e",
-                              detail::read_double(rMesh.mPoints, i * dim + c));
+                              detail::read_double(points, i * dim + c));
                 row += buf;
             }
             row += '\n';
@@ -292,16 +294,17 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 
     const auto& m2a = meshio_to_abaqus();
     std::size_t eid = 0;
-    for (const auto& cb : rMesh.mCells) {
-        auto it = m2a.find(cb.mType);
+    for (const auto cb : rMesh.CellRange()) {
+        auto it = m2a.find(cb.Type());
         if (it == m2a.end())
-            throw WriteError("Abaqus writer: unsupported cell type " + cb.mType);
-        std::size_t k = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+            throw WriteError("Abaqus writer: unsupported cell type " + cb.Type());
+        const NDArray& conn = cb.Conn();
+        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         os << "*ELEMENT, TYPE=" << it->second << "\n";
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             os << (++eid);
             for (std::size_t j = 0; j < k; ++j)
-                os << "," << (detail::read_int(cb.mData, r * k + j) + 1);
+                os << "," << (detail::read_int(conn, r * k + j) + 1);
             os << "\n";
         }
     }

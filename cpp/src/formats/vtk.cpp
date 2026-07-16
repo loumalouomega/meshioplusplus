@@ -26,7 +26,6 @@
 // Project includes
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -162,22 +161,23 @@ void write_field_block(std::ostream& rOs, const std::string& rName, DType dt,
 }  // namespace
 
 void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v51) {
-    for (const auto& cb : rMesh.mCells)
-        if (cb.mType.rfind("polyhedron", 0) == 0)
+    for (const auto cb : rMesh.CellRange())
+        if (cb.Type().rfind("polyhedron", 0) == 0)
             throw WriteError("C++ VTK writer does not support polyhedron cells");
 
     std::ofstream os(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
+    const NDArray& points = rMesh.Points();
     const std::size_t num_points = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
-    const std::size_t pt_isz = dtype_size(rMesh.mPoints.Dtype());
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t pt_isz = dtype_size(points.Dtype());
 
     std::size_t total_cells = 0, total_idx = 0;
-    for (const auto& cb : rMesh.mCells) {
+    for (const auto cb : rMesh.CellRange()) {
         total_cells += cb.NumCells();
-        total_idx += cb.mData.Size();
+        total_idx += cb.Conn().Size();
     }
 
     os << (v51 ? "# vtk DataFile Version 5.1\n" : "# vtk DataFile Version 4.2\n");
@@ -186,10 +186,10 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
     os << "DATASET UNSTRUCTURED_GRID\n";
 
     // Points (3 components; pad 2D with zero z).
-    os << "POINTS " << num_points << ' ' << vtk_dtype_str(rMesh.mPoints.Dtype()) << '\n';
+    os << "POINTS " << num_points << ' ' << vtk_dtype_str(points.Dtype()) << '\n';
     if (binary) {
         // Pre-sized padded buffer, parallel byte-swap, then one write.
-        const auto* src = reinterpret_cast<const char*>(rMesh.mPoints.Data());
+        const auto* src = reinterpret_cast<const char*>(points.Data());
         std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
         auto* dst = reinterpret_cast<char*>(buf.data());
         const int isz = static_cast<int>(pt_isz);
@@ -203,7 +203,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
     } else {
         for (std::size_t r = 0; r < num_points; ++r)
             for (std::size_t c = 0; c < 3; ++c) {
-                ascii_double(os, (c < dim) ? read_double(rMesh.mPoints, r * dim + c) : 0.0);
+                ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
                 os << ((r + 1 == num_points && c == 2) ? '\n' : ' ');
             }
         if (num_points == 0)
@@ -219,8 +219,8 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
         offs[0] = 0;
         std::size_t oi = 1;
         std::int64_t running = 0;
-        for (const auto& cb : rMesh.mCells) {
-            const std::int64_t k = static_cast<std::int64_t>(cols(cb.mData));
+        for (const auto cb : rMesh.CellRange()) {
+            const std::int64_t k = static_cast<std::int64_t>(cols(cb.Conn()));
             for (std::size_t r = 0; r < cb.NumCells(); ++r)
                 offs[oi++] = (running += k);
         }
@@ -231,12 +231,13 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             // Fused gather + big-endian store, one pass into the byte buffer.
             std::vector<unsigned char> cbuf(total_idx * 8);
             std::size_t base = 0;
-            for (const auto& cb : rMesh.mCells) {
+            for (const auto cb : rMesh.CellRange()) {
+                const NDArray& conn = cb.Conn();
                 const std::size_t nc = cb.NumCells();
-                const std::size_t k = cols(cb.mData);
-                std::vector<int> order = meshio_to_vtk_order(cb.mType);
+                const std::size_t k = cols(conn);
+                std::vector<int> order = meshio_to_vtk_order(cb.Type());
                 const int* ord = order.empty() ? nullptr : order.data();
-                gather_be(cbuf.data() + base * 8, cb.mData, nc, k, ord, 8);
+                gather_be(cbuf.data() + base * 8, conn, nc, k, ord, 8);
                 base += nc * k;
             }
             os.write(reinterpret_cast<const char*>(cbuf.data()),
@@ -246,14 +247,15 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             for (std::int64_t v : offs)
                 os << v << '\n';
             os << "CONNECTIVITY vtktypeint64\n";
-            for (const auto& cb : rMesh.mCells) {
+            for (const auto cb : rMesh.CellRange()) {
+                const NDArray& conn = cb.Conn();
                 const std::size_t nc = cb.NumCells();
-                const std::size_t k = cols(cb.mData);
-                std::vector<int> order = meshio_to_vtk_order(cb.mType);
+                const std::size_t k = cols(conn);
+                std::vector<int> order = meshio_to_vtk_order(cb.Type());
                 for (std::size_t r = 0; r < nc; ++r)
                     for (std::size_t j = 0; j < k; ++j) {
                         std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                        os << read_int(cb.mData, r * k + col) << '\n';
+                        os << read_int(conn, r * k + col) << '\n';
                     }
             }
         }
@@ -264,15 +266,16 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             // Fused: each cell -> [k, v0..v(k-1)] big-endian int32, one pass.
             std::vector<unsigned char> cbuf((total_idx + total_cells) * 4);
             std::size_t p = 0;  // element index into cbuf
-            for (const auto& cb : rMesh.mCells) {
+            for (const auto cb : rMesh.CellRange()) {
+                const NDArray& conn = cb.Conn();
                 const std::size_t nc = cb.NumCells();
-                const std::size_t k = cols(cb.mData);
+                const std::size_t k = cols(conn);
                 const std::size_t stride = k + 1;
-                std::vector<int> order = meshio_to_vtk_order(cb.mType);
+                std::vector<int> order = meshio_to_vtk_order(cb.Type());
                 const int* ord = order.empty() ? nullptr : order.data();
                 const std::size_t block_base = p;
-                dispatch_dtype(cb.mData.Dtype(), [&]<class T>() {
-                    const T* src = cb.mData.As<T>();
+                dispatch_dtype(conn.Dtype(), [&]<class T>() {
+                    const T* src = conn.As<T>();
                     parallel_for_bw(nc, [&](std::size_t r) {
                         unsigned char* o = cbuf.data() + (block_base + r * stride) * 4;
                         be_store(o, static_cast<std::uint64_t>(k), 4);
@@ -290,15 +293,16 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                      static_cast<std::streamsize>(cbuf.size()));
             os << '\n';
         } else {
-            for (const auto& cb : rMesh.mCells) {
+            for (const auto cb : rMesh.CellRange()) {
+                const NDArray& conn = cb.Conn();
                 const std::size_t nc = cb.NumCells();
-                const std::size_t k = cols(cb.mData);
-                std::vector<int> order = meshio_to_vtk_order(cb.mType);
+                const std::size_t k = cols(conn);
+                std::vector<int> order = meshio_to_vtk_order(cb.Type());
                 for (std::size_t r = 0; r < nc; ++r) {
                     os << k << '\n';
                     for (std::size_t j = 0; j < k; ++j) {
                         std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                        os << read_int(cb.mData, r * k + col) << '\n';
+                        os << read_int(conn, r * k + col) << '\n';
                     }
                 }
             }
@@ -310,10 +314,10 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
     const auto& tmap = meshio_to_vtk_type();
     std::vector<std::int32_t> ctypes(total_cells);
     std::size_t ci = 0;
-    for (const auto& cb : rMesh.mCells) {
-        auto it = tmap.find(cb.mType);
+    for (const auto cb : rMesh.CellRange()) {
+        auto it = tmap.find(cb.Type());
         if (it == tmap.end())
-            throw WriteError("Unknown cell type for VTK: " + cb.mType);
+            throw WriteError("Unknown cell type for VTK: " + cb.Type());
         for (std::size_t r = 0; r < cb.NumCells(); ++r)
             ctypes[ci++] = it->second;
     }
@@ -326,11 +330,11 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
     }
 
     // Point data.
-    if (!rMesh.mPointData.empty()) {
+    if (rMesh.NumPointData() != 0) {
         os << "POINT_DATA " << num_points << '\n';
-        os << "FIELD FieldData " << rMesh.mPointData.size() << '\n';
-        for (const auto& name : detail::sorted_keys(rMesh.mPointData)) {
-            const NDArray& d = rMesh.mPointData.at(name);
+        os << "FIELD FieldData " << rMesh.NumPointData() << '\n';
+        for (const auto& name : rMesh.PointDataNames()) {
+            const NDArray& d = rMesh.PointData(name);
             std::size_t ncomp = cols(d);
             write_field_block(os, name, d.Dtype(), ncomp, d.Shape().empty() ? 0 : d.Shape()[0],
                               binary, {&d});
@@ -338,18 +342,18 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
     }
 
     // Cell data (concatenate per-block arrays for each name).
-    if (!rMesh.mCellData.empty()) {
+    if (rMesh.NumCellData() != 0) {
         os << "CELL_DATA " << total_cells << '\n';
-        os << "FIELD FieldData " << rMesh.mCellData.size() << '\n';
-        for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
-            const auto& blocks = rMesh.mCellData.at(name);
-            if (blocks.empty())
+        os << "FIELD FieldData " << rMesh.NumCellData() << '\n';
+        for (const auto& name : rMesh.CellDataNames()) {
+            const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
+            if (nblocks == 0)
                 continue;
             std::vector<const NDArray*> ptrs;
-            for (const auto& b : blocks)
-                ptrs.push_back(&b);
-            write_field_block(os, name, blocks.front().Dtype(), cols(blocks.front()), total_cells,
-                              binary, ptrs);
+            for (std::size_t bi = 0; bi < nblocks; ++bi)
+                ptrs.push_back(&rMesh.CellData(name, bi));
+            const NDArray& first = *ptrs.front();
+            write_field_block(os, name, first.Dtype(), cols(first), total_cells, binary, ptrs);
         }
     }
 }

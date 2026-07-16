@@ -29,7 +29,6 @@
 
 // Project includes
 #include "meshioplusplus/formats/ply.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -335,16 +334,17 @@ Mesh read_ply(const std::string& rPath) {
         if (xyz[k] != SIZE_MAX)
             ++ndim;
     DType pdt = (xyz[0] != SIZE_MAX) ? vcols[xyz[0]].Dtype() : DType::Float64;
-    mesh.mPoints = NDArray(pdt, {num_verts, ndim});
+    NDArray pts(pdt, {num_verts, ndim});
     for (std::size_t i = 0; i < num_verts; ++i)
         for (std::size_t k = 0; k < ndim; ++k)
-            store_scalar(mesh.mPoints, i * ndim + k, detail::read_double(vcols[xyz[k]], i),
+            store_scalar(pts, i * ndim + k, detail::read_double(vcols[xyz[k]], i),
                          detail::read_int(vcols[xyz[k]], i), detail::is_float_dtype(pdt));
+    mesh.AssignPoints(std::move(pts));
     for (std::size_t c = 0; c < vprops.size(); ++c) {
         const std::string& nm = vprops[c].mName;
         if (nm == "x" || nm == "y" || nm == "z")
             continue;
-        mesh.mPointData.emplace(nm, std::move(vcols[c]));
+        mesh.AddPointData(nm, std::move(vcols[c]));
     }
 
     // Faces -> cell blocks grouped by consecutive vertex count.
@@ -357,7 +357,7 @@ Mesh read_ply(const std::string& rPath) {
                 return;
             NDArray data(DType::Int64, {cur_count, cur_n});
             std::memcpy(data.Data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
-            mesh.mCells.emplace_back(cell_type_from_count(cur_n), std::move(data));
+            mesh.AddCellBlock(cell_type_from_count(cur_n), std::move(data));
             cur_conn.clear();
             cur_count = 0;
         };
@@ -397,13 +397,14 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t num_points = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
     const std::size_t ncoord = std::min<std::size_t>(dim, 3);
 
     // Scalar point data only (PLY can't store multidimensional vertex data here).
     std::vector<std::pair<std::string, const NDArray*>> pd;
-    for (const auto& name : detail::sorted_keys(rMesh.mPointData)) {
-        const NDArray& d = rMesh.mPointData.at(name);
+    for (const auto& name : rMesh.PointDataNames()) {
+        const NDArray& d = rMesh.PointData(name);
         if (d.Shape().size() <= 1)
             pd.emplace_back(name, &d);
     }
@@ -416,8 +417,8 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
         return false;
     };
     std::size_t num_cells = 0;
-    for (const auto& cb : rMesh.mCells)
-        if (is_legal(cb.mType))
+    for (const auto cb : rMesh.CellRange())
+        if (is_legal(cb.Type()))
             num_cells += cb.NumCells();
 
     os << "ply\n";
@@ -426,7 +427,7 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
     os << "element vertex " << num_points << "\n";
     const char* dim_names[3] = {"x", "y", "z"};
     for (std::size_t k = 0; k < ncoord; ++k)
-        os << "property " << dtype_to_ply(rMesh.mPoints.Dtype()) << " " << dim_names[k] << "\n";
+        os << "property " << dtype_to_ply(points.Dtype()) << " " << dim_names[k] << "\n";
     for (auto& p : pd)
         os << "property " << dtype_to_ply(p.second->Dtype()) << " " << p.first << "\n";
     if (num_cells > 0) {
@@ -435,28 +436,27 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
     }
     os << "end_header\n";
 
-    const std::size_t pisz = dtype_size(rMesh.mPoints.Dtype());
+    const std::size_t pisz = dtype_size(points.Dtype());
     if (binary) {
         // Interleaved vertex records: coords then scalar point data.
         for (std::size_t i = 0; i < num_points; ++i) {
             for (std::size_t k = 0; k < ncoord; ++k)
-                os.write(reinterpret_cast<const char*>(rMesh.mPoints.Data()) + (i * dim + k) * pisz,
-                         pisz);
+                os.write(reinterpret_cast<const char*>(points.Data()) + (i * dim + k) * pisz, pisz);
             for (auto& p : pd) {
                 std::size_t isz = dtype_size(p.second->Dtype());
                 os.write(reinterpret_cast<const char*>(p.second->Data()) + i * isz, isz);
             }
         }
-        for (const auto& cb : rMesh.mCells) {
-            if (!is_legal(cb.mType))
+        for (const auto cb : rMesh.CellRange()) {
+            if (!is_legal(cb.Type()))
                 continue;
-            std::size_t n = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+            const NDArray& conn = cb.Conn();
+            std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 std::uint8_t cnt = static_cast<std::uint8_t>(n);
                 os.write(reinterpret_cast<const char*>(&cnt), 1);
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::int32_t v =
-                        static_cast<std::int32_t>(detail::read_int(cb.mData, r * n + j));
+                    std::int32_t v = static_cast<std::int32_t>(detail::read_int(conn, r * n + j));
                     os.write(reinterpret_cast<const char*>(&v), 4);
                 }
             }
@@ -468,8 +468,7 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
             for (std::size_t k = 0; k < ncoord; ++k) {
                 if (k)
                     row += " ";
-                std::snprintf(buf, sizeof(buf), "%.17g",
-                              detail::read_double(rMesh.mPoints, i * dim + k));
+                std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + k));
                 row += buf;
             }
             for (auto& p : pd) {
@@ -483,14 +482,15 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
             }
             os << row << "\n";
         }
-        for (const auto& cb : rMesh.mCells) {
-            if (!is_legal(cb.mType))
+        for (const auto cb : rMesh.CellRange()) {
+            if (!is_legal(cb.Type()))
                 continue;
-            std::size_t n = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+            const NDArray& conn = cb.Conn();
+            std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 os << n;
                 for (std::size_t j = 0; j < n; ++j)
-                    os << " " << detail::read_int(cb.mData, r * n + j);
+                    os << " " << detail::read_int(conn, r * n + j);
                 os << "\n";
             }
         }

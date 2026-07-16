@@ -249,7 +249,7 @@ Mesh read_vtk(const std::string& rPath) {
             DType dt = dtype_from_vtk_token(tok[2]);
             NDArray pts = cur.ReadValues(dt, n * 3, is_ascii);
             pts.Reshape({n, 3});
-            mesh.mPoints = std::move(pts);
+            mesh.AssignPoints(std::move(pts));
         } else if (section == "CELLS") {
             if (is_v5) {
                 std::size_t num_off = std::stoull(tok[1]);
@@ -326,7 +326,7 @@ Mesh read_vtk(const std::string& rPath) {
                 if (ncomp != 1)
                     arr.Reshape({ntuples, ncomp});
                 if (active == "POINT_DATA")
-                    mesh.mPointData.emplace(name, std::move(arr));
+                    mesh.AddPointData(name, std::move(arr));
                 else
                     cell_data_raw.emplace(name, std::move(arr));
             }
@@ -348,7 +348,7 @@ Mesh read_vtk(const std::string& rPath) {
     // Fast path (zero copy): a single cell type spanning all cells, non-special,
     // with an identity VTK->meshio node order and regular end-offsets
     // (offsets[i] == (i+1)*n) means the owning int64 connectivity NDArray is
-    // already the block data -> reshape and move it straight into the CellBlock
+    // already the block data -> reshape and move it straight into the cell block
     // instead of gathering a fresh copy.
     bool moved = false;
     if (conn_owned && !types.empty()) {
@@ -373,17 +373,16 @@ Mesh read_vtk(const std::string& rPath) {
                         regular = false;
                 if (regular) {
                     conn_nd.Reshape({ncells, n});
-                    mesh.mCells.emplace_back(it->second, std::move(conn_nd));
+                    mesh.AddCellBlock(it->second, std::move(conn_nd));
                     for (auto& kv : cell_data_raw)
-                        mesh.mCellData[kv.first].push_back(std::move(kv.second));
+                        mesh.AppendCellData(kv.first, std::move(kv.second));
                     moved = true;
                 }
             }
         }
     }
     if (!moved)
-        detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh.mCells,
-                                  mesh.mCellData);
+        detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh);
     return mesh;
 }
 

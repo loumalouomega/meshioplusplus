@@ -31,7 +31,6 @@
 
 // Project includes
 #include "meshioplusplus/formats/tecplot.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -314,14 +313,15 @@ Mesh read_tecplot(const std::string& rPath) {
             zi = (int)k;
     }
     std::size_t ndim = (zi >= 0) ? 3 : 2;
-    mesh.mPoints = NDArray(DType::Float64, {num_nodes, ndim});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64, {num_nodes, ndim});
+    double* pp = pts.As<double>();
     for (std::size_t r = 0; r < num_nodes; ++r) {
         pp[r * ndim + 0] = cols[xi][r];
         pp[r * ndim + 1] = cols[yi][r];
         if (zi >= 0)
             pp[r * ndim + 2] = cols[zi][r];
     }
+    mesh.AssignPoints(std::move(pts));
     for (std::size_t k = 0; k < variables.size(); ++k) {
         if ((int)k == xi || (int)k == yi || (int)k == zi)
             continue;
@@ -330,12 +330,12 @@ Mesh read_tecplot(const std::string& rPath) {
         if (cell_centered[k]) {
             std::vector<NDArray> blk;
             blk.push_back(std::move(arr));
-            mesh.mCellData.emplace(variables[k], std::move(blk));
+            mesh.AddCellData(variables[k], std::move(blk));
         } else {
-            mesh.mPointData.emplace(variables[k], std::move(arr));
+            mesh.AddPointData(variables[k], std::move(arr));
         }
     }
-    mesh.mCells.emplace_back(mtype, std::move(celldata));
+    mesh.AddCellBlock(mtype, std::move(celldata));
     return mesh;
 }
 
@@ -343,10 +343,11 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     // Gather supported cell blocks; require a single unique type.
     std::vector<std::size_t> blocks;
     std::set<std::string> types;
-    for (std::size_t i = 0; i < rMesh.mCells.size(); ++i) {
-        if (!meshio_to_tecplot(rMesh.mCells[i].mType).empty()) {
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
+        const auto cb = rMesh.Cells(i);
+        if (!meshio_to_tecplot(cb.Type()).empty()) {
             blocks.push_back(i);
-            types.insert(rMesh.mCells[i].mType);
+            types.insert(cb.Type());
         }
     }
     if (types.size() != 1)
@@ -359,19 +360,20 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t dim = rMesh.PointDim();
     const std::size_t num_nodes = rMesh.NumPoints();
     std::size_t num_cells = 0;
     for (std::size_t b : blocks)
-        num_cells += rMesh.mCells[b].NumCells();
+        num_cells += rMesh.Cells(b).NumCells();
 
     // Variables + data columns.
+    const NDArray& points = rMesh.Points();
     std::vector<std::string> variables = {"X", "Y"};
     std::vector<std::vector<double>> data;
     auto push_point_col = [&](std::size_t comp) {
         std::vector<double> col(num_nodes);
         for (std::size_t r = 0; r < num_nodes; ++r)
-            col[r] = detail::read_double(rMesh.mPoints, r * dim + comp);
+            col[r] = detail::read_double(points, r * dim + comp);
         data.push_back(std::move(col));
     };
     push_point_col(0);
@@ -383,11 +385,11 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         varrange0 += 1;
     }
 
-    for (const auto& k : detail::sorted_keys(rMesh.mPointData)) {
+    for (const auto& k : rMesh.PointDataNames()) {
         std::string ku = upper(k);
         if (ku == "X" || ku == "Y" || ku == "Z")
             continue;
-        const NDArray& v = rMesh.mPointData.at(k);
+        const NDArray& v = rMesh.PointData(k);
         std::size_t ncomp = v.Shape().size() >= 2 ? v.Shape()[1] : 1;
         for (std::size_t c = 0; c < ncomp; ++c) {
             variables.push_back(ncomp == 1 ? k : k + "_" + std::to_string(c));
@@ -400,21 +402,20 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     }
     bool have_cell_data = false;
     varrange1 = varrange0 - 1;
-    for (const auto& k : detail::sorted_keys(rMesh.mCellData)) {
+    for (const auto& k : rMesh.CellDataNames()) {
         std::string ku = upper(k);
         if (ku == "X" || ku == "Y" || ku == "Z")
             continue;
-        const auto& cd_blocks = rMesh.mCellData.at(k);
-        if (cd_blocks.empty())
+        if (rMesh.CellDataNumBlocks(k) == 0)
             continue;
         // concatenate the (single-type) blocks
-        const NDArray& first = cd_blocks.front();
+        const NDArray& first = rMesh.CellData(k, 0);
         std::size_t ncomp = first.Shape().size() >= 2 ? first.Shape()[1] : 1;
         for (std::size_t c = 0; c < ncomp; ++c) {
             variables.push_back(ncomp == 1 ? k : k + "_" + std::to_string(c));
             std::vector<double> col;
             for (std::size_t b : blocks) {
-                const NDArray& vv = cd_blocks[b];
+                const NDArray& vv = rMesh.CellData(k, b);
                 for (std::size_t r = 0; r < vv.Shape()[0]; ++r)
                     col.push_back(detail::read_double(vv, r * ncomp + c));
             }
@@ -452,14 +453,15 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     }
 
     for (std::size_t b : blocks) {
-        const CellBlock& cb = rMesh.mCells[b];
-        std::size_t k = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
+        const auto cb = rMesh.Cells(b);
+        const NDArray& conn = cb.Conn();
+        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             for (std::size_t j = 0; j < order.size(); ++j) {
                 std::size_t src = static_cast<std::size_t>(order[j]);
                 if (src >= k)
                     src = k - 1;
-                os << (detail::read_int(cb.mData, r * k + src) + 1)
+                os << (detail::read_int(conn, r * k + src) + 1)
                    << (j + 1 == order.size() ? '\n' : ' ');
             }
         }

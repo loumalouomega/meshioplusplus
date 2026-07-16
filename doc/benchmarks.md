@@ -113,3 +113,44 @@ The notebook records the machine, library versions, and the inputs (the bundled
 the harness, writes `results.csv`, and regenerates the plots above. Numbers are
 single-machine and indicative — the *shape* of the result is the point, not the
 exact factors.
+
+## Mesh-backend benchmarks
+
+The C++ core's [mesh backend](cpp_backends.md) (MESHIO / NATIVE / KRATOS) is an
+exclusive compile-time choice, so `benchmark/bench_backends.sh` builds one
+benchmark binary per backend (`cpp/benchmark/bench_backends.cpp`, enabled with
+`-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV
+(`benchmark/results_backends.csv`). Method mirrors the Python harness: warmup +
+median of 5 (`std::chrono`), a synthetic structured tet cube (default
+6·35³ = 257k tets over 46k shared points), and four kinds of rows:
+
+- **ingest** — building the mesh through the uniform ingestion API (the reader
+  side's cost);
+- **traverse** — a full writer-side accessor sweep;
+- **to_modelpart** (KRATOS only) — the one-time `GetModelPart()`
+  materialization: Nodes, Elements/Conditions, variables, and the automatic
+  tag SubModelParts;
+- **write/read** per format — full file round-trips (gmsh 4.1 binary,
+  vtu binary+zlib, vtk binary, medit ASCII, su2).
+
+Representative single-machine numbers (257k tets):
+
+| op | meshio | native | kratos |
+| -- | ------ | ------ | ------ |
+| ingest | 0.7 ms | 1.0 ms | 0.8 ms |
+| traverse | 0.6 ms | 0.7 ms | 0.8 ms |
+| to_modelpart | — | — | 65 ms |
+| gmsh 4.1 binary write / read | 17 / 3.6 ms | 17 / 8.4 ms | 18 / 2.8 ms |
+| vtu (binary+zlib) write / read | 28 / 19 ms | 19 / 38 ms | 25 / 16 ms |
+| medit ASCII write / read | 79 / 59 ms | 70 / 63 ms | 89 / 63 ms |
+
+The takeaway: because ingestion is move-based for canonical (Float64/Int64)
+arrays and the KRATOS backend materializes its ModelPart lazily, **format I/O
+costs the same under every backend** (differences above are run-to-run noise on
+parse-bound paths); the only real extra is the explicit, one-time
+`to_modelpart` conversion — the O(n) entity-creation pass any Kratos exchange
+has to pay. Reproduce with:
+
+```sh
+./benchmark/bench_backends.sh          # optional: grid size, e.g. `... 50`
+```

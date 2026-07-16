@@ -32,9 +32,9 @@ void stl_roundtrip(const mt::Mesh& mesh, bool binary) {
     meshioplusplus::write_stl(path, mesh, binary);
     mt::Mesh out = meshioplusplus::read_stl(path);
 
-    ASSERT_EQ(out.mCells.size(), 1u);
-    EXPECT_EQ(out.mCells[0].mType, "triangle");
-    EXPECT_EQ(out.mCells[0].NumCells(), mesh.mCells[0].NumCells());
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(out.Cells(0).Type(), "triangle");
+    EXPECT_EQ(out.Cells(0).NumCells(), mesh.Cells(0).NumCells());
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -56,7 +56,7 @@ TEST(Stl, GeometryPreserved) {
     meshioplusplus::write_stl(path, in, false);
     mt::Mesh out = meshioplusplus::read_stl(path);
     // both meshes describe the same 2 triangles over the unit square
-    EXPECT_EQ(out.mCells[0].NumCells(), 2u);
+    EXPECT_EQ(out.Cells(0).NumCells(), 2u);
     EXPECT_GE(out.NumPoints(), 3u);
     std::error_code ec;
     std::filesystem::remove(path, ec);

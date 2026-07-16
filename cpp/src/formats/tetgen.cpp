@@ -126,18 +126,19 @@ Mesh read_tetgen(const std::string& rPath) {
             throw ReadError("TetGen: nodes not numbered consecutively");
     }
 
-    mesh.mPoints = NDArray(DType::Float64, {static_cast<std::size_t>(npoints), 3});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), 3});
+    double* pp = pts.As<double>();
     for (std::int64_t i = 0; i < npoints; ++i)
         for (int c = 0; c < 3; ++c)
             pp[i * 3 + c] = at(i, 1 + c);
+    mesh.AssignPoints(std::move(pts));
 
     // point attributes
     for (int k = 0; k < num_attrs; ++k) {
         NDArray a(DType::Float64, {static_cast<std::size_t>(npoints)});
         for (std::int64_t i = 0; i < npoints; ++i)
             a.As<double>()[i] = at(i, 4 + k);
-        mesh.mPointData.emplace("tetgen:attr" + std::to_string(k + 1), std::move(a));
+        mesh.AddPointData("tetgen:attr" + std::to_string(k + 1), std::move(a));
     }
     // boundary markers: tetgen:ref, tetgen:ref2, ...
     for (int k = 0; k < num_bmarkers; ++k) {
@@ -145,7 +146,7 @@ Mesh read_tetgen(const std::string& rPath) {
         NDArray a(DType::Float64, {static_cast<std::size_t>(npoints)});
         for (std::int64_t i = 0; i < npoints; ++i)
             a.As<double>()[i] = at(i, 4 + num_attrs + k);
-        mesh.mPointData.emplace(std::move(name), std::move(a));
+        mesh.AddPointData(std::move(name), std::move(a));
     }
 
     // ---- elements ----
@@ -171,7 +172,7 @@ Mesh read_tetgen(const std::string& rPath) {
     for (std::int64_t i = 0; i < num_tets; ++i)
         for (int c = 0; c < 4; ++c)
             cp[i * 4 + c] = eat(i, 1 + c) - node_index_base;
-    mesh.mCells.emplace_back("tetra", std::move(cells));
+    mesh.AddCellBlock("tetra", std::move(cells));
 
     // region attributes: tetgen:ref, tetgen:ref2, ...
     for (int k = 0; k < ele_attrs; ++k) {
@@ -181,7 +182,7 @@ Mesh read_tetgen(const std::string& rPath) {
             a.As<std::int64_t>()[i] = eat(i, 5 + k);
         std::vector<NDArray> blocks;
         blocks.push_back(std::move(a));
-        mesh.mCellData.emplace(std::move(name), std::move(blocks));
+        mesh.AddCellData(std::move(name), std::move(blocks));
     }
 
     return mesh;
@@ -211,7 +212,8 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
     const std::string& node_path = paths.first;
     const std::string& ele_path = paths.second;
 
-    const std::size_t ncols = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const NDArray& points = rMesh.Points();
+    const std::size_t ncols = rMesh.PointDim();
     if (ncols != 3)
         throw WriteError("TetGen: can only write 3D points");
 
@@ -225,10 +227,8 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 
         // Split point_data into one ref key and the remaining attribute keys,
         // mirroring meshioplusplus.tetgen.write.
-        std::vector<std::string> attr_keys;
-        for (const auto& kv : rMesh.mPointData)
-            attr_keys.push_back(kv.first);
-        std::sort(attr_keys.begin(), attr_keys.end());  // deterministic column order
+        std::vector<std::string> attr_keys =
+            rMesh.PointDataNames();  // sorted: deterministic column order
         std::vector<std::string> ref_keys;
         if (!attr_keys.empty()) {
             for (const auto& k : attr_keys)
@@ -268,17 +268,17 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
             fh << i;
             for (int c = 0; c < 3; ++c) {
                 std::snprintf(fbuf, sizeof(fbuf), "%.16e",
-                              detail::read_double(rMesh.mPoints, i * 3 + c));
+                              detail::read_double(points, i * 3 + c));
                 fh << " " << fbuf;
             }
             for (const auto& k : attr_keys) {
                 std::snprintf(fbuf, sizeof(fbuf), "%.16e",
-                              detail::read_double(rMesh.mPointData.at(k), i));
+                              detail::read_double(rMesh.PointData(k), i));
                 fh << " " << fbuf;
             }
             for (const auto& k : ref_keys) {
                 fh << " ";
-                write_value(fh, detail::read_double(rMesh.mPointData.at(k), i));
+                write_value(fh, detail::read_double(rMesh.PointData(k), i));
             }
             fh << "\n";
         }
@@ -291,10 +291,8 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
             throw WriteError("Could not open file for writing: " + ele_path);
 
         // Cell-data attribute keys, with the first ":ref" key moved to front.
-        std::vector<std::string> attr_keys;
-        for (const auto& kv : rMesh.mCellData)
-            attr_keys.push_back(kv.first);
-        std::sort(attr_keys.begin(), attr_keys.end());  // deterministic column order
+        std::vector<std::string> attr_keys =
+            rMesh.CellDataNames();  // sorted: deterministic column order
         if (!attr_keys.empty()) {
             std::string ref;
             for (const auto& k : attr_keys)
@@ -321,20 +319,20 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
             fh << "\n";
         }
 
-        for (std::size_t ci = 0; ci < rMesh.mCells.size(); ++ci) {
-            const CellBlock& cb = rMesh.mCells[ci];
-            if (cb.mType != "tetra")
+        for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+            const auto cb = rMesh.Cells(ci);
+            if (cb.Type() != "tetra")
                 continue;
-            std::int64_t n = detail::rows(cb.mData);
+            const NDArray& conn = cb.Conn();
+            std::int64_t n = detail::rows(conn);
             fh << n << " 4 " << nattr << "\n";
             for (std::int64_t i = 0; i < n; ++i) {
                 fh << i;
                 for (int c = 0; c < 4; ++c)
-                    fh << " " << detail::read_int(cb.mData, i * 4 + c);
+                    fh << " " << detail::read_int(conn, i * 4 + c);
                 for (const auto& k : attr_keys) {
-                    const std::vector<NDArray>& blocks = rMesh.mCellData.at(k);
-                    if (ci < blocks.size())
-                        fh << " " << detail::read_int(blocks[ci], i);
+                    if (ci < rMesh.CellDataNumBlocks(k))
+                        fh << " " << detail::read_int(rMesh.CellData(k, ci), i);
                     else
                         fh << " 0";
                 }

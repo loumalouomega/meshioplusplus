@@ -76,14 +76,15 @@ Mesh read_dolfin(const std::string& rPath) {
     // Vertices (placed by index).
     pugi::xml_node verts = mesh_node.child("vertices");
     std::size_t nverts = verts.attribute("size").as_uint();
-    mesh.mPoints = NDArray(DType::Float64, {nverts, static_cast<std::size_t>(dim)});
-    double* pp = mesh.mPoints.As<double>();
+    NDArray pts(DType::Float64, {nverts, static_cast<std::size_t>(dim)});
+    double* pp = pts.As<double>();
     const char* coord[3] = {"x", "y", "z"};
     for (pugi::xml_node v : verts.children("vertex")) {
         std::size_t k = v.attribute("index").as_uint();
         for (int c = 0; c < dim; ++c)
             pp[k * dim + c] = v.attribute(coord[c]).as_double();
     }
+    mesh.AssignPoints(std::move(pts));
 
     // Cells (single block, placed by index).
     pugi::xml_node cells = mesh_node.child("cells");
@@ -98,7 +99,7 @@ Mesh read_dolfin(const std::string& rPath) {
             dp[k * npc + j] = c.attribute(tag).as_llong();
         }
     }
-    mesh.mCells.emplace_back(cell_type, std::move(data));
+    mesh.AddCellBlock(cell_type, std::move(data));
 
     // Cell data: sibling files "<stem>_<name>.xml".
     fs::path p(rPath);
@@ -137,7 +138,7 @@ Mesh read_dolfin(const std::string& rPath) {
             }
             std::vector<NDArray> blocks;
             blocks.push_back(std::move(arr));
-            mesh.mCellData.emplace(name, std::move(blocks));
+            mesh.AddCellData(name, std::move(blocks));
         }
     }
 
@@ -147,21 +148,21 @@ Mesh read_dolfin(const std::string& rPath) {
 void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     // Pick the single supported cell type to write.
     std::string cell_type;
-    for (const auto& cb : rMesh.mCells)
-        if (cb.mType == "tetra") {
+    for (const auto cb : rMesh.CellRange())
+        if (cb.Type() == "tetra") {
             cell_type = "tetra";
             break;
         }
     if (cell_type.empty())
-        for (const auto& cb : rMesh.mCells)
-            if (cb.mType == "triangle") {
+        for (const auto cb : rMesh.CellRange())
+            if (cb.Type() == "triangle") {
                 cell_type = "triangle";
                 break;
             }
     if (cell_type.empty())
         throw WriteError("DOLFIN XML only supports triangles and tetrahedra");
 
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t dim = rMesh.PointDim();
     if (dim != 2 && dim != 3)
         throw WriteError("DOLFIN: can only write dimension 2 or 3");
 
@@ -173,14 +174,14 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     f << "  <mesh celltype=\"" << meshio_to_dolfin(cell_type) << "\" dim=\"" << dim << "\">\n";
 
     const std::size_t npts = rMesh.NumPoints();
+    const NDArray& points = rMesh.Points();
     f << "    <vertices size=\"" << npts << "\">\n";
     char buf[32];
     const char* coord[3] = {"x", "y", "z"};
     for (std::size_t i = 0; i < npts; ++i) {
         f << "      <vertex index=\"" << i << "\"";
         for (std::size_t c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.17g",
-                          detail::read_double(rMesh.mPoints, i * dim + c));
+            std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + c));
             f << " " << coord[c] << "=\"" << buf << "\"";
         }
         f << " />\n";
@@ -188,22 +189,23 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     f << "    </vertices>\n";
 
     std::size_t num_cells = 0;
-    for (const auto& cb : rMesh.mCells)
-        if (cb.mType == cell_type)
+    for (const auto cb : rMesh.CellRange())
+        if (cb.Type() == cell_type)
             num_cells += cb.NumCells();
 
     f << "    <cells size=\"" << num_cells << "\">\n";
     const char* ts = meshio_to_dolfin(cell_type);
     std::size_t idx = 0;
-    for (const auto& cb : rMesh.mCells) {
-        if (cb.mType != cell_type)
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.Type() != cell_type)
             continue;
-        std::size_t ncols = detail::cols(cb.mData);
+        const NDArray& conn = cb.Conn();
+        std::size_t ncols = detail::cols(conn);
         std::size_t n = cb.NumCells();
         for (std::size_t r = 0; r < n; ++r) {
             f << "      <" << ts << " index=\"" << idx << "\"";
             for (std::size_t j = 0; j < ncols; ++j)
-                f << " v" << j << "=\"" << detail::read_int(cb.mData, r * ncols + j) << "\"";
+                f << " v" << j << "=\"" << detail::read_int(conn, r * ncols + j) << "\"";
             f << " />\n";
             ++idx;
         }
@@ -216,7 +218,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     bool z_all_zero = true;
     if (dim == 3) {
         for (std::size_t i = 0; i < npts; ++i)
-            if (detail::read_double(rMesh.mPoints, i * 3 + 2) != 0.0) {
+            if (detail::read_double(points, i * 3 + 2) != 0.0) {
                 z_all_zero = false;
                 break;
             }
@@ -225,9 +227,10 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 
     fs::path p(rPath);
     std::string base = (p.parent_path() / p.stem()).string();
-    for (const auto& kv : rMesh.mCellData) {
-        const std::string& name = kv.first;
-        for (const NDArray& arr : kv.second) {
+    for (const auto& name : rMesh.CellDataNames()) {
+        const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
+        for (std::size_t bi = 0; bi < nblocks; ++bi) {
+            const NDArray& arr = rMesh.CellData(name, bi);
             std::string fn = base + "_" + name + ".xml";
             std::ofstream cf(fn, std::ios::binary);
             if (!cf)

@@ -24,7 +24,6 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
-#include <map>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -372,7 +371,7 @@ struct E41 {
     std::size_t mCount = 0;
     int mEntityTag = 0;
     NDArray mConn;  // (count, n) Int64, 0-based gmsh node ids; moved into the
-                    // CellBlock directly when the tag remap is the identity.
+                    // cell block directly when the tag remap is the identity.
 };
 
 void read_nodes_41(Cursor& rCur, bool is_ascii, int data_size, NDArray& rPoints,
@@ -543,9 +542,11 @@ Mesh read_gmsh41_body(Cursor& rCur, bool is_ascii, int data_size) {
     }
 
     Mesh mesh;
-    mesh.mPoints = std::move(points);
-    mesh.mPointData = std::move(point_data);
-    mesh.mFieldData = std::move(field_data);
+    mesh.AssignPoints(std::move(points));
+    for (auto& kv : point_data)
+        mesh.AddPointData(kv.first, std::move(kv.second));
+    for (auto& kv : field_data)
+        mesh.AddFieldData(kv.first, std::move(kv.second));
 
     // Node entity (dim, tag) -> gmsh:dim_tags point data.
     NDArray dt(DType::Int64, {dim_tags.size(), 2});
@@ -553,7 +554,7 @@ Mesh read_gmsh41_body(Cursor& rCur, bool is_ascii, int data_size) {
         dt.As<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
         dt.As<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
     });
-    mesh.mPointData.emplace("gmsh:dim_tags", std::move(dt));
+    mesh.AddPointData("gmsh:dim_tags", std::move(dt));
 
     std::vector<NDArray> geom_blocks;
     for (auto& b : eblocks) {
@@ -562,7 +563,7 @@ Mesh read_gmsh41_body(Cursor& rCur, bool is_ascii, int data_size) {
         if (remap_identity && !prm) {
             // Identity remap, no reorder -> the connectivity is already final:
             // move the owning (count, n) array straight into the cell block.
-            mesh.mCells.emplace_back(b.mType, std::move(b.mConn));
+            mesh.AddCellBlock(b.mType, std::move(b.mConn));
         } else {
             NDArray data(DType::Int64, {b.mCount, b.mN});
             std::int64_t* dp = data.As<std::int64_t>();
@@ -581,7 +582,7 @@ Mesh read_gmsh41_body(Cursor& rCur, bool is_ascii, int data_size) {
                     }
                 });
             }
-            mesh.mCells.emplace_back(b.mType, std::move(data));
+            mesh.AddCellBlock(b.mType, std::move(data));
         }
 
         NDArray ge(DType::Int32, {b.mCount});
@@ -598,10 +599,10 @@ Mesh read_gmsh41_body(Cursor& rCur, bool is_ascii, int data_size) {
             per_block.push_back(slice_rows(kv.second, offset, offset + b.mCount));
             offset += b.mCount;
         }
-        mesh.mCellData.emplace(kv.first, std::move(per_block));
+        mesh.AddCellData(kv.first, std::move(per_block));
     }
     if (!geom_blocks.empty())
-        mesh.mCellData.emplace("gmsh:geometrical", std::move(geom_blocks));
+        mesh.AddCellData("gmsh:geometrical", std::move(geom_blocks));
 
     return mesh;
 }
@@ -683,9 +684,11 @@ Mesh read_gmsh(const std::string& rPath) {
     });
 
     Mesh mesh;
-    mesh.mPoints = std::move(points);
-    mesh.mPointData = std::move(point_data);
-    mesh.mFieldData = std::move(field_data);
+    mesh.AssignPoints(std::move(points));
+    for (auto& kv : point_data)
+        mesh.AddPointData(kv.first, std::move(kv.second));
+    for (auto& kv : field_data)
+        mesh.AddFieldData(kv.first, std::move(kv.second));
 
     // Determine which tag columns are present across all blocks.
     std::size_t min_tags = eblocks.empty() ? 0 : SIZE_MAX;
@@ -705,7 +708,7 @@ Mesh read_gmsh(const std::string& rPath) {
                 dp[r * b.mN + j] = remap[static_cast<std::size_t>(gid)];
             }
         });
-        mesh.mCells.emplace_back(b.mType, std::move(data));
+        mesh.AddCellBlock(b.mType, std::move(data));
 
         if (min_tags >= 1) {
             NDArray ph(DType::Int32, {b.mCount});
@@ -733,12 +736,12 @@ Mesh read_gmsh(const std::string& rPath) {
             per_block.push_back(slice_rows(kv.second, offset, offset + b.mCount));
             offset += b.mCount;
         }
-        mesh.mCellData.emplace(kv.first, std::move(per_block));
+        mesh.AddCellData(kv.first, std::move(per_block));
     }
     if (!physical_blocks.empty())
-        mesh.mCellData.emplace("gmsh:physical", std::move(physical_blocks));
+        mesh.AddCellData("gmsh:physical", std::move(physical_blocks));
     if (!geometrical_blocks.empty())
-        mesh.mCellData.emplace("gmsh:geometrical", std::move(geometrical_blocks));
+        mesh.AddCellData("gmsh:geometrical", std::move(geometrical_blocks));
 
     return mesh;
 }
@@ -747,14 +750,15 @@ Mesh read_gmsh(const std::string& rPath) {
 
 namespace {
 
-void write_physical_names(std::ostream& rOs, const std::unordered_map<std::string, NDArray>& rFd) {
+void write_physical_names(std::ostream& rOs, const Mesh& rMesh) {
     std::vector<std::tuple<long long, long long, std::string>> sortable;  // dim, num, name
-    for (const auto& kv : rFd) {
-        if (kv.second.Size() < 2)
+    for (const auto& name : rMesh.FieldDataNames()) {
+        const NDArray& d = rMesh.FieldData(name);
+        if (d.Size() < 2)
             continue;
-        long long num = detail::read_int(kv.second, 0);
-        long long dim = detail::read_int(kv.second, 1);
-        sortable.emplace_back(dim, num, kv.first);
+        long long num = detail::read_int(d, 0);
+        long long dim = detail::read_int(d, 1);
+        sortable.emplace_back(dim, num, name);
     }
     if (sortable.empty())
         return;
@@ -765,11 +769,15 @@ void write_physical_names(std::ostream& rOs, const std::unordered_map<std::strin
     rOs << "$EndPhysicalNames\n";
 }
 
-void write_data(std::ostream& rOs, const char* pTag, const std::string& rName,
-                const std::vector<NDArray>& rBlocks, bool binary) {
+// Writes the cell-data array named `rName` as one $ElementData-style section,
+// concatenated across cell blocks.
+void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, const Mesh& rMesh,
+                bool binary) {
     // Concatenate blocks.
+    const std::size_t nblocks = rMesh.CellDataNumBlocks(rName);
     std::size_t total = 0, ncomp = 1;
-    for (const auto& b : rBlocks) {
+    for (std::size_t k = 0; k < nblocks; ++k) {
+        const NDArray& b = rMesh.CellData(rName, k);
         total += b.Shape().empty() ? 0 : b.Shape()[0];
         ncomp = b.Shape().size() >= 2 ? b.Shape()[1] : 1;
     }
@@ -777,7 +785,8 @@ void write_data(std::ostream& rOs, const char* pTag, const std::string& rName,
         << ncomp << "\n"
         << total << "\n";
     std::int64_t idx = 1;
-    for (const auto& b : rBlocks) {
+    for (std::size_t k = 0; k < nblocks; ++k) {
+        const NDArray& b = rMesh.CellData(rName, k);
         std::size_t rows = b.Shape().empty() ? 0 : b.Shape()[0];
         for (std::size_t r = 0; r < rows; ++r) {
             if (binary) {
@@ -813,37 +822,21 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t num_points = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
-    const std::size_t nblocks = rMesh.mCells.size();
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
+    const std::size_t nblocks = rMesh.NumCellBlocks();
 
-    // Separate point/cell data from tags.
-    std::map<std::string, const std::vector<NDArray>*> elem_data;
-    const std::vector<NDArray>* physical = nullptr;
-    const std::vector<NDArray>* geometrical = nullptr;
-    for (const auto& kv : rMesh.mCellData) {
-        if (kv.first == "gmsh:physical")
-            physical = &kv.second;
-        else if (kv.first == "gmsh:geometrical")
-            geometrical = &kv.second;
-        else if (kv.first != "cell_tags")
-            elem_data.emplace(kv.first, &kv.second);
-    }
-    std::map<std::string, const NDArray*> node_data;
-    for (const auto& kv : rMesh.mPointData)
-        if (kv.first != "gmsh:dim_tags")
-            node_data.emplace(kv.first, &kv.second);
-
+    // Tag cell data ("gmsh:physical"/"gmsh:geometrical") is written inline with
+    // the elements; per-block zeros stand in when a tag column is absent.
+    const bool has_physical = rMesh.HasCellData("gmsh:physical");
+    const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
     std::vector<NDArray> zeros_phys, zeros_geom;
-    if (!physical) {
-        for (const auto& cb : rMesh.mCells)
+    if (!has_physical)
+        for (const auto cb : rMesh.CellRange())
             zeros_phys.emplace_back(DType::Int32, std::vector<std::size_t>{cb.NumCells()});
-        physical = &zeros_phys;
-    }
-    if (!geometrical) {
-        for (const auto& cb : rMesh.mCells)
+    if (!has_geometrical)
+        for (const auto cb : rMesh.CellRange())
             zeros_geom.emplace_back(DType::Int32, std::vector<std::size_t>{cb.NumCells()});
-        geometrical = &zeros_geom;
-    }
 
     os << "$MeshFormat\n2.2 " << (binary ? 1 : 0) << " 8\n";
     if (binary) {
@@ -853,7 +846,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
     }
     os << "$EndMeshFormat\n";
 
-    write_physical_names(os, rMesh.mFieldData);
+    write_physical_names(os, rMesh);
 
     // Nodes.
     os << "$Nodes\n" << num_points << "\n";
@@ -862,7 +855,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
             std::int32_t id = static_cast<std::int32_t>(i + 1);
             os.write(reinterpret_cast<const char*>(&id), 4);
             for (std::size_t c = 0; c < 3; ++c) {
-                double v = (c < dim) ? detail::read_double(rMesh.mPoints, i * dim + c) : 0.0;
+                double v = (c < dim) ? detail::read_double(points, i * dim + c) : 0.0;
                 os.write(reinterpret_cast<const char*>(&v), 8);
             }
         }
@@ -870,9 +863,9 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
     } else {
         char buf[80];
         for (std::size_t i = 0; i < num_points; ++i) {
-            double x = (0 < dim) ? detail::read_double(rMesh.mPoints, i * dim + 0) : 0.0;
-            double y = (1 < dim) ? detail::read_double(rMesh.mPoints, i * dim + 1) : 0.0;
-            double z = (2 < dim) ? detail::read_double(rMesh.mPoints, i * dim + 2) : 0.0;
+            double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
+            double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
+            double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
             std::snprintf(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
             os << buf;
         }
@@ -881,22 +874,23 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
     // Elements.
     std::size_t total_cells = 0;
-    for (const auto& cb : rMesh.mCells)
+    for (const auto cb : rMesh.CellRange())
         total_cells += cb.NumCells();
     os << "$Elements\n" << total_cells << "\n";
     const auto& m2g = meshio_to_gmsh_type();
     std::size_t consecutive = 0;
     for (std::size_t k = 0; k < nblocks; ++k) {
-        const CellBlock& cb = rMesh.mCells[k];
-        auto it = m2g.find(cb.mType);
+        const auto cb = rMesh.Cells(k);
+        auto it = m2g.find(cb.Type());
         if (it == m2g.end())
-            throw WriteError("Gmsh writer: unsupported cell type " + cb.mType);
+            throw WriteError("Gmsh writer: unsupported cell type " + cb.Type());
         int gtype = it->second;
-        std::size_t n = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
-        const std::vector<int>& perm = meshio_to_gmsh_perm(cb.mType);
+        const NDArray& conn = cb.Conn();
+        std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        const std::vector<int>& perm = meshio_to_gmsh_perm(cb.Type());
         std::size_t count = cb.NumCells();
-        const NDArray& ph = (*physical)[k];
-        const NDArray& ge = (*geometrical)[k];
+        const NDArray& ph = has_physical ? rMesh.CellData("gmsh:physical", k) : zeros_phys[k];
+        const NDArray& ge = has_geometrical ? rMesh.CellData("gmsh:geometrical", k) : zeros_geom[k];
 
         if (binary) {
             std::int32_t hdr[3] = {gtype, static_cast<std::int32_t>(count), 2};
@@ -911,7 +905,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
                 for (std::size_t j = 0; j < n; ++j) {
                     std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
                     std::int32_t node =
-                        static_cast<std::int32_t>(detail::read_int(cb.mData, r * n + src) + 1);
+                        static_cast<std::int32_t>(detail::read_int(conn, r * n + src) + 1);
                     os.write(reinterpret_cast<const char*>(&node), 4);
                 }
             }
@@ -921,7 +915,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
                    << ' ' << detail::read_int(ge, r);
                 for (std::size_t j = 0; j < n; ++j) {
                     std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                    os << ' ' << (detail::read_int(cb.mData, r * n + src) + 1);
+                    os << ' ' << (detail::read_int(conn, r * n + src) + 1);
                 }
                 os << '\n';
             }
@@ -932,13 +926,14 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
         os << '\n';
     os << "$EndElements\n";
 
-    for (const auto& kv : node_data) {
-        std::vector<NDArray> one;  // wrap single point-data array as one "block"
-        // Reuse write_data by passing a single-element vector view is awkward; inline:
-        const NDArray& d = *kv.second;
+    for (const auto& name : rMesh.PointDataNames()) {
+        if (name == "gmsh:dim_tags")
+            continue;
+        // Reusing write_data (cell-data-shaped) for point data is awkward; inline:
+        const NDArray& d = rMesh.PointData(name);
         std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
         std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
-        os << "$NodeData\n1\n\"" << kv.first << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
+        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
         char buf[32];
         for (std::size_t r = 0; r < rows; ++r) {
             if (binary) {
@@ -963,8 +958,11 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
         os << "$EndNodeData\n";
     }
 
-    for (const auto& kv : elem_data)
-        write_data(os, "ElementData", kv.first, *kv.second, binary);
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags")
+            continue;
+        write_data(os, "ElementData", name, rMesh, binary);
+    }
 }
 
 void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
@@ -973,26 +971,17 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t num_points = rMesh.NumPoints();
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
     const int data_size = 8;
 
     auto put_u64 = [&](std::uint64_t v) { os.write(reinterpret_cast<const char*>(&v), 8); };
     auto put_i32 = [&](std::int32_t v) { os.write(reinterpret_cast<const char*>(&v), 4); };
     auto put_f64 = [&](double v) { os.write(reinterpret_cast<const char*>(&v), 8); };
 
-    // Separate point/cell data from tags.
-    std::map<std::string, const NDArray*> node_data;
-    for (const auto& kv : rMesh.mPointData)
-        if (kv.first != "gmsh:dim_tags")
-            node_data.emplace(kv.first, &kv.second);
-    std::map<std::string, const std::vector<NDArray>*> elem_data;
-    const std::vector<NDArray>* geometrical = nullptr;
-    for (const auto& kv : rMesh.mCellData) {
-        if (kv.first == "gmsh:geometrical")
-            geometrical = &kv.second;
-        else if (kv.first != "gmsh:physical" && kv.first != "cell_tags")
-            elem_data.emplace(kv.first, &kv.second);
-    }
+    // "gmsh:geometrical" supplies the per-block entity tag below; the other
+    // tag names are excluded from the $NodeData/$ElementData sections.
+    const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
 
     const auto& topo = topological_dimension();
     auto cell_dim = [&](const std::string& t) -> int {
@@ -1007,10 +996,10 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
     }
     os << "$EndMeshFormat\n";
 
-    write_physical_names(os, rMesh.mFieldData);
+    write_physical_names(os, rMesh);
 
     // Nodes: a single entity block (no $Entities is emitted).
-    int node_dim = rMesh.mCells.empty() ? 0 : cell_dim(rMesh.mCells.front().mType);
+    int node_dim = rMesh.NumCellBlocks() == 0 ? 0 : cell_dim(rMesh.Cells(0).Type());
     os << "$Nodes\n";
     if (binary) {
         put_u64(1);
@@ -1029,8 +1018,8 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
         os.write(reinterpret_cast<const char*>(ntags.data()),
                  static_cast<std::streamsize>(num_points * 8));
         std::vector<double> cbuf(num_points * 3, 0.0);
-        detail::dispatch_dtype(rMesh.mPoints.Dtype(), [&]<class T>() {
-            const T* src = rMesh.mPoints.As<T>();
+        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
+            const T* src = points.As<T>();
             parallel_for_bw(num_points, [&](std::size_t i) {
                 for (std::size_t c = 0; c < dim && c < 3; ++c)
                     cbuf[i * 3 + c] = static_cast<double>(src[i * dim + c]);
@@ -1046,9 +1035,9 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
             os << (i + 1) << "\n";
         char buf[80];
         for (std::size_t i = 0; i < num_points; ++i) {
-            double x = (0 < dim) ? detail::read_double(rMesh.mPoints, i * dim + 0) : 0.0;
-            double y = (1 < dim) ? detail::read_double(rMesh.mPoints, i * dim + 1) : 0.0;
-            double z = (2 < dim) ? detail::read_double(rMesh.mPoints, i * dim + 2) : 0.0;
+            double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
+            double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
+            double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
             std::snprintf(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
             os << buf;
         }
@@ -1057,31 +1046,34 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
     // Elements: one block per cell block.
     std::size_t total_cells = 0;
-    for (const auto& cb : rMesh.mCells)
+    for (const auto cb : rMesh.CellRange())
         total_cells += cb.NumCells();
     const auto& m2g = meshio_to_gmsh_type();
     os << "$Elements\n";
     if (binary) {
-        put_u64(rMesh.mCells.size());
+        put_u64(rMesh.NumCellBlocks());
         put_u64(total_cells);
         put_u64(1);
         put_u64(total_cells);
     } else {
-        os << rMesh.mCells.size() << " " << total_cells << " 1 " << total_cells << "\n";
+        os << rMesh.NumCellBlocks() << " " << total_cells << " 1 " << total_cells << "\n";
     }
     std::size_t tag0 = 1;
-    for (std::size_t ci = 0; ci < rMesh.mCells.size(); ++ci) {
-        const CellBlock& cb = rMesh.mCells[ci];
-        auto it = m2g.find(cb.mType);
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+        const auto cb = rMesh.Cells(ci);
+        auto it = m2g.find(cb.Type());
         if (it == m2g.end())
-            throw WriteError("Gmsh writer: unsupported cell type " + cb.mType);
+            throw WriteError("Gmsh writer: unsupported cell type " + cb.Type());
         int gtype = it->second;
-        int bdim = cell_dim(cb.mType);
-        int entity_tag = (geometrical && ci < geometrical->size() && (*geometrical)[ci].Size() > 0)
-                             ? static_cast<int>(detail::read_int((*geometrical)[ci], 0))
-                             : 0;
-        std::size_t n = cb.mData.Shape().size() >= 2 ? cb.mData.Shape()[1] : 1;
-        const std::vector<int>& perm = meshio_to_gmsh_perm(cb.mType);
+        int bdim = cell_dim(cb.Type());
+        int entity_tag =
+            (has_geometrical && ci < rMesh.CellDataNumBlocks("gmsh:geometrical") &&
+             rMesh.CellData("gmsh:geometrical", ci).Size() > 0)
+                ? static_cast<int>(detail::read_int(rMesh.CellData("gmsh:geometrical", ci), 0))
+                : 0;
+        const NDArray& conn = cb.Conn();
+        std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        const std::vector<int>& perm = meshio_to_gmsh_perm(cb.Type());
         std::size_t count = cb.NumCells();
         if (binary) {
             put_i32(bdim);
@@ -1093,8 +1085,8 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
             const std::size_t stride = n + 1;
             std::vector<std::uint64_t> ebuf(count * stride);
             const std::uint64_t base = tag0;
-            detail::dispatch_dtype(cb.mData.Dtype(), [&]<class T>() {
-                const T* src = cb.mData.As<T>();
+            detail::dispatch_dtype(conn.Dtype(), [&]<class T>() {
+                const T* src = conn.As<T>();
                 parallel_for_bw(count, [&](std::size_t r) {
                     std::uint64_t* o = ebuf.data() + r * stride;
                     o[0] = base + r;
@@ -1112,7 +1104,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
                 os << (tag0 + r);
                 for (std::size_t j = 0; j < n; ++j) {
                     std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
-                    os << " " << (detail::read_int(cb.mData, r * n + src) + 1);
+                    os << " " << (detail::read_int(conn, r * n + src) + 1);
                 }
                 os << "\n";
             }
@@ -1123,11 +1115,13 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
         os << '\n';
     os << "$EndElements\n";
 
-    for (const auto& kv : node_data) {
-        const NDArray& d = *kv.second;
+    for (const auto& name : rMesh.PointDataNames()) {
+        if (name == "gmsh:dim_tags")
+            continue;
+        const NDArray& d = rMesh.PointData(name);
         std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
         std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
-        os << "$NodeData\n1\n\"" << kv.first << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
+        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
         char buf[32];
         for (std::size_t r = 0; r < rows; ++r) {
             if (binary) {
@@ -1150,8 +1144,11 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
         os << "$EndNodeData\n";
     }
 
-    for (const auto& kv : elem_data)
-        write_data(os, "ElementData", kv.first, *kv.second, binary);
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags")
+            continue;
+        write_data(os, "ElementData", name, rMesh, binary);
+    }
 }
 
 }  // namespace meshioplusplus

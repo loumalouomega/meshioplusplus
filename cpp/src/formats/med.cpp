@@ -315,13 +315,13 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
             throw ReadError("MED: missing NOE/COO");
         std::int64_t n_points = h5::read_attr_int(coo_ds, "NBR");
         NDArray coo = h5::read_dataset(noe, "COO");
-        mesh.mPoints =
-            unflatten_f(coo, static_cast<std::size_t>(n_points), static_cast<std::size_t>(dim), 0);
+        mesh.AssignPoints(
+            unflatten_f(coo, static_cast<std::size_t>(n_points), static_cast<std::size_t>(dim), 0));
     }
 
     // Point tags
     if (h5::exists(noe, "FAM"))
-        mesh.mPointData.emplace("point_tags", h5::read_dataset(noe, "FAM"));
+        mesh.AddPointData("point_tags", h5::read_dataset(noe, "FAM"));
 
     // Families info
     h5::Hid fas = h5::exists(data_grp, "FAS") ? h5::open_group(data_grp, "FAS") : h5::Hid();
@@ -352,17 +352,16 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
             NDArray nod = h5::read_dataset(g, "NOD");
             NDArray inn = h5::read_dataset(g, "INN");
             std::size_t npoly = inn.Size() > 0 ? inn.Size() - 1 : 0;
-            CellBlock cb;
-            cb.mType = it->second;
+            std::vector<std::vector<std::int64_t>> rows;
             for (std::size_t i = 0; i < npoly; ++i) {
                 std::int64_t a = detail::read_int(inn, i) - 1;
                 std::int64_t b = detail::read_int(inn, i + 1) - 1;
                 std::vector<std::int64_t> row;
                 for (std::int64_t j = a; j < b; ++j)
                     row.push_back(detail::read_int(nod, static_cast<std::size_t>(j)) - 1);
-                cb.mPolygonRows.push_back(std::move(row));
+                rows.push_back(std::move(row));
             }
-            mesh.mCells.push_back(std::move(cb));
+            mesh.AddPolygonBlock(it->second, std::move(rows));
             cell_types.push_back(it->second);
         } else {
             h5::Hid nod_ds(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
@@ -378,7 +377,7 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
             const std::vector<int>* perm =
                 (pit != med_node_perm().end() && pit->second.size() == k) ? &pit->second : nullptr;
             NDArray data = unflatten_f(nod, static_cast<std::size_t>(n_cells), k, -1, perm);
-            mesh.mCells.emplace_back(it->second, std::move(data));
+            mesh.AddCellBlock(it->second, std::move(data));
             cell_types.push_back(it->second);
         }
 
@@ -388,9 +387,9 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
         }
     }
     if (any_cell_tags) {
-        if (cell_tag_blocks.size() != mesh.mCells.size())
+        if (cell_tag_blocks.size() != mesh.NumCellBlocks())
             throw ReadError("MED: partial cell tags handled by Python fallback");
-        mesh.mCellData.emplace("cell_tags", std::move(cell_tag_blocks));
+        mesh.AddCellData("cell_tags", std::move(cell_tag_blocks));
     }
 
     if (h5::exists(fas, "ELEME")) {
@@ -414,19 +413,19 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     // Fields (CHA) with the MED-4.1 bitmask / units / step metadata and the
     // gmsh:physical family bridging are produced by the enhanced Python writer
     // and inspected byte-for-byte by tests; defer any such mesh to Python.
-    for (const auto& kv : rMesh.mPointData)
-        if (kv.first != "point_tags")
+    for (const auto& name : rMesh.PointDataNames())
+        if (name != "point_tags")
             throw WriteError("MED: fields handled by Python fallback");
-    for (const auto& kv : rMesh.mCellData)
-        if (kv.first != "cell_tags")
+    for (const auto& name : rMesh.CellDataNames())
+        if (name != "cell_tags")
             throw WriteError("MED: fields handled by Python fallback");
-    if (rMesh.mCellData.count("gmsh:physical"))
+    if (rMesh.HasCellData("gmsh:physical"))
         throw WriteError("MED: gmsh physical groups handled by Python fallback");
 
     // MED cannot have two blocks of the same type.
-    for (std::size_t i = 0; i < rMesh.mCells.size(); ++i)
-        for (std::size_t j = i + 1; j < rMesh.mCells.size(); ++j)
-            if (rMesh.mCells[i].mType == rMesh.mCells[j].mType)
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i)
+        for (std::size_t j = i + 1; j < rMesh.NumCellBlocks(); ++j)
+            if (rMesh.Cells(i).Type() == rMesh.Cells(j).Type())
                 throw WriteError("MED files cannot have two sections of the same cell type.");
 
     // Parse med_version -> MAJ.MIN.REL (default 4.1.0 on error).
@@ -464,7 +463,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     h5::write_attr_int(infos, "REL", rel);
 
     const std::string mesh_name = rInfo.mMeshName.empty() ? "mesh" : rInfo.mMeshName;
-    const std::size_t dim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t dim = rMesh.PointDim();
 
     h5::Hid ens = h5::create_group(f, "ENS_MAA");
     h5::Hid med_mesh = h5::create_group(ens, mesh_name);
@@ -501,15 +500,14 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     h5::write_attr_int(noe, "CGS", 1);
     write_attr_bytes(noe, "PFL", kProfile);
     {
-        NDArray coo = flatten_f(rMesh.mPoints, 0);
+        NDArray coo = flatten_f(rMesh.Points(), 0);
         h5::write_dataset(noe, "COO", coo);
         h5::Hid d(H5Dopen2(noe, "COO", H5P_DEFAULT), H5Dclose);
         h5::write_attr_int(d, "CGT", 1);
         h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(rMesh.NumPoints()));
     }
-    auto pt = rMesh.mPointData.find("point_tags");
-    if (pt != rMesh.mPointData.end()) {
-        h5::write_dataset(noe, "FAM", pt->second);
+    if (rMesh.HasPointData("point_tags")) {
+        h5::write_dataset(noe, "FAM", rMesh.PointData("point_tags"));
         h5::Hid d(H5Dopen2(noe, "FAM", H5P_DEFAULT), H5Dclose);
         h5::write_attr_int(d, "CGT", 1);
         h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(rMesh.NumPoints()));
@@ -518,25 +516,27 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     // Cells
     h5::Hid mai = h5::create_group(time_step, "MAI");
     h5::write_attr_int(mai, "CGT", 1);
-    auto ct = rMesh.mCellData.find("cell_tags");
-    for (std::size_t k = 0; k < rMesh.mCells.size(); ++k) {
-        const CellBlock& cb = rMesh.mCells[k];
-        auto it = meshio_to_med().find(cb.mType);
+    const bool has_cell_tags = rMesh.HasCellData("cell_tags");
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+        const auto cb = rMesh.Cells(k);
+        auto it = meshio_to_med().find(cb.Type());
         if (it == meshio_to_med().end())
-            throw WriteError(std::format("MED: unsupported cell type {}", cb.mType));
+            throw WriteError(std::format("MED: unsupported cell type {}", cb.Type()));
         h5::Hid g = h5::create_group(mai, it->second);
         h5::write_attr_int(g, "CGT", 1);
         h5::write_attr_int(g, "CGS", 1);
         write_attr_bytes(g, "PFL", kProfile);
 
-        if (cb.mType == "polygon" || cb.mType == "polygon2") {
+        if (cb.Type() == "polygon" || cb.Type() == "polygon2") {
             // Ragged: flat 1-based NOD + 1-based INN offsets.
             std::vector<std::int64_t> nod;
             std::vector<std::int64_t> inn = {1};
-            for (const auto& row : cb.mPolygonRows) {
-                for (std::int64_t v : row)
-                    nod.push_back(v + 1);
-                inn.push_back(inn.back() + static_cast<std::int64_t>(row.size()));
+            for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+                const std::int64_t* row = cb.Row(i);
+                const std::size_t row_size = cb.RowSize(i);
+                for (std::size_t j = 0; j < row_size; ++j)
+                    nod.push_back(row[j] + 1);
+                inn.push_back(inn.back() + static_cast<std::int64_t>(row_size));
             }
             NDArray nod_a(DType::Int64, {nod.size()});
             for (std::size_t i = 0; i < nod.size(); ++i)
@@ -550,19 +550,19 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
         } else {
-            warn_unconverted_3d(cb.mType);
+            warn_unconverted_3d(cb.Type());
             // Fuse the meshio->MED node reorder with the Fortran transpose
             // (shift +1) into a single pass (mirrors the read side).
-            auto pit = med_node_perm().find(cb.mType);
+            auto pit = med_node_perm().find(cb.Type());
             const std::vector<int>* perm = (pit != med_node_perm().end()) ? &pit->second : nullptr;
-            NDArray nod = flatten_f(cb.mData, +1, perm);
+            NDArray nod = flatten_f(cb.Conn(), +1, perm);
             h5::write_dataset(g, "NOD", nod);
             h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
         }
-        if (ct != rMesh.mCellData.end() && k < ct->second.size()) {
-            h5::write_dataset(g, "FAM", ct->second[k]);
+        if (has_cell_tags && k < rMesh.CellDataNumBlocks("cell_tags")) {
+            h5::write_dataset(g, "FAM", rMesh.CellData("cell_tags", k));
             h5::Hid d(H5Dopen2(g, "FAM", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));

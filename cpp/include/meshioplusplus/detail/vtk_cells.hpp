@@ -26,7 +26,8 @@
  * giving each cell's end position within it, and a `types` array giving each
  * cell's VTK type id — so this header's `detail::reconstruct_cells` (ported
  * from `vtk_cells_from_data` in `_vtk_common.py`) is the single place that
- * turns that layout back into meshio's list-of-`CellBlock`s representation,
+ * turns that layout back into meshio's per-type cell-block representation
+ * (appended straight onto the output `Mesh`),
  * grouping consecutive same-type runs and further splitting runs of
  * variable-node-count types (polygon, VTK_LAGRANGE_*) by per-cell size.
  * It leans heavily on `parallel_for_bw`/`parallel_copy_i64` (memory-gather
@@ -115,23 +116,24 @@ inline NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
 }
 
 /**
- * @brief Reconstructs meshio `CellBlock`s (and the matching per-block
+ * @brief Reconstructs meshio cell blocks (and the matching per-block
  * `cell_data`) from the VTK/VTU flat connectivity + end-offsets + types
- * representation.
+ * representation, appending them to @p rMesh.
  *
  * Ported from `vtk_cells_from_data` in `_vtk_common.py`; shared by the VTU
  * reader and the VTK 5.1 legacy reader, which store cells identically.
  * Walks `types` and groups consecutive cells of the same VTK type into a
- * run; a run of a *fixed*-node-count type becomes one rectangular
- * `CellBlock` (data gathered per-row via `vtk_to_meshio_order`, or
+ * run; a run of a *fixed*-node-count type becomes one rectangular cell
+ * block (data gathered per-row via `vtk_to_meshio_order`, or
  * block-copied via `parallel_copy_i64` when the run is contiguous in
  * `conn` with no reordering needed); a run of a *variable*-node-count type
  * (`is_special_cell`, e.g. polygon or VTK_LAGRANGE_*) is further split into
- * sub-runs of a single common node count each, since meshio's `CellBlock`
- * still requires a rectangular `(num_cells, n)` layout — each such sub-run
- * is emitted as its own separate `CellBlock` sharing the same meshio type
+ * sub-runs of a single common node count each, since a rectangular cell
+ * block still requires a `(num_cells, n)` layout — each such sub-run
+ * is emitted as its own separate block sharing the same meshio type
  * name. Matching slices of every array in `cell_data_raw` are appended to
- * `out_cell_data` in lockstep with `out_cells`, via `slice_rows`.
+ * @p rMesh's cell data in lockstep with the appended blocks, via
+ * `slice_rows`.
  *
  * @param pConn Flat node-index connectivity buffer. Passed as a raw
  *             `int64_t*` (rather than an `NDArray`) so callers can hand in
@@ -146,11 +148,10 @@ inline NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
  * @param rCellDataRaw Per-name cell-data arrays covering the whole mesh
  *                      (all cells concatenated), to be re-sliced per output
  *                      block.
- * @param rOutCells Appended to with one `CellBlock` per contiguous
- *                  same-type (and, for special types, same-size) run.
- * @param rOutCellData Appended to in lockstep with `rOutCells`: for each
- *                      name in `rCellDataRaw`, one sliced `NDArray` per new
- *                      block.
+ * @param rMesh Mesh appended to: one rectangular cell block per contiguous
+ *              same-type (and, for special types, same-size) run, plus — in
+ *              lockstep — for each name in `rCellDataRaw` one sliced
+ *              `NDArray` per new block.
  * @throws ReadError if a cell's VTK type id is 42 (polyhedron — unsupported
  *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
  *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
@@ -158,14 +159,13 @@ inline NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
 inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
                               const std::vector<std::int64_t>& rTypes,
                               const std::unordered_map<std::string, NDArray>& rCellDataRaw,
-                              std::vector<CellBlock>& rOutCells,
-                              std::unordered_map<std::string, std::vector<NDArray>>& rOutCellData) {
+                              Mesh& rMesh) {
     const auto& vmap = vtk_to_meshio_type();
     const std::size_t ncells = rTypes.size();
 
     auto add_cd = [&](std::size_t start, std::size_t end) {
         for (const auto& kv : rCellDataRaw)
-            rOutCellData[kv.first].push_back(slice_rows(kv.second, start, end));
+            rMesh.AppendCellData(kv.first, slice_rows(kv.second, start, end));
     };
 
     std::size_t start = 0;
@@ -221,7 +221,7 @@ inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::
                             out[r * sz + c] = pConn[base + c];
                     });
                 }
-                rOutCells.emplace_back(meshio_type, std::move(data));
+                rMesh.AddCellBlock(meshio_type, std::move(data));
                 add_cd(start + i, start + j);
                 i = j;
             }
@@ -258,7 +258,7 @@ inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::
                     }
                 });
             }
-            rOutCells.emplace_back(meshio_type, std::move(data));
+            rMesh.AddCellBlock(meshio_type, std::move(data));
             add_cd(start, end);
         }
         start = end;

@@ -25,3 +25,22 @@ uv pip install --python ../.venv matplotlib jupyter nbconvert ipykernel
 See [`doc/benchmarks.md`](../doc/benchmarks.md) for the write-up and the
 interpretation (meshio++ wins big on text/ASCII formats; binary dumps already at
 numpy speed in pure Python see little or no gain).
+
+## Mesh-backend benchmark (pure C++)
+
+`bench_backends.sh` compares the C++ **mesh backends** (MESHIO / NATIVE /
+KRATOS) — no Python involved. The backend is a compile-time choice, so the
+script configures one throwaway tree per backend under `build/bench-<backend>`
+(`-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`, Python off), runs
+`meshioplusplus_bench` (from `cpp/benchmark/bench_backends.cpp`) in each, and
+collates `results_backends.csv`:
+
+```sh
+./bench_backends.sh        # default n=35 -> 257k tets
+./bench_backends.sh 50     # bigger synthetic grid
+```
+
+Rows: `ingest` (uniform-API mesh construction), `traverse` (writer-side
+accessor sweep), `to_modelpart` (KRATOS-only ModelPart materialization), and
+`write`/`read` file round-trips per format. See the "Mesh-backend benchmarks"
+section of [`doc/benchmarks.md`](../doc/benchmarks.md).

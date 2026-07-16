@@ -92,8 +92,8 @@ TEST(AnsysInp, SetsRoundtrip) {
 
 TEST(AnsysInp, UnknownTypeThrows) {
     meshioplusplus::Mesh m;
-    m.mPoints = mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
-    m.mCells.emplace_back("polygon", mt::conn_from({{0, 1, 2}}));
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}));
+    m.AddCellBlock("polygon", mt::conn_from({{0, 1, 2}}));
     AnsysInfo info;
     std::string path = mt::temp_path(".inp");
     EXPECT_THROW(write_ansysinp(path, m, info), meshioplusplus::WriteError);

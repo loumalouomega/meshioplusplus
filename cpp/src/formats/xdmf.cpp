@@ -31,7 +31,6 @@
 
 // Project includes
 #include "meshioplusplus/formats/xdmf.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -259,7 +258,8 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
 }
 
 // Mixed-topology translation (ported from common.translate_mixed_cells).
-void translate_mixed(const NDArray& rFlat, std::vector<CellBlock>& rOut) {
+// Appends one cell block per run of consecutive equal types onto `rMesh`.
+void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
     std::size_t n = rFlat.Size();
     std::vector<int> types;
     std::vector<std::size_t> offsets;
@@ -292,7 +292,7 @@ void translate_mixed(const NDArray& rFlat, std::vector<CellBlock>& rOut) {
             for (int j = 0; j < nn; ++j)
                 dp[b * nn + j] = detail::read_int(rFlat, base + j);
         }
-        rOut.emplace_back(xdmf_idx_to_meshio(xt), std::move(data));
+        rMesh.AddCellBlock(xdmf_idx_to_meshio(xt), std::move(data));
         start = end;
     }
 }
@@ -330,13 +330,13 @@ Mesh read_xdmf(const std::string& rPath) {
             pugi::xml_node di = c.child("DataItem");
             NDArray data = read_data_item(di, base_dir);
             if (ctype == "Mixed") {
-                translate_mixed(data, mesh.mCells);
+                translate_mixed(data, mesh);
             } else {
-                mesh.mCells.emplace_back(xdmf_to_meshio(ctype), std::move(data));
+                mesh.AddCellBlock(xdmf_to_meshio(ctype), std::move(data));
             }
         } else if (tag == "Geometry") {
             pugi::xml_node di = c.child("DataItem");
-            mesh.mPoints = read_data_item(di, base_dir);
+            mesh.AssignPoints(read_data_item(di, base_dir));
         } else if (tag == "Attribute") {
             std::string name = c.attribute("Name").value();
             std::string center = c.attribute("Center").value();
@@ -357,14 +357,14 @@ Mesh read_xdmf(const std::string& rPath) {
     }
 
     for (auto& kv : point_data)
-        mesh.mPointData.emplace(kv.first, std::move(kv.second));
+        mesh.AddPointData(kv.first, std::move(kv.second));
 
     // Split raw cell data into per-block arrays (cell_data_from_raw).
     std::vector<std::size_t> sizes;
-    for (const auto& cb : mesh.mCells)
+    for (const auto cb : mesh.CellRange())
         sizes.push_back(cb.NumCells());
     for (auto& kv : cell_data_raw)
-        mesh.mCellData.emplace(kv.first, split_raw_cell_data(kv.second, sizes));
+        mesh.AddCellData(kv.first, split_raw_cell_data(kv.second, sizes));
 
     return mesh;
 }
@@ -475,44 +475,47 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     grid.append_attribute("Name") = "Grid";
 
     // Geometry
-    const std::size_t pdim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 3;
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = points.Shape().size() >= 2 ? points.Shape()[1] : 3;
     if (pdim > 3)
         throw WriteError("XDMF: can only write points up to dimension 3");
     const char* geo_type = (pdim == 1) ? "X" : (pdim == 2) ? "XY" : "XYZ";
     pugi::xml_node geo = grid.append_child("Geometry");
     geo.append_attribute("GeometryType") = geo_type;
-    w.AddDataItem(geo, rMesh.mPoints);
+    w.AddDataItem(geo, points);
 
     // Topology
-    if (rMesh.mCells.size() == 1) {
-        const CellBlock& cb = rMesh.mCells[0];
+    if (rMesh.NumCellBlocks() == 1) {
+        const auto cb = rMesh.Cells(0);
+        const NDArray& conn = cb.Conn();
         pugi::xml_node topo = grid.append_child("Topology");
-        topo.append_attribute("TopologyType") = meshio_to_xdmf(cb.mType);
+        topo.append_attribute("TopologyType") = meshio_to_xdmf(cb.Type());
         topo.append_attribute("NumberOfElements") = std::to_string(cb.NumCells()).c_str();
-        topo.append_attribute("NodesPerElement") = std::to_string(detail::cols(cb.mData)).c_str();
-        w.AddDataItem(topo, cb.mData);
-    } else if (rMesh.mCells.size() > 1) {
+        topo.append_attribute("NodesPerElement") = std::to_string(detail::cols(conn)).c_str();
+        w.AddDataItem(topo, conn);
+    } else if (rMesh.NumCellBlocks() > 1) {
         std::size_t total_cells = 0, total_len = 0;
-        for (const auto& cb : rMesh.mCells) {
+        for (const auto cb : rMesh.CellRange()) {
             std::size_t nc = cb.NumCells();
-            std::size_t npc = detail::cols(cb.mData);
-            std::size_t prefix = (cb.mType == "vertex" || cb.mType == "line") ? 2 : 1;
+            std::size_t npc = detail::cols(cb.Conn());
+            std::size_t prefix = (cb.Type() == "vertex" || cb.Type() == "line") ? 2 : 1;
             total_cells += nc;
             total_len += nc * (prefix + npc);
         }
         NDArray cd(DType::Int64, {total_len});
         std::int64_t* cp = cd.As<std::int64_t>();
         std::size_t pos = 0;
-        for (const auto& cb : rMesh.mCells) {
+        for (const auto cb : rMesh.CellRange()) {
             std::size_t nc = cb.NumCells();
-            std::size_t npc = detail::cols(cb.mData);
-            int idx = meshio_to_xdmf_index(cb.mType);
-            std::size_t prefix = (cb.mType == "vertex" || cb.mType == "line") ? 2 : 1;
+            const NDArray& conn = cb.Conn();
+            std::size_t npc = detail::cols(conn);
+            int idx = meshio_to_xdmf_index(cb.Type());
+            std::size_t prefix = (cb.Type() == "vertex" || cb.Type() == "line") ? 2 : 1;
             for (std::size_t r = 0; r < nc; ++r) {
                 for (std::size_t pq = 0; pq < prefix; ++pq)
                     cp[pos++] = idx;
                 for (std::size_t j = 0; j < npc; ++j)
-                    cp[pos++] = detail::read_int(cb.mData, r * npc + j);
+                    cp[pos++] = detail::read_int(conn, r * npc + j);
             }
         }
         pugi::xml_node topo = grid.append_child("Topology");
@@ -522,8 +525,8 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     }
 
     // Point data (sorted key order for deterministic output)
-    for (const auto& name : detail::sorted_keys(rMesh.mPointData)) {
-        const NDArray& d = rMesh.mPointData.at(name);
+    for (const auto& name : rMesh.PointDataNames()) {
+        const NDArray& d = rMesh.PointData(name);
         pugi::xml_node att = grid.append_child("Attribute");
         att.append_attribute("Name") = name.c_str();
         att.append_attribute("AttributeType") = attribute_type(d.Shape()).c_str();
@@ -532,11 +535,10 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     }
 
     // Cell data (concatenated across blocks: raw_from_cell_data)
-    for (const auto& name : detail::sorted_keys(rMesh.mCellData)) {
-        const auto& blocks = rMesh.mCellData.at(name);
-        if (blocks.empty())
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) == 0)
             continue;
-        NDArray raw = concat_cell_data(blocks);
+        NDArray raw = concat_cell_data(rMesh, name);
         pugi::xml_node att = grid.append_child("Attribute");
         att.append_attribute("Name") = name.c_str();
         att.append_attribute("AttributeType") = attribute_type(raw.Shape()).c_str();

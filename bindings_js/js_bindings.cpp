@@ -112,7 +112,6 @@ using emscripten::val;
 
 namespace {
 
-using meshioplusplus::CellBlock;
 using meshioplusplus::DType;
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;
@@ -185,39 +184,41 @@ val ndarray_to_int32_array(const NDArray& rA) {
  */
 val mesh_to_val(const Mesh& rMesh) {
     val out = val::object();
-    out.set("points", ndarray_to_float64_array(rMesh.mPoints));
-    out.set("dim", static_cast<int>(cols_of(rMesh.mPoints)));
+    const NDArray& points = rMesh.Points();
+    out.set("points", ndarray_to_float64_array(points));
+    out.set("dim", static_cast<int>(cols_of(points)));
 
     val cells = val::array();
-    for (const auto& cb : rMesh.mCells) {
+    for (const auto cb : rMesh.CellRange()) {
         if (cb.IsRagged())
-            throw meshioplusplus::ReadError("meshio++ (wasm): ragged cell blocks ('" + cb.mType +
+            throw meshioplusplus::ReadError("meshio++ (wasm): ragged cell blocks ('" + cb.Type() +
                                             "') are not supported by the JS API yet");
+        const NDArray& conn = cb.Conn();
         val block = val::object();
-        block.set("type", cb.mType);
-        block.set("data", ndarray_to_int32_array(cb.mData));
-        block.set("nodesPerCell", static_cast<int>(cols_of(cb.mData)));
+        block.set("type", cb.Type());
+        block.set("data", ndarray_to_int32_array(conn));
+        block.set("nodesPerCell", static_cast<int>(cols_of(conn)));
         cells.call<void>("push", block);
     }
     out.set("cells", cells);
 
     val point_data = val::object();
-    for (const auto& kv : rMesh.mPointData)
-        point_data.set(kv.first, ndarray_to_float64_array(kv.second));
+    for (const auto& name : rMesh.PointDataNames())
+        point_data.set(name, ndarray_to_float64_array(rMesh.PointData(name)));
     out.set("point_data", point_data);
 
     val cell_data = val::object();
-    for (const auto& kv : rMesh.mCellData) {
+    for (const auto& name : rMesh.CellDataNames()) {
         val blocks = val::array();
-        for (const auto& arr : kv.second)
-            blocks.call<void>("push", ndarray_to_float64_array(arr));
-        cell_data.set(kv.first, blocks);
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+            blocks.call<void>("push", ndarray_to_float64_array(rMesh.CellData(name, b)));
+        cell_data.set(name, blocks);
     }
     out.set("cell_data", cell_data);
 
     val field_data = val::object();
-    for (const auto& kv : rMesh.mFieldData)
-        field_data.set(kv.first, ndarray_to_float64_array(kv.second));
+    for (const auto& name : rMesh.FieldDataNames())
+        field_data.set(name, ndarray_to_float64_array(rMesh.FieldData(name)));
     out.set("field_data", field_data);
 
     return out;
@@ -263,7 +264,7 @@ Mesh val_to_mesh(const val& rObj) {
     auto npts_len = points_val["length"].as<std::size_t>();
     if (dim == 0 || npts_len % dim != 0)
         throw meshioplusplus::WriteError("meshio++ (wasm): points length is not a multiple of dim");
-    mesh.mPoints = float64_ndarray_from_val(points_val, {npts_len / dim, dim});
+    mesh.AssignPoints(float64_ndarray_from_val(points_val, {npts_len / dim, dim}));
 
     val cells = rObj["cells"];
     auto ncells = cells["length"].as<unsigned>();
@@ -276,7 +277,7 @@ Mesh val_to_mesh(const val& rObj) {
         if (nodes_per_cell == 0 || data_len % nodes_per_cell != 0)
             throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                              "' data length is not a multiple of nodesPerCell");
-        mesh.mCells.emplace_back(
+        mesh.AddCellBlock(
             type, int64_ndarray_from_val(data_val, {data_len / nodes_per_cell, nodes_per_cell}));
     }
 
@@ -284,8 +285,8 @@ Mesh val_to_mesh(const val& rObj) {
         val pd = rObj["point_data"];
         for (const std::string& name : js_object_keys(pd)) {
             val arr = pd[name];
-            mesh.mPointData.emplace(
-                name, float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
+            mesh.AddPointData(name,
+                              float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
         }
     }
     if (rObj.hasOwnProperty("cell_data")) {
@@ -299,15 +300,15 @@ Mesh val_to_mesh(const val& rObj) {
                 val arr = blocks_val[b];
                 blocks.push_back(float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
             }
-            mesh.mCellData.emplace(name, std::move(blocks));
+            mesh.AddCellData(name, std::move(blocks));
         }
     }
     if (rObj.hasOwnProperty("field_data")) {
         val fd = rObj["field_data"];
         for (const std::string& name : js_object_keys(fd)) {
             val arr = fd[name];
-            mesh.mFieldData.emplace(
-                name, float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
+            mesh.AddFieldData(name,
+                              float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
         }
     }
     return mesh;
@@ -569,6 +570,11 @@ val topological_dimension_js() {
     return out;
 }
 
+/** @brief The compile-time mesh backend ("native" for the shipped wasm build). */
+std::string mesh_backend_js() {
+    return meshioplusplus::mesh_backend_name();
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
@@ -577,4 +583,5 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("convert", &convert);
     emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
     emscripten::function("topologicalDimension", &topological_dimension_js);
+    emscripten::function("meshBackend", &mesh_backend_js);
 }

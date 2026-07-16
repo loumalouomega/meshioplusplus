@@ -680,13 +680,14 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
 
     Mesh mesh;
     std::size_t npts = points.size();
-    mesh.mPoints = NDArray(DType::Float64, {npts, 3});
     {
-        double* pdst = mesh.mPoints.As<double>();
+        NDArray pts(DType::Float64, {npts, 3});
+        double* pdst = pts.As<double>();
         parallel_for(npts, [&](std::size_t i) {
             for (std::size_t j = 0; j < 3; ++j)
                 pdst[i * 3 + j] = points[i][j];
         });
+        mesh.AssignPoints(std::move(pts));
     }
 
     std::vector<NDArray> cell_tags;  // one per block, in final block order
@@ -702,21 +703,20 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
             for (std::size_t c = 0; c < k; ++c)
                 dp[r * k + c] = rows[r][c];
         });
-        mesh.mCells.emplace_back(t, std::move(data));
+        mesh.AddCellBlock(t, std::move(data));
         cell_tags.emplace_back(DType::Int64, std::vector<std::size_t>{nc});  // zeros
     }
     // ragged polyhedron blocks
     for (const std::string& key : poly_order) {
-        CellBlock cb;
-        cb.mType = key;
+        std::vector<std::vector<std::vector<std::int64_t>>> cells;
         for (const auto& cell : poly_buckets[key]) {
             std::vector<std::vector<std::int64_t>> ph;
             for (const auto& face : cell)
                 ph.push_back(face);
-            cb.mPolyhedronRows.push_back(std::move(ph));
+            cells.push_back(std::move(ph));
         }
-        std::size_t nc = cb.mPolyhedronRows.size();
-        mesh.mCells.push_back(std::move(cb));
+        std::size_t nc = cells.size();
+        mesh.AddPolyhedronBlock(key, std::move(cells));
         cell_tags.emplace_back(DType::Int64, std::vector<std::size_t>{nc});  // zeros
     }
 
@@ -758,7 +758,7 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
                 dp[r * k + c] = rows[r][c];
             tp[r] = tags[r];
         });
-        mesh.mCells.emplace_back(type, std::move(data));
+        mesh.AddCellBlock(type, std::move(data));
         cell_tags.push_back(std::move(tag));
     };
     if (!bysize[3].empty())
@@ -778,7 +778,7 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
     }
 
     if (!cell_tags.empty())
-        mesh.mCellData["cell_tags"] = std::move(cell_tags);
+        mesh.AddCellData("cell_tags", std::move(cell_tags));
     return mesh;
 }
 

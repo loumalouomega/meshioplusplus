@@ -32,7 +32,6 @@
 
 // Project includes
 #include "meshioplusplus/formats/exodus.hpp"
-#include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -320,14 +319,15 @@ Mesh read_exodus(const std::string& rPath) {
             NDArray coord = read_var(ncid, varid, std::vector<std::size_t>(dims.size(), 0), dims);
             std::size_t d = dims.size() >= 1 ? dims[0] : 0;
             std::size_t n = dims.size() >= 2 ? dims[1] : 0;
-            mesh.mPoints = NDArray(coord.Dtype(), {n, d});
+            NDArray pts(coord.Dtype(), {n, d});
             for (std::size_t c = 0; c < d; ++c)
                 for (std::size_t i = 0; i < n; ++i) {
                     if (coord.Dtype() == DType::Float32)
-                        mesh.mPoints.As<float>()[i * d + c] = coord.As<float>()[c * n + i];
+                        pts.As<float>()[i * d + c] = coord.As<float>()[c * n + i];
                     else
-                        mesh.mPoints.As<double>()[i * d + c] = coord.As<double>()[c * n + i];
+                        pts.As<double>()[i * d + c] = coord.As<double>()[c * n + i];
                 }
+            mesh.AssignPoints(std::move(pts));
             have_coord = true;
         } else if (key == "coordx" || key == "coordy" || key == "coordz") {
             int c = key.back() - 'x';
@@ -370,33 +370,31 @@ Mesh read_exodus(const std::string& rPath) {
     }
 
     if (!have_coord)
-        mesh.mPoints = std::move(points_xyz);
+        mesh.AssignPoints(std::move(points_xyz));
 
     std::sort(blocks.begin(), blocks.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
     for (auto& b : blocks)
-        mesh.mCells.emplace_back(b.second.mType, std::move(b.second.mData));
+        mesh.AddCellBlock(b.second.mType, std::move(b.second.mData));
 
     // Point data with X/Y/Z + _R/_Z recombination.
     if (!point_data_names.empty()) {
         Categorized cat = categorize(point_data_names);
         for (const auto& kv : cat.mSingle)
-            mesh.mPointData.emplace(kv.first, std::move(pd.at(kv.second)));
+            mesh.AddPointData(kv.first, std::move(pd.at(kv.second)));
         for (std::size_t i = 0; i < cat.mDoubleIdx.size(); ++i)
-            mesh.mPointData.emplace(
-                cat.mDoubleName[i],
-                column_stack({&pd.at(cat.mDoubleIdx[i][0]), &pd.at(cat.mDoubleIdx[i][1])}));
+            mesh.AddPointData(cat.mDoubleName[i], column_stack({&pd.at(cat.mDoubleIdx[i][0]),
+                                                                &pd.at(cat.mDoubleIdx[i][1])}));
         for (std::size_t i = 0; i < cat.mTripleIdx.size(); ++i)
-            mesh.mPointData.emplace(
-                cat.mTripleName[i],
-                column_stack({&pd.at(cat.mTripleIdx[i][0]), &pd.at(cat.mTripleIdx[i][1]),
-                              &pd.at(cat.mTripleIdx[i][2])}));
+            mesh.AddPointData(cat.mTripleName[i], column_stack({&pd.at(cat.mTripleIdx[i][0]),
+                                                                &pd.at(cat.mTripleIdx[i][1]),
+                                                                &pd.at(cat.mTripleIdx[i][2])}));
     }
 
     // Cell data: concatenate blocks, then re-split by cell-block sizes.
     if (!cell_data_names.empty() && !cd.empty()) {
         std::vector<std::size_t> sizes;
-        for (const auto& cb : mesh.mCells)
+        for (const auto cb : mesh.CellRange())
             sizes.push_back(cb.NumCells());
         std::size_t name_i = 0;
         for (auto& kv : cd) {
@@ -423,7 +421,7 @@ Mesh read_exodus(const std::string& rPath) {
                 pos += s;
                 out_blocks.push_back(std::move(blk));
             }
-            mesh.mCellData.emplace(name, std::move(out_blocks));
+            mesh.AddCellData(name, std::move(out_blocks));
         }
     }
 
@@ -438,8 +436,9 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         ~Closer() { nc_close(mId); }
     } closer{ncid};
 
+    const NDArray& points = rMesh.Points();
     const std::size_t npts = rMesh.NumPoints();
-    const std::size_t pdim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t pdim = rMesh.PointDim();
 
     // global attributes
     {
@@ -456,14 +455,14 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     }
 
     std::size_t total_elems = 0;
-    for (const auto& cb : rMesh.mCells)
+    for (const auto cb : rMesh.CellRange())
         total_elems += cb.NumCells();
 
     int d_nodes, d_dim, d_elem, d_blk, d_ns, d_str, d_line, d_four, d_time;
     check(nc_def_dim(ncid, "num_nodes", npts, &d_nodes), "def num_nodes", true);
     check(nc_def_dim(ncid, "num_dim", pdim, &d_dim), "def num_dim", true);
     check(nc_def_dim(ncid, "num_elem", total_elems, &d_elem), "def num_elem", true);
-    check(nc_def_dim(ncid, "num_el_blk", rMesh.mCells.size(), &d_blk), "def num_el_blk", true);
+    check(nc_def_dim(ncid, "num_el_blk", rMesh.NumCellBlocks(), &d_blk), "def num_el_blk", true);
     check(nc_def_dim(ncid, "num_node_sets", 0, &d_ns), "def num_node_sets", true);
     check(nc_def_dim(ncid, "len_string", 33, &d_str), "def len_string", true);
     check(nc_def_dim(ncid, "len_line", 81, &d_line), "def len_line", true);
@@ -495,15 +494,15 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     {
         int dims[2] = {d_dim, d_nodes};
         int var;
-        check(nc_def_var(ncid, "coord", nc_type_of(rMesh.mPoints.Dtype()), 2, dims, &var),
-              "def coord", true);
-        NDArray t(rMesh.mPoints.Dtype(), {pdim, npts});
+        check(nc_def_var(ncid, "coord", nc_type_of(points.Dtype()), 2, dims, &var), "def coord",
+              true);
+        NDArray t(points.Dtype(), {pdim, npts});
         for (std::size_t c = 0; c < pdim; ++c)
             for (std::size_t i = 0; i < npts; ++i) {
                 if (t.Dtype() == DType::Float32)
-                    t.As<float>()[c * npts + i] = rMesh.mPoints.As<float>()[i * pdim + c];
+                    t.As<float>()[c * npts + i] = points.As<float>()[i * pdim + c];
                 else
-                    t.As<double>()[c * npts + i] = rMesh.mPoints.As<double>()[i * pdim + c];
+                    t.As<double>()[c * npts + i] = points.As<double>()[i * pdim + c];
             }
         if (t.Size() > 0)
             check(nc_put_var(ncid, var, t.Data()), "coord", true);
@@ -513,7 +512,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     {
         int var;
         check(nc_def_var(ncid, "eb_prop1", NC_INT, 1, &d_blk, &var), "eb_prop1", true);
-        std::vector<int> ids(rMesh.mCells.size());
+        std::vector<int> ids(rMesh.NumCellBlocks());
         for (std::size_t k = 0; k < ids.size(); ++k)
             ids[k] = static_cast<int>(k);
         if (!ids.empty())
@@ -521,26 +520,27 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     }
 
     // connectivity blocks
-    for (std::size_t k = 0; k < rMesh.mCells.size(); ++k) {
-        const CellBlock& cb = rMesh.mCells[k];
-        auto it = meshio_to_exodus().find(cb.mType);
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+        const auto cb = rMesh.Cells(k);
+        auto it = meshio_to_exodus().find(cb.Type());
         if (it == meshio_to_exodus().end())
-            throw WriteError("Exodus: unsupported cell type " + cb.mType);
+            throw WriteError("Exodus: unsupported cell type " + cb.Type());
+        const NDArray& conn = cb.Conn();
         std::string dim1 = "num_el_in_blk" + std::to_string(k + 1);
         std::string dim2 = "num_nod_per_el" + std::to_string(k + 1);
         int d1, d2;
         check(nc_def_dim(ncid, dim1.c_str(), cb.NumCells(), &d1), "blk dim", true);
-        check(nc_def_dim(ncid, dim2.c_str(), detail::cols(cb.mData), &d2), "blk dim", true);
+        check(nc_def_dim(ncid, dim2.c_str(), detail::cols(conn), &d2), "blk dim", true);
         int dims[2] = {d1, d2};
         int var;
         std::string vname = "connect" + std::to_string(k + 1);
-        check(nc_def_var(ncid, vname.c_str(), nc_type_of(cb.mData.Dtype()), 2, dims, &var),
+        check(nc_def_var(ncid, vname.c_str(), nc_type_of(conn.Dtype()), 2, dims, &var),
               "def connect", true);
         check(nc_put_att_text(ncid, var, "elem_type", it->second.size(), it->second.c_str()),
               "elem_type", true);
-        NDArray shifted(cb.mData.Dtype(), cb.mData.Shape());
-        for (std::size_t i = 0; i < cb.mData.Size(); ++i) {
-            std::int64_t v = detail::read_int(cb.mData, i) + 1;
+        NDArray shifted(conn.Dtype(), conn.Shape());
+        for (std::size_t i = 0; i < conn.Size(); ++i) {
+            std::int64_t v = detail::read_int(conn, i) + 1;
             switch (shifted.Dtype()) {
                 case DType::Int32:
                     shifted.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
@@ -557,10 +557,9 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     }
 
     // point data
-    if (!rMesh.mPointData.empty()) {
+    if (rMesh.NumPointData() > 0) {
         int d_nnv;
-        check(nc_def_dim(ncid, "num_nod_var", rMesh.mPointData.size(), &d_nnv), "num_nod_var",
-              true);
+        check(nc_def_dim(ncid, "num_nod_var", rMesh.NumPointData(), &d_nnv), "num_nod_var", true);
         int name_var;
         {
             int dims[2] = {d_nnv, d_str};
@@ -570,14 +569,14 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         std::size_t k = 0;
         // Sorted key order: assigns the on-disk variable index (slot k) and
         // name deterministically, independent of the map's storage order.
-        for (const auto& name : detail::sorted_keys(rMesh.mPointData)) {
+        for (const auto& name : rMesh.PointDataNames()) {
             std::size_t start[2] = {k, 0};
             std::size_t count[2] = {1, std::min<std::size_t>(name.size(), 33)};
             if (count[1] > 0)
                 check(nc_put_vara_text(ncid, name_var, start, count, name.c_str()), "name_nod_var",
                       true);
 
-            const NDArray& data = rMesh.mPointData.at(name);
+            const NDArray& data = rMesh.PointData(name);
             std::vector<int> dims = {d_time};
             for (std::size_t i = 0; i < data.Shape().size(); ++i) {
                 std::string dn = "dim_nod_var" + std::to_string(k) + std::to_string(i);

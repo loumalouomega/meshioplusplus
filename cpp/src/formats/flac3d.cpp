@@ -255,8 +255,9 @@ Mesh read_flac3d(const std::string& rPath) {
     // Assemble: faces first, then zones (matching the Python reader).
     Mesh mesh;
     const std::int64_t npoints = static_cast<std::int64_t>(points.size() / 3);
-    mesh.mPoints = NDArray(DType::Float64, {static_cast<std::size_t>(npoints), 3});
-    std::memcpy(mesh.mPoints.Data(), points.data(), points.size() * sizeof(double));
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), 3});
+    std::memcpy(pts.Data(), points.data(), points.size() * sizeof(double));
+    mesh.AssignPoints(std::move(pts));
 
     std::vector<std::size_t> block_sizes;
     auto emit = [&](std::vector<RawBlock>& blocks) {
@@ -270,7 +271,7 @@ Mesh read_flac3d(const std::string& rPath) {
             for (std::size_t r = 0; r < n; ++r)
                 for (std::size_t j = 0; j < k; ++j)
                     dp[r * k + j] = b.mRows[r][ord[j]];
-            mesh.mCells.emplace_back(b.mType, std::move(data));
+            mesh.AddCellBlock(b.mType, std::move(data));
             block_sizes.push_back(n);
         }
     };
@@ -278,7 +279,7 @@ Mesh read_flac3d(const std::string& rPath) {
     emit(z_blocks);
 
     // Global cell ids -> cell_data["cell_ids"], split per block.
-    if (!mesh.mCells.empty()) {
+    if (mesh.NumCellBlocks() != 0) {
         std::int64_t z_offset = static_cast<std::int64_t>(f_ids.size());
         std::vector<std::int64_t> all_ids;
         all_ids.reserve(f_ids.size() + z_ids.size());
@@ -296,7 +297,7 @@ Mesh read_flac3d(const std::string& rPath) {
             off += sz;
             id_blocks.push_back(std::move(a));
         }
-        mesh.mCellData.emplace("cell_ids", std::move(id_blocks));
+        mesh.AddCellData("cell_ids", std::move(id_blocks));
     }
 
     return mesh;
@@ -345,10 +346,10 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
                   bool binary) {
     // Split blocks by FLAC3D category.
     std::vector<std::size_t> zone_idx, face_idx;
-    for (std::size_t i = 0; i < rMesh.mCells.size(); ++i) {
-        if (!zone_key(rMesh.mCells[i].mType).empty())
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
+        if (!zone_key(rMesh.Cells(i).Type()).empty())
             zone_idx.push_back(i);
-        else if (!face_key(rMesh.mCells[i].mType).empty())
+        else if (!face_key(rMesh.Cells(i).Type()).empty())
             face_idx.push_back(i);
     }
 
@@ -357,7 +358,8 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t npts = rMesh.NumPoints();
-    const std::size_t pdim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t pdim = rMesh.PointDim();
+    const NDArray& points = rMesh.Points();
 
     if (binary) {
         wu32(f, 1375135718u);
@@ -367,25 +369,25 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         for (std::size_t i = 0; i < npts; ++i) {
             wu32(f, static_cast<std::uint32_t>(i + 1));
             for (int c = 0; c < 3; ++c)
-                wf64(f, c < static_cast<int>(pdim)
-                            ? detail::read_double(rMesh.mPoints, i * pdim + c)
-                            : 0.0);
+                wf64(f, c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c)
+                                                   : 0.0);
         }
         std::uint32_t gid = 0;
         // zones
         std::uint32_t nz = 0;
         for (auto i : zone_idx)
-            nz += static_cast<std::uint32_t>(rMesh.mCells[i].NumCells());
+            nz += static_cast<std::uint32_t>(rMesh.Cells(i).NumCells());
         wu32(f, nz);
         for (auto i : zone_idx) {
-            const CellBlock& cb = rMesh.mCells[i];
-            std::string key = zone_key(cb.mType);
+            const auto cb = rMesh.Cells(i);
+            const NDArray& conn = cb.Conn();
+            std::string key = zone_key(cb.Type());
             std::size_t n = cb.NumCells();
             // Right-handed reorder per row is independent -> compute in
             // parallel, then stream sequentially.
             std::vector<std::vector<std::int64_t>> zcells(n);
             parallel_for(n, [&](std::size_t r) {
-                zcells[r] = zone_cell_flac3d(rMesh.mPoints, cb.mData, r, key);
+                zcells[r] = zone_cell_flac3d(points, conn, r, key);
             });
             for (std::size_t r = 0; r < n; ++r) {
                 const auto& cell = zcells[r];
@@ -399,20 +401,21 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         // faces
         std::uint32_t nf = 0;
         for (auto i : face_idx)
-            nf += static_cast<std::uint32_t>(rMesh.mCells[i].NumCells());
+            nf += static_cast<std::uint32_t>(rMesh.Cells(i).NumCells());
         wu32(f, nf);
         for (auto i : face_idx) {
-            const CellBlock& cb = rMesh.mCells[i];
-            std::string key = face_key(cb.mType);
+            const auto cb = rMesh.Cells(i);
+            const NDArray& conn = cb.Conn();
+            std::string key = face_key(cb.Type());
             const std::vector<int>& ord = m2f_order(key);
             std::size_t n = cb.NumCells();
-            std::size_t ncols = detail::cols(cb.mData);
+            std::size_t ncols = detail::cols(conn);
             for (std::size_t r = 0; r < n; ++r) {
                 wu32(f, ++gid);
                 wu32(f, static_cast<std::uint32_t>(ord.size()));
                 for (int local : ord)
-                    wu32(f, static_cast<std::uint32_t>(
-                                detail::read_int(cb.mData, r * ncols + local) + 1));
+                    wu32(f,
+                         static_cast<std::uint32_t>(detail::read_int(conn, r * ncols + local) + 1));
             }
         }
         wu32(f, 0u);  // face groups
@@ -427,7 +430,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         f << "G\t" << (i + 1) << "\t";
         for (int c = 0; c < 3; ++c) {
             double v =
-                c < static_cast<int>(pdim) ? detail::read_double(rMesh.mPoints, i * pdim + c) : 0.0;
+                c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
             std::snprintf(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
             f << buf << (c == 2 ? '\n' : '\t');
         }
@@ -436,16 +439,16 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     std::int64_t gid = 0;
     f << "* ZONES\n";
     for (auto i : zone_idx) {
-        const CellBlock& cb = rMesh.mCells[i];
-        std::string key = zone_key(cb.mType);
+        const auto cb = rMesh.Cells(i);
+        const NDArray& conn = cb.Conn();
+        std::string key = zone_key(cb.Type());
         const char* abbr = flac3d_type(key);
         std::size_t n = cb.NumCells();
         // Right-handed reorder per row is independent -> compute in parallel,
         // then stream sequentially.
         std::vector<std::vector<std::int64_t>> zcells(n);
-        parallel_for(n, [&](std::size_t r) {
-            zcells[r] = zone_cell_flac3d(rMesh.mPoints, cb.mData, r, key);
-        });
+        parallel_for(n,
+                     [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
         for (std::size_t r = 0; r < n; ++r) {
             f << "Z " << abbr << " " << (++gid);
             for (auto v : zcells[r])
@@ -457,16 +460,17 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
 
     f << "* FACES\n";
     for (auto i : face_idx) {
-        const CellBlock& cb = rMesh.mCells[i];
-        std::string key = face_key(cb.mType);
+        const auto cb = rMesh.Cells(i);
+        const NDArray& conn = cb.Conn();
+        std::string key = face_key(cb.Type());
         const char* abbr = flac3d_type(key);
         const std::vector<int>& ord = m2f_order(key);
         std::size_t n = cb.NumCells();
-        std::size_t ncols = detail::cols(cb.mData);
+        std::size_t ncols = detail::cols(conn);
         for (std::size_t r = 0; r < n; ++r) {
             f << "F " << abbr << " " << (++gid);
             for (int local : ord)
-                f << " " << (detail::read_int(cb.mData, r * ncols + local) + 1);
+                f << " " << (detail::read_int(conn, r * ncols + local) + 1);
             f << "\n";
         }
     }

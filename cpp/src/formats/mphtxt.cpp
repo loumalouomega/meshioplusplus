@@ -114,10 +114,11 @@ Mesh read_mphtxt(const std::string& rPath) {
         const long long sdim = c.Integer();
         const long long n_points = c.Integer();
         const long long lowest = c.Integer();
-        mesh.mPoints = NDArray(
-            DType::Float64, {static_cast<std::size_t>(n_points), static_cast<std::size_t>(sdim)});
+        NDArray pts(DType::Float64,
+                    {static_cast<std::size_t>(n_points), static_cast<std::size_t>(sdim)});
         for (long long p = 0; p < n_points * sdim; ++p)
-            mesh.mPoints.As<double>()[p] = c.Real();
+            pts.As<double>()[p] = c.Real();
+        mesh.AssignPoints(std::move(pts));
 
         const long long n_eltypes = c.Integer();
         for (long long e = 0; e < n_eltypes; ++e) {
@@ -150,14 +151,14 @@ Mesh read_mphtxt(const std::string& rPath) {
             for (long long v = 0; v < nud * 2; ++v)
                 c.Integer();
 
-            mesh.mCells.emplace_back(mtype, std::move(conn));
+            mesh.AddCellBlock(mtype, std::move(conn));
             geom.push_back(std::move(g));
         }
         break;  // first mesh object only
     }
 
     if (!geom.empty())
-        mesh.mCellData.emplace("mphtxt:geom", std::move(geom));
+        mesh.AddCellData("mphtxt:geom", std::move(geom));
     return mesh;
 }
 
@@ -166,20 +167,22 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t sdim = rMesh.mPoints.Shape().size() >= 2 ? rMesh.mPoints.Shape()[1] : 0;
+    const std::size_t sdim = rMesh.PointDim();
 
     struct Blk {
         std::size_t mIdx;
-        const CellBlock* mCb;
+        Mesh::CellView mCb;
     };
     std::vector<Blk> blocks;
-    for (std::size_t k = 0; k < rMesh.mCells.size(); ++k)
-        if (!meshio_to_comsol(rMesh.mCells[k].mType).empty())
-            blocks.push_back({k, &rMesh.mCells[k]});
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+        const auto cb = rMesh.Cells(k);
+        if (!meshio_to_comsol(cb.Type()).empty())
+            blocks.push_back({k, cb});
         else
-            throw WriteError("mphtxt: unsupported cell type " + rMesh.mCells[k].mType);
+            throw WriteError("mphtxt: unsupported cell type " + cb.Type());
+    }
 
-    auto geom_it = rMesh.mCellData.find("mphtxt:geom");
+    const bool has_geom = rMesh.HasCellData("mphtxt:geom");
 
     f << "# Created by meshio++ (C++ core)\n\n";
     f << "0 1\n";
@@ -189,11 +192,11 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
     f << sdim << " # sdim\n";
     f << rMesh.NumPoints() << " # number of mesh points\n";
     f << "1 # lowest mesh point index\n\n# Mesh point coordinates\n";
+    const NDArray& points = rMesh.Points();
     char buf[32];
     for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
         for (std::size_t cc = 0; cc < sdim; ++cc) {
-            std::snprintf(buf, sizeof(buf), "%.16g",
-                          detail::read_double(rMesh.mPoints, i * sdim + cc));
+            std::snprintf(buf, sizeof(buf), "%.16g", detail::read_double(points, i * sdim + cc));
             f << buf << (cc + 1 == sdim ? '\n' : ' ');
         }
     }
@@ -201,10 +204,11 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
 
     int ti = 0;
     for (const auto& b : blocks) {
-        const CellBlock& cb = *b.mCb;
-        std::string ctype = meshio_to_comsol(cb.mType);
-        const std::vector<int>* p = perm_of(cb.mType);
-        std::size_t nn = detail::cols(cb.mData);
+        const auto cb = b.mCb;
+        std::string ctype = meshio_to_comsol(cb.Type());
+        const std::vector<int>* p = perm_of(cb.Type());
+        const NDArray& conn = cb.Conn();
+        std::size_t nn = detail::cols(conn);
         std::size_t ne = cb.NumCells();
         f << "# Type #" << (++ti) << "\n\n";
         f << ctype.size() << " " << ctype << " # type name\n\n";
@@ -213,14 +217,14 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
         for (std::size_t r = 0; r < ne; ++r) {
             for (std::size_t j = 0; j < nn; ++j) {
                 std::size_t src = p ? (*p)[j] : j;
-                f << (detail::read_int(cb.mData, r * nn + src) + 1) << (j + 1 == nn ? '\n' : ' ');
+                f << (detail::read_int(conn, r * nn + src) + 1) << (j + 1 == nn ? '\n' : ' ');
             }
         }
         f << "\n" << nn << " # number of parameter values per element\n";
         f << "0 # number of parameters\n# Parameters\n\n";
         f << ne << " # number of geometric entity indices\n# Geometric entity indices\n";
-        const NDArray* g = (geom_it != rMesh.mCellData.end() && b.mIdx < geom_it->second.size())
-                               ? &geom_it->second[b.mIdx]
+        const NDArray* g = (has_geom && b.mIdx < rMesh.CellDataNumBlocks("mphtxt:geom"))
+                               ? &rMesh.CellData("mphtxt:geom", b.mIdx)
                                : nullptr;
         for (std::size_t r = 0; r < ne; ++r)
             f << (g ? detail::read_int(*g, r) : 0) << "\n";
