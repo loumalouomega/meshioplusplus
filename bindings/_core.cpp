@@ -34,11 +34,14 @@
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
 #include "meshioplusplus/formats/exodus.hpp"
 #endif
+#include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/ip.hpp"
 #include "meshioplusplus/formats/medit.hpp"
+#include "meshioplusplus/formats/mff.hpp"
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/nastran.hpp"
@@ -261,13 +264,43 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ugrid(path));
     });
 
-    // UNV (I-DEAS Universal) writer / reader (.unv).
-    m.def("unv_write", [](const std::string& path, py::object pymesh) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_unv(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
-    });
+    // UNV (I-DEAS Universal) writer / reader (.unv).  point_data/cell_data
+    // become field datasets 2414 (or 55/57 in Code-Aster mode); permanent
+    // groups (point_sets/cell_sets) travel via the UnvInfo side-channel.
+    m.def(
+        "unv_write",
+        [](const std::string& path, py::object pymesh,
+           std::map<std::string, std::vector<std::int64_t>> point_sets,
+           std::map<std::string, std::vector<std::vector<std::int64_t>>> cell_sets, bool code_aster,
+           int node_dataset) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::UnvInfo info;
+            info.mPointSets = std::move(point_sets);
+            info.mCellSets = std::move(cell_sets);
+            meshioplusplus::write_unv(path, cpp, info, code_aster, node_dataset);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("point_sets"), py::arg("cell_sets"),
+        py::arg("code_aster") = false, py::arg("node_dataset") = 2411);
     m.def("unv_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_unv(path));
+        meshioplusplus::UnvInfo info;
+        py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_unv(path, info));
+        py::dict psets, csets;
+        for (const auto& kv : info.mPointSets)
+            psets[py::str(kv.first)] = py::array_t<std::int64_t>(
+                static_cast<py::ssize_t>(kv.second.size()), kv.second.data());
+        for (const auto& kv : info.mCellSets) {
+            py::list blocks;
+            for (const auto& blk : kv.second)
+                blocks.append(
+                    py::array_t<std::int64_t>(static_cast<py::ssize_t>(blk.size()), blk.data()));
+            csets[py::str(kv.first)] = blocks;
+        }
+        if (py::len(psets) > 0)
+            pymesh.attr("point_sets") = psets;
+        if (py::len(csets) > 0)
+            pymesh.attr("cell_sets") = csets;
+        return pymesh;
     });
 
     // TetGen writer / reader (.node/.ele pair).
@@ -493,6 +526,31 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("flux_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_flux(path));
+    });
+
+    // Modulef Formatted Field (.mff), FLUX field (.dex), ANSYS Fluent
+    // interpolation (.ip) -- field-only formats read/written as geometry-less
+    // meshes (point_data carried by the normal conversion layer).
+    m.def("mff_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_mff(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("mff_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mff(path));
+    });
+    m.def("dex_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_dex(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("dex_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_dex(path));
+    });
+    m.def("ip_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_ip(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("ip_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ip(path));
     });
 
     // COMSOL .mphtxt writer / reader.

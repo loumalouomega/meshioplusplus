@@ -65,16 +65,17 @@ file contains one, and there is no way to construct one for `writeMesh`.
 
 ## Format support
 
-The WASM build ships the 28 formats with no HDF5/netCDF dependency, plus
-XDMF's XML/Binary data path (not its HDF variant) — 29 readable formats in
-total, 28 writable (`openfoam` is read-only):
+The WASM build ships the 31 formats with no HDF5/netCDF dependency, plus
+XDMF's XML/Binary data path (not its HDF variant) — 32 readable formats in
+total, 31 writable (`openfoam` is read-only):
 
-`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `dolfin-xml`, `flac3d`,
-`flux`, `freefem`, `gmsh`, `medit`, `mfm`, `mphtxt`, `nastran`, `netgen`,
-`obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core),
-`permas`, `ply`, `stl`, `su2`, `tecplot`, `tetgen`, `ugrid`, `unv`, `vtk`,
-`vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf`
-(XML/Binary only).
+`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `dex`, `dolfin-xml`,
+`flac3d`, `flux`, `freefem`, `gmsh`, `ip`, `medit`, `mff`, `mfm`, `mphtxt`,
+`nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the
+C++/Python core), `permas`, `ply`, `stl`, `su2`, `tecplot`, `tetgen`,
+`ugrid`, `unv`, `vtk`, `vtu` (zlib compression works via Emscripten's built-in
+port), `wkt`, `xdmf` (XML/Binary only). The three field-only formats (`dex`,
+`ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
 
 **Not yet supported: `cgns`, `h5m`, `hmf`, `med`, `exodus`.** All five need
 HDF5 and/or netCDF, which are not built for this target — porting those C

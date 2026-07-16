@@ -43,20 +43,46 @@
  * `[0,4,1,5,2,6,7,8,9,3]`, hexahedron20 20-entry table) — applied directly
  * on read and inverted on write.
  *
- * Dataset 2467/2477 (permanent groups -> point_sets/cell_sets) and field
- * datasets (2414/55/56/57) are **not implemented in the C++ core**: the
- * reader throws ReadError as soon as it meets one, and the writer shim
- * routes any mesh carrying point_sets/cell_sets to the Python writer
- * (groups have no C++ writer path).
+ * Field/results datasets (2414 and legacy 55, 56, 57) are read
+ * and written by the C++ core: data at nodes (location 1) -> `point_data`,
+ * data on elements (location 2) -> `cell_data`; the field name becomes the
+ * data key (de-duplicated on collision), and the component count (1/3/6/9)
+ * is the array's inner dimension. On write, the default emits dataset 2414;
+ * with `code_aster=true` it emits dataset 55 for `point_data` and 57 for
+ * `cell_data` (the Code-Aster convention). Complex data and the
+ * nodes-on-elements location (3) are skipped with a warning.
+ *
+ * Permanent-group datasets (2467, 2477, 2452, 2435, 2432, 2430 ->
+ * point_sets/cell_sets) are decoded by the `UnvInfo` overloads of read_unv /
+ * write_unv (a side-channel, since point_sets/cell_sets are not part of the
+ * Mesh/NDArray conversion layer); the group-less overloads ignore them.
  */
 
 // System includes
+#include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
+
+/**
+ * @brief Side-channel carrying permanent-group-derived point/cell sets across
+ *        the Mesh conversion boundary (the `point_sets`/`cell_sets` Python
+ *        Mesh attributes are not part of the C++ Mesh/NDArray layer).
+ *
+ * Mirrors `AnsysInfo`: node groups (UNV entity type 8) become `mPointSets`
+ * (0-based node indices); element groups (entity type 7) become `mCellSets`
+ * (per-cell-block lists of 0-based local cell indices, one inner list per
+ * mesh cell block in block order).
+ */
+struct UnvInfo {
+    std::map<std::string, std::vector<std::int64_t>> mPointSets;
+    std::map<std::string, std::vector<std::vector<std::int64_t>>> mCellSets;
+};
 
 /**
  * @brief Write a mesh as a UNV file (datasets 2411 + 2412 only).
@@ -69,15 +95,35 @@ namespace meshioplusplus {
  * parabolic types, and always writing a placeholder `0 0 0` beam
  * orientation record for line/line3 elements.
  *
+ * Also emits field datasets from `point_data` (dataset 2414 location 1, or
+ * dataset 55 in Code-Aster mode) and `cell_data` (dataset 2414 location 2, or
+ * dataset 57 in Code-Aster mode); the reserved key `unv:pid` is excluded (it
+ * is the per-element property id carried by dataset 2412, not a field).
+ *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
+ * @param code_aster emit legacy datasets 55/57 for fields instead of 2414
+ * @param node_dataset node dataset id to emit — `2411` (default) or `781`
  * @throws WriteError if the mesh carries `point_sets`/`cell_sets` (no
- *         dataset-2467 writer in C++ — the shim falls back to Python) or
- *         contains an unsupported cell type
- * @note reads `cell_data["unv:pid"]` for the per-element property id
- *       (defaults to `1` if absent).
+ *         dataset-2467 writer in C++ — the shim falls back to Python)
+ * @note unsupported cell types are warned about and skipped (matching the
+ *       Python writer); reads `cell_data["unv:pid"]` for the per-element
+ *       property id (defaults to `1` if absent).
  */
-void write_unv(const std::string& rPath, const Mesh& rMesh);
+void write_unv(const std::string& rPath, const Mesh& rMesh, bool code_aster = false,
+               int node_dataset = 2411);
+
+/**
+ * @brief Write a mesh plus permanent groups (dataset 2467) as a UNV file.
+ *
+ * Same as the group-less overload, additionally emitting `rInfo`'s point sets
+ * (node groups, entity type 8) and cell sets (element groups, entity type 7)
+ * as dataset-2467 records after the field datasets.
+ *
+ * @param rInfo point/cell sets to emit as dataset-2467 groups
+ */
+void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo,
+               bool code_aster = false, int node_dataset = 2411);
 
 /**
  * @brief Read a UNV file's node (2411) and element (2412) datasets.
@@ -87,14 +133,26 @@ void write_unv(const std::string& rPath, const Mesh& rMesh);
  * records into typed cell blocks using the FE-descriptor table and the
  * sandwich-order permutation for parabolic types.
  *
+ * Field datasets (2414/55/56/57) are decoded into `point_data`/`cell_data`.
+ *
+ * This group-less overload discards any permanent groups; use the `UnvInfo`
+ * overload to receive them.
+ *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if the file contains a 2467/2477 (permanent group) or a
- *         field (2414/55/56/57) dataset — the shim then falls back to the
- *         Python reader, which does support those (as point_sets/cell_sets).
  * @note cell_data key produced: `"unv:pid"` (element property id, dataset-
- *       2412 record-1 field 2).
+ *       2412 record-1 field 2); field datasets add point_data/cell_data keyed
+ *       by field name.
  */
 Mesh read_unv(const std::string& rPath);
+
+/**
+ * @brief Read a UNV file, additionally decoding permanent-group datasets
+ *        (2467/2477/2452/2435/2432/2430) into `rInfo`.
+ *
+ * @param[out] rInfo receives node groups as `mPointSets` and element groups
+ *        as `mCellSets` (0-based indices).
+ */
+Mesh read_unv(const std::string& rPath, UnvInfo& rInfo);
 
 }  // namespace meshioplusplus

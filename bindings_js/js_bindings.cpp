@@ -81,12 +81,15 @@
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
+#include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/ip.hpp"
 #include "meshioplusplus/formats/medit.hpp"
+#include "meshioplusplus/formats/mff.hpp"
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/nastran.hpp"
@@ -334,10 +337,13 @@ const std::map<std::string, ReadFn>& readers() {
         {"avsucd", meshioplusplus::read_avsucd},
         {"dolfin", meshioplusplus::read_dolfin},
         {"flac3d", meshioplusplus::read_flac3d},
+        {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
         {"freefem", meshioplusplus::read_freefem},
         {"gmsh", meshioplusplus::read_gmsh},
+        {"ip", meshioplusplus::read_ip},
         {"medit", meshioplusplus::read_medit_ascii},
+        {"mff", meshioplusplus::read_mff},
         {"mfm", meshioplusplus::read_mfm},
         {"mphtxt", meshioplusplus::read_mphtxt},
         {"nastran", meshioplusplus::read_nastran},
@@ -351,7 +357,7 @@ const std::map<std::string, ReadFn>& readers() {
         {"tecplot", meshioplusplus::read_tecplot},
         {"tetgen", meshioplusplus::read_tetgen},
         {"ugrid", meshioplusplus::read_ugrid},
-        {"unv", meshioplusplus::read_unv},
+        {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
         {"vtk", meshioplusplus::read_vtk},
         {"vtu", meshioplusplus::read_vtu},
         {"wkt", meshioplusplus::read_wkt},
@@ -383,11 +389,14 @@ const std::map<std::string, WriteFn>& writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_flac3d(p, mm, ".16e", /*binary=*/false);
          }},
+        {"dex", meshioplusplus::write_dex},
         {"flux", meshioplusplus::write_flux},
         {"freefem", meshioplusplus::write_freefem},
         {"gmsh", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
+        {"ip", meshioplusplus::write_ip},
         {"medit", meshioplusplus::write_medit_ascii},
+        {"mff", meshioplusplus::write_mff},
         {"mfm",
          [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
         {"mphtxt", meshioplusplus::write_mphtxt},
@@ -405,7 +414,7 @@ const std::map<std::string, WriteFn>& writers() {
         {"tecplot", meshioplusplus::write_tecplot},
         {"tetgen", meshioplusplus::write_tetgen},
         {"ugrid", meshioplusplus::write_ugrid},
-        {"unv", meshioplusplus::write_unv},
+        {"unv", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); }},
         {"vtk",
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
@@ -433,14 +442,15 @@ const std::map<std::string, WriteFn>& writers() {
 // select ansys/freefem (.msh) or ansysinp (.inp) instead.
 const std::map<std::string, std::string>& extension_defaults() {
     static const std::map<std::string, std::string> m = {
-        {".inp", "abaqus"},  {".avs", "avsucd"},  {".xml", "dolfin"},  {".f3grid", "flac3d"},
-        {".pf3", "flux"},    {".mesh", "medit"},  {".mfm", "mfm"},     {".mphtxt", "mphtxt"},
-        {".bdf", "nastran"}, {".nas", "nastran"}, {".fem", "nastran"}, {".vol", "netgen"},
-        {".obj", "obj"},     {".off", "off"},     {".post", "permas"}, {".dato", "permas"},
-        {".ply", "ply"},     {".stl", "stl"},     {".su2", "su2"},     {".dat", "tecplot"},
-        {".tec", "tecplot"}, {".ele", "tetgen"},  {".node", "tetgen"}, {".ugrid", "ugrid"},
-        {".unv", "unv"},     {".vtk", "vtk"},     {".vtu", "vtu"},     {".wkt", "wkt"},
-        {".xdmf", "xdmf"},   {".xmf", "xdmf"},    {".msh", "gmsh"},
+        {".inp", "abaqus"},  {".avs", "avsucd"},  {".xml", "dolfin"},    {".f3grid", "flac3d"},
+        {".dex", "dex"},     {".ip", "ip"},       {".mff", "mff"},       {".pf3", "flux"},
+        {".mesh", "medit"},  {".mfm", "mfm"},     {".mphtxt", "mphtxt"}, {".bdf", "nastran"},
+        {".nas", "nastran"}, {".fem", "nastran"}, {".vol", "netgen"},    {".obj", "obj"},
+        {".off", "off"},     {".post", "permas"}, {".dato", "permas"},   {".ply", "ply"},
+        {".stl", "stl"},     {".su2", "su2"},     {".dat", "tecplot"},   {".tec", "tecplot"},
+        {".ele", "tetgen"},  {".node", "tetgen"}, {".ugrid", "ugrid"},   {".unv", "unv"},
+        {".vtk", "vtk"},     {".vtu", "vtu"},     {".wkt", "wkt"},       {".xdmf", "xdmf"},
+        {".xmf", "xdmf"},    {".msh", "gmsh"},
     };
     return m;
 }
