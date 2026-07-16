@@ -21,7 +21,14 @@ mesh = meshioplusplus.read("mesh.unv")          # or meshioplusplus.unv.read("me
 meshioplusplus.unv.write("out.unv", mesh)
 ```
 
-Both `read`/`write` take no keyword arguments.
+`write` accepts two optional keyword arguments:
+
+- `code_aster=False` — when `True`, field data is written as the legacy
+  datasets **55** (node data) and **57** (element data) instead of dataset
+  2414, matching the Code-Aster convention.
+- `node_dataset=2411` — the node dataset id to emit; `781` is also accepted.
+
+`read` takes no keyword arguments.
 
 ## File structure
 
@@ -63,13 +70,30 @@ write** — beam orientation data does not round-trip through meshioplusplus.
 Node-label records follow, gathered (possibly across several lines) until
 `num_nodes` labels have been collected.
 
-### 2467 / 2477 — permanent groups
+### 2467 / 2477 / 2452 / 2435 / 2432 / 2430 — permanent groups
 
-Record 1 has ≥8 integers; field 7 is the entity count `n`. The next line is
-the group name. Then `4*n` integers follow, laid out as `(entity_type, tag, 0,
-0)` quadruples (typically 2 quadruples — 8 integers — per line). Entity type
-`8` = node → the group becomes a `point_sets` entry; entity type `7` = element
-→ `cell_sets`. Other entity types are collected internally but never emitted.
+All six of these dataset ids share the same record layout and are accepted on
+read (FEconv parity); dataset **2467** is used on write. Record 1 has ≥8
+integers; field 7 is the entity count `n`. The next line is the group name.
+Then `4*n` integers follow, laid out as `(entity_type, tag, 0, 0)` quadruples
+(typically 2 quadruples — 8 integers — per line). Entity type `8` = node → the
+group becomes a `point_sets` entry; entity type `7` = element → `cell_sets`.
+Other entity types are collected internally but never emitted.
+
+### 2414 / 55 / 56 / 57 — field (results) data
+
+Result fields map to `point_data` (data at nodes) and `cell_data` (data on
+elements). The **2414** dataset (the default on write) carries a dataset name
+(→ the data key, de-duplicated on collision), a location code (1 = nodes,
+2 = elements, 3 = nodes-on-elements), and a *data characteristic* / value count
+that gives the number of components: 1 (scalar), 3 (vector), 6 (symmetric
+tensor) or 9 (general tensor), stored as the array's inner dimension. The
+legacy datasets **55** (nodes) and **57** (elements) carry the same
+information in a shorter header and are what `write(..., code_aster=True)`
+emits; **56** (nodes-on-elements) is read but, like 2414 location 3, is
+**skipped with a warning** (barycenter averaging is not implemented). Complex
+data is likewise skipped. The reserved key `unv:pid` is never written as a
+field (it is the element property id carried by dataset 2412).
 
 ## Cell types & node ordering
 
@@ -78,17 +102,22 @@ element type:
 
 | descriptor(s) | meshio++ type | descriptor(s) | meshio++ type |
 |---|---|---|---|
-| 11, 21 | `line` | 111 | `tetra` |
-| 22, 24 | `line3` | 118 | `tetra10` |
-| 41, 81, 91 | `triangle` | 112 | `wedge` |
-| 42, 82, 92 | `triangle6` | 115 | `hexahedron` |
-| 44, 84, 94, 122 | `quad` | 116 | `hexahedron20` |
-| 45, 85, 95 | `quad8` | | |
+| 11, 21 | `line` | 112 | `wedge` |
+| 22, 24 | `line3` | 113 | `wedge15` |
+| 41, 81, 91 | `triangle` | 115 | `hexahedron` |
+| 42, 82, 92 | `triangle6` | 116 | `hexahedron20` |
+| 44, 84, 94, 122 | `quad` | 111 | `tetra` |
+| 45, 85, 95 | `quad8` | 118 | `tetra10` |
 
 On write, one canonical descriptor is chosen per meshio++ type: `line→21`
 (beam), `line3→24` (beam), `triangle→91`, `triangle6→92`, `quad→94`,
-`quad8→95`, `tetra→111`, `tetra10→118`, `wedge→112`, `hexahedron→115`,
-`hexahedron20→116`.
+`quad8→95`, `tetra→111`, `tetra10→118`, `wedge→112`, `wedge15→113`,
+`hexahedron→115`, `hexahedron20→116`.
+
+Cell types with no standard UNV descriptor (e.g. `pyramid`, `quad9`, 0-D
+`vertex`) are **skipped with a warning** on write rather than emitted with an
+invented, non-interoperable descriptor; an unrecognized descriptor on read is
+likewise skipped with a warning rather than being a fatal error.
 
 Parabolic (second-order) elements use the **Salome/Code-Aster mid-node
 "sandwich" ordering** — corner, mid-node, corner, mid-node, … — which differs
@@ -102,14 +131,17 @@ inverse applied on write) is:
 | `triangle6` | `[0, 3, 1, 4, 2, 5]` |
 | `quad8` | `[0, 4, 1, 5, 2, 6, 3, 7]` |
 | `tetra10` | `[0, 4, 1, 5, 2, 6, 7, 8, 9, 3]` |
+| `wedge15` | `[0, 6, 1, 7, 2, 8, 9, 10, 11, 3, 12, 4, 13, 5, 14]` |
 | `hexahedron20` | `[0, 8, 1, 9, 2, 10, 3, 11, 12, 13, 14, 15, 4, 16, 5, 17, 6, 18, 7, 19]` |
 
 ## Data mapping
 
 - `cell_data["unv:pid"]` — the element's physical/material property id
   (record-1 field 2 of the 2412 dataset); defaults to `1` on write if absent.
-- `point_sets` / `cell_sets` — from 2467/2477 groups, keyed by group name
-  (node groups → `point_sets`, element groups → `cell_sets`).
+- `point_sets` / `cell_sets` — from permanent-group datasets, keyed by group
+  name (node groups → `point_sets`, element groups → `cell_sets`).
+- `point_data` / `cell_data` (other than `unv:pid`) — from / to field datasets
+  2414 (or 55/57), keyed by the field name.
 
 ## Quirks & limitations
 
@@ -119,12 +151,15 @@ inverse applied on write) is:
 - Node/element labels need not be contiguous or 1-based; meshio++ maintains
   explicit label→index maps throughout so groups referencing raw labels
   resolve correctly regardless of numbering gaps.
-- The C++ reader fully implements datasets **2411 and 2412** (nodes,
-  elements, with the sandwich reorder and property ids). Any file containing
-  a **2467/2477 group dataset**, or a **field dataset** (2414/55/56/57), makes
-  the C++ reader throw and the shim falls back to the Python reader.
-- The C++ writer defers to Python whenever the mesh carries `point_sets` or
-  `cell_sets` (since groups have no C++ writer path).
+- The C++ core implements nodes (2411/781), elements (2412), permanent groups
+  (2467 and its aliases, via the `UnvInfo` side-channel) and field datasets
+  (2414 + legacy 55/57); the shim only falls back to the Python reference for
+  buffer targets. Groups (`point_sets`/`cell_sets`) travel out of band because
+  they are not part of the numpy conversion layer — see the `UnvInfo`
+  side-channel, analogous to `AnsysInfo`.
+- Nodes-on-elements field data (2414 location 3, dataset 56) and complex field
+  data are read but skipped with a warning (barycenter averaging / complex
+  values are not implemented).
 
 ## Notes
 
