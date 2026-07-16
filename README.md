@@ -10,14 +10,10 @@
 [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
 
-<!-- TODO: mint a new Zenodo DOI for meshio++ before an official release; the
-     badge above still points at the original meshio project's record. -->
 [![GitHub stars](https://img.shields.io/github/stars/<org>/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/<org>/meshioplusplus)
 [![Downloads](https://pepy.tech/badge/meshioplusplus/month?style=flat-square)](https://pepy.tech/project/meshioplusplus)
 
 <!--[![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)-->
-
-[![Discord](https://img.shields.io/static/v1?logo=discord&logoColor=white&label=chat&message=on%20discord&color=7289da&style=flat-square)](https://discord.gg/Z6DMsJh4Hr)
 
 [![gh-actions](https://img.shields.io/github/workflow/status/<org>/meshioplusplus/ci?style=flat-square)](https://github.com/<org>/meshioplusplus/actions?query=workflow%3Aci)
 [![codecov](https://img.shields.io/codecov/c/github/<org>/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/<org>/meshioplusplus)
