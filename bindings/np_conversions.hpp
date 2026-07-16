@@ -16,6 +16,11 @@
 //
 #pragma once
 
+#if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE) || defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
+#error \
+    "bindings/np_conversions.hpp requires the MESHIO mesh backend: the zero-copy numpy boundary is written against Mesh/CellBlock's members. Configure with -DMESHIOPLUSPLUS_MESH_BACKEND=MESHIO (the default) when building the Python extension."
+#endif
+
 /**
  * @file np_conversions.hpp
  * @brief The pybind11 <-> C++ `meshioplusplus::Mesh` conversion boundary.

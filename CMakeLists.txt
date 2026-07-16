@@ -259,6 +259,46 @@ else()
 endif()
 message(STATUS "meshio++: parallel backend: ${_meshioplusplus_parallel}")
 
+# ---------------------------------------------------------------------------
+# In-memory mesh backend (cpp/include/meshioplusplus/mesh.hpp). Exactly one
+# MESHIOPLUSPLUS_MESH_BACKEND_* macro is defined; all format code is written
+# against the uniform mesh API (mesh_api.hpp) so any backend compiles:
+#   MESHIO - (default) the meshio-mirroring Mesh/CellBlock over dtype-erased
+#            NDArrays. REQUIRED when MESHIOPLUSPLUS_BUILD_PYTHON=ON (the
+#            zero-copy numpy boundary in bindings/np_conversions.hpp is
+#            written against it).
+#   NATIVE - canonical statically-typed storage (Float64 points, Int64
+#            connectivity, CellType enum, CSR ragged blocks). The fastest
+#            pure-C++ consumer surface; the WebAssembly build uses it.
+#   KRATOS - a Kratos-Multiphysics-style ModelPart (Nodes/Elements/
+#            Conditions/SubModelParts) behind the same API, for near-costless
+#            exchange with Kratos (see kratos_bridge.hpp).
+# ---------------------------------------------------------------------------
+set(MESHIOPLUSPLUS_MESH_BACKEND "MESHIO" CACHE STRING
+    "In-memory mesh backend: MESHIO, NATIVE or KRATOS")
+set_property(CACHE MESHIOPLUSPLUS_MESH_BACKEND PROPERTY STRINGS MESHIO NATIVE KRATOS)
+string(TOUPPER "${MESHIOPLUSPLUS_MESH_BACKEND}" _meshioplusplus_mesh_backend)
+
+if(MESHIOPLUSPLUS_BUILD_PYTHON AND NOT _meshioplusplus_mesh_backend STREQUAL "MESHIO")
+  message(FATAL_ERROR
+    "meshio++: the pybind11 extension (MESHIOPLUSPLUS_BUILD_PYTHON=ON) requires "
+    "MESHIOPLUSPLUS_MESH_BACKEND=MESHIO (got '${MESHIOPLUSPLUS_MESH_BACKEND}'). "
+    "Configure with -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF to use the NATIVE/KRATOS backends.")
+endif()
+
+if(_meshioplusplus_mesh_backend STREQUAL "MESHIO")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_MESH_BACKEND_MESHIO)
+elseif(_meshioplusplus_mesh_backend STREQUAL "NATIVE")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
+elseif(_meshioplusplus_mesh_backend STREQUAL "KRATOS")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
+else()
+  message(FATAL_ERROR
+    "meshio++: unknown MESHIOPLUSPLUS_MESH_BACKEND '${MESHIOPLUSPLUS_MESH_BACKEND}' "
+    "(use MESHIO, NATIVE or KRATOS)")
+endif()
+message(STATUS "meshio++: mesh backend: ${_meshioplusplus_mesh_backend}")
+
 if(MESHIOPLUSPLUS_BUILD_PYTHON)
   # The pybind11 extension: bindings + the shared core object library.
   file(GLOB MESHIOPLUSPLUS_BINDING_SOURCES bindings/*.cpp)
@@ -339,4 +379,16 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
 
   include(GoogleTest)
   gtest_discover_tests(meshioplusplus_tests)
+endif()
+
+# --------------------------------------------------------------------------
+# C++ backend benchmark (cpp/benchmark/bench_backends.cpp): one binary per
+# mesh backend (the backend is a compile-time choice); benchmark/
+# bench_backends.sh builds all three variants and collates the CSV output.
+# No external benchmark framework -- std::chrono, warmup + median-of-N.
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_BUILD_BENCHMARKS "Build the C++ mesh-backend benchmark binary" OFF)
+if(MESHIOPLUSPLUS_BUILD_BENCHMARKS)
+  add_executable(meshioplusplus_bench cpp/benchmark/bench_backends.cpp)
+  target_link_libraries(meshioplusplus_bench PRIVATE meshioplusplus_core_obj)
 endif()

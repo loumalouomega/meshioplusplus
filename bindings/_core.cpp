@@ -83,6 +83,10 @@ PYBIND11_MODULE(_core, m) {
     // callers verify that parallel_for actually threads (STL without TBB is
     // effectively sequential).
     m.attr("__parallel_backend__") = meshioplusplus::parallel_backend_name();
+    // Active compile-time mesh backend — always "meshio" here (the Python
+    // extension refuses to build against any other; see CMakeLists.txt),
+    // exposed for symmetry with the standalone/WASM builds.
+    m.attr("__mesh_backend__") = meshioplusplus::mesh_backend_name();
 
     // Translate C++ I/O errors to the existing Python exception classes.
     py::register_exception_translator([](std::exception_ptr p) {
