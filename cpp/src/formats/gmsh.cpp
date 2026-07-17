@@ -180,26 +180,6 @@ struct EBlock {
     std::vector<std::int64_t> mTags;  // count*num_tags
 };
 
-void store_value(NDArray& rA, std::size_t i, double d) {
-    switch (rA.Dtype()) {
-        case DType::Float64:
-            rA.As<double>()[i] = d;
-            break;
-        case DType::Float32:
-            rA.As<float>()[i] = static_cast<float>(d);
-            break;
-        case DType::Int64:
-            rA.As<std::int64_t>()[i] = static_cast<std::int64_t>(d);
-            break;
-        case DType::Int32:
-            rA.As<std::int32_t>()[i] = static_cast<std::int32_t>(d);
-            break;
-        default:
-            rA.As<double>()[i] = d;
-            break;
-    }
-}
-
 void read_physical_names(Cursor& rCur, std::unordered_map<std::string, NDArray>& rFieldData) {
     std::int64_t num = std::stoll(trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num; ++i) {
@@ -861,7 +841,8 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
         }
         os << '\n';
     } else {
-        char buf[80];
+        // %zu (up to 20 digits) + 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
+        char buf[128];
         for (std::size_t i = 0; i < num_points; ++i) {
             double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
             double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
@@ -1033,7 +1014,8 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
         os << node_dim << " 0 0 " << num_points << "\n";
         for (std::size_t i = 0; i < num_points; ++i)
             os << (i + 1) << "\n";
-        char buf[80];
+        // 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
+        char buf[128];
         for (std::size_t i = 0; i < num_points; ++i) {
             double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
             double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
