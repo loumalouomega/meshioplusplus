@@ -251,6 +251,37 @@ npm install @meshioplusplus/wasm
 
 See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
 
+### C / Fortran API
+
+For HPC codes written in C or Fortran, the C++ core also builds as an
+installable shared library (`libmeshioplusplus`, pure-C99 header, pkg-config +
+`find_package` support) with a modern OO Fortran 2008 module on top:
+
+```
+./build/configure.sh --fortran --tests --build     # --c-api for the C API alone
+cmake --install build/cpp-release --prefix /opt/meshioplusplus
+```
+
+```c
+mio_mesh* m = mio_read("in.msh", NULL);
+printf("%lld points\n", (long long)mio_mesh_num_points(m));
+mio_write("out.vtu", m, NULL);
+mio_mesh_free(m);
+```
+
+```fortran
+use meshioplusplus
+type(mio_mesh) :: m
+call m%read("in.msh")
+call m%write("out.vtu")
+call m%free()
+```
+
+Full mesh access (build meshes from raw arrays, zero-copy readback) is
+covered on the [C API](https://loumalouomega.github.io/meshioplusplus/c_api)
+and [Fortran](https://loumalouomega.github.io/meshioplusplus/fortran) doc
+pages.
+
 ### C++ mesh backends
 
 Standalone C++ builds (no Python) can swap the in-memory mesh structure at

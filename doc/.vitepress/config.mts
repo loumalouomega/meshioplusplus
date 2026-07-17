@@ -50,6 +50,8 @@ export default defineConfig({
           { text: "Extending meshio++", link: "/extending" },
           { text: "ParaView plugin", link: "/paraview_plugin" },
           { text: "WebAssembly / JavaScript", link: "/wasm" },
+          { text: "C API", link: "/c_api" },
+          { text: "Fortran", link: "/fortran" },
           { text: "Benchmarks", link: "/benchmarks" },
         ],
       },

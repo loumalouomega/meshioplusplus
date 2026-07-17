@@ -5,6 +5,20 @@ This document only describes _breaking_ changes in meshio++. If you are interest
 fixes, enhancements etc., best follow [the meshio++ project on
 GitHub](https://github.com/loumalouomega/meshioplusplus).
 
+## Unreleased
+
+- **New C API and Fortran interface** for HPC consumers: an installable
+  `libmeshioplusplus` shared library with a stable pure-C99 header
+  (`mio_*` functions; pkg-config + `find_package(meshioplusplus)` support)
+  and a modern OO Fortran 2008 module (`type(mio_mesh)` with type-bound
+  procedures) on top of it via ISO_C_BINDING. Off by default
+  (`MESHIOPLUSPLUS_BUILD_C_API` / `MESHIOPLUSPLUS_BUILD_FORTRAN`, or
+  `build/configure.sh --c-api` / `--fortran`); Python/WASM artifacts are
+  unaffected. The WASM binding's format-dispatch tables moved into a shared
+  core registry (`meshioplusplus/registry.hpp`) used by both flat bindings —
+  no JS API change. Not breaking; documented at `doc/c_api.md` and
+  `doc/fortran.md`.
+
 ## v6.0.0 (2026-07-14)
 
 - **Default C++ parallel backend is now `AUTO`** (prefers OpenMP, then

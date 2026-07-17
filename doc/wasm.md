@@ -2,7 +2,10 @@
 
 The C++ core also compiles to WebAssembly and ships as an npm package,
 [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm),
-for reading and writing meshes in the browser or Node.js.
+for reading and writing meshes in the browser or Node.js. (It is one of two
+"flat" bindings over the same core and shared format-dispatch registry — the
+other is the [C API](/c_api), which native HDF5/netCDF-capable builds can
+use.)
 
 ## Install
 

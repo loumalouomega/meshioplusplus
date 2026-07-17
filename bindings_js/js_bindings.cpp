@@ -63,8 +63,6 @@
 // System includes
 #include <algorithm>
 #include <cstdint>
-#include <functional>
-#include <map>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -77,38 +75,8 @@
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
-#include "meshioplusplus/formats/abaqus.hpp"
-#include "meshioplusplus/formats/ansys.hpp"
-#include "meshioplusplus/formats/ansysinp.hpp"
-#include "meshioplusplus/formats/avsucd.hpp"
-#include "meshioplusplus/formats/dex.hpp"
-#include "meshioplusplus/formats/dolfin.hpp"
-#include "meshioplusplus/formats/flac3d.hpp"
-#include "meshioplusplus/formats/flux.hpp"
-#include "meshioplusplus/formats/freefem.hpp"
-#include "meshioplusplus/formats/gmsh.hpp"
-#include "meshioplusplus/formats/ip.hpp"
-#include "meshioplusplus/formats/medit.hpp"
-#include "meshioplusplus/formats/mff.hpp"
-#include "meshioplusplus/formats/mfm.hpp"
-#include "meshioplusplus/formats/mphtxt.hpp"
-#include "meshioplusplus/formats/nastran.hpp"
-#include "meshioplusplus/formats/netgen.hpp"
-#include "meshioplusplus/formats/obj_off.hpp"
-#include "meshioplusplus/formats/openfoam.hpp"
-#include "meshioplusplus/formats/permas.hpp"
-#include "meshioplusplus/formats/ply.hpp"
-#include "meshioplusplus/formats/stl.hpp"
-#include "meshioplusplus/formats/su2.hpp"
-#include "meshioplusplus/formats/tecplot.hpp"
-#include "meshioplusplus/formats/tetgen.hpp"
-#include "meshioplusplus/formats/ugrid.hpp"
-#include "meshioplusplus/formats/unv.hpp"
-#include "meshioplusplus/formats/vtk.hpp"
-#include "meshioplusplus/formats/vtu.hpp"
-#include "meshioplusplus/formats/wkt.hpp"
-#include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/types.hpp"
 
 using emscripten::val;
@@ -318,156 +286,27 @@ Mesh val_to_mesh(const val& rObj) {
 }
 
 // ---------------------------------------------------------------------
-// Format dispatch tables (the JS-side analogue of Python's
-// extension_to_filetypes in _helpers.py, which has no C++-level
-// equivalent -- bindings/_core.cpp exposes one function per format and
-// leaves dispatch entirely to Python). Parameterized writers get a fixed
-// default here (documented per-entry), matching each format's own Python
-// reference default; per-call overrides are a possible future API addition,
-// deliberately out of scope for v1.
+// Format dispatch goes through the shared registry (registry.hpp), the
+// JS-side analogue of Python's extension_to_filetypes in _helpers.py --
+// bindings/_core.cpp exposes one function per format and leaves dispatch
+// entirely to Python, while the flat bindings (this file and bindings_c/)
+// share the C++-level tables in cpp/src/registry.cpp. Parameterized writers
+// get a fixed default there (documented per-entry); per-call overrides are a
+// possible future API addition, deliberately out of scope for v1. Under
+// Emscripten the HDF5/netCDF-conditional registry entries are compiled out,
+// so the WASM format set is exactly the non-HDF5/netCDF one described in the
+// file-level docs above.
 // ---------------------------------------------------------------------
 
-using ReadFn = std::function<Mesh(const std::string&)>;
-using WriteFn = std::function<void(const std::string&, const Mesh&)>;
+using meshioplusplus::registry_readers;
+using meshioplusplus::registry_writers;
+using meshioplusplus::resolve_format;
 
-const std::map<std::string, ReadFn>& readers() {
-    static const std::map<std::string, ReadFn> m = {
-        {"abaqus", meshioplusplus::read_abaqus},
-        {"ansys", meshioplusplus::read_ansys},
-        {"avsucd", meshioplusplus::read_avsucd},
-        {"dolfin", meshioplusplus::read_dolfin},
-        {"flac3d", meshioplusplus::read_flac3d},
-        {"dex", meshioplusplus::read_dex},
-        {"flux", meshioplusplus::read_flux},
-        {"freefem", meshioplusplus::read_freefem},
-        {"gmsh", meshioplusplus::read_gmsh},
-        {"ip", meshioplusplus::read_ip},
-        {"medit", meshioplusplus::read_medit_ascii},
-        {"mff", meshioplusplus::read_mff},
-        {"mfm", meshioplusplus::read_mfm},
-        {"mphtxt", meshioplusplus::read_mphtxt},
-        {"nastran", meshioplusplus::read_nastran},
-        {"netgen", meshioplusplus::read_netgen},
-        {"obj", meshioplusplus::read_obj},
-        {"off", meshioplusplus::read_off},
-        {"permas", meshioplusplus::read_permas},
-        {"ply", meshioplusplus::read_ply},
-        {"stl", meshioplusplus::read_stl},
-        {"su2", meshioplusplus::read_su2},
-        {"tecplot", meshioplusplus::read_tecplot},
-        {"tetgen", meshioplusplus::read_tetgen},
-        {"ugrid", meshioplusplus::read_ugrid},
-        {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
-        {"vtk", meshioplusplus::read_vtk},
-        {"vtu", meshioplusplus::read_vtu},
-        {"wkt", meshioplusplus::read_wkt},
-        {"xdmf", meshioplusplus::read_xdmf},
-        // Side-channel info (point_sets/cell_sets, cell-tag family names) is
-        // not yet exposed to JS -- v1 limitation, see doc/wasm.md.
-        {"ansysinp",
-         [](const std::string& path) {
-             meshioplusplus::AnsysInfo info;
-             return meshioplusplus::read_ansysinp(path, info);
-         }},
-        {"openfoam",
-         [](const std::string& path) {
-             meshioplusplus::OpenFoamInfo info;
-             return meshioplusplus::read_openfoam(path, info);
-         }},
-    };
-    return m;
-}
-
-const std::map<std::string, WriteFn>& writers() {
-    static const std::map<std::string, WriteFn> m = {
-        {"abaqus", meshioplusplus::write_abaqus},
-        {"ansys", [](const std::string& p,
-                     const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
-        {"avsucd", meshioplusplus::write_avsucd},
-        {"dolfin", meshioplusplus::write_dolfin},
-        {"flac3d",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_flac3d(p, mm, ".16e", /*binary=*/false);
-         }},
-        {"dex", meshioplusplus::write_dex},
-        {"flux", meshioplusplus::write_flux},
-        {"freefem", meshioplusplus::write_freefem},
-        {"gmsh", [](const std::string& p,
-                    const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
-        {"ip", meshioplusplus::write_ip},
-        {"medit", meshioplusplus::write_medit_ascii},
-        {"mff", meshioplusplus::write_mff},
-        {"mfm",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
-        {"mphtxt", meshioplusplus::write_mphtxt},
-        {"nastran", meshioplusplus::write_nastran},
-        {"netgen",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_netgen(p, mm, ".16e"); }},
-        {"obj", meshioplusplus::write_obj},
-        {"off", meshioplusplus::write_off},
-        {"permas", meshioplusplus::write_permas},
-        {"ply", [](const std::string& p,
-                   const Mesh& mm) { meshioplusplus::write_ply(p, mm, /*binary=*/true); }},
-        {"stl", [](const std::string& p,
-                   const Mesh& mm) { meshioplusplus::write_stl(p, mm, /*binary=*/false); }},
-        {"su2", meshioplusplus::write_su2},
-        {"tecplot", meshioplusplus::write_tecplot},
-        {"tetgen", meshioplusplus::write_tetgen},
-        {"ugrid", meshioplusplus::write_ugrid},
-        {"unv", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); }},
-        {"vtk",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
-         }},
-        {"vtu",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/true);
-         }},
-        {"wkt", meshioplusplus::write_wkt},
-        {"xdmf",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xdmf(p, mm, "XML"); }},
-        {"ansysinp",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets from JS in v1
-             meshioplusplus::write_ansysinp(p, mm, info);
-         }},
-        // openfoam is read-only in the C++ core (see openfoam.hpp) -> no writer entry.
-    };
-    return m;
-}
-
-// Extension -> canonical format key for the non-ambiguous cases; `.msh`
-// defaults to gmsh and `.inp` to abaqus (matching this repo's own import
-// order in src/meshioplusplus/__init__.py). Pass an explicit `format` to
-// select ansys/freefem (.msh) or ansysinp (.inp) instead.
-const std::map<std::string, std::string>& extension_defaults() {
-    static const std::map<std::string, std::string> m = {
-        {".inp", "abaqus"},  {".avs", "avsucd"},  {".xml", "dolfin"},    {".f3grid", "flac3d"},
-        {".dex", "dex"},     {".ip", "ip"},       {".mff", "mff"},       {".pf3", "flux"},
-        {".mesh", "medit"},  {".mfm", "mfm"},     {".mphtxt", "mphtxt"}, {".bdf", "nastran"},
-        {".nas", "nastran"}, {".fem", "nastran"}, {".vol", "netgen"},    {".obj", "obj"},
-        {".off", "off"},     {".post", "permas"}, {".dato", "permas"},   {".ply", "ply"},
-        {".stl", "stl"},     {".su2", "su2"},     {".dat", "tecplot"},   {".tec", "tecplot"},
-        {".ele", "tetgen"},  {".node", "tetgen"}, {".ugrid", "ugrid"},   {".unv", "unv"},
-        {".vtk", "vtk"},     {".vtu", "vtu"},     {".wkt", "wkt"},       {".xdmf", "xdmf"},
-        {".xmf", "xdmf"},    {".msh", "gmsh"},
-    };
-    return m;
-}
-
-std::string extension_of(const std::string& rPath) {
-    auto pos = rPath.find_last_of('.');
-    return pos == std::string::npos ? "" : rPath.substr(pos);
-}
-
-std::string resolve_format(const std::string& rPath, const std::string& rFormat) {
-    if (!rFormat.empty())
-        return rFormat;
-    auto it = extension_defaults().find(extension_of(rPath));
-    if (it == extension_defaults().end())
-        throw meshioplusplus::ReadError("meshio++ (wasm): cannot infer format from '" + rPath +
-                                        "' -- pass an explicit format argument");
-    return it->second;
+// " (this build has no HDF5 support)" for extensions like `.med` whose format
+// the registry knows but this build compiled out; "" otherwise.
+std::string compiled_out_hint(const std::string& rFormat) {
+    const char* dep = meshioplusplus::registry_compiled_out(rFormat);
+    return dep ? " (this build has no " + std::string(dep) + " support)" : "";
 }
 
 // Throw a genuine, message-carrying JS `Error` from C++. Emscripten's
@@ -505,7 +344,7 @@ auto with_js_errors(F&& f) -> decltype(f()) {
 /**
  * @brief Read a mesh file from the Emscripten virtual filesystem.
  * @param rPath virtual FS path (write the bytes there first via `Module.FS`).
- * @param rFormat explicit format key (see `extension_defaults()`), or "" to
+ * @param rFormat explicit format key (see `registry_extension_defaults()`), or "" to
  *   infer from `rPath`'s extension.
  * @return a plain JS mesh object (see `mesh_to_val`).
  * @throws meshioplusplus::ReadError on an unknown/unsupported format or a
@@ -514,10 +353,10 @@ auto with_js_errors(F&& f) -> decltype(f()) {
 val read_mesh(const std::string& rPath, const std::string& rFormat) {
     return with_js_errors([&]() -> val {
         std::string fmt = resolve_format(rPath, rFormat);
-        auto it = readers().find(fmt);
-        if (it == readers().end())
+        auto it = registry_readers().find(fmt);
+        if (it == registry_readers().end())
             throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported format '" +
-                                            fmt + "'");
+                                            fmt + "'" + compiled_out_hint(fmt));
         return mesh_to_val(it->second(rPath));
     });
 }
@@ -534,10 +373,11 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
 void write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat) {
     with_js_errors([&]() {
         std::string fmt = resolve_format(rPath, rFormat);
-        auto it = writers().find(fmt);
-        if (it == writers().end())
+        auto it = registry_writers().find(fmt);
+        if (it == registry_writers().end())
             throw meshioplusplus::WriteError(
-                "meshio++ (wasm): unknown, read-only, or unsupported format '" + fmt + "'");
+                "meshio++ (wasm): unknown, read-only, or unsupported format '" + fmt + "'" +
+                compiled_out_hint(fmt));
         it->second(rPath, val_to_mesh(rMeshObj));
     });
 }
@@ -552,14 +392,16 @@ void convert(const std::string& rInPath, const std::string& rInFormat, const std
     with_js_errors([&]() {
         std::string rfmt = resolve_format(rInPath, rInFormat);
         std::string wfmt = resolve_format(rOutPath, rOutFormat);
-        auto rit = readers().find(rfmt);
-        auto wit = writers().find(wfmt);
-        if (rit == readers().end())
+        auto rit = registry_readers().find(rfmt);
+        auto wit = registry_writers().find(wfmt);
+        if (rit == registry_readers().end())
             throw meshioplusplus::ReadError(
-                "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'");
-        if (wit == writers().end())
+                "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
+                compiled_out_hint(rfmt));
+        if (wit == registry_writers().end())
             throw meshioplusplus::WriteError(
-                "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'");
+                "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'" +
+                compiled_out_hint(wfmt));
         wit->second(rOutPath, rit->second(rInPath));
     });
 }

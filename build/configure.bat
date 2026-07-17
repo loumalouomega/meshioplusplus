@@ -25,6 +25,8 @@ set "WITH_HDF5=OFF"
 set "WITH_NETCDF=OFF"
 set "WITH_ZLIB=OFF"
 set "TESTS=OFF"
+set "C_API=OFF"
+set "FORTRAN=OFF"
 set "DO_BUILD=no"
 set "PYTHON_EXE="
 set "TBB_DIR="
@@ -41,6 +43,8 @@ if /I "%~1"=="--without-netcdf" set "WITH_NETCDF=OFF" & shift & goto parse
 if /I "%~1"=="--with-zlib"      set "WITH_ZLIB=ON" & shift & goto parse
 if /I "%~1"=="--without-zlib"   set "WITH_ZLIB=OFF" & shift & goto parse
 if /I "%~1"=="--tests"          set "TESTS=ON" & shift & goto parse
+if /I "%~1"=="--c-api"          set "C_API=ON" & shift & goto parse
+if /I "%~1"=="--fortran"        set "FORTRAN=ON" & set "C_API=ON" & shift & goto parse
 if /I "%~1"=="--build"          set "DO_BUILD=yes" & shift & goto parse
 if /I "%~1"=="--python"         set "PYTHON_EXE=%~2" & shift & shift & goto parse
 if /I "%~1"=="--tbb-dir"        set "TBB_DIR=%~2" & shift & shift & goto parse
@@ -82,6 +86,7 @@ echo   backend:   %BACKEND%
 echo   mesh:      %MESH_BACKEND% (Python extension: %BUILD_PYTHON%)
 echo   HDF5:      %WITH_HDF5%   netCDF: %WITH_NETCDF%   zlib: %WITH_ZLIB%
 echo   tests:     %TESTS%
+echo   C API:     %C_API%   Fortran: %FORTRAN%
 echo   python:    %PYTHON_EXE%
 echo.
 
@@ -93,6 +98,8 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DMESHIOPLUSPLUS_WITH_NETCDF=%WITH_NETCDF% ^
     -DMESHIOPLUSPLUS_WITH_ZLIB=%WITH_ZLIB% ^
     -DMESHIOPLUSPLUS_BUILD_TESTS=%TESTS% ^
+    -DMESHIOPLUSPLUS_BUILD_C_API=%C_API% ^
+    -DMESHIOPLUSPLUS_BUILD_FORTRAN=%FORTRAN% ^
     -DPython_EXECUTABLE="%PYTHON_EXE%" ^
     %EXTRA%
 if errorlevel 1 exit /b 1
@@ -123,6 +130,9 @@ echo   --with-hdf5 / --without-hdf5     HDF5-backed formats (default: off on Win
 echo   --with-netcdf / --without-netcdf
 echo   --with-zlib / --without-zlib
 echo   --tests                          also build the GoogleTest suite (CTest)
+echo   --c-api                          build the installable libmeshioplusplus C API
+echo   --fortran                        build the Fortran module (implies --c-api;
+echo                                    needs a Fortran compiler, untested on MSVC)
 echo   --build                          run the build after configuring
 echo   --python ^<exe^>                  Python executable (default: auto)
 echo   --tbb-dir ^<path^>                TBBConfig.cmake dir
