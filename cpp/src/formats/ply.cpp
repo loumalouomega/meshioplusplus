@@ -102,7 +102,7 @@ std::string cell_type_from_count(std::size_t n) {
     }
 }
 
-std::string trim(const std::string& rS) {
+std::string ply_trim(const std::string& rS) {
     std::size_t b = 0, e = rS.size();
     while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
         ++b;
@@ -195,13 +195,13 @@ Mesh read_ply(const std::string& rPath) {
     };
     auto next_sig = [&]() -> std::string {
         while (true) {
-            std::string l = trim(read_line());
+            std::string l = ply_trim(read_line());
             if (!l.empty() && l.rfind("comment", 0) != 0)
                 return l;
         }
     };
 
-    if (trim(read_line()) != "ply")
+    if (ply_trim(read_line()) != "ply")
         throw ReadError("Expected 'ply'");
     std::string fmt = next_sig();
     bool is_binary, big = false;

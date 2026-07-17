@@ -33,8 +33,6 @@
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
-#include "meshioplusplus/types.hpp"
-#include "meshioplusplus/vtk_common.hpp"
 
 namespace meshioplusplus {
 
@@ -131,7 +129,7 @@ NDArray parse_ascii(const char* pText, DType dt) {
     return a;
 }
 
-std::string strip(const char* pS) {
+std::string vtu_strip(const char* pS) {
     std::string t = pS ? pS : "";
     std::size_t b = 0, e = t.size();
     while (b < e && std::isspace(static_cast<unsigned char>(t[b])))
@@ -165,11 +163,11 @@ NDArray read_data_array(const pugi::xml_node& rDa, int compression, std::size_t 
     if (fmt == "ascii")
         return parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return parse_binary(strip(rDa.text().get()), dt, compression, hsz);
+        return parse_binary(vtu_strip(rDa.text().get()), dt, compression, hsz);
     throw ReadError("VTU '" + fmt + "' data is not supported by the C++ reader");
 }
 
-std::vector<std::int64_t> to_int64(const NDArray& rA) {
+std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
     std::vector<std::int64_t> v(rA.Size());
     for (std::size_t i = 0; i < rA.Size(); ++i)
         v[i] = detail::read_int(rA, i);
@@ -240,11 +238,11 @@ Mesh read_vtu(const std::string& rPath) {
                 std::string name = da.attribute("Name").as_string();
                 NDArray arr = read_data_array(da, compression, hsz, nc);
                 if (name == "connectivity")
-                    conn = to_int64(arr);
+                    conn = vtu_to_int64(arr);
                 else if (name == "offsets")
-                    offsets = to_int64(arr);
+                    offsets = vtu_to_int64(arr);
                 else if (name == "types")
-                    types = to_int64(arr);
+                    types = vtu_to_int64(arr);
                 else if (name == "faces" || name == "faceoffsets")
                     throw ReadError("polyhedron VTU not supported by the C++ reader");
             }
