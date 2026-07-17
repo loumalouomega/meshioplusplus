@@ -81,10 +81,20 @@ class MeshioplusplusConan(ConanFile):
     def requirements(self):
         if self.options.with_zlib:
             self.requires("zlib/[>=1.2.11 <2]")
-        if self.options.with_hdf5:
-            self.requires("hdf5/[>=1.14 <2]")
         if self.options.with_netcdf:
             self.requires("netcdf/[>=4.8 <5]")
+        if self.options.with_hdf5:
+            # netcdf transitively pins an exact, older hdf5 (netcdf/4.8.1 ->
+            # hdf5/1.14.3) than the top of our floating range, which Conan
+            # reports as a hard version conflict. When both are on, pin our
+            # direct hdf5 to netcdf's version so the graph resolves and we still
+            # link hdf5 ourselves; otherwise float within the compatible range.
+            # (The `packages` CI now runs on every recipe change, so a future
+            # netcdf bumping its hdf5 pin is caught here rather than downstream.)
+            if self.options.with_netcdf:
+                self.requires("hdf5/1.14.3")
+            else:
+                self.requires("hdf5/[>=1.14 <2]")
 
     def generate(self):
         deps = CMakeDeps(self)
