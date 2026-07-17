@@ -231,6 +231,13 @@ call m%write("out.vtu")
 call m%free()
 ```
 
+The C API is also packaged for **Conan** (root [`conanfile.py`](conanfile.py)) and **vcpkg** (overlay port under [`ports/meshioplusplus/`](ports/meshioplusplus)), both driving the same install/`find_package` path:
+
+```
+conan create . -o meshioplusplus/*:with_hdf5=True
+vcpkg install meshioplusplus --overlay-ports=ports
+```
+
 Full mesh access (build meshes from raw arrays, zero-copy readback) is covered on the [C API](https://loumalouomega.github.io/meshioplusplus/c_api) and [Fortran](https://loumalouomega.github.io/meshioplusplus/fortran) doc pages.
 
 ### Single-header C++

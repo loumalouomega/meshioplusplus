@@ -35,6 +35,20 @@ target_link_libraries(my_solver PRIVATE meshioplusplus::meshioplusplus)
 
 HDF5/netCDF/zlib are detected at configure time exactly as for the Python build; they are private dependencies of the shared library (consumers never link them directly).
 
+## Package managers (Conan & vcpkg)
+
+The C API also ships as a **Conan** recipe (root [`conanfile.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/conanfile.py)) and a **vcpkg** overlay port ([`ports/meshioplusplus/`](https://github.com/loumalouomega/meshioplusplus/tree/main/ports/meshioplusplus)). Both are self-hosted in the repo and drive the same `-DMESHIOPLUSPLUS_BUILD_C_API=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` install path, so consumers get the identical `meshioplusplus::meshioplusplus` target:
+
+```sh
+# Conan (options: with_hdf5 / with_netcdf / with_zlib / with_eigen / fortran)
+conan create . -o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcdf=True
+
+# vcpkg (features: hdf5 / netcdf / zlib -- all on by default)
+vcpkg install meshioplusplus --overlay-ports=ports
+```
+
+Both are validated in CI on every PR and on `v*` release tags (`.github/workflows/packages.yml`). Two caveats: the shared library is **shared-only** (no static build yet), and the vendored **Eigen** submodule is off in both recipes (the MED transpose falls back to a hand-written loop), since it is absent from a source tarball. Neither is submitted to Conan Center / the upstream vcpkg registry today.
+
 ## Example
 
 The complete, CI-tested example lives at [`doc/examples/c_api_example.c`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/c_api_example.c):

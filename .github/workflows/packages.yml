@@ -1,0 +1,86 @@
+name: packages
+
+# Validate (and, on release tags, exercise) the self-hosted Conan recipe and
+# vcpkg overlay port for the C API (libmeshioplusplus). Mirrors wheels.yml /
+# wasm.yml: PRs validate, `v*` tags run the full release-shaped build.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "conanfile.py"
+      - "test_package/**"
+      - "ports/**"
+      - ".github/workflows/packages.yml"
+      - "CMakeLists.txt"
+      - "cpp/**"
+      - "bindings_c/**"
+      - "cmake/**"
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Conan: build + package + run test_package on two option sets -- the
+  # no-heavy-deps fallback and the full HDF5/netCDF/zlib build.
+  # ---------------------------------------------------------------------------
+  conan:
+    name: Conan (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: fallback
+            opts: "-o meshioplusplus/*:with_hdf5=False -o meshioplusplus/*:with_netcdf=False -o meshioplusplus/*:with_zlib=False"
+          - name: full
+            opts: "-o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcdf=True -o meshioplusplus/*:with_zlib=True"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Conan
+        run: |
+          python -m pip install --upgrade pip
+          pip install "conan>=2.0,<3"
+          conan profile detect --force
+      - name: conan create (${{ matrix.name }})
+        run: conan create . --build=missing ${{ matrix.opts }}
+
+  # ---------------------------------------------------------------------------
+  # vcpkg: lint the manifest on every run; on a release tag, pin the tarball
+  # SHA512 and build the overlay port end-to-end.
+  # ---------------------------------------------------------------------------
+  vcpkg-lint:
+    name: vcpkg manifest lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifest JSON
+        run: python -c "import json,sys; json.load(open('ports/meshioplusplus/vcpkg.json')); print('vcpkg.json OK')"
+      - name: format-manifest (schema check)
+        # Validates the manifest against vcpkg's schema. It also canonicalizes
+        # field order in place; if that changes anything, print the diff as a
+        # hint but don't fail the job (run `vcpkg format-manifest` and commit).
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" format-manifest ports/meshioplusplus/vcpkg.json
+          git diff --exit-code ports/meshioplusplus/vcpkg.json \
+            || echo "::warning::run 'vcpkg format-manifest ports/meshioplusplus/vcpkg.json' and commit the canonical form"
+
+  vcpkg-build:
+    name: vcpkg install (overlay)
+    runs-on: ubuntu-latest
+    # SHA512 of the release tarball is only knowable once the tag exists.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: vcpkg-lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin tarball SHA512
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_REF_NAME}.tar.gz"
+          curl -fsSL "$url" -o src.tar.gz
+          sha="$(sha512sum src.tar.gz | cut -d' ' -f1)"
+          sed -i "s/SHA512 0$/SHA512 ${sha}/" ports/meshioplusplus/portfile.cmake
+          grep "SHA512" ports/meshioplusplus/portfile.cmake
+      - name: vcpkg install
+        run: "\"$VCPKG_INSTALLATION_ROOT/vcpkg\" install meshioplusplus --overlay-ports=\"$PWD/ports\""

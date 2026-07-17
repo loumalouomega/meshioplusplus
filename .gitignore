@@ -30,6 +30,9 @@ build/*
 build-tests/
 build-omp/
 build-tbb/
+# Conan test_package build output + CMake presets emitted by `conan create`.
+test_package/build/
+CMakeUserPresets.json
 # Emscripten build output copied into the npm package staging dir -- built by
 # build/configure-wasm.sh, not committed (mirrors build/* above).
 wasm/dist/
