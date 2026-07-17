@@ -1,10 +1,11 @@
 # Conan test_package: builds a tiny C consumer against the packaged C API and
 # runs it, proving the config-package + target name (meshioplusplus::meshioplusplus)
 # resolve for a downstream find_package.
-from conan import ConanFile
-from conan.tools.cmake import CMake, cmake_layout
-from conan.tools.build import can_run
 import os
+
+from conan import ConanFile
+from conan.tools.build import can_run
+from conan.tools.cmake import CMake, cmake_layout
 
 
 class MeshioplusplusTestConan(ConanFile):
@@ -25,4 +26,6 @@ class MeshioplusplusTestConan(ConanFile):
 
     def test(self):
         if can_run(self):
-            self.run(os.path.join(self.cpp.build.bindir, "test_consumer"), env="conanrun")
+            self.run(
+                os.path.join(self.cpp.build.bindir, "test_consumer"), env="conanrun"
+            )

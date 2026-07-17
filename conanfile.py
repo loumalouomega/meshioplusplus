@@ -18,10 +18,11 @@
 #   * HDF5/netCDF/zlib are PRIVATE to the shared library (the installed surface
 #     is the C header alone), but they must be present at build and run time.
 
-from conan import ConanFile
-from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps, cmake_layout
-from conan.tools.files import copy
 import os
+
+from conan import ConanFile
+from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
+from conan.tools.files import copy
 
 
 class MeshioplusplusConan(ConanFile):
@@ -93,7 +94,9 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_BUILD_PYTHON"] = False
         tc.cache_variables["MESHIOPLUSPLUS_BUILD_FORTRAN"] = bool(self.options.fortran)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_HDF5"] = bool(self.options.with_hdf5)
-        tc.cache_variables["MESHIOPLUSPLUS_WITH_NETCDF"] = bool(self.options.with_netcdf)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_NETCDF"] = bool(
+            self.options.with_netcdf
+        )
         tc.cache_variables["MESHIOPLUSPLUS_WITH_ZLIB"] = bool(self.options.with_zlib)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_EIGEN"] = bool(self.options.with_eigen)
         tc.generate()
@@ -106,15 +109,21 @@ class MeshioplusplusConan(ConanFile):
     def package(self):
         cmake = CMake(self)
         cmake.install()
-        copy(self, "LICENSE", src=self.source_folder,
-             dst=os.path.join(self.package_folder, "licenses"))
+        copy(
+            self,
+            "LICENSE",
+            src=self.source_folder,
+            dst=os.path.join(self.package_folder, "licenses"),
+        )
 
     def package_info(self):
         self.cpp_info.libs = ["meshioplusplus"]
         # Match the installed find_package config so downstream
         # find_package(meshioplusplus) + meshioplusplus::meshioplusplus resolve.
         self.cpp_info.set_property("cmake_file_name", "meshioplusplus")
-        self.cpp_info.set_property("cmake_target_name", "meshioplusplus::meshioplusplus")
+        self.cpp_info.set_property(
+            "cmake_target_name", "meshioplusplus::meshioplusplus"
+        )
         self.cpp_info.set_property("pkg_config_name", "meshioplusplus")
         if self.options.fortran:
             self.cpp_info.libs.insert(0, "meshioplusplus_fortran")
