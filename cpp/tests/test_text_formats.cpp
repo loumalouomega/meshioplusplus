@@ -18,8 +18,13 @@
 // External includes
 #include <gtest/gtest.h>
 
+// System includes
+#include <filesystem>
+#include <fstream>
+
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
 #include "meshioplusplus/formats/medit.hpp"
@@ -101,6 +106,34 @@ TEST(Ugrid, Basic) {
               1e-12);
     SIMPLE_RT(meshioplusplus::write_ugrid, meshioplusplus::read_ugrid, mt::hex_mesh(), ".ugrid",
               1e-12);
+}
+
+TEST(Ugrid, BinaryFlavours) {
+    // The flavour (endianness, float/int width, Fortran record markers) is
+    // decoded from the penultimate filename suffix, so round-trip through each
+    // to exercise the byte-swap, width, and Fortran-record branches that the
+    // ASCII ".ugrid" path never touches.
+    for (const char* suffix :
+         {".b8.ugrid", ".b4.ugrid", ".lb8.ugrid", ".lb4.ugrid", ".r8.ugrid", ".lr8.ugrid"}) {
+        SIMPLE_RT(meshioplusplus::write_ugrid, meshioplusplus::read_ugrid, mt::tet_mesh(), suffix,
+                  1e-12);
+        SIMPLE_RT(meshioplusplus::write_ugrid, meshioplusplus::read_ugrid, mt::hex_mesh(), suffix,
+                  1e-12);
+    }
+}
+
+TEST(Ugrid, ReadRejectsTruncatedBinary) {
+    // A binary-flavour file shorter than its fixed count header must raise
+    // rather than read past EOF.
+    std::string path = mt::temp_path(".lb8.ugrid");
+    {
+        std::ofstream f(path, std::ios::binary);
+        const char partial[4] = {0, 0, 0, 0};
+        f.write(partial, sizeof(partial));
+    }
+    EXPECT_THROW(meshioplusplus::read_ugrid(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 TEST(Netgen, Basic) {

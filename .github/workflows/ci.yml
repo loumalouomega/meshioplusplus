@@ -315,6 +315,7 @@ jobs:
           cmake -S . -B build-cpp-cov -G Ninja \
             -DMESHIOPLUSPLUS_COVERAGE=ON \
             -DMESHIOPLUSPLUS_BUILD_TESTS=ON \
+            -DMESHIOPLUSPLUS_BUILD_C_API=ON \
             -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -355,6 +356,13 @@ jobs:
       #     and partially-covered generated code.
       # `*/build*/_deps/*` also strips FetchContent'd GoogleTest, which lands
       # under the build tree rather than a top-level _deps/.
+      #
+      # The non-MESHIO mesh-backend headers (native_mesh/kratos_mesh/model_part/
+      # kratos_names) are never instantiated in this MESHIO-only job -- they are
+      # exercised by the standalone `cpp-tests` backend matrix instead -- so
+      # leaving them in would structurally cap the `cpp` number with code this
+      # job cannot reach. Drop them from the denominator here (Codecov's ignore
+      # list mirrors this so the badge and the log summary agree).
       - name: Capture C++ coverage
         run: |
           lcov --capture --gcov-tool gcov \
@@ -363,6 +371,8 @@ jobs:
                --ignore-errors mismatch,inconsistent,version,unused,empty,gcov,negative,range,corrupt
           lcov --remove cpp-coverage.info \
                '*/cpp/third_party/*' '*/_deps/*' '*/build*/_deps/*' '/usr/*' \
+               '*/backends/native_mesh.hpp' '*/backends/kratos_mesh.hpp' \
+               '*/backends/model_part.hpp' '*/backends/kratos_names.hpp' \
                --output-file cpp-coverage.info \
                --ignore-errors unused
           lcov --list cpp-coverage.info

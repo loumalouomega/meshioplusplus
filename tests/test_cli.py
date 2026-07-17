@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import meshioplusplus
 
@@ -78,3 +79,37 @@ def test_ascii_binary(tmp_path):
     meshioplusplus._cli.main(["binary", str(infile)])
     mesh = meshioplusplus.read(infile)
     assert is_same_mesh(input_mesh, mesh, atol=1.0e-12)
+
+
+def test_version():
+    # `--version` is an argparse action that prints and exits 0.
+    with pytest.raises(SystemExit) as exc:
+        meshioplusplus._cli.main(["--version"])
+    assert exc.value.code == 0
+
+
+def test_no_command():
+    # A required subcommand is missing -> argparse exits with code 2.
+    with pytest.raises(SystemExit) as exc:
+        meshioplusplus._cli.main([])
+    assert exc.value.code == 2
+
+
+def test_convert_format_inference(tmp_path):
+    # No --input-format/--output-format: the formats are inferred from the
+    # extensions, and the `c` alias is used.
+    infile = tmp_path / "in.vtu"
+    outfile = tmp_path / "out.vtk"
+    meshioplusplus.write(infile, helpers.tri_mesh)
+
+    meshioplusplus._cli.main(["c", str(infile), str(outfile)])
+
+    mesh = meshioplusplus.read(outfile)
+    assert is_same_mesh(helpers.tri_mesh, mesh, atol=1.0e-12)
+
+
+def test_info_inference(tmp_path):
+    # `info` with extension inference, via the `i` alias.
+    infile = tmp_path / "mesh.vtu"
+    meshioplusplus.write(infile, helpers.tri_mesh)
+    meshioplusplus._cli.main(["i", str(infile)])

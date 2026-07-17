@@ -18,8 +18,13 @@
 // External includes
 #include <gtest/gtest.h>
 
+// System includes
+#include <filesystem>
+#include <fstream>
+
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 
 namespace {
@@ -48,3 +53,16 @@ TEST(Xdmf, Hdf) {
     rt(mt::tri_quad_mesh(), "HDF");
 }
 #endif
+
+TEST(Xdmf, ReadRejectsMissingRoot) {
+    // Well-formed XML that lacks the <Xdmf> root must raise rather than be
+    // treated as an empty mesh.
+    std::string path = mt::temp_path(".xdmf");
+    {
+        std::ofstream f(path);
+        f << "<?xml version=\"1.0\"?>\n<NotXdmf/>\n";
+    }
+    EXPECT_THROW(meshioplusplus::read_xdmf(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}

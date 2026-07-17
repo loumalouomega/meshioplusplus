@@ -25,48 +25,45 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/exceptions.hpp"
-#include "meshioplusplus/formats/vtk.hpp"
+#include "meshioplusplus/formats/ply.hpp"
 
 namespace {
-void rt(const mt::Mesh& mesh, bool binary, bool v51) {
-    mt::roundtrip([=](const std::string& p,
-                      const mt::Mesh& m) { meshioplusplus::write_vtk(p, m, binary, v51); },
-                  [](const std::string& p) { return meshioplusplus::read_vtk(p); }, mesh, ".vtk");
-}
-}  // namespace
 
-TEST(Vtk, V51Ascii) {
-    rt(mt::tri_mesh(), false, true);
-    rt(mt::tet_mesh(), false, true);
-    rt(mt::hex_mesh(), false, true);
-}
-TEST(Vtk, V51Binary) {
-    rt(mt::tri_mesh(), true, true);
-    rt(mt::tet_mesh(), true, true);
-}
-TEST(Vtk, V42Ascii) {
-    rt(mt::tri_mesh(), false, false);
-    rt(mt::tet_mesh(), false, false);
-}
-TEST(Vtk, V42Binary) {
-    rt(mt::quad_mesh(), true, false);
-}
-TEST(Vtk, Hybrid) {
-    rt(mt::tri_quad_mesh(), false, true);
+// PLY has no dedicated cpp/tests file elsewhere -- cpp/src/formats/ply.cpp is
+// otherwise reached only through the Python shim. Exercise both the ASCII and
+// binary reader/writer halves here.
+
+TEST(Ply, AsciiRoundtrip) {
+    auto w = [](const std::string& p, const mt::Mesh& m) {
+        meshioplusplus::write_ply(p, m, /*binary=*/false);
+    };
+    auto r = [](const std::string& p) { return meshioplusplus::read_ply(p); };
+    mt::roundtrip(w, r, mt::tri_mesh(), ".ply");
+    mt::roundtrip(w, r, mt::quad_mesh(), ".ply");
+    mt::roundtrip(w, r, mt::tri_quad_mesh(), ".ply");
 }
 
-TEST(Vtk, ReadRejectsStructuredGrid) {
-    // The C++ VTK reader only handles UNSTRUCTURED_GRID; a legacy header
-    // declaring another dataset type must raise rather than mis-read.
-    std::string path = mt::temp_path(".vtk");
+TEST(Ply, BinaryRoundtrip) {
+    auto w = [](const std::string& p, const mt::Mesh& m) {
+        meshioplusplus::write_ply(p, m, /*binary=*/true);
+    };
+    auto r = [](const std::string& p) { return meshioplusplus::read_ply(p); };
+    mt::roundtrip(w, r, mt::tri_mesh(), ".ply");
+    mt::roundtrip(w, r, mt::quad_mesh(), ".ply");
+    mt::roundtrip(w, r, mt::tri_quad_mesh(), ".ply");
+}
+
+TEST(Ply, ReadRejectsNonPly) {
+    // A file that does not start with the "ply" magic must be rejected rather
+    // than silently mis-parsed.
+    std::string path = mt::temp_path(".ply");
     {
         std::ofstream f(path);
-        f << "# vtk DataFile Version 3.0\n"
-          << "structured grid header\n"
-          << "ASCII\n"
-          << "DATASET STRUCTURED_GRID\n";
+        f << "this is not a ply file\n";
     }
-    EXPECT_THROW(meshioplusplus::read_vtk(path), meshioplusplus::ReadError);
+    EXPECT_THROW(meshioplusplus::read_ply(path), meshioplusplus::ReadError);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+
+}  // namespace
