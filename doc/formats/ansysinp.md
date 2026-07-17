@@ -1,9 +1,6 @@
 # Ansys MAPDL coded database (`.cdb` / `.inp`)
 
-An autonomous reader/writer for the Ansys **MAPDL "coded database"** format —
-distinct from the [Fluent `.msh` format](ansys.md) also named "ansys" in
-meshioplusplus. It parses `ET`/`ETBLOCK`, `NBLOCK`, `EBLOCK`, and `CMBLOCK` blocks
-directly, with no dependency on any other format module.
+An autonomous reader/writer for the Ansys **MAPDL "coded database"** format — distinct from the [Fluent `.msh` format](ansys.md) also named "ansys" in meshioplusplus. It parses `ET`/`ETBLOCK`, `NBLOCK`, `EBLOCK`, and `CMBLOCK` blocks directly, with no dependency on any other format module.
 
 | | |
 |---|---|
@@ -23,18 +20,11 @@ meshioplusplus.ansysInp.write("out.cdb", mesh)
 
 Both `read(filename)` and `write(filename, mesh)` take no keyword arguments.
 
-**Note on `.inp`**: this format registers **both** `.cdb` and `.inp` as
-extensions, colliding with [Abaqus](abaqus.md)'s pre-existing `.inp`
-registration. Since `abaqus` is imported before `ansysInp` in
-`src/meshioplusplus/__init__.py`, plain extension-based dispatch
-(`meshioplusplus.read("x.inp")`) still resolves to **Abaqus** by default — pass
-`file_format="ansysInp"` explicitly, or call `meshioplusplus.ansysInp.read`/`write`
-directly, to select this format for a `.inp` file.
+**Note on `.inp`**: this format registers **both** `.cdb` and `.inp` as extensions, colliding with [Abaqus](abaqus.md)'s pre-existing `.inp` registration. Since `abaqus` is imported before `ansysInp` in `src/meshioplusplus/__init__.py`, plain extension-based dispatch (`meshioplusplus.read("x.inp")`) still resolves to **Abaqus** by default — pass `file_format="ansysInp"` explicitly, or call `meshioplusplus.ansysInp.read`/`write` directly, to select this format for a `.inp` file.
 
 ## File structure
 
-Whitespace/keyword-delimited MAPDL command blocks, each starting with a
-header line and ending at a sentinel row:
+Whitespace/keyword-delimited MAPDL command blocks, each starting with a header line and ending at a sentinel row:
 
 ```
 /PREP7
@@ -56,31 +46,15 @@ CMBLOCK,<name>,ELEM,<n>                     -- named cell set
 FINISH
 ```
 
-- **Field widths** are read from the format-spec line following each block
-  header (`_int_width`/`_real_width`, parsed via regex against patterns like
-  `3i9` / `6e20.13`), not hardcoded — but the writer always emits `i9`/`e20.13`
-  widths.
-- **`ETBLOCK`** (an alternative to individual `ET,` lines) associates a
-  numeric element-type slot with an underlying Ansys element type id; either
-  form populates the same `etype_lib` mapping used to classify `EBLOCK` rows.
-- **`EBLOCK`** rows: fields are `(mat, type, real, secnum, esys, birth, death,
-  solkey, nodes_per_elem, ..., elem_id, node_ids...)`; only fields 1 (etype
-  slot), 8 (node count) and 10 (element id) are used, plus however many
-  trailing node ids follow (spilling onto a continuation line if there are
-  more than 8).
-- **`CMBLOCK`** (named component = point/cell set): entity `NODE` → point set,
-  entity starting `ELEM` → cell set. Negative values encode a **range
-  marker**: `-k` after a base value `b` expands to `range(b+1, k+1)` — an
-  `ReadError` is raised if a negative value appears before any base value.
-- Any line matching `_is_data_line`'s exclusion list (known keywords,
-  `KEYWORD,` command syntax, `!`/`/` comments) is treated as non-data and
-  stops a block's row-reading loop early.
+- **Field widths** are read from the format-spec line following each block header (`_int_width`/`_real_width`, parsed via regex against patterns like `3i9` / `6e20.13`), not hardcoded — but the writer always emits `i9`/`e20.13` widths.
+- **`ETBLOCK`** (an alternative to individual `ET,` lines) associates a numeric element-type slot with an underlying Ansys element type id; either form populates the same `etype_lib` mapping used to classify `EBLOCK` rows.
+- **`EBLOCK`** rows: fields are `(mat, type, real, secnum, esys, birth, death, solkey, nodes_per_elem, ..., elem_id, node_ids...)`; only fields 1 (etype slot), 8 (node count) and 10 (element id) are used, plus however many trailing node ids follow (spilling onto a continuation line if there are more than 8).
+- **`CMBLOCK`** (named component = point/cell set): entity `NODE` → point set, entity starting `ELEM` → cell set. Negative values encode a **range marker**: `-k` after a base value `b` expands to `range(b+1, k+1)` — an `ReadError` is raised if a negative value appears before any base value.
+- Any line matching `_is_data_line`'s exclusion list (known keywords, `KEYWORD,` command syntax, `!`/`/` comments) is treated as non-data and stops a block's row-reading loop early.
 
 ## Cell types
 
-Ansys element type ids are grouped into 4 families by node-count-independent
-type id, then combined with the node count actually present to resolve a
-meshio++ type:
+Ansys element type ids are grouped into 4 families by node-count-independent type id, then combined with the node count actually present to resolve a meshio++ type:
 
 | family | Ansys element type ids |
 |---|---|
@@ -100,43 +74,21 @@ meshio++ type:
 | (solid, 5) | `pyramid` | | |
 | (solid, 13) | `pyramid13` | | |
 
-Write uses a fixed reverse mapping (one Ansys type id per meshio++ type,
-regardless of which id the file was originally read with):
-`tetra→285, tetra10→187, hexahedron→185, hexahedron20→186, wedge→185,
-wedge15→186, pyramid→185, pyramid13→186, triangle→181, triangle6→281,
-quad→181, quad8→281, line→188, line3→189`. An unmapped meshio++ cell type
-raises `WriteError`.
+Write uses a fixed reverse mapping (one Ansys type id per meshio++ type, regardless of which id the file was originally read with): `tetra→285, tetra10→187, hexahedron→185, hexahedron20→186, wedge→185, wedge15→186, pyramid→185, pyramid13→186, triangle→181, triangle6→281, quad→181, quad8→281, line→188, line3→189`. An unmapped meshio++ cell type raises `WriteError`.
 
 ## Data mapping
 
-- `mesh.point_sets[name]` — from `CMBLOCK ...,NODE,...`, 0-based point
-  indices.
-- `mesh.cell_sets[name]` — from `CMBLOCK ...,ELEM,...`, one array per cell
-  block (in the order blocks were first encountered), 0-based local indices.
-- No point_data, cell_data, or field_data — only geometry, connectivity, and
-  named sets are represented.
+- `mesh.point_sets[name]` — from `CMBLOCK ...,NODE,...`, 0-based point indices.
+- `mesh.cell_sets[name]` — from `CMBLOCK ...,ELEM,...`, one array per cell block (in the order blocks were first encountered), 0-based local indices.
+- No point_data, cell_data, or field_data — only geometry, connectivity, and named sets are represented.
 
 ## Quirks & limitations
 
-- 2D input meshes are padded to 3D with a zero z-column on write (MAPDL has
-  no native 2D coordinate concept).
-- The writer always emits exactly one `NBLOCK`/`EBLOCK` pair (no attempt to
-  preserve an original file's exact block layout, field widths, or element
-  type ids) — a read→write round trip is not byte-identical, though it is
-  semantically equivalent (same points, cells, sets).
-- Read and write go through the C++ core (`meshioplusplus._core.ansysinp_read`/
-  `ansysinp_write`), with the Python reference as an automatic fallback for
-  buffers. CMBLOCK components (`point_sets`/`cell_sets`) travel through a
-  dedicated `AnsysInfo` side-channel struct rather than the Mesh conversion
-  layer.
+- 2D input meshes are padded to 3D with a zero z-column on write (MAPDL has no native 2D coordinate concept).
+- The writer always emits exactly one `NBLOCK`/`EBLOCK` pair (no attempt to preserve an original file's exact block layout, field widths, or element type ids) — a read→write round trip is not byte-identical, though it is semantically equivalent (same points, cells, sets).
+- Read and write go through the C++ core (`meshioplusplus._core.ansysinp_read`/ `ansysinp_write`), with the Python reference as an automatic fallback for buffers. CMBLOCK components (`point_sets`/`cell_sets`) travel through a dedicated `AnsysInfo` side-channel struct rather than the Mesh conversion layer.
 
 ## Notes
 
-- No dedicated `tests/meshes/` reference fixture; `tests/test_ansysInp.py`
-  builds MAPDL snippets and meshes inline (including negative-range
-  `CMBLOCK` expansion, multi-line `EBLOCK` continuation, and round-trips
-  through `io.StringIO`/temp files) rather than shipping a binary fixture.
-  The internal-helper tests import the Python module directly, so the pure-
-  Python reference stays exercised alongside the C++ path.
-- Ported from [Simvia's meshlane fork](https://github.com/simvia-tech/meshlane)
-  (see `CHANGELOG.md`) — this format did not exist upstream before that.
+- No dedicated `tests/meshes/` reference fixture; `tests/test_ansysInp.py` builds MAPDL snippets and meshes inline (including negative-range `CMBLOCK` expansion, multi-line `EBLOCK` continuation, and round-trips through `io.StringIO`/temp files) rather than shipping a binary fixture. The internal-helper tests import the Python module directly, so the pure- Python reference stays exercised alongside the C++ path.
+- Ported from [Simvia's meshlane fork](https://github.com/simvia-tech/meshlane) (see `CHANGELOG.md`) — this format did not exist upstream before that.

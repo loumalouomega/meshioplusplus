@@ -3,20 +3,13 @@
   <p align="center">I/O for mesh files.</p>
 </p>
 
-[![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
-[![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm)
-[![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
+[![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
 
-[![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus)
-[![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
+[![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus) [![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
 
-[![gh-actions](https://img.shields.io/github/actions/workflow/status/loumalouomega/meshioplusplus/ci.yml?branch=main&style=flat-square)](https://github.com/loumalouomega/meshioplusplus/actions?query=workflow%3Aci)
-[![codecov](https://img.shields.io/codecov/c/github/loumalouomega/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/loumalouomega/meshioplusplus)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black)
+[![gh-actions](https://img.shields.io/github/actions/workflow/status/loumalouomega/meshioplusplus/ci.yml?branch=main&style=flat-square)](https://github.com/loumalouomega/meshioplusplus/actions?query=workflow%3Aci) [![codecov](https://img.shields.io/codecov/c/github/loumalouomega/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/loumalouomega/meshioplusplus) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black)
 
-There are various mesh formats available for representing unstructured meshes.
-meshio++ can read and write all of the following and smoothly converts between them:
+There are various mesh formats available for representing unstructured meshes. meshio++ can read and write all of the following and smoothly converts between them:
 
 > [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
 > ANSYS msh (`.msh`),
@@ -57,16 +50,7 @@ meshio++ can read and write all of the following and smoothly converts between t
 > [WKT](https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry) ([TIN](https://en.wikipedia.org/wiki/Triangulated_irregular_network)) (`.wkt`),
 > [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) (`.xdmf`, `.xmf`).
 
-meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and
-writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF
-acceleration and a **selectable parallel backend** (`AUTO` by default — prefers OpenMP,
-then STL+TBB, then sequential; override with `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`).
-Every format has a pure-Python fallback, so behaviour and file compatibility are
-identical whether or not the native libraries are present. For a standalone C++ build
-use `build/configure.sh` (Linux/macOS) or `build/configure.bat` (Windows). Full docs
-(install, data model, per-format options, CLI) live at
-[the documentation site](https://loumalouomega.github.io/meshioplusplus/)
-(sources under [`doc/`](https://github.com/loumalouomega/meshioplusplus/tree/main/doc)).
+meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF acceleration and a **selectable parallel backend** (`AUTO` by default — prefers OpenMP, then STL+TBB, then sequential; override with `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`). Every format has a pure-Python fallback, so behaviour and file compatibility are identical whether or not the native libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS) or `build/configure.bat` (Windows). Full docs (install, data model, per-format options, CLI) live at [the documentation site](https://loumalouomega.github.io/meshioplusplus/) (sources under [`doc/`](https://github.com/loumalouomega/meshioplusplus/tree/main/doc)).
 
 Install with
 
@@ -74,8 +58,7 @@ Install with
 pip install meshioplusplus[all]
 ```
 
-(`[all]` pulls in all optional dependencies. By default, meshio++ only uses numpy.)
-You can then use the command-line tool
+(`[all]` pulls in all optional dependencies. By default, meshio++ only uses numpy.) You can then use the command-line tool
 
 <!--pytest-codeblocks:skip-->
 
@@ -146,14 +129,11 @@ mesh.write(
 meshioplusplus.write_points_cells("foo.vtk", points, cells)
 ```
 
-For both input and output, you can optionally specify the exact `file_format`
-(in case you would like to enforce ASCII over binary VTK, for example).
+For both input and output, you can optionally specify the exact `file_format` (in case you would like to enforce ASCII over binary VTK, for example).
 
 #### Time series
 
-The [XDMF format](https://xdmf.org/index.php/XDMF_Model_and_Format) supports
-time series with a shared mesh. You can write times series data using meshio++
-with
+The [XDMF format](https://xdmf.org/index.php/XDMF_Model_and_Format) supports time series with a shared mesh. You can write times series data using meshio++ with
 
 <!--pytest-codeblocks:skip-->
 
@@ -184,50 +164,28 @@ If you have downloaded a binary version of ParaView, you may proceed as follows.
 
 - Install meshio++ for the Python major version that ParaView uses (check `pvpython --version`)
 - Open ParaView
-- Find the file `paraview-meshioplusplus-plugin.py` of your meshio++ installation (on Linux:
-  `~/.local/share/paraview-5.9/plugins/`) and load it under _Tools / Manage Plugins / Load New_
+- Find the file `paraview-meshioplusplus-plugin.py` of your meshio++ installation (on Linux: `~/.local/share/paraview-5.9/plugins/`) and load it under _Tools / Manage Plugins / Load New_
 - _Optional:_ Activate _Auto Load_
 
 You can now open all meshio++-supported files in ParaView.
 
 ### Benchmarks
 
-How much does the C++ core help? The
-[`benchmark/`](https://github.com/loumalouomega/meshioplusplus/tree/main/benchmark) folder times
-read/write conversions against the original pure-Python
-[meshio](https://github.com/nschloe/meshio) on the formats both support (same
-in-memory mesh, same machine). The headline input is the bundled
-[`example.msh`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/example.msh) — a real Gmsh bracket (~52k nodes, ~293k
-cells).
+How much does the C++ core help? The [`benchmark/`](https://github.com/loumalouomega/meshioplusplus/tree/main/benchmark) folder times read/write conversions against the original pure-Python [meshio](https://github.com/nschloe/meshio) on the formats both support (same in-memory mesh, same machine). The headline input is the bundled [`example.msh`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/example.msh) — a real Gmsh bracket (~52k nodes, ~293k cells).
 
 <img alt="meshio vs meshio++ speedup on example.msh" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/benchmark/plots/benchmark_speedup.svg" width="85%">
 
-meshio++'s biggest wins are the parallel and text paths: **VTU binary+zlib
-~16× write** (the zlib blocks run across cores via an OpenMP backend with
-dynamic scheduling — hybrid P+E-core CPUs load-balance too), **VTU ASCII ~7×
-write / ~5× read**, and mixed-topology **XDMF read ~10×**. The binary and HDF5
-formats that used to be *slower* — VTK/Gmsh binary, UGRID, and MED — are now at
-or above parity after an optimisation pass (bulk-buffered binary I/O,
-single-instruction `bswap` endianness conversion, a real parallel backend, an
-Eigen-backed MED transpose, **zero-copy cell reconstruction** that moves the
-connectivity buffer straight into the mesh, and uninitialised reader buffers +
-thread-parallel block copies so nothing is written twice); binary **reads** now
-match or beat numpy's `fromfile` — Gmsh ~1.7×, single-type VTK ~1.45×, and even
-mixed-topology VTK ~1.1×. Output stays byte-identical throughout.
+meshio++'s biggest wins are the parallel and text paths: **VTU binary+zlib ~16× write** (the zlib blocks run across cores via an OpenMP backend with dynamic scheduling — hybrid P+E-core CPUs load-balance too), **VTU ASCII ~7× write / ~5× read**, and mixed-topology **XDMF read ~10×**. The binary and HDF5 formats that used to be *slower* — VTK/Gmsh binary, UGRID, and MED — are now at or above parity after an optimisation pass (bulk-buffered binary I/O, single-instruction `bswap` endianness conversion, a real parallel backend, an Eigen-backed MED transpose, **zero-copy cell reconstruction** that moves the connectivity buffer straight into the mesh, and uninitialised reader buffers + thread-parallel block copies so nothing is written twice); binary **reads** now match or beat numpy's `fromfile` — Gmsh ~1.7×, single-type VTK ~1.45×, and even mixed-topology VTK ~1.1×. Output stays byte-identical throughout.
 
-The speedup is per-element: text/parallel formats climb out of the small-mesh
-regime and plateau (large meshes realise the full speedup):
+The speedup is per-element: text/parallel formats climb out of the small-mesh regime and plateau (large meshes realise the full speedup):
 
 <img alt="speedup vs mesh size" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/benchmark/plots/benchmark_scaling.svg" width="85%">
 
-Full methodology and a reproducible notebook are on the
-[Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source:
-[`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/01_benchmark.ipynb)).
+Full methodology and a reproducible notebook are on the [Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source: [`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/01_benchmark.ipynb)).
 
 ### Installation
 
-meshio++ is [available from the Python Package Index](https://pypi.org/project/meshioplusplus/),
-so simply run
+meshio++ is [available from the Python Package Index](https://pypi.org/project/meshioplusplus/), so simply run
 
 ```
 pip install meshioplusplus
@@ -235,15 +193,13 @@ pip install meshioplusplus
 
 to install.
 
-Additional dependencies (`netcdf4`, `h5py`) are required for some of the output formats
-and can be pulled in by
+Additional dependencies (`netcdf4`, `h5py`) are required for some of the output formats and can be pulled in by
 
 ```
 pip install meshioplusplus[all]
 ```
 
-For JavaScript / browser use, the C++ core also ships as a WebAssembly npm
-package covering 29 of the formats above:
+For JavaScript / browser use, the C++ core also ships as a WebAssembly npm package covering 29 of the formats above:
 
 ```
 npm install @meshioplusplus/wasm
@@ -253,9 +209,7 @@ See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplu
 
 ### C / Fortran API
 
-For HPC codes written in C or Fortran, the C++ core also builds as an
-installable shared library (`libmeshioplusplus`, pure-C99 header, pkg-config +
-`find_package` support) with a modern OO Fortran 2008 module on top:
+For HPC codes written in C or Fortran, the C++ core also builds as an installable shared library (`libmeshioplusplus`, pure-C99 header, pkg-config + `find_package` support) with a modern OO Fortran 2008 module on top:
 
 ```
 ./build/configure.sh --fortran --tests --build     # --c-api for the C API alone
@@ -277,25 +231,32 @@ call m%write("out.vtu")
 call m%free()
 ```
 
-Full mesh access (build meshes from raw arrays, zero-copy readback) is
-covered on the [C API](https://loumalouomega.github.io/meshioplusplus/c_api)
-and [Fortran](https://loumalouomega.github.io/meshioplusplus/fortran) doc
-pages.
+Full mesh access (build meshes from raw arrays, zero-copy readback) is covered on the [C API](https://loumalouomega.github.io/meshioplusplus/c_api) and [Fortran](https://loumalouomega.github.io/meshioplusplus/fortran) doc pages.
+
+### Single-header C++
+
+The whole C++ core is also amalgamated into one self-contained, [STB](https://github.com/nothings/stb)-style header — [`single_include/meshioplusplus/meshioplusplus.hpp`](single_include/meshioplusplus/meshioplusplus.hpp) — with pugixml bundled and no external dependencies by default. Drop it in, no CMake or linking required:
+
+```cpp
+// in exactly ONE .cpp:
+#define MESHIOPLUSPLUS_IMPLEMENTATION
+#include "meshioplusplus/meshioplusplus.hpp"
+// elsewhere: just #include it (declarations only)
+```
+
+```
+g++ -std=c++20 -I single_include main.cpp
+```
+
+It is generated by `./tools/amalgamate.sh` and kept in sync by CI. See the [single-header](https://loumalouomega.github.io/meshioplusplus/single_header) doc page (optional HDF5/netCDF/zlib formats via `MESHIOPLUSPLUS_HAS_*` macros).
 
 ### C++ mesh backends
 
-Standalone C++ builds (no Python) can swap the in-memory mesh structure at
-compile time via `MESHIOPLUSPLUS_MESH_BACKEND` — every format works
-identically under each backend:
+Standalone C++ builds (no Python) can swap the in-memory mesh structure at compile time via `MESHIOPLUSPLUS_MESH_BACKEND` — every format works identically under each backend:
 
-- **MESHIO** (default; the Python extension and PyPI wheels always use it) —
-  mirrors the Python `meshio.Mesh`;
-- **NATIVE** — the fastest pure-C++ structure (canonical Float64/Int64
-  storage, cell-type enum, CSR ragged blocks); the WebAssembly build uses it;
-- **KRATOS** — a [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos)-style
-  `ModelPart` (Nodes/Elements/Conditions/SubModelParts) plus a header-only
-  templated bridge that populates a real `Kratos::ModelPart` with no Kratos
-  build dependency.
+- **MESHIO** (default; the Python extension and PyPI wheels always use it) — mirrors the Python `meshio.Mesh`;
+- **NATIVE** — the fastest pure-C++ structure (canonical Float64/Int64 storage, cell-type enum, CSR ragged blocks); the WebAssembly build uses it;
+- **KRATOS** — a [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos)-style `ModelPart` (Nodes/Elements/Conditions/SubModelParts) plus a header-only templated bridge that populates a real `Kratos::ModelPart` with no Kratos build dependency.
 
 ```
 ./build/configure.sh --mesh-backend NATIVE --tests --build
@@ -305,8 +266,7 @@ See the [C++ mesh backends](https://loumalouomega.github.io/meshioplusplus/cpp_b
 
 ### Testing
 
-To run the meshio++ unit tests, check out this repository, install it with the test
-extras, and type
+To run the meshio++ unit tests, check out this repository, install it with the test extras, and type
 
 ```
 pytest tests/

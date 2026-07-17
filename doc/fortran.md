@@ -1,8 +1,6 @@
 # Fortran
 
-meshio++ ships a modern object-oriented Fortran 2008 module,
-`meshioplusplus`, layered on the [C API](/c_api) via `ISO_C_BINDING` — in the
-HDF5/PETSc style, aimed at Fortran HPC codes:
+meshio++ ships a modern object-oriented Fortran 2008 module, `meshioplusplus`, layered on the [C API](/c_api) via `ISO_C_BINDING` — in the HDF5/PETSc style, aimed at Fortran HPC codes:
 
 ```fortran
 use meshioplusplus
@@ -21,9 +19,7 @@ build/configure.sh --fortran --build     # implies --c-api
 cmake --install build/cpp-release --prefix /opt/meshioplusplus
 ```
 
-installs `libmeshioplusplus_fortran.so` next to `libmeshioplusplus.so`, plus
-`include/meshioplusplus/fortran/meshioplusplus.mod` **and the module source**
-`meshioplusplus.f90`. Compile and link:
+installs `libmeshioplusplus_fortran.so` next to `libmeshioplusplus.so`, plus `include/meshioplusplus/fortran/meshioplusplus.mod` **and the module source** `meshioplusplus.f90`. Compile and link:
 
 ```sh
 gfortran my_solver.f90 -I /opt/meshioplusplus/include/meshioplusplus/fortran \
@@ -31,28 +27,19 @@ gfortran my_solver.f90 -I /opt/meshioplusplus/include/meshioplusplus/fortran \
 ```
 
 ::: warning .mod files are compiler-specific
-A `.mod` compiled by gfortran N is unreadable by gfortran N±2, ifort, or
-flang. If your compiler rejects the installed `.mod`, recompile the module
-from the installed `meshioplusplus.f90` with your own compiler and link the
-same libraries — that is exactly why the source is installed (the HDF5
-approach). CMake consumers can instead `find_package(meshioplusplus)` and
-link `meshioplusplus::meshioplusplus_fortran` from the same build.
+A `.mod` compiled by gfortran N is unreadable by gfortran N±2, ifort, or flang. If your compiler rejects the installed `.mod`, recompile the module from the installed `meshioplusplus.f90` with your own compiler and link the same libraries — that is exactly why the source is installed (the HDF5 approach). CMake consumers can instead `find_package(meshioplusplus)` and link `meshioplusplus::meshioplusplus_fortran` from the same build.
 :::
 
 ## Array layout and 1-based indexing
 
-The C core stores points as row-major `(num_points, dim)` and connectivity as
-`(num_cells, nodes_per_cell)`. Because Fortran is column-major, the **same
-memory** is naturally the Fortran arrays
+The C core stores points as row-major `(num_points, dim)` and connectivity as `(num_cells, nodes_per_cell)`. Because Fortran is column-major, the **same memory** is naturally the Fortran arrays
 
 ```fortran
 real(real64)   :: points(dim, num_points)     ! points(:, i) = coordinates of point i
 integer(int64) :: conn(nodes_per_cell, num_cells)
 ```
 
-so nothing is ever transposed. Node indices are **1-based** in this module;
-the ±1 shift happens inside the copying setters/getters (where a copy is made
-anyway):
+so nothing is ever transposed. Node indices are **1-based** in this module; the ±1 shift happens inside the copying setters/getters (where a copy is made anyway):
 
 ```fortran
 call m%set_points(points)                     ! copies
@@ -60,9 +47,7 @@ call m%add_cell_block("tetra", conn)          ! copies, shifts to the core's 0-b
 call m%get_cell_block(1, rconn)               ! allocates, copies, shifts back to 1-based
 ```
 
-Vector data uses the same rule — a per-point field of `c` components is
-`data(c, num_points)` in Fortran and round-trips as the C API's
-`(num_points, c)`.
+Vector data uses the same rule — a per-point field of `c` components is `data(c, num_points)` in Fortran and round-trips as the C API's `(num_points, c)`.
 
 Zero-copy borrows exist where no index shift is needed:
 
@@ -84,10 +69,7 @@ call m%read("missing.vtu", stat=ierr, errmsg=msg)
 if (ierr /= 0) print *, "read failed: ", msg
 ```
 
-If `stat` is **absent** and the call fails, the message is printed and the
-program `error stop`s — convenient for straight-line tools, pass `stat` when
-you need to recover. `mio_error_message()` returns the most recent failure
-message on the calling thread.
+If `stat` is **absent** and the call fails, the message is printed and the program `error stop`s — convenient for straight-line tools, pass `stat` when you need to recover. `mio_error_message()` returns the most recent failure message on the calling thread.
 
 ## API summary
 
@@ -101,10 +83,4 @@ message on the calling thread.
 | Zero-copy | `m%points_ptr(p)` |
 | Module-level | `mio_convert(in, out [, in_format, out_format])`, `mio_version()`, `mio_mesh_backend()`, `mio_format_readable(f)`, `mio_format_writable(f)`, `mio_error_message()` |
 
-The complete CI-tested example lives at
-[`doc/examples/fortran_example.f90`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/fortran_example.f90);
-format support and the v1 limitations (ragged blocks, side-channel metadata)
-are identical to the [C API](/c_api#format-support), which this module wraps.
-Copy-getters deliver `real(real64)` regardless of the stored dtype
-(float32/int32/int64 are converted); Fortran on Windows/MSVC is untested in
-v1.
+The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/fortran_example.f90); format support and the v1 limitations (ragged blocks, side-channel metadata) are identical to the [C API](/c_api#format-support), which this module wraps. Copy-getters deliver `real(real64)` regardless of the stored dtype (float32/int32/int64 are converted); Fortran on Windows/MSVC is untested in v1.

@@ -24,7 +24,7 @@ meshio++ ships a ParaView plugin (`tools/paraview-meshioplusplus-plugin.py`) tha
    ~/.local/share/paraview-5.9/plugins/paraview-meshioplusplus-plugin.py
    ```
 
-   You can also point directly to the file in the meshio++ source tree at `tools/paraview-meshioplusplus-plugin.py`.
+You can also point directly to the file in the meshio++ source tree at `tools/paraview-meshioplusplus-plugin.py`.
 
 5. *(Optional)* Tick **Auto Load** so the plugin is active every time ParaView starts.
 
