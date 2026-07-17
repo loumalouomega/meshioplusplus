@@ -55,7 +55,6 @@
 
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/exceptions.hpp"
-#include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/registry.hpp"
 
