@@ -47,13 +47,17 @@ jobs:
       - name: Install native libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev libtbb-dev
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev libtbb-dev gfortran pkg-config
       - name: Install build tools
         run: python -m pip install --upgrade pip pybind11 cmake ninja
+      # Every leg also builds the C API + Fortran module, so the gtest C-API
+      # suite and the fortran_api ctest run once per mesh backend.
       - name: Configure
         run: >-
           cmake -S . -B build -G Ninja
           -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_BUILD_C_API=ON
+          -DMESHIOPLUSPLUS_BUILD_FORTRAN=ON
           -DMESHIOPLUSPLUS_MESH_BACKEND=${{ matrix.mesh }}
           -DMESHIOPLUSPLUS_PARALLEL_BACKEND=${{ matrix.parallel }}
           -DMESHIOPLUSPLUS_BUILD_PYTHON=${{ matrix.python }}
@@ -63,6 +67,35 @@ jobs:
         run: cmake --build build
       - name: Run C++ tests
         run: ctest --test-dir build --output-on-failure
+      # The one place the install/export/pkg-config story is actually
+      # exercised end-to-end: install the C API + Fortran module, then build
+      # and run the doc examples as an external consumer would (gcc via
+      # pkg-config, gfortran against the installed .mod, find_package via a
+      # minimal CMake project). One leg is enough.
+      - name: Install + consumer smoke test
+        if: matrix.mesh == 'NATIVE'
+        run: |
+          cmake --install build --prefix "$PWD/inst"
+          export PKG_CONFIG_PATH="$PWD/inst/lib/pkgconfig"
+          pkg-config --exists meshioplusplus
+          gcc -std=c99 doc/examples/c_api_example.c \
+            $(pkg-config --cflags --libs meshioplusplus) -o /tmp/ex_c
+          gfortran doc/examples/fortran_example.f90 \
+            -I inst/include/meshioplusplus/fortran -L inst/lib \
+            -lmeshioplusplus_fortran -lmeshioplusplus -o /tmp/ex_f
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/ex_c
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/ex_f
+          mkdir -p /tmp/find-package-consumer && cd /tmp/find-package-consumer
+          cat > CMakeLists.txt <<EOF
+          cmake_minimum_required(VERSION 3.15)
+          project(consumer LANGUAGES C)
+          find_package(meshioplusplus 6.1 REQUIRED)
+          add_executable(ex_c $GITHUB_WORKSPACE/doc/examples/c_api_example.c)
+          target_link_libraries(ex_c PRIVATE meshioplusplus::meshioplusplus)
+          EOF
+          cmake -S . -B build -Dmeshioplusplus_DIR="$GITHUB_WORKSPACE/inst/lib/cmake/meshioplusplus"
+          cmake --build build
+          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/inst/lib" ./build/ex_c
       # The templated Kratos bridge promises to populate a real Kratos-like
       # ModelPart. Compile a TU against the actual CoSimIO headers (fetched at
       # CI time only -- CoSimIO's BSD-4-clause license is never vendored into

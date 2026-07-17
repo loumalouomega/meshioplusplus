@@ -1,0 +1,16 @@
+# find_package(meshioplusplus) config for the installed C API. The imported
+# target is `meshioplusplus::meshioplusplus` (the libmeshioplusplus shared
+# library + the C header's include dir); the Fortran module, when built, is
+# `meshioplusplus::meshioplusplus_fortran`. The optional heavy deps
+# (HDF5/netCDF/zlib) are PRIVATE to the shared library -- consumers need no
+# find_dependency() calls, the dynamic linker resolves them at load time.
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/meshioplusplusTargets.cmake")
+
+# Introspection: which optional format groups this build shipped with.
+set(MESHIOPLUSPLUS_WITH_HDF5 @HDF5_FOUND@)
+set(MESHIOPLUSPLUS_WITH_NETCDF @netCDF_FOUND@)
+set(MESHIOPLUSPLUS_MESH_BACKEND "@_meshioplusplus_mesh_backend@")
+
+check_required_components(meshioplusplus)

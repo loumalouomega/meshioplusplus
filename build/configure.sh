@@ -23,6 +23,8 @@ WITH_HDF5="ON"
 WITH_NETCDF="ON"
 WITH_ZLIB="ON"
 TESTS="OFF"
+C_API="OFF"
+FORTRAN="OFF"
 DO_BUILD="no"
 PYTHON_EXE=""
 TBB_DIR=""
@@ -40,6 +42,8 @@ Usage: $0 [options]
   --with-netcdf / --without-netcdf
   --with-zlib / --without-zlib
   --tests                         also build the GoogleTest suite (CTest)
+  --c-api                         build the installable libmeshioplusplus C API
+  --fortran                       build the Fortran module (implies --c-api)
   --build                         run the build after configuring
   --python <exe>                  Python executable (default: auto)
   --tbb-dir <path>                TBBConfig.cmake dir (e.g. oneAPI)
@@ -59,6 +63,8 @@ while [ $# -gt 0 ]; do
         --with-zlib) WITH_ZLIB="ON"; shift ;;
         --without-zlib) WITH_ZLIB="OFF"; shift ;;
         --tests) TESTS="ON"; shift ;;
+        --c-api) C_API="ON"; shift ;;
+        --fortran) FORTRAN="ON"; C_API="ON"; shift ;;
         --build) DO_BUILD="yes"; shift ;;
         --python) PYTHON_EXE="$2"; shift 2 ;;
         --tbb-dir) TBB_DIR="$2"; shift 2 ;;
@@ -101,6 +107,8 @@ set -- \
     -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
     -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB" \
     -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
+    -DMESHIOPLUSPLUS_BUILD_C_API="$C_API" \
+    -DMESHIOPLUSPLUS_BUILD_FORTRAN="$FORTRAN" \
     -DPython_EXECUTABLE="$PYTHON_EXE"
 
 # pybind11 from the chosen Python, when available.
@@ -120,6 +128,7 @@ echo "  backend:   $BACKEND"
 echo "  mesh:      $MESH_BACKEND (Python extension: $BUILD_PYTHON)"
 echo "  HDF5:      $WITH_HDF5   netCDF: $WITH_NETCDF   zlib: $WITH_ZLIB"
 echo "  tests:     $TESTS"
+echo "  C API:     $C_API   Fortran: $FORTRAN"
 echo "  python:    $PYTHON_EXE"
 echo
 
@@ -131,6 +140,9 @@ echo "== next steps =="
 echo "  cmake --build \"$BUILD_DIR\" -j"
 if [ "$TESTS" = "ON" ]; then
     echo "  ctest --test-dir \"$BUILD_DIR\" --output-on-failure"
+fi
+if [ "$C_API" = "ON" ]; then
+    echo "  cmake --install \"$BUILD_DIR\" --prefix <prefix>   # libmeshioplusplus + headers (see doc/c_api.md)"
 fi
 echo
 if [ "$MESH_BACKEND" = "MESHIO" ]; then

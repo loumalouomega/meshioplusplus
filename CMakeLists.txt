@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.15...3.30)
 
+# VERSION must track pyproject.toml's `version` (bump both together on a
+# release) -- it feeds mio_version(), the shared-library VERSION properties,
+# and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
+  VERSION 6.1.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -357,6 +361,117 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
 endif()
 
 # --------------------------------------------------------------------------
+# C API (bindings_c/): the installable `libmeshioplusplus` shared library +
+# the pure-C header, the third flat binding over the same core (alongside
+# WASM). Written against the uniform mesh API only, so it builds under every
+# MESHIOPLUSPLUS_MESH_BACKEND. The object-library split lets the GoogleTest
+# binary link the C API's objects directly (no RPATH/shared-lib coupling in
+# the per-backend test legs); the shared lib is what gets installed/exported.
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_BUILD_C_API "Build the installable libmeshioplusplus C API" OFF)
+option(MESHIOPLUSPLUS_BUILD_FORTRAN "Build the Fortran module (implies MESHIOPLUSPLUS_BUILD_C_API)" OFF)
+if(MESHIOPLUSPLUS_BUILD_FORTRAN AND NOT MESHIOPLUSPLUS_BUILD_C_API)
+  message(STATUS "meshio++: MESHIOPLUSPLUS_BUILD_FORTRAN=ON force-enables MESHIOPLUSPLUS_BUILD_C_API")
+  set(MESHIOPLUSPLUS_BUILD_C_API ON)
+endif()
+
+if(MESHIOPLUSPLUS_BUILD_C_API)
+  include(GNUInstallDirs)  # before any use of CMAKE_INSTALL_*DIR below
+  include(CMakePackageConfigHelpers)
+
+  add_library(meshioplusplus_c_obj OBJECT bindings_c/c_api.cpp)
+  set_target_properties(meshioplusplus_c_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_include_directories(meshioplusplus_c_obj
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/bindings_c/include>)
+  # MIO_SHARED/MIO_BUILDING drive the MIO_API dllexport/dllimport macro on
+  # Windows; consumers of the installed library get MIO_SHARED from the
+  # INTERFACE definition on the shared lib below.
+  target_compile_definitions(meshioplusplus_c_obj
+    PRIVATE MIO_BUILDING MIO_SHARED MIO_VERSION_STRING="${PROJECT_VERSION}")
+  target_link_libraries(meshioplusplus_c_obj PUBLIC meshioplusplus_core_obj)
+
+  # PRIVATE link: the object files are embedded, but the C++ core's usage
+  # requirements (in-tree include dirs, backend macros, HDF5/... link deps)
+  # stay out of the exported interface -- the installed surface is the C
+  # header alone. Both object libraries must be linked DIRECTLY: CMake embeds
+  # only directly-linked OBJECT libraries' objects (a transitive one, like
+  # core_obj via c_obj, would contribute usage requirements but no objects,
+  # leaving the .so with undefined registry/format symbols).
+  add_library(meshioplusplus SHARED)
+  target_link_libraries(meshioplusplus PRIVATE meshioplusplus_c_obj meshioplusplus_core_obj)
+  target_include_directories(meshioplusplus
+    INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/bindings_c/include>
+              $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+  target_compile_definitions(meshioplusplus INTERFACE MIO_SHARED)
+  set_target_properties(meshioplusplus PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 0)  # C ABI declared unstable pre-1.0 of the C API
+
+  install(TARGETS meshioplusplus EXPORT meshioplusplusTargets
+          LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(FILES bindings_c/include/meshioplusplus/meshioplusplus.h
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/meshioplusplus)
+  install(EXPORT meshioplusplusTargets NAMESPACE meshioplusplus::
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/meshioplusplus)
+  configure_package_config_file(cmake/meshioplusplusConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplusConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/meshioplusplus)
+  write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplusConfigVersion.cmake
+    COMPATIBILITY SameMajorVersion)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplusConfig.cmake
+                ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplusConfigVersion.cmake
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/meshioplusplus)
+
+  # pkg-config, the lingua franca of HPC build systems. Libs.private carries
+  # whatever optional deps this configure actually linked (static-link aid).
+  set(MIO_PC_LIBS_PRIVATE "")
+  if(HDF5_FOUND)
+    string(APPEND MIO_PC_LIBS_PRIVATE " -lhdf5")
+  endif()
+  if(netCDF_FOUND OR NETCDF_LIBRARY)
+    string(APPEND MIO_PC_LIBS_PRIVATE " -lnetcdf")
+  endif()
+  if(ZLIB_FOUND)
+    string(APPEND MIO_PC_LIBS_PRIVATE " -lz")
+  endif()
+  configure_file(cmake/meshioplusplus.pc.in
+                 ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus.pc @ONLY)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus.pc
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+endif()
+
+# --------------------------------------------------------------------------
+# Fortran module (bindings_fortran/): a modern OO Fortran 2008 interface
+# (`type(mio_mesh)` with type-bound procedures) layered on the C API via
+# ISO_C_BINDING. The .f90 source is installed alongside the compiled .mod
+# because .mod files are compiler-(major-version-)specific -- consumers on a
+# different compiler recompile the module from source (the HDF5 approach).
+# --------------------------------------------------------------------------
+if(MESHIOPLUSPLUS_BUILD_FORTRAN)
+  enable_language(Fortran)
+  add_library(meshioplusplus_fortran SHARED bindings_fortran/meshioplusplus.f90)
+  target_link_libraries(meshioplusplus_fortran PUBLIC meshioplusplus)
+  set_target_properties(meshioplusplus_fortran PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 0
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fortran_modules)
+  target_include_directories(meshioplusplus_fortran INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/fortran_modules>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/meshioplusplus/fortran>)
+
+  install(TARGETS meshioplusplus_fortran EXPORT meshioplusplusTargets
+          LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/fortran_modules/meshioplusplus.mod
+                bindings_fortran/meshioplusplus.f90
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/meshioplusplus/fortran)
+endif()
+
+# --------------------------------------------------------------------------
 # Optional standalone C++ tests (GoogleTest via CTest). OFF by default so that
 # `pip install .` / cibuildwheel never build them. Enable with
 # `-DMESHIO_BUILD_TESTS=ON` for a direct CMake configure.
@@ -370,15 +485,36 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
     URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
     URL_HASH SHA256=7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926)
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  # Keep `cmake --install` of a tests-enabled tree from installing gtest
+  # next to the C API (relevant since MESHIOPLUSPLUS_BUILD_C_API).
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
 
   file(GLOB MESHIOPLUSPLUS_TEST_SOURCES cpp/tests/*.cpp)
+  if(NOT MESHIOPLUSPLUS_BUILD_C_API)
+    list(REMOVE_ITEM MESHIOPLUSPLUS_TEST_SOURCES
+         ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests/test_c_api.cpp)
+  endif()
   add_executable(meshioplusplus_tests ${MESHIOPLUSPLUS_TEST_SOURCES})
   target_include_directories(meshioplusplus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests)
   target_link_libraries(meshioplusplus_tests PRIVATE meshioplusplus_core_obj GTest::gtest_main)
+  if(MESHIOPLUSPLUS_BUILD_C_API)
+    # Link the C API's objects directly (not the shared lib): the gtest binary
+    # then needs no install RPATH and the per-backend CI legs stay one-target.
+    target_link_libraries(meshioplusplus_tests PRIVATE meshioplusplus_c_obj)
+  endif()
 
   include(GoogleTest)
   gtest_discover_tests(meshioplusplus_tests)
+
+  if(MESHIOPLUSPLUS_BUILD_FORTRAN)
+    # Plain Fortran program, nonzero exit on any failed check; argv[1] is a
+    # path prefix for the files it writes.
+    add_executable(meshioplusplus_fortran_test bindings_fortran/test/test_fortran_api.f90)
+    target_link_libraries(meshioplusplus_fortran_test PRIVATE meshioplusplus_fortran)
+    add_test(NAME fortran_api
+             COMMAND meshioplusplus_fortran_test ${CMAKE_CURRENT_BINARY_DIR}/fortran_test_out)
+  endif()
 endif()
 
 # --------------------------------------------------------------------------

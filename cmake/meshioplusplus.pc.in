@@ -1,0 +1,14 @@
+# Relocatable: resolved relative to this file's installed location
+# (<prefix>/<libdir>/pkgconfig), so `cmake --install --prefix <anywhere>`
+# needs no re-configure.
+prefix=${pcfiledir}/../..
+libdir=${pcfiledir}/..
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: meshioplusplus
+Description: meshio++ mesh I/O library (C API)
+URL: https://github.com/loumalouomega/meshioplusplus
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lmeshioplusplus
+Libs.private:@MIO_PC_LIBS_PRIVATE@
+Cflags: -I${includedir}
