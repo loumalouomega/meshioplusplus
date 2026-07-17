@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.15...3.30)
 
-# VERSION must track pyproject.toml's `version` (bump both together on a
+# VERSION must track pyproject.toml's `version`, conanfile.py's `version`, and
+# ports/meshioplusplus/vcpkg.json's `version` (bump all four together on a
 # release) -- it feeds mio_version(), the shared-library VERSION properties,
 # and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 6.3.0
+  VERSION 6.3.1
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 

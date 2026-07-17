@@ -1,0 +1,43 @@
+{
+  "name": "meshioplusplus",
+  "version": "6.3.1",
+  "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
+  "homepage": "https://github.com/loumalouomega/meshioplusplus",
+  "license": "MIT",
+  "supports": "!uwp",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "default-features": [
+    "hdf5",
+    "netcdf",
+    "zlib"
+  ],
+  "features": {
+    "hdf5": {
+      "description": "HDF5-backed formats (CGNS, HMF, H5M, MED, XDMF-HDF)",
+      "dependencies": [
+        "hdf5"
+      ]
+    },
+    "netcdf": {
+      "description": "netCDF-backed formats (Exodus)",
+      "dependencies": [
+        "netcdf-c"
+      ]
+    },
+    "zlib": {
+      "description": "VTU zlib compression path",
+      "dependencies": [
+        "zlib"
+      ]
+    }
+  }
+}

@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "6.3.0"
+version = "6.3.1"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -70,6 +70,15 @@ cmake.build-type = "Release"
 # Rebuild the extension automatically on import during development.
 rebuild = true
 verbose = false
+
+[tool.coverage.run]
+# The `coverage` CI job measures the installed package through an editable
+# install, so coverage.py would otherwise record absolute
+# .../src/meshioplusplus/... paths that Codecov's `python` flag
+# (paths: src/meshioplusplus/) can't match. `relative_files` rewrites them to
+# repo-relative paths; `source` scopes measurement to the package.
+source = ["meshioplusplus"]
+relative_files = true
 
 [tool.isort]
 profile = "black"
