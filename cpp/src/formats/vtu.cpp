@@ -29,7 +29,6 @@
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
-#include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 
 namespace meshioplusplus {
@@ -67,7 +66,7 @@ const char* vtu_type_str(DType dt) {
     return "Float64";
 }
 
-void ascii_double(std::ostream& rOs, double v) {
+void vtu_ascii_double(std::ostream& rOs, double v) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%.11e", v);
     rOs << buf << '\n';
@@ -78,7 +77,7 @@ void ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
     const std::size_t n = rA.Size();
     for (std::size_t i = 0; i < n; ++i) {
         if (flt)
-            ascii_double(rOs, read_double(rA, i));
+            vtu_ascii_double(rOs, read_double(rA, i));
         else
             rOs << read_int(rA, i) << '\n';
     }
@@ -145,7 +144,7 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
     } else {
         for (std::size_t r = 0; r < num_points; ++r)
             for (std::size_t c = 0; c < 3; ++c)
-                ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
+                vtu_ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
     }
     os << "</DataArray>\n</Points>\n";
 

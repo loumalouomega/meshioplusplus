@@ -2,8 +2,7 @@
 
 ## Format table
 
-Each format name links to a detailed reference page (structure, options, data
-mapping, and the C++ vs Python behaviour).
+Each format name links to a detailed reference page (structure, options, data mapping, and the C++ vs Python behaviour).
 
 | Format name | Extensions | Read | Write | Extra dependencies |
 |-------------|-----------|------|-------|--------------------|
@@ -159,15 +158,11 @@ meshioplusplus.med.write(filename, mesh,
 )
 ```
 
-MED does not support compression. `meshioplusplus.med.read_med_multi`/
-`write_med_multi` read/write files containing several meshes — see
-[`med.md`](./formats/med.md).
+MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_med_multi` read/write files containing several meshes — see [`med.md`](./formats/med.md).
 
 ### AnsysInp (`.cdb`, `.inp`)
 
-`meshioplusplus.ansysInp.read(filename)` / `meshioplusplus.ansysInp.write(filename, mesh)` —
-no extra options. See the [`.inp` note](#format-table) above for the
-Abaqus extension collision.
+`meshioplusplus.ansysInp.read(filename)` / `meshioplusplus.ansysInp.write(filename, mesh)` — no extra options. See the [`.inp` note](#format-table) above for the Abaqus extension collision.
 
 ### OpenFOAM (`.foam`, read-only)
 

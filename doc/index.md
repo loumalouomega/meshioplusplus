@@ -32,9 +32,7 @@ features:
 
 ## What is meshio++?
 
-meshio++ reads and writes unstructured mesh files. It supports over 35 formats and
-provides one unified [data model](./mesh_data_model.md) so you can convert between
-any of them, from the command line or from Python:
+meshio++ reads and writes unstructured mesh files. It supports over 35 formats and provides one unified [data model](./mesh_data_model.md) so you can convert between any of them, from the command line or from Python:
 
 ```python
 import meshioplusplus
@@ -48,6 +46,4 @@ meshioplusplus convert input.msh output.vtu
 meshioplusplus info input.xdmf
 ```
 
-See the [Quickstart](./quickstart.md) to get going, the
-[Supported formats](./formats.md) table for the full list and per-format options,
-and the [CLI reference](./cli.md) for the command-line tools.
+See the [Quickstart](./quickstart.md) to get going, the [Supported formats](./formats.md) table for the full list and per-format options, and the [CLI reference](./cli.md) for the command-line tools.

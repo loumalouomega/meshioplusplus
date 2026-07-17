@@ -151,6 +151,54 @@ jobs:
             -I/tmp/CoSimIO/external_libraries /tmp/bridge_check.cpp
           echo "bridge compile-check OK"
 
+  # Include hygiene: fail the PR on any UNUSED #include (clang-tidy's
+  # misc-include-cleaner, driven by tools/include-cleanup.sh). Missing-include
+  # suggestions are advisory only -- see the script + .clang-tidy. HDF5/netCDF
+  # are installed so the guarded format TUs are analyzed too (otherwise their
+  # headers look spuriously unused).
+  include-cleanup:
+    name: Include hygiene (clang-tidy include-cleaner)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install clang-tidy + native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy libhdf5-dev libnetcdf-dev zlib1g-dev
+      - name: Install build tools
+        run: python -m pip install --upgrade pip cmake ninja
+      - name: Check includes
+        run: ./tools/include-cleanup.sh --check
+
+  # Regenerate the committed single-header amalgamation and fail if it is stale,
+  # then smoke-compile it (declarations-only, MESHIOPLUSPLUS_IMPLEMENTATION, and
+  # a two-TU link) so a change under cpp/ that breaks the header-only build is
+  # caught here. pugixml is committed under cpp/third_party (not a submodule),
+  # so no LFS/submodule checkout is needed.
+  amalgamation:
+    name: Single-header amalgamation
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Regenerate + smoke-compile the single header
+        run: ./tools/amalgamate.sh --smoke
+      - name: Fail if the committed single header is stale
+        run: |
+          git diff --exit-code single_include/ \
+            || { echo '::error::single_include/ is out of date -- run ./tools/amalgamate.sh and commit.'; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meshioplusplus-single-header
+          path: single_include/meshioplusplus/meshioplusplus.hpp
+
   test:
     needs: [lint]
     runs-on: ${{ matrix.os }}

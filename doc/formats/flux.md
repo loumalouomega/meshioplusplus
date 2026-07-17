@@ -1,8 +1,6 @@
 # FLUX mesh (`.pf3`)
 
-The [Altair FLUX](https://www.altair.com/flux/) `.pf3` mesh format (as handled
-by [FEconv](https://github.com/victorsndvg/FEconv)). ASCII with French
-keyword headers.
+The [Altair FLUX](https://www.altair.com/flux/) `.pf3` mesh format (as handled by [FEconv](https://github.com/victorsndvg/FEconv)). ASCII with French keyword headers.
 
 | | |
 |---|---|
@@ -24,21 +22,13 @@ meshioplusplus.flux.write("out.pf3", mesh)
 
 ## File structure
 
-Header lines are located by **substring search** for their French label
-(rather than by fixed line position), so header ordering is somewhat
-tolerant:
+Header lines are located by **substring search** for their French label (rather than by fixed line position), so header ordering is somewhat tolerant:
 
 - `dim` — the line containing `"NOMBRE DE DIMENSIONS"` (leading integer).
-- `nel` — the line containing `"D'ELEMENTS"` but *not* any of `VOLUMIQUES`,
-  `SURFACIQUES`, `LINEIQUES`, `PONCTUELS`, `MACRO` (i.e. the grand-total line,
-  not a per-category count).
+- `nel` — the line containing `"D'ELEMENTS"` but *not* any of `VOLUMIQUES`, `SURFACIQUES`, `LINEIQUES`, `PONCTUELS`, `MACRO` (i.e. the grand-total line, not a per-category count).
 - `nnod` — the line containing `"NOMBRE DE POINTS"` but not `"INTEGRATION"`.
 
-The element block starts after the line containing `"DESCRIPTEUR DE
-TOPOLOGIE"`; the coordinate block starts after `"COORDONNEES DES NOEUDS"`.
-Between those markers, `nel` element records are parsed as one continuous
-token stream (line breaks inside a record are tolerated), each a 12-integer
-header followed by its connectivity:
+The element block starts after the line containing `"DESCRIPTEUR DE TOPOLOGIE"`; the coordinate block starts after `"COORDONNEES DES NOEUDS"`. Between those markers, `nel` element records are parsed as one continuous token stream (line breaks inside a record are tolerated), each a 12-integer header followed by its connectivity:
 
 | field | meaning |
 |---|---|
@@ -52,9 +42,7 @@ header followed by its connectivity:
 | 7 | node count (drives how many ids follow) |
 | 8-11 | unused (0 0 0 0) |
 
-followed by the element's 1-based node ids. After `"COORDONNEES DES
-NOEUDS"`, `nnod` records of `node_index x1 x2 ... x_dim` follow; the leading
-index is read and discarded (rows are assumed already in file order).
+followed by the element's 1-based node ids. After `"COORDONNEES DES NOEUDS"`, `nnod` records of `node_index x1 x2 ... x_dim` follow; the leading index is read and discarded (rows are assumed already in file order).
 
 ## Cell types
 
@@ -86,27 +74,16 @@ Hybrid meshes are supported.
 
 ## Data mapping
 
-- `cell_data["pf3:ref"]` — per-element region reference (from header field 3),
-  one array per cell block.
+- `cell_data["pf3:ref"]` — per-element region reference (from header field 3), one array per cell block.
 
 ## Quirks & limitations
 
-- Unlike UNV/gmsh/mphtxt, **no node-order permutation table** is applied —
-  node ids pass through in file order directly. This round-trips losslessly
-  through meshio++ but is not guaranteed to match FLUX's own internal node
-  ordering convention for every element type.
-- Header-line detection is French-text substring matching; a real FLUX file
-  with reworded headers (not expected in practice, but possible) would break
-  parsing.
-- Region *names* (which FLUX may store as binary data alongside the mesh) are
-  not read at all — only the numeric per-element reference.
-- Several always-placeholder header fields on write: region counts are always
-  `1`/`0`/`0`/`0`/`0`/`0`, and both "max nodes per element" and "max
-  integration points per element" fields are hardcoded to `20` regardless of
-  actual mesh content.
+- Unlike UNV/gmsh/mphtxt, **no node-order permutation table** is applied — node ids pass through in file order directly. This round-trips losslessly through meshio++ but is not guaranteed to match FLUX's own internal node ordering convention for every element type.
+- Header-line detection is French-text substring matching; a real FLUX file with reworded headers (not expected in practice, but possible) would break parsing.
+- Region *names* (which FLUX may store as binary data alongside the mesh) are not read at all — only the numeric per-element reference.
+- Several always-placeholder header fields on write: region counts are always `1`/`0`/`0`/`0`/`0`/`0`, and both "max nodes per element" and "max integration points per element" fields are hardcoded to `20` regardless of actual mesh content.
 
 ## Notes
 
 - Fully handled by the C++ core.
-- No reference fixture exists under `tests/meshes/flux/`; tests round-trip
-  every supported linear and second-order type.
+- No reference fixture exists under `tests/meshes/flux/`; tests round-trip every supported linear and second-order type.

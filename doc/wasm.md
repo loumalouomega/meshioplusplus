@@ -1,11 +1,6 @@
 # WebAssembly / JavaScript
 
-The C++ core also compiles to WebAssembly and ships as an npm package,
-[`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm),
-for reading and writing meshes in the browser or Node.js. (It is one of two
-"flat" bindings over the same core and shared format-dispatch registry — the
-other is the [C API](/c_api), which native HDF5/netCDF-capable builds can
-use.)
+The C++ core also compiles to WebAssembly and ships as an npm package, [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm), for reading and writing meshes in the browser or Node.js. (It is one of two "flat" bindings over the same core and shared format-dispatch registry — the other is the [C API](/c_api), which native HDF5/netCDF-capable builds can use.)
 
 ## Install
 
@@ -36,10 +31,7 @@ meshio.writeMesh("/example.msh", mesh, "gmsh");
 
 ## The mesh object shape
 
-Unlike the Python bindings (which hand numpy a zero-copy view straight into
-the C++ buffer), WASM linear memory and the JS heap are different address
-spaces, so every value crossing the boundary is copied once. `readMesh`
-returns, and `writeMesh` accepts, a plain object:
+Unlike the Python bindings (which hand numpy a zero-copy view straight into the C++ buffer), WASM linear memory and the JS heap are different address spaces, so every value crossing the boundary is copied once. `readMesh` returns, and `writeMesh` accepts, a plain object:
 
 ```ts
 {
@@ -55,45 +47,21 @@ returns, and `writeMesh` accepts, a plain object:
 }
 ```
 
-This deliberately mirrors the Python `Mesh`'s structure (points, a list of
-cell blocks, `cell_data` as one array per block). Cell connectivity is always
-`Int32Array` — the C++ core's connectivity dtype is Int64, but node/point
-counts for any mesh a browser can reasonably hold fit comfortably in 32 bits,
-and `Int32Array` is far more ergonomic in JS than `BigInt64Array`.
+This deliberately mirrors the Python `Mesh`'s structure (points, a list of cell blocks, `cell_data` as one array per block). Cell connectivity is always `Int32Array` — the C++ core's connectivity dtype is Int64, but node/point counts for any mesh a browser can reasonably hold fit comfortably in 32 bits, and `Int32Array` is far more ergonomic in JS than `BigInt64Array`.
 
-**Ragged cell blocks** (polygon/polyhedron blocks with a varying node count
-per cell, e.g. MED Voronoi polygons or OpenFOAM general polyhedra) are not
-representable in this flat shape and are rejected: `readMesh` throws if the
-file contains one, and there is no way to construct one for `writeMesh`.
+**Ragged cell blocks** (polygon/polyhedron blocks with a varying node count per cell, e.g. MED Voronoi polygons or OpenFOAM general polyhedra) are not representable in this flat shape and are rejected: `readMesh` throws if the file contains one, and there is no way to construct one for `writeMesh`.
 
 ## Format support
 
-The WASM build ships the 31 formats with no HDF5/netCDF dependency, plus
-XDMF's XML/Binary data path (not its HDF variant) — 32 readable formats in
-total, 31 writable (`openfoam` is read-only):
+The WASM build ships the 31 formats with no HDF5/netCDF dependency, plus XDMF's XML/Binary data path (not its HDF variant) — 32 readable formats in total, 31 writable (`openfoam` is read-only):
 
-`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `dex`, `dolfin-xml`,
-`flac3d`, `flux`, `freefem`, `gmsh`, `ip`, `medit`, `mff`, `mfm`, `mphtxt`,
-`nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the
-C++/Python core), `permas`, `ply`, `stl`, `su2`, `tecplot`, `tetgen`,
-`ugrid`, `unv`, `vtk`, `vtu` (zlib compression works via Emscripten's built-in
-port), `wkt`, `xdmf` (XML/Binary only). The three field-only formats (`dex`,
-`ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
+`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `dex`, `dolfin-xml`, `flac3d`, `flux`, `freefem`, `gmsh`, `ip`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `tecplot`, `tetgen`, `ugrid`, `unv`, `vtk`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML/Binary only). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
 
-**Not yet supported: `cgns`, `h5m`, `hmf`, `med`, `exodus`.** All five need
-HDF5 and/or netCDF, which are not built for this target — porting those C
-libraries to WebAssembly is a separate, materially larger undertaking than
-the rest of the C++ core (both have autotools/CMake builds assuming a POSIX
-filesystem and, in HDF5's case, sometimes MPI). They may follow in a future
-release; there is no runtime fallback the way there is for the Python
-bindings, since there's no Python present at all in this build.
+**Not yet supported: `cgns`, `h5m`, `hmf`, `med`, `exodus`.** All five need HDF5 and/or netCDF, which are not built for this target — porting those C libraries to WebAssembly is a separate, materially larger undertaking than the rest of the C++ core (both have autotools/CMake builds assuming a POSIX filesystem and, in HDF5's case, sometimes MPI). They may follow in a future release; there is no runtime fallback the way there is for the Python bindings, since there's no Python present at all in this build.
 
 ### Ambiguous extensions
 
-Some extensions are shared by more than one format. `readMesh`/`writeMesh`/
-`convert` all take an optional trailing `format` argument (or an
-`{inFormat, outFormat}` options object for `convert`) to disambiguate,
-mirroring Python's `file_format=` kwarg:
+Some extensions are shared by more than one format. `readMesh`/`writeMesh`/ `convert` all take an optional trailing `format` argument (or an `{inFormat, outFormat}` options object for `convert`) to disambiguate, mirroring Python's `file_format=` kwarg:
 
 | Extension | Default format | Pass `format=` to select instead |
 |-----------|-----------------|-----------------------------------|
@@ -102,20 +70,9 @@ mirroring Python's `file_format=` kwarg:
 
 ## Known v1 limitations
 
-- **No zero-copy.** Every array is copied once crossing the JS/WASM boundary
-  (see above) — for very large meshes this has a real memory/time cost that
-  the Python bindings' numpy views avoid.
-- **No per-format write options.** Parameterized writers (binary vs ASCII,
-  float format strings, gzip levels, VTK 4.2 vs 5.1) use a fixed default
-  matching that format's own Python reference default (e.g. `vtu` writes
-  binary+zlib, `stl` writes ASCII, `gmsh` writes the 4.1 binary format).
-  Per-call overrides may be added in a future release.
-- **Side-channel data isn't exposed.** `ansysInp`'s `point_sets`/`cell_sets`
-  and `openfoam`'s cell-tag family names (both carried through a C++
-  side-channel struct alongside the `Mesh`, mirroring the Python bindings'
-  `AnsysInfo`/`OpenFoamInfo`) are not yet surfaced to JS — reading/writing
-  the mesh geometry and data itself works, but these format-specific extras
-  are dropped for now.
+- **No zero-copy.** Every array is copied once crossing the JS/WASM boundary (see above) — for very large meshes this has a real memory/time cost that the Python bindings' numpy views avoid.
+- **No per-format write options.** Parameterized writers (binary vs ASCII, float format strings, gzip levels, VTK 4.2 vs 5.1) use a fixed default matching that format's own Python reference default (e.g. `vtu` writes binary+zlib, `stl` writes ASCII, `gmsh` writes the 4.1 binary format). Per-call overrides may be added in a future release.
+- **Side-channel data isn't exposed.** `ansysInp`'s `point_sets`/`cell_sets` and `openfoam`'s cell-tag family names (both carried through a C++ side-channel struct alongside the `Mesh`, mirroring the Python bindings' `AnsysInfo`/`OpenFoamInfo`) are not yet surfaced to JS — reading/writing the mesh geometry and data itself works, but these format-specific extras are dropped for now.
 
 ## Building from source
 
@@ -130,15 +87,4 @@ cd ../meshioplusplus  # this repo
 node wasm/test/smoke.mjs
 ```
 
-`build/configure-wasm.sh` always configures with
-`-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` (no Python/pybind11 involved),
-`-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ` (OpenMP/TBB/the parallel STL have no
-meaningful story on this target yet),
-`-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE` (the fastest
-[in-memory mesh backend](cpp_backends.md) — canonical Float64/Int64 storage,
-so the embind typed-array boundary needs no dtype dispatch; the JS API shape
-is unchanged, and `meshBackend()` on the loaded module reports `"native"`),
-and HDF5/netCDF off. See
-`--help` for the `--without-zlib`/`--build-type` options. CI
-(`.github/workflows/wasm.yml`) builds and smoke-tests on every push/PR and
-publishes to npm on `v*` tags.
+`build/configure-wasm.sh` always configures with `-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` (no Python/pybind11 involved), `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ` (OpenMP/TBB/the parallel STL have no meaningful story on this target yet), `-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE` (the fastest [in-memory mesh backend](cpp_backends.md) — canonical Float64/Int64 storage, so the embind typed-array boundary needs no dtype dispatch; the JS API shape is unchanged, and `meshBackend()` on the loaded module reports `"native"`), and HDF5/netCDF off. See `--help` for the `--without-zlib`/`--build-type` options. CI (`.github/workflows/wasm.yml`) builds and smoke-tests on every push/PR and publishes to npm on `v*` tags.

@@ -43,9 +43,7 @@ tox
 
 ## Building from source (C++ core)
 
-meshio++'s core is C++20, built through scikit-build-core + CMake when you
-`pip install` from source. The optional native paths (HDF5, netCDF, zlib) are
-auto-detected; the CMake options can be passed through `CMAKE_ARGS`:
+meshio++'s core is C++20, built through scikit-build-core + CMake when you `pip install` from source. The optional native paths (HDF5, netCDF, zlib) are auto-detected; the CMake options can be passed through `CMAKE_ARGS`:
 
 ```
 CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON" \
@@ -54,41 +52,33 @@ CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESH
 
 ### Standalone C++ build
 
-For using the C++ library directly (without Python), two configure scripts live
-in `build/`:
+For using the C++ library directly (without Python), two configure scripts live in `build/`:
 
 ```
 ./build/configure.sh --backend OPENMP --tests --build     # Linux/macOS
 build\configure.bat --backend STL --tests --build         # Windows
 ```
 
-They create a CMake tree under `build/cpp-<build-type>` and print the follow-up
-build/ctest commands.
+They create a CMake tree under `build/cpp-<build-type>` and print the follow-up build/ctest commands.
 
 ### Mesh backends
 
-Standalone C++ builds can swap the in-memory mesh structure itself with
-`--mesh-backend` (CMake: `MESHIOPLUSPLUS_MESH_BACKEND`):
+Standalone C++ builds can swap the in-memory mesh structure itself with `--mesh-backend` (CMake: `MESHIOPLUSPLUS_MESH_BACKEND`):
 
 ```
 ./build/configure.sh --mesh-backend NATIVE --tests --build   # fastest pure-C++ structure
 ./build/configure.sh --mesh-backend KRATOS --tests --build   # Kratos-style ModelPart
 ```
 
-- `MESHIO` (default) — mirrors the Python `meshio.Mesh`; **required** when the
-  pybind11 extension is built (PyPI wheels always use it).
-- `NATIVE` — canonical Float64/Int64 storage, `CellType` enum, CSR ragged
-  blocks; the WebAssembly build uses it.
-- `KRATOS` — a Kratos-Multiphysics-style `ModelPart` behind the same API, with
-  a header-only bridge to the real `Kratos::ModelPart`.
+- `MESHIO` (default) — mirrors the Python `meshio.Mesh`; **required** when the pybind11 extension is built (PyPI wheels always use it).
+- `NATIVE` — canonical Float64/Int64 storage, `CellType` enum, CSR ragged blocks; the WebAssembly build uses it.
+- `KRATOS` — a Kratos-Multiphysics-style `ModelPart` behind the same API, with a header-only bridge to the real `Kratos::ModelPart`.
 
-All formats work identically under every backend. See
-[C++ mesh backends](cpp_backends.md) for the full story.
+All formats work identically under every backend. See [C++ mesh backends](cpp_backends.md) for the full story.
 
 ### Parallelism
 
-The C++ core parallelizes its hot loops through a compile-time-selected
-backend (`meshioplusplus::parallel_for`):
+The C++ core parallelizes its hot loops through a compile-time-selected backend (`meshioplusplus::parallel_for`):
 
 ```
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=AUTO     # default: OpenMP, else STL(+TBB), else SEQ
@@ -100,37 +90,23 @@ backend (`meshioplusplus::parallel_for`):
 
 Notes:
 
-- `AUTO` (the default) prefers OpenMP because it is the portable choice — libgomp
-  on manylinux, built into MSVC, libomp on macOS — and needs no TBB. It falls back
-  to the STL backend, then to sequential.
-- With GCC/libstdc++ the STL backend requires TBB (`apt install libtbb-dev`);
-  when TBB is unusable, CMake warns and falls back to the sequential backend.
-  This is why `AUTO` does not pick STL first: without TBB it runs sequentially.
+- `AUTO` (the default) prefers OpenMP because it is the portable choice — libgomp on manylinux, built into MSVC, libomp on macOS — and needs no TBB. It falls back to the STL backend, then to sequential.
+- With GCC/libstdc++ the STL backend requires TBB (`apt install libtbb-dev`); when TBB is unusable, CMake warns and falls back to the sequential backend. This is why `AUTO` does not pick STL first: without TBB it runs sequentially.
 - `_core.__parallel_backend__` reports the backend actually compiled in.
-- MSVC's STL backend needs nothing extra; Apple's libc++ has no parallel STL
-  (use OpenMP via `brew install libomp`, or SEQ).
-- The design is open to new backends (Kokkos, …): one CMake branch plus one
-  `#elif` block in `cpp/include/meshioplusplus/parallel.hpp`.
+- MSVC's STL backend needs nothing extra; Apple's libc++ has no parallel STL (use OpenMP via `brew install libomp`, or SEQ).
+- The design is open to new backends (Kokkos, …): one CMake branch plus one `#elif` block in `cpp/include/meshioplusplus/parallel.hpp`.
 
 ### Logging
 
-The C++ core logs through `std::format`-based helpers with source locations.
-Control verbosity with the `MESHIOPLUSPLUS_LOG_LEVEL` environment variable:
-`debug`, `info`, `warn` (default), `error`, or `off`.
+The C++ core logs through `std::format`-based helpers with source locations. Control verbosity with the `MESHIOPLUSPLUS_LOG_LEVEL` environment variable: `debug`, `info`, `warn` (default), `error`, or `off`.
 
 ### JavaScript / WebAssembly
 
-The same C++ core also compiles to WebAssembly for use in the browser or
-Node.js, published as [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm)
-(`npm install @meshioplusplus/wasm`). Building it from source needs the
-[Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
-instead of a native compiler:
+The same C++ core also compiles to WebAssembly for use in the browser or Node.js, published as [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm) (`npm install @meshioplusplus/wasm`). Building it from source needs the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) instead of a native compiler:
 
 ```sh
 ./build/configure-wasm.sh --build
 node wasm/test/smoke.mjs
 ```
 
-See [WebAssembly / JavaScript](./wasm.md) for the full usage guide, the
-supported-format list (27 of the 35+ formats — the HDF5/netCDF-backed ones
-are not yet ported to WASM), and known v1 limitations.
+See [WebAssembly / JavaScript](./wasm.md) for the full usage guide, the supported-format list (27 of the 35+ formats — the HDF5/netCDF-backed ones are not yet ported to WASM), and known v1 limitations.

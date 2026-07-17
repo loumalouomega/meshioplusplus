@@ -1,24 +1,17 @@
 # C API
 
-The C++ core also ships as an installable shared library, `libmeshioplusplus`,
-with a stable pure-C99 header — the natural entry point for HPC codes written
-in C (and the foundation of the [Fortran interface](/fortran)). Like the
-[WebAssembly binding](/wasm), it is a flat, whole-mesh API over the same C++
-core, built exclusively on the uniform mesh API, so it works identically under
-every [mesh backend](/cpp_backends).
+The C++ core also ships as an installable shared library, `libmeshioplusplus`, with a stable pure-C99 header — the natural entry point for HPC codes written in C (and the foundation of the [Fortran interface](/fortran)). Like the [WebAssembly binding](/wasm), it is a flat, whole-mesh API over the same C++ core, built exclusively on the uniform mesh API, so it works identically under every [mesh backend](/cpp_backends).
 
 ## Building and installing
 
-The C API is off by default (a plain `pip install` never builds it). From the
-repo:
+The C API is off by default (a plain `pip install` never builds it). From the repo:
 
 ```sh
 build/configure.sh --c-api --build          # add --fortran for the Fortran module
 cmake --install build/cpp-release --prefix /opt/meshioplusplus
 ```
 
-(or pass `-DMESHIOPLUSPLUS_BUILD_C_API=ON` to a direct CMake configure). The
-install lays out:
+(or pass `-DMESHIOPLUSPLUS_BUILD_C_API=ON` to a direct CMake configure). The install lays out:
 
 ```
 include/meshioplusplus/meshioplusplus.h     # the only installed header
@@ -40,14 +33,11 @@ find_package(meshioplusplus 6.1 REQUIRED)
 target_link_libraries(my_solver PRIVATE meshioplusplus::meshioplusplus)
 ```
 
-HDF5/netCDF/zlib are detected at configure time exactly as for the Python
-build; they are private dependencies of the shared library (consumers never
-link them directly).
+HDF5/netCDF/zlib are detected at configure time exactly as for the Python build; they are private dependencies of the shared library (consumers never link them directly).
 
 ## Example
 
-The complete, CI-tested example lives at
-[`doc/examples/c_api_example.c`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/c_api_example.c):
+The complete, CI-tested example lives at [`doc/examples/c_api_example.c`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/c_api_example.c):
 
 ```c
 #include <meshioplusplus/meshioplusplus.h>
@@ -73,19 +63,11 @@ mio_convert("in.msh", NULL, "out.vtk", NULL);
 
 ## The contract in five rules
 
-1. **Errors**: every fallible function returns a `mio_status` (`MIO_OK == 0`)
-   or `NULL`/`-1`; the message is retrievable via `mio_last_error()`
-   (thread-local, valid until the next `mio_*` call on the same thread). No
-   C++ exception ever crosses the ABI.
+1. **Errors**: every fallible function returns a `mio_status` (`MIO_OK == 0`) or `NULL`/`-1`; the message is retrievable via `mio_last_error()` (thread-local, valid until the next `mio_*` call on the same thread). No C++ exception ever crosses the ABI.
 2. **Setters copy** — your buffers can be freed as soon as the call returns.
-3. **Getters are zero-copy** — returned data pointers alias mesh-owned memory
-   and stay valid until the next *mutating* call on that mesh or
-   `mio_mesh_free()`. Read-only accessors never invalidate them.
-4. **Arrays are row-major** (C order): points `(num_points, dim)`,
-   connectivity `(num_cells, nodes_per_cell)` with **0-based** node indices.
-5. **String getters** use the snprintf convention: copy at most `buflen - 1`
-   bytes plus a NUL, return the full length (excluding the NUL), `-1` on
-   error.
+3. **Getters are zero-copy** — returned data pointers alias mesh-owned memory and stay valid until the next *mutating* call on that mesh or `mio_mesh_free()`. Read-only accessors never invalidate them.
+4. **Arrays are row-major** (C order): points `(num_points, dim)`, connectivity `(num_cells, nodes_per_cell)` with **0-based** node indices.
+5. **String getters** use the snprintf convention: copy at most `buflen - 1` bytes plus a NUL, return the full length (excluding the NUL), `-1` on error.
 
 ## API reference
 
@@ -98,31 +80,16 @@ mio_convert("in.msh", NULL, "out.vtk", NULL);
 | Points/cells | `mio_mesh_num_points`, `mio_mesh_point_dim`, `mio_mesh_get_points`, `mio_mesh_num_cell_blocks`, `mio_mesh_cell_block_info`, `mio_mesh_cell_block_type`, `mio_mesh_cell_block_conn` |
 | Named data | `mio_mesh_num_{point,cell,field}_data`, `mio_mesh_{point,cell,field}_data_name` (names in sorted order — identical on every backend), `mio_mesh_get_{point,cell,field}_data`, `mio_mesh_cell_data_num_blocks` |
 
-Every function is documented in the installed header,
-[`bindings_c/include/meshioplusplus/meshioplusplus.h`](https://github.com/loumalouomega/meshioplusplus/blob/main/bindings_c/include/meshioplusplus/meshioplusplus.h).
+Every function is documented in the installed header, [`bindings_c/include/meshioplusplus/meshioplusplus.h`](https://github.com/loumalouomega/meshioplusplus/blob/main/bindings_c/include/meshioplusplus/meshioplusplus.h).
 
 ## Format support
 
-All formats with a C++ implementation are available — the same set as the
-[WASM binding](/wasm#format-support) **plus**, when the build found the
-dependencies, the HDF5-backed formats (`cgns`, `h5m`, `hmf`, `med`, XDMF's
-HDF heavy-data path) and the netCDF-backed `exodus`. Probe at runtime with
-`mio_format_readable()`/`mio_format_writable()`; requesting a compiled-out
-format fails with a message naming the missing dependency. Formats that only
-exist in Python (`mdpa`, `svg`, `neuroglancer`, …) are not reachable from C.
+All formats with a C++ implementation are available — the same set as the [WASM binding](/wasm#format-support) **plus**, when the build found the dependencies, the HDF5-backed formats (`cgns`, `h5m`, `hmf`, `med`, XDMF's HDF heavy-data path) and the netCDF-backed `exodus`. Probe at runtime with `mio_format_readable()`/`mio_format_writable()`; requesting a compiled-out format fails with a message naming the missing dependency. Formats that only exist in Python (`mdpa`, `svg`, `neuroglancer`, …) are not reachable from C.
 
-Parameterized writers use each format's Python-reference default (VTU:
-binary+zlib, gmsh: 4.1 binary, STL: ASCII, XDMF: HDF when built with HDF5
-else XML, …); per-call writer options are a possible future addition.
+Parameterized writers use each format's Python-reference default (VTU: binary+zlib, gmsh: 4.1 binary, STL: ASCII, XDMF: HDF when built with HDF5 else XML, …); per-call writer options are a possible future addition.
 
 ## Limitations (v1)
 
-- **Ragged cell blocks** (polygons/polyhedra of varying size) cannot be
-  built through the C API, and on meshes read from files their connectivity
-  is not accessible (`mio_mesh_cell_block_conn` returns
-  `MIO_ERR_UNSUPPORTED`; counts, type and `is_ragged` still work).
-- **Side-channel metadata** is dropped: `point_sets`/`cell_sets`
-  (`ansysinp`, `unv`), MED families/groups, OpenFOAM cell tags. Use the
-  Python API when you need those.
-- A `mio_mesh` handle is not thread-safe; distinct handles may be used from
-  distinct threads freely.
+- **Ragged cell blocks** (polygons/polyhedra of varying size) cannot be built through the C API, and on meshes read from files their connectivity is not accessible (`mio_mesh_cell_block_conn` returns `MIO_ERR_UNSUPPORTED`; counts, type and `is_ragged` still work).
+- **Side-channel metadata** is dropped: `point_sets`/`cell_sets` (`ansysinp`, `unv`), MED families/groups, OpenFOAM cell tags. Use the Python API when you need those.
+- A `mio_mesh` handle is not thread-safe; distinct handles may be used from distinct threads freely.

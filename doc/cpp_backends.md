@@ -1,8 +1,6 @@
 # C++ mesh backends
 
-The C++ core has three interchangeable **in-memory mesh backends**, selected
-at build time with the CMake option `MESHIOPLUSPLUS_MESH_BACKEND` (exactly one
-is compiled per build, like the [parallel backend](installation.md#parallelism)):
+The C++ core has three interchangeable **in-memory mesh backends**, selected at build time with the CMake option `MESHIOPLUSPLUS_MESH_BACKEND` (exactly one is compiled per build, like the [parallel backend](installation.md#parallelism)):
 
 | Backend  | Structure | Use it for |
 | -------- | --------- | ---------- |
@@ -16,21 +14,13 @@ is compiled per build, like the [parallel backend](installation.md#parallelism))
 ./build/configure.sh --mesh-backend KRATOS --tests --build
 ```
 
-Every format reader/writer is written against a **uniform mesh API**
-(`cpp/include/meshioplusplus/mesh_api.hpp`), so all ~36 formats compile and
-round-trip identically under every backend — the full GoogleTest suite runs
-per backend in CI. Selecting `NATIVE`/`KRATOS` together with
-`MESHIOPLUSPLUS_BUILD_PYTHON=ON` is a CMake configure error: the zero-copy
-numpy boundary is written against MESHIO's exact struct layout.
+Every format reader/writer is written against a **uniform mesh API** (`cpp/include/meshioplusplus/mesh_api.hpp`), so all ~36 formats compile and round-trip identically under every backend — the full GoogleTest suite runs per backend in CI. Selecting `NATIVE`/`KRATOS` together with `MESHIOPLUSPLUS_BUILD_PYTHON=ON` is a CMake configure error: the zero-copy numpy boundary is written against MESHIO's exact struct layout.
 
 ## The uniform mesh API
 
-`meshioplusplus::Mesh` is a compile-time alias
-(`cpp/include/meshioplusplus/mesh.hpp`) for the selected backend type. All
-backends implement:
+`meshioplusplus::Mesh` is a compile-time alias (`cpp/include/meshioplusplus/mesh.hpp`) for the selected backend type. All backends implement:
 
-**Ingestion** (what readers use — `NDArray` is the universal staging type,
-handed over by move):
+**Ingestion** (what readers use — `NDArray` is the universal staging type, handed over by move):
 
 ```cpp
 mesh.AssignPoints(NDArray points);                    // (n, dim), float dtype
@@ -58,18 +48,11 @@ mesh.PointData("temperature");                        // const NDArray&
 mesh.CellData("gmsh:physical", blockIndex);
 ```
 
-Dtype rules: MESHIO stores arrays exactly as received; NATIVE and KRATOS
-canonicalize **within kind** (floats → Float64, ints → Int64 — an integer tag
-array never becomes float, so "first integer cell_data is the tag" format
-conventions survive). Owning arrays that are already canonical are *moved*,
-not copied, and readers produce canonical dtypes almost everywhere, so ingest
-is near-free. One observable consequence: under NATIVE/KRATOS, a file with
-Float32 points is re-written as Float64.
+Dtype rules: MESHIO stores arrays exactly as received; NATIVE and KRATOS canonicalize **within kind** (floats → Float64, ints → Int64 — an integer tag array never becomes float, so "first integer cell_data is the tag" format conventions survive). Owning arrays that are already canonical are *moved*, not copied, and readers produce canonical dtypes almost everywhere, so ingest is near-free. One observable consequence: under NATIVE/KRATOS, a file with Float32 points is re-written as Float64.
 
 ## The NATIVE backend
 
-`meshioplusplus::NativeMesh` (`backends/native_mesh.hpp`) adds a
-fast-consumer surface on top of the uniform API:
+`meshioplusplus::NativeMesh` (`backends/native_mesh.hpp`) adds a fast-consumer surface on top of the uniform API:
 
 ```cpp
 const double* xyz = mesh.PointsData();                    // contiguous Float64
@@ -79,13 +62,11 @@ const auto& csr = mesh.GlobalConnectivity();              // whole-mesh CSR
 // csr.mOffsets (ncells+1), csr.mConn (flat), csr.mTypes (one per cell)
 ```
 
-Ragged blocks are stored CSR-style (flat node buffer + offset arrays) rather
-than nested vectors. `GlobalConnectivity()` is built lazily and cached.
+Ragged blocks are stored CSR-style (flat node buffer + offset arrays) rather than nested vectors. `GlobalConnectivity()` is built lazily and cached.
 
 ## The KRATOS backend
 
-`meshioplusplus::KratosMesh` (`backends/kratos_mesh.hpp`) puts a
-Kratos-style `ModelPart` behind the same API:
+`meshioplusplus::KratosMesh` (`backends/kratos_mesh.hpp`) puts a Kratos-style `ModelPart` behind the same API:
 
 ```cpp
 meshioplusplus::Mesh mesh = meshioplusplus::read_gmsh("part.msh");
@@ -96,38 +77,15 @@ mp.NumberOfConditions();  // lower-dimension blocks
 mp.GetSubModelPart("gmsh_physical_1");  // built from integer tag arrays
 ```
 
-- **Elements vs Conditions**: blocks whose topological dimension equals the
-  mesh's maximum become Elements, lower-dimension blocks Conditions (the
-  Kratos convention, matching the [mdpa](formats/mdpa.md) reader/writer),
-  each kind Id-numbered 1..N in block order with default Kratos names
-  (`Element3D4N`, `SurfaceCondition3D3N`, ... — `backends/kratos_names.hpp`).
-- **Tags → SubModelParts**: integer cell-data under well-known names
-  (`gmsh:physical`, `su2:tag`, `medit:ref`, `cell_tags`, ...) automatically
-  become SubModelParts named `<key>_<value>` containing the tagged entities
-  and their nodes. Disable with `mesh.SetBuildSubModelPartsFromTags(false)`
-  before the first `GetModelPart()` call. The tag arrays also stay as
-  elemental/conditional data, so writer round-trips are byte-identical.
-- **point/cell data** become simplified per-entity variables
-  (`mp.GetNodalData("temperature")`, `mp.GetElementalData(...)`,
-  `mp.GetNodalValue("temperature", nodeId)`).
-- **Lazy and write-transparent**: a plain read → write conversion never
-  builds the ModelPart at all; writer accessors serve from the canonical
-  staging storage, so output matches the NATIVE backend byte-for-byte.
-- **Mutation**: after changing the ModelPart directly (`CreateNewNode`, ...),
-  call `mesh.InvalidateBlocks()`; the block view is then rebuilt from the
-  ModelPart (consecutive same-type Elements group into blocks, then
-  Conditions). Ragged pass-through blocks (polygon/polyhedron — Kratos has no
-  such geometry) and SubModelPart structure are not representable back and
-  are dropped by that rebuild.
+- **Elements vs Conditions**: blocks whose topological dimension equals the mesh's maximum become Elements, lower-dimension blocks Conditions (the Kratos convention, matching the [mdpa](formats/mdpa.md) reader/writer), each kind Id-numbered 1..N in block order with default Kratos names (`Element3D4N`, `SurfaceCondition3D3N`, ... — `backends/kratos_names.hpp`).
+- **Tags → SubModelParts**: integer cell-data under well-known names (`gmsh:physical`, `su2:tag`, `medit:ref`, `cell_tags`, ...) automatically become SubModelParts named `<key>_<value>` containing the tagged entities and their nodes. Disable with `mesh.SetBuildSubModelPartsFromTags(false)` before the first `GetModelPart()` call. The tag arrays also stay as elemental/conditional data, so writer round-trips are byte-identical.
+- **point/cell data** become simplified per-entity variables (`mp.GetNodalData("temperature")`, `mp.GetElementalData(...)`, `mp.GetNodalValue("temperature", nodeId)`).
+- **Lazy and write-transparent**: a plain read → write conversion never builds the ModelPart at all; writer accessors serve from the canonical staging storage, so output matches the NATIVE backend byte-for-byte.
+- **Mutation**: after changing the ModelPart directly (`CreateNewNode`, ...), call `mesh.InvalidateBlocks()`; the block view is then rebuilt from the ModelPart (consecutive same-type Elements group into blocks, then Conditions). Ragged pass-through blocks (polygon/polyhedron — Kratos has no such geometry) and SubModelPart structure are not representable back and are dropped by that rebuild.
 
 ### The Kratos bridge (works from any backend)
 
-`cpp/include/meshioplusplus/kratos_bridge.hpp` is header-only, templated, and
-independent of the selected mesh backend — `meshioplusplus::ModelPart` and
-the bridge compile in every build. `to_model_part` populates **any**
-Kratos-like class through the narrow creation API only
-(`CreateNewNode/CreateNewElement(name, id, nodeIds, properties)/...`), so it
-works with a real `Kratos::ModelPart` without meshio++ ever linking Kratos:
+`cpp/include/meshioplusplus/kratos_bridge.hpp` is header-only, templated, and independent of the selected mesh backend — `meshioplusplus::ModelPart` and the bridge compile in every build. `to_model_part` populates **any** Kratos-like class through the narrow creation API only (`CreateNewNode/CreateNewElement(name, id, nodeIds, properties)/...`), so it works with a real `Kratos::ModelPart` without meshio++ ever linking Kratos:
 
 ```cpp
 #include "meshioplusplus/kratos_bridge.hpp"
@@ -144,27 +102,12 @@ meshioplusplus::to_model_part(mesh.GetModelPart(), dest, [&](auto pid) {
 meshioplusplus::ModelPart mine = meshioplusplus::from_model_part(source);
 ```
 
-Sub model parts (including nested ones) are copied when the destination
-supports `CreateSubModelPart`/`AddNodes`/`AddElements`/`AddConditions`.
-CoSimIO's `ModelPart` (whose `CreateNewElement` takes an `ElementType` enum)
-is populated with a thin loop instead — CI compile-checks that pattern
-against the real CoSimIO headers on every run. The conversion cost is one
-O(n) bulk-create pass — the same cost Kratos's own CoSimIO conversion
-utilities pay, because Kratos's pointer-based entity storage cannot be
-aliased from outside.
+Sub model parts (including nested ones) are copied when the destination supports `CreateSubModelPart`/`AddNodes`/`AddElements`/`AddConditions`. CoSimIO's `ModelPart` (whose `CreateNewElement` takes an `ElementType` enum) is populated with a thin loop instead — CI compile-checks that pattern against the real CoSimIO headers on every run. The conversion cost is one O(n) bulk-create pass — the same cost Kratos's own CoSimIO conversion utilities pay, because Kratos's pointer-based entity storage cannot be aliased from outside.
 
 ## Benchmarks between backends
 
-`benchmark/bench_backends.sh` builds one benchmark binary per backend
-(`cpp/benchmark/bench_backends.cpp`, CMake option
-`MESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV comparing ingest,
-accessor traversal, ModelPart materialization (KRATOS only), and full file
-round-trips on a synthetic tet cube. See [Benchmarks](benchmarks.md#mesh-backend-benchmarks)
-for results and method.
+`benchmark/bench_backends.sh` builds one benchmark binary per backend (`cpp/benchmark/bench_backends.cpp`, CMake option `MESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV comparing ingest, accessor traversal, ModelPart materialization (KRATOS only), and full file round-trips on a synthetic tet cube. See [Benchmarks](benchmarks.md#mesh-backend-benchmarks) for results and method.
 
 ## Adding a backend
 
-One CMake branch defining `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>`, one `#elif`
-in `cpp/include/meshioplusplus/mesh.hpp`, and a `backends/<name>_mesh.hpp`
-implementing the uniform API (`mesh_api.hpp` documents the exact contract;
-`cpp/tests/test_mesh_api.cpp` is its executable form and must pass).
+One CMake branch defining `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>`, one `#elif` in `cpp/include/meshioplusplus/mesh.hpp`, and a `backends/<name>_mesh.hpp` implementing the uniform API (`mesh_api.hpp` documents the exact contract; `cpp/tests/test_mesh_api.cpp` is its executable form and must pass).

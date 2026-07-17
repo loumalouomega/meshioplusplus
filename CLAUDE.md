@@ -32,6 +32,10 @@ Single file/test: `pytest tests/test_gmsh.py::test_gmsh22`.
 
 **Lint / format:** `pre-commit run -a` (isort, black, flake8). Or `black --check . && flake8 . && isort --check .`.
 
+**C++ include hygiene** (`tools/include-cleanup.sh` + `.clang-tidy`): IWYU-style check via clang-tidy's `misc-include-cleaner`. `--check` (CI gate, `include-cleanup` job in `ci.yml`) fails on any **unused** include; missing-include suggestions are **advisory only** (the convention that a format's `.cpp` leans on its own format header to pull in the mesh types is kept). `--fix` removes unused includes. Deliberately-kept includes (the HDF5/netCDF format headers in `registry.cpp`, guarded optional-dep includes) carry `// IWYU pragma: keep`. Run the gate where HDF5/netCDF are installed (as CI does) or their format registrations compile out and look spuriously unused. `.clang-format` still owns ordering (`SortIncludes: Never`).
+
+**Single-header amalgamation** (`tools/amalgamate.sh` + `tools/amalgamate/amalgamate.py`): generates the committed, STB-style header-only `single_include/meshioplusplus/meshioplusplus.hpp` (all of `cpp/include` + `cpp/src` + bundled pugixml; declarations always visible, `.cpp` bodies behind `#define MESHIOPLUSPLUS_IMPLEMENTATION`). Backend defaults MESHIO/sequential; HDF5/netCDF/zlib/Eigen stay behind `MESHIOPLUSPLUS_HAS_*`. The generator emits every header once at file scope in dependency order (so no header is trapped inside another's `#ifdef`). `--smoke` regenerates + compiles it (decls-only, impl, two-TU link). The `amalgamation` CI job regenerates, `git diff --exit-code`s (fails if stale — **regenerate and commit after any `cpp/` change**), and smoke-compiles. Anonymous-namespace helpers must stay uniquely named across `cpp/src/*.cpp` (they concatenate into one TU under the impl macro; format-prefixed like `su2_tokens`/`GmshCursor`). Docs: [`doc/single_header.md`](doc/single_header.md).
+
 **CLI usage:**
 ```bash
 meshioplusplus convert input.msh output.vtk
