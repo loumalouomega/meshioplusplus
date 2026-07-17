@@ -73,7 +73,10 @@ def test_sets_to_int_data_warning():
 
 
 def test_int_data_to_sets():
-    mesh = helpers.tri_mesh
+    # Deep-copy the shared fixture: this test mutates cell_data/cell_sets in
+    # place, and leaking that onto the module-level helpers.tri_mesh corrupts
+    # later round-trip tests (surfaces on the Python-writer path, e.g. Windows).
+    mesh = copy.deepcopy(helpers.tri_mesh)
     mesh.cell_data = {"grain0-grain1": [np.array([0, 1])]}
 
     mesh.cell_data_to_sets("grain0-grain1")
