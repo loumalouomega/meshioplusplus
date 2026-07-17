@@ -71,6 +71,15 @@ cmake.build-type = "Release"
 rebuild = true
 verbose = false
 
+[tool.coverage.run]
+# The `coverage` CI job measures the installed package through an editable
+# install, so coverage.py would otherwise record absolute
+# .../src/meshioplusplus/... paths that Codecov's `python` flag
+# (paths: src/meshioplusplus/) can't match. `relative_files` rewrites them to
+# repo-relative paths; `source` scopes measurement to the package.
+source = ["meshioplusplus"]
+relative_files = true
+
 [tool.isort]
 profile = "black"
 

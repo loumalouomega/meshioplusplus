@@ -301,6 +301,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja
 
+      # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
+      # so re-runs reuse objects. compiler-check=content keeps hits valid across
+      # runner image updates.
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: coverage-${{ runner.os }}
+          max-size: 500M
+
       - name: Build and run the C++ tests (instrumented)
         run: |
           cmake -S . -B build-cpp-cov -G Ninja \
@@ -308,12 +317,17 @@ jobs:
             -DMESHIOPLUSPLUS_BUILD_TESTS=ON \
             -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DPython_EXECUTABLE=$(which python)
           cmake --build build-cpp-cov
           ctest --test-dir build-cpp-cov --output-on-failure
 
       # SKBUILD_CMAKE_BUILD_TYPE overrides pyproject's `cmake.build-type =
       # "Release"`; -O0 keeps the gcov line mapping honest.
+      # SKBUILD_EDITABLE_REBUILD=false stops scikit-build-core from rebuilding
+      # the extension on first import during pytest -- that rebuild would race
+      # the instrumented objects lcov is about to capture.
       - name: Build instrumented _core and run the Python tests
         env:
           CMAKE_ARGS: >-
@@ -321,22 +335,34 @@ jobs:
             -DMESHIOPLUSPLUS_WITH_HDF5=ON
             -DMESHIOPLUSPLUS_WITH_NETCDF=ON
             -DMESHIOPLUSPLUS_WITH_ZLIB=ON
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           SKBUILD_CMAKE_BUILD_TYPE: Debug
+          SKBUILD_EDITABLE_REBUILD: "false"
         run: |
           pip install --no-build-isolation -e . --verbose
           pytest tests/ --codeblocks --cov meshioplusplus --cov-report xml --cov-report term
 
       # lcov 2.x (ubuntu-latest) is strict about gcov edge cases that are not
-      # actionable here -- notably `mismatch` from TUs compiled once but linked
-      # into two binaries, and `unused` from the --remove patterns.
+      # actionable here and would otherwise hard-stop the capture:
+      #   mismatch/inconsistent - TUs compiled once but linked into two binaries
+      #     (the gtest binary and _core), and gtest headers pulled from _deps;
+      #   version - gcov data version vs the gcov tool, harmless on a matched
+      #     runner toolchain but fatal by default;
+      #   negative - counter races surviving -fprofile-update=atomic under the
+      #     threaded parallel_for loops;
+      #   unused/empty/gcov/range/corrupt - byproducts of the --remove patterns
+      #     and partially-covered generated code.
+      # `*/build*/_deps/*` also strips FetchContent'd GoogleTest, which lands
+      # under the build tree rather than a top-level _deps/.
       - name: Capture C++ coverage
         run: |
           lcov --capture --gcov-tool gcov \
                --directory build-cpp-cov --directory build \
                --output-file cpp-coverage.info \
-               --ignore-errors mismatch,unused,empty,gcov,negative
+               --ignore-errors mismatch,inconsistent,version,unused,empty,gcov,negative,range,corrupt
           lcov --remove cpp-coverage.info \
-               '*/cpp/third_party/*' '*/_deps/*' '/usr/*' \
+               '*/cpp/third_party/*' '*/_deps/*' '*/build*/_deps/*' '/usr/*' \
                --output-file cpp-coverage.info \
                --ignore-errors unused
           lcov --list cpp-coverage.info

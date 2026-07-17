@@ -21,20 +21,26 @@ coverage:
   round: down
   range: "60...90"
   status:
-    # Informational until a baseline settles: report the delta on PRs, but do
-    # not block merges on it.
+    # Blocking on PRs. `target: auto` compares against the base commit, so the
+    # first upload just sets the baseline; later PRs only fail on a real drop
+    # beyond `threshold`. Per-flag project checks gate Python and C++ separately.
     project:
       default:
-        informational: true
+        target: auto
+        threshold: 1%
       python:
         flags: [python]
-        informational: true
+        target: auto
+        threshold: 1%
       cpp:
         flags: [cpp]
-        informational: true
+        target: auto
+        threshold: 1%
+    # New/changed lines must carry tests; modest bar so trivial diffs don't stall.
     patch:
       default:
-        informational: true
+        target: 70%
+        threshold: 1%
 
 ignore:
   - "tests/"
