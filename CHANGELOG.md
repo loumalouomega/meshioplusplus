@@ -5,7 +5,7 @@ This document only describes _breaking_ changes in meshio++. If you are interest
 fixes, enhancements etc., best follow [the meshio++ project on
 GitHub](https://github.com/loumalouomega/meshioplusplus).
 
-## Unreleased
+## v6.2.0 (2026-07-17)
 
 - **New C API and Fortran interface** for HPC consumers: an installable
   `libmeshioplusplus` shared library with a stable pure-C99 header
