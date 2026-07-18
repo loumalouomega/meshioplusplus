@@ -64,3 +64,74 @@ def test_no_cells(binary):
     mesh2 = meshioplusplus.read(io.BytesIO(file.getvalue()), "ply")
     assert np.array_equal(mesh.points, mesh2.points)
     assert len(mesh2.cells) == 0
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_ply_volume_mesh_writes_skin(binary, tmp_path):
+    import copy
+
+    # A hexahedron writes its 6 boundary quads; all 8 corners stay.
+    filepath = tmp_path / "skin.ply"
+    meshioplusplus.ply.write(filepath, copy.deepcopy(helpers.hex_mesh), binary=binary)
+    out = meshioplusplus.ply.read(filepath)
+    assert len(out.points) == 8
+    assert len(out.get_cells_type("quad")) == 6
+
+
+def test_ply_skin_compacts_points(tmp_path):
+    # A cube split into 6 pyramids sharing a center apex: the center node
+    # must not appear in the PLY vertex table.
+    mesh = meshioplusplus.Mesh(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+            [0.5, 0.5, 0.5],
+        ],
+        [
+            (
+                "pyramid",
+                [
+                    [0, 1, 2, 3, 8],
+                    [7, 6, 5, 4, 8],
+                    [0, 4, 5, 1, 8],
+                    [2, 6, 7, 3, 8],
+                    [0, 3, 7, 4, 8],
+                    [1, 5, 6, 2, 8],
+                ],
+            )
+        ],
+    )
+    filepath = tmp_path / "compact.ply"
+    meshioplusplus.ply.write(filepath, mesh)
+    out = meshioplusplus.ply.read(filepath)
+    assert len(out.points) == 8
+
+
+def test_ply_skin_false_legacy(tmp_path):
+    import copy
+
+    # skin=False keeps the legacy behavior: volume cells are skipped and the
+    # file carries the full vertex table with no faces.
+    filepath = tmp_path / "legacy.ply"
+    meshioplusplus.ply.write(filepath, copy.deepcopy(helpers.tet_mesh), skin=False)
+    out = meshioplusplus.ply.read(filepath)
+    assert len(out.points) == 5
+    assert len(out.cells) == 0
+
+
+def test_ply_python_fallback_matches_skin(tmp_path):
+    import copy
+
+    from meshioplusplus.ply import _ply
+
+    filepath = tmp_path / "py_skin.ply"
+    _ply.write(filepath, copy.deepcopy(helpers.hex_mesh))
+    out = meshioplusplus.ply.read(filepath)
+    assert len(out.points) == 8
+    assert len(out.get_cells_type("quad")) == 6
