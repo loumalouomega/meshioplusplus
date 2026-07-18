@@ -13,6 +13,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` |
 | [`dex`](./formats/dex.md) | `.dex` | ✓ | ✓ | — |
 | [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — |
+| [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — |
 | [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
 | [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — |
 | [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — |
@@ -41,9 +42,11 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`tecplot`](./formats/tecplot.md) | `.dat`, `.tec` | ✓ | ✓ | — |
 | [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — |
 | [`tikz`](./formats/tikz.md) | `.tikz` | — | ✓ | — |
+| [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — |
 | [`unv`](./formats/unv.md) | `.unv` | ✓ | ✓ | — |
 | [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
+| [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — |
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
@@ -53,6 +56,12 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on `.inp`:** `abaqus` and `ansysInp` both use `.inp`. `abaqus` is registered first, so plain extension-based dispatch resolves to Abaqus by default; pass `file_format="ansysInp"` (or call `meshioplusplus.ansysInp.read`/`write` directly) to select the Ansys/APDL reader for a `.inp` file.
 
 **Note on `tetgen`:** The format spans two files (`.node` + `.ele`). It cannot be read from or written to a buffer.
+
+**Note on `triangle` vs `tetgen` (`.node`/`.ele`):** both formats use `.node`/`.ele`; `tetgen` is registered first, so plain extension dispatch resolves to it. When *reading*, a 2D pair makes tetgen raise and the dispatcher falls through to `triangle` automatically; when *writing*, pass `file_format="triangle"` (or use a `.poly` path, which defaults to `triangle`). Like tetgen, the format spans multiple files and cannot use buffers.
+
+**Note on `ensight`:** EnSight Gold, geometry only (`.case` + `.geo` sibling pair, ASCII and C-binary with byte-order auto-detection; variables/time steps out of scope). Multi-part files concatenate into one point array with the owning part recorded as `cell_data["ensight:part"]`. Cannot use buffers. The `.geo` extension is also used by Gmsh *script* files, which meshio++ never claimed.
+
+**Note on `vtp`:** VTK XML PolyData holds surface cells only (`vertex`/`line`/`triangle`/`quad`/`polygon`); volume or quadratic cells raise `WriteError`. PolyData has no cell-type array, so 3-/4-noded `polygon` cells read back as `triangle`/`quad`. Triangle strips are not supported.
 
 **Note on `svg`:** Write-only, 2D meshes only. C++ core with a Python fallback.
 

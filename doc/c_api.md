@@ -89,7 +89,7 @@ mio_convert("in.msh", NULL, "out.vtk", NULL);
 | --- | --- |
 | Introspection | `mio_version`, `mio_mesh_backend`, `mio_format_readable`, `mio_format_writable`, `mio_last_error` |
 | Cell-type metadata | `mio_cell_type_name`, `mio_cell_type_from_name`, `mio_cell_type_num_nodes`, `mio_cell_type_dimension` (the `mio_cell_type` enum mirrors the C++ table; strings like `"tetra10"` are the primary representation) |
-| Lifecycle & I/O | `mio_mesh_create`, `mio_mesh_free`, `mio_read`, `mio_write`, `mio_convert` (format `NULL`/`""` = infer from extension; `.msh` → gmsh, `.inp` → abaqus) |
+| Lifecycle & I/O | `mio_mesh_create`, `mio_mesh_free`, `mio_read`, `mio_write`, `mio_convert` (format `NULL`/`""` = infer from extension; `.msh` → gmsh, `.inp` → abaqus, `.node`/`.ele` → tetgen — pass `"triangle"` for 2D Triangle pairs) |
 | Building | `mio_mesh_set_points`, `mio_mesh_add_cell_block` (int32 connectivity is widened to the core's int64), `mio_mesh_add_point_data`, `mio_mesh_append_cell_data` (one call per cell block, in block order), `mio_mesh_add_field_data` |
 | Points/cells | `mio_mesh_num_points`, `mio_mesh_point_dim`, `mio_mesh_get_points`, `mio_mesh_num_cell_blocks`, `mio_mesh_cell_block_info`, `mio_mesh_cell_block_type`, `mio_mesh_cell_block_conn` |
 | Named data | `mio_mesh_num_{point,cell,field}_data`, `mio_mesh_{point,cell,field}_data_name` (names in sorted order — identical on every backend), `mio_mesh_get_{point,cell,field}_data`, `mio_mesh_cell_data_num_blocks` |
