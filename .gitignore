@@ -1,3 +1,4 @@
+# Ignore all build artifacts and temporary files
 *.bin
 *.dat
 *.dato
