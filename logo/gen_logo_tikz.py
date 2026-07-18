@@ -73,8 +73,9 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         meshioplusplus.tikz.write(os.path.join(tmp, "bunny.tikz"), bunny)
 
-    # Project with the default CAD-isometric camera and paint back-to-front.
-    x, y, faces = project_surface(bunny, ISO_AZIMUTH, ISO_ELEVATION, 0.0)
+    # Project with the CAD-isometric camera, rotated 180 degrees about the
+    # z axis so the bunny faces left, and paint back-to-front.
+    x, y, faces = project_surface(bunny, ISO_AZIMUTH + 180.0, ISO_ELEVATION, 0.0)
 
     # Fit into a centred [0, ICON_SIZE]^2 box, preserving the aspect ratio.
     min_x, max_x = float(np.min(x)), float(np.max(x))
