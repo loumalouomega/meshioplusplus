@@ -22,6 +22,9 @@
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
+#include <fstream>
+
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
@@ -122,6 +125,20 @@ TEST(Med, RaggedPolygons) {
               (std::vector<std::int64_t>{0, 1, 2}));
     EXPECT_EQ(std::vector<std::int64_t>(cb.Row(1), cb.Row(1) + cb.RowSize(1)),
               (std::vector<std::int64_t>{1, 3, 4, 2, 5}));
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, ReadRejectsNonHdf5) {
+    // A file that is not HDF5 must surface as a ReadError (the shared hdf5_util
+    // open helper), not an uncaught HDF5 abort.
+    std::string p = mt::temp_path(".med");
+    {
+        std::ofstream f(p);
+        f << "not an HDF5 file\n";
+    }
+    meshioplusplus::MedInfo info;
+    EXPECT_THROW(meshioplusplus::read_med(p, info), meshioplusplus::ReadError);
     std::error_code ec;
     std::filesystem::remove(p, ec);
 }

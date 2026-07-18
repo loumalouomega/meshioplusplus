@@ -14,6 +14,7 @@ flags:
     paths:
       - cpp/
       - bindings/
+      - bindings_c/
     carryforward: false
 
 coverage:
@@ -51,3 +52,18 @@ ignore:
   - "example/"
   - "logo/"
   - "tools/"
+  # Generated single-header amalgamation: a verbatim duplicate of cpp/ (kept in
+  # sync by CI). Counting it would double every cpp/ line.
+  - "single_include/"
+  # Non-MESHIO mesh backends: instantiated only by the standalone `cpp-tests`
+  # backend matrix, never by the MESHIO-only instrumented `coverage` job, so
+  # they are structurally unreachable here. Mirrors the lcov --remove in ci.yml.
+  - "cpp/include/meshioplusplus/backends/native_mesh.hpp"
+  - "cpp/include/meshioplusplus/backends/kratos_mesh.hpp"
+  - "cpp/include/meshioplusplus/backends/model_part.hpp"
+  - "cpp/include/meshioplusplus/backends/kratos_names.hpp"
+  # Not compiled by the coverage job (no Emscripten / no Fortran toolchain in
+  # this job); listed for clarity so a future config change can't silently
+  # start counting them as uncovered.
+  - "bindings_js/"
+  - "bindings_fortran/"

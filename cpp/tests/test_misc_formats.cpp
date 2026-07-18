@@ -18,8 +18,13 @@
 // External includes
 #include <gtest/gtest.h>
 
+// System includes
+#include <filesystem>
+#include <fstream>
+
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
@@ -92,4 +97,29 @@ TEST(Tetgen, TetraPair) {
     std::error_code ec;
     std::filesystem::remove(node, ec);
     std::filesystem::remove(ele, ec);
+}
+
+// Malformed-input paths: the readers must raise ReadError rather than silently
+// mis-parse. These exercise the error branches that self round-trips never hit.
+
+TEST(Tetgen, ReadRejectsMalformedNodeHeader) {
+    std::string node = mt::temp_path(".node");
+    {
+        std::ofstream f(node);
+        f << "not a valid header\n";
+    }
+    EXPECT_THROW(meshioplusplus::read_tetgen(node), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(node, ec);
+}
+
+TEST(Su2, ReadRejectsInvalidNdime) {
+    std::string path = mt::temp_path(".su2");
+    {
+        std::ofstream f(path);
+        f << "NDIME= 9\n";
+    }
+    EXPECT_THROW(meshioplusplus::read_su2(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
