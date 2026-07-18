@@ -3,6 +3,22 @@ name: packages
 # Validate (and, on release tags, exercise) the self-hosted Conan recipe and
 # vcpkg overlay port for the C API (libmeshioplusplus). Mirrors wheels.yml /
 # wasm.yml: PRs validate, `v*` tags run the full release-shaped build.
+#
+# Neither package is submitted to Conan Center or the upstream vcpkg registry
+# (that's a separate, heavier undertaking -- an external PR reviewed by those
+# projects, plus ongoing recipe maintenance there), so nothing resolves
+# `meshioplusplus` as a plain requirement out of the box. As a stopgap, `v*`
+# tags attach ready-to-use package artifacts to the tag's GitHub Release: a
+# Conan `cache save` archive per option set -- supplies just the recipe + one
+# matching prebuilt binary; restore with `conan cache restore <file>`, then
+# `conan install --requires=meshioplusplus/<version> --build=missing -o ...`
+# (Conan Center still supplies the transitive hdf5/netcdf/zlib/openssl
+# binaries over the network as normal; --build=missing rebuilds meshioplusplus
+# itself from the archived recipe if your profile doesn't match the prebuilt
+# one) -- and a zip of the vcpkg overlay port with the release tarball's
+# SHA512 already pinned in (`vcpkg install meshioplusplus
+# --overlay-ports=<unzipped dir>`). Both are Linux/x86_64 only, matching this
+# workflow's runners.
 on:
   push:
     tags: ["v*"]
@@ -46,6 +62,18 @@ jobs:
           conan profile detect --force
       - name: conan create (${{ matrix.name }})
         run: conan create . --build=missing ${{ matrix.opts }}
+      - name: Save Conan package (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          conan cache save "meshioplusplus/${version}:*" \
+            --file="meshioplusplus-conan-${{ matrix.name }}-linux-x86_64.tgz"
+      - name: Upload Conan package artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: conan-${{ matrix.name }}
+          path: meshioplusplus-conan-${{ matrix.name }}-linux-x86_64.tgz
 
   # ---------------------------------------------------------------------------
   # vcpkg: lint the manifest on every run; on a release tag, pin the tarball
@@ -84,3 +112,39 @@ jobs:
           grep "SHA512" ports/meshioplusplus/portfile.cmake
       - name: vcpkg install
         run: "\"$VCPKG_INSTALLATION_ROOT/vcpkg\" install meshioplusplus --overlay-ports=\"$PWD/ports\""
+      - name: Package overlay port
+        # The SHA512 patched into ports/meshioplusplus/portfile.cmake above is
+        # local to this checkout (not committed back to the repo, which keeps
+        # the placeholder -- see the file's own comment); zip it up so release
+        # consumers get a ready-to-use overlay port with no manual hash step.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          zip -r "meshioplusplus-vcpkg-overlay-port-${version}.zip" ports/meshioplusplus
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-overlay-port
+          path: meshioplusplus-vcpkg-overlay-port-*.zip
+
+  # ---------------------------------------------------------------------------
+  # Attach the Conan cache-save archives and the vcpkg overlay-port zip to the
+  # tag's GitHub Release (creating it if it doesn't exist yet -- none of the
+  # other release workflows create one either, they publish to PyPI/npm).
+  # ---------------------------------------------------------------------------
+  release:
+    name: Attach packages to GitHub Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [conan, vcpkg-build]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-packages
+          merge-multiple: true
+      - name: Create/update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist-packages/*
