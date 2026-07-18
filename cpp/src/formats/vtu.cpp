@@ -26,6 +26,7 @@
 // Project includes
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -36,52 +37,11 @@ namespace meshioplusplus {
 namespace {
 
 using detail::cols;
-using detail::is_float_dtype;
 using detail::read_double;
 using detail::read_int;
-
-const char* vtu_type_str(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return "Float32";
-        case DType::Float64:
-            return "Float64";
-        case DType::Int8:
-            return "Int8";
-        case DType::Int16:
-            return "Int16";
-        case DType::Int32:
-            return "Int32";
-        case DType::Int64:
-            return "Int64";
-        case DType::UInt8:
-            return "UInt8";
-        case DType::UInt16:
-            return "UInt16";
-        case DType::UInt32:
-            return "UInt32";
-        case DType::UInt64:
-            return "UInt64";
-    }
-    return "Float64";
-}
-
-void vtu_ascii_double(std::ostream& rOs, double v) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.11e", v);
-    rOs << buf << '\n';
-}
-
-void ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
-    const bool flt = is_float_dtype(rA.Dtype());
-    const std::size_t n = rA.Size();
-    for (std::size_t i = 0; i < n; ++i) {
-        if (flt)
-            vtu_ascii_double(rOs, read_double(rA, i));
-        else
-            rOs << read_int(rA, i) << '\n';
-    }
-}
+using detail::vtu_ascii_double;
+using detail::vtu_ascii_ndarray;
+using detail::vtu_type_str;
 
 }  // namespace
 
@@ -209,7 +169,7 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
             if (binary)
                 emit_bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
             else
-                ascii_ndarray(os, d);
+                vtu_ascii_ndarray(os, d);
             os << "</DataArray>\n";
         }
         os << "</PointData>\n";
@@ -234,7 +194,7 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
                 emit_bin(buf.data(), buf.size());
             } else {
                 for (std::size_t bi = 0; bi < nblocks; ++bi)
-                    ascii_ndarray(os, rMesh.CellData(name, bi));
+                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
             }
             os << "</DataArray>\n";
         }
