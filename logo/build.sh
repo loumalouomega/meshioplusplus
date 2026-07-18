@@ -4,7 +4,9 @@
 #   ./build.sh
 #
 # Produces (committed): logo-with-text.svg, logo-icon.svg, logo.pdf,
-# and logo.png / logo-icon.png when a rasteriser is available.
+# logo.png / logo-icon.png when a rasteriser is available, plus (via
+# make_icon_assets.py, needs PyMuPDF+Pillow) logo-icon-square.png,
+# social-preview.png, and doc/public/favicon.ico.
 #
 # Pipeline: gen_logo_tikz.py -> _mesh_icon.tex ; pdflatex -> PDF ;
 # dvisvgm --pdf -> SVG ; PNG via PyMuPDF (fitz) / pdftoppm / convert if present.
@@ -70,10 +72,20 @@ PYEOF
 rasterise logo.pdf logo.png
 rasterise logo-icon.pdf logo-icon.png
 
+# Derived small assets (square icon, favicon.ico, GitHub social-preview PNG).
+# Best-effort: skip quietly if PyMuPDF/Pillow aren't available.
+if "$PY" -c "import fitz, PIL" 2>/dev/null; then
+    echo "== deriving icon assets (favicon.ico, logo-icon-square.png, social-preview.png) =="
+    "$PY" make_icon_assets.py
+else
+    echo "!! PyMuPDF/Pillow not available - skipping favicon.ico/logo-icon-square.png/social-preview.png"
+fi
+
 # Tidy LaTeX aux (keep the committed .pdf/.svg/.png).
 rm -f ./*.aux ./*.log ./*.build.log
 
 echo
 echo "== assets =="
 ls -la logo-with-text.svg logo-icon.svg logo.pdf logo-icon.pdf 2>/dev/null || true
-ls -la logo.png logo-icon.png 2>/dev/null || true
+ls -la logo.png logo-icon.png logo-icon-square.png social-preview.png 2>/dev/null || true
+ls -la ../doc/public/favicon.ico 2>/dev/null || true

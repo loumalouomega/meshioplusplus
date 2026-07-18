@@ -12,6 +12,9 @@ export default defineConfig({
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: "/meshioplusplus/logo-icon.svg" }],
     ["link", { rel: "alternate icon", type: "image/png", href: "/meshioplusplus/logo-icon.png" }],
+    // Multi-resolution (16/32/48/64px) fallback for browsers/tools that only
+    // look for a plain .ico (bookmark managers, old IE, some crawlers).
+    ["link", { rel: "shortcut icon", type: "image/x-icon", href: "/meshioplusplus/favicon.ico" }],
   ],
 
   themeConfig: {

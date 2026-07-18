@@ -3,6 +3,10 @@
   <p align="center">I/O for mesh files.</p>
 </p>
 
+<p align="center">
+  <img alt="" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/logo/logo-icon-square.png" width="64">
+</p>
+
 [![C++][c++-image]][c++standard]
 [![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
 

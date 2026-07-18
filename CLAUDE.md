@@ -58,9 +58,16 @@ projects through `meshioplusplus._projection` — the same isometric camera +
 painter's sort as the SVG/TikZ 3D writers — and colors faces blue→teal by
 projected height → `logo/_mesh_icon.tex`), compiles
 `logo/logo.tex`/`logo-icon.tex` with `pdflatex`, and converts to SVG via
-`dvisvgm` (PNG via PyMuPDF). Committed assets: `logo/logo-with-text.svg`
-(README banner + `doc/public/logo.svg`), `logo/logo-icon.svg` (favicon/nav) —
-after regenerating, re-copy them into `doc/public/`. The old blob generator
+`dvisvgm` (PNG via PyMuPDF), then `logo/make_icon_assets.py` (PyMuPDF +
+Pillow; best-effort, skipped with a warning if unavailable) derives
+`logo/logo-icon-square.png` (the icon padded into a square, transparent —
+README badge + favicon source), `doc/public/favicon.ico` (16/32/48/64px,
+written straight there), and `logo/social-preview.png` (1280x640 banner on
+white, for GitHub's repo social-preview image — Settings → General → Social
+preview, upload-only, no API). Committed assets: `logo/logo-with-text.svg`
+(README banner + `doc/public/logo.svg`), `logo/logo-icon.svg` (non-square,
+docs favicon/nav) — after regenerating, re-copy the SVGs/PNGs into
+`doc/public/` (`favicon.ico` lands there directly). The old blob generator
 is in git history; the older pygmsh `logo/logo.py` is superseded (see
 `logo/README.md`).
 
