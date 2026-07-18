@@ -43,6 +43,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [Tecplot .dat](http://paulbourke.net/dataformats/tp/),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
 > [SVG](https://www.w3.org/TR/SVG/) (2D output only) (`.svg`),
+> [TikZ](https://tikz.dev/) (2D LaTeX output only) (`.tikz`),
 > [SU2](https://su2code.github.io/docs_v7/Mesh-File/) (`.su2`),
 > [UGRID](https://www.simcenter.msstate.edu/software/documentation/ug_io/3d_grid_file_type_ugrid.html) (`.ugrid`),
 > [VTK](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf) (`.vtk`),
