@@ -7357,6 +7357,50 @@ Mesh read_su2(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/su2.hpp =====
+// ===== begin cpp/include/meshioplusplus/formats/svg.hpp =====
+/**
+ * @file svg.hpp
+ * @brief SVG (Scalable Vector Graphics) 2D mesh writer (write-only).
+ *
+ * Draws the mesh's `line`/`triangle`/`quad` cells as `<path>` elements in a
+ * single `<svg>` document — a flat-2D visualization format with no reader.
+ * Points must be 2D or flat 3D (all z ~ 0); a genuinely non-flat mesh raises
+ * `WriteError`. The y-axis is flipped (`max_y + min_y - y`) to convert the
+ * mesh/math convention (y-up) to SVG's screen convention (y-down). Any cell
+ * type other than line/triangle/quad is silently skipped. No
+ * point_data/cell_data/field_data is emitted.
+ */
+
+// System includes
+#include <optional>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh's `line`/`triangle`/`quad` cells as an SVG document.
+ *
+ * @param rPath        filesystem path to write
+ * @param rMesh        the mesh to write (only line/triangle/quad contribute)
+ * @param rFloatFmt    printf-style float format for coordinates without the
+ *                     leading '%' (e.g. `".3f"`)
+ * @param rStrokeWidth explicit stroke width; `std::nullopt` auto-computes it as
+ *                     1% of the on-canvas width
+ * @param rImageWidth  output width in user units; `std::nullopt` keeps the
+ *                     mesh's own width (no scaling)
+ * @param rFill        cell fill colour
+ * @param rStroke      edge stroke colour
+ * @throws WriteError on an unopenable output path or a non-flat 3D mesh
+ */
+void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".3f",
+               const std::optional<std::string>& rStrokeWidth = std::nullopt,
+               const std::optional<double>& rImageWidth = 100.0,
+               const std::string& rFill = "#c8c5bd", const std::string& rStroke = "#000080");
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/formats/svg.hpp =====
 // ===== begin cpp/include/meshioplusplus/formats/tecplot.hpp =====
 /**
  * @file tecplot.hpp
@@ -7509,6 +7553,54 @@ Mesh read_tetgen(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/tetgen.hpp =====
+// ===== begin cpp/include/meshioplusplus/formats/tikz.hpp =====
+/**
+ * @file tikz.hpp
+ * @brief TikZ/PGF (LaTeX) 2D mesh writer (write-only).
+ *
+ * Draws the mesh's `line`/`triangle`/`quad` cells as `\draw` commands inside a
+ * `tikzpicture` environment. By default it emits a full, directly
+ * `pdflatex`-compilable `standalone` document; with `standalone=false` it emits
+ * only the bare `tikzpicture` snippet for `\input` into a larger document. It is
+ * the LaTeX counterpart to the SVG writer; unlike SVG there is no y-flip (TikZ
+ * uses the math convention, y-up). Points must be 2D or flat 3D (all z ~ 0); a
+ * non-flat mesh raises `WriteError`. Non-line/triangle/quad cells are silently
+ * skipped, and no point_data/cell_data/field_data is emitted.
+ */
+
+// System includes
+#include <optional>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh's `line`/`triangle`/`quad` cells as a TikZ figure.
+ *
+ * @param rPath       filesystem path to write
+ * @param rMesh       the mesh to write (only line/triangle/quad contribute)
+ * @param rFloatFmt   printf-style float format for coordinates without the
+ *                    leading '%' (e.g. `".6f"`)
+ * @param Standalone  when true, wrap the picture in a compilable
+ *                    `\documentclass{standalone}` document; otherwise emit only
+ *                    the `tikzpicture` environment
+ * @param rLineWidth  TikZ line width (e.g. `"0.4pt"`); `std::nullopt` uses TikZ's
+ *                    default
+ * @param rFill       xcolor fill spec for the filled faces
+ * @param rDraw       xcolor spec for the edge stroke
+ * @param rScale      optional `\begin{tikzpicture}[scale=...]` factor;
+ *                    `std::nullopt` emits no scale key
+ * @throws WriteError on an unopenable output path or a non-flat 3D mesh
+ */
+void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".6f",
+                bool Standalone = true, const std::optional<std::string>& rLineWidth = std::nullopt,
+                const std::string& rFill = "gray!30", const std::string& rDraw = "black",
+                const std::optional<double>& rScale = std::nullopt);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/formats/tikz.hpp =====
 // ===== begin cpp/include/meshioplusplus/formats/ugrid.hpp =====
 /**
  * @file ugrid.hpp
@@ -33190,6 +33282,137 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/formats/su2.cpp =====
+// ===== begin cpp/src/formats/svg.cpp =====
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Format a single double with a printf-style spec (spec without leading '%',
+// e.g. ".3f"), mirroring the Python reference's `format(x, float_fmt)`.
+std::string svg_fmt_num(double value, const std::string& rSpec) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
+    return buf;
+}
+
+}  // namespace
+
+void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
+               const std::optional<std::string>& rStrokeWidth,
+               const std::optional<double>& rImageWidth, const std::string& rFill,
+               const std::string& rStroke) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    // SVG can only handle flat 2D meshes: a 3D mesh must have every z ~ 0.
+    if (dim == 3) {
+        for (std::size_t i = 0; i < num_points; ++i) {
+            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14)
+                throw WriteError("SVG can only handle flat 2D meshes");
+        }
+    }
+
+    // Copy the first two coordinate columns.
+    std::vector<double> x(num_points), y(num_points);
+    for (std::size_t i = 0; i < num_points; ++i) {
+        x[i] = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
+        y[i] = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
+    }
+
+    double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
+    if (num_points > 0) {
+        min_x = max_x = x[0];
+        min_y = max_y = y[0];
+        for (std::size_t i = 1; i < num_points; ++i) {
+            min_x = std::min(min_x, x[i]);
+            max_x = std::max(max_x, x[i]);
+            min_y = std::min(min_y, y[i]);
+            max_y = std::max(max_y, y[i]);
+        }
+    }
+
+    // Flip y (mesh math convention y-up -> SVG screen convention y-down).
+    for (std::size_t i = 0; i < num_points; ++i)
+        y[i] = max_y + min_y - y[i];
+
+    double width = max_x - min_x;
+    double height = max_y - min_y;
+
+    if (rImageWidth.has_value() && width != 0.0) {
+        const double scaling_factor = *rImageWidth / width;
+        min_x *= scaling_factor;
+        min_y *= scaling_factor;
+        width *= scaling_factor;
+        height *= scaling_factor;
+        for (std::size_t i = 0; i < num_points; ++i) {
+            x[i] *= scaling_factor;
+            y[i] *= scaling_factor;
+        }
+    }
+
+    std::string stroke_width;
+    if (rStrokeWidth.has_value()) {
+        stroke_width = *rStrokeWidth;
+    } else {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%g", width / 100.0);
+        stroke_width = buf;
+    }
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    // viewBox: "min_x min_y width height", each float_fmt-formatted.
+    os << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" viewBox=\""
+       << svg_fmt_num(min_x, rFloatFmt) << ' ' << svg_fmt_num(min_y, rFloatFmt) << ' '
+       << svg_fmt_num(width, rFloatFmt) << ' ' << svg_fmt_num(height, rFloatFmt) << "\">";
+
+    // Use path (not polygon): svgo rewrites polygons to paths but drops style.
+    os << "<style>path {fill: " << rFill << "; stroke: " << rStroke
+       << "; stroke-width: " << stroke_width << "; stroke-linejoin:bevel}</style>";
+
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& type = cb.Type();
+        if (type != "line" && type != "triangle" && type != "quad")
+            continue;
+
+        const NDArray& conn = cb.Conn();
+        const std::size_t ncols = detail::cols(conn);
+        const std::size_t n = cb.NumCells();
+        for (std::size_t r = 0; r < n; ++r) {
+            std::string d;
+            for (std::size_t k = 0; k < ncols; ++k) {
+                const std::int64_t p = detail::read_int(conn, r * ncols + k);
+                // "M x y" for the first vertex, "L x y" for the rest — no
+                // separating space before the command letter (matches the
+                // Python reference's concatenated format strings).
+                d += (k == 0) ? "M " : "L ";
+                d += svg_fmt_num(x[static_cast<std::size_t>(p)], rFloatFmt);
+                d += ' ';
+                d += svg_fmt_num(y[static_cast<std::size_t>(p)], rFloatFmt);
+            }
+            // triangle/quad are closed; line stays open.
+            if (type != "line")
+                d += "Z";
+            os << "<path d=\"" << d << "\" />";
+        }
+    }
+
+    os << "</svg>";
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/formats/svg.cpp =====
 // ===== begin cpp/src/formats/tecplot.cpp =====
 #include <algorithm>
 #include <cctype>
@@ -33967,6 +34190,121 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/formats/tetgen.cpp =====
+// ===== begin cpp/src/formats/tikz.cpp =====
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Format a single double with a printf-style spec (spec without leading '%',
+// e.g. ".6f").
+std::string tikz_fmt_num(double value, const std::string& rSpec) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
+    return buf;
+}
+
+}  // namespace
+
+void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
+                bool Standalone, const std::optional<std::string>& rLineWidth,
+                const std::string& rFill, const std::string& rDraw,
+                const std::optional<double>& rScale) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    // TikZ can only handle flat 2D meshes: a 3D mesh must have every z ~ 0.
+    if (dim == 3) {
+        for (std::size_t i = 0; i < num_points; ++i) {
+            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14)
+                throw WriteError("TikZ can only handle flat 2D meshes");
+        }
+    }
+
+    // TikZ/PGF uses the math convention (y-up), so — unlike SVG — no y-flip.
+    auto coord = [&](std::int64_t p) {
+        const std::size_t idx = static_cast<std::size_t>(p);
+        const double px = (0 < dim) ? detail::read_double(points, idx * dim + 0) : 0.0;
+        const double py = (1 < dim) ? detail::read_double(points, idx * dim + 1) : 0.0;
+        return "(" + tikz_fmt_num(px, rFloatFmt) + "," + tikz_fmt_num(py, rFloatFmt) + ")";
+    };
+
+    // Per-path style option lists.
+    std::string fill_style = "fill=" + rFill + ", draw=" + rDraw;
+    std::string line_style = "draw=" + rDraw;
+    if (rLineWidth.has_value()) {
+        fill_style += ", line width=" + *rLineWidth;
+        line_style += ", line width=" + *rLineWidth;
+    }
+
+    std::vector<std::string> lines;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& type = cb.Type();
+        if (type != "line" && type != "triangle" && type != "quad")
+            continue;
+
+        const NDArray& conn = cb.Conn();
+        const std::size_t ncols = detail::cols(conn);
+        const std::size_t n = cb.NumCells();
+        for (std::size_t r = 0; r < n; ++r) {
+            std::string path;
+            for (std::size_t k = 0; k < ncols; ++k) {
+                if (k)
+                    path += " -- ";
+                path += coord(detail::read_int(conn, r * ncols + k));
+            }
+            if (type == "line")
+                lines.push_back("  \\draw[" + line_style + "] " + path + ";");
+            else
+                lines.push_back("  \\draw[" + fill_style + "] " + path + " -- cycle;");
+        }
+    }
+
+    // tikzpicture options (scale / line width) — emitted only when set.
+    std::string pic_opts;
+    if (rScale.has_value()) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "scale=%g", *rScale);
+        pic_opts = buf;
+    }
+    if (rLineWidth.has_value()) {
+        if (!pic_opts.empty())
+            pic_opts += ", ";
+        pic_opts += "line width=" + *rLineWidth;
+    }
+    const std::string pic_opt_str = pic_opts.empty() ? "" : ("[" + pic_opts + "]");
+
+    std::vector<std::string> out;
+    if (Standalone) {
+        out.push_back("\\documentclass{standalone}");
+        out.push_back("\\usepackage{tikz}");
+        out.push_back("\\begin{document}");
+    }
+    out.push_back("\\begin{tikzpicture}" + pic_opt_str);
+    for (const auto& l : lines)
+        out.push_back(l);
+    out.push_back("\\end{tikzpicture}");
+    if (Standalone)
+        out.push_back("\\end{document}");
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    for (std::size_t i = 0; i < out.size(); ++i)
+        os << out[i] << '\n';
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/formats/tikz.cpp =====
 // ===== begin cpp/src/formats/ugrid.cpp =====
 #include <cctype>
 #include <cstdint>
@@ -37296,6 +37634,11 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"stl", [](const std::string& p,
                    const Mesh& mm) { meshioplusplus::write_stl(p, mm, /*binary=*/false); }},
         {"su2", meshioplusplus::write_su2},
+        // svg/tikz are write-only 2D-visualization formats; the flat bindings
+        // emit them with the fixed default styling (per-call overrides are out
+        // of scope for v1, per registry.hpp).
+        {"svg", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); }},
+        {"tikz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); }},
         {"tecplot", meshioplusplus::write_tecplot},
         {"tetgen", meshioplusplus::write_tetgen},
         {"ugrid", meshioplusplus::write_ugrid},
@@ -37362,12 +37705,12 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".mesh", "medit"},  {".mfm", "mfm"},     {".mphtxt", "mphtxt"}, {".bdf", "nastran"},
         {".nas", "nastran"}, {".fem", "nastran"}, {".vol", "netgen"},    {".obj", "obj"},
         {".off", "off"},     {".post", "permas"}, {".dato", "permas"},   {".ply", "ply"},
-        {".stl", "stl"},     {".su2", "su2"},     {".dat", "tecplot"},   {".tec", "tecplot"},
-        {".ele", "tetgen"},  {".node", "tetgen"}, {".ugrid", "ugrid"},   {".unv", "unv"},
-        {".vtk", "vtk"},     {".vtu", "vtu"},     {".wkt", "wkt"},       {".xdmf", "xdmf"},
-        {".xmf", "xdmf"},    {".msh", "gmsh"},    {".cgns", "cgns"},     {".h5m", "h5m"},
-        {".hmf", "hmf"},     {".med", "med"},     {".e", "exodus"},      {".exo", "exodus"},
-        {".ex2", "exodus"},
+        {".stl", "stl"},     {".su2", "su2"},     {".svg", "svg"},       {".tikz", "tikz"},
+        {".dat", "tecplot"}, {".tec", "tecplot"}, {".ele", "tetgen"},    {".node", "tetgen"},
+        {".ugrid", "ugrid"}, {".unv", "unv"},     {".vtk", "vtk"},       {".vtu", "vtu"},
+        {".wkt", "wkt"},     {".xdmf", "xdmf"},   {".xmf", "xdmf"},      {".msh", "gmsh"},
+        {".cgns", "cgns"},   {".h5m", "h5m"},     {".hmf", "hmf"},       {".med", "med"},
+        {".e", "exodus"},    {".exo", "exodus"},  {".ex2", "exodus"},
     };
     return m;
 }

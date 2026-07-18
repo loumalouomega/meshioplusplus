@@ -6,7 +6,6 @@ import numpy as np
 
 from .._exceptions import WriteError
 from .._files import open_file
-from .._helpers import register_format
 
 
 def write(
@@ -81,6 +80,3 @@ def write(
 
     with open_file(filename, "w") as f:
         f.write("\n".join(out) + "\n")
-
-
-register_format("tikz", [".tikz"], None, {"tikz": write})

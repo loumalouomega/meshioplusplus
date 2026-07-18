@@ -58,9 +58,8 @@ None consumed — point_data/cell_data/field_data are ignored entirely; only geo
 - No diagonal/winding correction on `quad` cells — a "crossed" (non-convex, bowtie) node ordering renders incorrectly with no error raised.
 - Non-`line`/`triangle`/`quad` cells vanish from the output silently.
 - Write-only; there is no way to read an SVG back into a `Mesh`.
-- No C++ implementation — this format is Python-only.
 
 ## Notes
 
-- No reference test fixture (there being no reader to test against one); `tests/test_svg.py` only asserts that writing a mesh doesn't raise.
-- Implemented in pure Python (no C++ core path).
+- Backed by the **C++ core** (`write_svg`) with a pure-Python fallback: `meshioplusplus.svg.write` uses the C++ writer for real file paths and falls back to Python for file-object/buffer targets or on any error. Registered in the shared dispatch registry, so it is also reachable from the WASM, C API, and Fortran flat bindings (write-only, fixed default styling — per-call style options are exposed only through the Python `write`).
+- `tests/test_svg.py` writes each mesh, checks the output parses as SVG with one `<path>` per drawable cell, and cross-checks that the C++ and Python writers agree on the path count. `cpp/tests/test_svg_tikz.cpp` covers the C++ writer directly (path count, closed vs open paths, colour/scaling options, unsupported-cell skipping, the non-flat `WriteError`).

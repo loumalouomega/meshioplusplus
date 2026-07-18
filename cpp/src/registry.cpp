@@ -53,8 +53,10 @@
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/su2.hpp"
+#include "meshioplusplus/formats/svg.hpp"
 #include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/tetgen.hpp"
+#include "meshioplusplus/formats/tikz.hpp"
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
@@ -159,6 +161,11 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"stl", [](const std::string& p,
                    const Mesh& mm) { meshioplusplus::write_stl(p, mm, /*binary=*/false); }},
         {"su2", meshioplusplus::write_su2},
+        // svg/tikz are write-only 2D-visualization formats; the flat bindings
+        // emit them with the fixed default styling (per-call overrides are out
+        // of scope for v1, per registry.hpp).
+        {"svg", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); }},
+        {"tikz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); }},
         {"tecplot", meshioplusplus::write_tecplot},
         {"tetgen", meshioplusplus::write_tetgen},
         {"ugrid", meshioplusplus::write_ugrid},
@@ -225,12 +232,12 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".mesh", "medit"},  {".mfm", "mfm"},     {".mphtxt", "mphtxt"}, {".bdf", "nastran"},
         {".nas", "nastran"}, {".fem", "nastran"}, {".vol", "netgen"},    {".obj", "obj"},
         {".off", "off"},     {".post", "permas"}, {".dato", "permas"},   {".ply", "ply"},
-        {".stl", "stl"},     {".su2", "su2"},     {".dat", "tecplot"},   {".tec", "tecplot"},
-        {".ele", "tetgen"},  {".node", "tetgen"}, {".ugrid", "ugrid"},   {".unv", "unv"},
-        {".vtk", "vtk"},     {".vtu", "vtu"},     {".wkt", "wkt"},       {".xdmf", "xdmf"},
-        {".xmf", "xdmf"},    {".msh", "gmsh"},    {".cgns", "cgns"},     {".h5m", "h5m"},
-        {".hmf", "hmf"},     {".med", "med"},     {".e", "exodus"},      {".exo", "exodus"},
-        {".ex2", "exodus"},
+        {".stl", "stl"},     {".su2", "su2"},     {".svg", "svg"},       {".tikz", "tikz"},
+        {".dat", "tecplot"}, {".tec", "tecplot"}, {".ele", "tetgen"},    {".node", "tetgen"},
+        {".ugrid", "ugrid"}, {".unv", "unv"},     {".vtk", "vtk"},       {".vtu", "vtu"},
+        {".wkt", "wkt"},     {".xdmf", "xdmf"},   {".xmf", "xdmf"},      {".msh", "gmsh"},
+        {".cgns", "cgns"},   {".h5m", "h5m"},     {".hmf", "hmf"},       {".med", "med"},
+        {".e", "exodus"},    {".exo", "exodus"},  {".ex2", "exodus"},
     };
     return m;
 }

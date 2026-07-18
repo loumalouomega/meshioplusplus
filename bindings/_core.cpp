@@ -52,8 +52,10 @@
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/su2.hpp"
+#include "meshioplusplus/formats/svg.hpp"
 #include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/tetgen.hpp"
+#include "meshioplusplus/formats/tikz.hpp"
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
@@ -498,6 +500,36 @@ PYBIND11_MODULE(_core, m) {
     m.def("wkt_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_wkt(path));
     });
+
+    // SVG writer (write-only, 2D visualization).
+    m.def(
+        "svg_write",
+        [](const std::string& path, py::object pymesh, const std::string& float_fmt,
+           const std::optional<std::string>& stroke_width, const std::optional<double>& image_width,
+           const std::string& fill, const std::string& stroke) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::write_svg(path, cpp, float_fmt, stroke_width, image_width, fill,
+                                      stroke);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = ".3f",
+        py::arg("stroke_width") = std::nullopt, py::arg("image_width") = 100.0,
+        py::arg("fill") = "#c8c5bd", py::arg("stroke") = "#000080");
+
+    // TikZ writer (write-only, 2D LaTeX visualization).
+    m.def(
+        "tikz_write",
+        [](const std::string& path, py::object pymesh, const std::string& float_fmt,
+           bool standalone, const std::optional<std::string>& line_width, const std::string& fill,
+           const std::string& draw, const std::optional<double>& scale) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::write_tikz(path, cpp, float_fmt, standalone, line_width, fill, draw,
+                                       scale);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = ".6f",
+        py::arg("standalone") = true, py::arg("line_width") = std::nullopt,
+        py::arg("fill") = "gray!30", py::arg("draw") = "black", py::arg("scale") = std::nullopt);
 
     // PERMAS writer / reader (.post/.dato).
     m.def("permas_write", [](const std::string& path, py::object pymesh) {

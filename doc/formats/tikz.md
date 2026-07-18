@@ -61,9 +61,8 @@ None consumed — `point_data`/`cell_data`/`field_data` are ignored entirely; on
 - No winding correction on `quad` cells — a "crossed" (bowtie) node ordering renders incorrectly with no error raised.
 - Non-`line`/`triangle`/`quad` cells vanish from the output silently.
 - Write-only; there is no way to read a TikZ figure back into a `Mesh`.
-- No C++ implementation — this format is Python-only.
 
 ## Notes
 
-- No reference test fixture (there being no reader to test against one); `tests/test_tikz.py` asserts that writing does not raise, checks for the document/`tikzpicture` wrappers, and covers the `standalone=False` snippet and the non-flat-3D `WriteError` path.
-- Implemented in pure Python (no C++ core path).
+- Backed by the **C++ core** (`write_tikz`) with a pure-Python fallback: `meshioplusplus.tikz.write` uses the C++ writer for real file paths and falls back to Python for file-object/buffer targets or on any error. The C++ writer is byte-for-byte identical to the Python reference. Registered in the shared dispatch registry, so it is also reachable from the WASM, C API, and Fortran flat bindings (write-only, fixed default styling; the flat surface always emits the standalone document).
+- `tests/test_tikz.py` checks the document/`tikzpicture` wrappers and `\draw` count, cross-checks the C++ and Python writers are byte-identical, and covers the `standalone=False` snippet and the non-flat-3D `WriteError` path. `cpp/tests/test_svg_tikz.cpp` covers the C++ writer directly (standalone vs snippet, filled faces vs open lines, `\draw` count, style/scale options, the non-flat `WriteError`).
