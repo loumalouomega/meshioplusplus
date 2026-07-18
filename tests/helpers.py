@@ -221,6 +221,30 @@ hex20_mesh = meshioplusplus.Mesh(
     [("hexahedron20", [np.arange(20)])],
 )
 
+wedge15_mesh = meshioplusplus.Mesh(
+    [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0],
+        # bottom-edge midpoints
+        [0.5, 0.0, 0.0],
+        [1.0, 0.5, 0.0],
+        [0.5, 0.5, 0.0],
+        # top-edge midpoints
+        [0.5, 0.0, 1.0],
+        [1.0, 0.5, 1.0],
+        [0.5, 0.5, 1.0],
+        # vertical-edge midpoints
+        [0.0, 0.0, 0.5],
+        [1.0, 0.0, 0.5],
+        [1.0, 1.0, 0.5],
+    ],
+    [("wedge15", [np.arange(15)])],
+)
+
 polygon_mesh = meshioplusplus.Mesh(
     [
         [0.0, 0.0, 0.0],
