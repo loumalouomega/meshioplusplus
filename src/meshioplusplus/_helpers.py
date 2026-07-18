@@ -74,9 +74,9 @@ def read(filename, file_format: Union[str, None] = None):
 def _read_buffer(filename, file_format: Union[str, None]):
     if file_format is None:
         raise ReadError("File format must be given if buffer is used")
-    if file_format == "tetgen":
+    if file_format in ("tetgen", "triangle", "ensight"):
         raise ReadError(
-            "tetgen format is spread across multiple files "
+            f"{file_format} format is spread across multiple files "
             "and so cannot be read from a buffer"
         )
     if file_format not in reader_map:
@@ -167,9 +167,10 @@ def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
     if is_buffer(filename, "r"):
         if file_format is None:
             raise WriteError("File format must be supplied if `filename` is a buffer")
-        if file_format == "tetgen":
+        if file_format in ("tetgen", "triangle", "ensight"):
             raise WriteError(
-                "tetgen format is spread across multiple files, and so cannot be written to a buffer"
+                f"{file_format} format is spread across multiple files, "
+                "and so cannot be written to a buffer"
             )
     else:
         path = Path(filename)
