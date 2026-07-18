@@ -66,6 +66,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/types.hpp"
 #include "np_conversions.hpp"
 
@@ -166,12 +167,25 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtk(path));
     });
 
+    // Boundary-skin extraction (volume mesh -> surface mesh).
+    m.def(
+        "extract_skin",
+        [](py::object pymesh, bool linearize) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::extract_skin(cpp, linearize));
+        },
+        py::arg("mesh"), py::arg("linearize") = false);
+
     // STL writer / reader (ascii or binary).
-    m.def("stl_write", [](const std::string& path, py::object pymesh, bool binary) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-        meshioplusplus::write_stl(path, cpp, binary);
-    });
+    m.def(
+        "stl_write",
+        [](const std::string& path, py::object pymesh, bool binary, bool skin) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::write_stl(path, cpp, binary, skin);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = false, py::arg("skin") = true);
     m.def("stl_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_stl(path));
     });
@@ -210,11 +224,14 @@ PYBIND11_MODULE(_core, m) {
     });
 
     // PLY writer / reader (ascii or binary).
-    m.def("ply_write", [](const std::string& path, py::object pymesh, bool binary) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-        meshioplusplus::write_ply(path, cpp, binary);
-    });
+    m.def(
+        "ply_write",
+        [](const std::string& path, py::object pymesh, bool binary, bool skin) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::write_ply(path, cpp, binary, skin);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("skin") = true);
     m.def("ply_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ply(path));
     });
@@ -535,35 +552,43 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_wkt(path));
     });
 
-    // SVG writer (write-only, 2D visualization).
+    // SVG writer (write-only visualization; 3D input renders the projected
+    // skin — camera args appended AFTER the existing ones, the Python shim
+    // passes everything positionally).
     m.def(
         "svg_write",
         [](const std::string& path, py::object pymesh, const std::string& float_fmt,
            const std::optional<std::string>& stroke_width, const std::optional<double>& image_width,
-           const std::string& fill, const std::string& stroke) {
+           const std::string& fill, const std::string& stroke, double azimuth, double elevation,
+           double roll) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-            meshioplusplus::write_svg(path, cpp, float_fmt, stroke_width, image_width, fill,
-                                      stroke);
+            meshioplusplus::write_svg(path, cpp, float_fmt, stroke_width, image_width, fill, stroke,
+                                      azimuth, elevation, roll);
         },
         py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = ".3f",
         py::arg("stroke_width") = std::nullopt, py::arg("image_width") = 100.0,
-        py::arg("fill") = "#c8c5bd", py::arg("stroke") = "#000080");
+        py::arg("fill") = "#c8c5bd", py::arg("stroke") = "#000080", py::arg("azimuth") = 45.0,
+        py::arg("elevation") = 35.264389682754654, py::arg("roll") = 0.0);
 
-    // TikZ writer (write-only, 2D LaTeX visualization).
+    // TikZ writer (write-only LaTeX visualization; 3D input renders the
+    // projected skin — camera args appended AFTER the existing ones).
     m.def(
         "tikz_write",
         [](const std::string& path, py::object pymesh, const std::string& float_fmt,
            bool standalone, const std::optional<std::string>& line_width, const std::string& fill,
-           const std::string& draw, const std::optional<double>& scale) {
+           const std::string& draw, const std::optional<double>& scale, double azimuth,
+           double elevation, double roll) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
             meshioplusplus::write_tikz(path, cpp, float_fmt, standalone, line_width, fill, draw,
-                                       scale);
+                                       scale, azimuth, elevation, roll);
         },
         py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = ".6f",
         py::arg("standalone") = true, py::arg("line_width") = std::nullopt,
-        py::arg("fill") = "gray!30", py::arg("draw") = "black", py::arg("scale") = std::nullopt);
+        py::arg("fill") = "gray!30", py::arg("draw") = "black", py::arg("scale") = std::nullopt,
+        py::arg("azimuth") = 45.0, py::arg("elevation") = 35.264389682754654,
+        py::arg("roll") = 0.0);
 
     // PERMAS writer / reader (.post/.dato).
     m.def("permas_write", [](const std::string& path, py::object pymesh) {
