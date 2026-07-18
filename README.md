@@ -48,8 +48,8 @@ There are various mesh formats available for representing unstructured meshes. m
 > [Tecplot .dat](http://paulbourke.net/dataformats/tp/),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
 > [Triangle .node/.ele/.poly](https://www.cs.cmu.edu/~quake/triangle.html),
-> [SVG](https://www.w3.org/TR/SVG/) (2D output only) (`.svg`),
-> [TikZ](https://tikz.dev/) (2D LaTeX output only) (`.tikz`),
+> [SVG](https://www.w3.org/TR/SVG/) (output only; 2D direct, 3D via skin projection) (`.svg`),
+> [TikZ](https://tikz.dev/) (LaTeX output only; 2D direct, 3D via skin projection) (`.tikz`),
 > [SU2](https://su2code.github.io/docs_v7/Mesh-File/) (`.su2`),
 > [UGRID](https://www.simcenter.msstate.edu/software/documentation/ug_io/3d_grid_file_type_ugrid.html) (`.ugrid`),
 > [VTK](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf) (`.vtk`),
@@ -138,6 +138,19 @@ meshioplusplus.write_points_cells("foo.vtk", points, cells)
 ```
 
 For both input and output, you can optionally specify the exact `file_format` (in case you would like to enforce ASCII over binary VTK, for example).
+
+#### Skin extraction
+
+`meshioplusplus.extract_skin` derives the boundary surface of a 3D volume mesh (the [Kratos `SkinDetectionProcess`](https://github.com/KratosMultiphysics/Kratos) face-hashing algorithm — faces occurring exactly once are boundary; points are compacted, `point_data` follows):
+
+<!--pytest-codeblocks:skip-->
+
+```python
+vol = meshioplusplus.read("part.msh")     # tetra/hexa/wedge/pyramid mesh
+skin = meshioplusplus.extract_skin(vol)   # triangle/quad/... surface mesh
+```
+
+The **STL and PLY writers do this automatically** for volume meshes (pass `skin=False` for the legacy drop-volume-cells behavior), and the **SVG/TikZ writers render 3D meshes** by projecting the skin through an orthographic camera (`azimuth`/`elevation`/`roll` in degrees, default the classic CAD isometric view) with painter's-algorithm depth ordering — that is exactly how the Stanford-bunny logo above is drawn.
 
 #### Time series
 
