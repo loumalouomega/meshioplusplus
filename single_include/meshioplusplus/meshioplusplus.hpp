@@ -3096,6 +3096,177 @@ inline void bswap_inplace(char* pP, int n) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/byteswap.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/cell_faces.hpp =====
+/**
+ * @file cell_faces.hpp
+ * @brief Per-cell-type boundary-face topology tables (local node indices of
+ * each face of a 3D volume cell), used by the skin extractor (`skin.hpp`).
+ *
+ * Every face row lists **corner nodes first** (wound so the face normal
+ * points *outward*, away from the element interior), then the mid-edge nodes
+ * (mid of corner k → corner k+1), then the face-center node — i.e. each row
+ * is itself a valid meshio/VTK `triangle6`/`quad8`/`quad9` node ordering.
+ *
+ * Node numbering is meshio's (= VTK's). Conventions baked in, matching the
+ * rest of this repo (see `openfoam.cpp`'s `build_*` orientation checks and
+ * the `tests/helpers.py` fixtures):
+ *  - tetra: base `(0,1,2)` normal points toward apex 3 → outward base is
+ *    `(0,2,1)`.
+ *  - hexahedron: base `(0,1,2,3)` normal points toward the top `(4,5,6,7)`.
+ *  - wedge: base `(0,1,2)` normal points toward the top `(3,4,5)` (the
+ *    gmsh-like layout this codebase uses; do NOT trust vtkWedge's own
+ *    doc-comment/face array, whose orientation is famously inconsistent).
+ *  - pyramid: base `(0,1,2,3)` normal points toward apex 4.
+ *  - wedge15 mid-node numbering is pure VTK_QUADRATIC_WEDGE — EnSight's
+ *    penta15 involution (see CLAUDE.md) must NOT be applied here.
+ *
+ * The outward winding of every row is enforced by a gtest invariant
+ * (`cpp/tests/test_skin.cpp`): on the reference element, the Newell normal
+ * of each face's corner ring must point away from the cell centroid.
+ *
+ * KEEP IN SYNC: `src/meshioplusplus/_skin.py` carries the Python twin of
+ * these tables for the pure-Python fallback — any change here must be
+ * mirrored there.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief One boundary face of a volume cell: its meshio face type and the
+ * local node indices into the cell's connectivity row.
+ */
+struct CellFaceDef {
+    /// Face cell type: `Triangle`/`Quad`/`Triangle6`/`Quad8`/`Quad9`.
+    CellType mFaceType;
+    /// Number of corner nodes (3 or 4) — the leading entries of `mNodes`.
+    std::uint8_t mNumCorners;
+    /// Total node count of the face (3, 4, 6, 8, or 9).
+    std::uint8_t mNumNodes;
+    /// Local node indices, corners first (outward winding), then mid-edge
+    /// nodes, then the face center; only the first `mNumNodes` are valid.
+    std::array<std::uint8_t, 9> mNodes;
+};
+
+/**
+ * @brief The boundary faces of a volume cell type, or an empty list for
+ * types the skin extractor does not support.
+ * @param VolumeType The volume cell type to query.
+ * @return Reference to the process-wide face table (empty if unsupported).
+ */
+inline const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
+    using CT = CellType;
+    static const std::vector<CellFaceDef> empty = {};
+    static const std::vector<CellFaceDef> tetra = {
+        {CT::Triangle, 3, 3, {0, 1, 3}},
+        {CT::Triangle, 3, 3, {1, 2, 3}},
+        {CT::Triangle, 3, 3, {2, 0, 3}},
+        {CT::Triangle, 3, 3, {0, 2, 1}},
+    };
+    static const std::vector<CellFaceDef> tetra10 = {
+        {CT::Triangle6, 3, 6, {0, 1, 3, 4, 8, 7}},
+        {CT::Triangle6, 3, 6, {1, 2, 3, 5, 9, 8}},
+        {CT::Triangle6, 3, 6, {2, 0, 3, 6, 7, 9}},
+        {CT::Triangle6, 3, 6, {0, 2, 1, 6, 5, 4}},
+    };
+    static const std::vector<CellFaceDef> hexahedron = {
+        {CT::Quad, 4, 4, {0, 4, 7, 3}}, {CT::Quad, 4, 4, {1, 2, 6, 5}},
+        {CT::Quad, 4, 4, {0, 1, 5, 4}}, {CT::Quad, 4, 4, {3, 7, 6, 2}},
+        {CT::Quad, 4, 4, {0, 3, 2, 1}}, {CT::Quad, 4, 4, {4, 5, 6, 7}},
+    };
+    static const std::vector<CellFaceDef> hexahedron20 = {
+        {CT::Quad8, 4, 8, {0, 4, 7, 3, 16, 15, 19, 11}},
+        {CT::Quad8, 4, 8, {1, 2, 6, 5, 9, 18, 13, 17}},
+        {CT::Quad8, 4, 8, {0, 1, 5, 4, 8, 17, 12, 16}},
+        {CT::Quad8, 4, 8, {3, 7, 6, 2, 19, 14, 18, 10}},
+        {CT::Quad8, 4, 8, {0, 3, 2, 1, 11, 10, 9, 8}},
+        {CT::Quad8, 4, 8, {4, 5, 6, 7, 12, 13, 14, 15}},
+    };
+    // VTK face-center numbering: 20=(0,1,5,4), 21=(1,2,6,5), 22=(2,3,7,6),
+    // 23=(3,0,4,7), 24=bottom (0,1,2,3), 25=top (4,5,6,7); 26 = body center.
+    static const std::vector<CellFaceDef> hexahedron27 = {
+        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 23}},
+        {CT::Quad9, 4, 9, {1, 2, 6, 5, 9, 18, 13, 17, 21}},
+        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 20}},
+        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 22}},
+        {CT::Quad9, 4, 9, {0, 3, 2, 1, 11, 10, 9, 8, 24}},
+        {CT::Quad9, 4, 9, {4, 5, 6, 7, 12, 13, 14, 15, 25}},
+    };
+    static const std::vector<CellFaceDef> wedge = {
+        {CT::Triangle, 3, 3, {0, 2, 1}}, {CT::Triangle, 3, 3, {3, 4, 5}},
+        {CT::Quad, 4, 4, {0, 1, 4, 3}},  {CT::Quad, 4, 4, {1, 2, 5, 4}},
+        {CT::Quad, 4, 4, {2, 0, 3, 5}},
+    };
+    static const std::vector<CellFaceDef> wedge15 = {
+        {CT::Triangle6, 3, 6, {0, 2, 1, 8, 7, 6}},
+        {CT::Triangle6, 3, 6, {3, 4, 5, 9, 10, 11}},
+        {CT::Quad8, 4, 8, {0, 1, 4, 3, 6, 13, 9, 12}},
+        {CT::Quad8, 4, 8, {1, 2, 5, 4, 7, 14, 10, 13}},
+        {CT::Quad8, 4, 8, {2, 0, 3, 5, 8, 12, 11, 14}},
+    };
+    static const std::vector<CellFaceDef> pyramid = {
+        {CT::Quad, 4, 4, {0, 3, 2, 1}},  {CT::Triangle, 3, 3, {0, 1, 4}},
+        {CT::Triangle, 3, 3, {1, 2, 4}}, {CT::Triangle, 3, 3, {2, 3, 4}},
+        {CT::Triangle, 3, 3, {3, 0, 4}},
+    };
+    static const std::vector<CellFaceDef> pyramid13 = {
+        {CT::Quad8, 4, 8, {0, 3, 2, 1, 8, 7, 6, 5}}, {CT::Triangle6, 3, 6, {0, 1, 4, 5, 10, 9}},
+        {CT::Triangle6, 3, 6, {1, 2, 4, 6, 11, 10}}, {CT::Triangle6, 3, 6, {2, 3, 4, 7, 12, 11}},
+        {CT::Triangle6, 3, 6, {3, 0, 4, 8, 9, 12}},
+    };
+    // pyramid14 = pyramid13 plus node 13 at the base-face center.
+    static const std::vector<CellFaceDef> pyramid14 = {
+        {CT::Quad9, 4, 9, {0, 3, 2, 1, 8, 7, 6, 5, 13}},
+        {CT::Triangle6, 3, 6, {0, 1, 4, 5, 10, 9}},
+        {CT::Triangle6, 3, 6, {1, 2, 4, 6, 11, 10}},
+        {CT::Triangle6, 3, 6, {2, 3, 4, 7, 12, 11}},
+        {CT::Triangle6, 3, 6, {3, 0, 4, 8, 9, 12}},
+    };
+    switch (VolumeType) {
+        case CT::Tetra:
+            return tetra;
+        case CT::Tetra10:
+            return tetra10;
+        case CT::Hexahedron:
+            return hexahedron;
+        case CT::Hexahedron20:
+            return hexahedron20;
+        case CT::Hexahedron27:
+            return hexahedron27;
+        case CT::Wedge:
+            return wedge;
+        case CT::Wedge15:
+            return wedge15;
+        case CT::Pyramid:
+            return pyramid;
+        case CT::Pyramid13:
+            return pyramid13;
+        case CT::Pyramid14:
+            return pyramid14;
+        default:
+            return empty;
+    }
+}
+
+/**
+ * @brief Whether the skin extractor supports a volume cell type.
+ * @param Type The cell type to test.
+ * @return `true` when `cell_faces(Type)` is non-empty.
+ */
+inline bool skin_supported(CellType Type) {
+    return !cell_faces(Type).empty();
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/cell_faces.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/format_compat.hpp =====
 /**
  * @file format_compat.hpp
@@ -3751,6 +3922,248 @@ struct SilenceErrors {
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
+// ===== begin cpp/include/meshioplusplus/mesh.hpp =====
+/**
+ * @file mesh.hpp
+ * @brief Compile-time mesh-backend dispatch: selects which in-memory mesh
+ * structure `meshioplusplus::Mesh` is.
+ *
+ * meshio++ has three interchangeable mesh backends, selected at build time
+ * by the `MESHIOPLUSPLUS_MESH_BACKEND` CMake option (exactly one of the
+ * `MESHIOPLUSPLUS_MESH_BACKEND_*` macros is defined — mirroring the
+ * `MESHIOPLUSPLUS_PARALLEL_*` parallel-backend pattern in `parallel.hpp`):
+ *
+ *  - **MESHIO** (`backends/meshio_mesh.hpp`, the default): the
+ *    meshio-mirroring `Mesh`/`CellBlock` over dtype-erased `NDArray`s.
+ *    Required when the pybind11 extension is built — the zero-copy numpy
+ *    boundary (`bindings/np_conversions.hpp`) is written against it.
+ *  - **NATIVE** (`backends/native_mesh.hpp`): canonical statically-typed
+ *    storage — Float64 points, Int64 connectivity, `CellType` enum,
+ *    CSR-shaped ragged blocks. The fastest pure-C++ consumer surface; used
+ *    by the WebAssembly build.
+ *  - **KRATOS** (`backends/kratos_mesh.hpp`): a Kratos-Multiphysics-style
+ *    `ModelPart` (Nodes/Elements/Conditions/SubModelParts) behind the same
+ *    API, for near-costless exchange with Kratos (see `kratos_bridge.hpp`).
+ *
+ * All three implement the uniform format-facing API documented in
+ * `mesh_api.hpp`; format code compiles unchanged under any of them. To add
+ * a backend: add one CMake branch defining a new
+ * `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>` macro, one `#elif` below, and a
+ * `backends/<name>_mesh.hpp` implementing the API.
+ */
+
+// Project includes
+
+#if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
+namespace meshioplusplus {
+using Mesh = NativeMesh;
+}
+#elif defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
+namespace meshioplusplus {
+using Mesh = KratosMesh;
+}
+#else  // MESHIOPLUSPLUS_MESH_BACKEND_MESHIO (and the no-macro default)
+// backends/meshio_mesh.hpp defines `struct Mesh` directly (no alias) so the
+// pybind11 binding layer sees literally the same type as before the
+// backends existed.
+#endif
+// ===== end cpp/include/meshioplusplus/mesh.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/projection.hpp =====
+/**
+ * @file projection.hpp
+ * @brief Orthographic camera projection + painter's-algorithm face ordering
+ * for the SVG/TikZ 3D rendering path.
+ *
+ * The camera is parameterized by azimuth/elevation/roll in degrees: the view
+ * direction (from the scene toward the camera) is
+ * `w = (cos el * cos az, cos el * sin az, sin el)`, the screen-right axis is
+ * `u = normalize(cross((0,0,1), w))` (falling back to the y axis as the up
+ * reference when looking straight along z), the screen-up axis is
+ * `v = cross(w, u)`, and `roll` rotates `(u, v)` about `w`. The defaults
+ * `azimuth = 45`, `elevation = 35.264389682754654` (`atan(1/sqrt(2))`) give
+ * `w` proportional to `(1,1,1)` — the classic CAD isometric view. Projection
+ * is orthographic (`x' = p.u`, `y' = p.v`), and `depth = p.w` orders faces
+ * back-to-front (painter's algorithm; larger depth = closer to the camera).
+ *
+ * KEEP IN SYNC: `src/meshioplusplus/_projection.py` is the Python twin used
+ * by the pure-Python fallback writers — the arithmetic (down to expression
+ * order, which fixes the floating-point rounding) must stay identical so
+ * TikZ output is byte-identical across the two implementations.
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/** @brief Orthonormal camera basis: screen-right `u`, screen-up `v`, and the
+ * view direction `w` (scene toward camera). */
+struct CameraBasis {
+    std::array<double, 3> mU;
+    std::array<double, 3> mV;
+    std::array<double, 3> mW;
+};
+
+/**
+ * @brief Build the orthographic camera basis for azimuth/elevation/roll.
+ * @param azimuth Camera azimuth in degrees (rotation about z, from +x).
+ * @param elevation Camera elevation in degrees above the xy plane.
+ * @param roll In-screen rotation in degrees about the view direction.
+ * @return The `{u, v, w}` basis described in the file header.
+ */
+inline CameraBasis camera_basis(double azimuth, double elevation, double roll) {
+    constexpr double deg = 3.141592653589793 / 180.0;
+    const double az = azimuth * deg;
+    const double el = elevation * deg;
+    const double caz = std::cos(az);
+    const double saz = std::sin(az);
+    const double cel = std::cos(el);
+    const double sel = std::sin(el);
+    const double w0 = cel * caz;
+    const double w1 = cel * saz;
+    const double w2 = sel;
+
+    double u0, u1, u2;
+    if (std::fabs(w2) > 1.0 - 1.0e-12) {
+        // Looking straight along z: use y as the up reference.
+        // u = normalize(cross((0,1,0), w))
+        const double n = std::sqrt(w2 * w2 + w0 * w0);
+        u0 = w2 / n;
+        u1 = 0.0;
+        u2 = -w0 / n;
+    } else {
+        // u = normalize(cross((0,0,1), w))
+        const double n = std::sqrt(w1 * w1 + w0 * w0);
+        u0 = -w1 / n;
+        u1 = w0 / n;
+        u2 = 0.0;
+    }
+    // v = cross(w, u)
+    double v0 = w1 * u2 - w2 * u1;
+    double v1 = w2 * u0 - w0 * u2;
+    double v2 = w0 * u1 - w1 * u0;
+
+    if (roll != 0.0) {
+        const double cr = std::cos(roll * deg);
+        const double sr = std::sin(roll * deg);
+        const double ru0 = cr * u0 + sr * v0;
+        const double ru1 = cr * u1 + sr * v1;
+        const double ru2 = cr * u2 + sr * v2;
+        const double rv0 = -sr * u0 + cr * v0;
+        const double rv1 = -sr * u1 + cr * v1;
+        const double rv2 = -sr * u2 + cr * v2;
+        u0 = ru0;
+        u1 = ru1;
+        u2 = ru2;
+        v0 = rv0;
+        v1 = rv1;
+        v2 = rv2;
+    }
+    return CameraBasis{{u0, u1, u2}, {v0, v1, v2}, {w0, w1, w2}};
+}
+
+/** @brief One drawable face of a projected surface: 2-4 corner point ids. */
+struct ProjectedFace {
+    std::array<std::int64_t, 4> mNodes;
+    std::uint8_t mNumNodes;  // 2 (line), 3 (triangle), or 4 (quad)
+    bool mIsLine;
+    double mDepth;  // view-space depth of the face centroid
+};
+
+/** @brief A surface mesh projected to screen space, faces sorted
+ * back-to-front. */
+struct ProjectedSurface {
+    std::vector<double> mX;
+    std::vector<double> mY;
+    std::vector<ProjectedFace> mFaces;
+};
+
+/**
+ * @brief Project a surface mesh's points with an orthographic camera and
+ * gather its drawable faces sorted back-to-front (painter's algorithm).
+ *
+ * Drawable blocks are `line`, `triangle`, `quad`, and the corner-linearized
+ * higher-order surface types (`triangle6`, `quad8`, `quad9` — corner nodes
+ * only); anything else is skipped. Faces keep enumeration order within
+ * equal depths (`std::stable_sort`, matching numpy's stable argsort).
+ *
+ * @param rMesh The surface mesh to project (already skin-extracted when it
+ *              came from a volume mesh).
+ * @param azimuth Camera azimuth in degrees.
+ * @param elevation Camera elevation in degrees.
+ * @param roll In-screen rotation in degrees.
+ * @return Projected screen coordinates per point and the sorted face list.
+ */
+inline ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double elevation,
+                                        double roll) {
+    const CameraBasis cam = camera_basis(azimuth, elevation, roll);
+    const NDArray& points = rMesh.Points();
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    ProjectedSurface out;
+    out.mX.resize(num_points);
+    out.mY.resize(num_points);
+    std::vector<double> depth(num_points);
+    for (std::size_t i = 0; i < num_points; ++i) {
+        const double px = (0 < dim) ? read_double(points, i * dim + 0) : 0.0;
+        const double py = (1 < dim) ? read_double(points, i * dim + 1) : 0.0;
+        const double pz = (2 < dim) ? read_double(points, i * dim + 2) : 0.0;
+        out.mX[i] = px * cam.mU[0] + py * cam.mU[1] + pz * cam.mU[2];
+        out.mY[i] = px * cam.mV[0] + py * cam.mV[1] + pz * cam.mV[2];
+        depth[i] = px * cam.mW[0] + py * cam.mW[1] + pz * cam.mW[2];
+    }
+
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& type = cb.Type();
+        std::uint8_t n_corner = 0;
+        bool is_line = false;
+        if (type == "line") {
+            n_corner = 2;
+            is_line = true;
+        } else if (type == "triangle" || type == "triangle6") {
+            n_corner = 3;
+        } else if (type == "quad" || type == "quad8" || type == "quad9") {
+            n_corner = 4;
+        } else {
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t ncols = cols(conn);
+        const std::size_t n = cb.NumCells();
+        for (std::size_t r = 0; r < n; ++r) {
+            ProjectedFace face;
+            face.mNodes = {-1, -1, -1, -1};
+            face.mNumNodes = n_corner;
+            face.mIsLine = is_line;
+            double d = 0.0;
+            for (std::uint8_t k = 0; k < n_corner; ++k) {
+                const std::int64_t p = read_int(conn, r * ncols + k);
+                face.mNodes[k] = p;
+                d += depth[static_cast<std::size_t>(p)];
+            }
+            face.mDepth = d / static_cast<double>(n_corner);
+            out.mFaces.push_back(face);
+        }
+    }
+
+    std::stable_sort(
+        out.mFaces.begin(), out.mFaces.end(),
+        [](const ProjectedFace& rA, const ProjectedFace& rB) { return rA.mDepth < rB.mDepth; });
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/projection.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
 /**
  * @file source_location_compat.hpp
@@ -3813,52 +4226,6 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
-// ===== begin cpp/include/meshioplusplus/mesh.hpp =====
-/**
- * @file mesh.hpp
- * @brief Compile-time mesh-backend dispatch: selects which in-memory mesh
- * structure `meshioplusplus::Mesh` is.
- *
- * meshio++ has three interchangeable mesh backends, selected at build time
- * by the `MESHIOPLUSPLUS_MESH_BACKEND` CMake option (exactly one of the
- * `MESHIOPLUSPLUS_MESH_BACKEND_*` macros is defined — mirroring the
- * `MESHIOPLUSPLUS_PARALLEL_*` parallel-backend pattern in `parallel.hpp`):
- *
- *  - **MESHIO** (`backends/meshio_mesh.hpp`, the default): the
- *    meshio-mirroring `Mesh`/`CellBlock` over dtype-erased `NDArray`s.
- *    Required when the pybind11 extension is built — the zero-copy numpy
- *    boundary (`bindings/np_conversions.hpp`) is written against it.
- *  - **NATIVE** (`backends/native_mesh.hpp`): canonical statically-typed
- *    storage — Float64 points, Int64 connectivity, `CellType` enum,
- *    CSR-shaped ragged blocks. The fastest pure-C++ consumer surface; used
- *    by the WebAssembly build.
- *  - **KRATOS** (`backends/kratos_mesh.hpp`): a Kratos-Multiphysics-style
- *    `ModelPart` (Nodes/Elements/Conditions/SubModelParts) behind the same
- *    API, for near-costless exchange with Kratos (see `kratos_bridge.hpp`).
- *
- * All three implement the uniform format-facing API documented in
- * `mesh_api.hpp`; format code compiles unchanged under any of them. To add
- * a backend: add one CMake branch defining a new
- * `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>` macro, one `#elif` below, and a
- * `backends/<name>_mesh.hpp` implementing the API.
- */
-
-// Project includes
-
-#if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
-namespace meshioplusplus {
-using Mesh = NativeMesh;
-}
-#elif defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
-namespace meshioplusplus {
-using Mesh = KratosMesh;
-}
-#else  // MESHIOPLUSPLUS_MESH_BACKEND_MESHIO (and the no-macro default)
-// backends/meshio_mesh.hpp defines `struct Mesh` directly (no alias) so the
-// pybind11 binding layer sees literally the same type as before the
-// backends existed.
-#endif
-// ===== end cpp/include/meshioplusplus/mesh.hpp =====
 // ===== begin cpp/include/meshioplusplus/parallel.hpp =====
 /**
  * @file parallel.hpp
@@ -7518,21 +7885,30 @@ namespace meshioplusplus {
 /**
  * @brief Write a mesh to a PLY file, ascii or binary.
  *
- * Writes `element vertex`/`element face` sections; point_data columns beyond
- * x/y/z become extra vertex properties, cell blocks are grouped by type into
- * one `property list` face element. Requires all cell blocks to share one
- * dtype; 64-bit integer cell_data is downcast to int32 with a warning (PLY
- * has no 64-bit int property type). Only vertex/line/triangle/quad/polygon
- * cell types are written; other types are skipped with a warning.
- * Multi-dimensional point_data is silently filtered.
+ * When `skin` is true (the default) and the mesh contains supported 3D
+ * volume cells (tetra/hexahedron/wedge/pyramid and their common
+ * higher-order variants), the boundary skin is extracted first
+ * (`extract_skin`, linearized to corner triangles/quads, points compacted)
+ * and only that skin is written; any pre-existing surface blocks are
+ * dropped with a warning. With `skin=false` (or no volume cells) the legacy
+ * behavior applies. Writes `element vertex`/`element face` sections;
+ * point_data columns beyond x/y/z become extra vertex properties, cell
+ * blocks are grouped by type into one `property list` face element.
+ * Requires all cell blocks to share one dtype; 64-bit integer cell_data is
+ * downcast to int32 with a warning (PLY has no 64-bit int property type).
+ * Only vertex/line/triangle/quad/polygon cell types are written; other
+ * types are skipped with a warning. Multi-dimensional point_data is
+ * silently filtered.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
  * @param binary true for `binary_little_endian`/`binary_big_endian`
  *        (host-endian) output, false for `format ascii 1.0`
+ * @param skin extract and write the boundary skin when volume cells are
+ *        present (default true); false keeps the legacy behavior
  * @throws WriteError on an unopenable output path
  */
-void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary);
+void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin = true);
 
 /**
  * @brief Read a PLY file (ascii or binary, either endianness).
@@ -7592,19 +7968,29 @@ namespace meshioplusplus {
 /**
  * @brief Write a mesh's triangle facets to an STL file, ascii or binary.
  *
- * Non-triangle cell blocks are dropped with a warning naming the discarded
- * types. If `cell_data["facet_normals"]` is present it is written verbatim;
- * otherwise normals are computed per-facet from the cross product of two
- * edge vectors.
+ * When `skin` is true (the default) and the mesh contains supported 3D
+ * volume cells (tetra/hexahedron/wedge/pyramid and their common
+ * higher-order variants), the boundary skin is extracted first
+ * (`extract_skin`, linearized to corner nodes) with quads triangulated as
+ * `(0,1,2)`/`(0,2,3)`, and only that skin is written; any pre-existing
+ * surface blocks are dropped with a warning (a volume mesh's surface blocks
+ * are usually its boundary — writing both would duplicate every facet).
+ * With `skin=false` (or no volume cells) the legacy behavior applies:
+ * non-triangle cell blocks are dropped and only existing `triangle` blocks
+ * are written. If `cell_data["facet_normals"]` is present it is written
+ * verbatim; otherwise normals are computed per-facet from the cross product
+ * of two edge vectors.
  *
  * @param rPath filesystem path to write
- * @param rMesh the mesh to write (only triangle cells are emitted)
+ * @param rMesh the mesh to write
  * @param binary true for the 80-byte-header + 50-byte-record binary layout,
  *        false for the `solid`/`facet`/`endfacet` ascii layout
+ * @param skin extract and write the boundary skin when volume cells are
+ *        present (default true); false keeps the legacy triangles-only path
  * @throws WriteError on an unopenable output path
  * @note cell_data key produced/consumed: `"facet_normals"`.
  */
-void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary);
+void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin = true);
 
 /**
  * @brief Read an STL file, auto-detecting ascii vs. binary.
@@ -7698,15 +8084,20 @@ Mesh read_su2(const std::string& rPath);
 // ===== begin cpp/include/meshioplusplus/formats/svg.hpp =====
 /**
  * @file svg.hpp
- * @brief SVG (Scalable Vector Graphics) 2D mesh writer (write-only).
+ * @brief SVG (Scalable Vector Graphics) mesh writer (write-only).
  *
  * Draws the mesh's `line`/`triangle`/`quad` cells as `<path>` elements in a
- * single `<svg>` document — a flat-2D visualization format with no reader.
- * Points must be 2D or flat 3D (all z ~ 0); a genuinely non-flat mesh raises
- * `WriteError`. The y-axis is flipped (`max_y + min_y - y`) to convert the
- * mesh/math convention (y-up) to SVG's screen convention (y-down). Any cell
- * type other than line/triangle/quad is silently skipped. No
- * point_data/cell_data/field_data is emitted.
+ * single `<svg>` document — a visualization format with no reader. For 2D or
+ * flat-3D input (all z ~ 0) the classic flat path is used, byte-identical to
+ * previous releases. A genuinely non-flat 3D mesh is *rendered*: if it
+ * contains supported volume cells its boundary skin is extracted first
+ * (`extract_skin`, linearized), then the surface faces are projected with an
+ * orthographic camera (azimuth/elevation/roll, default the classic CAD
+ * isometric view) and painted back-to-front (painter's algorithm on face
+ * centroid depth — see `detail/projection.hpp`). The y-axis is flipped
+ * (`max_y + min_y - y`) to convert the mesh/math convention (y-up) to SVG's
+ * screen convention (y-down). Any non-drawable cell type is silently
+ * skipped. No point_data/cell_data/field_data is emitted.
  */
 
 // System includes
@@ -7730,12 +8121,18 @@ namespace meshioplusplus {
  *                     mesh's own width (no scaling)
  * @param rFill        cell fill colour
  * @param rStroke      edge stroke colour
- * @throws WriteError on an unopenable output path or a non-flat 3D mesh
+ * @param azimuth      camera azimuth in degrees (3D input only)
+ * @param elevation    camera elevation in degrees (3D input only); the
+ *                     default pair (45, atan(1/sqrt(2))) is the classic CAD
+ *                     isometric view
+ * @param roll         in-screen camera roll in degrees (3D input only)
+ * @throws WriteError on an unopenable output path
  */
 void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".3f",
                const std::optional<std::string>& rStrokeWidth = std::nullopt,
                const std::optional<double>& rImageWidth = 100.0,
-               const std::string& rFill = "#c8c5bd", const std::string& rStroke = "#000080");
+               const std::string& rFill = "#c8c5bd", const std::string& rStroke = "#000080",
+               double azimuth = 45.0, double elevation = 35.264389682754654, double roll = 0.0);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/svg.hpp =====
@@ -7901,9 +8298,14 @@ Mesh read_tetgen(const std::string& rPath);
  * `pdflatex`-compilable `standalone` document; with `standalone=false` it emits
  * only the bare `tikzpicture` snippet for `\input` into a larger document. It is
  * the LaTeX counterpart to the SVG writer; unlike SVG there is no y-flip (TikZ
- * uses the math convention, y-up). Points must be 2D or flat 3D (all z ~ 0); a
- * non-flat mesh raises `WriteError`. Non-line/triangle/quad cells are silently
- * skipped, and no point_data/cell_data/field_data is emitted.
+ * uses the math convention, y-up). 2D or flat-3D input (all z ~ 0) takes the
+ * classic flat path, byte-identical to previous releases. A genuinely
+ * non-flat 3D mesh is rendered: the boundary skin of any supported volume
+ * cells is extracted first (`extract_skin`, linearized), then the surface
+ * faces are projected with an orthographic camera (azimuth/elevation/roll,
+ * default the classic CAD isometric view) and drawn back-to-front
+ * (painter's algorithm — see `detail/projection.hpp`). Non-drawable cells
+ * are silently skipped, and no point_data/cell_data/field_data is emitted.
  */
 
 // System includes
@@ -7930,12 +8332,18 @@ namespace meshioplusplus {
  * @param rDraw       xcolor spec for the edge stroke
  * @param rScale      optional `\begin{tikzpicture}[scale=...]` factor;
  *                    `std::nullopt` emits no scale key
- * @throws WriteError on an unopenable output path or a non-flat 3D mesh
+ * @param azimuth     camera azimuth in degrees (3D input only)
+ * @param elevation   camera elevation in degrees (3D input only); the default
+ *                    pair (45, atan(1/sqrt(2))) is the classic CAD isometric
+ *                    view
+ * @param roll        in-screen camera roll in degrees (3D input only)
+ * @throws WriteError on an unopenable output path
  */
 void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".6f",
                 bool Standalone = true, const std::optional<std::string>& rLineWidth = std::nullopt,
                 const std::string& rFill = "gray!30", const std::string& rDraw = "black",
-                const std::optional<double>& rScale = std::nullopt);
+                const std::optional<double>& rScale = std::nullopt, double azimuth = 45.0,
+                double elevation = 35.264389682754654, double roll = 0.0);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/tikz.hpp =====
@@ -9138,6 +9546,68 @@ const char* registry_compiled_out(const std::string& rFormat);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/registry.hpp =====
+// ===== begin cpp/include/meshioplusplus/skin.hpp =====
+/**
+ * @file skin.hpp
+ * @brief Boundary-skin extraction: derive the surface mesh of a 3D volume
+ * mesh (the algorithm of Kratos Multiphysics' `SkinDetectionProcess`).
+ *
+ * A face of a volume cell is a *boundary* face when its sorted corner-node
+ * key appears exactly once across all volume cells — faces shared by two
+ * cells are interior and cancel out. The per-cell-type face topology comes
+ * from `detail/cell_faces.hpp`; supported volume types are tetra,
+ * hexahedron, wedge, pyramid and their common higher-order variants
+ * (tetra10, hexahedron20/27, wedge15, pyramid13/14), whose boundary faces
+ * come out as `triangle6`/`quad8`/`quad9`.
+ *
+ * Used by the STL/PLY writers (skin-by-default for volume meshes), by the
+ * SVG/TikZ 3D projection path, and exposed to Python as
+ * `meshioplusplus.extract_skin`.
+ */
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Extract the boundary skin of a volume mesh as a new surface mesh.
+ *
+ * Walks every supported, non-ragged 3D cell block, keeps the faces whose
+ * sorted corner-node key occurs exactly once (Kratos `SkinDetectionProcess`
+ * hashing), and builds a new mesh containing only those faces. Output cell
+ * blocks appear in the fixed canonical order `triangle`, `triangle6`,
+ * `quad`, `quad8`, `quad9` (only non-empty blocks are emitted), with the
+ * faces of each type in volume-block enumeration order. Points are
+ * *compacted*: only nodes referenced by a boundary face are kept, in
+ * ascending original-index order, and `point_data` rows are subset the same
+ * way. `cell_data`, `field_data`, sets, and `info` are dropped (a boundary
+ * face has no canonical 1:1 source cell).
+ *
+ * Unsupported 3D blocks (polyhedron/ragged blocks, Lagrange and other
+ * very-high-order types) are skipped with a warning; existing 0/1/2-D
+ * blocks are ignored (the skin is derived from volume cells only).
+ *
+ * @param rMesh the volume mesh to extract the skin from
+ * @param linearize when true, only the corner nodes of each boundary face
+ *        are emitted (`triangle`/`quad` output even for higher-order volume
+ *        cells) and unused mid-nodes are compacted away — what the STL/PLY/
+ *        SVG/TikZ writers need
+ * @return a new surface mesh holding the boundary faces
+ * @throws std::invalid_argument if `rMesh` contains no supported volume
+ *         cell block at all
+ */
+Mesh extract_skin(const Mesh& rMesh, bool linearize = false);
+
+/**
+ * @brief Whether a mesh has at least one cell block the skin extractor
+ * supports (a non-ragged 3D block with a known face table).
+ * @param rMesh the mesh to test
+ * @return true when `extract_skin(rMesh)` would have input to work on
+ */
+bool has_skinnable_cells(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/skin.hpp =====
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
@@ -33855,7 +34325,21 @@ Mesh read_ply(const std::string& rPath) {
     return mesh;
 }
 
-void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
+void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin) {
+    if (skin && has_skinnable_cells(rMesh)) {
+        std::size_t dropped = 0;
+        for (const auto cb : rMesh.CellRange())
+            if (cell_type_dimension(cell_type_from_name(cb.Type())) != 3)
+                ++dropped;
+        if (dropped > 0)
+            log::warn(
+                "PLY: writing the extracted skin of the volume cells; {} pre-existing "
+                "non-volume cell block(s) dropped (pass skin=false for the legacy behavior).",
+                dropped);
+        write_ply(rPath, extract_skin(rMesh, /*linearize=*/true), binary, /*skin=*/false);
+        return;
+    }
+
     std::ofstream os(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -34188,9 +34672,59 @@ void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTr
     }
 }
 
+// Extract the linearized boundary skin of the volume cells and triangulate
+// its quads (quad -> (0,1,2), (0,2,3)) into a single triangle block.
+Mesh stl_skin_triangles(const Mesh& rMesh) {
+    const Mesh skin = extract_skin(rMesh, /*linearize=*/true);
+    std::vector<std::int64_t> tri;
+    for (const auto cb : skin.CellRange()) {
+        const NDArray& conn = cb.Conn();
+        const std::size_t nc = cb.NumCells();
+        if (cb.Type() == "triangle") {
+            for (std::size_t r = 0; r < nc * 3; ++r)
+                tri.push_back(detail::read_int(conn, r));
+        } else {  // quad
+            for (std::size_t r = 0; r < nc; ++r) {
+                const std::int64_t a = detail::read_int(conn, r * 4 + 0);
+                const std::int64_t b = detail::read_int(conn, r * 4 + 1);
+                const std::int64_t c = detail::read_int(conn, r * 4 + 2);
+                const std::int64_t d = detail::read_int(conn, r * 4 + 3);
+                tri.insert(tri.end(), {a, b, c, a, c, d});
+            }
+        }
+    }
+    Mesh out;
+    NDArray pts = skin.Points();
+    out.AssignPoints(std::move(pts));
+    NDArray block = NDArray::Uninit(DType::Int64, {tri.size() / 3, 3});
+    std::memcpy(block.Data(), tri.data(), tri.size() * sizeof(std::int64_t));
+    out.AddCellBlock("triangle", std::move(block));
+    return out;
+}
+
+// Number of non-volume cell blocks (the ones the skin path drops).
+std::size_t stl_num_surface_blocks(const Mesh& rMesh) {
+    std::size_t n = 0;
+    for (const auto cb : rMesh.CellRange())
+        if (cell_type_dimension(cell_type_from_name(cb.Type())) != 3)
+            ++n;
+    return n;
+}
+
 }  // namespace
 
-void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary) {
+void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin) {
+    if (skin && has_skinnable_cells(rMesh)) {
+        const std::size_t dropped = stl_num_surface_blocks(rMesh);
+        if (dropped > 0)
+            log::warn(
+                "STL: writing the extracted skin of the volume cells; {} pre-existing "
+                "non-volume cell block(s) dropped (pass skin=false for the legacy behavior).",
+                dropped);
+        write_stl(rPath, stl_skin_triangles(rMesh), binary, /*skin=*/false);
+        return;
+    }
+
     std::vector<std::array<double, 9>> tris;
     std::vector<std::array<double, 3>> normals;
     gather_triangles(rMesh, tris, normals);
@@ -34615,21 +35149,113 @@ std::string svg_fmt_num(double value, const std::string& rSpec) {
     return buf;
 }
 
+// 3D rendering path: project the (already skin-extracted) surface mesh with
+// the orthographic camera and emit its faces back-to-front. Replicates the
+// flat path's bbox -> y-flip -> image_width scaling -> <path> emission, but
+// over the sorted projected faces.
+void svg_proj_write(const std::string& rPath, const Mesh& rDrawMesh, const std::string& rFloatFmt,
+                    const std::optional<std::string>& rStrokeWidth,
+                    const std::optional<double>& rImageWidth, const std::string& rFill,
+                    const std::string& rStroke, double azimuth, double elevation, double roll) {
+    detail::ProjectedSurface ps = detail::project_surface(rDrawMesh, azimuth, elevation, roll);
+    std::vector<double>& x = ps.mX;
+    std::vector<double>& y = ps.mY;
+    const std::size_t num_points = x.size();
+
+    double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
+    if (num_points > 0) {
+        min_x = max_x = x[0];
+        min_y = max_y = y[0];
+        for (std::size_t i = 1; i < num_points; ++i) {
+            min_x = std::min(min_x, x[i]);
+            max_x = std::max(max_x, x[i]);
+            min_y = std::min(min_y, y[i]);
+            max_y = std::max(max_y, y[i]);
+        }
+    }
+
+    // Flip y (projected math convention y-up -> SVG screen convention y-down).
+    for (std::size_t i = 0; i < num_points; ++i)
+        y[i] = max_y + min_y - y[i];
+
+    double width = max_x - min_x;
+    double height = max_y - min_y;
+
+    if (rImageWidth.has_value() && width != 0.0) {
+        const double scaling_factor = *rImageWidth / width;
+        min_x *= scaling_factor;
+        min_y *= scaling_factor;
+        width *= scaling_factor;
+        height *= scaling_factor;
+        for (std::size_t i = 0; i < num_points; ++i) {
+            x[i] *= scaling_factor;
+            y[i] *= scaling_factor;
+        }
+    }
+
+    std::string stroke_width;
+    if (rStrokeWidth.has_value()) {
+        stroke_width = *rStrokeWidth;
+    } else {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%g", width / 100.0);
+        stroke_width = buf;
+    }
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    os << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" viewBox=\""
+       << svg_fmt_num(min_x, rFloatFmt) << ' ' << svg_fmt_num(min_y, rFloatFmt) << ' '
+       << svg_fmt_num(width, rFloatFmt) << ' ' << svg_fmt_num(height, rFloatFmt) << "\">";
+
+    os << "<style>path {fill: " << rFill << "; stroke: " << rStroke
+       << "; stroke-width: " << stroke_width << "; stroke-linejoin:bevel}</style>";
+
+    for (const detail::ProjectedFace& face : ps.mFaces) {
+        std::string d;
+        for (std::uint8_t k = 0; k < face.mNumNodes; ++k) {
+            const std::int64_t p = face.mNodes[k];
+            d += (k == 0) ? "M " : "L ";
+            d += svg_fmt_num(x[static_cast<std::size_t>(p)], rFloatFmt);
+            d += ' ';
+            d += svg_fmt_num(y[static_cast<std::size_t>(p)], rFloatFmt);
+        }
+        if (!face.mIsLine)
+            d += "Z";
+        os << "<path d=\"" << d << "\" />";
+    }
+
+    os << "</svg>";
+}
+
 }  // namespace
 
 void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
                const std::optional<std::string>& rStrokeWidth,
                const std::optional<double>& rImageWidth, const std::string& rFill,
-               const std::string& rStroke) {
+               const std::string& rStroke, double azimuth, double elevation, double roll) {
     const NDArray& points = rMesh.Points();
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    // SVG can only handle flat 2D meshes: a 3D mesh must have every z ~ 0.
+    // A genuinely non-flat 3D mesh takes the projected-rendering path (skin
+    // extraction for volume cells + orthographic camera); a flat one (every
+    // z ~ 0) keeps the classic 2D path below, byte-identical to before.
     if (dim == 3) {
         for (std::size_t i = 0; i < num_points; ++i) {
-            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14)
-                throw WriteError("SVG can only handle flat 2D meshes");
+            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14) {
+                if (has_skinnable_cells(rMesh)) {
+                    svg_proj_write(rPath, extract_skin(rMesh, /*linearize=*/true), rFloatFmt,
+                                   rStrokeWidth, rImageWidth, rFill, rStroke, azimuth, elevation,
+                                   roll);
+                } else {
+                    svg_proj_write(rPath, rMesh, rFloatFmt, rStrokeWidth, rImageWidth, rFill,
+                                   rStroke, azimuth, elevation, roll);
+                }
+                return;
+            }
         }
     }
 
@@ -35523,21 +36149,101 @@ std::string tikz_fmt_num(double value, const std::string& rSpec) {
     return buf;
 }
 
+// 3D rendering path: project the (already skin-extracted) surface mesh with
+// the orthographic camera and emit its faces back-to-front as \draw commands.
+// Mirrors the flat path's emission; no y-flip (TikZ is y-up).
+void tikz_proj_write(const std::string& rPath, const Mesh& rDrawMesh, const std::string& rFloatFmt,
+                     bool Standalone, const std::optional<std::string>& rLineWidth,
+                     const std::string& rFill, const std::string& rDraw,
+                     const std::optional<double>& rScale, double azimuth, double elevation,
+                     double roll) {
+    const detail::ProjectedSurface ps =
+        detail::project_surface(rDrawMesh, azimuth, elevation, roll);
+
+    std::string fill_style = "fill=" + rFill + ", draw=" + rDraw;
+    std::string line_style = "draw=" + rDraw;
+    if (rLineWidth.has_value()) {
+        fill_style += ", line width=" + *rLineWidth;
+        line_style += ", line width=" + *rLineWidth;
+    }
+
+    std::vector<std::string> lines;
+    for (const detail::ProjectedFace& face : ps.mFaces) {
+        std::string path;
+        for (std::uint8_t k = 0; k < face.mNumNodes; ++k) {
+            if (k)
+                path += " -- ";
+            const std::size_t p = static_cast<std::size_t>(face.mNodes[k]);
+            path += "(" + tikz_fmt_num(ps.mX[p], rFloatFmt) + "," +
+                    tikz_fmt_num(ps.mY[p], rFloatFmt) + ")";
+        }
+        if (face.mIsLine)
+            lines.push_back("  \\draw[" + line_style + "] " + path + ";");
+        else
+            lines.push_back("  \\draw[" + fill_style + "] " + path + " -- cycle;");
+    }
+
+    std::string pic_opts;
+    if (rScale.has_value()) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "scale=%g", *rScale);
+        pic_opts = buf;
+    }
+    if (rLineWidth.has_value()) {
+        if (!pic_opts.empty())
+            pic_opts += ", ";
+        pic_opts += "line width=" + *rLineWidth;
+    }
+    const std::string pic_opt_str = pic_opts.empty() ? "" : ("[" + pic_opts + "]");
+
+    std::vector<std::string> out;
+    if (Standalone) {
+        out.push_back("\\documentclass{standalone}");
+        out.push_back("\\usepackage{tikz}");
+        out.push_back("\\begin{document}");
+    }
+    out.push_back("\\begin{tikzpicture}" + pic_opt_str);
+    for (const auto& l : lines)
+        out.push_back(l);
+    out.push_back("\\end{tikzpicture}");
+    if (Standalone)
+        out.push_back("\\end{document}");
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    for (std::size_t i = 0; i < out.size(); ++i)
+        os << out[i] << '\n';
+}
+
 }  // namespace
 
 void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
                 bool Standalone, const std::optional<std::string>& rLineWidth,
                 const std::string& rFill, const std::string& rDraw,
-                const std::optional<double>& rScale) {
+                const std::optional<double>& rScale, double azimuth, double elevation,
+                double roll) {
     const NDArray& points = rMesh.Points();
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    // TikZ can only handle flat 2D meshes: a 3D mesh must have every z ~ 0.
+    // A genuinely non-flat 3D mesh takes the projected-rendering path (skin
+    // extraction for volume cells + orthographic camera); a flat one (every
+    // z ~ 0) keeps the classic 2D path below, byte-identical to before.
     if (dim == 3) {
         for (std::size_t i = 0; i < num_points; ++i) {
-            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14)
-                throw WriteError("TikZ can only handle flat 2D meshes");
+            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14) {
+                if (has_skinnable_cells(rMesh)) {
+                    tikz_proj_write(rPath, extract_skin(rMesh, /*linearize=*/true), rFloatFmt,
+                                    Standalone, rLineWidth, rFill, rDraw, rScale, azimuth,
+                                    elevation, roll);
+                } else {
+                    tikz_proj_write(rPath, rMesh, rFloatFmt, Standalone, rLineWidth, rFill, rDraw,
+                                    rScale, azimuth, elevation, roll);
+                }
+                return;
+            }
         }
     }
 
@@ -39648,10 +40354,17 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"obj", meshioplusplus::write_obj},
         {"off", meshioplusplus::write_off},
         {"permas", meshioplusplus::write_permas},
-        {"ply", [](const std::string& p,
-                   const Mesh& mm) { meshioplusplus::write_ply(p, mm, /*binary=*/true); }},
-        {"stl", [](const std::string& p,
-                   const Mesh& mm) { meshioplusplus::write_stl(p, mm, /*binary=*/false); }},
+        // ply/stl default to skin=true (matching the Python shims): a volume
+        // mesh writes its extracted boundary skin instead of dropping the
+        // volume cells.
+        {"ply",
+         [](const std::string& p, const Mesh& mm) {
+             meshioplusplus::write_ply(p, mm, /*binary=*/true, /*skin=*/true);
+         }},
+        {"stl",
+         [](const std::string& p, const Mesh& mm) {
+             meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
+         }},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are write-only 2D-visualization formats; the flat bindings
         // emit them with the fixed default styling (per-call overrides are out
@@ -39812,4 +40525,213 @@ const char* registry_compiled_out(const std::string& rFormat) {
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/registry.cpp =====
+// ===== begin cpp/src/skin.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Sorted corner ids of one face, padded with -1 up to 4 entries.
+using SkinFaceKey = std::array<std::int64_t, 4>;
+
+struct SkinFaceKeyHash {
+    std::size_t operator()(const SkinFaceKey& rKey) const {
+        std::size_t h = 0;
+        for (std::int64_t v : rKey)
+            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+bool skin_block_supported(const CellType type, const bool is_ragged) {
+    return cell_type_dimension(type) == 3 && !is_ragged && detail::skin_supported(type);
+}
+
+SkinFaceKey skin_face_key(const NDArray& rConn, std::size_t row_offset,
+                          const detail::CellFaceDef& rFace) {
+    SkinFaceKey key = {-1, -1, -1, -1};
+    for (std::uint8_t k = 0; k < rFace.mNumCorners; ++k)
+        key[k] = detail::read_int(rConn, row_offset + rFace.mNodes[k]);
+    std::sort(key.begin(), key.end());
+    return key;
+}
+
+// Invoke f(conn, row_offset, face_def) for every face of every cell of every
+// supported volume block, in block-major / cell-major / face-slot order.
+template <class F>
+void skin_for_each_face(const Mesh& rMesh, F&& f) {
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (!skin_block_supported(ct, cb.IsRagged()))
+            continue;
+        const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
+        const NDArray& conn = cb.Conn();
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t nc = cb.NumCells();
+        for (std::size_t r = 0; r < nc; ++r)
+            for (const detail::CellFaceDef& fd : faces)
+                f(conn, r * npc, fd);
+    }
+}
+
+// Canonical output block order: triangle, triangle6, quad, quad8, quad9.
+constexpr std::size_t SKIN_NUM_OUT_TYPES = 5;
+
+std::size_t skin_out_type_index(CellType type) {
+    switch (type) {
+        case CellType::Triangle:
+            return 0;
+        case CellType::Triangle6:
+            return 1;
+        case CellType::Quad:
+            return 2;
+        case CellType::Quad8:
+            return 3;
+        default:  // Quad9
+            return 4;
+    }
+}
+
+const char* skin_out_type_name(std::size_t index) {
+    static const char* names[SKIN_NUM_OUT_TYPES] = {"triangle", "triangle6", "quad", "quad8",
+                                                    "quad9"};
+    return names[index];
+}
+
+std::size_t skin_out_type_nodes(std::size_t index) {
+    static const std::size_t counts[SKIN_NUM_OUT_TYPES] = {3, 6, 4, 8, 9};
+    return counts[index];
+}
+
+}  // namespace
+
+bool has_skinnable_cells(const Mesh& rMesh) {
+    for (const auto cb : rMesh.CellRange()) {
+        if (skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
+            return true;
+    }
+    return false;
+}
+
+Mesh extract_skin(const Mesh& rMesh, bool linearize) {
+    // Pre-scan: warn once per unsupported 3D block, require at least one
+    // supported one.
+    bool any_supported = false;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        const bool is_volume = cell_type_dimension(ct) == 3 || cb.IsPolyhedron();
+        if (!is_volume)
+            continue;
+        if (skin_block_supported(ct, cb.IsRagged())) {
+            any_supported = true;
+        } else {
+            log::warn("extract_skin: volume cell block '{}' is not supported; skipping it.",
+                      cb.Type());
+        }
+    }
+    if (!any_supported)
+        throw std::invalid_argument(
+            "extract_skin: mesh contains no supported 3D volume cell block");
+
+    // Pass 1: count occurrences of every face key.
+    std::unordered_map<SkinFaceKey, std::uint32_t, SkinFaceKeyHash> face_count;
+    skin_for_each_face(
+        rMesh, [&](const NDArray& rConn, std::size_t row_offset, const detail::CellFaceDef& rFace) {
+            ++face_count[skin_face_key(rConn, row_offset, rFace)];
+        });
+
+    // Pass 2: collect boundary faces (count == 1) in enumeration order,
+    // partitioned by output face type.
+    std::array<std::vector<std::int64_t>, SKIN_NUM_OUT_TYPES> out_conn;
+    skin_for_each_face(
+        rMesh, [&](const NDArray& rConn, std::size_t row_offset, const detail::CellFaceDef& rFace) {
+            if (face_count[skin_face_key(rConn, row_offset, rFace)] != 1)
+                return;
+            const std::uint8_t n_out = linearize ? rFace.mNumCorners : rFace.mNumNodes;
+            const CellType out_type =
+                linearize ? (rFace.mNumCorners == 3 ? CellType::Triangle : CellType::Quad)
+                          : rFace.mFaceType;
+            std::vector<std::int64_t>& dst = out_conn[skin_out_type_index(out_type)];
+            for (std::uint8_t k = 0; k < n_out; ++k)
+                dst.push_back(detail::read_int(rConn, row_offset + rFace.mNodes[k]));
+        });
+
+    // Compaction: keep only referenced points, in ascending original-id order
+    // (the numpy fallback relies on np.unique's sortedness for the same order).
+    const std::size_t num_points = rMesh.NumPoints();
+    std::vector<char> used(num_points, 0);
+    for (const std::vector<std::int64_t>& conn : out_conn)
+        for (std::int64_t id : conn)
+            used[static_cast<std::size_t>(id)] = 1;
+    std::vector<std::int64_t> remap(num_points, -1);
+    std::size_t num_used = 0;
+    for (std::size_t i = 0; i < num_points; ++i)
+        if (used[i])
+            remap[i] = static_cast<std::int64_t>(num_used++);
+
+    Mesh skin;
+
+    // Points: byte-row subset preserving the source dtype.
+    {
+        const NDArray& points = rMesh.Points();
+        const std::size_t dim = detail::cols(points);
+        const std::size_t row_bytes = dim * dtype_size(points.Dtype());
+        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
+        const std::byte* src = points.Data();
+        std::byte* dst = new_points.Data();
+        std::size_t w = 0;
+        for (std::size_t i = 0; i < num_points; ++i)
+            if (used[i])
+                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
+        skin.AssignPoints(std::move(new_points));
+    }
+
+    // Cell blocks, canonical order, remapped connectivity.
+    for (std::size_t t = 0; t < SKIN_NUM_OUT_TYPES; ++t) {
+        const std::vector<std::int64_t>& conn = out_conn[t];
+        if (conn.empty())
+            continue;
+        const std::size_t npc = skin_out_type_nodes(t);
+        NDArray block = NDArray::Uninit(DType::Int64, {conn.size() / npc, npc});
+        std::int64_t* dst = block.As<std::int64_t>();
+        for (std::size_t i = 0; i < conn.size(); ++i)
+            dst[i] = remap[static_cast<std::size_t>(conn[i])];
+        skin.AddCellBlock(skin_out_type_name(t), std::move(block));
+    }
+
+    // point_data: subset rows through the same remap; other data maps are
+    // dropped (no 1:1 face -> source cell mapping).
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (detail::rows(a) != num_points)
+            continue;  // shape does not match the point table; drop
+        std::vector<std::size_t> new_shape = a.Shape();
+        new_shape[0] = num_used;
+        const std::size_t row_bytes = num_points == 0 ? 0 : a.Nbytes() / num_points;
+        NDArray b = NDArray::Uninit(a.Dtype(), std::move(new_shape));
+        const std::byte* src = a.Data();
+        std::byte* dst = b.Data();
+        std::size_t w = 0;
+        for (std::size_t i = 0; i < num_points; ++i)
+            if (used[i])
+                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
+        skin.AddPointData(name, std::move(b));
+    }
+
+    return skin;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/skin.cpp =====
 #endif  // MESHIOPLUSPLUS_IMPLEMENTATION
