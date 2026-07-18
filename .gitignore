@@ -30,6 +30,7 @@ build/*
 build-tests/
 build-omp/
 build-tbb/
+build-cpp-cov/
 # Conan test_package build output + CMake presets emitted by `conan create`.
 test_package/build/
 CMakeUserPresets.json
