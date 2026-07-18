@@ -53,9 +53,9 @@ This deliberately mirrors the Python `Mesh`'s structure (points, a list of cell 
 
 ## Format support
 
-The WASM build ships the 33 formats with no HDF5/netCDF dependency, plus XDMF's XML/Binary data path (not its HDF variant) — 32 readable formats in total, 33 writable (`openfoam` is read-only; `svg` and `tikz` are write-only):
+The WASM build ships the 36 formats with no HDF5/netCDF dependency, plus XDMF's XML/Binary data path (not its HDF variant) — 35 readable formats in total, 36 writable (`openfoam` is read-only; `svg` and `tikz` are write-only):
 
-`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `dex`, `dolfin-xml`, `flac3d`, `flux`, `freefem`, `gmsh`, `ip`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `ugrid`, `unv`, `vtk`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML/Binary only). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
+`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `flac3d`, `flux`, `freefem`, `gmsh`, `ip`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML/Binary only). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
 
 **Not yet supported: `cgns`, `h5m`, `hmf`, `med`, `exodus`.** All five need HDF5 and/or netCDF, which are not built for this target — porting those C libraries to WebAssembly is a separate, materially larger undertaking than the rest of the C++ core (both have autotools/CMake builds assuming a POSIX filesystem and, in HDF5's case, sometimes MPI). They may follow in a future release; there is no runtime fallback the way there is for the Python bindings, since there's no Python present at all in this build.
 
@@ -67,6 +67,7 @@ Some extensions are shared by more than one format. `readMesh`/`writeMesh`/ `con
 |-----------|-----------------|-----------------------------------|
 | `.msh` | `gmsh` | `"ansys"`, `"freefem"` |
 | `.inp` | `abaqus` | `"ansysinp"` |
+| `.node` / `.ele` | `tetgen` | `"triangle"` (2D Triangle pairs) |
 
 ## Known v1 limitations
 

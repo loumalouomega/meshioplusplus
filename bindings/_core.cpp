@@ -31,6 +31,7 @@
 #include "meshioplusplus/formats/med.hpp"
 #endif
 #include "meshioplusplus/formats/dolfin.hpp"
+#include "meshioplusplus/formats/ensight.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
 #include "meshioplusplus/formats/exodus.hpp"
 #endif
@@ -55,6 +56,8 @@
 #include "meshioplusplus/formats/svg.hpp"
 #include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/tetgen.hpp"
+#include "meshioplusplus/formats/triangle.hpp"
+#include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/formats/unv.hpp"
@@ -131,6 +134,19 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
         meshioplusplus::write_vtu(path, cpp, binary, zlib);
+    });
+
+    // VTP (PolyData) writer / reader; allow_ragged so jagged polygon blocks
+    // reach the C++ writer (they are legal PolyData Polys rows).
+    m.def("vtp_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                 /*lenient_field_data=*/false,
+                                                                 /*allow_ragged=*/true);
+        meshioplusplus::write_vtp(path, cpp, binary, zlib);
+    });
+    m.def("vtp_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtp(path));
     });
 
     // VTU reader -> Python mesh (zero-copy capsule-backed arrays).
@@ -305,6 +321,15 @@ PYBIND11_MODULE(_core, m) {
         return pymesh;
     });
 
+    // EnSight Gold writer / reader (.case/.geo pair, geometry only).
+    m.def("ensight_write", [](const std::string& path, py::object pymesh, bool binary) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_ensight(path, meshioplusplus_py::py_to_mesh(pymesh, refs), binary);
+    });
+    m.def("ensight_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ensight(path));
+    });
+
     // TetGen writer / reader (.node/.ele pair).
     m.def("tetgen_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
@@ -312,6 +337,15 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("tetgen_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_tetgen(path));
+    });
+
+    // Triangle writer / reader (.node/.ele pair or .poly).
+    m.def("triangle_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_triangle(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("triangle_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_triangle(path));
     });
 
     // XDMF writer / reader (.xdmf/.xmf) — XML/Binary always; HDF when built

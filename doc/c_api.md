@@ -47,7 +47,21 @@ conan create . -o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcd
 vcpkg install meshioplusplus --overlay-ports=ports
 ```
 
-Both are validated in CI on every PR and on `v*` release tags (`.github/workflows/packages.yml`). Two caveats: the shared library is **shared-only** (no static build yet), and the vendored **Eigen** submodule is off in both recipes (the MED transpose falls back to a hand-written loop), since it is absent from a source tarball. Neither is submitted to Conan Center / the upstream vcpkg registry today.
+Both are validated in CI on every PR and on `v*` release tags (`.github/workflows/packages.yml`). Two caveats: the shared library is **shared-only** (no static build yet), and the vendored **Eigen** submodule is off in both recipes (the MED transpose falls back to a hand-written loop), since it is absent from a source tarball. Neither is submitted to Conan Center / the upstream vcpkg registry today, so nothing resolves `meshioplusplus` as a plain requirement out of the box; as a stopgap, every `v*` release attaches ready-to-use Linux/x86_64 artifacts to its [GitHub Release](https://github.com/loumalouomega/meshioplusplus/releases) that supply the missing recipe:
+
+```sh
+# Conan: restore the release archive (adds the meshioplusplus recipe + a matching
+# prebuilt binary to your local cache), then install normally -- Conan Center
+# still supplies the transitive hdf5/netcdf/zlib/openssl binaries over the
+# network as usual; --build=missing rebuilds meshioplusplus itself from the
+# archive's recipe if your profile doesn't match the prebuilt one.
+conan cache restore meshioplusplus-conan-full-linux-x86_64.tgz
+conan install --requires=meshioplusplus/<version> --build=missing \
+  -o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcdf=True -o meshioplusplus/*:with_zlib=True
+
+# vcpkg, from the release archive (unzip first):
+vcpkg install meshioplusplus --overlay-ports=meshioplusplus-vcpkg-overlay-port-<version>
+```
 
 ## Example
 
@@ -89,7 +103,7 @@ mio_convert("in.msh", NULL, "out.vtk", NULL);
 | --- | --- |
 | Introspection | `mio_version`, `mio_mesh_backend`, `mio_format_readable`, `mio_format_writable`, `mio_last_error` |
 | Cell-type metadata | `mio_cell_type_name`, `mio_cell_type_from_name`, `mio_cell_type_num_nodes`, `mio_cell_type_dimension` (the `mio_cell_type` enum mirrors the C++ table; strings like `"tetra10"` are the primary representation) |
-| Lifecycle & I/O | `mio_mesh_create`, `mio_mesh_free`, `mio_read`, `mio_write`, `mio_convert` (format `NULL`/`""` = infer from extension; `.msh` → gmsh, `.inp` → abaqus) |
+| Lifecycle & I/O | `mio_mesh_create`, `mio_mesh_free`, `mio_read`, `mio_write`, `mio_convert` (format `NULL`/`""` = infer from extension; `.msh` → gmsh, `.inp` → abaqus, `.node`/`.ele` → tetgen — pass `"triangle"` for 2D Triangle pairs) |
 | Building | `mio_mesh_set_points`, `mio_mesh_add_cell_block` (int32 connectivity is widened to the core's int64), `mio_mesh_add_point_data`, `mio_mesh_append_cell_data` (one call per cell block, in block order), `mio_mesh_add_field_data` |
 | Points/cells | `mio_mesh_num_points`, `mio_mesh_point_dim`, `mio_mesh_get_points`, `mio_mesh_num_cell_blocks`, `mio_mesh_cell_block_info`, `mio_mesh_cell_block_type`, `mio_mesh_cell_block_conn` |
 | Named data | `mio_mesh_num_{point,cell,field}_data`, `mio_mesh_{point,cell,field}_data_name` (names in sorted order — identical on every backend), `mio_mesh_get_{point,cell,field}_data`, `mio_mesh_cell_data_num_blocks` |

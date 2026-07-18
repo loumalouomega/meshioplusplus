@@ -4981,6 +4981,263 @@ inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nby
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/vtu_binary.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/vtk_xml.hpp =====
+/**
+ * @file vtk_xml.hpp
+ * @brief Shared VTK-XML `<DataArray>` helpers used by the VTU
+ * (UnstructuredGrid) and VTP (PolyData) readers/writers.
+ *
+ * Both formats are the same XML container — `<VTKFile>` with per-array
+ * `<DataArray>` elements in ascii or base64 "binary" encoding (raw or
+ * zlib-compressed, framed by `detail/vtu_binary.hpp`) — differing only in
+ * the grid element in between. This header holds the container-level pieces:
+ * the DType <-> VTK type-name mapping (`vtu_type_str`/`dtype_from_vtu`),
+ * ASCII float/array emission (`vtu_ascii_double`/`vtu_ascii_ndarray`),
+ * DataArray text parsing for both encodings (`vtu_parse_ascii` /
+ * `vtu_parse_binary`), and the `vtu_to_int64` widening helper.
+ *
+ * Deliberately pugixml-free (the single-header amalgamation only bundles
+ * pugixml in its implementation section): the readers each keep a thin local
+ * wrapper that pulls the `format`/`type`/`NumberOfComponents` attributes off
+ * a `<DataArray>` node and dispatches to `vtu_parse_ascii`/`vtu_parse_binary`.
+ */
+
+// System includes
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ostream>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief Map an `NDArray` dtype to its VTK-XML type-name string.
+ * @param dt The dtype.
+ * @return The VTK type name (e.g. `"Float64"`, `"Int32"`).
+ */
+inline const char* vtu_type_str(DType dt) {
+    switch (dt) {
+        case DType::Float32:
+            return "Float32";
+        case DType::Float64:
+            return "Float64";
+        case DType::Int8:
+            return "Int8";
+        case DType::Int16:
+            return "Int16";
+        case DType::Int32:
+            return "Int32";
+        case DType::Int64:
+            return "Int64";
+        case DType::UInt8:
+            return "UInt8";
+        case DType::UInt16:
+            return "UInt16";
+        case DType::UInt32:
+            return "UInt32";
+        case DType::UInt64:
+            return "UInt64";
+    }
+    return "Float64";
+}
+
+/**
+ * @brief Map a VTK-XML type-name string to the `NDArray` dtype.
+ * @param rS The VTK type name.
+ * @return The matching dtype.
+ * @throws ReadError on an unknown type name.
+ */
+inline DType dtype_from_vtu(const std::string& rS) {
+    if (rS == "Float32")
+        return DType::Float32;
+    if (rS == "Float64")
+        return DType::Float64;
+    if (rS == "Int8")
+        return DType::Int8;
+    if (rS == "Int16")
+        return DType::Int16;
+    if (rS == "Int32")
+        return DType::Int32;
+    if (rS == "Int64")
+        return DType::Int64;
+    if (rS == "UInt8")
+        return DType::UInt8;
+    if (rS == "UInt16")
+        return DType::UInt16;
+    if (rS == "UInt32")
+        return DType::UInt32;
+    if (rS == "UInt64")
+        return DType::UInt64;
+    throw ReadError("Illegal VTU data type '" + rS + "'");
+}
+
+/**
+ * @brief Emit one float in VTK's `%.11e` ASCII format followed by a newline.
+ * @param rOs Output stream.
+ * @param v The value.
+ */
+inline void vtu_ascii_double(std::ostream& rOs, double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.11e", v);
+    rOs << buf << '\n';
+}
+
+/**
+ * @brief Emit a whole `NDArray` in ASCII, one value per line (floats via
+ * `vtu_ascii_double`, integers as plain decimals).
+ * @param rOs Output stream.
+ * @param rA The array.
+ */
+inline void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
+    const bool flt = is_float_dtype(rA.Dtype());
+    const std::size_t n = rA.Size();
+    for (std::size_t i = 0; i < n; ++i) {
+        if (flt)
+            vtu_ascii_double(rOs, read_double(rA, i));
+        else
+            rOs << read_int(rA, i) << '\n';
+    }
+}
+
+/**
+ * @brief Store one parsed value into a dtype-erased array slot.
+ * @param rA Destination array.
+ * @param i Flat index.
+ * @param d The value when `rA` is a float dtype.
+ * @param v The value when `rA` is an integer dtype.
+ */
+inline void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
+    switch (rA.Dtype()) {
+        case DType::Float32:
+            rA.As<float>()[i] = static_cast<float>(d);
+            break;
+        case DType::Float64:
+            rA.As<double>()[i] = d;
+            break;
+        case DType::Int8:
+            rA.As<std::int8_t>()[i] = static_cast<std::int8_t>(v);
+            break;
+        case DType::Int16:
+            rA.As<std::int16_t>()[i] = static_cast<std::int16_t>(v);
+            break;
+        case DType::Int32:
+            rA.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
+            break;
+        case DType::Int64:
+            rA.As<std::int64_t>()[i] = v;
+            break;
+        case DType::UInt8:
+            rA.As<std::uint8_t>()[i] = static_cast<std::uint8_t>(v);
+            break;
+        case DType::UInt16:
+            rA.As<std::uint16_t>()[i] = static_cast<std::uint16_t>(v);
+            break;
+        case DType::UInt32:
+            rA.As<std::uint32_t>()[i] = static_cast<std::uint32_t>(v);
+            break;
+        case DType::UInt64:
+            rA.As<std::uint64_t>()[i] = static_cast<std::uint64_t>(v);
+            break;
+    }
+}
+
+/**
+ * @brief Parse whitespace-separated ASCII DataArray text into a flat array.
+ * @param pText The element text (may be null).
+ * @param dt Target dtype (drives float vs integer parsing).
+ * @return A 1-D owning array of every parsed value.
+ */
+inline NDArray vtu_parse_ascii(const char* pText, DType dt) {
+    const bool isflt = is_float_dtype(dt);
+    std::vector<double> dv;
+    std::vector<std::int64_t> iv;
+    const char* p = pText ? pText : "";
+    while (*p) {
+        while (*p && std::isspace(static_cast<unsigned char>(*p)))
+            ++p;
+        if (!*p)
+            break;
+        char* endp = nullptr;
+        if (isflt) {
+            double x = std::strtod(p, &endp);
+            if (endp == p)
+                break;
+            dv.push_back(x);
+        } else {
+            long long x = std::strtoll(p, &endp, 10);
+            if (endp == p)
+                break;
+            iv.push_back(static_cast<std::int64_t>(x));
+        }
+        p = endp;
+    }
+    std::size_t n = isflt ? dv.size() : iv.size();
+    NDArray a(dt, {n});
+    for (std::size_t i = 0; i < n; ++i)
+        vtu_store(a, i, isflt ? dv[i] : 0.0, isflt ? 0 : iv[i]);
+    return a;
+}
+
+/**
+ * @brief Trim leading/trailing whitespace from a C string.
+ * @param pS The string (may be null).
+ * @return The trimmed copy.
+ */
+inline std::string vtu_strip(const char* pS) {
+    std::string t = pS ? pS : "";
+    std::size_t b = 0, e = t.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(t[b])))
+        ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(t[e - 1])))
+        --e;
+    return t.substr(b, e - b);
+}
+
+/**
+ * @brief Decode a base64 "binary" DataArray payload into a flat array.
+ * @param rText The stripped base64 text.
+ * @param dt Target dtype.
+ * @param compression 0 = none, 1 = zlib.
+ * @param hsz Header integer size in bytes (4 for UInt32, 8 for UInt64).
+ * @return A 1-D owning array over the decoded bytes.
+ */
+inline NDArray vtu_parse_binary(const std::string& rText, DType dt, int compression,
+                                std::size_t hsz) {
+    std::vector<unsigned char> bytes;
+    if (compression == 0)
+        bytes = vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
+    else
+        bytes = vtu_decode_zlib(rText.c_str(), rText.size(), hsz);
+    std::size_t isz = dtype_size(dt);
+    std::size_t n = isz ? bytes.size() / isz : 0;
+    NDArray a(dt, {n});
+    if (n)
+        std::memcpy(a.Data(), bytes.data(), n * isz);
+    return a;
+}
+
+/**
+ * @brief Widen a dtype-erased integer array to a `std::int64_t` vector.
+ * @param rA The array.
+ * @return The widened values.
+ */
+inline std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
+    std::vector<std::int64_t> v(rA.Size());
+    for (std::size_t i = 0; i < rA.Size(); ++i)
+        v[i] = read_int(rA, i);
+    return v;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/vtk_xml.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/xdmf_common.hpp =====
 /**
  * @file xdmf_common.hpp
@@ -5648,6 +5905,87 @@ Mesh read_dolfin(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/dolfin.hpp =====
+// ===== begin cpp/include/meshioplusplus/formats/ensight.hpp =====
+/**
+ * @file ensight.hpp
+ * @brief EnSight Gold (.case/.geo) C++ reader/writer — geometry only.
+ *
+ * EnSight Gold stores a dataset as a small `.case` index file plus a
+ * geometry file (conventionally `.geo`). Only the mesh-geometry subset is
+ * handled: the `.case` `FORMAT`/`GEOMETRY` sections (the file must declare
+ * `type: ensight gold`; `VARIABLE`/`TIME` sections are ignored) and the Gold
+ * geometry file in both ASCII and C-binary form (the leading `"C Binary"`
+ * 80-char record selects binary; `"Fortran Binary"` is rejected). Binary
+ * files use 32-bit ints/floats in the writing machine's byte order; the
+ * reader auto-detects a foreign byte order from the plausibility of the
+ * part-number/node-count records and byte-swaps accordingly.
+ *
+ * Element keywords `point`, `bar2/3`, `tria3/6`, `quad4/8`, `tetra4/10`,
+ * `pyramid5/13`, `penta6/15`, `hexa8/20` map to the corresponding meshio
+ * cell types; ragged `nsided`/`nfaced` sections are read into polygon /
+ * polyhedron blocks (grouped by node count, the openfoam convention). Node
+ * ordering matches meshio for every type except `penta15`, which differs
+ * from meshio's `wedge15` by the involution
+ * `{0,2,1,3,5,4, 8,7,6, 11,10,9, 12,14,13}` (the same map VTK's EnSight
+ * readers apply). Per the Gold specification connectivity is **positional**
+ * (1-based index into the part's coordinate list); `node id given/ignore`
+ * id arrays are present in the file but skipped.
+ *
+ * Multi-part files are concatenated into one point array; every per-part
+ * element section becomes its own cell block, and when the file has two or
+ * more parts the owning part number is recorded as the integer cell_data
+ * field `"ensight:part"`. The writer emits a single part (`node id assign`,
+ * `element id assign`) and drops point/cell/field data (mesh-only scope).
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as an EnSight Gold `.case` + `.geo` sibling pair.
+ *
+ * `rPath` may name either sibling (`.case` or `.geo`); the other is derived
+ * from the shared stem and both files are written. The geometry is a single
+ * part (id 1, description "Mesh") with `node id assign` / `element id
+ * assign` numbering; coordinates are always emitted with three components
+ * (z padded with 0 for 2D meshes). ASCII floats use `%12.5e` (EnSight caps
+ * usable precision at 6 significant digits); binary emits 32-bit
+ * ints/floats in host byte order with 80-char string records.
+ *
+ * @param rPath filesystem path to either the `.case` or `.geo` sibling
+ * @param rMesh the mesh to write
+ * @param binary true for C-binary geometry, false for ASCII
+ * @throws WriteError if a file cannot be opened, the mesh contains a cell
+ *         type without an EnSight keyword, a ragged (polygon/polyhedron)
+ *         block is present (not written in v1), points have more than three
+ *         components, or a binary mesh exceeds 32-bit counts
+ * @note point/cell/field data are not written (geometry-only scope).
+ */
+void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary);
+
+/**
+ * @brief Read an EnSight Gold `.case` file (or a Gold geometry file directly).
+ *
+ * A `.case` path is parsed for its `GEOMETRY`/`model:` entry (resolved
+ * relative to the case file's directory; transient wildcard names are
+ * rejected); any other path is treated as a Gold geometry file. ASCII and
+ * C-binary geometries are both handled, including foreign-endian binaries.
+ *
+ * @param rPath filesystem path to a `.case` file or a Gold `.geo` file
+ * @return the read Mesh (parts concatenated; one cell block per per-part
+ *         element section; `"ensight:part"` cell_data when the file has
+ *         two or more parts)
+ * @throws ReadError on malformed input, a non-Gold case file, Fortran-binary
+ *         geometry, an unknown element keyword, or out-of-range connectivity
+ */
+Mesh read_ensight(const std::string& rPath);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/formats/ensight.hpp =====
 // ===== begin cpp/include/meshioplusplus/formats/exodus.hpp =====
 /**
  * @file exodus.hpp
@@ -7601,6 +7939,71 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/tikz.hpp =====
+// ===== begin cpp/include/meshioplusplus/formats/triangle.hpp =====
+/**
+ * @file triangle.hpp
+ * @brief Triangle (.node/.ele/.poly) C++ reader/writer — Shewchuk's 2D
+ * mesh generator, the planar analogue of TetGen.
+ *
+ * A `.node`/`.ele` path selects the shared-stem sibling pair: `<stem>.node`
+ * (header `npoints 2 nattrs nbmarkers`, rows `idx x y attrs.. markers..`;
+ * `dim` must be 2) plus, when present, `<stem>.ele` (header
+ * `ntriangles 3|6 nattrs`, giving `triangle` or `triangle6` cells; a lone
+ * `.node` file reads as a point cloud). A `.poly` path reads the PSLG file:
+ * a vertex section (inline, or the sibling `.node` when the vertex count is
+ * 0) plus a segment section that becomes a `line` cell block; holes and
+ * regional attributes are skipped with a warning. The node index base (0 or
+ * 1) is auto-detected and indices must be exactly consecutive, mirroring
+ * the tetgen reader.
+ *
+ * Data naming mirrors tetgen: vertex attribute columns become
+ * `point_data["triangle:attr<k>"]`, boundary-marker columns
+ * `"triangle:ref"`/`"triangle:ref2"`/..., and element attribute / segment
+ * marker columns become the matching `cell_data` keys.
+ *
+ * Note that `.node`/`.ele` default to the tetgen format in the extension
+ * registry; the Python dispatcher falls through to this format when tetgen
+ * rejects a 2D file, while the flat bindings need an explicit
+ * `format="triangle"` (only `.poly` defaults here).
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as Triangle files.
+ *
+ * A `.node`/`.ele` path writes the sibling pair — points (2D only) with
+ * attribute/marker columns from point_data, and every `triangle`/
+ * `triangle6` block (which must all share one type) with attribute columns
+ * from cell_data; other cell types are skipped. A `.poly` path writes a
+ * PSLG: inline vertices, the `line` blocks as segments (markers from the
+ * first `:ref` cell_data key), and zero holes.
+ *
+ * @param rPath filesystem path ending in `.node`, `.ele`, or `.poly`
+ * @param rMesh the mesh to write (points must be 2D)
+ * @throws WriteError if a file cannot be opened, points are not 2D, or
+ *         `triangle` and `triangle6` blocks are mixed
+ */
+void write_triangle(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief Read Triangle files (`.node`/`.ele` pair or `.poly`).
+ *
+ * @param rPath filesystem path ending in `.node`, `.ele`, or `.poly`
+ * @return the read Mesh (2-column points; `triangle`/`triangle6` cells from
+ *         `.ele`, `line` cells from `.poly` segments)
+ * @throws ReadError on malformed input, `dim != 2`, non-consecutive node
+ *         indices, or an unsupported nodes-per-triangle count
+ */
+Mesh read_triangle(const std::string& rPath);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/formats/triangle.hpp =====
 // ===== begin cpp/include/meshioplusplus/formats/ugrid.hpp =====
 /**
  * @file ugrid.hpp
@@ -7922,6 +8325,66 @@ Mesh read_vtk(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/vtk.hpp =====
+// ===== begin cpp/include/meshioplusplus/formats/vtp.hpp =====
+/**
+ * @file vtp.hpp
+ * @brief VTK XML PolyData (.vtp) C++ reader/writer.
+ *
+ * The same VTK-XML container as VTU (shared `<DataArray>` machinery in
+ * `detail/vtk_xml.hpp` + base64/zlib framing in `detail/vtu_binary.hpp`),
+ * with a `<PolyData>` grid holding `<Verts>/<Lines>/<Polys>/<Strips>`
+ * connectivity+offsets sections instead of `<Cells>`. Only surface cells are
+ * representable: `vertex` (Verts), `line` (Lines), and
+ * `triangle`/`quad`/`polygon` (Polys). Cell data follows VTK's canonical
+ * PolyData cell order — Verts, then Lines, then Polys, then Strips — in
+ * both directions. Triangle strips, poly-vertex/poly-line rows, multiple
+ * pieces, appended data, and lzma compression raise (Python fallback).
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as VTK XML PolyData (.vtp).
+ *
+ * Writable cell types: `vertex` -> Verts, `line` -> Lines, and
+ * `triangle`/`quad`/`polygon` (rectangular or ragged polygon blocks) ->
+ * Polys. Blocks are emitted grouped in VTK's canonical PolyData cell order
+ * (Verts, Lines, Polys), and cell_data is reordered in lockstep. Points are
+ * always written with three components (z padded with 0 for 2D meshes).
+ *
+ * @param rPath filesystem path of the output `.vtp` file
+ * @param rMesh the mesh to write
+ * @param binary true for base64 "binary" DataArrays, false for ASCII
+ * @param zlib compress binary DataArrays with zlib (requires a zlib build;
+ *             ignored for ASCII)
+ * @throws WriteError if the file cannot be opened or the mesh contains a
+ *         cell type PolyData cannot hold (volume or quadratic cells,
+ *         polyhedra)
+ */
+void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
+
+/**
+ * @brief Read a VTK XML PolyData (.vtp) file.
+ *
+ * Verts rows become `vertex` cells, Lines rows `line` cells, and Polys rows
+ * `triangle`/`quad`/`polygon` cells (grouped by row size); cell_data is
+ * split per block in VTK's canonical Verts/Lines/Polys order.
+ *
+ * @param rPath filesystem path of the `.vtp` file
+ * @return the read Mesh
+ * @throws ReadError on malformed XML, a non-PolyData file, triangle strips,
+ *         poly-vertex/poly-line rows, multiple pieces, appended data, or
+ *         lzma compression (all deferred to the Python reader)
+ */
+Mesh read_vtp(const std::string& rPath);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/formats/vtp.hpp =====
 // ===== begin cpp/include/meshioplusplus/formats/vtu.hpp =====
 /**
  * @file vtu.hpp
@@ -25643,6 +26106,855 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/formats/dolfin.cpp =====
+// ===== begin cpp/src/formats/ensight.cpp =====
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <map>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Shared tables
+// ---------------------------------------------------------------------------
+
+// EnSight Gold element keyword <-> meshio cell type (fixed-node types only;
+// nsided/nfaced are handled separately as ragged blocks).
+struct EnsightTypeEntry {
+    const char* mKeyword;
+    const char* mMeshioType;
+    int mNumNodes;
+};
+
+const std::vector<EnsightTypeEntry>& ensight_type_table() {
+    static const std::vector<EnsightTypeEntry> table = {
+        {"point", "vertex", 1},         {"bar2", "line", 2},
+        {"bar3", "line3", 3},           {"tria3", "triangle", 3},
+        {"tria6", "triangle6", 6},      {"quad4", "quad", 4},
+        {"quad8", "quad8", 8},          {"tetra4", "tetra", 4},
+        {"tetra10", "tetra10", 10},     {"pyramid5", "pyramid", 5},
+        {"pyramid13", "pyramid13", 13}, {"penta6", "wedge", 6},
+        {"penta15", "wedge15", 15},     {"hexa8", "hexahedron", 8},
+        {"hexa20", "hexahedron20", 20}};
+    return table;
+}
+
+const EnsightTypeEntry* ensight_entry_from_keyword(const std::string& rKeyword) {
+    static const std::unordered_map<std::string, const EnsightTypeEntry*> map = [] {
+        std::unordered_map<std::string, const EnsightTypeEntry*> m;
+        for (const auto& e : ensight_type_table())
+            m.emplace(e.mKeyword, &e);
+        return m;
+    }();
+    auto it = map.find(rKeyword);
+    return it == map.end() ? nullptr : it->second;
+}
+
+const EnsightTypeEntry* ensight_entry_from_meshio(const std::string& rType) {
+    static const std::unordered_map<std::string, const EnsightTypeEntry*> map = [] {
+        std::unordered_map<std::string, const EnsightTypeEntry*> m;
+        for (const auto& e : ensight_type_table())
+            m.emplace(e.mMeshioType, &e);
+        return m;
+    }();
+    auto it = map.find(rType);
+    return it == map.end() ? nullptr : it->second;
+}
+
+// meshio <-> EnSight node-order permutation. meshio ordering is VTK ordering
+// for every supported type; the only difference is the prism triangle
+// winding of penta15 vs wedge15 — the same involution VTK's EnSight readers
+// apply, so one table serves both directions (result[j] = source index for
+// position j). Kratos's penta15/hexa20 group swaps fix Kratos-specific
+// ordering and must NOT be ported here.
+const std::vector<int>* ensight_permutation(const std::string& rMeshioType) {
+    static const std::vector<int> wedge15 = {0, 2, 1, 3, 5, 4, 8, 7, 6, 11, 10, 9, 12, 14, 13};
+    if (rMeshioType == "wedge15")
+        return &wedge15;
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Small string / path helpers
+// ---------------------------------------------------------------------------
+
+bool ensight_has_suffix(const std::string& rPath, const std::string& rSuffix) {
+    if (rPath.size() < rSuffix.size())
+        return false;
+    return rPath.compare(rPath.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+}
+
+std::string ensight_trim(const std::string& rLine) {
+    std::size_t b = 0, e = rLine.size();
+    while (b < e && (std::isspace(static_cast<unsigned char>(rLine[b])) || rLine[b] == '\0'))
+        ++b;
+    while (e > b &&
+           (std::isspace(static_cast<unsigned char>(rLine[e - 1])) || rLine[e - 1] == '\0'))
+        --e;
+    return rLine.substr(b, e - b);
+}
+
+bool ensight_starts_with(const std::string& rStr, const char* pPrefix) {
+    return rStr.rfind(pPrefix, 0) == 0;
+}
+
+std::string ensight_dirname(const std::string& rPath) {
+    std::size_t slash = rPath.find_last_of("/\\");
+    return slash == std::string::npos ? std::string() : rPath.substr(0, slash + 1);
+}
+
+std::string ensight_basename(const std::string& rPath) {
+    std::size_t slash = rPath.find_last_of("/\\");
+    return slash == std::string::npos ? rPath : rPath.substr(slash + 1);
+}
+
+// "<stem>.case" or "<stem>.geo" -> {case path, geo path}.
+std::pair<std::string, std::string> ensight_case_geo_paths(const std::string& rPath, bool& rOk) {
+    rOk = true;
+    if (ensight_has_suffix(rPath, ".case"))
+        return {rPath, rPath.substr(0, rPath.size() - 5) + ".geo"};
+    if (ensight_has_suffix(rPath, ".geo"))
+        return {rPath.substr(0, rPath.size() - 4) + ".case", rPath};
+    rOk = false;
+    return {"", ""};
+}
+
+std::string ensight_read_whole_file(const std::string& rPath, const char* pWhat) {
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError(std::string("EnSight: could not open ") + pWhat + ": " + rPath);
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    in.seekg(0, std::ios::beg);
+    std::string data(static_cast<std::size_t>(size < 0 ? 0 : size), '\0');
+    if (!data.empty())
+        in.read(data.data(), static_cast<std::streamsize>(data.size()));
+    return data;
+}
+
+// ---------------------------------------------------------------------------
+// Geometry cursors: one record/number stream over ASCII or C-binary data
+// ---------------------------------------------------------------------------
+
+class EnsightCursor {
+public:
+    virtual ~EnsightCursor() = default;
+    /// True once only trailing whitespace/padding remains.
+    virtual bool AtEnd() = 0;
+    /// Consume and return the next string record (trimmed line / 80-char record).
+    virtual std::string NextRecord() = 0;
+    /// Return the next string record without consuming it ("" at end).
+    virtual std::string PeekRecord() = 0;
+    virtual std::int64_t NextInt() = 0;
+    virtual void ReadInts(std::size_t n, std::int64_t* pDst) = 0;
+    virtual void ReadFloats(std::size_t n, double* pDst) = 0;
+    virtual void SkipInts(std::size_t n) = 0;
+    /// Binary-only hook: peek the next int32 and enable byte-swapping when it
+    /// is implausible as-is but plausible swapped. With PreferSmaller (used at
+    /// the tiny part-number record, where e.g. bswap(1) = 16777216 is still
+    /// "plausible"), the smaller of two plausible interpretations wins.
+    /// No-op for ASCII.
+    virtual void CheckSwap(std::int64_t Max, bool PreferSmaller) {
+        (void)Max;
+        (void)PreferSmaller;
+    }
+};
+
+class EnsightAsciiCursor final : public EnsightCursor {
+public:
+    explicit EnsightAsciiCursor(std::string Text) : mText(std::move(Text)) {}
+
+    bool AtEnd() override {
+        std::size_t p = mPos;
+        while (p < mText.size() &&
+               (std::isspace(static_cast<unsigned char>(mText[p])) || mText[p] == '\0'))
+            ++p;
+        return p >= mText.size();
+    }
+
+    std::string NextRecord() override {
+        while (mPos < mText.size()) {
+            std::size_t eol = mText.find('\n', mPos);
+            if (eol == std::string::npos)
+                eol = mText.size();
+            std::string line = ensight_trim(mText.substr(mPos, eol - mPos));
+            mPos = eol < mText.size() ? eol + 1 : eol;
+            if (!line.empty())
+                return line;
+        }
+        throw ReadError("EnSight: unexpected end of geometry file");
+    }
+
+    std::string PeekRecord() override {
+        if (AtEnd())
+            return "";
+        const std::size_t saved = mPos;
+        std::string rec = NextRecord();
+        mPos = saved;
+        return rec;
+    }
+
+    std::int64_t NextInt() override {
+        const char* start = mText.c_str() + mPos;
+        char* end = nullptr;
+        const std::int64_t v = std::strtoll(start, &end, 10);
+        if (end == start)
+            throw ReadError("EnSight: expected an integer in geometry file");
+        mPos = static_cast<std::size_t>(end - mText.c_str());
+        return v;
+    }
+
+    void ReadInts(std::size_t n, std::int64_t* pDst) override {
+        for (std::size_t i = 0; i < n; ++i)
+            pDst[i] = NextInt();
+    }
+
+    void ReadFloats(std::size_t n, double* pDst) override {
+        for (std::size_t i = 0; i < n; ++i) {
+            const char* start = mText.c_str() + mPos;
+            char* end = nullptr;
+            pDst[i] = std::strtod(start, &end);
+            if (end == start)
+                throw ReadError("EnSight: expected a number in geometry file");
+            mPos = static_cast<std::size_t>(end - mText.c_str());
+        }
+    }
+
+    void SkipInts(std::size_t n) override {
+        for (std::size_t i = 0; i < n; ++i)
+            NextInt();
+    }
+
+private:
+    std::string mText;
+    std::size_t mPos = 0;
+};
+
+class EnsightBinaryCursor final : public EnsightCursor {
+public:
+    // Text is the whole file; the cursor starts after the leading
+    // "C Binary" 80-char record.
+    explicit EnsightBinaryCursor(std::string Data) : mData(std::move(Data)), mPos(80) {}
+
+    bool AtEnd() override { return mPos >= mData.size(); }
+
+    std::string NextRecord() override {
+        if (mPos + 80 > mData.size())
+            throw ReadError("EnSight: truncated binary geometry file");
+        std::string rec(mData.data() + mPos, 80);
+        mPos += 80;
+        const std::size_t nul = rec.find('\0');
+        if (nul != std::string::npos)
+            rec.resize(nul);
+        return ensight_trim(rec);
+    }
+
+    std::string PeekRecord() override {
+        if (mPos + 80 > mData.size())
+            return "";
+        const std::size_t saved = mPos;
+        std::string rec = NextRecord();
+        mPos = saved;
+        return rec;
+    }
+
+    std::int64_t NextInt() override {
+        std::int32_t v;
+        Require(4);
+        std::memcpy(&v, mData.data() + mPos, 4);
+        mPos += 4;
+        if (mSwap)
+            detail::bswap_inplace(reinterpret_cast<char*>(&v), 4);
+        return v;
+    }
+
+    void ReadInts(std::size_t n, std::int64_t* pDst) override {
+        Require(4 * n);
+        const char* src = mData.data() + mPos;
+        for (std::size_t i = 0; i < n; ++i) {
+            std::int32_t v;
+            std::memcpy(&v, src + 4 * i, 4);
+            if (mSwap)
+                detail::bswap_inplace(reinterpret_cast<char*>(&v), 4);
+            pDst[i] = v;
+        }
+        mPos += 4 * n;
+    }
+
+    void ReadFloats(std::size_t n, double* pDst) override {
+        Require(4 * n);
+        const char* src = mData.data() + mPos;
+        for (std::size_t i = 0; i < n; ++i) {
+            float v;
+            std::memcpy(&v, src + 4 * i, 4);
+            if (mSwap)
+                detail::bswap_inplace(reinterpret_cast<char*>(&v), 4);
+            pDst[i] = v;
+        }
+        mPos += 4 * n;
+    }
+
+    void SkipInts(std::size_t n) override {
+        Require(4 * n);
+        mPos += 4 * n;
+    }
+
+    void CheckSwap(std::int64_t Max, bool PreferSmaller) override {
+        if (mPos + 4 > mData.size())
+            return;
+        std::int32_t v;
+        std::memcpy(&v, mData.data() + mPos, 4);
+        if (mSwap)
+            detail::bswap_inplace(reinterpret_cast<char*>(&v), 4);
+        std::int32_t s = v;
+        detail::bswap_inplace(reinterpret_cast<char*>(&s), 4);
+        const bool v_ok = v >= 0 && v <= Max;
+        const bool s_ok = s >= 0 && s <= Max;
+        if ((!v_ok && s_ok) || (PreferSmaller && v_ok && s_ok && s < v))
+            mSwap = !mSwap;
+    }
+
+private:
+    void Require(std::size_t n) {
+        if (mPos + n > mData.size())
+            throw ReadError("EnSight: truncated binary geometry file");
+    }
+
+    std::string mData;
+    std::size_t mPos;
+    bool mSwap = false;
+};
+
+// ---------------------------------------------------------------------------
+// .case parsing
+// ---------------------------------------------------------------------------
+
+// Parse the .case file and return the resolved geometry file path.
+std::string ensight_parse_case(const std::string& rCasePath) {
+    const std::string data = ensight_read_whole_file(rCasePath, "case file");
+
+    std::string section;
+    std::string format_type;
+    std::string model_value;
+    std::istringstream stream(data);
+    std::string raw;
+    while (std::getline(stream, raw)) {
+        std::string line = ensight_trim(raw);
+        if (line.empty() || line[0] == '#')
+            continue;
+        if (line == "FORMAT" || line == "GEOMETRY" || line == "VARIABLE" || line == "TIME" ||
+            line == "FILE" || line == "MATERIAL" || line == "SCRIPTS") {
+            section = line;
+            continue;
+        }
+        if (section == "FORMAT" && ensight_starts_with(line, "type:"))
+            format_type = ensight_trim(line.substr(5));
+        else if (section == "GEOMETRY" && ensight_starts_with(line, "model:"))
+            model_value = ensight_trim(line.substr(6));
+    }
+
+    if (format_type.find("ensight gold") == std::string::npos)
+        throw ReadError("EnSight: case file is not 'type: ensight gold' (got '" + format_type +
+                        "')");
+    if (model_value.empty())
+        throw ReadError("EnSight: case file has no GEOMETRY 'model:' entry");
+
+    // model: [ts] [fs] filename [change_coords_only] — drop leading integer
+    // timeset/fileset tokens, take the first remaining token as the filename.
+    std::istringstream toks(model_value);
+    std::vector<std::string> tokens;
+    std::string tok;
+    while (toks >> tok)
+        tokens.push_back(tok);
+    std::size_t first = 0;
+    while (first < tokens.size()) {
+        char* end = nullptr;
+        (void)std::strtoll(tokens[first].c_str(), &end, 10);
+        if (end == tokens[first].c_str() || *end != '\0')
+            break;  // not a pure integer
+        ++first;
+    }
+    if (first >= tokens.size())
+        throw ReadError("EnSight: malformed 'model:' line in case file");
+    const std::string& filename = tokens[first];
+    if (filename.find('*') != std::string::npos)
+        throw ReadError("EnSight: transient (wildcard) geometry is not supported");
+
+    return ensight_dirname(rCasePath) + filename;
+}
+
+// ---------------------------------------------------------------------------
+// Geometry reading
+// ---------------------------------------------------------------------------
+
+// A staged cell block (added to the mesh only after AssignPoints).
+struct EnsightBlock {
+    std::string mType;
+    NDArray mConn{DType::Int64, {}};                                       // rectangular
+    std::vector<std::vector<std::int64_t>> mPolygonRows;                   // nsided
+    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronCells;  // nfaced
+    int mKind = 0;  // 0 rectangular, 1 polygon, 2 polyhedron
+    std::int64_t mPartId = 0;
+    std::size_t mNumCells = 0;
+};
+
+// "given" and "ignore" both put id arrays in the file; only the presence
+// matters — Gold connectivity is positional, so ids are always skipped.
+bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
+    // rRecord is e.g. "node id assign"; the mode is the last token.
+    std::istringstream iss(rRecord);
+    std::string tok, mode;
+    while (iss >> tok)
+        mode = tok;
+    if (mode == "given" || mode == "ignore")
+        return true;
+    if (mode == "off" || mode == "assign")
+        return false;
+    throw ReadError(std::string("EnSight: malformed '") + pWhat + " id' record: " + rRecord);
+}
+
+Mesh ensight_parse_geo(EnsightCursor& rCur) {
+    constexpr std::int64_t plausible_max = 100000000;  // generous id/count bound
+
+    rCur.NextRecord();  // description line 1
+    rCur.NextRecord();  // description line 2
+    std::string node_id_rec = rCur.NextRecord();
+    if (!ensight_starts_with(node_id_rec, "node id"))
+        throw ReadError("EnSight: expected 'node id' record, got: " + node_id_rec);
+    std::string elem_id_rec = rCur.NextRecord();
+    if (!ensight_starts_with(elem_id_rec, "element id"))
+        throw ReadError("EnSight: expected 'element id' record, got: " + elem_id_rec);
+    const bool node_ids_in_file = ensight_ids_in_file(node_id_rec, "node");
+    const bool elem_ids_in_file = ensight_ids_in_file(elem_id_rec, "element");
+
+    if (ensight_starts_with(rCur.PeekRecord(), "extents")) {
+        rCur.NextRecord();
+        double extents[6];
+        rCur.ReadFloats(6, extents);
+    }
+
+    std::vector<double> coords;  // xyz-interleaved, all parts concatenated
+    std::vector<EnsightBlock> blocks;
+    std::int64_t num_parts = 0;
+
+    while (!rCur.AtEnd()) {
+        std::string rec = rCur.NextRecord();
+        if (!ensight_starts_with(rec, "part"))
+            throw ReadError("EnSight: expected 'part' record, got: " + rec);
+        rCur.CheckSwap(plausible_max, /*PreferSmaller=*/true);
+        const std::int64_t part_id = rCur.NextInt();
+        ++num_parts;
+        rCur.NextRecord();  // part description
+
+        rec = rCur.NextRecord();
+        if (!ensight_starts_with(rec, "coordinates"))
+            throw ReadError("EnSight: expected 'coordinates' record, got: " + rec);
+        rCur.CheckSwap(plausible_max, /*PreferSmaller=*/false);
+        const std::int64_t nn = rCur.NextInt();
+        if (nn < 0)
+            throw ReadError("EnSight: negative node count");
+        const std::int64_t point_offset = static_cast<std::int64_t>(coords.size() / 3);
+
+        if (node_ids_in_file)
+            rCur.SkipInts(static_cast<std::size_t>(nn));
+        std::vector<double> x(static_cast<std::size_t>(nn));
+        std::vector<double> y(static_cast<std::size_t>(nn));
+        std::vector<double> z(static_cast<std::size_t>(nn));
+        rCur.ReadFloats(static_cast<std::size_t>(nn), x.data());
+        rCur.ReadFloats(static_cast<std::size_t>(nn), y.data());
+        rCur.ReadFloats(static_cast<std::size_t>(nn), z.data());
+        coords.reserve(coords.size() + static_cast<std::size_t>(nn) * 3);
+        for (std::int64_t i = 0; i < nn; ++i) {
+            coords.push_back(x[static_cast<std::size_t>(i)]);
+            coords.push_back(y[static_cast<std::size_t>(i)]);
+            coords.push_back(z[static_cast<std::size_t>(i)]);
+        }
+
+        // 1-based positional index within this part -> global 0-based index.
+        auto resolve = [&](std::int64_t v) -> std::int64_t {
+            const std::int64_t local = v - 1;
+            if (local < 0 || local >= nn)
+                throw ReadError("EnSight: connectivity index out of range");
+            return local + point_offset;
+        };
+
+        // Element sections until the next part / EOF.
+        while (!rCur.AtEnd()) {
+            std::string kw = rCur.PeekRecord();
+            if (kw.empty() || ensight_starts_with(kw, "part"))
+                break;
+            rCur.NextRecord();
+            // Ghost-cell sections carry the same data as their base type.
+            if (ensight_starts_with(kw, "g_"))
+                kw = kw.substr(2);
+
+            rCur.CheckSwap(plausible_max, /*PreferSmaller=*/false);
+            const std::int64_t ne = rCur.NextInt();
+            if (ne < 0)
+                throw ReadError("EnSight: negative element count");
+            if (elem_ids_in_file)
+                rCur.SkipInts(static_cast<std::size_t>(ne));
+
+            if (kw == "nsided") {
+                std::vector<std::int64_t> sizes(static_cast<std::size_t>(ne));
+                rCur.ReadInts(sizes.size(), sizes.data());
+                std::vector<std::vector<std::int64_t>> rows(static_cast<std::size_t>(ne));
+                std::vector<std::int64_t> flat;
+                std::size_t total = 0;
+                for (auto s : sizes)
+                    total += static_cast<std::size_t>(s);
+                flat.resize(total);
+                rCur.ReadInts(total, flat.data());
+                std::size_t at = 0;
+                for (std::size_t c = 0; c < rows.size(); ++c) {
+                    rows[c].resize(static_cast<std::size_t>(sizes[c]));
+                    for (std::size_t j = 0; j < rows[c].size(); ++j)
+                        rows[c][j] = resolve(flat[at++]);
+                }
+                EnsightBlock b;
+                b.mType = "polygon";
+                b.mKind = 1;
+                b.mPartId = part_id;
+                b.mNumCells = rows.size();
+                b.mPolygonRows = std::move(rows);
+                blocks.push_back(std::move(b));
+            } else if (kw == "nfaced") {
+                std::vector<std::int64_t> nfaces(static_cast<std::size_t>(ne));
+                rCur.ReadInts(nfaces.size(), nfaces.data());
+                std::size_t total_faces = 0;
+                for (auto f : nfaces)
+                    total_faces += static_cast<std::size_t>(f);
+                std::vector<std::int64_t> fsizes(total_faces);
+                rCur.ReadInts(total_faces, fsizes.data());
+                std::size_t total_nodes = 0;
+                for (auto s : fsizes)
+                    total_nodes += static_cast<std::size_t>(s);
+                std::vector<std::int64_t> flat(total_nodes);
+                rCur.ReadInts(total_nodes, flat.data());
+
+                std::vector<std::vector<std::vector<std::int64_t>>> cells(
+                    static_cast<std::size_t>(ne));
+                std::size_t face_at = 0, node_at = 0;
+                for (std::size_t c = 0; c < cells.size(); ++c) {
+                    cells[c].resize(static_cast<std::size_t>(nfaces[c]));
+                    for (auto& face : cells[c]) {
+                        face.resize(static_cast<std::size_t>(fsizes[face_at++]));
+                        for (auto& v : face)
+                            v = resolve(flat[node_at++]);
+                    }
+                }
+                // Group by unique node count into "polyhedron<N>" blocks (the
+                // openfoam convention), preserving first-seen order.
+                std::vector<std::size_t> node_counts(cells.size());
+                for (std::size_t c = 0; c < cells.size(); ++c) {
+                    std::vector<std::int64_t> uniq;
+                    for (const auto& face : cells[c])
+                        uniq.insert(uniq.end(), face.begin(), face.end());
+                    std::sort(uniq.begin(), uniq.end());
+                    uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                    node_counts[c] = uniq.size();
+                }
+                std::vector<std::size_t> group_order;
+                std::map<std::size_t, std::vector<std::size_t>> groups;
+                for (std::size_t c = 0; c < cells.size(); ++c) {
+                    if (groups.find(node_counts[c]) == groups.end())
+                        group_order.push_back(node_counts[c]);
+                    groups[node_counts[c]].push_back(c);
+                }
+                for (std::size_t n : group_order) {
+                    std::vector<std::vector<std::vector<std::int64_t>>> group_cells;
+                    for (std::size_t c : groups[n])
+                        group_cells.push_back(std::move(cells[c]));
+                    EnsightBlock b;
+                    b.mType = "polyhedron" + std::to_string(n);
+                    b.mKind = 2;
+                    b.mPartId = part_id;
+                    b.mNumCells = group_cells.size();
+                    b.mPolyhedronCells = std::move(group_cells);
+                    blocks.push_back(std::move(b));
+                }
+            } else {
+                const EnsightTypeEntry* entry = ensight_entry_from_keyword(kw);
+                if (entry == nullptr)
+                    throw ReadError("EnSight: unsupported element keyword: " + kw);
+                const std::size_t npc = static_cast<std::size_t>(entry->mNumNodes);
+                NDArray conn = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ne), npc});
+                std::int64_t* cp = conn.As<std::int64_t>();
+                rCur.ReadInts(static_cast<std::size_t>(ne) * npc, cp);
+                const std::vector<int>* perm = ensight_permutation(entry->mMeshioType);
+                if (perm != nullptr) {
+                    std::vector<std::int64_t> tmp(npc);
+                    for (std::int64_t r = 0; r < ne; ++r) {
+                        std::int64_t* row = cp + r * static_cast<std::int64_t>(npc);
+                        for (std::size_t j = 0; j < npc; ++j)
+                            tmp[j] = row[(*perm)[j]];
+                        for (std::size_t j = 0; j < npc; ++j)
+                            row[j] = tmp[j];
+                    }
+                }
+                const std::size_t nvals = static_cast<std::size_t>(ne) * npc;
+                for (std::size_t k = 0; k < nvals; ++k)
+                    cp[k] = resolve(cp[k]);
+                EnsightBlock b;
+                b.mType = entry->mMeshioType;
+                b.mKind = 0;
+                b.mPartId = part_id;
+                b.mNumCells = static_cast<std::size_t>(ne);
+                b.mConn = std::move(conn);
+                blocks.push_back(std::move(b));
+            }
+        }
+    }
+
+    Mesh mesh;
+    const std::size_t npoints = coords.size() / 3;
+    NDArray pts = NDArray::Uninit(DType::Float64, {npoints, 3});
+    if (npoints > 0)
+        std::memcpy(pts.Data(), coords.data(), npoints * 3 * sizeof(double));
+    mesh.AssignPoints(std::move(pts));
+
+    for (auto& b : blocks) {
+        if (b.mKind == 0)
+            mesh.AddCellBlock(b.mType, std::move(b.mConn));
+        else if (b.mKind == 1)
+            mesh.AddPolygonBlock(b.mType, std::move(b.mPolygonRows));
+        else
+            mesh.AddPolyhedronBlock(b.mType, std::move(b.mPolyhedronCells));
+    }
+
+    if (num_parts >= 2) {
+        std::vector<NDArray> tags;
+        tags.reserve(blocks.size());
+        for (const auto& b : blocks) {
+            NDArray a = NDArray::Uninit(DType::Int64, {b.mNumCells});
+            std::int64_t* ap = a.As<std::int64_t>();
+            for (std::size_t i = 0; i < b.mNumCells; ++i)
+                ap[i] = b.mPartId;
+            tags.push_back(std::move(a));
+        }
+        mesh.AddCellData("ensight:part", std::move(tags));
+    }
+
+    return mesh;
+}
+
+}  // namespace
+
+Mesh read_ensight(const std::string& rPath) {
+    std::string geo_path = rPath;
+    if (ensight_has_suffix(rPath, ".case"))
+        geo_path = ensight_parse_case(rPath);
+
+    std::string data = ensight_read_whole_file(geo_path, "geometry file");
+    if (ensight_starts_with(data, "Fortran Binary"))
+        throw ReadError("EnSight: Fortran-binary geometry files are not supported");
+    if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
+        EnsightBinaryCursor cur(std::move(data));
+        return ensight_parse_geo(cur);
+    }
+    EnsightAsciiCursor cur(std::move(data));
+    return ensight_parse_geo(cur);
+}
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+void ensight_append_str80(std::vector<char>& rOut, const std::string& rStr) {
+    char buf[80] = {};
+    rStr.copy(buf, std::min<std::size_t>(rStr.size(), 79));
+    rOut.insert(rOut.end(), buf, buf + 80);
+}
+
+void ensight_append_i32(std::vector<char>& rOut, std::int64_t v) {
+    const std::int32_t i = static_cast<std::int32_t>(v);
+    const char* p = reinterpret_cast<const char*>(&i);
+    rOut.insert(rOut.end(), p, p + 4);
+}
+
+// Validate the mesh and return one keyword entry per cell block.
+std::vector<const EnsightTypeEntry*> ensight_writable_blocks(const Mesh& rMesh) {
+    std::vector<const EnsightTypeEntry*> entries;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsRagged())
+            throw WriteError("EnSight: writing nsided/nfaced (ragged) blocks is not supported");
+        const EnsightTypeEntry* entry = ensight_entry_from_meshio(cb.Type());
+        if (entry == nullptr)
+            throw WriteError("EnSight: cell type '" + cb.Type() + "' has no EnSight keyword");
+        entries.push_back(entry);
+    }
+    return entries;
+}
+
+void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
+                             const std::vector<const EnsightTypeEntry*>& rEntries) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t np = rMesh.NumPoints();
+
+    std::string out;
+    out.reserve(200 + np * 42);
+    out += "EnSight Gold Geometry File\n";
+    out += "Written by meshio++\n";
+    out += "node id assign\n";
+    out += "element id assign\n";
+    out += "part\n";
+
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%10d\n", 1);
+    out += buf;
+    out += "Mesh\n";
+    out += "coordinates\n";
+    std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(np));
+    out += buf;
+    for (std::size_t c = 0; c < 3; ++c) {
+        for (std::size_t i = 0; i < np; ++i) {
+            const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
+            std::snprintf(buf, sizeof(buf), "%12.5e\n", v);
+            out += buf;
+        }
+    }
+
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const auto cb = rMesh.Cells(bi);
+        const EnsightTypeEntry* entry = rEntries[bi];
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t ne = cb.NumCells();
+        const NDArray& conn = cb.Conn();
+        const std::vector<int>* perm = ensight_permutation(cb.Type());
+
+        out += entry->mKeyword;
+        out += "\n";
+        std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(ne));
+        out += buf;
+        for (std::size_t r = 0; r < ne; ++r) {
+            for (std::size_t j = 0; j < npc; ++j) {
+                const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
+                const long long v =
+                    static_cast<long long>(detail::read_int(conn, r * npc + src)) + 1;
+                std::snprintf(buf, sizeof(buf), "%10lld", v);
+                out += buf;
+            }
+            out += "\n";
+        }
+    }
+
+    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
+                              const std::vector<const EnsightTypeEntry*>& rEntries) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t np = rMesh.NumPoints();
+
+    constexpr std::size_t i32_max =
+        static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+    if (np > i32_max)
+        throw WriteError("EnSight: mesh too large for 32-bit binary EnSight output");
+
+    std::vector<char> out;
+    out.reserve(80 * 8 + np * 12 + 64);
+    ensight_append_str80(out, "C Binary");
+    ensight_append_str80(out, "EnSight Gold Geometry File");
+    ensight_append_str80(out, "Written by meshio++");
+    ensight_append_str80(out, "node id assign");
+    ensight_append_str80(out, "element id assign");
+    ensight_append_str80(out, "part");
+    ensight_append_i32(out, 1);
+    ensight_append_str80(out, "Mesh");
+    ensight_append_str80(out, "coordinates");
+    ensight_append_i32(out, static_cast<std::int64_t>(np));
+    {
+        std::vector<float> col(np * 3);
+        for (std::size_t c = 0; c < 3; ++c)
+            for (std::size_t i = 0; i < np; ++i)
+                col[c * np + i] =
+                    c < dim ? static_cast<float>(detail::read_double(points, i * dim + c)) : 0.0f;
+        const char* p = reinterpret_cast<const char*>(col.data());
+        out.insert(out.end(), p, p + col.size() * sizeof(float));
+    }
+
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const auto cb = rMesh.Cells(bi);
+        const EnsightTypeEntry* entry = rEntries[bi];
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t ne = cb.NumCells();
+        if (ne > i32_max)
+            throw WriteError("EnSight: mesh too large for 32-bit binary EnSight output");
+        const NDArray& conn = cb.Conn();
+        const std::vector<int>* perm = ensight_permutation(cb.Type());
+
+        ensight_append_str80(out, entry->mKeyword);
+        ensight_append_i32(out, static_cast<std::int64_t>(ne));
+        std::vector<std::int32_t> flat(ne * npc);
+        for (std::size_t r = 0; r < ne; ++r)
+            for (std::size_t j = 0; j < npc; ++j) {
+                const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
+                flat[r * npc + j] =
+                    static_cast<std::int32_t>(detail::read_int(conn, r * npc + src)) + 1;
+            }
+        const char* p = reinterpret_cast<const char*>(flat.data());
+        out.insert(out.end(), p, p + flat.size() * sizeof(std::int32_t));
+    }
+
+    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+}  // namespace
+
+void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    bool ok = false;
+    auto paths = ensight_case_geo_paths(rPath, ok);
+    if (!ok)
+        throw WriteError("EnSight: must specify a .case or .geo file");
+    const std::string& case_path = paths.first;
+    const std::string& geo_path = paths.second;
+
+    if (rMesh.PointDim() > 3)
+        throw WriteError("EnSight: points must have at most three components");
+    const std::vector<const EnsightTypeEntry*> entries = ensight_writable_blocks(rMesh);
+
+    {
+        std::ofstream cf(case_path, std::ios::binary);
+        if (!cf)
+            throw WriteError("Could not open file for writing: " + case_path);
+        std::string out;
+        out += "FORMAT\n";
+        out += "type: ensight gold\n";
+        out += "\n";
+        out += "GEOMETRY\n";
+        out += "model: " + ensight_basename(geo_path) + "\n";
+        cf.write(out.data(), static_cast<std::streamsize>(out.size()));
+    }
+
+    std::ofstream gf(geo_path, std::ios::binary);
+    if (!gf)
+        throw WriteError("Could not open file for writing: " + geo_path);
+    if (binary)
+        ensight_write_geo_binary(gf, rMesh, entries);
+    else
+        ensight_write_geo_ascii(gf, rMesh, entries);
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/formats/ensight.cpp =====
 // ===== begin cpp/src/formats/exodus.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
 
@@ -34305,6 +35617,478 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/formats/tikz.cpp =====
+// ===== begin cpp/src/formats/triangle.cpp =====
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Whitespace token stream over a whole file, '#' comments stripped to EOL.
+struct TriangleTokens {
+    std::vector<std::string> mToks;
+    std::size_t mPos = 0;
+
+    bool AtEnd() const { return mPos >= mToks.size(); }
+
+    const std::string& Next(const char* pWhat) {
+        if (AtEnd())
+            throw ReadError(std::string("Triangle: unexpected end of file reading ") + pWhat);
+        return mToks[mPos++];
+    }
+
+    std::int64_t NextInt(const char* pWhat) {
+        const std::string& t = Next(pWhat);
+        char* end = nullptr;
+        const std::int64_t v = std::strtoll(t.c_str(), &end, 10);
+        if (end == t.c_str())
+            throw ReadError(std::string("Triangle: expected an integer for ") + pWhat);
+        return v;
+    }
+
+    double NextDouble(const char* pWhat) {
+        const std::string& t = Next(pWhat);
+        char* end = nullptr;
+        const double v = std::strtod(t.c_str(), &end);
+        if (end == t.c_str())
+            throw ReadError(std::string("Triangle: expected a number for ") + pWhat);
+        return v;
+    }
+};
+
+TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
+    TriangleTokens tokens;
+    std::ifstream in(rPath, std::ios::binary);
+    rOk = static_cast<bool>(in);
+    if (!rOk)
+        return tokens;
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos)
+            line.resize(hash);
+        std::istringstream iss(line);
+        std::string tok;
+        while (iss >> tok)
+            tokens.mToks.push_back(tok);
+    }
+    return tokens;
+}
+
+// Suffix classification: 0 = .node/.ele pair, 1 = .poly, -1 = unsupported.
+int triangle_path_kind(const std::string& rPath, std::string& rStem) {
+    const std::size_t dot = rPath.find_last_of('.');
+    if (dot == std::string::npos)
+        return -1;
+    const std::string suffix = rPath.substr(dot);
+    rStem = rPath.substr(0, dot);
+    if (suffix == ".node" || suffix == ".ele")
+        return 0;
+    if (suffix == ".poly")
+        return 1;
+    return -1;
+}
+
+// One parsed vertex section (from a .node file or inline in a .poly).
+struct TriangleNodes {
+    std::int64_t mNumPoints = 0;
+    std::int64_t mBase = 0;
+    std::vector<double> mXY;                    // 2 per point
+    std::vector<std::vector<double>> mAttrs;    // one column per attribute
+    std::vector<std::vector<double>> mMarkers;  // one column per boundary marker
+};
+
+TriangleNodes triangle_read_node_section(TriangleTokens& rTokens) {
+    TriangleNodes out;
+    out.mNumPoints = rTokens.NextInt("vertex count");
+    const std::int64_t dim = rTokens.NextInt("dimension");
+    const std::int64_t nattr = rTokens.NextInt("attribute count");
+    const std::int64_t nmark = rTokens.NextInt("marker count");
+    if (dim != 2)
+        throw ReadError("Triangle: need 2D points");
+    if (out.mNumPoints < 0 || nattr < 0 || nmark < 0)
+        throw ReadError("Triangle: malformed vertex header");
+
+    out.mXY.resize(static_cast<std::size_t>(out.mNumPoints) * 2);
+    out.mAttrs.assign(static_cast<std::size_t>(nattr),
+                      std::vector<double>(static_cast<std::size_t>(out.mNumPoints)));
+    out.mMarkers.assign(static_cast<std::size_t>(nmark),
+                        std::vector<double>(static_cast<std::size_t>(out.mNumPoints)));
+
+    for (std::int64_t i = 0; i < out.mNumPoints; ++i) {
+        const std::int64_t idx = rTokens.NextInt("vertex index");
+        if (i == 0)
+            out.mBase = idx;
+        if (idx != out.mBase + i)
+            throw ReadError("Triangle: vertices not numbered consecutively");
+        out.mXY[static_cast<std::size_t>(i) * 2] = rTokens.NextDouble("x coordinate");
+        out.mXY[static_cast<std::size_t>(i) * 2 + 1] = rTokens.NextDouble("y coordinate");
+        for (auto& col : out.mAttrs)
+            col[static_cast<std::size_t>(i)] = rTokens.NextDouble("vertex attribute");
+        for (auto& col : out.mMarkers)
+            col[static_cast<std::size_t>(i)] = rTokens.NextDouble("boundary marker");
+    }
+    return out;
+}
+
+void triangle_apply_nodes(Mesh& rMesh, const TriangleNodes& rNodes) {
+    const std::size_t n = static_cast<std::size_t>(rNodes.mNumPoints);
+    NDArray pts = NDArray::Uninit(DType::Float64, {n, 2});
+    if (n > 0)
+        std::copy(rNodes.mXY.begin(), rNodes.mXY.end(), pts.As<double>());
+    rMesh.AssignPoints(std::move(pts));
+
+    for (std::size_t k = 0; k < rNodes.mAttrs.size(); ++k) {
+        NDArray a = NDArray::Uninit(DType::Float64, {n});
+        std::copy(rNodes.mAttrs[k].begin(), rNodes.mAttrs[k].end(), a.As<double>());
+        rMesh.AddPointData("triangle:attr" + std::to_string(k + 1), std::move(a));
+    }
+    for (std::size_t k = 0; k < rNodes.mMarkers.size(); ++k) {
+        std::string name = "triangle:ref" + (k == 0 ? std::string() : std::to_string(k + 1));
+        NDArray a = NDArray::Uninit(DType::Float64, {n});
+        std::copy(rNodes.mMarkers[k].begin(), rNodes.mMarkers[k].end(), a.As<double>());
+        rMesh.AddPointData(std::move(name), std::move(a));
+    }
+}
+
+Mesh triangle_read_node_ele(const std::string& rStem) {
+    bool have_node = false;
+    TriangleTokens node_tokens = triangle_tokenize(rStem + ".node", have_node);
+    if (!have_node)
+        throw ReadError("Triangle: could not open file: " + rStem + ".node");
+    TriangleNodes nodes = triangle_read_node_section(node_tokens);
+
+    Mesh mesh;
+    triangle_apply_nodes(mesh, nodes);
+
+    // The .ele sibling is optional: a lone .node file is a point cloud.
+    bool have_ele = false;
+    TriangleTokens ele_tokens = triangle_tokenize(rStem + ".ele", have_ele);
+    if (!have_ele)
+        return mesh;
+
+    const std::int64_t ne = ele_tokens.NextInt("triangle count");
+    const std::int64_t npc = ele_tokens.NextInt("nodes per triangle");
+    const std::int64_t nattr = ele_tokens.NextInt("attribute count");
+    if (npc != 3 && npc != 6)
+        throw ReadError("Triangle: only 3- or 6-node triangles are supported");
+    if (ne < 0 || nattr < 0)
+        throw ReadError("Triangle: malformed .ele header");
+
+    NDArray conn = NDArray::Uninit(DType::Int64,
+                                   {static_cast<std::size_t>(ne), static_cast<std::size_t>(npc)});
+    std::int64_t* cp = conn.As<std::int64_t>();
+    std::vector<std::vector<double>> attrs(static_cast<std::size_t>(nattr),
+                                           std::vector<double>(static_cast<std::size_t>(ne)));
+    for (std::int64_t i = 0; i < ne; ++i) {
+        ele_tokens.NextInt("triangle index");
+        for (std::int64_t c = 0; c < npc; ++c) {
+            const std::int64_t v = ele_tokens.NextInt("triangle connectivity") - nodes.mBase;
+            if (v < 0 || v >= nodes.mNumPoints)
+                throw ReadError("Triangle: connectivity index out of range");
+            cp[i * npc + c] = v;
+        }
+        for (auto& col : attrs)
+            col[static_cast<std::size_t>(i)] = ele_tokens.NextDouble("triangle attribute");
+    }
+    if (ne == 0)  // an empty .ele adds no block
+        return mesh;
+    mesh.AddCellBlock(npc == 3 ? "triangle" : "triangle6", std::move(conn));
+
+    for (std::size_t k = 0; k < attrs.size(); ++k) {
+        std::string name = "triangle:ref" + (k == 0 ? std::string() : std::to_string(k + 1));
+        NDArray a = NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(ne)});
+        std::copy(attrs[k].begin(), attrs[k].end(), a.As<double>());
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(a));
+        mesh.AddCellData(std::move(name), std::move(blocks));
+    }
+    return mesh;
+}
+
+Mesh triangle_read_poly(const std::string& rPath, const std::string& rStem) {
+    bool ok = false;
+    TriangleTokens tokens = triangle_tokenize(rPath, ok);
+    if (!ok)
+        throw ReadError("Triangle: could not open file: " + rPath);
+
+    // Vertex section: inline, or the sibling .node when the count is 0.
+    TriangleNodes nodes;
+    const std::size_t header_pos = tokens.mPos;
+    const std::int64_t nv = tokens.NextInt("vertex count");
+    if (nv == 0) {
+        tokens.NextInt("dimension");
+        tokens.NextInt("attribute count");
+        tokens.NextInt("marker count");
+        bool have_node = false;
+        TriangleTokens node_tokens = triangle_tokenize(rStem + ".node", have_node);
+        if (!have_node)
+            throw ReadError("Triangle: .poly refers to a missing sibling .node file");
+        nodes = triangle_read_node_section(node_tokens);
+    } else {
+        tokens.mPos = header_pos;
+        nodes = triangle_read_node_section(tokens);
+    }
+
+    Mesh mesh;
+    triangle_apply_nodes(mesh, nodes);
+
+    // Segment section -> one "line" cell block (+ optional marker cell_data).
+    const std::int64_t ns = tokens.NextInt("segment count");
+    const std::int64_t nmark = tokens.NextInt("segment marker count");
+    if (ns < 0 || nmark < 0 || nmark > 1)
+        throw ReadError("Triangle: malformed segment header");
+    NDArray conn = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ns), 2});
+    std::int64_t* cp = conn.As<std::int64_t>();
+    std::vector<std::int64_t> markers(static_cast<std::size_t>(nmark == 1 ? ns : 0));
+    for (std::int64_t i = 0; i < ns; ++i) {
+        tokens.NextInt("segment index");
+        for (int c = 0; c < 2; ++c) {
+            const std::int64_t v = tokens.NextInt("segment endpoint") - nodes.mBase;
+            if (v < 0 || v >= nodes.mNumPoints)
+                throw ReadError("Triangle: segment endpoint out of range");
+            cp[i * 2 + c] = v;
+        }
+        if (nmark == 1)
+            markers[static_cast<std::size_t>(i)] = tokens.NextInt("segment marker");
+    }
+    mesh.AddCellBlock("line", std::move(conn));
+    if (nmark == 1) {
+        NDArray a = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ns)});
+        std::copy(markers.begin(), markers.end(), a.As<std::int64_t>());
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(a));
+        mesh.AddCellData("triangle:ref", std::move(blocks));
+    }
+
+    // Holes (and optional regional attributes) are not representable — skip.
+    if (!tokens.AtEnd()) {
+        const std::int64_t nh = tokens.NextInt("hole count");
+        if (nh > 0)
+            log::warn("Triangle: skipping {} hole(s) in {}", nh, rPath);
+        for (std::int64_t i = 0; i < nh * 3; ++i)
+            tokens.NextDouble("hole entry");
+    }
+    if (!tokens.AtEnd()) {
+        const std::int64_t nr = tokens.NextInt("region count");
+        if (nr > 0)
+            log::warn("Triangle: skipping {} regional attribute(s) in {}", nr, rPath);
+    }
+    return mesh;
+}
+
+// Write a marker/ref value: integral values as integers, else %.16e.
+void triangle_write_value(std::ostream& rOs, double v) {
+    const double r = std::nearbyint(v);
+    if (v == r && std::fabs(v) < 9.2e18) {
+        rOs << static_cast<std::int64_t>(r);
+    } else {
+        char buf[40];
+        std::snprintf(buf, sizeof(buf), "%.16e", v);
+        rOs << buf;
+    }
+}
+
+// Split point_data keys into attribute columns and at most one marker
+// column (the first ":ref" key, or else the first key), mirroring tetgen.
+void triangle_split_point_keys(const Mesh& rMesh, std::vector<std::string>& rAttrKeys,
+                               std::vector<std::string>& rRefKeys) {
+    rAttrKeys = rMesh.PointDataNames();  // sorted: deterministic column order
+    if (rAttrKeys.empty())
+        return;
+    for (const auto& k : rAttrKeys)
+        if (k.find(":ref") != std::string::npos) {
+            rRefKeys.push_back(k);
+            break;
+        }
+    if (!rRefKeys.empty()) {
+        rAttrKeys.erase(std::remove(rAttrKeys.begin(), rAttrKeys.end(), rRefKeys[0]),
+                        rAttrKeys.end());
+    } else {
+        rRefKeys.push_back(rAttrKeys.front());
+        rAttrKeys.erase(rAttrKeys.begin());
+    }
+}
+
+void triangle_write_node_rows(std::ostream& rOs, const Mesh& rMesh,
+                              const std::vector<std::string>& rAttrKeys,
+                              const std::vector<std::string>& rRefKeys) {
+    const NDArray& points = rMesh.Points();
+    const std::int64_t np = static_cast<std::int64_t>(rMesh.NumPoints());
+    char fbuf[40];
+    for (std::int64_t i = 0; i < np; ++i) {
+        rOs << i;
+        for (int c = 0; c < 2; ++c) {
+            std::snprintf(fbuf, sizeof(fbuf), "%.16e", detail::read_double(points, i * 2 + c));
+            rOs << " " << fbuf;
+        }
+        for (const auto& k : rAttrKeys) {
+            std::snprintf(fbuf, sizeof(fbuf), "%.16e", detail::read_double(rMesh.PointData(k), i));
+            rOs << " " << fbuf;
+        }
+        for (const auto& k : rRefKeys) {
+            rOs << " ";
+            triangle_write_value(rOs, detail::read_double(rMesh.PointData(k), i));
+        }
+        rOs << "\n";
+    }
+}
+
+void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
+    std::vector<std::string> attr_keys, ref_keys;
+    triangle_split_point_keys(rMesh, attr_keys, ref_keys);
+
+    {
+        std::ofstream fh(rStem + ".node", std::ios::binary);
+        if (!fh)
+            throw WriteError("Could not open file for writing: " + rStem + ".node");
+        fh << "# This file was created by meshio++ (C++ core)\n";
+        fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
+        triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
+    }
+
+    // Collect the triangle blocks (must all share one type).
+    std::string tri_type;
+    std::size_t ne = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.Type() != "triangle" && cb.Type() != "triangle6")
+            continue;
+        if (!tri_type.empty() && tri_type != cb.Type())
+            throw WriteError("Triangle: cannot mix triangle and triangle6 blocks");
+        tri_type = cb.Type();
+        ne += cb.NumCells();
+    }
+
+    std::vector<std::string> cell_attr_keys = rMesh.CellDataNames();
+    if (!cell_attr_keys.empty()) {
+        std::string ref;
+        for (const auto& k : cell_attr_keys)
+            if (k.find(":ref") != std::string::npos) {
+                ref = k;
+                break;
+            }
+        if (!ref.empty()) {
+            cell_attr_keys.erase(std::remove(cell_attr_keys.begin(), cell_attr_keys.end(), ref),
+                                 cell_attr_keys.end());
+            cell_attr_keys.insert(cell_attr_keys.begin(), ref);
+        }
+    }
+
+    std::ofstream fh(rStem + ".ele", std::ios::binary);
+    if (!fh)
+        throw WriteError("Could not open file for writing: " + rStem + ".ele");
+    fh << "# This file was created by meshio++ (C++ core)\n";
+    const std::size_t npc = tri_type == "triangle6" ? 6 : 3;
+    fh << ne << " " << npc << " " << cell_attr_keys.size() << "\n";
+    std::int64_t id = 0;
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+        const auto cb = rMesh.Cells(ci);
+        if (cb.Type() != tri_type)
+            continue;
+        const NDArray& conn = cb.Conn();
+        const std::int64_t n = static_cast<std::int64_t>(cb.NumCells());
+        for (std::int64_t i = 0; i < n; ++i) {
+            fh << id++;
+            for (std::size_t c = 0; c < npc; ++c)
+                fh << " " << detail::read_int(conn, i * static_cast<std::int64_t>(npc) + c);
+            for (const auto& k : cell_attr_keys) {
+                fh << " ";
+                if (ci < rMesh.CellDataNumBlocks(k))
+                    triangle_write_value(fh, detail::read_double(rMesh.CellData(k, ci), i));
+                else
+                    fh << "0";
+            }
+            fh << "\n";
+        }
+    }
+}
+
+void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
+    std::vector<std::string> attr_keys, ref_keys;
+    triangle_split_point_keys(rMesh, attr_keys, ref_keys);
+
+    // Segment markers: the first ":ref" cell_data key, when present.
+    std::string seg_ref;
+    for (const auto& k : rMesh.CellDataNames())
+        if (k.find(":ref") != std::string::npos) {
+            seg_ref = k;
+            break;
+        }
+
+    std::ofstream fh(rPath, std::ios::binary);
+    if (!fh)
+        throw WriteError("Could not open file for writing: " + rPath);
+    fh << "# This file was created by meshio++ (C++ core)\n";
+    fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
+    triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
+
+    std::size_t ns = 0;
+    for (const auto cb : rMesh.CellRange())
+        if (cb.Type() == "line")
+            ns += cb.NumCells();
+    fh << ns << " " << (seg_ref.empty() ? 0 : 1) << "\n";
+    std::int64_t id = 0;
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+        const auto cb = rMesh.Cells(ci);
+        if (cb.Type() != "line")
+            continue;
+        const NDArray& conn = cb.Conn();
+        const std::int64_t n = static_cast<std::int64_t>(cb.NumCells());
+        for (std::int64_t i = 0; i < n; ++i) {
+            fh << id++ << " " << detail::read_int(conn, i * 2) << " "
+               << detail::read_int(conn, i * 2 + 1);
+            if (!seg_ref.empty()) {
+                fh << " ";
+                if (ci < rMesh.CellDataNumBlocks(seg_ref))
+                    triangle_write_value(fh, detail::read_double(rMesh.CellData(seg_ref, ci), i));
+                else
+                    fh << "0";
+            }
+            fh << "\n";
+        }
+    }
+    fh << "0\n";  // holes
+}
+
+}  // namespace
+
+Mesh read_triangle(const std::string& rPath) {
+    std::string stem;
+    const int kind = triangle_path_kind(rPath, stem);
+    if (kind < 0)
+        throw ReadError("Triangle: expected a .node, .ele, or .poly file");
+    if (kind == 1)
+        return triangle_read_poly(rPath, stem);
+    return triangle_read_node_ele(stem);
+}
+
+void write_triangle(const std::string& rPath, const Mesh& rMesh) {
+    std::string stem;
+    const int kind = triangle_path_kind(rPath, stem);
+    if (kind < 0)
+        throw WriteError("Triangle: must specify a .node, .ele, or .poly file");
+    if (rMesh.PointDim() != 2)
+        throw WriteError("Triangle: can only write 2D points");
+    if (kind == 1)
+        triangle_write_poly(rPath, rMesh);
+    else
+        triangle_write_node_ele(stem, rMesh);
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/formats/triangle.cpp =====
 // ===== begin cpp/src/formats/ugrid.cpp =====
 #include <cctype>
 #include <cstdint>
@@ -36333,6 +38117,397 @@ Mesh read_vtk(const std::string& rPath) {
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/formats/vtk_read.cpp =====
+// ===== begin cpp/src/formats/vtp.cpp =====
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::cols;
+using detail::read_double;
+using detail::read_int;
+using detail::vtu_ascii_double;
+using detail::vtu_ascii_ndarray;
+using detail::vtu_type_str;
+
+// PolyData section a cell block belongs to (VTK's canonical cell order).
+enum class VtpSection { Verts = 0, Lines = 1, Polys = 2 };
+
+VtpSection vtp_section_of(const Mesh::CellView& rCb) {
+    const std::string& type = rCb.Type();
+    if (rCb.IsPolyhedron())
+        throw WriteError("VTP: PolyData cannot hold polyhedron cells");
+    if (type == "vertex")
+        return VtpSection::Verts;
+    if (type == "line")
+        return VtpSection::Lines;
+    if (type == "triangle" || type == "quad" || type == "polygon")
+        return VtpSection::Polys;
+    throw WriteError("VTP: PolyData cannot hold '" + type + "' cells");
+}
+
+// Flat connectivity + VTK end-offsets of one section's blocks.
+struct VtpSectionData {
+    std::vector<std::int64_t> mConn;
+    std::vector<std::int64_t> mOffsets;
+};
+
+void vtp_append_block(VtpSectionData& rSec, const Mesh::CellView& rCb) {
+    if (rCb.IsRagged()) {
+        for (std::size_t r = 0; r < rCb.NumCells(); ++r) {
+            const std::size_t sz = rCb.RowSize(r);
+            const std::int64_t* row = rCb.Row(r);
+            rSec.mConn.insert(rSec.mConn.end(), row, row + sz);
+            rSec.mOffsets.push_back(static_cast<std::int64_t>(rSec.mConn.size()));
+        }
+        return;
+    }
+    const NDArray& conn = rCb.Conn();
+    const std::size_t k = cols(conn);
+    for (std::size_t r = 0; r < rCb.NumCells(); ++r) {
+        for (std::size_t j = 0; j < k; ++j)
+            rSec.mConn.push_back(read_int(conn, r * k + j));
+        rSec.mOffsets.push_back(static_cast<std::int64_t>(rSec.mConn.size()));
+    }
+}
+
+}  // namespace
+
+void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    // Classify blocks and build the VTK canonical order (Verts, Lines, Polys)
+    // as a stable partition of the mesh's block order.
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<VtpSection> sections(nblocks);
+    for (std::size_t bi = 0; bi < nblocks; ++bi)
+        sections[bi] = vtp_section_of(rMesh.Cells(bi));
+    std::vector<std::size_t> block_order;
+    block_order.reserve(nblocks);
+    VtpSectionData verts, lines, polys;
+    for (VtpSection want : {VtpSection::Verts, VtpSection::Lines, VtpSection::Polys})
+        for (std::size_t bi = 0; bi < nblocks; ++bi) {
+            if (sections[bi] != want)
+                continue;
+            block_order.push_back(bi);
+            VtpSectionData& sec = want == VtpSection::Verts   ? verts
+                                  : want == VtpSection::Lines ? lines
+                                                              : polys;
+            vtp_append_block(sec, rMesh.Cells(bi));
+        }
+
+    for (std::size_t i = 0; i < verts.mOffsets.size(); ++i)
+        if (verts.mOffsets[i] - (i == 0 ? 0 : verts.mOffsets[i - 1]) != 1)
+            throw WriteError("VTP: vertex cells must have exactly one node");
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t pt_isz = dtype_size(points.Dtype());
+
+    const char* fmt = binary ? "binary" : "ascii";
+
+    auto da_header = [&](const char* type, const std::string& name, int ncomp) {
+        os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
+        if (ncomp > 0)
+            os << " NumberOfComponents=\"" << ncomp << "\"";
+        os << " format=\"" << fmt << "\">\n";
+    };
+    auto emit_bin = [&](const unsigned char* d, std::size_t n) {
+        os << detail::vtu_encode_binary(d, n, zlib) << "\n";
+    };
+    auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
+        da_header("Int64", name, 0);
+        if (binary) {
+            emit_bin(reinterpret_cast<const unsigned char*>(v.data()),
+                     v.size() * sizeof(std::int64_t));
+        } else {
+            for (std::int64_t x : v)
+                os << x << '\n';
+        }
+        os << "</DataArray>\n";
+    };
+
+    os << "<?xml version=\"1.0\"?>\n";
+    os << "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\"";
+    if (binary && zlib)
+        os << " compressor=\"vtkZLibDataCompressor\"";
+    os << ">\n";
+    os << "<!--This file was created by meshio++ (C++ core)-->\n";
+    os << "<PolyData>\n";
+    os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfVerts=\"" << verts.mOffsets.size()
+       << "\" NumberOfLines=\"" << lines.mOffsets.size()
+       << "\" NumberOfStrips=\"0\" NumberOfPolys=\"" << polys.mOffsets.size() << "\">\n";
+
+    // Points (3 components; pad 2D with zero z) — same layout as the VTU writer.
+    os << "<Points>\n";
+    da_header(vtu_type_str(points.Dtype()), "Points", 3);
+    if (binary) {
+        std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
+        const auto* src = reinterpret_cast<const unsigned char*>(points.Data());
+        parallel_for(num_points, [&](std::size_t r) {
+            for (std::size_t c = 0; c < dim && c < 3; ++c)
+                std::memcpy(buf.data() + (r * 3 + c) * pt_isz, src + (r * dim + c) * pt_isz,
+                            pt_isz);
+        });
+        emit_bin(buf.data(), buf.size());
+    } else {
+        for (std::size_t r = 0; r < num_points; ++r)
+            for (std::size_t c = 0; c < 3; ++c)
+                vtu_ascii_double(os, (c < dim) ? read_double(points, r * dim + c) : 0.0);
+    }
+    os << "</DataArray>\n</Points>\n";
+
+    auto emit_section = [&](const char* tag, const VtpSectionData& rSec) {
+        if (rSec.mOffsets.empty())
+            return;
+        os << "<" << tag << ">\n";
+        emit_i64("connectivity", rSec.mConn);
+        emit_i64("offsets", rSec.mOffsets);
+        os << "</" << tag << ">\n";
+    };
+    emit_section("Verts", verts);
+    emit_section("Lines", lines);
+    emit_section("Polys", polys);
+
+    if (rMesh.NumPointData() != 0) {
+        os << "<PointData>\n";
+        for (const auto& name : rMesh.PointDataNames()) {
+            const NDArray& d = rMesh.PointData(name);
+            int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
+            da_header(vtu_type_str(d.Dtype()), name, ncomp);
+            if (binary)
+                emit_bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
+            else
+                vtu_ascii_ndarray(os, d);
+            os << "</DataArray>\n";
+        }
+        os << "</PointData>\n";
+    }
+
+    if (rMesh.NumCellData() != 0) {
+        // Cell data follows the reordered (Verts, Lines, Polys) block order.
+        os << "<CellData>\n";
+        for (const auto& name : rMesh.CellDataNames()) {
+            const std::size_t ndblocks = rMesh.CellDataNumBlocks(name);
+            if (ndblocks == 0)
+                continue;
+            const NDArray& first = rMesh.CellData(name, 0);
+            int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
+            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            if (binary) {
+                std::vector<unsigned char> buf;
+                for (std::size_t bi : block_order) {
+                    if (bi >= ndblocks)
+                        continue;
+                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
+                    buf.insert(buf.end(), p, p + blk.Nbytes());
+                }
+                emit_bin(buf.data(), buf.size());
+            } else {
+                for (std::size_t bi : block_order) {
+                    if (bi >= ndblocks)
+                        continue;
+                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+                }
+            }
+            os << "</DataArray>\n";
+        }
+        os << "</CellData>\n";
+    }
+
+    os << "</Piece>\n</PolyData>\n</VTKFile>\n";
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/formats/vtp.cpp =====
+// ===== begin cpp/src/formats/vtp_read.cpp =====
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::vtu_to_int64;
+
+// compression: 0 = none, 1 = zlib. lzma/appended raise (handled by caller).
+NDArray vtp_read_data_array(const pugi::xml_node& rDa, int compression, std::size_t hsz,
+                            int& rNumComponents) {
+    std::string fmt = rDa.attribute("format").as_string("ascii");
+    DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
+    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
+
+    if (fmt == "ascii")
+        return detail::vtu_parse_ascii(rDa.text().get(), dt);
+    if (fmt == "binary")
+        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, compression, hsz);
+    throw ReadError("VTP '" + fmt + "' data is not supported by the C++ reader");
+}
+
+// One PolyData section's connectivity + VTK end-offsets.
+struct VtpPiece {
+    std::vector<std::int64_t> mConn;
+    std::vector<std::int64_t> mOffsets;
+    bool mPresent = false;
+};
+
+VtpPiece vtp_read_section(const pugi::xml_node& rSection, int compression, std::size_t hsz) {
+    VtpPiece out;
+    if (!rSection)
+        return out;
+    out.mPresent = true;
+    for (pugi::xml_node da : rSection.children("DataArray")) {
+        std::string name = da.attribute("Name").as_string();
+        int nc = 0;
+        NDArray arr = vtp_read_data_array(da, compression, hsz, nc);
+        if (name == "connectivity")
+            out.mConn = vtu_to_int64(arr);
+        else if (name == "offsets")
+            out.mOffsets = vtu_to_int64(arr);
+    }
+    return out;
+}
+
+}  // namespace
+
+Mesh read_vtp(const std::string& rPath) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result res = doc.load_file(rPath.c_str());
+    if (!res)
+        throw ReadError(std::string("VTP XML parse failed: ") + res.description());
+
+    pugi::xml_node root = doc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile'");
+    if (std::string(root.attribute("type").as_string()) != "PolyData")
+        throw ReadError("Expected type PolyData");
+
+    int compression = 0;  // 0 none, 1 zlib
+    std::string compressor = root.attribute("compressor").as_string("");
+    if (compressor == "vtkZLibDataCompressor")
+        compression = 1;
+    else if (compressor == "vtkLZMADataCompressor")
+        throw ReadError("lzma-compressed VTP not supported by the C++ reader");
+    else if (!compressor.empty())
+        throw ReadError("Unknown VTP compressor '" + compressor + "'");
+
+    std::string header_type = root.attribute("header_type").as_string("UInt32");
+    std::size_t hsz = (header_type == "UInt64") ? 8 : 4;
+
+    pugi::xml_node grid = root.child("PolyData");
+    if (!grid)
+        throw ReadError("No PolyData found");
+
+    // Appended data is not handled here -> let the Python reader take over.
+    if (grid.parent().child("AppendedData") || root.child("AppendedData"))
+        throw ReadError("appended VTP data not supported by the C++ reader");
+
+    pugi::xml_node piece = grid.child("Piece");
+    if (!piece)
+        throw ReadError("No Piece found");
+    // A single piece is supported; multiple pieces -> Python reader.
+    if (piece.next_sibling("Piece"))
+        throw ReadError("multi-piece VTP not supported by the C++ reader");
+
+    std::size_t num_points =
+        static_cast<std::size_t>(piece.attribute("NumberOfPoints").as_ullong());
+
+    Mesh mesh;
+    std::unordered_map<std::string, NDArray> cell_data_raw;
+
+    for (pugi::xml_node child : piece.children()) {
+        std::string tag = child.name();
+        if (tag == "Points") {
+            pugi::xml_node da = child.child("DataArray");
+            int nc = 0;
+            NDArray pts = vtp_read_data_array(da, compression, hsz, nc);
+            if (nc <= 0)
+                nc = 3;
+            pts.Reshape({num_points, static_cast<std::size_t>(nc)});
+            mesh.AssignPoints(std::move(pts));
+        } else if (tag == "PointData") {
+            for (pugi::xml_node da : child.children("DataArray")) {
+                int nc = 0;
+                std::string name = da.attribute("Name").as_string();
+                NDArray arr = vtp_read_data_array(da, compression, hsz, nc);
+                if (nc > 1)
+                    arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+                mesh.AddPointData(name, std::move(arr));
+            }
+        } else if (tag == "CellData") {
+            for (pugi::xml_node da : child.children("DataArray")) {
+                int nc = 0;
+                std::string name = da.attribute("Name").as_string();
+                NDArray arr = vtp_read_data_array(da, compression, hsz, nc);
+                if (nc > 1)
+                    arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+                cell_data_raw.emplace(name, std::move(arr));
+            }
+        }
+    }
+
+    VtpPiece verts = vtp_read_section(piece.child("Verts"), compression, hsz);
+    VtpPiece lines = vtp_read_section(piece.child("Lines"), compression, hsz);
+    VtpPiece polys = vtp_read_section(piece.child("Polys"), compression, hsz);
+    VtpPiece strips = vtp_read_section(piece.child("Strips"), compression, hsz);
+    if (!strips.mOffsets.empty())
+        throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
+
+    // Concatenate sections in VTK's canonical PolyData cell order (Verts,
+    // Lines, Polys), synthesizing a VTK type id per row so the shared
+    // reconstruction (detail/vtk_cells.hpp) can build the blocks and split
+    // cell_data.
+    std::vector<std::int64_t> conn, offsets, types;
+    auto append_section = [&](const VtpPiece& rSec, int kind) {
+        const std::int64_t conn_base = static_cast<std::int64_t>(conn.size());
+        std::int64_t prev = 0;
+        for (std::int64_t end : rSec.mOffsets) {
+            const std::int64_t sz = end - prev;
+            prev = end;
+            std::int64_t vtk_type = 0;
+            if (kind == 0) {
+                if (sz != 1)
+                    throw ReadError("poly-vertex VTP cells not supported by the C++ reader");
+                vtk_type = 1;  // VTK_VERTEX
+            } else if (kind == 1) {
+                if (sz != 2)
+                    throw ReadError("poly-line VTP cells not supported by the C++ reader");
+                vtk_type = 3;  // VTK_LINE
+            } else {
+                vtk_type = sz == 3 ? 5 : sz == 4 ? 9 : 7;  // triangle / quad / polygon
+            }
+            types.push_back(vtk_type);
+            offsets.push_back(conn_base + end);
+        }
+        conn.insert(conn.end(), rSec.mConn.begin(), rSec.mConn.end());
+    };
+    append_section(verts, 0);
+    append_section(lines, 1);
+    append_section(polys, 2);
+
+    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
+    return mesh;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/formats/vtp_read.cpp =====
 // ===== begin cpp/src/formats/vtu.cpp =====
 #include <cstdint>
 #include <cstdio>
@@ -36348,52 +38523,11 @@ namespace meshioplusplus {
 namespace {
 
 using detail::cols;
-using detail::is_float_dtype;
 using detail::read_double;
 using detail::read_int;
-
-const char* vtu_type_str(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return "Float32";
-        case DType::Float64:
-            return "Float64";
-        case DType::Int8:
-            return "Int8";
-        case DType::Int16:
-            return "Int16";
-        case DType::Int32:
-            return "Int32";
-        case DType::Int64:
-            return "Int64";
-        case DType::UInt8:
-            return "UInt8";
-        case DType::UInt16:
-            return "UInt16";
-        case DType::UInt32:
-            return "UInt32";
-        case DType::UInt64:
-            return "UInt64";
-    }
-    return "Float64";
-}
-
-void vtu_ascii_double(std::ostream& rOs, double v) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.11e", v);
-    rOs << buf << '\n';
-}
-
-void ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
-    const bool flt = is_float_dtype(rA.Dtype());
-    const std::size_t n = rA.Size();
-    for (std::size_t i = 0; i < n; ++i) {
-        if (flt)
-            vtu_ascii_double(rOs, read_double(rA, i));
-        else
-            rOs << read_int(rA, i) << '\n';
-    }
-}
+using detail::vtu_ascii_double;
+using detail::vtu_ascii_ndarray;
+using detail::vtu_type_str;
 
 }  // namespace
 
@@ -36521,7 +38655,7 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
             if (binary)
                 emit_bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
             else
-                ascii_ndarray(os, d);
+                vtu_ascii_ndarray(os, d);
             os << "</DataArray>\n";
         }
         os << "</PointData>\n";
@@ -36546,7 +38680,7 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
                 emit_bin(buf.data(), buf.size());
             } else {
                 for (std::size_t bi = 0; bi < nblocks; ++bi)
-                    ascii_ndarray(os, rMesh.CellData(name, bi));
+                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
             }
             os << "</DataArray>\n";
         }
@@ -36575,140 +38709,20 @@ namespace meshioplusplus {
 
 namespace {
 
-DType dtype_from_vtu(const std::string& rS) {
-    if (rS == "Float32")
-        return DType::Float32;
-    if (rS == "Float64")
-        return DType::Float64;
-    if (rS == "Int8")
-        return DType::Int8;
-    if (rS == "Int16")
-        return DType::Int16;
-    if (rS == "Int32")
-        return DType::Int32;
-    if (rS == "Int64")
-        return DType::Int64;
-    if (rS == "UInt8")
-        return DType::UInt8;
-    if (rS == "UInt16")
-        return DType::UInt16;
-    if (rS == "UInt32")
-        return DType::UInt32;
-    if (rS == "UInt64")
-        return DType::UInt64;
-    throw ReadError("Illegal VTU data type '" + rS + "'");
-}
-
-void store(NDArray& rA, std::size_t i, double d, std::int64_t v, bool isflt) {
-    switch (rA.Dtype()) {
-        case DType::Float32:
-            rA.As<float>()[i] = static_cast<float>(d);
-            break;
-        case DType::Float64:
-            rA.As<double>()[i] = d;
-            break;
-        case DType::Int8:
-            rA.As<std::int8_t>()[i] = static_cast<std::int8_t>(v);
-            break;
-        case DType::Int16:
-            rA.As<std::int16_t>()[i] = static_cast<std::int16_t>(v);
-            break;
-        case DType::Int32:
-            rA.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
-            break;
-        case DType::Int64:
-            rA.As<std::int64_t>()[i] = v;
-            break;
-        case DType::UInt8:
-            rA.As<std::uint8_t>()[i] = static_cast<std::uint8_t>(v);
-            break;
-        case DType::UInt16:
-            rA.As<std::uint16_t>()[i] = static_cast<std::uint16_t>(v);
-            break;
-        case DType::UInt32:
-            rA.As<std::uint32_t>()[i] = static_cast<std::uint32_t>(v);
-            break;
-        case DType::UInt64:
-            rA.As<std::uint64_t>()[i] = static_cast<std::uint64_t>(v);
-            break;
-    }
-    (void)isflt;
-}
-
-NDArray parse_ascii(const char* pText, DType dt) {
-    const bool isflt = detail::is_float_dtype(dt);
-    std::vector<double> dv;
-    std::vector<std::int64_t> iv;
-    const char* p = pText ? pText : "";
-    while (*p) {
-        while (*p && std::isspace(static_cast<unsigned char>(*p)))
-            ++p;
-        if (!*p)
-            break;
-        char* endp = nullptr;
-        if (isflt) {
-            double x = std::strtod(p, &endp);
-            if (endp == p)
-                break;
-            dv.push_back(x);
-        } else {
-            long long x = std::strtoll(p, &endp, 10);
-            if (endp == p)
-                break;
-            iv.push_back(static_cast<std::int64_t>(x));
-        }
-        p = endp;
-    }
-    std::size_t n = isflt ? dv.size() : iv.size();
-    NDArray a(dt, {n});
-    for (std::size_t i = 0; i < n; ++i)
-        store(a, i, isflt ? dv[i] : 0.0, isflt ? 0 : iv[i], isflt);
-    return a;
-}
-
-std::string vtu_strip(const char* pS) {
-    std::string t = pS ? pS : "";
-    std::size_t b = 0, e = t.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(t[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(t[e - 1])))
-        --e;
-    return t.substr(b, e - b);
-}
-
-NDArray parse_binary(const std::string& rText, DType dt, int compression, std::size_t hsz) {
-    std::vector<unsigned char> bytes;
-    if (compression == 0)
-        bytes = detail::vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
-    else
-        bytes = detail::vtu_decode_zlib(rText.c_str(), rText.size(), hsz);
-    std::size_t isz = dtype_size(dt);
-    std::size_t n = isz ? bytes.size() / isz : 0;
-    NDArray a(dt, {n});
-    if (n)
-        std::memcpy(a.Data(), bytes.data(), n * isz);
-    return a;
-}
+using detail::vtu_to_int64;
 
 // compression: 0 = none, 1 = zlib. lzma/appended raise (handled by caller).
-NDArray read_data_array(const pugi::xml_node& rDa, int compression, std::size_t hsz,
-                        int& rNumComponents) {
+NDArray vtu_read_data_array(const pugi::xml_node& rDa, int compression, std::size_t hsz,
+                            int& rNumComponents) {
     std::string fmt = rDa.attribute("format").as_string("ascii");
-    DType dt = dtype_from_vtu(rDa.attribute("type").as_string());
+    DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
     rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
 
     if (fmt == "ascii")
-        return parse_ascii(rDa.text().get(), dt);
+        return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return parse_binary(vtu_strip(rDa.text().get()), dt, compression, hsz);
+        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, compression, hsz);
     throw ReadError("VTU '" + fmt + "' data is not supported by the C++ reader");
-}
-
-std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
-    std::vector<std::int64_t> v(rA.Size());
-    for (std::size_t i = 0; i < rA.Size(); ++i)
-        v[i] = detail::read_int(rA, i);
-    return v;
 }
 
 }  // namespace
@@ -36764,7 +38778,7 @@ Mesh read_vtu(const std::string& rPath) {
         if (tag == "Points") {
             pugi::xml_node da = child.child("DataArray");
             int nc = 0;
-            NDArray pts = read_data_array(da, compression, hsz, nc);
+            NDArray pts = vtu_read_data_array(da, compression, hsz, nc);
             if (nc <= 0)
                 nc = 3;
             pts.Reshape({num_points, static_cast<std::size_t>(nc)});
@@ -36773,7 +38787,7 @@ Mesh read_vtu(const std::string& rPath) {
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
                 std::string name = da.attribute("Name").as_string();
-                NDArray arr = read_data_array(da, compression, hsz, nc);
+                NDArray arr = vtu_read_data_array(da, compression, hsz, nc);
                 if (name == "connectivity")
                     conn = vtu_to_int64(arr);
                 else if (name == "offsets")
@@ -36787,7 +38801,7 @@ Mesh read_vtu(const std::string& rPath) {
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
                 std::string name = da.attribute("Name").as_string();
-                NDArray arr = read_data_array(da, compression, hsz, nc);
+                NDArray arr = vtu_read_data_array(da, compression, hsz, nc);
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
                 mesh.AddPointData(name, std::move(arr));
@@ -36796,7 +38810,7 @@ Mesh read_vtu(const std::string& rPath) {
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
                 std::string name = da.attribute("Name").as_string();
-                NDArray arr = read_data_array(da, compression, hsz, nc);
+                NDArray arr = vtu_read_data_array(da, compression, hsz, nc);
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
                 cell_data_raw.emplace(name, std::move(arr));
@@ -37545,6 +39559,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ansys", meshioplusplus::read_ansys},
         {"avsucd", meshioplusplus::read_avsucd},
         {"dolfin", meshioplusplus::read_dolfin},
+        {"ensight", meshioplusplus::read_ensight},
         {"flac3d", meshioplusplus::read_flac3d},
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
@@ -37565,9 +39580,11 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"su2", meshioplusplus::read_su2},
         {"tecplot", meshioplusplus::read_tecplot},
         {"tetgen", meshioplusplus::read_tetgen},
+        {"triangle", meshioplusplus::read_triangle},
         {"ugrid", meshioplusplus::read_ugrid},
         {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
         {"vtk", meshioplusplus::read_vtk},
+        {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"wkt", meshioplusplus::read_wkt},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -37608,6 +39625,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
         {"avsucd", meshioplusplus::write_avsucd},
         {"dolfin", meshioplusplus::write_dolfin},
+        {"ensight", [](const std::string& p,
+                       const Mesh& mm) { meshioplusplus::write_ensight(p, mm, /*binary=*/true); }},
         {"flac3d",
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_flac3d(p, mm, ".16e", /*binary=*/false);
@@ -37641,11 +39660,16 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"tikz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); }},
         {"tecplot", meshioplusplus::write_tecplot},
         {"tetgen", meshioplusplus::write_tetgen},
+        {"triangle", meshioplusplus::write_triangle},
         {"ugrid", meshioplusplus::write_ugrid},
         {"unv", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); }},
         {"vtk",
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
+         }},
+        {"vtp",
+         [](const std::string& p, const Mesh& mm) {
+             meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/true);
          }},
         {"vtu",
          [](const std::string& p, const Mesh& mm) {
@@ -37700,17 +39724,57 @@ const std::map<std::string, WriteFn>& registry_writers() {
 // rather than claiming the extension is unknown.
 const std::map<std::string, std::string>& registry_extension_defaults() {
     static const std::map<std::string, std::string> m = {
-        {".inp", "abaqus"},  {".avs", "avsucd"},  {".xml", "dolfin"},    {".f3grid", "flac3d"},
-        {".dex", "dex"},     {".ip", "ip"},       {".mff", "mff"},       {".pf3", "flux"},
-        {".mesh", "medit"},  {".mfm", "mfm"},     {".mphtxt", "mphtxt"}, {".bdf", "nastran"},
-        {".nas", "nastran"}, {".fem", "nastran"}, {".vol", "netgen"},    {".obj", "obj"},
-        {".off", "off"},     {".post", "permas"}, {".dato", "permas"},   {".ply", "ply"},
-        {".stl", "stl"},     {".su2", "su2"},     {".svg", "svg"},       {".tikz", "tikz"},
-        {".dat", "tecplot"}, {".tec", "tecplot"}, {".ele", "tetgen"},    {".node", "tetgen"},
-        {".ugrid", "ugrid"}, {".unv", "unv"},     {".vtk", "vtk"},       {".vtu", "vtu"},
-        {".wkt", "wkt"},     {".xdmf", "xdmf"},   {".xmf", "xdmf"},      {".msh", "gmsh"},
-        {".cgns", "cgns"},   {".h5m", "h5m"},     {".hmf", "hmf"},       {".med", "med"},
-        {".e", "exodus"},    {".exo", "exodus"},  {".ex2", "exodus"},
+        {".inp", "abaqus"},
+        {".avs", "avsucd"},
+        {".xml", "dolfin"},
+        {".f3grid", "flac3d"},
+        {".case", "ensight"},
+        {".geo", "ensight"},
+        {".dex", "dex"},
+        {".ip", "ip"},
+        {".mff", "mff"},
+        {".pf3", "flux"},
+        {".mesh", "medit"},
+        {".mfm", "mfm"},
+        {".mphtxt", "mphtxt"},
+        {".bdf", "nastran"},
+        {".nas", "nastran"},
+        {".fem", "nastran"},
+        {".vol", "netgen"},
+        {".obj", "obj"},
+        {".off", "off"},
+        {".post", "permas"},
+        {".dato", "permas"},
+        {".ply", "ply"},
+        {".stl", "stl"},
+        {".su2", "su2"},
+        {".svg", "svg"},
+        {".tikz", "tikz"},
+        // .node/.ele stay with tetgen for backward compatibility (3D pairs
+        // are the common case for the flat bindings); reading Triangle 2D
+        // .node/.ele files there needs an explicit format="triangle". Only
+        // .poly defaults to triangle.
+        {".dat", "tecplot"},
+        {".tec", "tecplot"},
+        {".ele", "tetgen"},
+        {".node", "tetgen"},
+        {".poly", "triangle"},
+        {".ugrid", "ugrid"},
+        {".unv", "unv"},
+        {".vtk", "vtk"},
+        {".vtp", "vtp"},
+        {".vtu", "vtu"},
+        {".wkt", "wkt"},
+        {".xdmf", "xdmf"},
+        {".xmf", "xdmf"},
+        {".msh", "gmsh"},
+        {".cgns", "cgns"},
+        {".h5m", "h5m"},
+        {".hmf", "hmf"},
+        {".med", "med"},
+        {".e", "exodus"},
+        {".exo", "exodus"},
+        {".ex2", "exodus"},
     };
     return m;
 }
