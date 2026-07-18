@@ -65,7 +65,11 @@ def test_lzma_roundtrip(tmp_path):
         meshioplusplus.vtp.write(filename, mesh, binary=True, compression="lzma")
 
     helpers.write_read(
-        tmp_path, writer, meshioplusplus.vtp.read, helpers.tri_mesh, 1.0e-15,
+        tmp_path,
+        writer,
+        meshioplusplus.vtp.read,
+        helpers.tri_mesh,
+        1.0e-15,
         extension=".vtp",
     )
 

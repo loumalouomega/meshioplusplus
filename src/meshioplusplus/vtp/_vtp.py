@@ -246,7 +246,9 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         if ncomp > 0:
             out.append(f' NumberOfComponents="{ncomp}"')
         out.append(f' format="{"binary" if binary else "ascii"}">\n')
-        flat = np.ascontiguousarray(data).astype(data.dtype.newbyteorder("="), copy=False)
+        flat = np.ascontiguousarray(data).astype(
+            data.dtype.newbyteorder("="), copy=False
+        )
         if binary:
             data_bytes = flat.tobytes()
             if compression:

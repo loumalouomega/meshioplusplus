@@ -213,7 +213,9 @@ def _write_node_ele(stem, mesh):
         raise WriteError("Triangle: cannot mix triangle and triangle6 blocks")
     skipped = {c.type for c in mesh.cells} - tri_types
     if skipped:
-        warn(f"Triangle only supports triangles; skipping {', '.join(sorted(skipped))}.")
+        warn(
+            f"Triangle only supports triangles; skipping {', '.join(sorted(skipped))}."
+        )
 
     cell_attr_keys = sorted(mesh.cell_data.keys())
     ref = next((k for k in cell_attr_keys if ":ref" in k), None)
@@ -247,9 +249,7 @@ def _write_poly(filename, mesh):
         fh.write(f"{len(mesh.points)} 2 {len(attr_keys)} {len(ref_keys)}\n")
         _write_node_rows(fh, mesh, attr_keys, ref_keys)
 
-        line_blocks = [
-            (ci, c) for ci, c in enumerate(mesh.cells) if c.type == "line"
-        ]
+        line_blocks = [(ci, c) for ci, c in enumerate(mesh.cells) if c.type == "line"]
         fh.write(
             f"{sum(len(c) for _, c in line_blocks)} {0 if seg_ref is None else 1}\n"
         )
@@ -274,4 +274,6 @@ def write(filename, mesh):
     elif filename.suffix == ".poly":
         _write_poly(filename, mesh)
     else:
-        raise WriteError(f"Triangle: must specify a .node, .ele, or .poly file. Got {filename}.")
+        raise WriteError(
+            f"Triangle: must specify a .node, .ele, or .poly file. Got {filename}."
+        )
