@@ -390,7 +390,18 @@ def _read_binary_list(buffer, count_dtype, data_dtype, num_cells, endianness):
     return byte_starts_ends[-1], blocks
 
 
-def write(filename, mesh: Mesh, binary: bool = True):  # noqa: C901
+def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa: C901
+    from .._skin import _extract_skin_py, _has_skinnable_cells, _is_volume_type
+
+    if skin and _has_skinnable_cells(mesh):
+        dropped = sum(1 for block in mesh.cells if not _is_volume_type(block.type))
+        if dropped > 0:
+            warn(
+                "PLY: writing the extracted skin of the volume cells; "
+                f"{dropped} pre-existing non-volume cell block(s) dropped "
+                "(pass skin=False for the legacy behavior)."
+            )
+        mesh = _extract_skin_py(mesh, linearize=True)
 
     with open_file(filename, "wb") as fh:
         fh.write(b"ply\n")

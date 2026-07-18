@@ -56,6 +56,7 @@ from ._helpers import (
     write_points_cells,
 )
 from ._mesh import CellBlock, Mesh, topological_dimension
+from ._skin import extract_skin
 
 __all__ = [
     "abaqus",
@@ -109,6 +110,7 @@ __all__ = [
     "deregister_format",
     "write_points_cells",
     "extension_to_filetypes",
+    "extract_skin",
     "Mesh",
     "CellBlock",
     "ReadError",
