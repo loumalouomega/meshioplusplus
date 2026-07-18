@@ -72,7 +72,7 @@ Some extensions are shared by more than one format. `readMesh`/`writeMesh`/ `con
 ## Known v1 limitations
 
 - **No zero-copy.** Every array is copied once crossing the JS/WASM boundary (see above) — for very large meshes this has a real memory/time cost that the Python bindings' numpy views avoid.
-- **No per-format write options.** Parameterized writers (binary vs ASCII, float format strings, gzip levels, VTK 4.2 vs 5.1) use a fixed default matching that format's own Python reference default (e.g. `vtu` writes binary+zlib, `stl` writes ASCII, `gmsh` writes the 4.1 binary format). Per-call overrides may be added in a future release.
+- **No per-format write options.** Parameterized writers (binary vs ASCII, float format strings, gzip levels, VTK 4.2 vs 5.1) use a fixed default matching that format's own Python reference default (e.g. `vtu` writes binary+zlib, `stl` writes ASCII, `gmsh` writes the 4.1 binary format; `stl`/`ply` extract and write the boundary **skin** of a 3D volume mesh — the Python default, see [Skin extraction](./extract_skin.md) — and `svg`/`tikz` render 3D meshes with the default isometric camera). Per-call overrides may be added in a future release. The standalone `extractSkin` utility is not exposed to JS yet (documented follow-up).
 - **Side-channel data isn't exposed.** `ansysInp`'s `point_sets`/`cell_sets` and `openfoam`'s cell-tag family names (both carried through a C++ side-channel struct alongside the `Mesh`, mirroring the Python bindings' `AnsysInfo`/`OpenFoamInfo`) are not yet surfaced to JS — reading/writing the mesh geometry and data itself works, but these format-specific extras are dropped for now.
 
 ## Building from source

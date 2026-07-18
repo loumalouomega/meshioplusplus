@@ -63,9 +63,11 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `vtp`:** VTK XML PolyData holds surface cells only (`vertex`/`line`/`triangle`/`quad`/`polygon`); volume or quadratic cells raise `WriteError`. PolyData has no cell-type array, so 3-/4-noded `polygon` cells read back as `triangle`/`quad`. Triangle strips are not supported.
 
-**Note on `svg`:** Write-only, 2D meshes only. C++ core with a Python fallback.
+**Note on `stl` / `ply` and volume meshes:** both writers extract and write the boundary **skin** of a 3D volume mesh by default (`skin=True` — see [Skin extraction](./extract_skin.md); STL additionally triangulates quads, PLY compacts the vertex table). Pass `skin=False` for the legacy behavior (volume cells dropped with a warning).
 
-**Note on `tikz`:** Write-only, 2D meshes only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). C++ core (byte-identical to the Python reference) with a Python fallback.
+**Note on `svg`:** Write-only. Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin (see [Skin extraction](./extract_skin.md)) through an orthographic camera (`azimuth`/`elevation`/`roll`, default the CAD isometric view) with painter's-algorithm depth ordering. C++ core with a Python fallback.
+
+**Note on `tikz`:** Write-only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
 
 **Note on `openfoam`:** Read-only; a directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file.
 

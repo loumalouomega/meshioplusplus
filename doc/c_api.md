@@ -112,9 +112,9 @@ Every function is documented in the installed header, [`bindings_c/include/meshi
 
 ## Format support
 
-All formats with a C++ implementation are available — the same set as the [WASM binding](/wasm#format-support) **plus**, when the build found the dependencies, the HDF5-backed formats (`cgns`, `h5m`, `hmf`, `med`, XDMF's HDF heavy-data path) and the netCDF-backed `exodus`. This includes the write-only 2D-visualization formats `svg` and `tikz` (writable, not readable; emitted with the fixed default styling). Probe at runtime with `mio_format_readable()`/`mio_format_writable()`; requesting a compiled-out format fails with a message naming the missing dependency. Formats that only exist in Python (`mdpa`, `neuroglancer`, …) are not reachable from C.
+All formats with a C++ implementation are available — the same set as the [WASM binding](/wasm#format-support) **plus**, when the build found the dependencies, the HDF5-backed formats (`cgns`, `h5m`, `hmf`, `med`, XDMF's HDF heavy-data path) and the netCDF-backed `exodus`. This includes the write-only visualization formats `svg` and `tikz` (writable, not readable; emitted with the fixed default styling — 3D meshes render their projected boundary skin with the default isometric camera). Probe at runtime with `mio_format_readable()`/`mio_format_writable()`; requesting a compiled-out format fails with a message naming the missing dependency. Formats that only exist in Python (`mdpa`, `neuroglancer`, …) are not reachable from C.
 
-Parameterized writers use each format's Python-reference default (VTU: binary+zlib, gmsh: 4.1 binary, STL: ASCII, XDMF: HDF when built with HDF5 else XML, …); per-call writer options are a possible future addition.
+Parameterized writers use each format's Python-reference default (VTU: binary+zlib, gmsh: 4.1 binary, STL: ASCII, XDMF: HDF when built with HDF5 else XML, …). In particular `stl`/`ply` extract and write the boundary **skin** of a 3D volume mesh, matching the Python default (see [Skin extraction](/extract_skin)); a standalone skin-extraction entry point is not part of the C API yet (documented follow-up). Per-call writer options are a possible future addition.
 
 ## Limitations (v1)
 
