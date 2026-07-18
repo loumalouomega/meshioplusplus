@@ -61,3 +61,36 @@ TEST(Stl, GeometryPreserved) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+
+TEST(Stl, SkinTetMesh) {
+    // Default skin=true: a tetra mesh writes its boundary skin (6 triangles).
+    std::string path = mt::temp_path("_skin.stl");
+    meshioplusplus::write_stl(path, mt::tet_mesh(), /*binary=*/false);
+    mt::Mesh out = meshioplusplus::read_stl(path);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(out.Cells(0).Type(), "triangle");
+    EXPECT_EQ(out.Cells(0).NumCells(), 6u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Stl, SkinHexMeshTriangulatesQuads) {
+    // A hexahedron's skin is 6 quads -> 12 triangles after triangulation.
+    std::string path = mt::temp_path("_skin_hex.stl");
+    meshioplusplus::write_stl(path, mt::hex_mesh(), /*binary=*/true);
+    mt::Mesh out = meshioplusplus::read_stl(path);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(out.Cells(0).NumCells(), 12u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Stl, SkinFalseLegacyDropsVolumeCells) {
+    // skin=false keeps the legacy behavior: no triangle cells -> empty STL.
+    std::string path = mt::temp_path("_legacy.stl");
+    meshioplusplus::write_stl(path, mt::tet_mesh(), /*binary=*/false, /*skin=*/false);
+    mt::Mesh out = meshioplusplus::read_stl(path);
+    EXPECT_EQ(out.NumCellBlocks(), 0u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
