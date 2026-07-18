@@ -62,7 +62,9 @@ def make_social_preview() -> Image.Image:
     art = render_pdf_page(os.path.join(HERE, "logo.pdf"), target_width)
     if art.height > SOCIAL_PREVIEW_SIZE[1] * 0.8:
         scale = (SOCIAL_PREVIEW_SIZE[1] * 0.8) / art.height
-        art = art.resize((int(art.width * scale), int(art.height * scale)), Image.LANCZOS)
+        art = art.resize(
+            (int(art.width * scale), int(art.height * scale)), Image.LANCZOS
+        )
     paste_centered(canvas, art)
     return canvas.convert("RGB")
 
@@ -73,9 +75,7 @@ def main() -> None:
     square.save(square_path)
     print(f"wrote {square_path}: {square.size}")
 
-    favicon_frames = [
-        square.resize((s, s), Image.LANCZOS) for s in FAVICON_SIZES
-    ]
+    favicon_frames = [square.resize((s, s), Image.LANCZOS) for s in FAVICON_SIZES]
     favicon_path = os.path.join(DOC_PUBLIC, "favicon.ico")
     favicon_frames[-1].save(
         favicon_path, format="ICO", sizes=[(s, s) for s in FAVICON_SIZES]

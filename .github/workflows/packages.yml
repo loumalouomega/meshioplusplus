@@ -85,15 +85,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate manifest JSON
-        run: python -c "import json,sys; json.load(open('ports/meshioplusplus/vcpkg.json')); print('vcpkg.json OK')"
+        run: |
+          python -c "import json,sys; json.load(open('ports/meshioplusplus/vcpkg.json')); print('meshioplusplus/vcpkg.json OK')"
+          python -c "import json,sys; json.load(open('ports/libaec/vcpkg.json')); print('libaec/vcpkg.json OK')"
       - name: format-manifest (schema check)
-        # Validates the manifest against vcpkg's schema. It also canonicalizes
+        # Validates the manifests against vcpkg's schema. It also canonicalizes
         # field order in place; if that changes anything, print the diff as a
         # hint but don't fail the job (run `vcpkg format-manifest` and commit).
+        # ports/libaec is our own overlay of vcpkg registry's libaec port (see
+        # its portfile.cmake) -- it sources from a GitHub mirror instead of the
+        # gitlab.dkrz.de host that had been intermittently rate-limiting this
+        # workflow's vcpkg-build job.
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" format-manifest ports/meshioplusplus/vcpkg.json
-          git diff --exit-code ports/meshioplusplus/vcpkg.json \
-            || echo "::warning::run 'vcpkg format-manifest ports/meshioplusplus/vcpkg.json' and commit the canonical form"
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" format-manifest ports/meshioplusplus/vcpkg.json ports/libaec/vcpkg.json
+          git diff --exit-code ports/meshioplusplus/vcpkg.json ports/libaec/vcpkg.json \
+            || echo "::warning::run 'vcpkg format-manifest ports/meshioplusplus/vcpkg.json ports/libaec/vcpkg.json' and commit the canonical form"
 
   vcpkg-build:
     name: vcpkg install (overlay)
