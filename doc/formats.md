@@ -40,6 +40,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — |
 | [`tecplot`](./formats/tecplot.md) | `.dat`, `.tec` | ✓ | ✓ | — |
 | [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — |
+| [`tikz`](./formats/tikz.md) | `.tikz` | — | ✓ | — |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — |
 | [`unv`](./formats/unv.md) | `.unv` | ✓ | ✓ | — |
 | [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
@@ -53,7 +54,9 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `tetgen`:** The format spans two files (`.node` + `.ele`). It cannot be read from or written to a buffer.
 
-**Note on `svg`:** Write-only, 2D meshes only.
+**Note on `svg`:** Write-only, 2D meshes only. C++ core with a Python fallback.
+
+**Note on `tikz`:** Write-only, 2D meshes only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). C++ core (byte-identical to the Python reference) with a Python fallback.
 
 **Note on `openfoam`:** Read-only; a directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file.
 

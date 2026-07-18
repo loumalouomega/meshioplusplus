@@ -94,6 +94,7 @@ export default defineConfig({
           { text: "svg", link: "/formats/svg" },
           { text: "tecplot", link: "/formats/tecplot" },
           { text: "tetgen", link: "/formats/tetgen" },
+          { text: "tikz", link: "/formats/tikz" },
           { text: "ugrid", link: "/formats/ugrid" },
           { text: "unv", link: "/formats/unv" },
           { text: "vtk", link: "/formats/vtk" },
