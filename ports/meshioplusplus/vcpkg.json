@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "6.5.0",
+  "version": "6.6.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
@@ -24,7 +24,13 @@
     "hdf5": {
       "description": "HDF5-backed formats (CGNS, HMF, H5M, MED, XDMF-HDF)",
       "dependencies": [
-        "hdf5"
+        {
+          "name": "hdf5",
+          "default-features": false,
+          "features": [
+            "zlib"
+          ]
+        }
       ]
     },
     "netcdf": {

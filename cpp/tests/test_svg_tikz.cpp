@@ -146,11 +146,40 @@ TEST(Svg, SkipsUnsupportedCellTypes) {
     std::filesystem::remove(path, ec);
 }
 
-TEST(Svg, NonFlatMeshThrows) {
+TEST(Svg, NonFlatShellMeshIsProjected) {
+    // A non-flat 3-D surface mesh (no volume cells) is projected with the
+    // default isometric camera and drawn as-is: 1 path for the 1 triangle.
     std::string path = mt::temp_path(".svg");
-    EXPECT_THROW(meshioplusplus::write_svg(path, non_flat_mesh()), meshioplusplus::WriteError);
+    meshioplusplus::write_svg(path, non_flat_mesh());
+    EXPECT_EQ(count_occurrences(slurp(path), "<path "), 1u);
     std::error_code ec;
     std::filesystem::remove(path, ec);
+}
+
+TEST(Svg, VolumeMeshDrawsSkin) {
+    // A tetra mesh renders its extracted skin: 6 boundary triangles.
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, mt::tet_mesh());
+    EXPECT_EQ(count_occurrences(slurp(path), "<path "), 6u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Svg, CameraAnglesChangeProjection) {
+    // A different camera azimuth must actually change the projected output.
+    std::string p1 = mt::temp_path(".svg");
+    std::string p2 = mt::temp_path(".svg");
+    meshioplusplus::write_svg(p1, mt::hex_mesh());
+    meshioplusplus::write_svg(p2, mt::hex_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+                              /*azimuth=*/10.0, /*elevation=*/60.0);
+    const std::string a = slurp(p1);
+    const std::string b = slurp(p2);
+    EXPECT_EQ(count_occurrences(a, "<path "), 6u);
+    EXPECT_EQ(count_occurrences(b, "<path "), 6u);
+    EXPECT_NE(a, b);
+    std::error_code ec;
+    std::filesystem::remove(p1, ec);
+    std::filesystem::remove(p2, ec);
 }
 
 // --------------------------------------------------------------- TikZ --------
@@ -223,9 +252,24 @@ TEST(Tikz, EmptyMeshHasNoDraws) {
     std::filesystem::remove(path, ec);
 }
 
-TEST(Tikz, NonFlatMeshThrows) {
+TEST(Tikz, NonFlatShellMeshIsProjected) {
+    // A non-flat 3-D surface mesh is projected and drawn as-is.
     std::string path = mt::temp_path(".tikz");
-    EXPECT_THROW(meshioplusplus::write_tikz(path, non_flat_mesh()), meshioplusplus::WriteError);
+    meshioplusplus::write_tikz(path, non_flat_mesh());
+    std::string out = slurp(path);
+    EXPECT_NE(out.find("\\documentclass{standalone}"), std::string::npos);
+    EXPECT_EQ(count_occurrences(out, "\\draw"), 1u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Tikz, VolumeMeshDrawsSkin) {
+    // A hexahedron renders its skin: 6 filled quads, drawn back-to-front.
+    std::string path = mt::temp_path(".tikz");
+    meshioplusplus::write_tikz(path, mt::hex_mesh());
+    std::string out = slurp(path);
+    EXPECT_EQ(count_occurrences(out, "\\draw"), 6u);
+    EXPECT_EQ(count_occurrences(out, "-- cycle;"), 6u);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

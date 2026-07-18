@@ -28,3 +28,10 @@ matplotlib surface plot.
 
 `example.stp` / `example.stp.geo` / `example.stp.mesh.json` are the CAD source
 and meshing options `example.msh` was generated from.
+
+`Bunny.stl` is ["Stanford Bunny -- Digitized!"](https://www.thingiverse.com/thing:88208)
+by MakerBot, licensed under the
+[Creative Commons - Attribution](https://creativecommons.org/licenses/by/3.0/)
+license (~112k triangles, binary STL). It feeds the project logo
+(`logo/gen_logo_tikz.py` renders it through meshio++'s 3D TikZ path) and makes
+a handy real-world surface mesh for trying the STL/PLY/SVG/TikZ writers.

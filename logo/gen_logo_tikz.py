@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Generate the TikZ mesh-icon for the meshio++ logo.
+"""Generate the TikZ mesh-icon for the meshio++ logo: the Stanford Bunny.
 
-Builds a *real* triangulation of an organic "FE surface blob", colours every
-triangle with a smooth blue->teal gradient (a faux finite-element field), and
-emits it as TikZ ``\\fill``/``\\draw`` commands into ``_mesh_icon.tex`` (which
-``logo.tex`` and ``logo-icon.tex`` ``\\input``).
+Reads ``example/Bunny.stl`` ("Stanford Bunny -- Digitized!" by MakerBot,
+CC-BY, https://www.thingiverse.com/thing:88208) with meshio++ itself,
+decimates it to a logo-friendly triangle count with PyVista, projects it
+through meshio++'s own 3D rendering machinery (`meshioplusplus._projection`
+-- the orthographic isometric camera + painter's-algorithm depth sort that
+powers the SVG/TikZ writers for 3D meshes), and emits the faces as TikZ
+``\\draw[fill=...]`` commands into ``_mesh_icon.tex`` (which ``logo.tex``
+and ``logo-icon.tex`` ``\\input``). Every face is coloured with the same
+blue->teal gradient as the previous "FE blob" logo (a faux finite-element
+field over the bunny), with white mesh edges.
 
-Deterministic: the point sampling is seeded, so re-running reproduces the same
-logo byte-for-byte. Requires only numpy + matplotlib (matplotlib.tri for the
-Delaunay triangulation and masking; no scipy).
+Deterministic: quadric decimation and the projection carry no randomness,
+so re-running reproduces the same logo byte-for-byte. Requires meshio++
+(this repo's venv) + numpy + pyvista.
 
 Run from anywhere::
 
@@ -20,116 +26,87 @@ then compile with ``build.sh``.
 from __future__ import annotations
 
 import os
+import tempfile
 
 import numpy as np
-from matplotlib.tri import Triangulation
+import pyvista as pv
+
+import meshioplusplus
+from meshioplusplus._projection import ISO_AZIMUTH, ISO_ELEVATION, project_surface
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+BUNNY = os.path.join(HERE, "..", "example", "Bunny.stl")
 OUT = os.path.join(HERE, "_mesh_icon.tex")
 
-# Palette (RGB 0-255): deep blue -> bright teal.
+# Palette (RGB 0-255): deep blue -> bright teal, as before.
 BLUE = np.array([31, 78, 121], dtype=float)
 TEAL = np.array([46, 196, 182], dtype=float)
-EDGE = np.array([255, 255, 255], dtype=float)  # triangle edge colour (white)
+EDGE = "white"
+EDGE_WIDTH = "0.25pt"
 
-SEED = 20260714
+TARGET_FACES = 900  # logo-friendly decimation target
 ICON_SIZE = 2.5  # cm, bounding box of the icon
 
 
-def blob_radius(theta: np.ndarray) -> np.ndarray:
-    """Smooth organic closed outline r(theta) (mean radius 1)."""
-    return (
-        1.0
-        + 0.16 * np.sin(3.0 * theta + 0.4)
-        + 0.10 * np.cos(5.0 * theta + 1.1)
-        - 0.06 * np.sin(2.0 * theta)
-    )
+def load_decimated_bunny() -> meshioplusplus.Mesh:
+    """The bunny as a meshio++ triangle mesh, decimated to ~TARGET_FACES."""
+    mesh = meshioplusplus.read(BUNNY)
+    conn = mesh.get_cells_type("triangle").astype(np.int64)
+    faces = np.hstack([np.full((len(conn), 1), 3, dtype=np.int64), conn]).ravel()
+    poly = pv.PolyData(np.asarray(mesh.points, dtype=float), faces)
+    dec = poly.decimate(1.0 - TARGET_FACES / len(conn))
+    dec_conn = dec.faces.reshape(-1, 4)[:, 1:]
+    return meshioplusplus.Mesh(np.asarray(dec.points), [("triangle", dec_conn)])
 
 
-def inside(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Boolean mask: points (x, y) within the blob outline."""
-    theta = np.arctan2(y, x)
-    r = np.hypot(x, y)
-    return r <= blob_radius(theta)
-
-
-def build_triangulation():
-    rng = np.random.default_rng(SEED)
-
-    # Interior: a jittered hex-ish grid, kept where inside the blob.
-    n = 15
-    gx, gy = np.meshgrid(np.linspace(-1.25, 1.25, n), np.linspace(-1.25, 1.25, n))
-    gx = gx + 0.06 * rng.standard_normal(gx.shape)
-    gy = gy + 0.06 * rng.standard_normal(gy.shape)
-    gx, gy = gx.ravel(), gy.ravel()
-    keep = inside(gx, gy)
-    ix, iy = gx[keep], gy[keep]
-
-    # Boundary ring: dense samples exactly on the outline for a clean edge.
-    tb = np.linspace(0, 2 * np.pi, 90, endpoint=False)
-    rb = blob_radius(tb)
-    bx, by = rb * np.cos(tb), rb * np.sin(tb)
-
-    x = np.concatenate([ix, bx])
-    y = np.concatenate([iy, by])
-
-    tri = Triangulation(x, y)
-    # Mask triangles whose centroid falls outside the blob (concave regions).
-    cx = x[tri.triangles].mean(axis=1)
-    cy = y[tri.triangles].mean(axis=1)
-    tri.set_mask(~inside(cx, cy))
-    return tri, x, y
-
-
-def to_icon_coords(x: np.ndarray, y: np.ndarray):
-    """Map blob coords into a centred [0, ICON_SIZE]^2 box (y up)."""
-    span = 2.0 * 1.32  # blob roughly spans [-1.32, 1.32]
-    scale = ICON_SIZE / span
-    return (x * scale + ICON_SIZE / 2.0), (y * scale + ICON_SIZE / 2.0)
-
-
-def tri_colour(cy_norm: float) -> tuple[int, int, int]:
-    """Interpolate blue->teal by normalised centroid height."""
-    c = BLUE + (TEAL - BLUE) * cy_norm
+def tri_colour(height_norm: float) -> tuple[int, int, int]:
+    """Interpolate blue->teal by normalised projected height."""
+    c = BLUE + (TEAL - BLUE) * height_norm
     return tuple(int(round(v)) for v in c)
 
 
 def main() -> None:
-    tri, x, y = build_triangulation()
-    px, py = to_icon_coords(x, y)
+    bunny = load_decimated_bunny()
 
-    tris = tri.triangles
-    mask = tri.mask if tri.mask is not None else np.zeros(len(tris), dtype=bool)
+    # Smoke-check the real writer path once: the TikZ writer must accept the
+    # 3D bunny directly (it uses the same projection machinery as below).
+    with tempfile.TemporaryDirectory() as tmp:
+        meshioplusplus.tikz.write(os.path.join(tmp, "bunny.tikz"), bunny)
 
-    cy = y[tri.triangles].mean(axis=1)
-    lo, hi = cy.min(), cy.max()
+    # Project with the CAD-isometric camera, rotated 180 degrees about the
+    # z axis so the bunny faces left, and paint back-to-front.
+    x, y, faces = project_surface(bunny, ISO_AZIMUTH + 180.0, ISO_ELEVATION, 0.0)
+
+    # Fit into a centred [0, ICON_SIZE]^2 box, preserving the aspect ratio.
+    min_x, max_x = float(np.min(x)), float(np.max(x))
+    min_y, max_y = float(np.min(y)), float(np.max(y))
+    span = max(max_x - min_x, max_y - min_y)
+    scale = ICON_SIZE / span
+    px = (x - (min_x + max_x) / 2.0) * scale + ICON_SIZE / 2.0
+    py = (y - (min_y + max_y) / 2.0) * scale + ICON_SIZE / 2.0
 
     lines = [
         "% Auto-generated by gen_logo_tikz.py -- do not edit by hand.",
-        "% Triangulated 'FE blob' icon for the meshio++ logo.",
+        "% Stanford Bunny ('Stanford Bunny -- Digitized!' by MakerBot, CC-BY,",
+        "% thingiverse.com/thing:88208), decimated and rendered through",
+        "% meshio++'s own 3D skin projection (isometric camera, painter's",
+        "% algorithm), coloured with a blue->teal faux-FE field.",
         "\\begin{scope}",
     ]
-    # Filled triangles first (so white edges draw on top).
-    for k, t in enumerate(tris):
-        if mask[k]:
-            continue
-        cyn = float((cy[k] - lo) / (hi - lo)) if hi > lo else 0.5
-        r, g, b = tri_colour(cyn)
-        p = [(px[i], py[i]) for i in t]
-        coords = " -- ".join(f"({vx:.4f},{vy:.4f})" for vx, vy in p)
+
+    # Screen-space height of each face centroid drives the colour ramp.
+    heights = np.array([py[nodes].mean() for nodes, _ in faces])
+    lo, hi = float(heights.min()), float(heights.max())
+
+    # One fill+stroke per face, in back-to-front order (nearer faces cover
+    # the hidden edges of farther ones).
+    for (nodes, _), h in zip(faces, heights):
+        hn = (h - lo) / (hi - lo) if hi > lo else 0.5
+        r, g, b = tri_colour(float(hn))
+        coords = " -- ".join(f"({px[i]:.4f},{py[i]:.4f})" for i in nodes)
         lines.append(
-            f"  \\fill[fill={{rgb,255:red,{r};green,{g};blue,{b}}}] {coords} -- cycle;"
-        )
-    # White edges on top for the mesh look.
-    er, eg, eb = (int(v) for v in EDGE)
-    for k, t in enumerate(tris):
-        if mask[k]:
-            continue
-        p = [(px[i], py[i]) for i in t]
-        coords = " -- ".join(f"({vx:.4f},{vy:.4f})" for vx, vy in p)
-        lines.append(
-            f"  \\draw[line width=0.35pt,draw={{rgb,255:red,{er};green,{eg};blue,{eb}}}]"
-            f" {coords} -- cycle;"
+            f"  \\draw[line width={EDGE_WIDTH},draw={EDGE},"
+            f"fill={{rgb,255:red,{r};green,{g};blue,{b}}}] {coords} -- cycle;"
         )
     lines.append("\\end{scope}")
     lines.append("")
@@ -137,8 +114,7 @@ def main() -> None:
     with open(OUT, "w") as fh:
         fh.write("\n".join(lines))
 
-    n_tri = int((~mask).sum())
-    print(f"wrote {OUT}: {n_tri} triangles, {len(x)} vertices")
+    print(f"wrote {OUT}: {len(faces)} triangles, {len(px)} vertices")
 
 
 if __name__ == "__main__":

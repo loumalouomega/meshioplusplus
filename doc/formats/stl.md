@@ -16,9 +16,15 @@ import meshioplusplus
 
 mesh = meshioplusplus.read("part.stl")
 meshioplusplus.stl.write("out.stl", mesh, binary=False)
+
+# A 3D volume mesh (tetra/hexa/wedge/pyramid) writes its boundary skin:
+vol = meshioplusplus.read("part.msh")
+meshioplusplus.stl.write("skin.stl", vol)              # skin extraction (default)
+meshioplusplus.stl.write("legacy.stl", vol, skin=False)  # legacy: drop volume cells
 ```
 
 - **`binary`** — binary (`True`) or ASCII (`False`, the default — unlike most binary-capable formats in meshio++, which default to `True`).
+- **`skin`** — when `True` (the default) and the mesh contains supported 3D volume cells (tetra, hexahedron, wedge, pyramid and their common higher-order variants), the boundary skin is extracted first (see [`extract_skin`](../extract_skin.md)), quads are triangulated as `(0,1,2)`/`(0,2,3)`, and only that skin is written. Any pre-existing surface blocks are dropped with a warning (a volume mesh's surface blocks are usually its boundary — writing both would duplicate every facet). `skin=False` restores the legacy behavior: volume cells are discarded and only existing `triangle` blocks are written.
 
 ## File structure
 
@@ -42,7 +48,7 @@ endsolid
 
 ## Cell types
 
-`triangle` only.
+`triangle` only on disk. On write, 3D volume cells (tetra, hexahedron, wedge, pyramid, tetra10, hexahedron20/27, wedge15, pyramid13/14) are accepted via the default skin extraction (linearized to corner nodes, quads triangulated).
 
 ## Data mapping
 
@@ -53,7 +59,7 @@ endsolid
 - **Vertex de-duplication**: all raw (possibly duplicate) triangle vertices are uniquified in **first-occurrence order** to build a shared point table — meaning point *indices* are not preserved across a round-trip, only the geometry.
 - **dtype**: ASCII coordinates parse as `float64`; binary coordinates parse as `float32` (matching the on-disk format) — this dtype difference is intentional, not a bug.
 - **Empty STL**: a file with zero triangles produces a `Mesh` with **no** cell blocks at all, not an empty `"triangle"` block.
-- Mixed cell types on write: a warning names the discarded types, and only triangles are written.
+- Mixed cell types on write with `skin=False` (or no volume cells): a warning names the discarded types, and only triangles are written. With `skin=True` and volume cells present, only the extracted skin is written and pre-existing surface blocks are dropped with a warning.
 - ASCII parsing uses a fast custom line reader that only looks at the last 3 whitespace-separated tokens per line (discarding any leading keyword like `vertex`), for performance over `np.loadtxt`.
 
 ## Notes

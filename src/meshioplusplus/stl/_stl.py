@@ -181,7 +181,35 @@ def _read_binary(f, num_triangles: int):
     return Mesh(points, cells)
 
 
-def write(filename, mesh, binary=False):
+def _skin_triangles(mesh):
+    """The linearized boundary skin of a volume mesh, quads triangulated."""
+    from .._skin import _extract_skin_py
+
+    skin = _extract_skin_py(mesh, linearize=True)
+    tri = []
+    for block in skin.cells:
+        if block.type == "triangle":
+            tri.append(np.asarray(block.data, dtype=np.int64))
+        else:  # quad -> (0,1,2), (0,2,3)
+            quad = np.asarray(block.data, dtype=np.int64)
+            tri.append(quad[:, [0, 1, 2]])
+            tri.append(quad[:, [0, 2, 3]])
+    return Mesh(skin.points, [("triangle", np.concatenate(tri))])
+
+
+def write(filename, mesh, binary=False, skin=True):
+    from .._skin import _has_skinnable_cells, _is_volume_type
+
+    if skin and _has_skinnable_cells(mesh):
+        dropped = sum(1 for block in mesh.cells if not _is_volume_type(block.type))
+        if dropped > 0:
+            warn(
+                "STL: writing the extracted skin of the volume cells; "
+                f"{dropped} pre-existing non-volume cell block(s) dropped "
+                "(pass skin=False for the legacy behavior)."
+            )
+        mesh = _skin_triangles(mesh)
+
     if "triangle" not in {block.type for block in mesh.cells}:
         warn("STL can only write triangle cells. No triangle cells found.")
     if len(mesh.cells) > 1:

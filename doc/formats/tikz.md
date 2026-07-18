@@ -1,6 +1,6 @@
 # TikZ (`.tikz`)
 
-[TikZ/PGF](https://tikz.dev/) output for 2D meshes — a **write-only** visualization format that draws the mesh cells as a LaTeX figure. By default it emits a standalone, directly `pdflatex`-compilable document; it can also emit a bare `tikzpicture` snippet for `\input` into a larger LaTeX document. It is the LaTeX counterpart to the [SVG](./svg.md) writer.
+[TikZ/PGF](https://tikz.dev/) output — a **write-only** visualization format that draws the mesh cells as a LaTeX figure. Flat 2D meshes draw directly; genuinely 3D meshes are **rendered**: the boundary skin of any volume cells is extracted (see [`extract_skin`](../extract_skin.md)) and projected through an orthographic camera, drawn back-to-front. By default it emits a standalone, directly `pdflatex`-compilable document; it can also emit a bare `tikzpicture` snippet for `\input` into a larger LaTeX document. It is the LaTeX counterpart to the [SVG](./svg.md) writer (the project logo — the Stanford bunny — is produced through this machinery, see `logo/gen_logo_tikz.py`).
 
 | | |
 |---|---|
@@ -24,6 +24,9 @@ meshioplusplus.tikz.write(
     fill="gray!30",
     draw="black",
     scale=None,
+    azimuth=45.0,
+    elevation=35.264389682754654,
+    roll=0.0,
 )
 ```
 
@@ -33,6 +36,11 @@ meshioplusplus.tikz.write(
 - **`fill`** — [xcolor](https://ctan.org/pkg/xcolor) fill spec for the filled faces (triangles/quads), e.g. `"gray!30"`, `"blue!20"`.
 - **`draw`** — xcolor spec for the edge stroke.
 - **`scale`** — optional `\begin{tikzpicture}[scale=…]` factor; if `None` (default), coordinates are emitted verbatim and no `scale` key is added.
+- **`azimuth`** / **`elevation`** / **`roll`** — orthographic camera angles in degrees, used only for genuinely 3D input; same semantics and defaults (the classic CAD isometric view) as the [SVG writer](./svg.md).
+
+### 3D input
+
+A mesh whose points have a non-zero z extent takes the 3D rendering path: supported volume cells are skin-extracted first (`extract_skin(mesh, linearize=True)`); a 3D shell mesh is projected as-is (`triangle6`/`quad8`/`quad9` corner-linearized). Faces are sorted back-to-front by view-space centroid depth (painter's algorithm) and drawn with the same `\draw` templates as the flat path — nearer filled faces cover the hidden edges of farther ones. No backface culling, no shading in v1.
 
 ## File structure
 
@@ -44,13 +52,13 @@ One `\draw` command per drawable cell inside a single `tikzpicture` environment.
 | `triangle` | `\draw[fill=…, draw=…] (x0,y0) -- (x1,y1) -- (x2,y2) -- cycle;` |
 | `quad` | `\draw[fill=…, draw=…] (x0,y0) -- (x1,y1) -- (x2,y2) -- (x3,y3) -- cycle;` |
 
-Points must be flat 2D: if `points.shape[1] == 3`, every z coordinate must be `~0` (`atol=1e-14`), else `WriteError`. Only the first two columns are used.
+If `points.shape[1] == 3` and every z coordinate is `~0` (`atol=1e-14`), the mesh is treated as flat 2D and drawn exactly as in previous releases (byte-identical); otherwise the 3D projected path above applies.
 
-Unlike the SVG writer, the y-coordinate is **not** flipped — TikZ/PGF already uses the math convention (y grows upward), so mesh coordinates map straight onto the canvas.
+Unlike the SVG writer, the y-coordinate is **not** flipped — TikZ/PGF already uses the math convention (y grows upward), so mesh (or projected) coordinates map straight onto the canvas.
 
 ## Cell types
 
-`line`, `triangle`, `quad` only. Any other cell block present in the mesh is **silently dropped** (matching the SVG writer's behaviour).
+`line`, `triangle`, `quad` (plus, on the 3D path, corner-linearized `triangle6`/`quad8`/`quad9` and the volume types accepted by [`extract_skin`](../extract_skin.md)). Any other cell block present in the mesh is **silently dropped** (matching the SVG writer's behaviour).
 
 ## Data mapping
 
@@ -59,10 +67,11 @@ None consumed — `point_data`/`cell_data`/`field_data` are ignored entirely; on
 ## Quirks & limitations
 
 - No winding correction on `quad` cells — a "crossed" (bowtie) node ordering renders incorrectly with no error raised.
-- Non-`line`/`triangle`/`quad` cells vanish from the output silently.
+- Unsupported cells vanish from the output silently.
+- The painter's algorithm sorts whole faces by centroid depth — mutually intersecting faces (which a closed skin never has) can stack in the wrong order; there is no per-pixel depth test.
 - Write-only; there is no way to read a TikZ figure back into a `Mesh`.
 
 ## Notes
 
-- Backed by the **C++ core** (`write_tikz`) with a pure-Python fallback: `meshioplusplus.tikz.write` uses the C++ writer for real file paths and falls back to Python for file-object/buffer targets or on any error. The C++ writer is byte-for-byte identical to the Python reference. Registered in the shared dispatch registry, so it is also reachable from the WASM, C API, and Fortran flat bindings (write-only, fixed default styling; the flat surface always emits the standalone document).
-- `tests/test_tikz.py` checks the document/`tikzpicture` wrappers and `\draw` count, cross-checks the C++ and Python writers are byte-identical, and covers the `standalone=False` snippet and the non-flat-3D `WriteError` path. `cpp/tests/test_svg_tikz.cpp` covers the C++ writer directly (standalone vs snippet, filled faces vs open lines, `\draw` count, style/scale options, the non-flat `WriteError`).
+- Backed by the **C++ core** (`write_tikz`) with a pure-Python fallback: `meshioplusplus.tikz.write` uses the C++ writer for real file paths and falls back to Python for file-object/buffer targets or on any error. The C++ writer is byte-for-byte identical to the Python reference — **including the 3D projected path** (the camera arithmetic in `detail/projection.hpp` and `_projection.py` is kept expression-for-expression identical for this reason). Registered in the shared dispatch registry, so it is also reachable from the WASM, C API, and Fortran flat bindings (write-only, fixed default styling and the default isometric camera; the flat surface always emits the standalone document).
+- `tests/test_tikz.py` checks the document/`tikzpicture` wrappers and `\draw` count, cross-checks the C++ and Python writers are byte-identical (2D **and** 3D), and covers the `standalone=False` snippet, volume-skin rendering, and camera angles. `cpp/tests/test_svg_tikz.cpp` covers the C++ writer directly (standalone vs snippet, filled faces vs open lines, `\draw` count, style/scale options, the projected 3D paths).

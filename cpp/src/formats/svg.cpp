@@ -23,9 +23,11 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/projection.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/svg.hpp"
+#include "meshioplusplus/skin.hpp"
 
 namespace meshioplusplus {
 
@@ -39,21 +41,113 @@ std::string svg_fmt_num(double value, const std::string& rSpec) {
     return buf;
 }
 
+// 3D rendering path: project the (already skin-extracted) surface mesh with
+// the orthographic camera and emit its faces back-to-front. Replicates the
+// flat path's bbox -> y-flip -> image_width scaling -> <path> emission, but
+// over the sorted projected faces.
+void svg_proj_write(const std::string& rPath, const Mesh& rDrawMesh, const std::string& rFloatFmt,
+                    const std::optional<std::string>& rStrokeWidth,
+                    const std::optional<double>& rImageWidth, const std::string& rFill,
+                    const std::string& rStroke, double azimuth, double elevation, double roll) {
+    detail::ProjectedSurface ps = detail::project_surface(rDrawMesh, azimuth, elevation, roll);
+    std::vector<double>& x = ps.mX;
+    std::vector<double>& y = ps.mY;
+    const std::size_t num_points = x.size();
+
+    double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
+    if (num_points > 0) {
+        min_x = max_x = x[0];
+        min_y = max_y = y[0];
+        for (std::size_t i = 1; i < num_points; ++i) {
+            min_x = std::min(min_x, x[i]);
+            max_x = std::max(max_x, x[i]);
+            min_y = std::min(min_y, y[i]);
+            max_y = std::max(max_y, y[i]);
+        }
+    }
+
+    // Flip y (projected math convention y-up -> SVG screen convention y-down).
+    for (std::size_t i = 0; i < num_points; ++i)
+        y[i] = max_y + min_y - y[i];
+
+    double width = max_x - min_x;
+    double height = max_y - min_y;
+
+    if (rImageWidth.has_value() && width != 0.0) {
+        const double scaling_factor = *rImageWidth / width;
+        min_x *= scaling_factor;
+        min_y *= scaling_factor;
+        width *= scaling_factor;
+        height *= scaling_factor;
+        for (std::size_t i = 0; i < num_points; ++i) {
+            x[i] *= scaling_factor;
+            y[i] *= scaling_factor;
+        }
+    }
+
+    std::string stroke_width;
+    if (rStrokeWidth.has_value()) {
+        stroke_width = *rStrokeWidth;
+    } else {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%g", width / 100.0);
+        stroke_width = buf;
+    }
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    os << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" viewBox=\""
+       << svg_fmt_num(min_x, rFloatFmt) << ' ' << svg_fmt_num(min_y, rFloatFmt) << ' '
+       << svg_fmt_num(width, rFloatFmt) << ' ' << svg_fmt_num(height, rFloatFmt) << "\">";
+
+    os << "<style>path {fill: " << rFill << "; stroke: " << rStroke
+       << "; stroke-width: " << stroke_width << "; stroke-linejoin:bevel}</style>";
+
+    for (const detail::ProjectedFace& face : ps.mFaces) {
+        std::string d;
+        for (std::uint8_t k = 0; k < face.mNumNodes; ++k) {
+            const std::int64_t p = face.mNodes[k];
+            d += (k == 0) ? "M " : "L ";
+            d += svg_fmt_num(x[static_cast<std::size_t>(p)], rFloatFmt);
+            d += ' ';
+            d += svg_fmt_num(y[static_cast<std::size_t>(p)], rFloatFmt);
+        }
+        if (!face.mIsLine)
+            d += "Z";
+        os << "<path d=\"" << d << "\" />";
+    }
+
+    os << "</svg>";
+}
+
 }  // namespace
 
 void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
                const std::optional<std::string>& rStrokeWidth,
                const std::optional<double>& rImageWidth, const std::string& rFill,
-               const std::string& rStroke) {
+               const std::string& rStroke, double azimuth, double elevation, double roll) {
     const NDArray& points = rMesh.Points();
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    // SVG can only handle flat 2D meshes: a 3D mesh must have every z ~ 0.
+    // A genuinely non-flat 3D mesh takes the projected-rendering path (skin
+    // extraction for volume cells + orthographic camera); a flat one (every
+    // z ~ 0) keeps the classic 2D path below, byte-identical to before.
     if (dim == 3) {
         for (std::size_t i = 0; i < num_points; ++i) {
-            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14)
-                throw WriteError("SVG can only handle flat 2D meshes");
+            if (std::fabs(detail::read_double(points, i * dim + 2)) > 1.0e-14) {
+                if (has_skinnable_cells(rMesh)) {
+                    svg_proj_write(rPath, extract_skin(rMesh, /*linearize=*/true), rFloatFmt,
+                                   rStrokeWidth, rImageWidth, rFill, rStroke, azimuth, elevation,
+                                   roll);
+                } else {
+                    svg_proj_write(rPath, rMesh, rFloatFmt, rStrokeWidth, rImageWidth, rFill,
+                                   rStroke, azimuth, elevation, roll);
+                }
+                return;
+            }
         }
     }
 

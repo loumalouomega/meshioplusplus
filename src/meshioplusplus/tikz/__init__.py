@@ -3,6 +3,7 @@ from typing import Union
 from .. import _core
 from .._files import is_buffer
 from .._helpers import register_format
+from .._projection import ISO_AZIMUTH, ISO_ELEVATION
 from ._tikz import write as _py_write
 
 
@@ -15,8 +16,18 @@ def write(
     fill: str = "gray!30",
     draw: str = "black",
     scale: Union[int, float, None] = None,
+    azimuth: float = ISO_AZIMUTH,
+    elevation: float = ISO_ELEVATION,
+    roll: float = 0.0,
 ):
-    """Write a TikZ figure (C++ core for real file paths, Python fallback)."""
+    """Write a TikZ figure (C++ core for real file paths, Python fallback).
+
+    Flat (2D or all-z~0) meshes draw as before; a genuinely 3D mesh renders
+    the boundary skin of its volume cells (or its surface cells as-is)
+    through an orthographic camera given by ``azimuth``/``elevation``/
+    ``roll`` in degrees — default the classic CAD isometric view — drawn
+    back-to-front.
+    """
     if not is_buffer(filename, "w"):
         try:
             _core.tikz_write(
@@ -28,6 +39,9 @@ def write(
                 fill,
                 draw,
                 scale,
+                azimuth,
+                elevation,
+                roll,
             )
             return
         except Exception:
@@ -41,6 +55,9 @@ def write(
         fill=fill,
         draw=draw,
         scale=scale,
+        azimuth=azimuth,
+        elevation=elevation,
+        roll=roll,
     )
 
 

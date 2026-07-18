@@ -29,9 +29,12 @@
 
 // Project includes
 #include "meshioplusplus/formats/ply.hpp"
+#include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/skin.hpp"
 
 namespace meshioplusplus {
 
@@ -391,7 +394,21 @@ Mesh read_ply(const std::string& rPath) {
     return mesh;
 }
 
-void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary) {
+void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin) {
+    if (skin && has_skinnable_cells(rMesh)) {
+        std::size_t dropped = 0;
+        for (const auto cb : rMesh.CellRange())
+            if (cell_type_dimension(cell_type_from_name(cb.Type())) != 3)
+                ++dropped;
+        if (dropped > 0)
+            log::warn(
+                "PLY: writing the extracted skin of the volume cells; {} pre-existing "
+                "non-volume cell block(s) dropped (pass skin=false for the legacy behavior).",
+                dropped);
+        write_ply(rPath, extract_skin(rMesh, /*linearize=*/true), binary, /*skin=*/false);
+        return;
+    }
+
     std::ofstream os(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);

@@ -34,7 +34,12 @@ meshioplusplus convert mesh.msh mesh.vtu
 meshioplusplus convert -i gmsh -o vtk mesh.msh mesh.vtk
 meshioplusplus convert --ascii mesh.msh mesh.vtu
 meshioplusplus convert --sets-to-int-data mesh.inp mesh.xdmf
+meshioplusplus convert mesh.msh skin.stl   # volume mesh -> boundary-skin STL
 ```
+
+Converting a 3D volume mesh to STL or PLY writes its extracted boundary
+skin (the writers' default — see [Skin extraction](./extract_skin.md));
+converting to SVG or TikZ renders it with the default isometric camera.
 
 ---
 

@@ -164,10 +164,17 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"obj", meshioplusplus::write_obj},
         {"off", meshioplusplus::write_off},
         {"permas", meshioplusplus::write_permas},
-        {"ply", [](const std::string& p,
-                   const Mesh& mm) { meshioplusplus::write_ply(p, mm, /*binary=*/true); }},
-        {"stl", [](const std::string& p,
-                   const Mesh& mm) { meshioplusplus::write_stl(p, mm, /*binary=*/false); }},
+        // ply/stl default to skin=true (matching the Python shims): a volume
+        // mesh writes its extracted boundary skin instead of dropping the
+        // volume cells.
+        {"ply",
+         [](const std::string& p, const Mesh& mm) {
+             meshioplusplus::write_ply(p, mm, /*binary=*/true, /*skin=*/true);
+         }},
+        {"stl",
+         [](const std::string& p, const Mesh& mm) {
+             meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
+         }},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are write-only 2D-visualization formats; the flat bindings
         // emit them with the fixed default styling (per-call overrides are out

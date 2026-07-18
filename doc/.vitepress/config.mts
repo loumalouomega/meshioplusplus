@@ -45,6 +45,7 @@ export default defineConfig({
         text: "Reference",
         items: [
           { text: "Supported formats", link: "/formats" },
+          { text: "Skin extraction", link: "/extract_skin" },
           { text: "CLI reference", link: "/cli" },
           { text: "XDMF time series", link: "/xdmf_time_series" },
           { text: "Extending meshio++", link: "/extending" },

@@ -19,6 +19,7 @@ meshioplusplus.ply.write("out.ply", mesh, binary=True)
 ```
 
 - **`binary`** — binary (`True`, the default) or ASCII.
+- **`skin`** — when `True` (the default) and the mesh contains supported 3D volume cells (tetra, hexahedron, wedge, pyramid and their common higher-order variants), the boundary skin is extracted first (see [`extract_skin`](../extract_skin.md)) and only that skin is written as triangles/quads, with the vertex table compacted to the referenced points. Pre-existing surface blocks are dropped with a warning. `skin=False` restores the legacy behavior (volume cells are skipped).
 
 ## File structure
 
@@ -53,7 +54,7 @@ Faces are grouped by vertex count: 1→`vertex`, 2→`line`, 3→`triangle`, 4�
 - **Extra face properties beyond the index list are Python-only** — the C++ reader explicitly rejects any face `property` beyond the single index list, as well as list-typed *vertex* properties; both force a Python fallback.
 - 64-bit integer cell data is **silently downcast to int32** on write (PLY has no 64-bit integer property type), with a warning; the writer also requires all cell blocks share one dtype.
 - Multi-dimensional point-data is not writable (skipped per-key with a warning in Python; silently filtered in C++).
-- Only `vertex`/`line`/`triangle`/`quad`/`polygon` are writable cell types; anything else is skipped with a warning.
+- Only `vertex`/`line`/`triangle`/`quad`/`polygon` are writable cell types. 3D volume cells write their extracted boundary skin by default (`skin=True`); with `skin=False` (or for other unsupported types) they are skipped — the Python reference writer warns per skipped block, while the default C++ path skips silently.
 - `obj_info` header lines (a Meshlab convention) are skipped without being parsed.
 - The uchar-property naming: `uchar` is mapped to a signed 1-byte type in the *count-field* parsing path (matching a common "uchar-as-count" convention some tools use) even though `uchar` normally means unsigned — this is deliberate, not an oversight, and only affects the binary list-count field, not general vertex/face data typing.
 
