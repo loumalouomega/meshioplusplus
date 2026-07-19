@@ -51,6 +51,17 @@ This deliberately mirrors the Python `Mesh`'s structure (points, a list of cell 
 
 **Ragged cell blocks** (polygon/polyhedron blocks with a varying node count per cell, e.g. MED Voronoi polygons or OpenFOAM general polyhedra) are not representable in this flat shape and are rejected: `readMesh` throws if the file contains one, and there is no way to construct one for `writeMesh`.
 
+## Mesh operations
+
+Besides read/write/convert, the module exposes the mesh operations on the same
+mesh-object shape: `extractSurface(mesh [, recordParentIds])`,
+`extractSkin(mesh [, linearize])`, `attachQuality(mesh)`, `sniffFormat(path)`,
+`computeBandwidth(mesh)`, and `reorder(mesh, method)` (method `"rcm"`,
+`"morton"`, or `"hilbert"`). `reorder` returns
+`{ mesh, nodePermutation, cellPermutations }` — the renumbered mesh plus the
+applied old→new permutations (`Int32Array`s). See
+[Reordering / renumbering](./reorder.md).
+
 ## Format support
 
 The WASM build ships the 36 formats with no HDF5/netCDF dependency, plus XDMF's XML/Binary data path (not its HDF variant) — 35 readable formats in total, 36 writable (`openfoam` is read-only; `svg` and `tikz` are write-only):

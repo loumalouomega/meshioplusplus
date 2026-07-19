@@ -75,6 +75,8 @@ module meshioplusplus
         procedure :: extract_skin => mesh_extract_skin
         procedure :: attach_quality => mesh_attach_quality
         procedure :: quality_counts => mesh_quality_counts
+        procedure :: reorder => mesh_reorder
+        procedure :: compute_bandwidth => mesh_compute_bandwidth
         ! -- building --
         procedure :: set_points => mesh_set_points
         procedure, private :: mesh_add_cell_block_i32
@@ -201,6 +203,41 @@ module meshioplusplus
             type(c_ptr), value :: h
             integer(c_int64_t), intent(out) :: nc, ninv, ndeg
             integer(c_int) :: s
+        end function
+
+        function c_mio_reorder(h, method) bind(c, name="mio_reorder") result(r)
+            import :: c_ptr, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: method
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_reorder_result_take_mesh(r) &
+                bind(c, name="mio_reorder_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_reorder_result_node_perm(r, data, dtype, n) &
+                bind(c, name="mio_reorder_result_node_perm") result(s)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: r
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int64_t), intent(out) :: n
+            integer(c_int) :: s
+        end function
+
+        subroutine c_mio_reorder_result_free(r) bind(c, name="mio_reorder_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_compute_bandwidth(h) bind(c, name="mio_compute_bandwidth") result(bw)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t) :: bw
         end function
 
         function c_mio_sniff_format(path, buf, buflen) &
@@ -696,6 +733,64 @@ contains
         if (present(num_degenerate)) num_degenerate = ndeg
         call clear_status(stat, errmsg)
     end subroutine
+
+    !> Renumber the mesh (method: "rcm", "morton", or "hilbert") as a pure
+    !> permutation. Returns the renumbered mesh; the optional `node_perm`
+    !> receives the node permutation (1-based old index -> 1-based new index).
+    function mesh_reorder(self, method, node_perm, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: method
+        integer(int64), allocatable, intent(out), optional :: node_perm(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res, cdata
+        integer(c_int) :: s, dt
+        integer(c_int64_t) :: nlen
+        integer(c_int64_t), pointer :: fp(:)
+        res = c_mio_reorder(self%handle, c_str(method))
+        if (.not. c_associated(res)) then
+            call handle_failure('reorder', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(node_perm)) then
+            s = c_mio_reorder_result_node_perm(res, cdata, dt, nlen)
+            if (s /= 0_c_int) then
+                call c_mio_reorder_result_free(res)
+                call handle_failure('reorder', mio_error_message(), stat, errmsg)
+                return
+            end if
+            allocate (node_perm(nlen))
+            if (nlen > 0) then
+                call c_f_pointer(cdata, fp, [nlen])
+                node_perm = int(fp, int64) + 1_int64  ! 0-based new id -> 1-based
+            end if
+        end if
+        out%handle = c_mio_reorder_result_take_mesh(res)
+        call c_mio_reorder_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('reorder', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Connectivity bandwidth: max over cells of (max - min) node index.
+    function mesh_compute_bandwidth(self, stat, errmsg) result(bw)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: bw
+        integer(c_int64_t) :: cbw
+        cbw = c_mio_compute_bandwidth(self%handle)
+        if (cbw < 0_c_int64_t) then
+            call handle_failure('compute_bandwidth', mio_error_message(), stat, errmsg)
+            bw = -1_int64
+            return
+        end if
+        bw = int(cbw, int64)
+        call clear_status(stat, errmsg)
+    end function
 
     ! ------------------------------------------------------------------
     ! mio_mesh: building (setters copy; see module header for layout rules)

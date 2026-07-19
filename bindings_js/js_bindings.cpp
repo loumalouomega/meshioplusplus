@@ -77,6 +77,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -468,6 +469,32 @@ std::string sniff_format_js(const std::string& rPath) {
     return with_js_errors([&]() -> std::string { return meshioplusplus::sniff_format(rPath); });
 }
 
+/**
+ * @brief Renumber a mesh (method: "rcm", "morton", or "hilbert"). Returns an
+ * object `{mesh, nodePermutation, cellPermutations}` (permutations old->new).
+ */
+val reorder_js(const val& rMeshObj, const std::string& rMethod) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ReorderResult res = meshioplusplus::reorder(
+            val_to_mesh(rMeshObj), meshioplusplus::reorder_method_from_name(rMethod));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(res.mMesh));
+        out.set("nodePermutation", ndarray_to_int32_array(res.mNodePermutation));
+        val cell_perms = val::array();
+        for (const NDArray& a : res.mCellPermutations)
+            cell_perms.call<void>("push", ndarray_to_int32_array(a));
+        out.set("cellPermutations", cell_perms);
+        return out;
+    });
+}
+
+/** @brief Connectivity bandwidth (max |i - j| over node pairs sharing a cell). */
+int compute_bandwidth_js(const val& rMeshObj) {
+    return with_js_errors([&]() -> int {
+        return static_cast<int>(meshioplusplus::compute_bandwidth(val_to_mesh(rMeshObj)));
+    });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
@@ -481,4 +508,6 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("extractSkin", &extract_skin_js);
     emscripten::function("attachQuality", &attach_quality_js);
     emscripten::function("sniffFormat", &sniff_format_js);
+    emscripten::function("reorder", &reorder_js);
+    emscripten::function("computeBandwidth", &compute_bandwidth_js);
 }

@@ -57,6 +57,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -64,6 +65,12 @@
 
 struct mio_mesh {
     meshioplusplus::Mesh mMesh;
+};
+
+struct mio_reorder_result {
+    mio_mesh mMesh;  // owns the renumbered mesh; borrowed via mio_reorder_result_mesh
+    meshioplusplus::NDArray mNodePerm;
+    std::vector<meshioplusplus::NDArray> mCellPerms;
 };
 
 namespace {
@@ -461,6 +468,87 @@ int64_t mio_sniff_format(const char* path, char* buf, int64_t buflen) {
         if (!path)
             throw meshioplusplus::ReadError("meshio++: path is NULL");
         return copy_string(meshioplusplus::sniff_format(path), buf, buflen);
+    });
+}
+
+mio_reorder_result* mio_reorder(const mio_mesh* mesh, const char* method) {
+    return guarded_ptr(static_cast<mio_reorder_result*>(nullptr), [&]() -> mio_reorder_result* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!method)
+            throw meshioplusplus::ReadError("meshio++: method is NULL");
+        meshioplusplus::ReorderResult res =
+            meshioplusplus::reorder(mesh->mMesh, meshioplusplus::reorder_method_from_name(method));
+        auto* out =
+            new mio_reorder_result{mio_mesh{std::move(res.mMesh)}, std::move(res.mNodePermutation),
+                                   std::move(res.mCellPermutations)};
+        return out;
+    });
+}
+
+const mio_mesh* mio_reorder_result_mesh(const mio_reorder_result* result) {
+    return result ? &result->mMesh : nullptr;
+}
+
+mio_status mio_reorder_result_node_perm(const mio_reorder_result* result, const void** data,
+                                        mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        const NDArray& a = result->mNodePerm;
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_reorder_result_num_cell_perms(const mio_reorder_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mCellPerms.size());
+    });
+}
+
+mio_status mio_reorder_result_cell_perm(const mio_reorder_result* result, int64_t block,
+                                        const void** data, mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellPerms.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-permutation block index out of range");
+        const NDArray& a = result->mCellPerms[static_cast<std::size_t>(block)];
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+mio_mesh* mio_reorder_result_take_mesh(mio_reorder_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+void mio_reorder_result_free(mio_reorder_result* result) {
+    delete result;
+}
+
+int64_t mio_compute_bandwidth(const mio_mesh* mesh) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        return meshioplusplus::compute_bandwidth(mesh->mMesh);
     });
 }
 

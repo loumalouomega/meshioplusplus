@@ -180,7 +180,19 @@ print(report["num_inverted"], "inverted cells")
 annotated = meshioplusplus.attach_quality(mesh)   # metrics as cell_data
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality` and `meshioplusplus extract-surface`.
+#### Reordering / renumbering
+
+`meshioplusplus.reorder` renumbers nodes and elements to reduce sparse-matrix bandwidth (Reverse Cuthill–McKee) or improve cache locality (Morton / Hilbert space-filling curves). It is a pure permutation — geometry and all data preserved — and returns the applied node/cell permutations so external arrays can be remapped. `compute_bandwidth` measures the before/after connectivity bandwidth. See `doc/reorder.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.reorder(mesh, method="rcm")            # "morton" / "hilbert" too
+out, node_perm, cell_perms = meshioplusplus.reorder(mesh, return_permutation=True)
+print(meshioplusplus.compute_bandwidth(mesh), "->", meshioplusplus.compute_bandwidth(out))
+```
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, and `meshioplusplus reorder`.
 
 #### Time series
 
