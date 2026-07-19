@@ -53,6 +53,7 @@ module meshioplusplus
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_format_readable, mio_format_writable
     public :: mio_sniff_format
+    public :: mio_merge
 
     ! mio_dtype values (must match the C enum in meshioplusplus.h).
     integer(c_int), parameter :: MIO_FLOAT32 = 0, MIO_FLOAT64 = 1
@@ -205,6 +206,16 @@ module meshioplusplus
             type(c_ptr), value :: h
             integer(c_int64_t), intent(out) :: nc, ninv, ndeg
             integer(c_int) :: s
+        end function
+
+        function c_mio_merge(meshes, count, weld, atol, source_tag, data_policy, drop_dup) &
+                bind(c, name="mio_merge") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), intent(in) :: meshes(*)
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: weld, source_tag, data_policy, drop_dup
+            real(c_double), value :: atol
+            type(c_ptr) :: r
         end function
 
         function c_mio_reorder(h, method) bind(c, name="mio_reorder") result(r)
@@ -767,6 +778,53 @@ contains
         if (present(num_degenerate)) num_degenerate = ndeg
         call clear_status(stat, errmsg)
     end subroutine
+
+    !> Merge two or more meshes into one (concatenate, with optional welding of
+    !> coincident nodes within `atol`). `data_policy` is "intersection" (default)
+    !> or "fill". point_sets/cell_sets are not carried across the C ABI.
+    function mio_merge(meshes, weld, atol, source_tag, data_policy, &
+                       drop_duplicate_cells, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: meshes(:)
+        logical, intent(in), optional :: weld, source_tag, drop_duplicate_cells
+        real(real64), intent(in), optional :: atol
+        character(*), intent(in), optional :: data_policy
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr), allocatable :: handles(:)
+        integer(c_int) :: cweld, csrc, cpolicy, cdrop
+        real(c_double) :: catol
+        integer :: i, n
+        n = size(meshes)
+        allocate (handles(max(n, 1)))
+        do i = 1, n
+            handles(i) = meshes(i)%handle
+        end do
+        cweld = 0
+        if (present(weld)) then
+            if (weld) cweld = 1
+        end if
+        csrc = 1
+        if (present(source_tag)) then
+            if (.not. source_tag) csrc = 0
+        end if
+        cdrop = 0
+        if (present(drop_duplicate_cells)) then
+            if (drop_duplicate_cells) cdrop = 1
+        end if
+        cpolicy = 0
+        if (present(data_policy)) then
+            if (data_policy == 'fill') cpolicy = 1
+        end if
+        catol = 1.0e-8_c_double
+        if (present(atol)) catol = real(atol, c_double)
+        out%handle = c_mio_merge(handles, int(n, c_int64_t), cweld, catol, csrc, cpolicy, cdrop)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('merge', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
 
     !> Renumber the mesh (method: "rcm", "morton", or "hilbert") as a pure
     !> permutation. Returns the renumbered mesh; the optional `node_perm`
