@@ -40,12 +40,20 @@ jobs:
   # no-heavy-deps fallback and the full HDF5/netCDF/zlib build.
   # ---------------------------------------------------------------------------
   conan:
-    name: Conan (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    name: Conan (${{ matrix.name }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        arch: [x86_64, arm64]
+        name: [fallback, full]
         include:
+          - arch: x86_64
+            os: ubuntu-latest
+          # GitHub's free-for-public-repos hosted arm64 runner -- native
+          # build, matching the same treatment as wheels.yml/cli.yml.
+          - arch: arm64
+            os: ubuntu-24.04-arm
           - name: fallback
             opts: "-o meshioplusplus/*:with_hdf5=False -o meshioplusplus/*:with_netcdf=False -o meshioplusplus/*:with_zlib=False"
           - name: full
@@ -67,13 +75,13 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           conan cache save "meshioplusplus/${version}:*" \
-            --file="meshioplusplus-conan-${{ matrix.name }}-linux-x86_64.tgz"
+            --file="meshioplusplus-conan-${{ matrix.name }}-linux-${{ matrix.arch }}.tgz"
       - name: Upload Conan package artifact
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
-          name: conan-${{ matrix.name }}
-          path: meshioplusplus-conan-${{ matrix.name }}-linux-x86_64.tgz
+          name: conan-${{ matrix.name }}-${{ matrix.arch }}
+          path: meshioplusplus-conan-${{ matrix.name }}-linux-${{ matrix.arch }}.tgz
 
   # ---------------------------------------------------------------------------
   # vcpkg: lint the manifest on every run; on a release tag, pin the tarball
