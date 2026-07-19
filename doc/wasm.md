@@ -64,7 +64,10 @@ applied old→new permutations (`Int32Array`s). See
 `meshesEqual(meshA, meshB, atol, rtol, unordered)` (boolean) and
 `diff(meshA, meshB, atol, rtol, unordered)` (a report object with `verdict`,
 `points`, `blocks`, `pointData`/`cellData`/`fieldData`); named point/cell sets
-are not compared. See [Mesh comparison (diff)](./diff.md).
+are not compared. See [Mesh comparison (diff)](./diff.md). Merging is exposed as
+`merge([meshA, meshB, ...], weld, atol, sourceTag, dataPolicy, dropDuplicateCells)`
+(`dataPolicy` is `"intersection"` or `"fill"`), returning a new mesh object;
+named point/cell sets are not carried. See [Merge / combine](./merge.md).
 
 ## Format support
 

@@ -109,7 +109,7 @@ mio_convert("in.msh", NULL, "out.vtk", NULL);
 | Building | `mio_mesh_set_points`, `mio_mesh_add_cell_block` (int32 connectivity is widened to the core's int64), `mio_mesh_add_point_data`, `mio_mesh_append_cell_data` (one call per cell block, in block order), `mio_mesh_add_field_data` |
 | Points/cells | `mio_mesh_num_points`, `mio_mesh_point_dim`, `mio_mesh_get_points`, `mio_mesh_num_cell_blocks`, `mio_mesh_cell_block_info`, `mio_mesh_cell_block_type`, `mio_mesh_cell_block_conn` |
 | Named data | `mio_mesh_num_{point,cell,field}_data`, `mio_mesh_{point,cell,field}_data_name` (names in sorted order — identical on every backend), `mio_mesh_get_{point,cell,field}_data`, `mio_mesh_cell_data_num_blocks` |
-| Operations | `mio_extract_surface`, `mio_extract_skin`, `mio_attach_quality`, `mio_quality_counts`, `mio_sniff_format`, `mio_compute_bandwidth`, and reordering: `mio_reorder` (method `"rcm"`/`"morton"`/`"hilbert"`) → `mio_reorder_result` (`mio_reorder_result_mesh` borrow, `mio_reorder_result_node_perm` / `mio_reorder_result_num_cell_perms` / `mio_reorder_result_cell_perm` zero-copy borrows, `mio_reorder_result_take_mesh` ownership transfer, `mio_reorder_result_free`), and comparison: `mio_meshes_equal(a, b, atol, rtol, unordered, &equal)` plus `mio_diff(a, b, atol, rtol, unordered, &result)` → `mio_diff_result` (`mio_diff_result_verdict`, `mio_diff_result_point_summary`, `mio_diff_result_num_block_diffs` / `mio_diff_result_block`, `mio_diff_result_free`) |
+| Operations | `mio_extract_surface`, `mio_extract_skin`, `mio_attach_quality`, `mio_quality_counts`, `mio_sniff_format`, `mio_compute_bandwidth`, and reordering: `mio_reorder` (method `"rcm"`/`"morton"`/`"hilbert"`) → `mio_reorder_result` (`mio_reorder_result_mesh` borrow, `mio_reorder_result_node_perm` / `mio_reorder_result_num_cell_perms` / `mio_reorder_result_cell_perm` zero-copy borrows, `mio_reorder_result_take_mesh` ownership transfer, `mio_reorder_result_free`), and comparison: `mio_meshes_equal(a, b, atol, rtol, unordered, &equal)` plus `mio_diff(a, b, atol, rtol, unordered, &result)` → `mio_diff_result` (`mio_diff_result_verdict`, `mio_diff_result_point_summary`, `mio_diff_result_num_block_diffs` / `mio_diff_result_block`, `mio_diff_result_free`), and merging: `mio_merge(meshes, count, weld, atol, source_tag, data_policy, drop_duplicate_cells)` (array of mesh handles → a new `mio_mesh*`; `data_policy` `0`=intersection / `1`=fill) |
 
 Every function is documented in the installed header, [`bindings_c/include/meshioplusplus/meshioplusplus.h`](https://github.com/loumalouomega/meshioplusplus/blob/main/bindings_c/include/meshioplusplus/meshioplusplus.h).
 
@@ -118,6 +118,30 @@ Every function is documented in the installed header, [`bindings_c/include/meshi
 All formats with a C++ implementation are available — the same set as the [WASM binding](/wasm#format-support) **plus**, when the build found the dependencies, the HDF5-backed formats (`cgns`, `h5m`, `hmf`, `med`, XDMF's HDF heavy-data path) and the netCDF-backed `exodus`. This includes the write-only visualization formats `svg` and `tikz` (writable, not readable; emitted with the fixed default styling — 3D meshes render their projected boundary skin with the default isometric camera). Probe at runtime with `mio_format_readable()`/`mio_format_writable()`; requesting a compiled-out format fails with a message naming the missing dependency. Formats that only exist in Python (`mdpa`, `neuroglancer`, …) are not reachable from C.
 
 Parameterized writers use each format's Python-reference default (VTU: binary+zlib, gmsh: 4.1 binary, STL: ASCII, XDMF: HDF when built with HDF5 else XML, …). In particular `stl`/`ply` extract and write the boundary **skin** of a 3D volume mesh, matching the Python default (see [Skin extraction](/extract_skin)); a standalone skin-extraction entry point is not part of the C API yet (documented follow-up). Per-call writer options are a possible future addition.
+
+## Native command-line binary
+
+The core also ships a **Python-free CLI** — the same verbs as the Python command-line tool, built directly on the C++ core, so it needs neither a Python interpreter nor the pybind11 extension. It is off by default; build it alongside a standalone C++ tree:
+
+```sh
+build/configure.sh --cli --build          # -DMESHIOPLUSPLUS_BUILD_CLI=ON
+build/cpp-release/meshioplusplus --help
+```
+
+The installed executable is named `meshioplusplus` and mirrors the Python verbs:
+
+```sh
+meshioplusplus convert in.msh out.vtu
+meshioplusplus info out.vtu
+meshioplusplus ascii out.vtu             # in-place; also: binary / compress / decompress
+meshioplusplus quality mesh.vtu
+meshioplusplus extract-surface vol.vtu surf.vtu
+meshioplusplus reorder in.vtu out.vtu --method rcm --report
+meshioplusplus diff a.vtu b.vtu          # nonzero exit if different
+meshioplusplus merge a.vtu b.vtu out.vtu
+```
+
+Format dispatch reuses the shared registry (with a content-sniff fallback on read); ASCII/binary/compress variants call the per-format writers directly. Because it links only the C++ core it inherits the same flat-surface limitations as this C API: point/cell **sets** and the `convert -s/-d` sets↔data conversions are unavailable (they live only in the Python `Mesh`), so `info`/`diff` omit sets. There is also no Python fallback, so a file whose C++ reader raises (e.g. a Gmsh file using `$Entities`) is not readable by the native CLI — use the Python CLI for those. It works under any [mesh backend](/cpp_backends) and any optional-dependency configuration; verbs that touch a compiled-out HDF5/netCDF format report the missing dependency by name.
 
 ## Limitations (v1)
 
