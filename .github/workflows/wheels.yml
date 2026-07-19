@@ -12,7 +12,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-24.04-arm is GitHub's free-for-public-repos hosted arm64
+        # runner; cibuildwheel's CIBW_ARCHS defaults to "auto" (the runner's
+        # native arch), so this leg builds aarch64 wheels with no QEMU/binfmt
+        # setup, using CIBW_MANYLINUX_AARCH64_IMAGE (below) automatically.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
         with:
