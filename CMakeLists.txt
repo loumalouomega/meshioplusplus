@@ -529,3 +529,21 @@ if(MESHIOPLUSPLUS_BUILD_BENCHMARKS)
   add_executable(meshioplusplus_bench cpp/benchmark/bench_backends.cpp)
   target_link_libraries(meshioplusplus_bench PRIVATE meshioplusplus_core_obj)
 endif()
+
+# --------------------------------------------------------------------------
+# Native command-line binary (cpp/cli/main.cpp): a Python-free CLI over
+# meshioplusplus_core_obj, mirroring the Python console script's verbs
+# (convert/info/ascii/binary/compress/decompress/quality/extract-surface/
+# reorder/diff). Installed executable name is `meshioplusplus`. Opt-in like the
+# other executables; works under any mesh/parallel backend and optional-dep set.
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_BUILD_CLI "Build the native command-line binary" OFF)
+if(MESHIOPLUSPLUS_BUILD_CLI)
+  add_executable(meshioplusplus_cli cpp/cli/main.cpp)
+  target_link_libraries(meshioplusplus_cli PRIVATE meshioplusplus_core_obj)
+  target_compile_definitions(meshioplusplus_cli
+    PRIVATE MESHIOPLUSPLUS_CLI_VERSION="${PROJECT_VERSION}")
+  set_target_properties(meshioplusplus_cli PROPERTIES OUTPUT_NAME meshioplusplus)
+  include(GNUInstallDirs)
+  install(TARGETS meshioplusplus_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
