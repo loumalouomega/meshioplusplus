@@ -54,6 +54,11 @@
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/crop.hpp"
+#include "meshioplusplus/operations/split.hpp"
+#include "meshioplusplus/operations/stats.hpp"
 // Per-format writers for the ASCII/binary/compress variants (the registry bakes
 // one default each, so these are called directly).
 #include "meshioplusplus/formats/ansys.hpp"
@@ -329,7 +334,12 @@ void print_usage(std::ostream& os) {
           "  extract-surface (surface)  Extract the boundary surface/edges\n"
           "  reorder                 Renumber nodes/elements (RCM / Morton / Hilbert)\n"
           "  diff                    Compare two meshes (nonzero exit if different)\n"
-          "  merge                   Merge two or more meshes into one\n\n"
+          "  merge                   Merge two or more meshes into one\n"
+          "  transform               Affine transform (translate/scale/rotate/matrix/units)\n"
+          "  clean                   Weld / prune / de-dup a mesh\n"
+          "  crop                    Subset by bounding box or half-space\n"
+          "  split                   Partition into multiple files (type/region/component)\n"
+          "  stats                   Print geometric statistics (bbox/area/volume)\n\n"
           "  -v, --version           Display version information\n"
           "  -h, --help              Show this message\n\n"
           "notes: point/cell sets and 'convert -s/-d' are unavailable in the native\n"
@@ -571,6 +581,289 @@ int cmd_extract_surface(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+std::vector<double> parse_doubles(const std::string& rText) {
+    std::vector<double> out;
+    std::size_t start = 0;
+    while (start <= rText.size()) {
+        std::size_t comma = rText.find(',', start);
+        std::string tok =
+            rText.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (!tok.empty())
+            out.push_back(std::stod(tok));
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    return out;
+}
+
+int cmd_transform(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"translate", {}, true},
+                                  {"scale", {}, true},
+                                  {"rotate", {}, true},
+                                  {"matrix", {}, true},
+                                  {"scale-units", {}, true},
+                                  {"rotate-data", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("transform requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::AffineTransform xf;
+    int given = 0;
+    if (p.values.count("translate")) {
+        auto v = parse_doubles(opt_value(p, "translate"));
+        if (v.size() != 3)
+            throw std::runtime_error("transform: --translate expects 'x,y,z'");
+        xf = meshioplusplus::transform_translation(v[0], v[1], v[2]);
+        ++given;
+    }
+    if (p.values.count("scale")) {
+        auto v = parse_doubles(opt_value(p, "scale"));
+        if (v.size() == 1)
+            xf = meshioplusplus::transform_scale(v[0], v[0], v[0]);
+        else if (v.size() == 3)
+            xf = meshioplusplus::transform_scale(v[0], v[1], v[2]);
+        else
+            throw std::runtime_error("transform: --scale expects 's' or 'sx,sy,sz'");
+        ++given;
+    }
+    if (p.values.count("rotate")) {
+        auto v = parse_doubles(opt_value(p, "rotate"));
+        const std::string& raw = opt_value(p, "rotate");
+        double ax = 0, ay = 0, az = 0, deg = 0;
+        if (v.size() == 4) {
+            ax = v[0];
+            ay = v[1];
+            az = v[2];
+            deg = v[3];
+        } else if (v.size() == 2 && !raw.empty() &&
+                   (raw[0] == 'x' || raw[0] == 'y' || raw[0] == 'z')) {
+            ax = raw[0] == 'x' ? 1 : 0;
+            ay = raw[0] == 'y' ? 1 : 0;
+            az = raw[0] == 'z' ? 1 : 0;
+            deg = v[0];  // parse_doubles skips the non-numeric axis token
+        } else {
+            throw std::runtime_error(
+                "transform: --rotate expects 'axis,deg' (x|y|z) or "
+                "'nx,ny,nz,deg'");
+        }
+        xf = meshioplusplus::transform_rotation(ax, ay, az, deg * 3.14159265358979323846 / 180.0);
+        ++given;
+    }
+    if (p.values.count("matrix")) {
+        auto v = parse_doubles(opt_value(p, "matrix"));
+        if (v.size() != 16)
+            throw std::runtime_error("transform: --matrix expects 16 values (row-major 4x4)");
+        xf = meshioplusplus::transform_from_matrix(v.data());
+        ++given;
+    }
+    if (p.values.count("scale-units")) {
+        xf = meshioplusplus::transform_units(std::stod(opt_value(p, "scale-units")));
+        ++given;
+    }
+    if (given != 1)
+        throw std::runtime_error(
+            "transform: give exactly one of "
+            "--translate/--scale/--rotate/--matrix/--scale-units");
+
+    Mesh out = meshioplusplus::transform(mesh, xf, has_flag(p, "rotate-data"));
+    write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_clean(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"atol", {}, true},
+                                  {"weld", {}, false},
+                                  {"remove-orphans", {}, false},
+                                  {"drop-degenerate", {}, false},
+                                  {"drop-duplicates", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("clean requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::CleanOptions opts;
+    const bool any_flag = has_flag(p, "weld") || has_flag(p, "remove-orphans") ||
+                          has_flag(p, "drop-degenerate") || has_flag(p, "drop-duplicates");
+    if (any_flag) {
+        opts.weld = has_flag(p, "weld");
+        opts.remove_orphans = has_flag(p, "remove-orphans");
+        opts.drop_degenerate = has_flag(p, "drop-degenerate");
+        opts.drop_duplicate_cells = has_flag(p, "drop-duplicates");
+    } else {
+        opts.weld = false;
+        opts.remove_orphans = true;
+        opts.drop_degenerate = true;
+        opts.drop_duplicate_cells = true;
+    }
+    if (p.values.count("atol"))
+        opts.atol = std::stod(opt_value(p, "atol"));
+
+    auto r = meshioplusplus::clean(mesh, opts);
+    if (!has_flag(p, "quiet")) {
+        std::cout << "cleaned mesh\n";
+        std::cout << "  points welded:             " << r.mPointsWelded << "\n";
+        std::cout << "  points removed (orphan):   " << r.mPointsRemovedOrphan << "\n";
+        std::cout << "  cells dropped (degenerate): " << r.mCellsDroppedDegenerate << "\n";
+        std::cout << "  cells dropped (duplicate):  " << r.mCellsDroppedDuplicate << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_crop(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"bbox", {}, true},
+                                  {"plane", {}, true},
+                                  {"mode", {}, true},
+                                  {"record-ids", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("crop requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    const bool has_bbox = p.values.count("bbox") != 0;
+    const bool has_plane = p.values.count("plane") != 0;
+    if (has_bbox == has_plane)
+        throw std::runtime_error("crop: give exactly one of --bbox or --plane");
+    std::string mode_s = opt_value(p, "mode", "all");
+    if (mode_s != "all" && mode_s != "any")
+        throw std::runtime_error("crop: --mode must be 'all' or 'any'");
+    meshioplusplus::CropMode mode =
+        mode_s == "any" ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
+    const bool record_ids = has_flag(p, "record-ids");
+
+    meshioplusplus::CropResult r;
+    if (has_bbox) {
+        auto v = parse_doubles(opt_value(p, "bbox"));
+        if (v.size() != 6)
+            throw std::runtime_error("crop: --bbox expects 'xmin,ymin,zmin,xmax,ymax,zmax'");
+        double lo[3] = {v[0], v[1], v[2]}, hi[3] = {v[3], v[4], v[5]};
+        r = meshioplusplus::crop_bbox(mesh, lo, hi, mode, record_ids);
+    } else {
+        auto v = parse_doubles(opt_value(p, "plane"));
+        if (v.size() != 6)
+            throw std::runtime_error("crop: --plane expects 'px,py,pz,nx,ny,nz'");
+        double point[3] = {v[0], v[1], v[2]}, normal[3] = {v[3], v[4], v[5]};
+        r = meshioplusplus::crop_halfspace(mesh, point, normal, mode, record_ids);
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+std::string replace_key(const std::string& rPattern, const std::string& rKey) {
+    const std::string token = "{key}";
+    std::string out = rPattern;
+    std::size_t pos = out.find(token);
+    while (pos != std::string::npos) {
+        out.replace(pos, token.size(), rKey);
+        pos = out.find(token, pos + rKey.size());
+    }
+    return out;
+}
+
+int cmd_split(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"by", {}, true},
+                                  {"tag", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("split requires exactly INFILE and OUTPATTERN (with {key})");
+    if (p.positionals[1].find("{key}") == std::string::npos)
+        throw std::runtime_error("split: output pattern must contain '{key}' (e.g. out_{key}.vtu)");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    std::string by = opt_value(p, "by", "type");
+    auto crit = meshioplusplus::split_by_from_name(by);
+    auto result = meshioplusplus::split(mesh, crit, opt_value(p, "tag"));
+
+    std::string out_fmt = opt_value(p, "output-format");
+    if (!has_flag(p, "quiet"))
+        std::cout << "split into " << result.mPieces.size() << " piece(s) by " << by << "\n";
+    for (auto& piece : result.mPieces) {
+        std::string path = replace_key(p.positionals[1], piece.mKey);
+        std::int64_t ncells = 0;
+        for (const auto cb : piece.mMesh.CellRange())
+            ncells += static_cast<std::int64_t>(cb.NumCells());
+        if (!has_flag(p, "quiet"))
+            std::cout << "  " << piece.mKey << ": " << piece.mMesh.NumPoints() << " points, "
+                      << ncells << " cells -> " << path << "\n";
+        write_mesh_cli(path, piece.mMesh, out_fmt);
+    }
+    return 0;
+}
+
+std::string stats_g6(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", v);
+    return buf;
+}
+
+int cmd_stats(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("stats requires exactly INFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::StatsReport s = meshioplusplus::compute_stats(mesh);
+
+    auto vec3 = [&](const double* v) {
+        return "[" + stats_g6(v[0]) + ", " + stats_g6(v[1]) + ", " + stats_g6(v[2]) + "]";
+    };
+
+    if (has_flag(p, "json")) {
+        std::cout << "{\n";
+        std::cout << "  \"num_points\": " << s.mNumPoints << ",\n";
+        std::cout << "  \"num_cells\": " << s.mNumCells << ",\n";
+        std::cout << "  \"bbox_min\": " << vec3(s.mBBoxMin) << ",\n";
+        std::cout << "  \"bbox_max\": " << vec3(s.mBBoxMax) << ",\n";
+        std::cout << "  \"extent\": " << vec3(s.mExtent) << ",\n";
+        std::cout << "  \"centroid\": " << vec3(s.mCentroid) << ",\n";
+        std::cout << "  \"cell_type_counts\": {";
+        for (std::size_t i = 0; i < s.mCellTypeCounts.size(); ++i)
+            std::cout << (i ? ", " : "") << "\"" << s.mCellTypeCounts[i].first
+                      << "\": " << s.mCellTypeCounts[i].second;
+        std::cout << "},\n";
+        std::cout << "  \"total_area\": " << stats_g6(s.mTotalArea) << ",\n";
+        std::cout << "  \"signed_volume\": " << stats_g6(s.mSignedVolume) << ",\n";
+        std::cout << "  \"unsigned_volume\": " << stats_g6(s.mUnsignedVolume) << ",\n";
+        std::cout << "  \"num_inverted\": " << s.mNumInverted << "\n";
+        std::cout << "}\n";
+        return 0;
+    }
+
+    std::cout << "<meshio++ geometric stats>\n";
+    std::cout << "  points:          " << s.mNumPoints << "\n";
+    std::cout << "  cells:           " << s.mNumCells << "\n";
+    std::cout << "  bbox min:        " << vec3(s.mBBoxMin) << "\n";
+    std::cout << "  bbox max:        " << vec3(s.mBBoxMax) << "\n";
+    std::cout << "  extent:          " << vec3(s.mExtent) << "\n";
+    std::cout << "  centroid:        " << vec3(s.mCentroid) << "\n";
+    std::cout << "  cell types:\n";
+    for (const auto& kv : s.mCellTypeCounts)
+        std::cout << "    " << kv.first << ": " << kv.second << "\n";
+    std::cout << "  total area:      " << stats_g6(s.mTotalArea) << "\n";
+    std::cout << "  signed volume:   " << stats_g6(s.mSignedVolume) << "\n";
+    std::cout << "  unsigned volume: " << stats_g6(s.mUnsignedVolume) << "\n";
+    std::cout << "  inverted cells:  " << s.mNumInverted << "\n";
+    return 0;
+}
+
 int cmd_reorder(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -805,6 +1098,16 @@ int main(int argc, char** argv) {
             return cmd_diff(rest);
         if (cmd == "merge")
             return cmd_merge(rest);
+        if (cmd == "transform")
+            return cmd_transform(rest);
+        if (cmd == "clean")
+            return cmd_clean(rest);
+        if (cmd == "crop")
+            return cmd_crop(rest);
+        if (cmd == "split")
+            return cmd_split(rest);
+        if (cmd == "stats")
+            return cmd_stats(rest);
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;

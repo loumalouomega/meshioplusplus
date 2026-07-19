@@ -76,12 +76,17 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/split.hpp"
+#include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/types.hpp"
@@ -518,6 +523,141 @@ val merge_js(const val& rMeshes, bool weld, double atol, bool sourceTag,
     });
 }
 
+/**
+ * @brief Apply an affine transform to a mesh's point coordinates. `matrix` is a
+ * JS array of 16 numbers (row-major 4x4). Returns the transformed mesh object.
+ */
+val transform_js(const val& rMeshObj, const val& rMatrix, bool rotateVectorData) {
+    return with_js_errors([&]() -> val {
+        const unsigned n = rMatrix["length"].as<unsigned>();
+        if (n != 16)
+            throw meshioplusplus::WriteError("transform: matrix must have 16 elements (4x4)");
+        double m[16];
+        for (unsigned i = 0; i < 16; ++i)
+            m[i] = rMatrix[i].as<double>();
+        meshioplusplus::AffineTransform xf = meshioplusplus::transform_from_matrix(m);
+        return mesh_to_val(meshioplusplus::transform(val_to_mesh(rMeshObj), xf, rotateVectorData));
+    });
+}
+
+/**
+ * @brief Clean a mesh (weld / prune / de-dup). Returns an object
+ * `{mesh, pointsWelded, pointsRemovedOrphan, cellsDroppedDegenerate,
+ * cellsDroppedDuplicate}` (sets/maps are not carried, as elsewhere in JS).
+ */
+val clean_js(const val& rMeshObj, bool weld, double atol, bool removeOrphans, bool dropDegenerate,
+             bool dropDuplicateCells) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::CleanOptions opts;
+        opts.weld = weld;
+        opts.atol = atol;
+        opts.remove_orphans = removeOrphans;
+        opts.drop_degenerate = dropDegenerate;
+        opts.drop_duplicate_cells = dropDuplicateCells;
+        meshioplusplus::CleanResult r = meshioplusplus::clean(val_to_mesh(rMeshObj), opts);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointsWelded", static_cast<double>(r.mPointsWelded));
+        out.set("pointsRemovedOrphan", static_cast<double>(r.mPointsRemovedOrphan));
+        out.set("cellsDroppedDegenerate", static_cast<double>(r.mCellsDroppedDegenerate));
+        out.set("cellsDroppedDuplicate", static_cast<double>(r.mCellsDroppedDuplicate));
+        return out;
+    });
+}
+
+/**
+ * @brief Crop a mesh to a bounding box (`lo`/`hi` are 3-element JS arrays).
+ * `mode` is "all" (default) or "any". Returns the pruned mesh object.
+ */
+val crop_bbox_js(const val& rMeshObj, const val& rLo, const val& rHi, const std::string& rMode,
+                 bool recordIds) {
+    return with_js_errors([&]() -> val {
+        double lo[3], hi[3];
+        for (unsigned i = 0; i < 3; ++i) {
+            lo[i] = rLo[i].as<double>();
+            hi[i] = rHi[i].as<double>();
+        }
+        meshioplusplus::CropMode m =
+            (rMode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
+        return mesh_to_val(
+            meshioplusplus::crop_bbox(val_to_mesh(rMeshObj), lo, hi, m, recordIds).mMesh);
+    });
+}
+
+/**
+ * @brief Crop a mesh to the half-space (p - point) . normal >= 0 (`point`/
+ * `normal` are 3-element JS arrays). Returns the pruned mesh object.
+ */
+val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
+                  const std::string& rMode, bool recordIds) {
+    return with_js_errors([&]() -> val {
+        double point[3], normal[3];
+        for (unsigned i = 0; i < 3; ++i) {
+            point[i] = rPoint[i].as<double>();
+            normal[i] = rNormal[i].as<double>();
+        }
+        meshioplusplus::CropMode m =
+            (rMode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
+        return mesh_to_val(
+            meshioplusplus::crop_halfspace(val_to_mesh(rMeshObj), point, normal, m, recordIds)
+                .mMesh);
+    });
+}
+
+/**
+ * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
+ * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
+ * cell_data for the tag criterion (empty = auto-detect).
+ */
+val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTagName) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SplitResult r = meshioplusplus::split(
+            val_to_mesh(rMeshObj), meshioplusplus::split_by_from_name(rBy), rTagName);
+        val out = val::array();
+        for (meshioplusplus::SplitPiece& p : r.mPieces) {
+            val piece = val::object();
+            piece.set("key", p.mKey);
+            piece.set("mesh", mesh_to_val(p.mMesh));
+            out.call<void>("push", piece);
+        }
+        return out;
+    });
+}
+
+/**
+ * @brief Geometric statistics of a mesh (read-only). Returns an object with
+ * `numPoints`, `numCells`, `bboxMin`/`bboxMax`/`extent`/`centroid` (3-arrays),
+ * `cellTypeCounts` (object), `totalArea`, `signedVolume`, `unsignedVolume`,
+ * `numInverted`.
+ */
+val stats_js(const val& rMeshObj) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::StatsReport r = meshioplusplus::compute_stats(val_to_mesh(rMeshObj));
+        auto vec3 = [](const double* p) {
+            val a = val::array();
+            for (int i = 0; i < 3; ++i)
+                a.call<void>("push", p[i]);
+            return a;
+        };
+        val out = val::object();
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("numCells", static_cast<double>(r.mNumCells));
+        out.set("bboxMin", vec3(r.mBBoxMin));
+        out.set("bboxMax", vec3(r.mBBoxMax));
+        out.set("extent", vec3(r.mExtent));
+        out.set("centroid", vec3(r.mCentroid));
+        val counts = val::object();
+        for (const auto& kv : r.mCellTypeCounts)
+            counts.set(kv.first, static_cast<double>(kv.second));
+        out.set("cellTypeCounts", counts);
+        out.set("totalArea", r.mTotalArea);
+        out.set("signedVolume", r.mSignedVolume);
+        out.set("unsignedVolume", r.mUnsignedVolume);
+        out.set("numInverted", static_cast<double>(r.mNumInverted));
+        return out;
+    });
+}
+
 /** @brief Connectivity bandwidth (max |i - j| over node pairs sharing a cell). */
 int compute_bandwidth_js(const val& rMeshObj) {
     return with_js_errors([&]() -> int {
@@ -632,4 +772,10 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("diff", &diff_js);
     emscripten::function("meshesEqual", &meshes_equal_js);
     emscripten::function("merge", &merge_js);
+    emscripten::function("transform", &transform_js);
+    emscripten::function("clean", &clean_js);
+    emscripten::function("cropBbox", &crop_bbox_js);
+    emscripten::function("cropPlane", &crop_plane_js);
+    emscripten::function("split", &split_js);
+    emscripten::function("stats", &stats_js);
 }

@@ -80,6 +80,10 @@ typedef struct mio_reorder_result mio_reorder_result;
  *  with mio_diff_result_free(). */
 typedef struct mio_diff_result mio_diff_result;
 
+/** Opaque result of mio_split(): the ordered submesh pieces. Destroy with
+ *  mio_split_result_free(). */
+typedef struct mio_split_result mio_split_result;
+
 typedef enum mio_status {
     MIO_OK = 0,           /**< success */
     MIO_ERR_READ = 1,     /**< file could not be parsed / read-side failure */
@@ -334,6 +338,126 @@ MIO_API int64_t mio_sniff_format(const char* path, char* buf, int64_t buflen);
  */
 MIO_API mio_mesh* mio_merge(const mio_mesh* const* meshes, int64_t count, int weld, double atol,
                             int source_tag, int data_policy, int drop_duplicate_cells);
+
+/**
+ * Apply an affine transform to a mesh's point coordinates (translate / scale /
+ * rotate / general matrix). Connectivity and data are carried through; only the
+ * points change (plus optional vector/tensor point_data rotation).
+ * @param mesh   input mesh.
+ * @param matrix a row-major 4x4 affine matrix (16 doubles); point p maps to
+ *               M * [p.x, p.y, p.z, 1].
+ * @param rotate_vector_data nonzero to rotate vector (trailing dim 3) and tensor
+ *               (trailing dim 9) point_data by the transform's 3x3 linear block.
+ * @return the transformed mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_transform(const mio_mesh* mesh, const double* matrix,
+                                int rotate_vector_data);
+
+/**
+ * Clean a mesh in one pass: weld coincident points, drop degenerate/duplicate
+ * cells, remove orphaned points. Each step is toggleable; the removal counts are
+ * returned through the (optional) out-params. point_sets/cell_sets are not
+ * carried across the C ABI.
+ * @param mesh                    input mesh.
+ * @param weld                    nonzero to fuse coincident points within `atol`.
+ * @param atol                    absolute coincidence tolerance for welding.
+ * @param remove_orphans          nonzero to drop points referenced by no cell.
+ * @param drop_degenerate         nonzero to drop degenerate cells.
+ * @param drop_duplicate_cells    nonzero to drop exact-duplicate cells.
+ * @param points_welded           receives the number of points fused by welding.
+ * @param points_removed_orphan   receives the number of orphaned points removed.
+ * @param cells_dropped_degenerate receives the number of degenerate cells dropped.
+ * @param cells_dropped_duplicate receives the number of duplicate cells dropped.
+ * @return the cleaned mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_clean(const mio_mesh* mesh, int weld, double atol, int remove_orphans,
+                            int drop_degenerate, int drop_duplicate_cells, int64_t* points_welded,
+                            int64_t* points_removed_orphan, int64_t* cells_dropped_degenerate,
+                            int64_t* cells_dropped_duplicate);
+
+/**
+ * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).
+ * @param mesh       input mesh.
+ * @param lo         box lower corner (3 doubles).
+ * @param hi         box upper corner (3 doubles).
+ * @param mode       0 = keep cells with ALL nodes inside, 1 = ANY node inside.
+ * @param record_ids nonzero to attach crop:original_point_id / _cell_id data.
+ * @return the cropped mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_crop_bbox(const mio_mesh* mesh, const double* lo, const double* hi, int mode,
+                                int record_ids);
+
+/**
+ * Crop a mesh to the half-space (p - point) . normal >= 0.
+ * @param mesh       input mesh.
+ * @param point      a point on the plane (3 doubles).
+ * @param normal     the plane normal (3 doubles); the kept side is non-negative.
+ * @param mode       0 = keep cells with ALL nodes inside, 1 = ANY node inside.
+ * @param record_ids nonzero to attach crop:original_point_id / _cell_id data.
+ * @return the cropped mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_crop_plane(const mio_mesh* mesh, const double* point, const double* normal,
+                                 int mode, int record_ids);
+
+/**
+ * Split a mesh into pieces by cell type, connected component, or integer
+ * cell_data tag. point_sets/cell_sets are not carried across the C ABI.
+ * @param mesh     input mesh.
+ * @param by       "type", "component", or "region"/"tag".
+ * @param tag_name for "region"/"tag", the integer cell_data name (NULL/"" =
+ *                 auto-detect the first integer cell_data); ignored otherwise.
+ * @return a result handle (free with mio_split_result_free), or NULL on failure.
+ */
+MIO_API mio_split_result* mio_split(const mio_mesh* mesh, const char* by, const char* tag_name);
+
+/** Number of pieces in a split result, or -1 on error. */
+MIO_API int64_t mio_split_result_count(const mio_split_result* result);
+
+/**
+ * Copy piece `index`'s key (type name / component index / tag value) into `buf`.
+ * @return the untruncated key length, or -1 on error (string-getter protocol).
+ */
+MIO_API int64_t mio_split_result_key(const mio_split_result* result, int64_t index, char* buf,
+                                     int64_t buflen);
+
+/**
+ * Borrow piece `index`'s mesh. Owned by the result: valid until
+ * mio_split_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the piece mesh, or NULL if out of range.
+ */
+MIO_API const mio_mesh* mio_split_result_mesh(const mio_split_result* result, int64_t index);
+
+/**
+ * Transfer ownership of piece `index`'s mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_split_result_take_mesh(mio_split_result* result, int64_t index);
+
+/** Free a split result (and any pieces it still owns). */
+MIO_API void mio_split_result_free(mio_split_result* result);
+
+/** Geometric statistics of a mesh (see mio_stats). Per-cell-type counts are not
+ *  carried across the C ABI (use mio_num_cell_blocks / mio_cell_block_type). */
+typedef struct mio_stats_report {
+    int64_t num_points;     /**< number of points */
+    int64_t num_cells;      /**< total number of cells */
+    double bbox_min[3];     /**< bounding-box lower corner */
+    double bbox_max[3];     /**< bounding-box upper corner */
+    double extent[3];       /**< bounding-box extent (max - min) */
+    double centroid[3];     /**< mean of the point coordinates */
+    double total_area;      /**< area of 2D cells + boundary of 3D cells */
+    double signed_volume;   /**< sum of signed volumes of 3D cells */
+    double unsigned_volume; /**< sum of |volume| of 3D cells */
+    int64_t num_inverted;   /**< 3D cells with negative signed volume */
+} mio_stats_report;
+
+/**
+ * Compute geometric statistics of a mesh (read-only).
+ * @param mesh input mesh.
+ * @param out  receives the statistics (must be non-NULL).
+ * @return MIO_OK, or an error status (see mio_last_error()).
+ */
+MIO_API mio_status mio_stats(const mio_mesh* mesh, mio_stats_report* out);
 
 /**
  * Renumber a mesh (RCM / Morton / Hilbert) as a pure permutation of node and

@@ -50,10 +50,26 @@ module meshioplusplus
     private
 
     public :: mio_mesh
+    public :: mio_stats_report
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_format_readable, mio_format_writable
     public :: mio_sniff_format
     public :: mio_merge
+
+    ! Geometric statistics (bind(c); layout must match mio_stats_report in
+    ! meshioplusplus.h). Per-cell-type counts are not carried across the C ABI.
+    type, bind(c) :: mio_stats_report
+        integer(c_int64_t) :: num_points
+        integer(c_int64_t) :: num_cells
+        real(c_double) :: bbox_min(3)
+        real(c_double) :: bbox_max(3)
+        real(c_double) :: extent(3)
+        real(c_double) :: centroid(3)
+        real(c_double) :: total_area
+        real(c_double) :: signed_volume
+        real(c_double) :: unsigned_volume
+        integer(c_int64_t) :: num_inverted
+    end type
 
     ! mio_dtype values (must match the C enum in meshioplusplus.h).
     integer(c_int), parameter :: MIO_FLOAT32 = 0, MIO_FLOAT64 = 1
@@ -77,6 +93,12 @@ module meshioplusplus
         procedure :: attach_quality => mesh_attach_quality
         procedure :: quality_counts => mesh_quality_counts
         procedure :: reorder => mesh_reorder
+        procedure :: transform => mesh_transform
+        procedure :: clean => mesh_clean
+        procedure :: crop_bbox => mesh_crop_bbox
+        procedure :: crop_plane => mesh_crop_plane
+        procedure :: split => mesh_split
+        procedure :: stats => mesh_stats
         procedure :: compute_bandwidth => mesh_compute_bandwidth
         procedure :: equals => mesh_equals
         procedure :: diff => mesh_diff
@@ -223,6 +245,84 @@ module meshioplusplus
             type(c_ptr), value :: h
             character(kind=c_char), dimension(*), intent(in) :: method
             type(c_ptr) :: r
+        end function
+
+        function c_mio_transform(h, matrix, rotate_data) bind(c, name="mio_transform") result(r)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: matrix(*)
+            integer(c_int), value :: rotate_data
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_clean(h, weld, atol, rmorph, ddeg, ddup, nweld, norph, ndeg, ndup) &
+                bind(c, name="mio_clean") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: h
+            integer(c_int), value :: weld, rmorph, ddeg, ddup
+            real(c_double), value :: atol
+            integer(c_int64_t), intent(out) :: nweld, norph, ndeg, ndup
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_crop_bbox(h, lo, hi, mode, record_ids) &
+                bind(c, name="mio_crop_bbox") result(r)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: lo(*), hi(*)
+            integer(c_int), value :: mode, record_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_crop_plane(h, point, normal, mode, record_ids) &
+                bind(c, name="mio_crop_plane") result(r)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: point(*), normal(*)
+            integer(c_int), value :: mode, record_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_split(h, by, tag_name) bind(c, name="mio_split") result(r)
+            import :: c_ptr, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: by, tag_name
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_split_result_count(r) bind(c, name="mio_split_result_count") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_split_result_key(r, index, buf, buflen) &
+                bind(c, name="mio_split_result_key") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_split_result_take_mesh(r, index) &
+                bind(c, name="mio_split_result_take_mesh") result(m)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            type(c_ptr) :: m
+        end function
+
+        subroutine c_mio_split_result_free(r) bind(c, name="mio_split_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_stats(h, out) bind(c, name="mio_stats") result(s)
+            import :: c_ptr, c_int, mio_stats_report
+            type(c_ptr), value :: h
+            type(mio_stats_report), intent(out) :: out
+            integer(c_int) :: s
         end function
 
         function c_mio_reorder_result_take_mesh(r) &
@@ -862,6 +962,192 @@ contains
         call c_mio_reorder_result_free(res)
         if (.not. c_associated(out%handle)) then
             call handle_failure('reorder', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Apply an affine transform to the mesh's point coordinates. `matrix` is a
+    !> row-major 4x4 affine matrix flattened to 16 doubles (point p maps to
+    !> M * [p, 1]). `rotate_vector_data` (default .false.) rotates vector/tensor
+    !> point_data by the transform's linear part. Returns the transformed mesh.
+    function mesh_transform(self, matrix, rotate_vector_data, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: matrix(16)
+        logical, intent(in), optional :: rotate_vector_data
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        real(c_double) :: cmat(16)
+        integer(c_int) :: crot
+        cmat = real(matrix, c_double)
+        crot = 0
+        if (present(rotate_vector_data)) then
+            if (rotate_vector_data) crot = 1
+        end if
+        out%handle = c_mio_transform(self%handle, cmat, crot)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('transform', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Clean the mesh in one pass (weld / prune / de-dup). Each step is optional;
+    !> defaults: no weld, remove orphans, drop degenerate, drop duplicate cells.
+    !> The optional integer out-args receive the removal counts.
+    function mesh_clean(self, weld, atol, remove_orphans, drop_degenerate, &
+                        drop_duplicate_cells, points_welded, points_removed_orphan, &
+                        cells_dropped_degenerate, cells_dropped_duplicate, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: weld, remove_orphans, drop_degenerate, &
+                                         drop_duplicate_cells
+        real(real64), intent(in), optional :: atol
+        integer(int64), intent(out), optional :: points_welded, points_removed_orphan, &
+                                                 cells_dropped_degenerate, cells_dropped_duplicate
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cweld, crm, cdeg, cdup
+        real(c_double) :: catol
+        integer(c_int64_t) :: nweld, norph, ndeg, ndup
+        cweld = 0
+        if (present(weld)) then
+            if (weld) cweld = 1
+        end if
+        crm = 1
+        if (present(remove_orphans)) then
+            if (.not. remove_orphans) crm = 0
+        end if
+        cdeg = 1
+        if (present(drop_degenerate)) then
+            if (.not. drop_degenerate) cdeg = 0
+        end if
+        cdup = 1
+        if (present(drop_duplicate_cells)) then
+            if (.not. drop_duplicate_cells) cdup = 0
+        end if
+        catol = 1.0e-8_c_double
+        if (present(atol)) catol = real(atol, c_double)
+        out%handle = c_mio_clean(self%handle, cweld, catol, crm, cdeg, cdup, &
+                                 nweld, norph, ndeg, ndup)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('clean', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(points_welded)) points_welded = int(nweld, int64)
+        if (present(points_removed_orphan)) points_removed_orphan = int(norph, int64)
+        if (present(cells_dropped_degenerate)) cells_dropped_degenerate = int(ndeg, int64)
+        if (present(cells_dropped_duplicate)) cells_dropped_duplicate = int(ndup, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Crop the mesh to an axis-aligned bounding box. `lo`/`hi` are the box
+    !> corners (3 each). `mode` is "all" (default) or "any". Returns the crop.
+    function mesh_crop_bbox(self, lo, hi, mode, record_ids, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: lo(3), hi(3)
+        character(*), intent(in), optional :: mode
+        logical, intent(in), optional :: record_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cmode, crec
+        cmode = 0
+        if (present(mode)) then
+            if (mode == 'any') cmode = 1
+        end if
+        crec = 0
+        if (present(record_ids)) then
+            if (record_ids) crec = 1
+        end if
+        out%handle = c_mio_crop_bbox(self%handle, real(lo, c_double), real(hi, c_double), &
+                                     cmode, crec)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('crop_bbox', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Crop the mesh to the half-space (p - point) . normal >= 0. `mode` is
+    !> "all" (default) or "any". Returns the crop.
+    function mesh_crop_plane(self, point, normal, mode, record_ids, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: point(3), normal(3)
+        character(*), intent(in), optional :: mode
+        logical, intent(in), optional :: record_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cmode, crec
+        cmode = 0
+        if (present(mode)) then
+            if (mode == 'any') cmode = 1
+        end if
+        crec = 0
+        if (present(record_ids)) then
+            if (record_ids) crec = 1
+        end if
+        out%handle = c_mio_crop_plane(self%handle, real(point, c_double), &
+                                      real(normal, c_double), cmode, crec)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('crop_plane', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Split the mesh into pieces by "type", "component", or "region"/"tag".
+    !> Returns an array of meshes (one per piece); the optional `keys` array
+    !> receives each piece's key. For "region"/"tag", `tag_name` selects the
+    !> integer cell_data to split on (default: first integer cell_data).
+    function mesh_split(self, by, tag_name, keys, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: by
+        character(*), intent(in), optional :: tag_name
+        character(len=STRBUF_LEN), allocatable, intent(out), optional :: keys(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh), allocatable :: out(:)
+        type(c_ptr) :: res
+        integer(c_int64_t) :: count, i, n
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        character(len=:), allocatable :: tag
+        tag = ''
+        if (present(tag_name)) tag = tag_name
+        res = c_mio_split(self%handle, c_str(by), c_str(tag))
+        if (.not. c_associated(res)) then
+            call handle_failure('split', mio_error_message(), stat, errmsg)
+            allocate (out(0))
+            return
+        end if
+        count = c_mio_split_result_count(res)
+        allocate (out(count))
+        if (present(keys)) allocate (keys(count))
+        do i = 1, count
+            out(i)%handle = c_mio_split_result_take_mesh(res, i - 1_c_int64_t)
+            if (present(keys)) then
+                n = c_mio_split_result_key(res, i - 1_c_int64_t, buf, int(STRBUF_LEN, c_int64_t))
+                keys(i) = ''
+                if (n > 0) keys(i) = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+            end if
+        end do
+        call c_mio_split_result_free(res)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Geometric statistics of the mesh (bbox / centroid / area / volume /
+    !> inverted count). Per-cell-type counts are not carried across the C ABI.
+    function mesh_stats(self, stat, errmsg) result(rep)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_stats_report) :: rep
+        integer(c_int) :: s
+        s = c_mio_stats(self%handle, rep)
+        if (s /= 0_c_int) then
+            call handle_failure('stats', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

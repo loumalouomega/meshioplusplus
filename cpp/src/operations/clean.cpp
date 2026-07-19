@@ -1,0 +1,415 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░
+//
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+// One-pass mesh cleanup: weld coincident points (spatial-hash bucket grid, never
+// O(N^2)), drop degenerate/duplicate cells, remove orphaned points, remapping
+// connectivity and data. Built entirely through the uniform mesh API so it
+// compiles under every mesh backend. See operations/clean.hpp for the contract.
+
+// System includes
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+// Project includes
+#include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/parallel.hpp"
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+// Row-preserving gather: out[j] = src[idx[j]] (whole trailing dims), dtype kept.
+NDArray clean_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx) {
+    const std::vector<std::size_t>& shp = rSrc.Shape();
+    std::size_t cols = 1;
+    for (std::size_t d = 1; d < shp.size(); ++d)
+        cols *= shp[d];
+    std::vector<std::size_t> out_shape = shp;
+    if (out_shape.empty())
+        out_shape = {rIdx.size()};
+    else
+        out_shape[0] = rIdx.size();
+    NDArray out = NDArray::Uninit(rSrc.Dtype(), out_shape);
+    const std::size_t rb = cols * dtype_size(rSrc.Dtype());
+    if (rb == 0)
+        return out;
+    const std::byte* s = rSrc.Data();
+    std::byte* d = out.Data();
+    parallel_for_bw(rIdx.size(), [&](std::size_t j) {
+        std::memcpy(d + j * rb, s + static_cast<std::size_t>(rIdx[j]) * rb, rb);
+    });
+    return out;
+}
+
+std::int64_t clean_quantize(double v, double atol) {
+    return static_cast<std::int64_t>(std::floor(v / atol));
+}
+
+struct CleanKey {
+    std::int64_t x, y, z;
+    bool operator==(const CleanKey& r) const { return x == r.x && y == r.y && z == r.z; }
+};
+
+struct CleanKeyHash {
+    std::size_t operator()(const CleanKey& k) const {
+        std::size_t h = 1469598103934665603ULL;
+        for (std::int64_t v : {k.x, k.y, k.z}) {
+            h ^= static_cast<std::size_t>(v);
+            h *= 1099511628211ULL;
+        }
+        return h;
+    }
+};
+
+// Spatial-hash weld (keep-first, deterministic). Fills rWeldRep[g] in [0, W) and
+// rRepSource[r] = the first global point that created representative r; returns W.
+std::int64_t clean_build_weld_map(const NDArray& rPts, std::size_t n, std::size_t dim, double atol,
+                                  std::vector<std::int64_t>& rWeldRep,
+                                  std::vector<std::int64_t>& rRepSource) {
+    rWeldRep.assign(n, 0);
+    rRepSource.clear();
+    const std::size_t ddim = std::min<std::size_t>(dim, 3);
+    const double atol2 = atol * atol;
+    std::unordered_map<CleanKey, std::vector<std::int64_t>, CleanKeyHash> grid;
+    for (std::size_t g = 0; g < n; ++g) {
+        double p[3] = {0, 0, 0};
+        for (std::size_t d = 0; d < ddim; ++d)
+            p[d] = detail::read_double(rPts, g * dim + d);
+        const CleanKey k{clean_quantize(p[0], atol), clean_quantize(p[1], atol),
+                         clean_quantize(p[2], atol)};
+        std::int64_t found = -1;
+        for (std::int64_t dz = -1; dz <= 1 && found < 0; ++dz)
+            for (std::int64_t dy = -1; dy <= 1 && found < 0; ++dy)
+                for (std::int64_t dx = -1; dx <= 1 && found < 0; ++dx) {
+                    auto it = grid.find({k.x + dx, k.y + dy, k.z + dz});
+                    if (it == grid.end())
+                        continue;
+                    for (std::int64_t rep : it->second) {
+                        double q[3] = {0, 0, 0};
+                        const std::size_t rg = static_cast<std::size_t>(rRepSource[rep]);
+                        for (std::size_t d = 0; d < ddim; ++d)
+                            q[d] = detail::read_double(rPts, rg * dim + d);
+                        double d2 = 0;
+                        for (std::size_t d = 0; d < ddim; ++d)
+                            d2 += (p[d] - q[d]) * (p[d] - q[d]);
+                        if (d2 <= atol2) {
+                            found = rep;
+                            break;
+                        }
+                    }
+                }
+        if (found >= 0) {
+            rWeldRep[g] = found;
+        } else {
+            const std::int64_t r = static_cast<std::int64_t>(rRepSource.size());
+            rWeldRep[g] = r;
+            rRepSource.push_back(static_cast<std::int64_t>(g));
+            grid[k].push_back(r);
+        }
+    }
+    return static_cast<std::int64_t>(rRepSource.size());
+}
+
+// Unsigned area of a 2D corner polygon (triangle / quad, Newell normal).
+double clean_area(const std::vector<Vec3>& rC, int corners) {
+    if (corners < 3)
+        return 0.0;
+    Vec3 s = {0, 0, 0};
+    for (int i = 0; i < corners; ++i)
+        s = detail::vec3_add(s, detail::vec3_cross(rC[i], rC[(i + 1) % corners]));
+    return 0.5 * detail::vec3_norm(s);
+}
+
+// Unsigned volume of a 3D cell via the divergence theorem over its outward-wound
+// boundary faces (triangulated fan). NaN for types without a face table.
+double clean_volume(const std::vector<Vec3>& rC, CellType ct) {
+    const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
+    if (faces.empty())
+        return std::nan("");
+    double vol6 = 0.0;
+    for (const detail::CellFaceDef& f : faces) {
+        const Vec3 a = rC[f.mNodes[0]];
+        for (int i = 1; i + 1 < f.mNumCorners; ++i)
+            vol6 += detail::triple_product(a, rC[f.mNodes[i]], rC[f.mNodes[i + 1]]);
+    }
+    return std::abs(vol6 / 6.0);
+}
+
+}  // namespace
+
+CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
+    const double eps = 1e-14;
+    CleanResult res;
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    // --- weld (or identity) -> welded representatives -----------------------
+    std::vector<std::int64_t> weld_rep;    // global point -> rep in [0, W)
+    std::vector<std::int64_t> rep_source;  // rep -> first contributing global point
+    std::int64_t W = 0;
+    if (rOpts.weld && n > 0 && dim > 0 && rOpts.atol > 0) {
+        W = clean_build_weld_map(points, n, dim, rOpts.atol, weld_rep, rep_source);
+    } else {
+        weld_rep.resize(n);
+        rep_source.resize(n);
+        for (std::size_t g = 0; g < n; ++g) {
+            weld_rep[g] = static_cast<std::int64_t>(g);
+            rep_source[g] = static_cast<std::int64_t>(g);
+        }
+        W = static_cast<std::int64_t>(n);
+    }
+    res.mPointsWelded = static_cast<std::int64_t>(n) - W;
+
+    // --- per-block cell filtering (rep-space connectivity) ------------------
+    struct BlockOut {
+        std::string type;
+        int kind;  // 0 rect, 1 polygon, 2 polyhedron
+        std::size_t npc = 0;
+        std::vector<std::int64_t> rect_conn;                        // kind 0, flat (kept*npc)
+        std::vector<std::vector<std::int64_t>> poly_rows;           // kind 1
+        std::vector<std::vector<std::vector<std::int64_t>>> polyh;  // kind 2
+        std::vector<std::int64_t> kept_cells;                       // old local indices kept
+    };
+    std::vector<BlockOut> blocks;
+    std::vector<char> rep_used(static_cast<std::size_t>(W), 0);
+
+    for (const auto cb : rMesh.CellRange()) {
+        BlockOut bo;
+        bo.type = std::string(cb.Type());
+        const CellType ct = cell_type_from_name(bo.type);
+        const std::size_t nc = cb.NumCells();
+
+        if (cb.IsPolyhedron()) {
+            bo.kind = 2;
+            for (std::size_t c = 0; c < nc; ++c) {
+                std::vector<std::vector<std::int64_t>> cell(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    cell[f].reserve(face.second);
+                    for (std::size_t k = 0; k < face.second; ++k) {
+                        std::int64_t r = weld_rep[static_cast<std::size_t>(face.first[k])];
+                        cell[f].push_back(r);
+                        rep_used[static_cast<std::size_t>(r)] = 1;
+                    }
+                }
+                bo.polyh.push_back(std::move(cell));
+                bo.kept_cells.push_back(static_cast<std::int64_t>(c));
+            }
+        } else if (cb.IsRagged()) {
+            bo.kind = 1;
+            for (std::size_t c = 0; c < nc; ++c) {
+                std::vector<std::int64_t> row(cb.RowSize(c));
+                for (std::size_t k = 0; k < cb.RowSize(c); ++k) {
+                    std::int64_t r = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
+                    row[k] = r;
+                    rep_used[static_cast<std::size_t>(r)] = 1;
+                }
+                bo.poly_rows.push_back(std::move(row));
+                bo.kept_cells.push_back(static_cast<std::int64_t>(c));
+            }
+        } else {
+            bo.kind = 0;
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            bo.npc = npc;
+            const int corner_count = detail::cell_corner_count(ct);
+            const int cdim = cell_type_dimension(ct);
+            std::unordered_set<std::string> seen;
+            std::vector<std::int64_t> row(npc);
+            for (std::size_t c = 0; c < nc; ++c) {
+                for (std::size_t k = 0; k < npc; ++k)
+                    row[k] =
+                        weld_rep[static_cast<std::size_t>(detail::read_int(conn, c * npc + k))];
+
+                // degenerate: repeated corner node, or near-zero measure.
+                bool degenerate = false;
+                if (rOpts.drop_degenerate) {
+                    const int cc = corner_count > 0 ? corner_count : static_cast<int>(npc);
+                    for (int i = 0; i < cc && !degenerate; ++i)
+                        for (int j = i + 1; j < cc; ++j)
+                            if (row[i] == row[j]) {
+                                degenerate = true;
+                                break;
+                            }
+                    if (!degenerate && corner_count > 0) {
+                        std::vector<Vec3> coords(corner_count);
+                        for (int i = 0; i < corner_count; ++i)
+                            coords[i] = detail::read_point(
+                                points, dim, rep_source[static_cast<std::size_t>(row[i])]);
+                        double measure = std::nan("");
+                        if (cdim == 2)
+                            measure = clean_area(coords, corner_count);
+                        else if (cdim == 3)
+                            measure = clean_volume(coords, ct);
+                        if (!std::isnan(measure) && measure < eps)
+                            degenerate = true;
+                    }
+                }
+                if (degenerate) {
+                    ++res.mCellsDroppedDegenerate;
+                    continue;
+                }
+
+                // exact duplicate: identical sorted connectivity, keep-first.
+                if (rOpts.drop_duplicate_cells) {
+                    std::vector<std::int64_t> sorted(row);
+                    std::sort(sorted.begin(), sorted.end());
+                    std::string key(reinterpret_cast<const char*>(sorted.data()),
+                                    sorted.size() * sizeof(std::int64_t));
+                    if (!seen.insert(std::move(key)).second) {
+                        ++res.mCellsDroppedDuplicate;
+                        continue;
+                    }
+                }
+
+                for (std::size_t k = 0; k < npc; ++k) {
+                    bo.rect_conn.push_back(row[k]);
+                    rep_used[static_cast<std::size_t>(row[k])] = 1;
+                }
+                bo.kept_cells.push_back(static_cast<std::int64_t>(c));
+            }
+        }
+        blocks.push_back(std::move(bo));
+    }
+
+    // --- point compaction (orphan removal) ----------------------------------
+    std::vector<std::int64_t> new_point(static_cast<std::size_t>(W), -1);
+    std::vector<std::int64_t> kept_reps;  // reps surviving, ascending
+    for (std::int64_t r = 0; r < W; ++r) {
+        if (!rOpts.remove_orphans || rep_used[static_cast<std::size_t>(r)]) {
+            new_point[static_cast<std::size_t>(r)] = static_cast<std::int64_t>(kept_reps.size());
+            kept_reps.push_back(r);
+        }
+    }
+    const std::int64_t P = static_cast<std::int64_t>(kept_reps.size());
+    res.mPointsRemovedOrphan = W - P;
+
+    // point gather indices (output row -> source global point, keep-first).
+    std::vector<std::int64_t> point_src(kept_reps.size());
+    for (std::size_t j = 0; j < kept_reps.size(); ++j)
+        point_src[j] = rep_source[static_cast<std::size_t>(kept_reps[j])];
+
+    // --- emit points + point_data ------------------------------------------
+    Mesh& out = res.mMesh;
+    {
+        NDArray newpts = NDArray::Uninit(points.Dtype(), {static_cast<std::size_t>(P), dim});
+        if (P > 0 && dim > 0) {
+            const std::size_t rb = dim * dtype_size(points.Dtype());
+            const std::byte* s = points.Data();
+            std::byte* d = newpts.Data();
+            parallel_for_bw(point_src.size(), [&](std::size_t j) {
+                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
+            });
+        }
+        out.AssignPoints(std::move(newpts));
+    }
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
+        if (rows == n)
+            out.AddPointData(name, clean_gather_rows(a, point_src));
+        else {
+            NDArray c = a;
+            c.MakeOwned();
+            out.AddPointData(name, std::move(c));
+        }
+    }
+
+    // --- emit cells (remap rep-space -> final point index) ------------------
+    res.mCellMaps.clear();
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        BlockOut& bo = blocks[bi];
+        // cell map: old local -> new local (or -1).
+        NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
+        std::int64_t* cm = cmap.As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c)
+            cm[c] = -1;
+        for (std::size_t j = 0; j < bo.kept_cells.size(); ++j)
+            cm[static_cast<std::size_t>(bo.kept_cells[j])] = static_cast<std::int64_t>(j);
+        res.mCellMaps.push_back(std::move(cmap));
+
+        if (bo.kind == 0) {
+            const std::size_t kept = bo.kept_cells.size();
+            NDArray conn = NDArray::Uninit(DType::Int64, {kept, bo.npc});
+            std::int64_t* cd = conn.As<std::int64_t>();
+            for (std::size_t i = 0; i < bo.rect_conn.size(); ++i)
+                cd[i] = new_point[static_cast<std::size_t>(bo.rect_conn[i])];
+            out.AddCellBlock(bo.type, std::move(conn));
+        } else if (bo.kind == 1) {
+            for (auto& row : bo.poly_rows)
+                for (std::int64_t& v : row)
+                    v = new_point[static_cast<std::size_t>(v)];
+            out.AddPolygonBlock(bo.type, std::move(bo.poly_rows));
+        } else {
+            for (auto& cell : bo.polyh)
+                for (auto& face : cell)
+                    for (std::int64_t& v : face)
+                        v = new_point[static_cast<std::size_t>(v)];
+            out.AddPolyhedronBlock(bo.type, std::move(bo.polyh));
+        }
+        ++bi;
+    }
+
+    // --- emit cell_data (gather surviving cells per block) ------------------
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> outblocks;
+        std::size_t b = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const NDArray& src = rMesh.CellData(name, b);
+            const std::size_t rows = src.Shape().empty() ? 0 : src.Shape()[0];
+            if (rows == cb.NumCells())
+                outblocks.push_back(clean_gather_rows(src, blocks[b].kept_cells));
+            else {
+                NDArray c = src;
+                c.MakeOwned();
+                outblocks.push_back(std::move(c));
+            }
+            ++b;
+        }
+        out.AddCellData(name, std::move(outblocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        NDArray c = rMesh.FieldData(name);
+        c.MakeOwned();
+        out.AddFieldData(name, std::move(c));
+    }
+
+    // --- point map (input global -> output point, or -1) --------------------
+    res.mPointMap = NDArray::Uninit(DType::Int64, {n});
+    std::int64_t* pm = res.mPointMap.As<std::int64_t>();
+    for (std::size_t g = 0; g < n; ++g)
+        pm[g] = new_point[static_cast<std::size_t>(weld_rep[g])];
+
+    return res;
+}
+
+}  // namespace meshioplusplus
