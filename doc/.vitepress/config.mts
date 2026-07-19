@@ -48,6 +48,8 @@ export default defineConfig({
         text: "Reference",
         items: [
           { text: "Supported formats", link: "/formats" },
+          { text: "Mesh quality metrics", link: "/mesh_quality" },
+          { text: "Surface extraction", link: "/extract_surface" },
           { text: "Skin extraction", link: "/extract_skin" },
           { text: "CLI reference", link: "/cli" },
           { text: "XDMF time series", link: "/xdmf_time_series" },

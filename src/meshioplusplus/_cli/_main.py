@@ -2,7 +2,16 @@ import argparse
 from sys import version_info
 
 from ..__about__ import __version__
-from . import _ascii, _binary, _compress, _convert, _decompress, _info
+from . import (
+    _ascii,
+    _binary,
+    _compress,
+    _convert,
+    _decompress,
+    _extract_surface,
+    _info,
+    _quality,
+)
 
 
 def main(argv=None):
@@ -45,6 +54,20 @@ def main(argv=None):
     parser = subparsers.add_parser("binary", help="Convert to binary", aliases=["b"])
     _binary.add_args(parser)
     parser.set_defaults(func=_binary.binary)
+
+    parser = subparsers.add_parser(
+        "quality", help="Print mesh quality metrics", aliases=["q"]
+    )
+    _quality.add_args(parser)
+    parser.set_defaults(func=_quality.quality)
+
+    parser = subparsers.add_parser(
+        "extract-surface",
+        help="Extract the boundary surface/edges",
+        aliases=["surface"],
+    )
+    _extract_surface.add_args(parser)
+    parser.set_defaults(func=_extract_surface.extract_surface_cmd)
 
     args = parent_parser.parse_args(argv)
 

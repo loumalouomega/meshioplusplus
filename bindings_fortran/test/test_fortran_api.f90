@@ -16,7 +16,8 @@ program test_fortran_api
     use meshioplusplus
     implicit none
 
-    type(mio_mesh) :: m, r, c
+    type(mio_mesh) :: m, r, c, s, q
+    integer(int64) :: qcells, qinv, qdeg
     real(real64) :: points(3, 5), vec(3, 5)
     real(real64), allocatable :: rpoints(:, :), rdata(:), rvec(:, :)
     real(real64), pointer :: pview(:, :)
@@ -69,6 +70,19 @@ program test_fortran_api
     call check(m%num_points() == 5_int64, 'num_points before write')
     call check(m%point_dim() == 3_int64, 'point_dim before write')
     call check(m%num_cell_blocks() == 1_int64, 'num_cell_blocks before write')
+
+    ! ---- mesh operations ------------------------------------------------
+    s = m%extract_surface()
+    call check(s%num_cell_blocks() >= 1_int64, 'extract_surface produces cells')
+    call check(s%cell_block_type(1) == 'triangle', 'extract_surface gives triangles')
+    call s%free()
+
+    q = m%attach_quality()
+    call check(q%num_cell_data() >= 1_int64, 'attach_quality adds cell_data')
+    call q%free()
+
+    call m%quality_counts(num_cells=qcells, num_inverted=qinv, num_degenerate=qdeg)
+    call check(qcells == 2_int64, 'quality_counts reports two cells')
 
     ! ---- write, read back, verify everything ---------------------------
     call m%write(vtu_path)

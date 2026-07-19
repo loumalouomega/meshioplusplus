@@ -240,6 +240,53 @@ TEST(CApi, FileRoundTripAndConvert) {
     std::remove(vtk.c_str());
 }
 
+TEST(CApi, MeshOperations) {
+    mio_mesh* m = build_tet_mesh();  // 2 tetra sharing a face
+
+    // extract_surface -> boundary triangles.
+    mio_mesh* surf = mio_extract_surface(m, /*record_parent_ids=*/1);
+    ASSERT_NE(surf, nullptr) << mio_last_error();
+    EXPECT_GT(mio_mesh_num_cell_blocks(surf), 0);
+    EXPECT_EQ(block_type(surf, 0), "triangle");
+    mio_mesh_free(surf);
+
+    // extract_skin -> also boundary triangles.
+    mio_mesh* skin = mio_extract_skin(m, /*linearize=*/0);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(block_type(skin, 0), "triangle");
+    mio_mesh_free(skin);
+
+    // attach_quality preserves the cell block(s) and adds cell_data.
+    mio_mesh* q = mio_attach_quality(m);
+    ASSERT_NE(q, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_cell_blocks(q), 1);
+    EXPECT_EQ(block_type(q, 0), "tetra");
+    EXPECT_GT(mio_mesh_num_cell_data(q), 0);
+    mio_mesh_free(q);
+
+    // quality counts.
+    std::int64_t nc = -1, ninv = -1, ndeg = -1;
+    ASSERT_EQ(mio_quality_counts(m, &nc, &ninv, &ndeg), MIO_OK) << mio_last_error();
+    EXPECT_EQ(nc, 2);
+    EXPECT_GE(ninv, 0);
+    EXPECT_GE(ndeg, 0);
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, SniffFormat) {
+    const std::string vtu = mt::temp_path("_capi_sniff.vtu");
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_EQ(mio_write(vtu.c_str(), m, nullptr), MIO_OK);
+    mio_mesh_free(m);
+
+    char buf[32] = {};
+    const std::int64_t n = mio_sniff_format(vtu.c_str(), buf, sizeof(buf));
+    EXPECT_EQ(std::string(buf), "vtu");
+    EXPECT_EQ(n, 3);
+    std::remove(vtu.c_str());
+}
+
 TEST(CApi, ZeroCopyPointerStability) {
     mio_mesh* m = build_tet_mesh();
     const void* pts1 = nullptr;

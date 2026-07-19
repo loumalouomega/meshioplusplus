@@ -65,6 +65,9 @@
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/types.hpp"
@@ -176,6 +179,70 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus_py::mesh_to_py(meshioplusplus::extract_skin(cpp, linearize));
         },
         py::arg("mesh"), py::arg("linearize") = false);
+
+    // Surface/boundary extraction (auto: volume -> faces, surface -> edges).
+    m.def(
+        "extract_surface",
+        [](py::object pymesh, bool record_parent_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::extract_surface(cpp, record_parent_ids));
+        },
+        py::arg("mesh"), py::arg("record_parent_ids") = false);
+
+    // Mesh quality: attach per-cell metrics as cell_data.
+    m.def(
+        "attach_quality",
+        [](py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::attach_quality(cpp));
+        },
+        py::arg("mesh"));
+
+    // Mesh quality: full per-cell report (summaries + arrays + counts).
+    m.def(
+        "compute_quality",
+        [](py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::QualityReport rep = meshioplusplus::compute_quality(cpp);
+            py::dict out;
+            out["num_cells"] = rep.mNumCells;
+            out["num_inverted"] = rep.mNumInverted;
+            out["num_degenerate"] = rep.mNumDegenerate;
+            py::dict metrics;
+            for (auto& entry : rep.mMetrics) {
+                const meshioplusplus::QualityMetricSummary& s = entry.second;
+                py::dict d;
+                d["min"] = s.mMin;
+                d["max"] = s.mMax;
+                d["mean"] = s.mMean;
+                d["count"] = s.mCount;
+                py::list hist;
+                for (std::int64_t h : s.mHistogram)
+                    hist.append(h);
+                d["histogram"] = hist;
+                metrics[py::str(entry.first)] = d;
+            }
+            out["metrics"] = metrics;
+            py::dict cell_arrays;
+            for (auto& entry : rep.mCellArrays) {
+                py::list lst;
+                for (meshioplusplus::NDArray& a : entry.second)
+                    lst.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+                cell_arrays[py::str(entry.first)] = lst;
+            }
+            out["cell_arrays"] = cell_arrays;
+            return out;
+        },
+        py::arg("mesh"));
+
+    // Content-based format detection ("" if unsure).
+    m.def(
+        "sniff_format", [](const std::string& path) { return meshioplusplus::sniff_format(path); },
+        py::arg("path"));
 
     // STL writer / reader (ascii or binary).
     m.def(

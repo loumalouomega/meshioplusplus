@@ -52,6 +52,7 @@ module meshioplusplus
     public :: mio_mesh
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_format_readable, mio_format_writable
+    public :: mio_sniff_format
 
     ! mio_dtype values (must match the C enum in meshioplusplus.h).
     integer(c_int), parameter :: MIO_FLOAT32 = 0, MIO_FLOAT64 = 1
@@ -69,6 +70,11 @@ module meshioplusplus
         procedure :: is_valid => mesh_is_valid
         procedure :: read => mesh_read
         procedure :: write => mesh_write
+        ! -- operations --
+        procedure :: extract_surface => mesh_extract_surface
+        procedure :: extract_skin => mesh_extract_skin
+        procedure :: attach_quality => mesh_attach_quality
+        procedure :: quality_counts => mesh_quality_counts
         ! -- building --
         procedure :: set_points => mesh_set_points
         procedure, private :: mesh_add_cell_block_i32
@@ -166,6 +172,44 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: in_path, in_format
             character(kind=c_char), dimension(*), intent(in) :: out_path, out_format
             integer(c_int) :: s
+        end function
+
+        function c_mio_extract_surface(h, record_parent_ids) &
+                bind(c, name="mio_extract_surface") result(r)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: h
+            integer(c_int), value :: record_parent_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_extract_skin(h, linearize) bind(c, name="mio_extract_skin") result(r)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: h
+            integer(c_int), value :: linearize
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_attach_quality(h) bind(c, name="mio_attach_quality") result(r)
+            import :: c_ptr
+            type(c_ptr), value :: h
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_quality_counts(h, nc, ninv, ndeg) &
+                bind(c, name="mio_quality_counts") result(s)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t), intent(out) :: nc, ninv, ndeg
+            integer(c_int) :: s
+        end function
+
+        function c_mio_sniff_format(path, buf, buflen) &
+                bind(c, name="mio_sniff_format") result(n)
+            import :: c_char, c_int64_t
+            character(kind=c_char), dimension(*), intent(in) :: path
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
         end function
 
         function c_mio_mesh_set_points(h, dtype, num_points, dim, xyz) &
@@ -506,6 +550,17 @@ contains
                                          c_str(ofmt)), 'convert', stat, errmsg)
     end subroutine
 
+    !> Guess a mesh file's format from its contents ('' if undetermined).
+    function mio_sniff_format(path) result(fmt)
+        character(*), intent(in) :: path
+        character(:), allocatable :: fmt
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        integer(c_int64_t) :: n
+        fmt = ''
+        n = c_mio_sniff_format(c_str(path), buf, int(STRBUF_LEN, c_int64_t))
+        if (n > 0) fmt = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+    end function
+
     ! ------------------------------------------------------------------
     ! mio_mesh: lifecycle & file I/O
     ! ------------------------------------------------------------------
@@ -568,6 +623,78 @@ contains
         fmt = ''; if (present(format)) fmt = format
         call handle_status(c_mio_write(c_str(path), self%handle, c_str(fmt)), 'write', &
                            stat, errmsg)
+    end subroutine
+
+    !> Extract the boundary of the mesh's highest-dimension cells as a new mesh
+    !> (volume -> faces, surface -> edges).
+    function mesh_extract_surface(self, record_parent_ids, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: record_parent_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: rec
+        rec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) rec = 1
+        end if
+        out%handle = c_mio_extract_surface(self%handle, rec)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('extract_surface', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Extract the boundary skin of a volume mesh as a new surface mesh.
+    function mesh_extract_skin(self, linearize, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: linearize
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: lin
+        lin = 0
+        if (present(linearize)) then
+            if (linearize) lin = 1
+        end if
+        out%handle = c_mio_extract_skin(self%handle, lin)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('extract_skin', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A copy of the mesh with per-cell quality metrics attached as cell_data.
+    function mesh_attach_quality(self, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out%handle = c_mio_attach_quality(self%handle)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('attach_quality', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Aggregate quality counts (total / inverted / degenerate cells).
+    subroutine mesh_quality_counts(self, num_cells, num_inverted, num_degenerate, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(out), optional :: num_cells, num_inverted, num_degenerate
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int64_t) :: nc, ninv, ndeg
+        if (c_mio_quality_counts(self%handle, nc, ninv, ndeg) /= 0_c_int) then
+            call handle_failure('quality_counts', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_cells)) num_cells = nc
+        if (present(num_inverted)) num_inverted = ninv
+        if (present(num_degenerate)) num_degenerate = ndeg
+        call clear_status(stat, errmsg)
     end subroutine
 
     ! ------------------------------------------------------------------

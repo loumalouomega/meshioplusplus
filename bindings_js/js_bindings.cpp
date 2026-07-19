@@ -76,7 +76,11 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/types.hpp"
 
 using emscripten::val;
@@ -352,7 +356,14 @@ auto with_js_errors(F&& f) -> decltype(f()) {
  */
 val read_mesh(const std::string& rPath, const std::string& rFormat) {
     return with_js_errors([&]() -> val {
-        std::string fmt = resolve_format(rPath, rFormat);
+        std::string fmt;
+        try {
+            fmt = resolve_format(rPath, rFormat);
+        } catch (const meshioplusplus::ReadError&) {
+            fmt = meshioplusplus::sniff_format(rPath);
+            if (fmt.empty())
+                throw;
+        }
         auto it = registry_readers().find(fmt);
         if (it == registry_readers().end())
             throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported format '" +
@@ -427,6 +438,36 @@ std::string mesh_backend_js() {
     return meshioplusplus::mesh_backend_name();
 }
 
+// ---------------------------------------------------------------------
+// Mesh operations (computations on a mesh, not file formats).
+// ---------------------------------------------------------------------
+
+/** @brief Extract the boundary (volume -> faces, surface -> edges). */
+val extract_surface_js(const val& rMeshObj, bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::extract_surface(val_to_mesh(rMeshObj), recordParentIds));
+    });
+}
+
+/** @brief Extract the boundary skin of a volume mesh. */
+val extract_skin_js(const val& rMeshObj, bool linearize) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::extract_skin(val_to_mesh(rMeshObj), linearize));
+    });
+}
+
+/** @brief Attach per-cell quality metrics as cell_data. */
+val attach_quality_js(const val& rMeshObj) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::attach_quality(val_to_mesh(rMeshObj)));
+    });
+}
+
+/** @brief Guess a mesh file's format from its contents ("" if undetermined). */
+std::string sniff_format_js(const std::string& rPath) {
+    return with_js_errors([&]() -> std::string { return meshioplusplus::sniff_format(rPath); });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
@@ -436,4 +477,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
     emscripten::function("topologicalDimension", &topological_dimension_js);
     emscripten::function("meshBackend", &mesh_backend_js);
+    emscripten::function("extractSurface", &extract_surface_js);
+    emscripten::function("extractSkin", &extract_skin_js);
+    emscripten::function("attachQuality", &attach_quality_js);
+    emscripten::function("sniffFormat", &sniff_format_js);
 }

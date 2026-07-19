@@ -36,6 +36,7 @@
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/operations/surface.hpp"  // extract_surface shares this implementation
 
 namespace meshioplusplus {
 
