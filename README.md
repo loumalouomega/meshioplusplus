@@ -89,6 +89,8 @@ meshioplusplus ascii      input.msh              # convert to ASCII format
 
 with any of the supported formats.
 
+The same verbs are available as a **standalone C++ binary** that needs no Python: build it with `build/configure.sh --cli --build` (or `-DMESHIOPLUSPLUS_BUILD_CLI=ON`) and run the installed `meshioplusplus` executable exactly as above. It links only the C++ core, so point/cell *sets* (and `convert -s/-d`) — which live only in the Python `Mesh` — are unavailable there; use the Python CLI for those.
+
 In Python, simply do
 
 <!--pytest-codeblocks:skip-->
