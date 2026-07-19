@@ -18,6 +18,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Off by default: only portable release artifacts (manylinux wheel builds --
+# paired with a newer-than-image GCC, e.g. gcc-toolset-13 on manylinux_2_28 --
+# and the standalone CLI binary, see cli.yml) need this, to keep the binary's
+# GLIBCXX/CXXABI symbol requirements within the target policy's floor (Linux)
+# or avoid a vcredist dependency (MSVC static CRT). Applied below to whichever
+# of _core / meshioplusplus_cli is actually being built.
+option(MESHIOPLUSPLUS_STATIC_RUNTIME
+  "Statically link the C++ runtime (libgcc/libstdc++ on GNU, static CRT on MSVC)" OFF)
+
 # The pybind11 extension is the default consumer of meshioplusplus_core_obj,
 # but non-Python consumers (the GoogleTest suite, the Emscripten/WASM target
 # below) must be configurable without ever locating a Python interpreter or
@@ -311,12 +320,8 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
   target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings)
   target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
 
-  # Off by default: only manylinux wheel builds (paired with a newer-than-image
-  # GCC, e.g. gcc-toolset-13 on manylinux_2_28) need this, to keep the .so's
-  # GLIBCXX/CXXABI/GLIBC symbol requirements within the target policy's floor.
   # LDFLAGS env-var seeding of CMAKE_MODULE_LINKER_FLAGS was tried first and
   # silently didn't apply to this MODULE target, hence targeting it directly.
-  option(MESHIOPLUSPLUS_STATIC_RUNTIME "Statically link libgcc/libstdc++ into _core (portable manylinux wheels)" OFF)
   if(MESHIOPLUSPLUS_STATIC_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(_core PRIVATE -static-libgcc -static-libstdc++)
   endif()
@@ -544,6 +549,17 @@ if(MESHIOPLUSPLUS_BUILD_CLI)
   target_compile_definitions(meshioplusplus_cli
     PRIVATE MESHIOPLUSPLUS_CLI_VERSION="${PROJECT_VERSION}")
   set_target_properties(meshioplusplus_cli PROPERTIES OUTPUT_NAME meshioplusplus)
+  if(MESHIOPLUSPLUS_STATIC_RUNTIME)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      target_link_options(meshioplusplus_cli PRIVATE -static-libgcc -static-libstdc++)
+    elseif(MSVC)
+      # CMP0091 (NEW via the top-of-file cmake_minimum_required range) makes this
+      # property authoritative regardless of when the target was created: static
+      # CRT (/MT, /MTd for Debug) so the binary needs no vcredist at runtime.
+      set_property(TARGET meshioplusplus_cli PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+  endif()
   include(GNUInstallDirs)
   install(TARGETS meshioplusplus_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
