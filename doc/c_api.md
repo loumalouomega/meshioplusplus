@@ -49,7 +49,7 @@ vcpkg install meshioplusplus --overlay-ports=ports
 
 `ports/` also carries a second overlay, `ports/libaec/`, alongside `ports/meshioplusplus/` — it replaces vcpkg registry's own `libaec` port (a transitive dependency of `hdf5`'s `szip` feature) with an otherwise-identical one that sources the same release from `libaec`'s official GitHub mirror instead of its `gitlab.dkrz.de` host, which had been intermittently rate-limiting this project's release CI. `--overlay-ports=ports` picks up both automatically.
 
-Both are validated in CI on every PR and on `v*` release tags (`.github/workflows/packages.yml`). Two caveats: the shared library is **shared-only** (no static build yet), and the vendored **Eigen** submodule is off in both recipes (the MED transpose falls back to a hand-written loop), since it is absent from a source tarball. Neither is submitted to Conan Center / the upstream vcpkg registry today, so nothing resolves `meshioplusplus` as a plain requirement out of the box; as a stopgap, every `v*` release attaches ready-to-use Linux/x86_64 artifacts to its [GitHub Release](https://github.com/loumalouomega/meshioplusplus/releases) that supply the missing recipe:
+Both are validated in CI on every PR and on `v*` release tags (`.github/workflows/packages.yml`). Two caveats: the shared library is **shared-only** (no static build yet), and the vendored **Eigen** submodule is off in both recipes (the MED transpose falls back to a hand-written loop), since it is absent from a source tarball. Neither is submitted to Conan Center / the upstream vcpkg registry today, so nothing resolves `meshioplusplus` as a plain requirement out of the box; as a stopgap, every `v*` release attaches ready-to-use Linux artifacts, for both x86_64 and arm64, to its [GitHub Release](https://github.com/loumalouomega/meshioplusplus/releases) that supply the missing recipe:
 
 ```sh
 # Conan: restore the release archive (adds the meshioplusplus recipe + a matching
@@ -57,7 +57,7 @@ Both are validated in CI on every PR and on `v*` release tags (`.github/workflow
 # still supplies the transitive hdf5/netcdf/zlib/openssl binaries over the
 # network as usual; --build=missing rebuilds meshioplusplus itself from the
 # archive's recipe if your profile doesn't match the prebuilt one.
-conan cache restore meshioplusplus-conan-full-linux-x86_64.tgz
+conan cache restore meshioplusplus-conan-full-linux-x86_64.tgz   # or ...-linux-arm64.tgz
 conan install --requires=meshioplusplus/<version> --build=missing \
   -o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcdf=True -o meshioplusplus/*:with_zlib=True
 
@@ -123,7 +123,7 @@ Parameterized writers use each format's Python-reference default (VTU: binary+zl
 
 The core also ships a **Python-free CLI** — the same verbs as the Python command-line tool, built directly on the C++ core, so it needs neither a Python interpreter nor the pybind11 extension.
 
-**Prebuilt binaries:** every [GitHub Release](https://github.com/loumalouomega/meshioplusplus/releases) tag (`v*`) ships a ready-to-run, statically-linked `meshioplusplus` executable for Linux (x86_64), macOS (universal x86_64+arm64), and Windows (x86_64) — no install step, no runtime dependency to satisfy (no `libstdc++`/vcredist). These release binaries build with `MESHIOPLUSPLUS_WITH_HDF5/NETCDF/ZLIB=OFF` and the sequential parallel backend, trading those for a single dependency-free file (see `.github/workflows/cli.yml`); build from source (below) for the full HDF5/netCDF/multi-threaded feature set.
+**Prebuilt binaries:** every [GitHub Release](https://github.com/loumalouomega/meshioplusplus/releases) tag (`v*`) ships a ready-to-run, statically-linked `meshioplusplus` executable for Linux (x86_64 and arm64), macOS (universal x86_64+arm64), and Windows (x86_64) — no install step, no runtime dependency to satisfy (no `libstdc++`/vcredist). These release binaries build with `MESHIOPLUSPLUS_WITH_HDF5/NETCDF/ZLIB=OFF` and the sequential parallel backend, trading those for a single dependency-free file (see `.github/workflows/cli.yml`); build from source (below) for the full HDF5/netCDF/multi-threaded feature set.
 
 **Build from source:** off by default; build it alongside a standalone C++ tree:
 
