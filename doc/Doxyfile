@@ -1,0 +1,29 @@
+# Minimal Doxyfile for the meshio++ C++/C API reference.
+# Unset options fall back to Doxygen's built-in defaults.
+# Generated into doc/doxygen-build/html, then copied into the VitePress
+# dist output at /api/ by .github/workflows/docs.yml (see doc/README or
+# CLAUDE.md "Docs (VitePress)" for the local reproduction steps).
+
+PROJECT_NAME           = "meshio++"
+PROJECT_BRIEF          = "C++ / C API reference"
+
+OUTPUT_DIRECTORY       = doxygen-build
+INPUT                  = ../cpp/include ../bindings_c/include
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp *.h
+
+EXTRACT_ALL             = YES
+EXTRACT_STATIC          = YES
+EXTRACT_PRIVATE         = NO
+WARN_IF_UNDOCUMENTED    = NO
+
+GENERATE_HTML           = YES
+HTML_OUTPUT             = html
+GENERATE_LATEX          = NO
+GENERATE_XML            = NO
+HAVE_DOT                = NO
+DISABLE_INDEX           = NO
+GENERATE_TREEVIEW       = YES
+SOURCE_BROWSER          = YES
+
+QUIET                   = YES

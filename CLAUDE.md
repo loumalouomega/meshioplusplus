@@ -62,6 +62,8 @@ meshioplusplus binary mesh.msh        # convert to binary
 
 **Docs (VitePress):** `cd doc && npm install && npm run docs:build` (dev: `npm run docs:dev`).
 
+**Doxygen API reference** (`doc/Doxyfile`): C++/C API docs generated from `cpp/include` + `bindings_c/include` (`EXTRACT_ALL=YES`, no third-party headers in scope). `docs.yml` runs `doxygen Doxyfile` (from `doc/`, needs `apt-get install doxygen`) into the gitignored `doc/doxygen-build/html`, then copies it into the VitePress build as `doc/.vitepress/dist/api/` after `docs:build` — a separate static HTML island, not VitePress-rendered pages, linked from the nav/sidebar as "API (Doxygen)". Reproduce locally: `cd doc && doxygen Doxyfile && npm run docs:build && cp -r doxygen-build/html .vitepress/dist/api`, then `npm run docs:preview`.
+
 **Logo:** built with TikZ — the **Stanford Bunny** (`example/Bunny.stl`,
 "Stanford Bunny — Digitized!" by MakerBot, CC-BY, thingiverse thing:88208),
 rendered by meshio++ itself. `logo/build.sh` runs `logo/gen_logo_tikz.py`

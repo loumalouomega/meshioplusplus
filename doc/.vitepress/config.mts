@@ -25,6 +25,7 @@ export default defineConfig({
       { text: "Formats", link: "/formats" },
       { text: "Benchmarks", link: "/benchmarks" },
       { text: "CLI", link: "/cli" },
+      { text: "API (Doxygen)", link: "/api/", target: "_self" },
     ],
 
     sidebar: [
@@ -60,6 +61,7 @@ export default defineConfig({
           { text: "C API", link: "/c_api" },
           { text: "Fortran", link: "/fortran" },
           { text: "Benchmarks", link: "/benchmarks" },
+          { text: "API reference (Doxygen)", link: "/api/", target: "_self" },
         ],
       },
       {
