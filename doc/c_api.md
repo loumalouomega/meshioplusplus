@@ -29,7 +29,7 @@ gcc my_solver.c $(pkg-config --cflags --libs meshioplusplus) -o my_solver
 or CMake:
 
 ```cmake
-find_package(meshioplusplus 6.1 REQUIRED)
+find_package(meshioplusplus REQUIRED)  # pin a minimum version if you need one, e.g. `meshioplusplus 7.0`
 target_link_libraries(my_solver PRIVATE meshioplusplus::meshioplusplus)
 ```
 
