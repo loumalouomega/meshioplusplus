@@ -96,6 +96,19 @@ file(GLOB_RECURSE MESHIOPLUSPLUS_CORE_SOURCES
 add_library(meshioplusplus_core_obj OBJECT ${MESHIOPLUSPLUS_CORE_SOURCES})
 set_target_properties(meshioplusplus_core_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(meshioplusplus_core_obj PUBLIC cxx_std_20)
+
+# On MSVC, /MT vs /MD is a *compile*-time flag baked into each .obj (unlike
+# GNU's -static-libgcc/-static-libstdc++, which is link-only) -- every object
+# library feeding a static-runtime final link must be compiled with the same
+# setting, or the link fails with unresolved __imp_-prefixed CRT externals
+# (nearbyint/isnan/ecvt_s/... -- the dynamic-CRT objects expect an import lib
+# that a static-CRT link doesn't provide). Never applied when building the
+# Python extension: pybind11 modules must always match the interpreter's own
+# (dynamic) CRT, and Windows wheels never set MESHIOPLUSPLUS_STATIC_RUNTIME.
+if(MESHIOPLUSPLUS_STATIC_RUNTIME AND MSVC AND NOT MESHIOPLUSPLUS_BUILD_PYTHON)
+  set_property(TARGET meshioplusplus_core_obj PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 target_include_directories(
   meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include
                          ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/pugixml)
