@@ -89,7 +89,7 @@ jobs:
           cat > CMakeLists.txt <<EOF
           cmake_minimum_required(VERSION 3.15)
           project(consumer LANGUAGES C)
-          find_package(meshioplusplus 6.1 REQUIRED)
+          find_package(meshioplusplus 7.0 REQUIRED)
           add_executable(ex_c $GITHUB_WORKSPACE/doc/examples/c_api_example.c)
           target_link_libraries(ex_c PRIVATE meshioplusplus::meshioplusplus)
           EOF
