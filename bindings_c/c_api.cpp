@@ -56,12 +56,17 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/split.hpp"
+#include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
 
@@ -77,6 +82,11 @@ struct mio_reorder_result {
 
 struct mio_diff_result {
     meshioplusplus::DiffReport mReport;
+};
+
+struct mio_split_result {
+    std::vector<mio_mesh> mMeshes;   // owns each piece; borrowed via mio_split_result_mesh
+    std::vector<std::string> mKeys;  // per-piece key (type / component / tag value)
 };
 
 namespace {
@@ -473,6 +483,146 @@ mio_mesh* mio_merge(const mio_mesh* const* meshes, int64_t count, int weld, doub
         opts.data_policy = (data_policy == 1) ? meshioplusplus::MergeDataPolicy::Fill
                                               : meshioplusplus::MergeDataPolicy::Intersection;
         return new mio_mesh{meshioplusplus::merge(ptrs, opts).mMesh};
+    });
+}
+
+mio_mesh* mio_transform(const mio_mesh* mesh, const double* matrix, int rotate_vector_data) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!matrix)
+            throw meshioplusplus::ReadError("meshio++: matrix is NULL");
+        meshioplusplus::AffineTransform xf = meshioplusplus::transform_from_matrix(matrix);
+        return new mio_mesh{meshioplusplus::transform(mesh->mMesh, xf, rotate_vector_data != 0)};
+    });
+}
+
+mio_mesh* mio_clean(const mio_mesh* mesh, int weld, double atol, int remove_orphans,
+                    int drop_degenerate, int drop_duplicate_cells, int64_t* points_welded,
+                    int64_t* points_removed_orphan, int64_t* cells_dropped_degenerate,
+                    int64_t* cells_dropped_duplicate) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::CleanOptions opts;
+        opts.weld = weld != 0;
+        opts.atol = atol;
+        opts.remove_orphans = remove_orphans != 0;
+        opts.drop_degenerate = drop_degenerate != 0;
+        opts.drop_duplicate_cells = drop_duplicate_cells != 0;
+        meshioplusplus::CleanResult r = meshioplusplus::clean(mesh->mMesh, opts);
+        if (points_welded)
+            *points_welded = r.mPointsWelded;
+        if (points_removed_orphan)
+            *points_removed_orphan = r.mPointsRemovedOrphan;
+        if (cells_dropped_degenerate)
+            *cells_dropped_degenerate = r.mCellsDroppedDegenerate;
+        if (cells_dropped_duplicate)
+            *cells_dropped_duplicate = r.mCellsDroppedDuplicate;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_crop_bbox(const mio_mesh* mesh, const double* lo, const double* hi, int mode,
+                        int record_ids) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !lo || !hi)
+            throw meshioplusplus::ReadError("meshio++: mesh/lo/hi is NULL");
+        meshioplusplus::CropMode m =
+            (mode == 1) ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
+        return new mio_mesh{
+            meshioplusplus::crop_bbox(mesh->mMesh, lo, hi, m, record_ids != 0).mMesh};
+    });
+}
+
+mio_mesh* mio_crop_plane(const mio_mesh* mesh, const double* point, const double* normal, int mode,
+                         int record_ids) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !point || !normal)
+            throw meshioplusplus::ReadError("meshio++: mesh/point/normal is NULL");
+        meshioplusplus::CropMode m =
+            (mode == 1) ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
+        return new mio_mesh{
+            meshioplusplus::crop_halfspace(mesh->mMesh, point, normal, m, record_ids != 0).mMesh};
+    });
+}
+
+mio_split_result* mio_split(const mio_mesh* mesh, const char* by, const char* tag_name) {
+    return guarded_ptr(static_cast<mio_split_result*>(nullptr), [&]() -> mio_split_result* {
+        if (!mesh || !by)
+            throw meshioplusplus::ReadError("meshio++: mesh/by is NULL");
+        meshioplusplus::SplitResult r = meshioplusplus::split(
+            mesh->mMesh, meshioplusplus::split_by_from_name(by), tag_name ? tag_name : "");
+        auto* out = new mio_split_result{};
+        out->mMeshes.reserve(r.mPieces.size());
+        out->mKeys.reserve(r.mPieces.size());
+        for (meshioplusplus::SplitPiece& p : r.mPieces) {
+            out->mMeshes.push_back(mio_mesh{std::move(p.mMesh)});
+            out->mKeys.push_back(std::move(p.mKey));
+        }
+        return out;
+    });
+}
+
+int64_t mio_split_result_count(const mio_split_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mMeshes.size());
+    });
+}
+
+int64_t mio_split_result_key(const mio_split_result* result, int64_t index, char* buf,
+                             int64_t buflen) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mKeys.size())
+            throw meshioplusplus::ReadError("meshio++: split piece index out of range");
+        return copy_string(result->mKeys[static_cast<std::size_t>(index)], buf, buflen);
+    });
+}
+
+const mio_mesh* mio_split_result_mesh(const mio_split_result* result, int64_t index) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result || index < 0 || static_cast<std::size_t>(index) >= result->mMeshes.size())
+            return nullptr;
+        return &result->mMeshes[static_cast<std::size_t>(index)];
+    });
+}
+
+mio_mesh* mio_split_result_take_mesh(mio_split_result* result, int64_t index) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result || index < 0 || static_cast<std::size_t>(index) >= result->mMeshes.size())
+            throw meshioplusplus::ReadError("meshio++: split piece index out of range");
+        return new mio_mesh{std::move(result->mMeshes[static_cast<std::size_t>(index)].mMesh)};
+    });
+}
+
+void mio_split_result_free(mio_split_result* result) {
+    delete result;
+}
+
+mio_status mio_stats(const mio_mesh* mesh, mio_stats_report* out) {
+    return guarded([&]() -> mio_status {
+        if (!mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        if (!out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+        meshioplusplus::StatsReport r = meshioplusplus::compute_stats(mesh->mMesh);
+        out->num_points = r.mNumPoints;
+        out->num_cells = r.mNumCells;
+        for (int d = 0; d < 3; ++d) {
+            out->bbox_min[d] = r.mBBoxMin[d];
+            out->bbox_max[d] = r.mBBoxMax[d];
+            out->extent[d] = r.mExtent[d];
+            out->centroid[d] = r.mCentroid[d];
+        }
+        out->total_area = r.mTotalArea;
+        out->signed_volume = r.mSignedVolume;
+        out->unsigned_volume = r.mUnsignedVolume;
+        out->num_inverted = r.mNumInverted;
+        return MIO_OK;
     });
 }
 
