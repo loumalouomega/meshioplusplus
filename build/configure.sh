@@ -25,6 +25,7 @@ WITH_ZLIB="ON"
 TESTS="OFF"
 C_API="OFF"
 FORTRAN="OFF"
+CLI="OFF"
 DO_BUILD="no"
 PYTHON_EXE=""
 TBB_DIR=""
@@ -44,6 +45,7 @@ Usage: $0 [options]
   --tests                         also build the GoogleTest suite (CTest)
   --c-api                         build the installable libmeshioplusplus C API
   --fortran                       build the Fortran module (implies --c-api)
+  --cli                           build the native command-line binary (meshioplusplus)
   --build                         run the build after configuring
   --python <exe>                  Python executable (default: auto)
   --tbb-dir <path>                TBBConfig.cmake dir (e.g. oneAPI)
@@ -65,6 +67,7 @@ while [ $# -gt 0 ]; do
         --tests) TESTS="ON"; shift ;;
         --c-api) C_API="ON"; shift ;;
         --fortran) FORTRAN="ON"; C_API="ON"; shift ;;
+        --cli) CLI="ON"; shift ;;
         --build) DO_BUILD="yes"; shift ;;
         --python) PYTHON_EXE="$2"; shift 2 ;;
         --tbb-dir) TBB_DIR="$2"; shift 2 ;;
@@ -108,6 +111,7 @@ set -- \
     -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB" \
     -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
     -DMESHIOPLUSPLUS_BUILD_C_API="$C_API" \
+    -DMESHIOPLUSPLUS_BUILD_CLI="$CLI" \
     -DMESHIOPLUSPLUS_BUILD_FORTRAN="$FORTRAN" \
     -DPython_EXECUTABLE="$PYTHON_EXE"
 
@@ -129,6 +133,7 @@ echo "  mesh:      $MESH_BACKEND (Python extension: $BUILD_PYTHON)"
 echo "  HDF5:      $WITH_HDF5   netCDF: $WITH_NETCDF   zlib: $WITH_ZLIB"
 echo "  tests:     $TESTS"
 echo "  C API:     $C_API   Fortran: $FORTRAN"
+echo "  CLI:       $CLI"
 echo "  python:    $PYTHON_EXE"
 echo
 
@@ -143,6 +148,9 @@ if [ "$TESTS" = "ON" ]; then
 fi
 if [ "$C_API" = "ON" ]; then
     echo "  cmake --install \"$BUILD_DIR\" --prefix <prefix>   # libmeshioplusplus + headers (see doc/c_api.md)"
+fi
+if [ "$CLI" = "ON" ]; then
+    echo "  \"$BUILD_DIR/meshioplusplus\" --help   # native CLI (no Python)"
 fi
 echo
 if [ "$MESH_BACKEND" = "MESHIO" ]; then
