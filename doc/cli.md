@@ -204,6 +204,147 @@ meshioplusplus merge a.vtu b.vtu merged.vtu --data-policy fill
 
 ---
 
+## meshioplusplus transform
+
+Apply an affine transform to a mesh's point coordinates (see [transform](/transform)).
+
+```
+meshioplusplus transform [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--translate x,y,z` | Translation |
+| `--scale sx,sy,sz` | Per-axis scale (or a single scalar for uniform) |
+| `--rotate axis,deg` | Rotation; `axis` is `x`/`y`/`z` or `nx,ny,nz` (angle in degrees) |
+| `--matrix m00,...,m33` | A row-major 4×4 affine matrix (16 values) |
+| `--scale-units FACTOR` | Uniform unit-scale factor (e.g. `0.001`) |
+| `--rotate-data` | Also rotate vector/tensor `point_data` by the transform |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Give exactly one transform source. Values starting with `-` need the `=` form
+(`--translate=-1,0,0`).
+
+**Examples:**
+
+```sh
+meshioplusplus transform in.vtu out.vtu --translate 1,2,3
+meshioplusplus transform in.vtu out.vtu --rotate z,90
+meshioplusplus transform in.vtu out.vtu --scale-units 0.001
+```
+
+---
+
+## meshioplusplus clean
+
+Weld / prune / de-dup a mesh in one pass (see [clean](/clean)).
+
+```
+meshioplusplus clean [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--weld` | Fuse coincident points within `--atol` |
+| `--atol ATOL` | Weld tolerance (default `1e-8`) |
+| `--remove-orphans` | Drop unused points |
+| `--drop-degenerate` | Drop degenerate cells |
+| `--drop-duplicates` | Drop exact-duplicate cells |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+With no step flags, the default set runs (remove-orphans + drop-degenerate +
+drop-duplicates, **no** weld). A removal summary is printed.
+
+**Examples:**
+
+```sh
+meshioplusplus clean in.vtu out.vtu
+meshioplusplus clean in.vtu out.vtu --weld --atol 1e-6
+```
+
+---
+
+## meshioplusplus crop
+
+Extract the part of a mesh inside a bounding box or half-space (see [crop](/crop)).
+
+```
+meshioplusplus crop [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--bbox xmin,ymin,zmin,xmax,ymax,zmax` | Axis-aligned bounding box |
+| `--plane px,py,pz,nx,ny,nz` | Half-space (point + normal), keep `(p−point)·normal ≥ 0` |
+| `--mode all\|any` | Keep a cell if ALL (default) or ANY node is inside |
+| `--record-ids` | Attach original point/cell ids as data arrays |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Give exactly one of `--bbox`/`--plane`. Negative values need the `=` form
+(`--bbox=-1,-1,-1,1,1,1`).
+
+**Examples:**
+
+```sh
+meshioplusplus crop in.vtu out.vtu --bbox 0,0,0,1,1,1
+meshioplusplus crop in.vtu out.vtu --plane 0.5,0,0,1,0,0 --mode any
+```
+
+---
+
+## meshioplusplus split
+
+Partition a mesh into several files by type, region, or connected component (see [split](/split)).
+
+```
+meshioplusplus split [options] INFILE OUTPATTERN
+```
+
+`OUTPATTERN` must contain `{key}`, replaced by each piece's key.
+
+| Option | Description |
+|--------|-------------|
+| `--by type\|region\|component` | Split criterion (default `type`) |
+| `--tag NAME` | For `--by region`: the integer `cell_data` name to split on |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Prints how many pieces were produced and their sizes.
+
+**Examples:**
+
+```sh
+meshioplusplus split in.vtu 'out_{key}.vtu' --by type
+meshioplusplus split in.vtu 'out_{key}.vtu' --by component
+```
+
+---
+
+## meshioplusplus stats
+
+Print geometric statistics of a mesh (see [stats](/stats)).
+
+```
+meshioplusplus stats [options] INFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit the statistics as JSON |
+| `--input-format` (`-i`) | Force input format |
+
+Prints the bounding box, extent, centroid, per-cell-type counts, total area,
+signed/unsigned volume, and inverted-cell count. This complements `info` (which
+is topological) with geometric measures.
+
+**Examples:**
+
+```sh
+meshioplusplus stats mesh.vtu
+meshioplusplus stats mesh.vtu --json
+```
+
+---
+
 ## meshioplusplus compress
 
 Compress the data in a mesh file (formats that support compression, e.g. VTU).

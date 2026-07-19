@@ -67,7 +67,17 @@ applied old→new permutations (`Int32Array`s). See
 are not compared. See [Mesh comparison (diff)](./diff.md). Merging is exposed as
 `merge([meshA, meshB, ...], weld, atol, sourceTag, dataPolicy, dropDuplicateCells)`
 (`dataPolicy` is `"intersection"` or `"fill"`), returning a new mesh object;
-named point/cell sets are not carried. See [Merge / combine](./merge.md).
+named point/cell sets are not carried. See [Merge / combine](./merge.md). The
+editing/stats bundle is exposed too: `transform(mesh, matrix, rotateVectorData)`
+(a 16-element row-major matrix) → mesh; `clean(mesh, weld, atol, removeOrphans,
+dropDegenerate, dropDuplicateCells)` → `{ mesh, pointsWelded, ... }`;
+`cropBbox(mesh, lo, hi, mode, recordIds)` / `cropPlane(mesh, point, normal, mode,
+recordIds)` (`mode` `"all"`/`"any"`) → mesh; `split(mesh, by, tagName)` → an
+array of `{ key, mesh }`; and `stats(mesh)` → an object of geometric measures
+(`bboxMin`/`bboxMax`/`extent`/`centroid`, `cellTypeCounts`, `totalArea`,
+`signedVolume`, `unsignedVolume`, `numInverted`). See
+[transform](./transform.md), [clean](./clean.md), [crop](./crop.md),
+[split](./split.md), and [stats](./stats.md).
 
 ## Format support
 
