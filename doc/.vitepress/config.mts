@@ -25,6 +25,7 @@ export default defineConfig({
       { text: "Formats", link: "/formats" },
       { text: "Benchmarks", link: "/benchmarks" },
       { text: "CLI", link: "/cli" },
+      { text: "API (Doxygen)", link: "/api/", target: "_self" },
     ],
 
     sidebar: [
@@ -51,6 +52,7 @@ export default defineConfig({
           { text: "Mesh quality metrics", link: "/mesh_quality" },
           { text: "Surface extraction", link: "/extract_surface" },
           { text: "Skin extraction", link: "/extract_skin" },
+          { text: "Reordering / renumbering", link: "/reorder" },
           { text: "CLI reference", link: "/cli" },
           { text: "XDMF time series", link: "/xdmf_time_series" },
           { text: "Extending meshio++", link: "/extending" },
@@ -60,6 +62,7 @@ export default defineConfig({
           { text: "C API", link: "/c_api" },
           { text: "Fortran", link: "/fortran" },
           { text: "Benchmarks", link: "/benchmarks" },
+          { text: "API reference (Doxygen)", link: "/api/", target: "_self" },
         ],
       },
       {

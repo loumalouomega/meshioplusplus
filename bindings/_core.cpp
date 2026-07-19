@@ -66,6 +66,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -243,6 +244,37 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "sniff_format", [](const std::string& path) { return meshioplusplus::sniff_format(path); },
         py::arg("path"));
+
+    // Mesh renumbering (RCM / Morton / Hilbert). Returns a dict with the
+    // permuted mesh and the applied node/cell permutations (old->new).
+    m.def(
+        "reorder",
+        [](py::object pymesh, const std::string& method) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::ReorderResult res =
+                meshioplusplus::reorder(cpp, meshioplusplus::reorder_method_from_name(method));
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(res.mMesh));
+            out["node_permutation"] =
+                meshioplusplus_py::numpy_from_ndarray(std::move(res.mNodePermutation));
+            py::list cell_perms;
+            for (meshioplusplus::NDArray& a : res.mCellPermutations)
+                cell_perms.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_permutations"] = cell_perms;
+            return out;
+        },
+        py::arg("mesh"), py::arg("method") = "rcm");
+
+    // Connectivity bandwidth (max |i - j| over node pairs sharing a cell).
+    m.def(
+        "compute_bandwidth",
+        [](py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            return meshioplusplus::compute_bandwidth(cpp);
+        },
+        py::arg("mesh"));
 
     // STL writer / reader (ascii or binary).
     m.def(

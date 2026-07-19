@@ -16,8 +16,10 @@ program test_fortran_api
     use meshioplusplus
     implicit none
 
-    type(mio_mesh) :: m, r, c, s, q
-    integer(int64) :: qcells, qinv, qdeg
+    type(mio_mesh) :: m, r, c, s, q, ro
+    integer(int64) :: qcells, qinv, qdeg, bw
+    integer(int64), allocatable :: node_perm(:)
+    logical :: perm_ok
     real(real64) :: points(3, 5), vec(3, 5)
     real(real64), allocatable :: rpoints(:, :), rdata(:), rvec(:, :)
     real(real64), pointer :: pview(:, :)
@@ -83,6 +85,22 @@ program test_fortran_api
 
     call m%quality_counts(num_cells=qcells, num_inverted=qinv, num_degenerate=qdeg)
     call check(qcells == 2_int64, 'quality_counts reports two cells')
+
+    ! ---- reorder + bandwidth -------------------------------------------
+    bw = m%compute_bandwidth()
+    call check(bw >= 0_int64, 'compute_bandwidth is non-negative')
+    ro = m%reorder('rcm', node_perm=node_perm)
+    call check(ro%num_points() == 5_int64, 'reorder preserves point count')
+    call check(ro%num_cell_blocks() == 1_int64, 'reorder preserves cell blocks')
+    call check(allocated(node_perm), 'reorder returns a node permutation')
+    call check(size(node_perm) == 5, 'node permutation has one entry per node')
+    ! 1-based bijection over [1, 5]
+    perm_ok = .true.
+    do i = 1, 5
+        if (count(node_perm == int(i, int64)) /= 1) perm_ok = .false.
+    end do
+    call check(perm_ok, 'node permutation is a 1-based bijection')
+    call ro%free()
 
     ! ---- write, read back, verify everything ---------------------------
     call m%write(vtu_path)

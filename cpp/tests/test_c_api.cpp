@@ -271,6 +271,40 @@ TEST(CApi, MeshOperations) {
     EXPECT_GE(ninv, 0);
     EXPECT_GE(ndeg, 0);
 
+    // bandwidth + reorder (RCM): result carries a renumbered mesh + node perm.
+    EXPECT_GE(mio_compute_bandwidth(m), 0);
+    mio_reorder_result* res = mio_reorder(m, "rcm");
+    ASSERT_NE(res, nullptr) << mio_last_error();
+    const mio_mesh* rmesh = mio_reorder_result_mesh(res);
+    ASSERT_NE(rmesh, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(rmesh), 1);
+    const void* np = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_reorder_result_node_perm(res, &np, &dt, &n), MIO_OK) << mio_last_error();
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(n, 5);  // build_tet_mesh has 5 points
+    // node permutation is a bijection over [0, n).
+    {
+        const std::int64_t* p = static_cast<const std::int64_t*>(np);
+        std::vector<int> seen(static_cast<std::size_t>(n), 0);
+        for (std::int64_t i = 0; i < n; ++i) {
+            ASSERT_GE(p[i], 0);
+            ASSERT_LT(p[i], n);
+            EXPECT_EQ(seen[static_cast<std::size_t>(p[i])], 0);
+            seen[static_cast<std::size_t>(p[i])] = 1;
+        }
+    }
+    EXPECT_EQ(mio_reorder_result_num_cell_perms(res), 1);
+    // Ownership transfer keeps the mesh alive after freeing the result.
+    mio_mesh* taken = mio_reorder_result_take_mesh(res);
+    ASSERT_NE(taken, nullptr) << mio_last_error();
+    mio_reorder_result_free(res);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(taken), 1);
+    mio_mesh_free(taken);
+    // Unknown method fails cleanly.
+    EXPECT_EQ(mio_reorder(m, "bogus"), nullptr);
+
     mio_mesh_free(m);
 }
 

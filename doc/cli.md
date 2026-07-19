@@ -112,6 +112,32 @@ meshioplusplus extract-surface --parent-ids part.vtu surface.vtu
 
 ---
 
+## meshioplusplus reorder
+
+[Renumber](./reorder.md) a mesh's nodes/elements to reduce matrix bandwidth
+(RCM) or improve cache locality (Morton / Hilbert), as a pure permutation.
+
+```
+meshioplusplus reorder [options] INFILE OUTFILE
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--method METHOD` | `-m` | `rcm` (default), `morton`, or `hilbert` |
+| `--report` | `-r` | Print the connectivity bandwidth before and after |
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format |
+
+**Examples:**
+
+```sh
+meshioplusplus reorder part.vtu reordered.vtu
+meshioplusplus reorder part.vtu reordered.vtu --method hilbert
+meshioplusplus reorder part.vtu reordered.vtu --method rcm --report
+```
+
+---
+
 ## meshioplusplus compress
 
 Compress the data in a mesh file (formats that support compression, e.g. VTU).

@@ -11,6 +11,7 @@ from . import (
     _extract_surface,
     _info,
     _quality,
+    _reorder,
 )
 
 
@@ -68,6 +69,13 @@ def main(argv=None):
     )
     _extract_surface.add_args(parser)
     parser.set_defaults(func=_extract_surface.extract_surface_cmd)
+
+    parser = subparsers.add_parser(
+        "reorder",
+        help="Renumber nodes/elements (RCM / Morton / Hilbert)",
+    )
+    _reorder.add_args(parser)
+    parser.set_defaults(func=_reorder.reorder_cmd)
 
     args = parent_parser.parse_args(argv)
 

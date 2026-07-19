@@ -57,6 +57,7 @@ from ._helpers import (
 )
 from ._mesh import CellBlock, Mesh, topological_dimension
 from ._quality import attach_quality, compute_quality
+from ._reorder import compute_bandwidth, reorder
 from ._skin import extract_skin
 from ._sniff import sniff_format
 from ._surface import extract_surface
@@ -118,6 +119,8 @@ __all__ = [
     "compute_quality",
     "attach_quality",
     "sniff_format",
+    "reorder",
+    "compute_bandwidth",
     "Mesh",
     "CellBlock",
     "ReadError",

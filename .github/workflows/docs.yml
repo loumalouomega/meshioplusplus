@@ -24,11 +24,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen
+      - name: Build Doxygen API reference
+        run: doxygen Doxyfile
+        working-directory: doc
       - name: Install and build (VitePress)
         run: |
           cd doc
           npm install
           npm run docs:build
+      - name: Merge Doxygen output into the VitePress site
+        run: cp -r doc/doxygen-build/html doc/.vitepress/dist/api
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

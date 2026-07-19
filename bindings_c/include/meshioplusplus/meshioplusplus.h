@@ -72,6 +72,10 @@ extern "C" {
  *  used from distinct threads freely). */
 typedef struct mio_mesh mio_mesh;
 
+/** Opaque result of mio_reorder(): owns the renumbered mesh plus the applied
+ *  node/cell permutations. Destroy with mio_reorder_result_free(). */
+typedef struct mio_reorder_result mio_reorder_result;
+
 typedef enum mio_status {
     MIO_OK = 0,           /**< success */
     MIO_ERR_READ = 1,     /**< file could not be parsed / read-side failure */
@@ -300,6 +304,76 @@ MIO_API mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells,
  *         on error; the name is written to `buf` NUL-terminated when it fits.
  */
 MIO_API int64_t mio_sniff_format(const char* path, char* buf, int64_t buflen);
+
+/**
+ * Renumber a mesh (RCM / Morton / Hilbert) as a pure permutation of node and
+ * element indices, to reduce sparse-matrix bandwidth / improve cache locality.
+ * @param mesh   input mesh.
+ * @param method "rcm", "morton", or "hilbert".
+ * @return a result handle (free with mio_reorder_result_free), or NULL on
+ *         failure (see mio_last_error()).
+ */
+MIO_API mio_reorder_result* mio_reorder(const mio_mesh* mesh, const char* method);
+
+/**
+ * Borrow the renumbered mesh from a reorder result. The returned handle is
+ * owned by the result: valid until mio_reorder_result_free(result); do NOT
+ * pass it to mio_mesh_free().
+ * @param result a reorder result.
+ * @return the renumbered mesh, or NULL if `result` is NULL.
+ */
+MIO_API const mio_mesh* mio_reorder_result_mesh(const mio_reorder_result* result);
+
+/**
+ * Zero-copy borrow of the node permutation (int64, shape (num_points,),
+ * old index -> new index). The pointer is valid until the result is freed.
+ * Any out-param may be NULL.
+ * @param result a reorder result.
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives num_points.
+ */
+MIO_API mio_status mio_reorder_result_node_perm(const mio_reorder_result* result, const void** data,
+                                                mio_dtype* dtype, int64_t* n);
+
+/**
+ * Number of per-block cell permutations in a reorder result (equal to the
+ * number of cell blocks of the mesh).
+ * @param result a reorder result.
+ * @return the block count, or -1 on error (see mio_last_error()).
+ */
+MIO_API int64_t mio_reorder_result_num_cell_perms(const mio_reorder_result* result);
+
+/**
+ * Zero-copy borrow of cell block `block`'s cell permutation (int64, shape
+ * (num_cells_in_block,), old index -> new index). Any out-param may be NULL.
+ * @param result a reorder result.
+ * @param block  cell-block index in [0, mio_reorder_result_num_cell_perms).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's cell count.
+ */
+MIO_API mio_status mio_reorder_result_cell_perm(const mio_reorder_result* result, int64_t block,
+                                                const void** data, mio_dtype* dtype, int64_t* n);
+
+/**
+ * Transfer ownership of the renumbered mesh out of the result. Afterwards the
+ * result no longer owns a mesh (its borrowed accessor yields an empty mesh).
+ * @param result a reorder result.
+ * @return a new owning mesh handle (free it with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_reorder_result_take_mesh(mio_reorder_result* result);
+
+/** Free a reorder result (and its owned mesh and permutation arrays). */
+MIO_API void mio_reorder_result_free(mio_reorder_result* result);
+
+/**
+ * Connectivity bandwidth: the maximum over all cells of (max node index - min
+ * node index) within a cell. A before/after measure of a reordering.
+ * @param mesh input mesh.
+ * @return the bandwidth (0 for a node-less mesh), or -1 on error.
+ */
+MIO_API int64_t mio_compute_bandwidth(const mio_mesh* mesh);
 
 /* ---------------------------------------------------------------------
  * Building a mesh (setters -- all COPY caller memory)
