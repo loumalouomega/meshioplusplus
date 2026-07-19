@@ -29,6 +29,13 @@ DOC_PUBLIC = os.path.join(HERE, "..", "doc", "public")
 ICON_MASTER_SIZE = 512  # px, square, transparent
 FAVICON_SIZES = [16, 32, 48, 64]
 SOCIAL_PREVIEW_SIZE = (1280, 640)  # GitHub's ideal social-preview dimensions
+# GitHub's own "repository-open-graph-template.png" (Settings -> General ->
+# Social preview -> "learn more") draws a safe-area guide ~80px in from each
+# edge of the 1280x640 canvas ("leave a 40pt border ... so nothing gets
+# cropped"); measured directly off that template, kept here as the
+# authoritative margin so the banner is sized to fill the safe area rather
+# than an arbitrary fraction of the canvas.
+SOCIAL_PREVIEW_SAFE_MARGIN = 80
 
 
 def render_pdf_page(path: str, target_long_edge: int) -> Image.Image:
@@ -57,11 +64,13 @@ def make_square_icon() -> Image.Image:
 
 def make_social_preview() -> Image.Image:
     canvas = Image.new("RGBA", SOCIAL_PREVIEW_SIZE, (255, 255, 255, 255))
-    # Leave a margin so the banner doesn't touch the crop edges GitHub applies.
-    target_width = int(SOCIAL_PREVIEW_SIZE[0] * 0.8)
-    art = render_pdf_page(os.path.join(HERE, "logo.pdf"), target_width)
-    if art.height > SOCIAL_PREVIEW_SIZE[1] * 0.8:
-        scale = (SOCIAL_PREVIEW_SIZE[1] * 0.8) / art.height
+    # Fill the safe area GitHub's template guides against, so the banner
+    # doesn't touch the crop edges but still uses the available space.
+    safe_width = SOCIAL_PREVIEW_SIZE[0] - 2 * SOCIAL_PREVIEW_SAFE_MARGIN
+    safe_height = SOCIAL_PREVIEW_SIZE[1] - 2 * SOCIAL_PREVIEW_SAFE_MARGIN
+    art = render_pdf_page(os.path.join(HERE, "logo.pdf"), safe_width)
+    if art.height > safe_height:
+        scale = safe_height / art.height
         art = art.resize(
             (int(art.width * scale), int(art.height * scale)), Image.LANCZOS
         )

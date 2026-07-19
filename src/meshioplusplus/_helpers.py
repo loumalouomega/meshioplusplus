@@ -92,8 +92,17 @@ def _read_file(path: Path, file_format: Union[str, None]):
     if file_format:
         possible_file_formats = [file_format]
     else:
-        # deduce possible file formats from extension
-        possible_file_formats = _filetypes_from_path(path)
+        # deduce possible file formats from extension, falling back to a
+        # conservative content sniff when the extension is unknown/ambiguous
+        try:
+            possible_file_formats = _filetypes_from_path(path)
+        except ReadError:
+            from ._sniff import sniff_format
+
+            sniffed = sniff_format(path)
+            if not sniffed:
+                raise
+            possible_file_formats = [sniffed]
 
     for file_format in possible_file_formats:
         if file_format not in reader_map:

@@ -3096,6 +3096,109 @@ inline void bswap_inplace(char* pP, int n) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/byteswap.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/cell_edges.hpp =====
+/**
+ * @file cell_edges.hpp
+ * @brief Per-cell-type boundary-edge topology tables (local node indices of
+ * each edge of a 2D surface cell), the 2D analogue of `cell_faces.hpp`, used
+ * by the surface/boundary extractor (`operations/surface.hpp`) when the input
+ * is a surface (max topological dimension 2) mesh.
+ *
+ * Every edge row lists its two **corner nodes first**, wound consistently with
+ * the cell's local corner ring (corner k -> corner k+1), then the mid-edge
+ * node for quadratic cells — i.e. each row is itself a valid meshio/VTK
+ * `line`/`line3` node ordering.
+ *
+ * Node numbering is meshio's (= VTK's): for `triangle6` mid node 3 = mid(0,1),
+ * 4 = mid(1,2), 5 = mid(2,0); for `quad8`/`quad9` mid node 4 = mid(0,1),
+ * 5 = mid(1,2), 6 = mid(2,3), 7 = mid(3,0) (quad9 node 8 is the face center,
+ * on no edge).
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief One boundary edge of a surface cell: its meshio edge type and the
+ * local node indices into the cell's connectivity row.
+ */
+struct CellEdgeDef {
+    /// Edge cell type: `Line` or `Line3`.
+    CellType mEdgeType;
+    /// Number of corner nodes (always 2) — the leading entries of `mNodes`.
+    std::uint8_t mNumCorners;
+    /// Total node count of the edge (2 for `Line`, 3 for `Line3`).
+    std::uint8_t mNumNodes;
+    /// Local node indices, corners first, then the mid node; only the first
+    /// `mNumNodes` are valid.
+    std::array<std::uint8_t, 3> mNodes;
+};
+
+/**
+ * @brief The boundary edges of a surface cell type, or an empty list for types
+ * the surface extractor does not support.
+ * @param SurfaceType The surface cell type to query.
+ * @return Reference to the process-wide edge table (empty if unsupported).
+ */
+inline const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType) {
+    using CT = CellType;
+    static const std::vector<CellEdgeDef> empty = {};
+    static const std::vector<CellEdgeDef> triangle = {
+        {CT::Line, 2, 2, {0, 1}},
+        {CT::Line, 2, 2, {1, 2}},
+        {CT::Line, 2, 2, {2, 0}},
+    };
+    static const std::vector<CellEdgeDef> triangle6 = {
+        {CT::Line3, 2, 3, {0, 1, 3}},
+        {CT::Line3, 2, 3, {1, 2, 4}},
+        {CT::Line3, 2, 3, {2, 0, 5}},
+    };
+    static const std::vector<CellEdgeDef> quad = {
+        {CT::Line, 2, 2, {0, 1}},
+        {CT::Line, 2, 2, {1, 2}},
+        {CT::Line, 2, 2, {2, 3}},
+        {CT::Line, 2, 2, {3, 0}},
+    };
+    static const std::vector<CellEdgeDef> quad8 = {
+        {CT::Line3, 2, 3, {0, 1, 4}},
+        {CT::Line3, 2, 3, {1, 2, 5}},
+        {CT::Line3, 2, 3, {2, 3, 6}},
+        {CT::Line3, 2, 3, {3, 0, 7}},
+    };
+    switch (SurfaceType) {
+        case CT::Triangle:
+            return triangle;
+        case CT::Triangle6:
+            return triangle6;
+        case CT::Quad:
+            return quad;
+        case CT::Quad8:
+        case CT::Quad9:  // same edges as quad8; node 8 (center) is on no edge
+            return quad8;
+        default:
+            return empty;
+    }
+}
+
+/**
+ * @brief Whether the surface extractor supports a surface cell type's edges.
+ * @param Type The cell type to test.
+ * @return `true` when `cell_edges(Type)` is non-empty.
+ */
+inline bool surface_edge_supported(CellType Type) {
+    return !cell_edges(Type).empty();
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/cell_edges.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/cell_faces.hpp =====
 /**
  * @file cell_faces.hpp
@@ -3336,6 +3439,224 @@ std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&...
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/format_compat.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/geometry.hpp =====
+/**
+ * @file geometry.hpp
+ * @brief Small, dependency-free 3D vector primitives and mesh-coordinate
+ * readers shared by the mesh-operations layer (`operations/quality.cpp`,
+ * `operations/surface.cpp`).
+ *
+ * `Vec3` is a plain `std::array<double, 3>`; every helper is a free inline
+ * function in `meshioplusplus::detail` (header-only, so it is exempt from the
+ * anonymous-namespace unique-prefix rule the amalgamation imposes on `.cpp`
+ * translation units). Coordinates are pulled out of an `NDArray` through
+ * `detail::read_double`, so these work regardless of the point/connectivity
+ * dtype and under every mesh backend.
+ */
+
+// System includes
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A point/vector in 3D. 2D meshes are padded with z = 0 on read.
+using Vec3 = std::array<double, 3>;
+
+/** @brief Component-wise difference `a - b`. */
+inline Vec3 vec3_sub(const Vec3& a, const Vec3& b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+/** @brief Component-wise sum `a + b`. */
+inline Vec3 vec3_add(const Vec3& a, const Vec3& b) {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+}
+
+/** @brief Scalar multiple `s * a`. */
+inline Vec3 vec3_scale(const Vec3& a, double s) {
+    return {a[0] * s, a[1] * s, a[2] * s};
+}
+
+/** @brief Dot product `a . b`. */
+inline double vec3_dot(const Vec3& a, const Vec3& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+/** @brief Cross product `a x b`. */
+inline Vec3 vec3_cross(const Vec3& a, const Vec3& b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+/** @brief Squared Euclidean length `a . a`. */
+inline double vec3_norm_sq(const Vec3& a) {
+    return vec3_dot(a, a);
+}
+
+/** @brief Euclidean length `|a|`. */
+inline double vec3_norm(const Vec3& a) {
+    return std::sqrt(vec3_norm_sq(a));
+}
+
+/**
+ * @brief Unit vector along `a`, or the zero vector when `|a| < eps`.
+ * @param a Vector to normalize.
+ * @param eps Length below which `a` is treated as degenerate.
+ * @return `a / |a|`, or `{0,0,0}` if `|a| < eps`.
+ */
+inline Vec3 vec3_normalize(const Vec3& a, double eps = 1e-300) {
+    const double n = vec3_norm(a);
+    if (n < eps)
+        return {0.0, 0.0, 0.0};
+    return vec3_scale(a, 1.0 / n);
+}
+
+/** @brief Scalar triple product `a . (b x c)` (signed volume of the parallelepiped). */
+inline double triple_product(const Vec3& a, const Vec3& b, const Vec3& c) {
+    return vec3_dot(a, vec3_cross(b, c));
+}
+
+/** @brief Determinant of the 3x3 matrix whose columns are `c0`, `c1`, `c2`. */
+inline double det3(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
+    return triple_product(c0, c1, c2);
+}
+
+/**
+ * @brief Reads global point @p nodeId as a `Vec3`, padding z = 0 when the mesh
+ * is 2D (`pointDim == 2`).
+ * @param rPoints The `(num_points, pointDim)` point array.
+ * @param pointDim Spatial dimension of the points (2 or 3).
+ * @param nodeId Global point index.
+ * @return The point's coordinates, with unused components set to 0.
+ */
+inline Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId) {
+    Vec3 p = {0.0, 0.0, 0.0};
+    const std::size_t base = static_cast<std::size_t>(nodeId) * pointDim;
+    const std::size_t k = pointDim < 3 ? pointDim : 3;
+    for (std::size_t c = 0; c < k; ++c)
+        p[c] = read_double(rPoints, base + c);
+    return p;
+}
+
+/**
+ * @brief Reads the first @p n connectivity entries of one cell row into @p rOut
+ * as `Vec3` coordinates (used to gather a cell's corner nodes).
+ * @param rPoints The point array.
+ * @param pointDim Spatial dimension of the points.
+ * @param rConn The block connectivity array.
+ * @param rowOffset Flat offset of the cell's row (`cell * nodes_per_cell`).
+ * @param n Number of leading entries to read (the corner count).
+ * @param rOut Cleared and filled with @p n coordinates.
+ */
+inline void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
+                               std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut) {
+    rOut.clear();
+    rOut.reserve(n);
+    for (std::size_t k = 0; k < n; ++k)
+        rOut.push_back(read_point(rPoints, pointDim, read_int(rConn, rowOffset + k)));
+}
+
+/**
+ * @brief Number of corner (linear-parent) nodes of a cell type. Corners are
+ * always the leading connectivity entries in meshio/VTK ordering, so a
+ * quadratic cell can be reduced to its linear parent by reading the first
+ * `cell_corner_count(type)` nodes.
+ * @param type The cell type to query.
+ * @return The corner count, or 0 for variable-node-count / unsupported types
+ *         (`Polygon`, `Polyhedron`, the VTK Lagrange family, `Custom`) — the
+ *         caller must skip those.
+ */
+inline int cell_corner_count(CellType type) {
+    switch (type) {
+        case CellType::Vertex:
+            return 1;
+        case CellType::Line:
+        case CellType::Line3:
+        case CellType::Line4:
+        case CellType::Line5:
+        case CellType::Line6:
+        case CellType::Line7:
+        case CellType::Line8:
+        case CellType::Line9:
+        case CellType::Line10:
+        case CellType::Line11:
+            return 2;
+        case CellType::Triangle:
+        case CellType::Triangle6:
+        case CellType::Triangle10:
+        case CellType::Triangle15:
+        case CellType::Triangle21:
+        case CellType::Triangle28:
+        case CellType::Triangle36:
+        case CellType::Triangle45:
+        case CellType::Triangle55:
+        case CellType::Triangle66:
+            return 3;
+        case CellType::Quad:
+        case CellType::Quad8:
+        case CellType::Quad9:
+        case CellType::Quad16:
+        case CellType::Quad25:
+        case CellType::Quad36:
+        case CellType::Quad49:
+        case CellType::Quad64:
+        case CellType::Quad81:
+        case CellType::Quad100:
+        case CellType::Quad121:
+            return 4;
+        case CellType::Tetra:
+        case CellType::Tetra10:
+        case CellType::Tetra20:
+        case CellType::Tetra35:
+        case CellType::Tetra56:
+        case CellType::Tetra84:
+        case CellType::Tetra120:
+        case CellType::Tetra165:
+        case CellType::Tetra220:
+        case CellType::Tetra286:
+            return 4;
+        case CellType::Hexahedron:
+        case CellType::Hexahedron20:
+        case CellType::Hexahedron24:
+        case CellType::Hexahedron27:
+        case CellType::Hexahedron64:
+        case CellType::Hexahedron125:
+        case CellType::Hexahedron216:
+        case CellType::Hexahedron343:
+        case CellType::Hexahedron512:
+        case CellType::Hexahedron729:
+        case CellType::Hexahedron1000:
+        case CellType::Hexahedron1331:
+            return 8;
+        case CellType::Wedge:
+        case CellType::Wedge15:
+        case CellType::Wedge18:
+        case CellType::Wedge40:
+        case CellType::Wedge75:
+        case CellType::Wedge126:
+        case CellType::Wedge196:
+        case CellType::Wedge288:
+        case CellType::Wedge405:
+        case CellType::Wedge550:
+            return 6;
+        case CellType::Pyramid:
+        case CellType::Pyramid13:
+        case CellType::Pyramid14:
+            return 5;
+        default:  // Polygon, Polyhedron, VtkLagrange*, Custom
+            return 0;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/geometry.hpp =====
 // ===== begin cpp/include/meshioplusplus/exceptions.hpp =====
 /**
  * @file exceptions.hpp
@@ -9469,6 +9790,180 @@ void error(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) 
 }  // namespace log
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/log.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/quality.hpp =====
+/**
+ * @file operations/quality.hpp
+ * @brief Per-cell mesh quality metrics + inverted-element detection, part of
+ * the dependency-free mesh-operations layer.
+ *
+ * `compute_quality` scores every cell of every block on a fixed set of
+ * geometric metrics (area/volume, scaled Jacobian, aspect ratio, skewness,
+ * interior/dihedral angles, warpage) evaluated on the cell's *corner* nodes
+ * (quadratic variants reduce to their linear parent), and aggregates a
+ * per-metric summary plus counts of inverted (negative signed volume) and
+ * degenerate (near-zero) cells. `attach_quality` returns a copy of the mesh
+ * with every metric attached as `cell_data` (name `"quality:<metric>"`), ready
+ * to write out and visualise. All metrics use only standard C++ math and the
+ * uniform mesh API, so they run under every mesh backend.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Aggregate statistics for one quality metric over all cells that have
+ * a finite value for it.
+ */
+struct QualityMetricSummary {
+    /// Number of histogram bins spanning `[mMin, mMax]`.
+    static constexpr int K = 10;
+    double mMin = std::numeric_limits<double>::quiet_NaN();
+    double mMax = std::numeric_limits<double>::quiet_NaN();
+    double mMean = std::numeric_limits<double>::quiet_NaN();
+    /// Cells contributing a finite value.
+    std::int64_t mCount = 0;
+    /// Counts per bin over `[mMin, mMax]`; all zero when `mCount == 0`.
+    std::array<std::int64_t, K> mHistogram{};
+};
+
+/**
+ * @brief The result of `compute_quality`: per-metric summaries, per-cell metric
+ * arrays (ready to attach as `cell_data`), and inverted/degenerate counts.
+ */
+struct QualityReport {
+    /// Total cells scored (across all blocks, including unsupported ones).
+    std::int64_t mNumCells = 0;
+    /// Cells with negative signed volume/area.
+    std::int64_t mNumInverted = 0;
+    /// Cells that are degenerate (near-zero volume/edge/Jacobian).
+    std::int64_t mNumDegenerate = 0;
+    /// Metric name -> summary, in the fixed metric order (see `quality.cpp`).
+    std::vector<std::pair<std::string, QualityMetricSummary>> mMetrics;
+    /// Metric name -> one `Float64` array of shape `(num_cells_in_block, 1)`
+    /// per cell block (NaN where the metric does not apply), in the same order.
+    std::vector<std::pair<std::string, std::vector<NDArray>>> mCellArrays;
+};
+
+/**
+ * @brief Compute per-cell quality metrics and their aggregate report.
+ * @param rMesh the mesh to evaluate
+ * @return the filled `QualityReport`
+ */
+QualityReport compute_quality(const Mesh& rMesh);
+
+/**
+ * @brief A copy of @p rMesh with every quality metric attached as `cell_data`.
+ *
+ * Each metric becomes a `cell_data` entry named `"quality:<metric>"` with one
+ * array per cell block (NaN where the metric does not apply to that block's
+ * cell type).
+ * @param rMesh the mesh to score
+ * @return a copy carrying the metric arrays
+ */
+Mesh attach_quality(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/quality.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/sniff.hpp =====
+/**
+ * @file operations/sniff.hpp
+ * @brief Content-based mesh-format detection, part of the dependency-free
+ * mesh-operations layer.
+ *
+ * `sniff_format` reads the leading bytes / first lines of a file and returns
+ * the meshio++ format name on a *confident* signature match, or `""` when it
+ * cannot tell. It is used as a fallback by the read paths (C API, WASM, and
+ * the Python reader) when the format cannot be inferred from the extension —
+ * never on a write path. It is deliberately conservative: signatures shared by
+ * several formats (e.g. the generic HDF5 magic used by med/h5m/cgns/hmf, or a
+ * headerless binary STL) yield `""` rather than a guess.
+ */
+
+// System includes
+#include <string>
+
+namespace meshioplusplus {
+
+/**
+ * @brief Guess a mesh file's format from its contents.
+ * @param rPath path to an existing, readable file
+ * @return a meshio++ format name (e.g. `"vtu"`, `"gmsh"`) on a confident
+ *         signature match, or `""` if the format cannot be determined (or the
+ *         file cannot be opened)
+ */
+std::string sniff_format(const std::string& rPath);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/sniff.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/surface.hpp =====
+/**
+ * @file operations/surface.hpp
+ * @brief Surface/boundary extraction — the general form of boundary-skin
+ * extraction, part of the dependency-free mesh-operations layer.
+ *
+ * A *facet* (a face of a 3D cell, or an edge of a 2D cell) is on the boundary
+ * when its sorted corner-node key occurs exactly once across all cells of the
+ * chosen dimension — facets shared by two cells are interior and cancel out
+ * (the face-hashing algorithm of Kratos Multiphysics' `SkinDetectionProcess`).
+ *
+ * `extract_surface` chooses the dimension automatically: if the mesh has any
+ * 3D volume cells it returns their boundary faces (`triangle`/`quad` and the
+ * quadratic `triangle6`/`quad8`/`quad9`); otherwise, for a surface mesh, it
+ * returns the boundary edges (`line`/`line3`). Per-cell-type facet topology
+ * comes from `detail/cell_faces.hpp` (3D) and `detail/cell_edges.hpp` (2D).
+ *
+ * `extract_skin` (declared in `skin.hpp`) is the volume-only, `linearize`-able
+ * special case; both share the implementation in `operations/surface.cpp`.
+ */
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Extract the boundary of a mesh's highest-dimension cells as a new mesh.
+ *
+ * Picks the dimension automatically: 3D volume cells present → boundary faces
+ * (`triangle`, `triangle6`, `quad`, `quad8`, `quad9`); otherwise 2D surface
+ * cells → boundary edges (`line`, `line3`). Facets whose sorted corner-node
+ * key occurs exactly once are kept, in cell-block enumeration order,
+ * partitioned into the fixed canonical block order for the chosen dimension.
+ * Points are *compacted* (only referenced nodes, in ascending original-index
+ * order) and `point_data` rows are subset the same way; `cell_data`,
+ * `field_data`, sets, and `info` are dropped.
+ *
+ * Unsupported same-dimension blocks (ragged/polyhedron blocks, Lagrange and
+ * other very-high-order types) are skipped with a warning; lower-dimension
+ * blocks are ignored.
+ *
+ * @param rMesh the mesh to extract the boundary of
+ * @param recordParentIds when true, attaches an `Int64` cell-data array
+ *        `"surface:parent_cell"` giving, for each output facet, the global
+ *        input-cell index (counted block-major over every input cell of every
+ *        block) of the unique cell that owns it
+ * @return a new mesh holding the boundary facets
+ * @throws std::invalid_argument if `rMesh` has no supported 2D/3D cell block
+ */
+Mesh extract_surface(const Mesh& rMesh, bool recordParentIds = false);
+
+/**
+ * @brief Whether a mesh has at least one cell block `extract_surface` supports.
+ * @param rMesh the mesh to test
+ * @return true when `extract_surface(rMesh)` would have input to work on
+ */
+bool has_surface_extractable_cells(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/surface.hpp =====
 // ===== begin cpp/include/meshioplusplus/registry.hpp =====
 /**
  * @file registry.hpp
@@ -40247,6 +40742,1145 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/formats/xdmf.cpp =====
+// ===== begin cpp/src/operations/quality.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+constexpr int NUM_METRICS = 11;
+// Fixed metric order (index === position in QualityReport::mMetrics).
+enum QualityMetric {
+    QM_VOLUME = 0,
+    QM_SCALED_JACOBIAN,
+    QM_ASPECT_RATIO,
+    QM_SKEWNESS,
+    QM_MIN_ANGLE,
+    QM_MAX_ANGLE,
+    QM_WARPAGE,
+    QM_MIN_DIHEDRAL,
+    QM_MAX_DIHEDRAL,
+    QM_INVERTED,
+    QM_DEGENERATE,
+};
+
+const char* const QUALITY_METRIC_NAMES[NUM_METRICS] = {
+    "quality:volume",   "quality:scaled_jacobian", "quality:aspect_ratio",
+    "quality:skewness", "quality:min_angle",       "quality:max_angle",
+    "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
+    "quality:inverted", "quality:degenerate",
+};
+
+constexpr double QUALITY_NAN = std::numeric_limits<double>::quiet_NaN();
+constexpr double QUALITY_RAD2DEG = 57.29577951308232087680;  // 180/pi
+
+enum class QualityFamily { None, Tri, Quad, Tetra, Hex, Wedge, Pyr };
+
+QualityFamily quality_family(CellType ct) {
+    const int cc = detail::cell_corner_count(ct);
+    const int dim = cell_type_dimension(ct);
+    if (dim == 2) {
+        if (cc == 3)
+            return QualityFamily::Tri;
+        if (cc == 4)
+            return QualityFamily::Quad;
+        return QualityFamily::None;
+    }
+    if (dim == 3) {
+        // Only the types with a known face table (tetra(10), hex(20/27),
+        // wedge(15), pyramid(13/14)); exotic high-order variants are skipped.
+        if (!detail::skin_supported(ct))
+            return QualityFamily::None;
+        if (cc == 4)
+            return QualityFamily::Tetra;
+        if (cc == 8)
+            return QualityFamily::Hex;
+        if (cc == 6)
+            return QualityFamily::Wedge;
+        if (cc == 5)
+            return QualityFamily::Pyr;
+    }
+    return QualityFamily::None;
+}
+
+// --- small geometry helpers -------------------------------------------------
+
+double quality_edge_len(const Vec3& a, const Vec3& b) {
+    return detail::vec3_norm(detail::vec3_sub(b, a));
+}
+
+// Interior angle (degrees) at the vertex from which edges u and v emanate.
+double quality_angle_deg(const Vec3& u, const Vec3& v, double eps) {
+    const double nu = detail::vec3_norm(u);
+    const double nv = detail::vec3_norm(v);
+    if (nu < eps || nv < eps)
+        return QUALITY_NAN;
+    double c = detail::vec3_dot(u, v) / (nu * nv);
+    c = std::clamp(c, -1.0, 1.0);
+    return std::acos(c) * QUALITY_RAD2DEG;
+}
+
+// det of the three unit edge vectors; NaN if any is degenerate.
+double quality_det_unit3(const Vec3& a, const Vec3& b, const Vec3& c, double eps) {
+    const double na = detail::vec3_norm(a);
+    const double nb = detail::vec3_norm(b);
+    const double nc = detail::vec3_norm(c);
+    if (na < eps || nb < eps || nc < eps)
+        return QUALITY_NAN;
+    return detail::det3(detail::vec3_scale(a, 1.0 / na), detail::vec3_scale(b, 1.0 / nb),
+                        detail::vec3_scale(c, 1.0 / nc));
+}
+
+// Signed volume via a cell-centroid / face-centroid fan over outward-wound
+// faces (robust to non-planar faces). Positive for a well-oriented cell.
+double quality_facefan_volume(const std::vector<Vec3>& rCorners,
+                              const std::vector<detail::CellFaceDef>& rFaces) {
+    Vec3 cc = {0.0, 0.0, 0.0};
+    for (const Vec3& p : rCorners)
+        cc = detail::vec3_add(cc, p);
+    cc = detail::vec3_scale(cc, 1.0 / static_cast<double>(rCorners.size()));
+    double vol = 0.0;
+    for (const detail::CellFaceDef& f : rFaces) {
+        Vec3 fc = {0.0, 0.0, 0.0};
+        for (std::uint8_t k = 0; k < f.mNumCorners; ++k)
+            fc = detail::vec3_add(fc, rCorners[f.mNodes[k]]);
+        fc = detail::vec3_scale(fc, 1.0 / static_cast<double>(f.mNumCorners));
+        for (std::uint8_t k = 0; k < f.mNumCorners; ++k) {
+            const Vec3& a = rCorners[f.mNodes[k]];
+            const Vec3& b = rCorners[f.mNodes[(k + 1) % f.mNumCorners]];
+            vol += detail::triple_product(detail::vec3_sub(a, cc), detail::vec3_sub(b, cc),
+                                          detail::vec3_sub(fc, cc)) /
+                   6.0;
+        }
+    }
+    return vol;
+}
+
+// Equiangle skewness over a set of quad-face corner angles (degrees). 0 = ideal.
+double quality_equiangle_skew(double min_angle, double max_angle) {
+    return std::max((max_angle - 90.0) / 90.0, (90.0 - min_angle) / 90.0);
+}
+
+// --- per-family metric evaluation (writes into m[NUM_METRICS], pre-NaN) -----
+
+void quality_tri(const std::vector<Vec3>& c, bool is2d, double eps, double* m) {
+    const Vec3& p0 = c[0];
+    const Vec3& p1 = c[1];
+    const Vec3& p2 = c[2];
+    const double a = quality_edge_len(p0, p1);
+    const double b = quality_edge_len(p1, p2);
+    const double cc = quality_edge_len(p2, p0);
+
+    double area;
+    if (is2d)
+        area = 0.5 * ((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]));
+    else
+        area = 0.5 * detail::vec3_norm(
+                         detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0)));
+    m[QM_VOLUME] = area;
+    const double abs_area = std::fabs(area);
+    const bool degenerate = abs_area < eps || a < eps || b < eps || cc < eps;
+    m[QM_INVERTED] = (is2d && area < 0.0) ? 1.0 : 0.0;
+    m[QM_DEGENERATE] = degenerate ? 1.0 : 0.0;
+    if (degenerate)
+        return;
+
+    const double a0 = quality_angle_deg(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0), eps);
+    const double a1 = quality_angle_deg(detail::vec3_sub(p0, p1), detail::vec3_sub(p2, p1), eps);
+    const double a2 = quality_angle_deg(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2), eps);
+    m[QM_MIN_ANGLE] = std::min({a0, a1, a2});
+    m[QM_MAX_ANGLE] = std::max({a0, a1, a2});
+    // Radius ratio R/(2r) = a*b*c*(a+b+c) / (16 A^2); 1 for an equilateral tri.
+    m[QM_ASPECT_RATIO] = a * b * cc * (a + b + cc) / (16.0 * abs_area * abs_area);
+}
+
+void quality_quad(const std::vector<Vec3>& c, bool is2d, double eps, double* m) {
+    const Vec3& p0 = c[0];
+    const Vec3& p1 = c[1];
+    const Vec3& p2 = c[2];
+    const Vec3& p3 = c[3];
+    const double l0 = quality_edge_len(p0, p1);
+    const double l1 = quality_edge_len(p1, p2);
+    const double l2 = quality_edge_len(p2, p3);
+    const double l3 = quality_edge_len(p3, p0);
+
+    double area;
+    if (is2d) {
+        area = 0.5 * ((p0[0] * p1[1] - p1[0] * p0[1]) + (p1[0] * p2[1] - p2[0] * p1[1]) +
+                      (p2[0] * p3[1] - p3[0] * p2[1]) + (p3[0] * p0[1] - p0[0] * p3[1]));
+    } else {
+        Vec3 n = {0.0, 0.0, 0.0};
+        const Vec3* pts[4] = {&p0, &p1, &p2, &p3};
+        for (int i = 0; i < 4; ++i)
+            n = detail::vec3_add(n, detail::vec3_cross(*pts[i], *pts[(i + 1) % 4]));
+        area = 0.5 * detail::vec3_norm(n);
+    }
+    m[QM_VOLUME] = area;
+    const double abs_area = std::fabs(area);
+    const double lmin = std::min({l0, l1, l2, l3});
+    const double lmax = std::max({l0, l1, l2, l3});
+    const bool degenerate = abs_area < eps || lmin < eps;
+    m[QM_INVERTED] = (is2d && area < 0.0) ? 1.0 : 0.0;
+    m[QM_DEGENERATE] = degenerate ? 1.0 : 0.0;
+    if (degenerate)
+        return;
+
+    m[QM_ASPECT_RATIO] = lmax / lmin;
+    // Equiangle skewness over the four interior corner angles.
+    const double t0 = quality_angle_deg(detail::vec3_sub(p1, p0), detail::vec3_sub(p3, p0), eps);
+    const double t1 = quality_angle_deg(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1), eps);
+    const double t2 = quality_angle_deg(detail::vec3_sub(p3, p2), detail::vec3_sub(p1, p2), eps);
+    const double t3 = quality_angle_deg(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3), eps);
+    m[QM_SKEWNESS] = quality_equiangle_skew(std::min({t0, t1, t2, t3}), std::max({t0, t1, t2, t3}));
+
+    // Warpage: max out-of-plane angle over the two diagonal splits (degrees).
+    auto split_warp = [&](const Vec3& a0, const Vec3& a1, const Vec3& a2, const Vec3& b0,
+                          const Vec3& b1, const Vec3& b2) -> double {
+        const Vec3 na = detail::vec3_cross(detail::vec3_sub(a1, a0), detail::vec3_sub(a2, a0));
+        const Vec3 nb = detail::vec3_cross(detail::vec3_sub(b1, b0), detail::vec3_sub(b2, b0));
+        const double lna = detail::vec3_norm(na);
+        const double lnb = detail::vec3_norm(nb);
+        if (lna < eps || lnb < eps)
+            return QUALITY_NAN;
+        double d = std::fabs(detail::vec3_dot(na, nb) / (lna * lnb));
+        d = std::clamp(d, 0.0, 1.0);
+        return std::acos(d) * QUALITY_RAD2DEG;
+    };
+    const double w0 = split_warp(p0, p1, p2, p2, p3, p0);  // diagonal 0-2
+    const double w1 = split_warp(p1, p2, p3, p3, p0, p1);  // diagonal 1-3
+    if (std::isfinite(w0) && std::isfinite(w1))
+        m[QM_WARPAGE] = std::max(w0, w1);
+}
+
+// Solve the 3x3 system whose rows are a0,a1,a2 for x (Cramer). ok=false if singular.
+Vec3 quality_solve3(const Vec3& a0, const Vec3& a1, const Vec3& a2, const Vec3& b, double eps,
+                    bool& rOk) {
+    auto det = [](const Vec3& r0, const Vec3& r1, const Vec3& r2) {
+        return r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
+               r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
+    };
+    const double d = det(a0, a1, a2);
+    if (std::fabs(d) < eps) {
+        rOk = false;
+        return {0.0, 0.0, 0.0};
+    }
+    rOk = true;
+    Vec3 x;
+    for (int k = 0; k < 3; ++k) {
+        Vec3 c0 = a0, c1 = a1, c2 = a2;
+        c0[k] = b[0];
+        c1[k] = b[1];
+        c2[k] = b[2];
+        x[k] = det(c0, c1, c2) / d;
+    }
+    return x;
+}
+
+void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {
+    const Vec3& p0 = c[0];
+    const Vec3& p1 = c[1];
+    const Vec3& p2 = c[2];
+    const Vec3& p3 = c[3];
+    const double vol = detail::triple_product(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
+                                              detail::vec3_sub(p3, p0)) /
+                       6.0;
+    m[QM_VOLUME] = vol;
+    const double edges[6] = {quality_edge_len(p0, p1), quality_edge_len(p0, p2),
+                             quality_edge_len(p0, p3), quality_edge_len(p1, p2),
+                             quality_edge_len(p1, p3), quality_edge_len(p2, p3)};
+    double emin = edges[0];
+    for (double e : edges)
+        emin = std::min(emin, e);
+
+    // Scaled Jacobian: sqrt(2) * min corner det of unit outgoing edges.
+    const double j0 = quality_det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
+                                        detail::vec3_sub(p3, p0), eps);
+    const double j1 = quality_det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
+                                        detail::vec3_sub(p3, p1), eps);
+    const double j2 = quality_det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
+                                        detail::vec3_sub(p3, p2), eps);
+    const double j3 = quality_det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
+                                        detail::vec3_sub(p1, p3), eps);
+    double sj = QUALITY_NAN;
+    if (std::isfinite(j0) && std::isfinite(j1) && std::isfinite(j2) && std::isfinite(j3))
+        sj = std::sqrt(2.0) * std::min({j0, j1, j2, j3});
+
+    const double abs_vol = std::fabs(vol);
+    const bool degenerate =
+        abs_vol < eps || emin < eps || (std::isfinite(sj) && std::fabs(sj) < eps);
+    m[QM_INVERTED] = vol < 0.0 ? 1.0 : 0.0;
+    m[QM_DEGENERATE] = degenerate ? 1.0 : 0.0;
+    if (degenerate)
+        return;
+    m[QM_SCALED_JACOBIAN] = sj;
+
+    // Radius (aspect) ratio R / (3 r); 1 for a regular tetra.
+    auto tri_area = [&](const Vec3& x, const Vec3& y, const Vec3& z) {
+        return 0.5 * detail::vec3_norm(
+                         detail::vec3_cross(detail::vec3_sub(y, x), detail::vec3_sub(z, x)));
+    };
+    const double face_sum =
+        tri_area(p0, p1, p2) + tri_area(p0, p1, p3) + tri_area(p0, p2, p3) + tri_area(p1, p2, p3);
+    if (face_sum > eps) {
+        const double r = 3.0 * abs_vol / face_sum;
+        // Circumcenter O: 2 (p_i - p0) . O = |p_i|^2 - |p0|^2, i = 1,2,3.
+        const Vec3 a0 = detail::vec3_scale(detail::vec3_sub(p1, p0), 2.0);
+        const Vec3 a1 = detail::vec3_scale(detail::vec3_sub(p2, p0), 2.0);
+        const Vec3 a2 = detail::vec3_scale(detail::vec3_sub(p3, p0), 2.0);
+        const Vec3 rhs = {detail::vec3_norm_sq(p1) - detail::vec3_norm_sq(p0),
+                          detail::vec3_norm_sq(p2) - detail::vec3_norm_sq(p0),
+                          detail::vec3_norm_sq(p3) - detail::vec3_norm_sq(p0)};
+        bool ok = false;
+        const Vec3 o = quality_solve3(a0, a1, a2, rhs, eps, ok);
+        if (ok && r > eps) {
+            const double R = detail::vec3_norm(detail::vec3_sub(o, p0));
+            m[QM_ASPECT_RATIO] = R / (3.0 * r);
+        }
+    }
+
+    // Min/max dihedral angle (degrees) from outward face normals.
+    const int fverts[4][3] = {{0, 1, 2}, {0, 1, 3}, {0, 2, 3}, {1, 2, 3}};
+    const int edge_faces[6][2] = {{0, 1}, {0, 2}, {1, 2}, {0, 3}, {1, 3}, {2, 3}};
+    Vec3 centroid = detail::vec3_scale(
+        detail::vec3_add(detail::vec3_add(p0, p1), detail::vec3_add(p2, p3)), 0.25);
+    Vec3 fn[4];
+    bool fn_ok = true;
+    for (int f = 0; f < 4; ++f) {
+        const Vec3& v0 = c[fverts[f][0]];
+        const Vec3& v1 = c[fverts[f][1]];
+        const Vec3& v2 = c[fverts[f][2]];
+        Vec3 n = detail::vec3_cross(detail::vec3_sub(v1, v0), detail::vec3_sub(v2, v0));
+        n = detail::vec3_normalize(n, eps);
+        if (detail::vec3_norm(n) < 0.5) {
+            fn_ok = false;
+            break;
+        }
+        const Vec3 fc =
+            detail::vec3_scale(detail::vec3_add(detail::vec3_add(v0, v1), v2), 1.0 / 3.0);
+        if (detail::vec3_dot(n, detail::vec3_sub(fc, centroid)) < 0.0)
+            n = detail::vec3_scale(n, -1.0);
+        fn[f] = n;
+    }
+    if (fn_ok) {
+        double dmin = 360.0, dmax = -360.0;
+        for (int e = 0; e < 6; ++e) {
+            const double dot =
+                std::clamp(detail::vec3_dot(fn[edge_faces[e][0]], fn[edge_faces[e][1]]), -1.0, 1.0);
+            const double dih = 180.0 - std::acos(dot) * QUALITY_RAD2DEG;
+            dmin = std::min(dmin, dih);
+            dmax = std::max(dmax, dih);
+        }
+        m[QM_MIN_DIHEDRAL] = dmin;
+        m[QM_MAX_DIHEDRAL] = dmax;
+    }
+}
+
+void quality_hex(const std::vector<Vec3>& c, const std::vector<detail::CellFaceDef>& rFaces,
+                 double eps, double* m) {
+    const double vol = quality_facefan_volume(c, rFaces);
+    m[QM_VOLUME] = vol;
+
+    // 12 edges.
+    const int ep[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                           {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    double emin = std::numeric_limits<double>::max();
+    for (const auto& e : ep)
+        emin = std::min(emin, quality_edge_len(c[e[0]], c[e[1]]));
+
+    // Scaled Jacobian: min corner det of unit outgoing element edges.
+    const int tj[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
+                          {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
+    double sj = std::numeric_limits<double>::max();
+    bool sj_ok = true;
+    for (int n = 0; n < 8; ++n) {
+        const double d = quality_det_unit3(detail::vec3_sub(c[tj[n][0]], c[n]),
+                                           detail::vec3_sub(c[tj[n][1]], c[n]),
+                                           detail::vec3_sub(c[tj[n][2]], c[n]), eps);
+        if (!std::isfinite(d)) {
+            sj_ok = false;
+            break;
+        }
+        sj = std::min(sj, d);
+    }
+
+    const double abs_vol = std::fabs(vol);
+    const bool degenerate = abs_vol < eps || emin < eps || (sj_ok && std::fabs(sj) < eps) || !sj_ok;
+    m[QM_INVERTED] = vol < 0.0 ? 1.0 : 0.0;
+    m[QM_DEGENERATE] = degenerate ? 1.0 : 0.0;
+    if (degenerate)
+        return;
+    m[QM_SCALED_JACOBIAN] = sj;
+
+    // Equiangle skewness over the 24 face-corner angles.
+    double amin = 360.0, amax = -360.0;
+    for (const detail::CellFaceDef& f : rFaces) {
+        for (std::uint8_t k = 0; k < f.mNumCorners; ++k) {
+            const Vec3& pc = c[f.mNodes[k]];
+            const Vec3& pn = c[f.mNodes[(k + 1) % f.mNumCorners]];
+            const Vec3& pp = c[f.mNodes[(k + f.mNumCorners - 1) % f.mNumCorners]];
+            const double ang =
+                quality_angle_deg(detail::vec3_sub(pn, pc), detail::vec3_sub(pp, pc), eps);
+            if (std::isfinite(ang)) {
+                amin = std::min(amin, ang);
+                amax = std::max(amax, ang);
+            }
+        }
+    }
+    if (amax > -360.0)
+        m[QM_SKEWNESS] = quality_equiangle_skew(amin, amax);
+}
+
+void quality_wedge(const std::vector<Vec3>& c, const std::vector<detail::CellFaceDef>& rFaces,
+                   double eps, double* m) {
+    const double vol = quality_facefan_volume(c, rFaces);
+    m[QM_VOLUME] = vol;
+
+    const int ep[9][2] = {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5}, {5, 3}, {0, 3}, {1, 4}, {2, 5}};
+    double emin = std::numeric_limits<double>::max();
+    for (const auto& e : ep)
+        emin = std::min(emin, quality_edge_len(c[e[0]], c[e[1]]));
+
+    // Scaled Jacobian at the 6 corners; (2/sqrt3) factor => 1 for a right prism.
+    const int tj[6][3] = {{1, 2, 3}, {2, 0, 4}, {0, 1, 5}, {5, 4, 0}, {3, 5, 1}, {4, 3, 2}};
+    double sj = std::numeric_limits<double>::max();
+    bool sj_ok = true;
+    for (int n = 0; n < 6; ++n) {
+        const double d = quality_det_unit3(detail::vec3_sub(c[tj[n][0]], c[n]),
+                                           detail::vec3_sub(c[tj[n][1]], c[n]),
+                                           detail::vec3_sub(c[tj[n][2]], c[n]), eps);
+        if (!std::isfinite(d)) {
+            sj_ok = false;
+            break;
+        }
+        sj = std::min(sj, d);
+    }
+
+    const double abs_vol = std::fabs(vol);
+    const bool degenerate = abs_vol < eps || emin < eps || (sj_ok && std::fabs(sj) < eps) || !sj_ok;
+    m[QM_INVERTED] = vol < 0.0 ? 1.0 : 0.0;
+    m[QM_DEGENERATE] = degenerate ? 1.0 : 0.0;
+    if (degenerate)
+        return;
+    m[QM_SCALED_JACOBIAN] = (2.0 / std::sqrt(3.0)) * sj;
+}
+
+void quality_pyramid(const std::vector<Vec3>& c, const std::vector<detail::CellFaceDef>& rFaces,
+                     double eps, double* m) {
+    const double vol = quality_facefan_volume(c, rFaces);
+    m[QM_VOLUME] = vol;
+
+    const int ep[8][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {0, 4}, {1, 4}, {2, 4}, {3, 4}};
+    double emin = std::numeric_limits<double>::max();
+    for (const auto& e : ep)
+        emin = std::min(emin, quality_edge_len(c[e[0]], c[e[1]]));
+
+    // Scaled Jacobian at the 4 base corners: two base edges + the apex edge.
+    // sqrt(2) factor => 1 for a reference right square pyramid (J1).
+    double sj = std::numeric_limits<double>::max();
+    bool sj_ok = true;
+    for (int i = 0; i < 4; ++i) {
+        const int nxt = (i + 1) % 4;
+        const int prv = (i + 3) % 4;
+        const double d =
+            quality_det_unit3(detail::vec3_sub(c[nxt], c[i]), detail::vec3_sub(c[prv], c[i]),
+                              detail::vec3_sub(c[4], c[i]), eps);
+        if (!std::isfinite(d)) {
+            sj_ok = false;
+            break;
+        }
+        sj = std::min(sj, d);
+    }
+
+    const double abs_vol = std::fabs(vol);
+    const bool degenerate = abs_vol < eps || emin < eps || (sj_ok && std::fabs(sj) < eps) || !sj_ok;
+    m[QM_INVERTED] = vol < 0.0 ? 1.0 : 0.0;
+    m[QM_DEGENERATE] = degenerate ? 1.0 : 0.0;
+    if (degenerate)
+        return;
+    m[QM_SCALED_JACOBIAN] = std::sqrt(2.0) * sj;
+}
+
+// Evaluate one cell's metrics into m (assumed pre-filled with NaN).
+void quality_eval_cell(QualityFamily family, CellType ct, const std::vector<Vec3>& c, bool is2d,
+                       double eps, double* m) {
+    switch (family) {
+        case QualityFamily::Tri:
+            quality_tri(c, is2d, eps, m);
+            break;
+        case QualityFamily::Quad:
+            quality_quad(c, is2d, eps, m);
+            break;
+        case QualityFamily::Tetra:
+            quality_tetra(c, eps, m);
+            break;
+        case QualityFamily::Hex:
+            quality_hex(c, detail::cell_faces(ct), eps, m);
+            break;
+        case QualityFamily::Wedge:
+            quality_wedge(c, detail::cell_faces(ct), eps, m);
+            break;
+        case QualityFamily::Pyr:
+            quality_pyramid(c, detail::cell_faces(ct), eps, m);
+            break;
+        default:
+            break;
+    }
+}
+
+using CellMetrics = std::array<double, NUM_METRICS>;
+
+// A deep copy of an NDArray that always owns its buffer (safe even if the
+// source is a view over foreign memory).
+NDArray quality_owned_copy(const NDArray& rArr) {
+    NDArray c = rArr;
+    c.MakeOwned();
+    return c;
+}
+
+// Backend-agnostic mesh clone through the uniform API (the KRATOS backend's
+// Mesh is not copy-constructible, so we cannot rely on `Mesh out = in;`).
+Mesh quality_clone_mesh(const Mesh& rMesh) {
+    Mesh out;
+    out.AssignPoints(quality_owned_copy(rMesh.Points()));
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron()) {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                cells[c].resize(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    cells[c][f].assign(face.first, face.first + face.second);
+                }
+            }
+            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
+        } else if (cb.IsRagged()) {
+            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        } else {
+            out.AddCellBlock(std::string(cb.Type()), quality_owned_copy(cb.Conn()));
+        }
+    }
+    for (const std::string& name : rMesh.PointDataNames())
+        out.AddPointData(name, quality_owned_copy(rMesh.PointData(name)));
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+            blocks.push_back(quality_owned_copy(rMesh.CellData(name, b)));
+        out.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, quality_owned_copy(rMesh.FieldData(name)));
+    return out;
+}
+
+}  // namespace
+
+QualityReport compute_quality(const Mesh& rMesh) {
+    const double eps = 1e-14;
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    const bool is2d = pdim == 2;
+
+    QualityReport rep;
+
+    // --- per-block per-cell metric values (compute-bound → parallel) ---
+    std::vector<std::vector<CellMetrics>> block_vals;
+    block_vals.reserve(rMesh.NumCellBlocks());
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        const std::size_t nc = cb.NumCells();
+        rep.mNumCells += static_cast<std::int64_t>(nc);
+        std::vector<CellMetrics> vals(nc);
+        const QualityFamily family =
+            (cb.IsRagged() || cb.IsPolyhedron()) ? QualityFamily::None : quality_family(ct);
+        if (family == QualityFamily::None) {
+            for (CellMetrics& v : vals)
+                v.fill(QUALITY_NAN);
+        } else {
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            const int corner_count = detail::cell_corner_count(ct);
+            parallel_for(nc, [&](std::size_t i) {
+                CellMetrics& v = vals[i];
+                v.fill(QUALITY_NAN);
+                std::vector<Vec3> coords;
+                detail::read_corner_coords(points, pdim, conn, i * npc,
+                                           static_cast<std::size_t>(corner_count), coords);
+                quality_eval_cell(family, ct, coords, is2d, eps, v.data());
+            });
+        }
+        block_vals.push_back(std::move(vals));
+    }
+
+    // --- reduction: summaries + inverted/degenerate counts (serial) ---
+    struct Acc {
+        double mMin = std::numeric_limits<double>::infinity();
+        double mMax = -std::numeric_limits<double>::infinity();
+        double mSum = 0.0;
+        std::int64_t mCount = 0;
+    };
+    std::array<Acc, NUM_METRICS> acc;
+    for (const std::vector<CellMetrics>& vals : block_vals) {
+        for (const CellMetrics& v : vals) {
+            for (int mi = 0; mi < NUM_METRICS; ++mi) {
+                const double x = v[mi];
+                if (!std::isfinite(x))
+                    continue;
+                Acc& a = acc[mi];
+                a.mMin = std::min(a.mMin, x);
+                a.mMax = std::max(a.mMax, x);
+                a.mSum += x;
+                ++a.mCount;
+            }
+            if (v[QM_INVERTED] == 1.0)
+                ++rep.mNumInverted;
+            if (v[QM_DEGENERATE] == 1.0)
+                ++rep.mNumDegenerate;
+        }
+    }
+
+    // --- histograms (second pass now that min/max are known) ---
+    std::array<QualityMetricSummary, NUM_METRICS> summ;
+    for (int mi = 0; mi < NUM_METRICS; ++mi) {
+        const Acc& a = acc[mi];
+        QualityMetricSummary& s = summ[mi];
+        s.mCount = a.mCount;
+        if (a.mCount == 0)
+            continue;
+        s.mMin = a.mMin;
+        s.mMax = a.mMax;
+        s.mMean = a.mSum / static_cast<double>(a.mCount);
+    }
+    const int K = QualityMetricSummary::K;
+    for (const std::vector<CellMetrics>& vals : block_vals) {
+        for (const CellMetrics& v : vals) {
+            for (int mi = 0; mi < NUM_METRICS; ++mi) {
+                const double x = v[mi];
+                if (!std::isfinite(x))
+                    continue;
+                QualityMetricSummary& s = summ[mi];
+                const double span = s.mMax - s.mMin;
+                int bin = 0;
+                if (span > 0.0)
+                    bin = static_cast<int>((x - s.mMin) / span * K);
+                bin = std::clamp(bin, 0, K - 1);
+                ++s.mHistogram[bin];
+            }
+        }
+    }
+
+    // --- assemble the report ---
+    for (int mi = 0; mi < NUM_METRICS; ++mi) {
+        rep.mMetrics.emplace_back(QUALITY_METRIC_NAMES[mi], summ[mi]);
+        std::vector<NDArray> arrays;
+        arrays.reserve(block_vals.size());
+        for (const std::vector<CellMetrics>& vals : block_vals) {
+            NDArray a = NDArray::Uninit(DType::Float64, {vals.size(), 1});
+            double* d = a.As<double>();
+            for (std::size_t c = 0; c < vals.size(); ++c)
+                d[c] = vals[c][mi];
+            arrays.push_back(std::move(a));
+        }
+        rep.mCellArrays.emplace_back(QUALITY_METRIC_NAMES[mi], std::move(arrays));
+    }
+
+    return rep;
+}
+
+Mesh attach_quality(const Mesh& rMesh) {
+    QualityReport rep = compute_quality(rMesh);
+    Mesh out = quality_clone_mesh(rMesh);
+    if (rMesh.NumCellBlocks() == 0)
+        return out;
+    for (std::pair<std::string, std::vector<NDArray>>& metric : rep.mCellArrays)
+        out.AddCellData(metric.first, std::move(metric.second));
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/quality.cpp =====
+// ===== begin cpp/src/operations/sniff.cpp =====
+#include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Whether `hay` starts with `needle`.
+bool sniff_starts_with(const std::string& rHay, const char* pNeedle) {
+    const std::string needle(pNeedle);
+    return rHay.size() >= needle.size() && rHay.compare(0, needle.size(), needle) == 0;
+}
+
+// Whether `hay` contains `needle`.
+bool sniff_contains(const std::string& rHay, const char* pNeedle) {
+    return rHay.find(pNeedle) != std::string::npos;
+}
+
+// The prefix with leading ASCII whitespace removed.
+std::string sniff_lstrip(const std::string& rIn) {
+    std::size_t i = 0;
+    while (i < rIn.size() && std::isspace(static_cast<unsigned char>(rIn[i])) != 0)
+        ++i;
+    return rIn.substr(i);
+}
+
+}  // namespace
+
+std::string sniff_format(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        return "";
+    char buf[512];
+    in.read(buf, sizeof(buf));
+    const std::string head(buf, static_cast<std::size_t>(in.gcount()));
+    if (head.empty())
+        return "";
+    const std::string stripped = sniff_lstrip(head);
+
+    // --- binary magics ---
+    // VTK XML formats begin (possibly after a BOM/whitespace) with "<?xml" or
+    // directly a "<VTKFile" element carrying the grid type.
+    if (sniff_contains(head, "VTKFile")) {
+        if (sniff_contains(head, "UnstructuredGrid"))
+            return "vtu";
+        if (sniff_contains(head, "PolyData"))
+            return "vtp";
+    }
+    if (sniff_starts_with(stripped, "<Xdmf") || sniff_contains(head, "<Xdmf"))
+        return "xdmf";
+
+    // --- line/text signatures ---
+    if (sniff_starts_with(stripped, "# vtk DataFile"))
+        return "vtk";
+    if (sniff_starts_with(stripped, "$MeshFormat"))
+        return "gmsh";
+    // PLY: "ply" on its own first line.
+    if (sniff_starts_with(stripped, "ply\n") || sniff_starts_with(stripped, "ply\r") ||
+        stripped == "ply")
+        return "ply";
+    // OFF variants (OFF / COFF / NOFF / STOFF ...): a token ending in "OFF".
+    if (sniff_starts_with(stripped, "OFF") || sniff_starts_with(stripped, "COFF") ||
+        sniff_starts_with(stripped, "NOFF") || sniff_starts_with(stripped, "STOFF"))
+        return "off";
+    // ASCII STL.
+    if (sniff_starts_with(stripped, "solid "))
+        return "stl";
+    // Abaqus input decks start with a keyword line "*Heading"/"*Node"/"*NODE".
+    {
+        std::string upper = stripped.substr(0, 8);
+        std::transform(upper.begin(), upper.end(), upper.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        if (sniff_starts_with(upper, "*HEADING") || sniff_starts_with(upper, "*NODE"))
+            return "abaqus";
+    }
+
+    return "";
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/sniff.cpp =====
+// ===== begin cpp/src/operations/surface.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// --- shared facet abstraction -----------------------------------------------
+
+// Which kind of boundary facet we extract.
+enum class SurfaceMode { Face, Edge };
+
+// One facet of a cell, corners-first: unifies CellFaceDef (3D) and CellEdgeDef
+// (2D) into a single shape so the two-phase extractor is dimension-agnostic.
+struct SurfaceFacetDef {
+    CellType mType;                      // output facet type
+    std::uint8_t mNumCorners;            // leading entries of mNodes
+    std::uint8_t mNumNodes;              // full node count of the facet
+    std::array<std::uint8_t, 9> mNodes;  // local node indices, corners first
+};
+
+// The facets of a cell type for the given mode (empty if unsupported).
+std::vector<SurfaceFacetDef> surface_facets_for(CellType type, SurfaceMode mode) {
+    std::vector<SurfaceFacetDef> out;
+    if (mode == SurfaceMode::Face) {
+        for (const detail::CellFaceDef& fd : detail::cell_faces(type))
+            out.push_back({fd.mFaceType, fd.mNumCorners, fd.mNumNodes, fd.mNodes});
+    } else {
+        for (const detail::CellEdgeDef& ed : detail::cell_edges(type)) {
+            std::array<std::uint8_t, 9> nodes = {};
+            nodes[0] = ed.mNodes[0];
+            nodes[1] = ed.mNodes[1];
+            nodes[2] = ed.mNodes[2];
+            out.push_back({ed.mEdgeType, ed.mNumCorners, ed.mNumNodes, nodes});
+        }
+    }
+    return out;
+}
+
+bool surface_mode_supported(CellType type, SurfaceMode mode) {
+    return mode == SurfaceMode::Face ? detail::skin_supported(type)
+                                     : detail::surface_edge_supported(type);
+}
+
+// Effective topological dimension for mode selection (polyhedron counts as 3).
+int surface_effective_dim(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    return cell_type_dimension(cell_type_from_name(rBlock.Type()));
+}
+
+// A supported 3D block is a non-ragged volume block with a known face table.
+bool surface_skin_block_supported(CellType type, bool is_ragged) {
+    return cell_type_dimension(type) == 3 && !is_ragged && detail::skin_supported(type);
+}
+
+// --- facet key + hash (identical to the legacy skin hashing) ----------------
+
+// Sorted corner ids of one facet, padded with -1 up to 4 entries.
+using SurfaceFacetKey = std::array<std::int64_t, 4>;
+
+struct SurfaceFacetKeyHash {
+    std::size_t operator()(const SurfaceFacetKey& rKey) const {
+        std::size_t h = 0;
+        for (std::int64_t v : rKey)
+            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+SurfaceFacetKey surface_facet_key(const NDArray& rConn, std::size_t rowOffset,
+                                  const SurfaceFacetDef& rFacet) {
+    SurfaceFacetKey key = {-1, -1, -1, -1};
+    for (std::uint8_t k = 0; k < rFacet.mNumCorners; ++k)
+        key[k] = detail::read_int(rConn, rowOffset + rFacet.mNodes[k]);
+    std::sort(key.begin(), key.end());
+    return key;
+}
+
+// --- canonical output buckets -----------------------------------------------
+
+// Face mode: triangle, triangle6, quad, quad8, quad9 (matches legacy skin).
+// Edge mode: line, line3.
+std::size_t surface_num_out_types(SurfaceMode mode) {
+    return mode == SurfaceMode::Face ? 5 : 2;
+}
+
+std::size_t surface_out_type_index(SurfaceMode mode, CellType type) {
+    if (mode == SurfaceMode::Face) {
+        switch (type) {
+            case CellType::Triangle:
+                return 0;
+            case CellType::Triangle6:
+                return 1;
+            case CellType::Quad:
+                return 2;
+            case CellType::Quad8:
+                return 3;
+            default:  // Quad9
+                return 4;
+        }
+    }
+    return type == CellType::Line ? 0 : 1;  // Line / Line3
+}
+
+const char* surface_out_type_name(SurfaceMode mode, std::size_t index) {
+    static const char* face_names[5] = {"triangle", "triangle6", "quad", "quad8", "quad9"};
+    static const char* edge_names[2] = {"line", "line3"};
+    return mode == SurfaceMode::Face ? face_names[index] : edge_names[index];
+}
+
+std::size_t surface_out_type_nodes(SurfaceMode mode, std::size_t index) {
+    static const std::size_t face_counts[5] = {3, 6, 4, 8, 9};
+    static const std::size_t edge_counts[2] = {2, 3};
+    return mode == SurfaceMode::Face ? face_counts[index] : edge_counts[index];
+}
+
+// --- per-block enumeration descriptor ---------------------------------------
+
+struct SurfaceBlockDesc {
+    const NDArray* mpConn;
+    std::size_t mNpc;
+    std::size_t mNumCells;
+    std::vector<SurfaceFacetDef> mFacets;
+    std::size_t mFacetsPerCell;
+    std::size_t mFirstFacet;       // offset into the flat record buffer
+    std::int64_t mGlobalCellBase;  // input-cell index of this block's cell 0
+};
+
+// One facet occurrence recorded in phase 1 (keys built in parallel).
+struct SurfaceFacetRecord {
+    SurfaceFacetKey mKey;
+    std::uint32_t mDesc;
+    std::uint32_t mCell;
+    std::uint32_t mSlot;
+    std::int64_t mParent;
+};
+
+// The shared core: extract boundary facets of the chosen mode.
+//  - mForceFaceMode true  => volume-only (extract_skin), honoring `linearize`.
+//  - mForceFaceMode false => auto (extract_surface): faces if any volume cell
+//    exists, else edges.
+Mesh surface_extract_impl(const Mesh& rMesh, bool forceFaceMode, bool linearize,
+                          bool recordParentIds, const char* pOpName) {
+    // --- select the mode ---
+    SurfaceMode mode = SurfaceMode::Face;
+    if (!forceFaceMode) {
+        int max_dim = -1;
+        for (const auto cb : rMesh.CellRange())
+            max_dim = std::max(max_dim, surface_effective_dim(cb));
+        if (max_dim == 3)
+            mode = SurfaceMode::Face;
+        else if (max_dim == 2)
+            mode = SurfaceMode::Edge;
+        else
+            throw std::invalid_argument(std::string(pOpName) +
+                                        ": mesh contains no supported 2D or 3D cell block");
+    }
+
+    // --- pre-scan: warn per unsupported same-dimension block, require one ---
+    // Face mode mirrors the legacy skin pre-scan (polyhedron counts as volume);
+    // the wording ("volume"/"3D volume") is kept byte-identical to the old
+    // extract_skin messages so its callers/tests are unaffected.
+    const char* noun = mode == SurfaceMode::Face ? "volume" : "surface";
+    const int scan_dim = mode == SurfaceMode::Face ? 3 : 2;
+    bool any_supported = false;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        const bool same_dim = mode == SurfaceMode::Face
+                                  ? (cell_type_dimension(ct) == 3 || cb.IsPolyhedron())
+                                  : (cell_type_dimension(ct) == 2 && !cb.IsPolyhedron());
+        if (!same_dim)
+            continue;
+        if (!cb.IsRagged() && !cb.IsPolyhedron() && surface_mode_supported(ct, mode)) {
+            any_supported = true;
+        } else {
+            log::warn("{}: {} cell block '{}' is not supported; skipping it.", pOpName, noun,
+                      cb.Type());
+        }
+    }
+    if (!any_supported)
+        throw std::invalid_argument(std::string(pOpName) + ": mesh contains no supported " +
+                                    std::to_string(scan_dim) + "D " + noun + " cell block");
+
+    // --- build per-block descriptors + a flat record buffer ---
+    std::vector<SurfaceBlockDesc> descs;
+    std::size_t total_facets = 0;
+    std::int64_t global_cell_base = 0;
+    std::size_t block_idx = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        const std::int64_t base = global_cell_base;
+        global_cell_base += static_cast<std::int64_t>(cb.NumCells());
+        ++block_idx;
+        const bool same_dim = mode == SurfaceMode::Face
+                                  ? (cell_type_dimension(ct) == 3 || cb.IsPolyhedron())
+                                  : (cell_type_dimension(ct) == 2 && !cb.IsPolyhedron());
+        if (!same_dim || cb.IsRagged() || cb.IsPolyhedron() || !surface_mode_supported(ct, mode))
+            continue;
+        SurfaceBlockDesc d;
+        d.mpConn = &cb.Conn();
+        d.mNpc = cb.NodesPerCell();
+        d.mNumCells = cb.NumCells();
+        d.mFacets = surface_facets_for(ct, mode);
+        d.mFacetsPerCell = d.mFacets.size();
+        d.mFirstFacet = total_facets;
+        d.mGlobalCellBase = base;
+        total_facets += d.mNumCells * d.mFacetsPerCell;
+        descs.push_back(std::move(d));
+    }
+
+    // --- phase 1: build facet keys into disjoint slots (parallel-safe) ---
+    std::vector<SurfaceFacetRecord> recs(total_facets);
+    for (std::uint32_t di = 0; di < descs.size(); ++di) {
+        const SurfaceBlockDesc& d = descs[di];
+        const NDArray& conn = *d.mpConn;
+        const std::size_t npc = d.mNpc;
+        const std::size_t fpc = d.mFacetsPerCell;
+        const std::size_t n = d.mNumCells * fpc;
+        parallel_for(n, [&, di](std::size_t j) {
+            const std::size_t cell = j / fpc;
+            const std::size_t slot = j % fpc;
+            SurfaceFacetRecord& r = recs[d.mFirstFacet + j];
+            r.mKey = surface_facet_key(conn, cell * npc, d.mFacets[slot]);
+            r.mDesc = di;
+            r.mCell = static_cast<std::uint32_t>(cell);
+            r.mSlot = static_cast<std::uint32_t>(slot);
+            r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
+        });
+    }
+
+    // --- phase 2, pass A: count key occurrences (serial → deterministic) ---
+    std::unordered_map<SurfaceFacetKey, std::uint32_t, SurfaceFacetKeyHash> face_count;
+    face_count.reserve(total_facets * 2);
+    for (const SurfaceFacetRecord& r : recs)
+        ++face_count[r.mKey];
+
+    // --- phase 2, pass B: emit boundary facets (count == 1) in stored order ---
+    const std::size_t num_out = surface_num_out_types(mode);
+    std::vector<std::vector<std::int64_t>> out_conn(num_out);
+    std::vector<std::vector<std::int64_t>> out_parent(num_out);
+    for (const SurfaceFacetRecord& r : recs) {
+        if (face_count[r.mKey] != 1)
+            continue;
+        const SurfaceBlockDesc& d = descs[r.mDesc];
+        const NDArray& conn = *d.mpConn;
+        const std::size_t row_offset = static_cast<std::size_t>(r.mCell) * d.mNpc;
+        const SurfaceFacetDef& facet = d.mFacets[r.mSlot];
+        const std::uint8_t n_out = linearize ? facet.mNumCorners : facet.mNumNodes;
+        const CellType out_type =
+            linearize ? (facet.mNumCorners == 3 ? CellType::Triangle : CellType::Quad)
+                      : facet.mType;
+        const std::size_t bucket = surface_out_type_index(mode, out_type);
+        std::vector<std::int64_t>& dst = out_conn[bucket];
+        for (std::uint8_t k = 0; k < n_out; ++k)
+            dst.push_back(detail::read_int(conn, row_offset + facet.mNodes[k]));
+        if (recordParentIds)
+            out_parent[bucket].push_back(r.mParent);
+    }
+
+    // --- compaction: keep only referenced points, ascending original index ---
+    const std::size_t num_points = rMesh.NumPoints();
+    std::vector<char> used(num_points, 0);
+    for (const std::vector<std::int64_t>& conn : out_conn)
+        for (std::int64_t id : conn)
+            used[static_cast<std::size_t>(id)] = 1;
+    std::vector<std::int64_t> remap(num_points, -1);
+    std::size_t num_used = 0;
+    for (std::size_t i = 0; i < num_points; ++i)
+        if (used[i])
+            remap[i] = static_cast<std::int64_t>(num_used++);
+
+    Mesh surface;
+
+    // Points: byte-row subset preserving the source dtype.
+    {
+        const NDArray& points = rMesh.Points();
+        const std::size_t dim = detail::cols(points);
+        const std::size_t row_bytes = dim * dtype_size(points.Dtype());
+        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
+        const std::byte* src = points.Data();
+        std::byte* dst = new_points.Data();
+        std::size_t w = 0;
+        for (std::size_t i = 0; i < num_points; ++i)
+            if (used[i])
+                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
+        surface.AssignPoints(std::move(new_points));
+    }
+
+    // Cell blocks in canonical order, remapped connectivity; optional parent ids.
+    std::vector<NDArray> parent_blocks;
+    for (std::size_t t = 0; t < num_out; ++t) {
+        const std::vector<std::int64_t>& conn = out_conn[t];
+        if (conn.empty())
+            continue;
+        const std::size_t npc = surface_out_type_nodes(mode, t);
+        NDArray block = NDArray::Uninit(DType::Int64, {conn.size() / npc, npc});
+        std::int64_t* dst = block.As<std::int64_t>();
+        for (std::size_t i = 0; i < conn.size(); ++i)
+            dst[i] = remap[static_cast<std::size_t>(conn[i])];
+        surface.AddCellBlock(surface_out_type_name(mode, t), std::move(block));
+        if (recordParentIds) {
+            const std::vector<std::int64_t>& par = out_parent[t];
+            NDArray pblock = NDArray::Uninit(DType::Int64, {par.size(), 1});
+            std::memcpy(pblock.Data(), par.data(), par.size() * sizeof(std::int64_t));
+            parent_blocks.push_back(std::move(pblock));
+        }
+    }
+    if (recordParentIds && !parent_blocks.empty())
+        surface.AddCellData("surface:parent_cell", std::move(parent_blocks));
+
+    // point_data: subset rows through the same remap; other data maps dropped.
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (detail::rows(a) != num_points)
+            continue;  // shape does not match the point table; drop
+        std::vector<std::size_t> new_shape = a.Shape();
+        new_shape[0] = num_used;
+        const std::size_t row_bytes = num_points == 0 ? 0 : a.Nbytes() / num_points;
+        NDArray b = NDArray::Uninit(a.Dtype(), std::move(new_shape));
+        const std::byte* src = a.Data();
+        std::byte* dst = b.Data();
+        std::size_t w = 0;
+        for (std::size_t i = 0; i < num_points; ++i)
+            if (used[i])
+                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
+        surface.AddPointData(name, std::move(b));
+    }
+
+    return surface;
+}
+
+}  // namespace
+
+// --- public API -------------------------------------------------------------
+
+Mesh extract_surface(const Mesh& rMesh, bool recordParentIds) {
+    return surface_extract_impl(rMesh, /*forceFaceMode=*/false, /*linearize=*/false,
+                                recordParentIds, "extract_surface");
+}
+
+bool has_surface_extractable_cells(const Mesh& rMesh) {
+    int max_dim = -1;
+    for (const auto cb : rMesh.CellRange())
+        max_dim = std::max(max_dim, surface_effective_dim(cb));
+    const SurfaceMode mode =
+        max_dim == 3 ? SurfaceMode::Face : (max_dim == 2 ? SurfaceMode::Edge : SurfaceMode::Face);
+    if (max_dim != 2 && max_dim != 3)
+        return false;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (!cb.IsRagged() && !cb.IsPolyhedron() && surface_mode_supported(ct, mode))
+            return true;
+    }
+    return false;
+}
+
+Mesh extract_skin(const Mesh& rMesh, bool linearize) {
+    return surface_extract_impl(rMesh, /*forceFaceMode=*/true, linearize,
+                                /*recordParentIds=*/false, "extract_skin");
+}
+
+bool has_skinnable_cells(const Mesh& rMesh) {
+    for (const auto cb : rMesh.CellRange()) {
+        if (surface_skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
+            return true;
+    }
+    return false;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/surface.cpp =====
 // ===== begin cpp/src/registry.cpp =====
 /**
  * @file registry.cpp
@@ -40525,213 +42159,4 @@ const char* registry_compiled_out(const std::string& rFormat) {
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/registry.cpp =====
-// ===== begin cpp/src/skin.cpp =====
-#include <algorithm>
-#include <array>
-#include <cstdint>
-#include <cstring>
-#include <functional>
-#include <stdexcept>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-
-namespace {
-
-// Sorted corner ids of one face, padded with -1 up to 4 entries.
-using SkinFaceKey = std::array<std::int64_t, 4>;
-
-struct SkinFaceKeyHash {
-    std::size_t operator()(const SkinFaceKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
-
-bool skin_block_supported(const CellType type, const bool is_ragged) {
-    return cell_type_dimension(type) == 3 && !is_ragged && detail::skin_supported(type);
-}
-
-SkinFaceKey skin_face_key(const NDArray& rConn, std::size_t row_offset,
-                          const detail::CellFaceDef& rFace) {
-    SkinFaceKey key = {-1, -1, -1, -1};
-    for (std::uint8_t k = 0; k < rFace.mNumCorners; ++k)
-        key[k] = detail::read_int(rConn, row_offset + rFace.mNodes[k]);
-    std::sort(key.begin(), key.end());
-    return key;
-}
-
-// Invoke f(conn, row_offset, face_def) for every face of every cell of every
-// supported volume block, in block-major / cell-major / face-slot order.
-template <class F>
-void skin_for_each_face(const Mesh& rMesh, F&& f) {
-    for (const auto cb : rMesh.CellRange()) {
-        const CellType ct = cell_type_from_name(cb.Type());
-        if (!skin_block_supported(ct, cb.IsRagged()))
-            continue;
-        const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
-        const NDArray& conn = cb.Conn();
-        const std::size_t npc = cb.NodesPerCell();
-        const std::size_t nc = cb.NumCells();
-        for (std::size_t r = 0; r < nc; ++r)
-            for (const detail::CellFaceDef& fd : faces)
-                f(conn, r * npc, fd);
-    }
-}
-
-// Canonical output block order: triangle, triangle6, quad, quad8, quad9.
-constexpr std::size_t SKIN_NUM_OUT_TYPES = 5;
-
-std::size_t skin_out_type_index(CellType type) {
-    switch (type) {
-        case CellType::Triangle:
-            return 0;
-        case CellType::Triangle6:
-            return 1;
-        case CellType::Quad:
-            return 2;
-        case CellType::Quad8:
-            return 3;
-        default:  // Quad9
-            return 4;
-    }
-}
-
-const char* skin_out_type_name(std::size_t index) {
-    static const char* names[SKIN_NUM_OUT_TYPES] = {"triangle", "triangle6", "quad", "quad8",
-                                                    "quad9"};
-    return names[index];
-}
-
-std::size_t skin_out_type_nodes(std::size_t index) {
-    static const std::size_t counts[SKIN_NUM_OUT_TYPES] = {3, 6, 4, 8, 9};
-    return counts[index];
-}
-
-}  // namespace
-
-bool has_skinnable_cells(const Mesh& rMesh) {
-    for (const auto cb : rMesh.CellRange()) {
-        if (skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
-            return true;
-    }
-    return false;
-}
-
-Mesh extract_skin(const Mesh& rMesh, bool linearize) {
-    // Pre-scan: warn once per unsupported 3D block, require at least one
-    // supported one.
-    bool any_supported = false;
-    for (const auto cb : rMesh.CellRange()) {
-        const CellType ct = cell_type_from_name(cb.Type());
-        const bool is_volume = cell_type_dimension(ct) == 3 || cb.IsPolyhedron();
-        if (!is_volume)
-            continue;
-        if (skin_block_supported(ct, cb.IsRagged())) {
-            any_supported = true;
-        } else {
-            log::warn("extract_skin: volume cell block '{}' is not supported; skipping it.",
-                      cb.Type());
-        }
-    }
-    if (!any_supported)
-        throw std::invalid_argument(
-            "extract_skin: mesh contains no supported 3D volume cell block");
-
-    // Pass 1: count occurrences of every face key.
-    std::unordered_map<SkinFaceKey, std::uint32_t, SkinFaceKeyHash> face_count;
-    skin_for_each_face(
-        rMesh, [&](const NDArray& rConn, std::size_t row_offset, const detail::CellFaceDef& rFace) {
-            ++face_count[skin_face_key(rConn, row_offset, rFace)];
-        });
-
-    // Pass 2: collect boundary faces (count == 1) in enumeration order,
-    // partitioned by output face type.
-    std::array<std::vector<std::int64_t>, SKIN_NUM_OUT_TYPES> out_conn;
-    skin_for_each_face(
-        rMesh, [&](const NDArray& rConn, std::size_t row_offset, const detail::CellFaceDef& rFace) {
-            if (face_count[skin_face_key(rConn, row_offset, rFace)] != 1)
-                return;
-            const std::uint8_t n_out = linearize ? rFace.mNumCorners : rFace.mNumNodes;
-            const CellType out_type =
-                linearize ? (rFace.mNumCorners == 3 ? CellType::Triangle : CellType::Quad)
-                          : rFace.mFaceType;
-            std::vector<std::int64_t>& dst = out_conn[skin_out_type_index(out_type)];
-            for (std::uint8_t k = 0; k < n_out; ++k)
-                dst.push_back(detail::read_int(rConn, row_offset + rFace.mNodes[k]));
-        });
-
-    // Compaction: keep only referenced points, in ascending original-id order
-    // (the numpy fallback relies on np.unique's sortedness for the same order).
-    const std::size_t num_points = rMesh.NumPoints();
-    std::vector<char> used(num_points, 0);
-    for (const std::vector<std::int64_t>& conn : out_conn)
-        for (std::int64_t id : conn)
-            used[static_cast<std::size_t>(id)] = 1;
-    std::vector<std::int64_t> remap(num_points, -1);
-    std::size_t num_used = 0;
-    for (std::size_t i = 0; i < num_points; ++i)
-        if (used[i])
-            remap[i] = static_cast<std::int64_t>(num_used++);
-
-    Mesh skin;
-
-    // Points: byte-row subset preserving the source dtype.
-    {
-        const NDArray& points = rMesh.Points();
-        const std::size_t dim = detail::cols(points);
-        const std::size_t row_bytes = dim * dtype_size(points.Dtype());
-        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
-        const std::byte* src = points.Data();
-        std::byte* dst = new_points.Data();
-        std::size_t w = 0;
-        for (std::size_t i = 0; i < num_points; ++i)
-            if (used[i])
-                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
-        skin.AssignPoints(std::move(new_points));
-    }
-
-    // Cell blocks, canonical order, remapped connectivity.
-    for (std::size_t t = 0; t < SKIN_NUM_OUT_TYPES; ++t) {
-        const std::vector<std::int64_t>& conn = out_conn[t];
-        if (conn.empty())
-            continue;
-        const std::size_t npc = skin_out_type_nodes(t);
-        NDArray block = NDArray::Uninit(DType::Int64, {conn.size() / npc, npc});
-        std::int64_t* dst = block.As<std::int64_t>();
-        for (std::size_t i = 0; i < conn.size(); ++i)
-            dst[i] = remap[static_cast<std::size_t>(conn[i])];
-        skin.AddCellBlock(skin_out_type_name(t), std::move(block));
-    }
-
-    // point_data: subset rows through the same remap; other data maps are
-    // dropped (no 1:1 face -> source cell mapping).
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        if (detail::rows(a) != num_points)
-            continue;  // shape does not match the point table; drop
-        std::vector<std::size_t> new_shape = a.Shape();
-        new_shape[0] = num_used;
-        const std::size_t row_bytes = num_points == 0 ? 0 : a.Nbytes() / num_points;
-        NDArray b = NDArray::Uninit(a.Dtype(), std::move(new_shape));
-        const std::byte* src = a.Data();
-        std::byte* dst = b.Data();
-        std::size_t w = 0;
-        for (std::size_t i = 0; i < num_points; ++i)
-            if (used[i])
-                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
-        skin.AddPointData(name, std::move(b));
-    }
-
-    return skin;
-}
-
-}  // namespace meshioplusplus
-// ===== end cpp/src/skin.cpp =====
 #endif  // MESHIOPLUSPLUS_IMPLEMENTATION

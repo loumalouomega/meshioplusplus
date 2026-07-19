@@ -157,6 +157,31 @@ skin = meshioplusplus.extract_skin(vol)   # triangle/quad/... surface mesh
 
 The **STL and PLY writers do this automatically** for volume meshes (pass `skin=False` for the legacy drop-volume-cells behavior), and the **SVG/TikZ writers render 3D meshes** by projecting the skin through an orthographic camera (`azimuth`/`elevation`/`roll` in degrees, default the classic CAD isometric view) with painter's-algorithm depth ordering — that is exactly how the Stanford-bunny logo above is drawn.
 
+#### Surface extraction
+
+`meshioplusplus.extract_surface` is the general form of skin extraction: it picks the dimension automatically (a volume mesh → boundary faces, a 2D surface mesh → boundary edges) and can record each facet's parent cell id (`record_parent_ids=True`). See the [surface extraction docs](https://meshioplusplus.readthedocs.io) (`doc/extract_surface.md`).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+surf = meshioplusplus.extract_surface(vol)                  # faces (or edges for a 2D mesh)
+edges = meshioplusplus.extract_surface(sheet, record_parent_ids=True)
+```
+
+#### Mesh quality
+
+`meshioplusplus.compute_quality` scores every cell on a set of geometric quality metrics (area/volume, scaled Jacobian, aspect ratio, skewness, interior/dihedral angles, warpage) and flags inverted/degenerate cells; `attach_quality` writes them back as `cell_data`. See `doc/mesh_quality.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+report = meshioplusplus.compute_quality(mesh)
+print(report["num_inverted"], "inverted cells")
+annotated = meshioplusplus.attach_quality(mesh)   # metrics as cell_data
+```
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality` and `meshioplusplus extract-surface`.
+
 #### Time series
 
 The [XDMF format](https://xdmf.org/index.php/XDMF_Model_and_Format) supports time series with a shared mesh. You can write times series data using meshio++ with

@@ -65,11 +65,15 @@ is what makes the STL normals come out right.
 - Non-conforming interfaces (a face appearing more than twice) are treated
   as interior — only count == 1 survives.
 
+For the general form that also handles 2D→edge extraction and records the
+parent cell id, see [surface extraction](./extract_surface.md).
+
 ## Implementation
 
-The C++ core implements the extractor in `cpp/src/skin.cpp` over the
-uniform mesh API (so it works under all three mesh backends), with the
-per-cell-type face topology tables in
+The C++ core implements the extractor in `cpp/src/operations/surface.cpp` —
+shared with [`extract_surface`](./extract_surface.md), which `extract_skin`
+calls in volume-only (face) mode — over the uniform mesh API (so it works
+under all three mesh backends), with the per-cell-type face topology tables in
 `cpp/include/meshioplusplus/detail/cell_faces.hpp`; a pure-numpy fallback
 (`meshioplusplus._skin._extract_skin_py`) carries a twin of the tables and
 produces **identical output** (same block order, connectivity, and point
@@ -79,6 +83,6 @@ face tables' outward winding is enforced by a gtest invariant
 (`cpp/tests/test_skin.cpp`): on each reference element, the Newell normal
 of every face must point away from the cell centroid.
 
-The extractor is not yet exposed through the WASM/C-API/Fortran flat
-bindings (documented follow-up); those surfaces get it implicitly through
-the STL/PLY writers' skin-by-default behavior.
+`extract_skin` is exposed through every binding surface — Python, the C API
+(`mio_extract_skin`), Fortran (`mesh%extract_skin()`), and WASM
+(`extractSkin`) — alongside the STL/PLY writers' skin-by-default behavior.

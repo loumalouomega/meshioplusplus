@@ -56,7 +56,11 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/skin.hpp"
 
 struct mio_mesh {
     meshioplusplus::Mesh mMesh;
@@ -361,7 +365,15 @@ mio_mesh* mio_read(const char* path, const char* format) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
         if (!path)
             throw meshioplusplus::ReadError("meshio++: path is NULL");
-        std::string fmt = meshioplusplus::resolve_format(path, format_or_empty(format));
+        std::string fmt;
+        try {
+            fmt = meshioplusplus::resolve_format(path, format_or_empty(format));
+        } catch (const meshioplusplus::ReadError&) {
+            // Extension gave nothing: fall back to a conservative content sniff.
+            fmt = meshioplusplus::sniff_format(path);
+            if (fmt.empty())
+                throw;
+        }
         auto it = meshioplusplus::registry_readers().find(fmt);
         if (it == meshioplusplus::registry_readers().end())
             throw meshioplusplus::ReadError(unknown_format_message(fmt, /*for_write=*/false));
@@ -397,6 +409,58 @@ mio_status mio_convert(const char* in_path, const char* in_format, const char* o
             return fail(MIO_ERR_NOT_FOUND, unknown_format_message(wfmt, /*for_write=*/true));
         wit->second(out_path, rit->second(in_path));
         return MIO_OK;
+    });
+}
+
+/* ------------------------------------------------------------------ */
+/* Mesh operations                                                     */
+/* ------------------------------------------------------------------ */
+
+mio_mesh* mio_extract_surface(const mio_mesh* mesh, int record_parent_ids) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        return new mio_mesh{meshioplusplus::extract_surface(mesh->mMesh, record_parent_ids != 0)};
+    });
+}
+
+mio_mesh* mio_extract_skin(const mio_mesh* mesh, int linearize) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        return new mio_mesh{meshioplusplus::extract_skin(mesh->mMesh, linearize != 0)};
+    });
+}
+
+mio_mesh* mio_attach_quality(const mio_mesh* mesh) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        return new mio_mesh{meshioplusplus::attach_quality(mesh->mMesh)};
+    });
+}
+
+mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells, int64_t* num_inverted,
+                              int64_t* num_degenerate) {
+    return guarded([&]() -> mio_status {
+        if (!mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        meshioplusplus::QualityReport rep = meshioplusplus::compute_quality(mesh->mMesh);
+        if (num_cells)
+            *num_cells = rep.mNumCells;
+        if (num_inverted)
+            *num_inverted = rep.mNumInverted;
+        if (num_degenerate)
+            *num_degenerate = rep.mNumDegenerate;
+        return MIO_OK;
+    });
+}
+
+int64_t mio_sniff_format(const char* path, char* buf, int64_t buflen) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!path)
+            throw meshioplusplus::ReadError("meshio++: path is NULL");
+        return copy_string(meshioplusplus::sniff_format(path), buf, buflen);
     });
 }
 

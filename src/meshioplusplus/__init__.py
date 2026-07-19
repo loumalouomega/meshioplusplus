@@ -56,7 +56,10 @@ from ._helpers import (
     write_points_cells,
 )
 from ._mesh import CellBlock, Mesh, topological_dimension
+from ._quality import attach_quality, compute_quality
 from ._skin import extract_skin
+from ._sniff import sniff_format
+from ._surface import extract_surface
 
 __all__ = [
     "abaqus",
@@ -111,6 +114,10 @@ __all__ = [
     "write_points_cells",
     "extension_to_filetypes",
     "extract_skin",
+    "extract_surface",
+    "compute_quality",
+    "attach_quality",
+    "sniff_format",
     "Mesh",
     "CellBlock",
     "ReadError",

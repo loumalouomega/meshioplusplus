@@ -65,6 +65,53 @@ meshioplusplus info mesh.msh
 
 ---
 
+## meshioplusplus quality
+
+Print a per-cell [mesh quality](./mesh_quality.md) report (min/mean/max and
+counts of inverted/degenerate cells).
+
+```
+meshioplusplus quality [options] INFILE
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output FILE` | `-o` | Also write the metrics into `FILE` as `cell_data` |
+
+**Examples:**
+
+```sh
+meshioplusplus quality part.vtu
+meshioplusplus quality part.vtu -o part_quality.vtu
+```
+
+---
+
+## meshioplusplus extract-surface
+
+Extract the [boundary surface/edges](./extract_surface.md) of a mesh (volume →
+faces, 2D surface → edges) and write it out.
+
+```
+meshioplusplus extract-surface [options] INFILE OUTFILE
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format |
+| `--parent-ids` | `-p` | Record each facet's parent cell id as `cell_data` |
+
+**Examples:**
+
+```sh
+meshioplusplus extract-surface part.vtu surface.stl
+meshioplusplus extract-surface --parent-ids part.vtu surface.vtu
+```
+
+---
+
 ## meshioplusplus compress
 
 Compress the data in a mesh file (formats that support compression, e.g. VTU).

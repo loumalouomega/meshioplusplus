@@ -1,0 +1,413 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░
+//
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+// Surface/boundary extraction, following the facet-hashing algorithm of Kratos
+// Multiphysics' SkinDetectionProcess: a facet (a face of a 3D cell, or an edge
+// of a 2D cell) whose sorted corner-node key occurs exactly once across all
+// cells of the chosen dimension is a boundary facet; facets seen twice are
+// interior and cancel out. This single translation unit implements both the
+// general `extract_surface` and the volume-only, linearize-able `extract_skin`
+// (declared in skin.hpp) so the two never drift.
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+#include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/skin.hpp"
+#include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/cell_edges.hpp"
+#include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
+
+namespace meshioplusplus {
+
+namespace {
+
+// --- shared facet abstraction -----------------------------------------------
+
+// Which kind of boundary facet we extract.
+enum class SurfaceMode { Face, Edge };
+
+// One facet of a cell, corners-first: unifies CellFaceDef (3D) and CellEdgeDef
+// (2D) into a single shape so the two-phase extractor is dimension-agnostic.
+struct SurfaceFacetDef {
+    CellType mType;                      // output facet type
+    std::uint8_t mNumCorners;            // leading entries of mNodes
+    std::uint8_t mNumNodes;              // full node count of the facet
+    std::array<std::uint8_t, 9> mNodes;  // local node indices, corners first
+};
+
+// The facets of a cell type for the given mode (empty if unsupported).
+std::vector<SurfaceFacetDef> surface_facets_for(CellType type, SurfaceMode mode) {
+    std::vector<SurfaceFacetDef> out;
+    if (mode == SurfaceMode::Face) {
+        for (const detail::CellFaceDef& fd : detail::cell_faces(type))
+            out.push_back({fd.mFaceType, fd.mNumCorners, fd.mNumNodes, fd.mNodes});
+    } else {
+        for (const detail::CellEdgeDef& ed : detail::cell_edges(type)) {
+            std::array<std::uint8_t, 9> nodes = {};
+            nodes[0] = ed.mNodes[0];
+            nodes[1] = ed.mNodes[1];
+            nodes[2] = ed.mNodes[2];
+            out.push_back({ed.mEdgeType, ed.mNumCorners, ed.mNumNodes, nodes});
+        }
+    }
+    return out;
+}
+
+bool surface_mode_supported(CellType type, SurfaceMode mode) {
+    return mode == SurfaceMode::Face ? detail::skin_supported(type)
+                                     : detail::surface_edge_supported(type);
+}
+
+// Effective topological dimension for mode selection (polyhedron counts as 3).
+int surface_effective_dim(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    return cell_type_dimension(cell_type_from_name(rBlock.Type()));
+}
+
+// A supported 3D block is a non-ragged volume block with a known face table.
+bool surface_skin_block_supported(CellType type, bool is_ragged) {
+    return cell_type_dimension(type) == 3 && !is_ragged && detail::skin_supported(type);
+}
+
+// --- facet key + hash (identical to the legacy skin hashing) ----------------
+
+// Sorted corner ids of one facet, padded with -1 up to 4 entries.
+using SurfaceFacetKey = std::array<std::int64_t, 4>;
+
+struct SurfaceFacetKeyHash {
+    std::size_t operator()(const SurfaceFacetKey& rKey) const {
+        std::size_t h = 0;
+        for (std::int64_t v : rKey)
+            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+SurfaceFacetKey surface_facet_key(const NDArray& rConn, std::size_t rowOffset,
+                                  const SurfaceFacetDef& rFacet) {
+    SurfaceFacetKey key = {-1, -1, -1, -1};
+    for (std::uint8_t k = 0; k < rFacet.mNumCorners; ++k)
+        key[k] = detail::read_int(rConn, rowOffset + rFacet.mNodes[k]);
+    std::sort(key.begin(), key.end());
+    return key;
+}
+
+// --- canonical output buckets -----------------------------------------------
+
+// Face mode: triangle, triangle6, quad, quad8, quad9 (matches legacy skin).
+// Edge mode: line, line3.
+std::size_t surface_num_out_types(SurfaceMode mode) {
+    return mode == SurfaceMode::Face ? 5 : 2;
+}
+
+std::size_t surface_out_type_index(SurfaceMode mode, CellType type) {
+    if (mode == SurfaceMode::Face) {
+        switch (type) {
+            case CellType::Triangle:
+                return 0;
+            case CellType::Triangle6:
+                return 1;
+            case CellType::Quad:
+                return 2;
+            case CellType::Quad8:
+                return 3;
+            default:  // Quad9
+                return 4;
+        }
+    }
+    return type == CellType::Line ? 0 : 1;  // Line / Line3
+}
+
+const char* surface_out_type_name(SurfaceMode mode, std::size_t index) {
+    static const char* face_names[5] = {"triangle", "triangle6", "quad", "quad8", "quad9"};
+    static const char* edge_names[2] = {"line", "line3"};
+    return mode == SurfaceMode::Face ? face_names[index] : edge_names[index];
+}
+
+std::size_t surface_out_type_nodes(SurfaceMode mode, std::size_t index) {
+    static const std::size_t face_counts[5] = {3, 6, 4, 8, 9};
+    static const std::size_t edge_counts[2] = {2, 3};
+    return mode == SurfaceMode::Face ? face_counts[index] : edge_counts[index];
+}
+
+// --- per-block enumeration descriptor ---------------------------------------
+
+struct SurfaceBlockDesc {
+    const NDArray* mpConn;
+    std::size_t mNpc;
+    std::size_t mNumCells;
+    std::vector<SurfaceFacetDef> mFacets;
+    std::size_t mFacetsPerCell;
+    std::size_t mFirstFacet;       // offset into the flat record buffer
+    std::int64_t mGlobalCellBase;  // input-cell index of this block's cell 0
+};
+
+// One facet occurrence recorded in phase 1 (keys built in parallel).
+struct SurfaceFacetRecord {
+    SurfaceFacetKey mKey;
+    std::uint32_t mDesc;
+    std::uint32_t mCell;
+    std::uint32_t mSlot;
+    std::int64_t mParent;
+};
+
+// The shared core: extract boundary facets of the chosen mode.
+//  - mForceFaceMode true  => volume-only (extract_skin), honoring `linearize`.
+//  - mForceFaceMode false => auto (extract_surface): faces if any volume cell
+//    exists, else edges.
+Mesh surface_extract_impl(const Mesh& rMesh, bool forceFaceMode, bool linearize,
+                          bool recordParentIds, const char* pOpName) {
+    // --- select the mode ---
+    SurfaceMode mode = SurfaceMode::Face;
+    if (!forceFaceMode) {
+        int max_dim = -1;
+        for (const auto cb : rMesh.CellRange())
+            max_dim = std::max(max_dim, surface_effective_dim(cb));
+        if (max_dim == 3)
+            mode = SurfaceMode::Face;
+        else if (max_dim == 2)
+            mode = SurfaceMode::Edge;
+        else
+            throw std::invalid_argument(std::string(pOpName) +
+                                        ": mesh contains no supported 2D or 3D cell block");
+    }
+
+    // --- pre-scan: warn per unsupported same-dimension block, require one ---
+    // Face mode mirrors the legacy skin pre-scan (polyhedron counts as volume);
+    // the wording ("volume"/"3D volume") is kept byte-identical to the old
+    // extract_skin messages so its callers/tests are unaffected.
+    const char* noun = mode == SurfaceMode::Face ? "volume" : "surface";
+    const int scan_dim = mode == SurfaceMode::Face ? 3 : 2;
+    bool any_supported = false;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        const bool same_dim = mode == SurfaceMode::Face
+                                  ? (cell_type_dimension(ct) == 3 || cb.IsPolyhedron())
+                                  : (cell_type_dimension(ct) == 2 && !cb.IsPolyhedron());
+        if (!same_dim)
+            continue;
+        if (!cb.IsRagged() && !cb.IsPolyhedron() && surface_mode_supported(ct, mode)) {
+            any_supported = true;
+        } else {
+            log::warn("{}: {} cell block '{}' is not supported; skipping it.", pOpName, noun,
+                      cb.Type());
+        }
+    }
+    if (!any_supported)
+        throw std::invalid_argument(std::string(pOpName) + ": mesh contains no supported " +
+                                    std::to_string(scan_dim) + "D " + noun + " cell block");
+
+    // --- build per-block descriptors + a flat record buffer ---
+    std::vector<SurfaceBlockDesc> descs;
+    std::size_t total_facets = 0;
+    std::int64_t global_cell_base = 0;
+    std::size_t block_idx = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        const std::int64_t base = global_cell_base;
+        global_cell_base += static_cast<std::int64_t>(cb.NumCells());
+        ++block_idx;
+        const bool same_dim = mode == SurfaceMode::Face
+                                  ? (cell_type_dimension(ct) == 3 || cb.IsPolyhedron())
+                                  : (cell_type_dimension(ct) == 2 && !cb.IsPolyhedron());
+        if (!same_dim || cb.IsRagged() || cb.IsPolyhedron() || !surface_mode_supported(ct, mode))
+            continue;
+        SurfaceBlockDesc d;
+        d.mpConn = &cb.Conn();
+        d.mNpc = cb.NodesPerCell();
+        d.mNumCells = cb.NumCells();
+        d.mFacets = surface_facets_for(ct, mode);
+        d.mFacetsPerCell = d.mFacets.size();
+        d.mFirstFacet = total_facets;
+        d.mGlobalCellBase = base;
+        total_facets += d.mNumCells * d.mFacetsPerCell;
+        descs.push_back(std::move(d));
+    }
+
+    // --- phase 1: build facet keys into disjoint slots (parallel-safe) ---
+    std::vector<SurfaceFacetRecord> recs(total_facets);
+    for (std::uint32_t di = 0; di < descs.size(); ++di) {
+        const SurfaceBlockDesc& d = descs[di];
+        const NDArray& conn = *d.mpConn;
+        const std::size_t npc = d.mNpc;
+        const std::size_t fpc = d.mFacetsPerCell;
+        const std::size_t n = d.mNumCells * fpc;
+        parallel_for(n, [&, di](std::size_t j) {
+            const std::size_t cell = j / fpc;
+            const std::size_t slot = j % fpc;
+            SurfaceFacetRecord& r = recs[d.mFirstFacet + j];
+            r.mKey = surface_facet_key(conn, cell * npc, d.mFacets[slot]);
+            r.mDesc = di;
+            r.mCell = static_cast<std::uint32_t>(cell);
+            r.mSlot = static_cast<std::uint32_t>(slot);
+            r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
+        });
+    }
+
+    // --- phase 2, pass A: count key occurrences (serial → deterministic) ---
+    std::unordered_map<SurfaceFacetKey, std::uint32_t, SurfaceFacetKeyHash> face_count;
+    face_count.reserve(total_facets * 2);
+    for (const SurfaceFacetRecord& r : recs)
+        ++face_count[r.mKey];
+
+    // --- phase 2, pass B: emit boundary facets (count == 1) in stored order ---
+    const std::size_t num_out = surface_num_out_types(mode);
+    std::vector<std::vector<std::int64_t>> out_conn(num_out);
+    std::vector<std::vector<std::int64_t>> out_parent(num_out);
+    for (const SurfaceFacetRecord& r : recs) {
+        if (face_count[r.mKey] != 1)
+            continue;
+        const SurfaceBlockDesc& d = descs[r.mDesc];
+        const NDArray& conn = *d.mpConn;
+        const std::size_t row_offset = static_cast<std::size_t>(r.mCell) * d.mNpc;
+        const SurfaceFacetDef& facet = d.mFacets[r.mSlot];
+        const std::uint8_t n_out = linearize ? facet.mNumCorners : facet.mNumNodes;
+        const CellType out_type =
+            linearize ? (facet.mNumCorners == 3 ? CellType::Triangle : CellType::Quad)
+                      : facet.mType;
+        const std::size_t bucket = surface_out_type_index(mode, out_type);
+        std::vector<std::int64_t>& dst = out_conn[bucket];
+        for (std::uint8_t k = 0; k < n_out; ++k)
+            dst.push_back(detail::read_int(conn, row_offset + facet.mNodes[k]));
+        if (recordParentIds)
+            out_parent[bucket].push_back(r.mParent);
+    }
+
+    // --- compaction: keep only referenced points, ascending original index ---
+    const std::size_t num_points = rMesh.NumPoints();
+    std::vector<char> used(num_points, 0);
+    for (const std::vector<std::int64_t>& conn : out_conn)
+        for (std::int64_t id : conn)
+            used[static_cast<std::size_t>(id)] = 1;
+    std::vector<std::int64_t> remap(num_points, -1);
+    std::size_t num_used = 0;
+    for (std::size_t i = 0; i < num_points; ++i)
+        if (used[i])
+            remap[i] = static_cast<std::int64_t>(num_used++);
+
+    Mesh surface;
+
+    // Points: byte-row subset preserving the source dtype.
+    {
+        const NDArray& points = rMesh.Points();
+        const std::size_t dim = detail::cols(points);
+        const std::size_t row_bytes = dim * dtype_size(points.Dtype());
+        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
+        const std::byte* src = points.Data();
+        std::byte* dst = new_points.Data();
+        std::size_t w = 0;
+        for (std::size_t i = 0; i < num_points; ++i)
+            if (used[i])
+                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
+        surface.AssignPoints(std::move(new_points));
+    }
+
+    // Cell blocks in canonical order, remapped connectivity; optional parent ids.
+    std::vector<NDArray> parent_blocks;
+    for (std::size_t t = 0; t < num_out; ++t) {
+        const std::vector<std::int64_t>& conn = out_conn[t];
+        if (conn.empty())
+            continue;
+        const std::size_t npc = surface_out_type_nodes(mode, t);
+        NDArray block = NDArray::Uninit(DType::Int64, {conn.size() / npc, npc});
+        std::int64_t* dst = block.As<std::int64_t>();
+        for (std::size_t i = 0; i < conn.size(); ++i)
+            dst[i] = remap[static_cast<std::size_t>(conn[i])];
+        surface.AddCellBlock(surface_out_type_name(mode, t), std::move(block));
+        if (recordParentIds) {
+            const std::vector<std::int64_t>& par = out_parent[t];
+            NDArray pblock = NDArray::Uninit(DType::Int64, {par.size(), 1});
+            std::memcpy(pblock.Data(), par.data(), par.size() * sizeof(std::int64_t));
+            parent_blocks.push_back(std::move(pblock));
+        }
+    }
+    if (recordParentIds && !parent_blocks.empty())
+        surface.AddCellData("surface:parent_cell", std::move(parent_blocks));
+
+    // point_data: subset rows through the same remap; other data maps dropped.
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (detail::rows(a) != num_points)
+            continue;  // shape does not match the point table; drop
+        std::vector<std::size_t> new_shape = a.Shape();
+        new_shape[0] = num_used;
+        const std::size_t row_bytes = num_points == 0 ? 0 : a.Nbytes() / num_points;
+        NDArray b = NDArray::Uninit(a.Dtype(), std::move(new_shape));
+        const std::byte* src = a.Data();
+        std::byte* dst = b.Data();
+        std::size_t w = 0;
+        for (std::size_t i = 0; i < num_points; ++i)
+            if (used[i])
+                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
+        surface.AddPointData(name, std::move(b));
+    }
+
+    return surface;
+}
+
+}  // namespace
+
+// --- public API -------------------------------------------------------------
+
+Mesh extract_surface(const Mesh& rMesh, bool recordParentIds) {
+    return surface_extract_impl(rMesh, /*forceFaceMode=*/false, /*linearize=*/false,
+                                recordParentIds, "extract_surface");
+}
+
+bool has_surface_extractable_cells(const Mesh& rMesh) {
+    int max_dim = -1;
+    for (const auto cb : rMesh.CellRange())
+        max_dim = std::max(max_dim, surface_effective_dim(cb));
+    const SurfaceMode mode =
+        max_dim == 3 ? SurfaceMode::Face : (max_dim == 2 ? SurfaceMode::Edge : SurfaceMode::Face);
+    if (max_dim != 2 && max_dim != 3)
+        return false;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (!cb.IsRagged() && !cb.IsPolyhedron() && surface_mode_supported(ct, mode))
+            return true;
+    }
+    return false;
+}
+
+Mesh extract_skin(const Mesh& rMesh, bool linearize) {
+    return surface_extract_impl(rMesh, /*forceFaceMode=*/true, linearize,
+                                /*recordParentIds=*/false, "extract_skin");
+}
+
+bool has_skinnable_cells(const Mesh& rMesh) {
+    for (const auto cb : rMesh.CellRange()) {
+        if (surface_skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
+            return true;
+    }
+    return false;
+}
+
+}  // namespace meshioplusplus
