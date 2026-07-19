@@ -91,7 +91,7 @@ meshioplusplus merge      a.vtu b.vtu out.vtu    # merge meshes (optional --weld
 
 with any of the supported formats.
 
-The same verbs are available as a **standalone C++ binary** that needs no Python: build it with `build/configure.sh --cli --build` (or `-DMESHIOPLUSPLUS_BUILD_CLI=ON`) and run the installed `meshioplusplus` executable exactly as above. It links only the C++ core, so point/cell *sets* (and `convert -s/-d`) — which live only in the Python `Mesh` — are unavailable there; use the Python CLI for those.
+The same verbs are available as a **standalone C++ binary** that needs no Python: grab a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page, or build it yourself with `build/configure.sh --cli --build` (or `-DMESHIOPLUSPLUS_BUILD_CLI=ON`). It links only the C++ core, so point/cell *sets* (and `convert -s/-d`) — which live only in the Python `Mesh` — are unavailable there; use the Python CLI for those.
 
 In Python, simply do
 
