@@ -50,15 +50,16 @@ def test_sets_to_int_data():
     assert_equal(mesh.point_sets, {"fixed": [0, 1, 2], "loose": [3, 4, 5, 6]})
 
 
-@pytest.mark.skip
-def test_sets_to_int_data_warning():
+def test_sets_to_int_data_warning(capsys):
+    # meshio++ emits these warnings via rich to stderr (not warnings.warn), so
+    # they are captured with capsys rather than pytest.warns.
     mesh = meshioplusplus.Mesh(
         [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
         {"triangle": [[0, 1, 2], [1, 2, 3]]},
         cell_sets={"tag": [[0]]},
     )
-    with pytest.warns(UserWarning):
-        mesh.cell_sets_to_data()
+    mesh.cell_sets_to_data()
+    assert "not part of any cell set" in capsys.readouterr().err
     assert np.all(mesh.cell_data["tag"] == np.array([[0, -1]]))
 
     mesh = meshioplusplus.Mesh(
@@ -66,9 +67,8 @@ def test_sets_to_int_data_warning():
         {"triangle": [[0, 1, 2], [1, 2, 3]]},
         point_sets={"tag": [[0, 1, 3]]},
     )
-    with pytest.warns(UserWarning):
-        mesh.point_sets_to_data()
-
+    mesh.point_sets_to_data()
+    assert "Not all points are part of a point set" in capsys.readouterr().err
     assert np.all(mesh.point_data["tag"] == np.array([[0, 0, -1, 0]]))
 
 
@@ -109,3 +109,66 @@ def test_copy():
 
     assert np.all(mesh.points == mesh2.points)
     assert not np.may_share_memory(mesh.points, mesh2.points)
+
+
+def test_get_cell_data():
+    # Two triangle blocks + a quad block, with per-block cell_data.
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [2.0, 0.0]],
+        [
+            ("triangle", [[0, 1, 2]]),
+            ("quad", [[0, 1, 2, 3]]),
+            ("triangle", [[1, 4, 2]]),
+        ],
+        cell_data={"a": [np.array([10.0]), np.array([20.0]), np.array([30.0])]},
+    )
+    # get_cell_data concatenates the data of all blocks of the given type.
+    assert_equal(mesh.get_cell_data("a", "triangle"), [10.0, 30.0])
+    assert_equal(mesh.get_cell_data("a", "quad"), [20.0])
+
+
+def test_init_point_data_length_mismatch():
+    with pytest.raises(ValueError):
+        meshioplusplus.Mesh(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            [("triangle", [[0, 1, 2]])],
+            point_data={"p": [1.0, 2.0, 3.0]},  # 3 != 4 points
+        )
+
+
+def test_init_cell_data_block_count_mismatch():
+    with pytest.raises(ValueError):
+        meshioplusplus.Mesh(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            [("triangle", [[0, 1, 2]])],  # one cell block
+            cell_data={"a": [[1.0], [2.0]]},  # two data blocks
+        )
+
+
+def test_init_cell_data_block_length_mismatch():
+    with pytest.raises(ValueError):
+        meshioplusplus.Mesh(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            [("triangle", [[0, 1, 2], [0, 2, 3]])],  # 2 cells
+            cell_data={"a": [[1.0]]},  # block has 1 value, not 2
+        )
+
+
+def test_topological_dimension():
+    from meshioplusplus import topological_dimension
+
+    assert topological_dimension["vertex"] == 0
+    assert topological_dimension["line"] == 1
+    assert topological_dimension["triangle"] == 2
+    assert topological_dimension["quad"] == 2
+    assert topological_dimension["tetra"] == 3
+    assert topological_dimension["hexahedron"] == 3
+
+
+def test_cellblock_polygon_dim():
+    # A polygon block reports topological dimension 2.
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        [("polygon", [[0, 1, 2, 3]])],
+    )
+    assert mesh.cells[0].dim == 2

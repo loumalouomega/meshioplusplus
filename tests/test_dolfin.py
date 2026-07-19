@@ -28,3 +28,14 @@ def test_generic_io(tmp_path):
     helpers.generic_io(tmp_path / "test.xml")
     # With additional, insignificant suffix:
     helpers.generic_io(tmp_path / "test.0.xml")
+
+
+# --- malformed-input / error-path coverage (Python reference reader) ---
+from meshioplusplus.dolfin._dolfin import read as _dolfin_py_read  # noqa: E402
+
+
+def test_dolfin_vertices_before_mesh_raises(tmp_path):
+    p = tmp_path / "bad.xml"
+    p.write_text('<dolfin><vertices size="1"/></dolfin>')
+    with pytest.raises(meshioplusplus.ReadError):
+        _dolfin_py_read(str(p))

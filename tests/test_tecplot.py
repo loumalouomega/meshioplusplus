@@ -80,3 +80,15 @@ def test_varlocation(tmp_path):
     # Add cell data: VARLOCATION = ([7-9] = CELLCENTERED)
     mesh.cell_data["six"] = [np.ones(num_cells) * 6.0]
     helpers.write_read(tmp_path, writer, reader, mesh, 1.0e-15)
+
+
+# --- malformed-input / error-path coverage (Python reference reader) ---
+from meshioplusplus.tecplot._tecplot import read as _tecplot_py_read  # noqa: E402
+
+
+def test_tecplot_missing_x_variable_raises(tmp_path):
+    # VARIABLES list without the mandatory coordinate 'X'.
+    p = tmp_path / "bad.dat"
+    p.write_text('VARIABLES = "A" "B"\nZONE N=1 E=1 F=FEPOINT ET=TRIANGLE\n')
+    with pytest.raises(meshioplusplus.ReadError):
+        _tecplot_py_read(str(p))

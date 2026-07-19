@@ -121,3 +121,13 @@ def test_time_series():
 
 if __name__ == "__main__":
     test_time_series()
+
+
+# --- malformed-input / error-path coverage ---
+
+
+def test_xdmf_wrong_root_tag_raises(tmp_path):
+    p = tmp_path / "bad.xdmf"
+    p.write_text('<?xml version="1.0"?><Nonsense/>')
+    with pytest.raises(meshioplusplus.ReadError):
+        meshioplusplus.read(p, file_format="xdmf")
