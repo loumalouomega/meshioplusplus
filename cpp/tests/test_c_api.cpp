@@ -308,6 +308,35 @@ TEST(CApi, MeshOperations) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, Merge) {
+    mio_mesh* a = build_tet_mesh();  // 5 points, 2 tetra
+    mio_mesh* b = build_tet_mesh();
+    const mio_mesh* inputs[2] = {a, b};
+
+    // Concatenate: point/cell counts sum; source tag present.
+    mio_mesh* cat = mio_merge(inputs, 2, /*weld=*/0, 1e-8, /*source_tag=*/1,
+                              /*data_policy=*/0, /*drop_dup=*/0);
+    ASSERT_NE(cat, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(cat), 10);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(cat), 1);
+    EXPECT_GT(mio_mesh_num_cell_data(cat), 0);  // source_mesh_id
+    mio_mesh_free(cat);
+
+    // Weld two identical meshes -> the 5 coincident points collapse.
+    mio_mesh* welded = mio_merge(inputs, 2, /*weld=*/1, 1e-9, /*source_tag=*/1,
+                                 /*data_policy=*/0, /*drop_dup=*/0);
+    ASSERT_NE(welded, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(welded), 5);
+    mio_mesh_free(welded);
+
+    // Error paths.
+    EXPECT_EQ(mio_merge(nullptr, 2, 0, 1e-8, 1, 0, 0), nullptr);
+    EXPECT_EQ(mio_merge(inputs, 0, 0, 1e-8, 1, 0, 0), nullptr);
+
+    mio_mesh_free(a);
+    mio_mesh_free(b);
+}
+
 TEST(CApi, Diff) {
     mio_mesh* a = build_tet_mesh();
     mio_mesh* b = build_tet_mesh();
