@@ -56,6 +56,7 @@ from ._helpers import (
     write,
     write_points_cells,
 )
+from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
 from ._quality import attach_quality, compute_quality
 from ._reorder import compute_bandwidth, reorder
@@ -124,6 +125,7 @@ __all__ = [
     "compute_bandwidth",
     "diff",
     "meshes_equal",
+    "merge",
     "Mesh",
     "CellBlock",
     "ReadError",
