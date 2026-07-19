@@ -41114,8 +41114,7 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
             const std::size_t r0 = chunk * kRowsPerChunk;
             const std::size_t r1 = std::min(r0 + kRowsPerChunk, nrows);
             for (std::size_t r = r0; r < r1; ++r) {
-                const std::size_t ar =
-                    pRowMapA ? static_cast<std::size_t>(pRowMapA[r]) : r;
+                const std::size_t ar = pRowMapA ? static_cast<std::size_t>(pRowMapA[r]) : r;
                 for (std::size_t c = 0; c < ncols; ++c) {
                     const double a = detail::read_double(rA, ar * cols_a + c);
                     const double b = detail::read_double(rB, r * cols_b + c);
@@ -41408,8 +41407,8 @@ void diff_compare_data_section(const std::vector<std::string>& rNamesA,
                 }
             }
         } else {
-            summary = diff_compare_array(rA.PointData(name), rB.PointData(name), pRowMapA, atol,
-                                         rtol);
+            summary =
+                diff_compare_array(rA.PointData(name), rB.PointData(name), pRowMapA, atol, rtol);
             summary.mName = name;
         }
         rOut.mShared.push_back(std::move(summary));
