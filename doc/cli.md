@@ -8,6 +8,8 @@ meshioplusplus --help
 meshioplusplus <subcommand> --help
 ```
 
+The same verbs are also available as a **standalone native C++ binary** that needs no Python interpreter and no pybind11 extension — see [Native CLI (C API)](./c_api.md#native-command-line-binary) for how to build it (`build/configure.sh --cli --build`). It shares the [C API](./c_api.md)'s flat-surface limitations: point/cell **sets** and `convert -s/-d` are unavailable there (they live only in the Python `Mesh`), and there is no Python fallback for formats whose C++ reader raises. Everything below otherwise applies identically to both.
+
 ---
 
 ## meshioplusplus convert
@@ -165,6 +167,39 @@ meshioplusplus diff a.vtu b.vtu
 meshioplusplus diff a.vtu b.vtu --atol 1e-8 --rtol 1e-6
 meshioplusplus diff a.msh b.vtu --unordered
 meshioplusplus diff expected.vtu actual.vtu --quiet || echo "regression!"
+```
+
+---
+
+## meshioplusplus merge
+
+Merge two or more mesh files into one.
+
+```
+meshioplusplus merge [options] FILE... OUTFILE
+```
+
+Takes two or more input meshes followed by the output file.
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--input-format FORMAT` | `-i` | Force input format (applied to every input) |
+| `--output-format FORMAT` | `-o` | Force output format |
+| `--weld` | | Merge coincident nodes within `--atol` |
+| `--atol ATOL` | | Coincidence tolerance for `--weld` (default `1e-8`) |
+| `--data-policy POLICY` | | `intersection` (default, keep only data keys present in every input) or `fill` (keep every key, filling missing rows with NaN) |
+| `--drop-duplicate-cells` | | With `--weld`, drop cells that become identical after welding |
+| `--no-source-tag` | | Do not add the per-cell `source_mesh_id` tag |
+| `--quiet` | `-q` | Do not print the merge summary |
+
+Prints a summary of points/cells in and out (and points welded, with `--weld`) unless `--quiet` is given.
+
+**Examples:**
+
+```sh
+meshioplusplus merge a.vtu b.vtu merged.vtu
+meshioplusplus merge a.vtu b.vtu c.vtu merged.vtu --weld --atol 1e-6
+meshioplusplus merge a.vtu b.vtu merged.vtu --data-policy fill
 ```
 
 ---
