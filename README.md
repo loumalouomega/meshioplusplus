@@ -87,6 +87,12 @@ meshioplusplus binary     input.msh              # convert to binary format
 meshioplusplus ascii      input.msh              # convert to ASCII format
 
 meshioplusplus merge      a.vtu b.vtu out.vtu    # merge meshes (optional --weld)
+
+meshioplusplus transform  in.vtu out.vtu --translate 1,2,3   # affine transform
+meshioplusplus clean      in.vtu out.vtu --weld              # weld / prune / de-dup
+meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
+meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # partition
+meshioplusplus stats      mesh.vtu                           # geometric statistics
 ```
 
 with any of the supported formats.
@@ -221,7 +227,27 @@ combined = meshioplusplus.merge([a, b, c])                 # concatenate
 welded = meshioplusplus.merge([left, right], weld=True, atol=1e-8)  # fuse the shared interface
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, and `meshioplusplus merge`.
+#### Editing (transform / clean / crop / split) and statistics
+
+A bundle of dependency-free mesh-editing utilities:
+
+- **`meshioplusplus.transform`** — apply an affine transform (translate / scale / rotate / 4×4 matrix / unit-scale) to the points; connectivity and data are carried through. See `doc/transform.md`.
+- **`meshioplusplus.clean`** — weld coincident points (spatial hash), drop degenerate and duplicate cells, and remove orphaned points, in one toggleable pass. See `doc/clean.md`.
+- **`meshioplusplus.crop`** — extract the part of a mesh inside a bounding box or half-space, pruning unused points (`mode="all"`/`"any"`). See `doc/crop.md`.
+- **`meshioplusplus.split`** — partition a mesh into several by cell type, connected component (flood-fill), or region (`cell_sets` / integer tag). See `doc/split.md`.
+- **`meshioplusplus.compute_stats`** — geometric statistics (bounding box, centroid, per-type counts, area, signed/unsigned volume, inverted cells) — the geometric complement to `info`. See `doc/stats.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.transform(mesh, rotate=("z", 90))
+out = meshioplusplus.clean(mesh, weld=True, atol=1e-8)
+sub = meshioplusplus.crop(mesh, bbox=[0, 0, 0, 1, 1, 1])
+pieces = meshioplusplus.split(mesh, by="type")             # {"triangle": ..., ...}
+s = meshioplusplus.compute_stats(mesh)                     # dict of measures
+```
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, and `meshioplusplus stats`.
 
 #### Time series
 
