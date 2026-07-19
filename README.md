@@ -85,6 +85,8 @@ meshioplusplus decompress input.vtu              # decompress the mesh file
 
 meshioplusplus binary     input.msh              # convert to binary format
 meshioplusplus ascii      input.msh              # convert to ASCII format
+
+meshioplusplus merge      a.vtu b.vtu out.vtu    # merge meshes (optional --weld)
 ```
 
 with any of the supported formats.
@@ -208,7 +210,18 @@ print(report["verdict"])
 
 The `meshioplusplus diff a.vtu b.vtu` CLI verb sets a nonzero exit code when meshes differ, for direct use in CI / Makefiles.
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, and `meshioplusplus diff`.
+#### Merge / combine
+
+`meshioplusplus.merge` combines two or more meshes into one: it concatenates points (offsetting connectivity so indices stay valid), merges cell blocks by type, concatenates data (per a configurable `data_policy`), and tags each cell's origin. With `weld=True` it fuses coincident nodes across inputs within `atol` using a spatial hash (never O(N²)) — the standard way to stitch adjacent blocks into a watertight mesh. Overlapping set / field-data names are namespaced by source id. See `doc/merge.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+combined = meshioplusplus.merge([a, b, c])                 # concatenate
+welded = meshioplusplus.merge([left, right], weld=True, atol=1e-8)  # fuse the shared interface
+```
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, and `meshioplusplus merge`.
 
 #### Time series
 
