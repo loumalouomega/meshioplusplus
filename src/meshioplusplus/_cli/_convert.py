@@ -60,9 +60,11 @@ def convert(args):
         mesh.cell_sets_to_data()
 
     if args.int_data_to_sets:
-        for key in mesh.point_data:
+        # Snapshot the keys: *_data_to_sets(key) deletes that key from the dict,
+        # so iterating the live view raises "dictionary changed size".
+        for key in list(mesh.point_data):
             mesh.point_data_to_sets(key)
-        for key in mesh.cell_data:
+        for key in list(mesh.cell_data):
             mesh.cell_data_to_sets(key)
 
     # write it out

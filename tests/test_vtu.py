@@ -80,3 +80,22 @@ def test_read_from_file(filename, ref_cells, ref_num_cells, ref_num_pnt):
     assert ref_cells == mesh.cells[0].type
     assert len(mesh.cells[0].data) == ref_num_cells
     assert len(mesh.points) == ref_num_pnt
+
+
+# --- malformed-input / error-path coverage ---
+
+
+def test_vtu_wrong_root_tag_raises(tmp_path):
+    # A well-formed XML document that is not a VTKFile is rejected on both the
+    # C++ and Python paths, so the ReadError surfaces through the shim.
+    p = tmp_path / "bad.vtu"
+    p.write_text('<?xml version="1.0"?><NotVTK></NotVTK>')
+    with pytest.raises(meshioplusplus.ReadError):
+        meshioplusplus.read(p, file_format="vtu")
+
+
+def test_vtu_not_xml_raises(tmp_path):
+    p = tmp_path / "bad.vtu"
+    p.write_text("this is not xml at all")
+    with pytest.raises(meshioplusplus.ReadError):
+        meshioplusplus.read(p, file_format="vtu")

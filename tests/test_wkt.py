@@ -8,18 +8,23 @@ import meshioplusplus
 from . import helpers
 
 
-# TODO reenable
-@pytest.mark.skip()
 @pytest.mark.parametrize(
     "mesh",
     [
-        # helpers.empty_mesh,
-        helpers.tri_mesh
+        # WKT/TIN is triangle-only.
+        helpers.tri_mesh,
+        helpers.tri_mesh_2d,
+        helpers.tri_mesh_one_cell,
     ],
 )
 def test_wkt(mesh, tmp_path):
     helpers.write_read(
-        tmp_path, meshioplusplus.wkt.write, meshioplusplus.wkt.read, mesh, 1.0e-12
+        tmp_path,
+        meshioplusplus.wkt.write,
+        meshioplusplus.wkt.read,
+        mesh,
+        1.0e-12,
+        ".wkt",
     )
 
 

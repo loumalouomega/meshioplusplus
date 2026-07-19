@@ -117,6 +117,29 @@ program test_fortran_api
     call check(c%num_points() == 5_int64, 'num_points after convert to vtk')
     call check(c%num_cell_blocks() == 1_int64, 'num_cell_blocks after convert to vtk')
 
+    ! ---- second-format round-trip (gmsh) exercises another writer/reader ----
+    ! VTU is XML/binary; gmsh is a wholly different text writer/reader, so this
+    ! shakes out format-specific bugs the single VTU path can't.
+    block
+        type(mio_mesh) :: g
+        real(real64), allocatable :: gpoints(:, :)
+        integer(int64), allocatable :: gconn(:, :)
+        character(:), allocatable :: gmsh_path
+
+        gmsh_path = prefix//'_mesh.msh'
+        call m%write(gmsh_path)
+        call g%read(gmsh_path)
+        call check(g%num_points() == 5_int64, 'gmsh: num_points round-trip')
+        call check(g%num_cell_blocks() == 1_int64, 'gmsh: num_cell_blocks round-trip')
+        call check(g%cell_block_type(1) == 'tetra', 'gmsh: cell block type round-trip')
+        call g%get_points(gpoints)
+        call check(maxval(abs(gpoints - points)) < 1.0e-12_real64, &
+                   'gmsh: point coordinates round-trip')
+        call g%get_cell_block(1, gconn)
+        call check(all(gconn == conn), 'gmsh: 1-based connectivity round-trip')
+        call g%free()
+    end block
+
     ! ---- error paths ----------------------------------------------------
     ierr = 0
     call r%read(prefix//'_does_not_exist.vtu', stat=ierr, errmsg=msg)
@@ -127,6 +150,13 @@ program test_fortran_api
 
     call m%write(prefix//'_mesh.nonsense_extension', stat=ierr, errmsg=msg)
     call check(ierr /= 0, 'unknown extension sets stat')
+
+    ! An explicit but unknown format name is rejected via stat/errmsg too.
+    ierr = 0
+    msg = ''
+    call m%write(vtu_path, format='not-a-real-format', stat=ierr, errmsg=msg)
+    call check(ierr /= 0, 'unknown explicit format sets stat')
+    call check(len(msg) > 0, 'unknown explicit format sets errmsg')
 
     call m%free()
     call r%free()

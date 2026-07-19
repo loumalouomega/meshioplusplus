@@ -121,3 +121,28 @@ def test_color_scalars(filename, ref_num_points, ref_num_cells):
     mesh = meshioplusplus.read(filename)
     assert len(mesh.points) == ref_num_points
     assert len(mesh.cells) == ref_num_cells
+
+
+# --- malformed-input / error-path coverage (Python reference reader) ---
+from meshioplusplus.vtk._vtk_51 import read as _vtk51_py_read  # noqa: E402
+
+
+def test_vtk_unknown_data_type_raises(tmp_path):
+    p = tmp_path / "bad.vtk"
+    p.write_text("# vtk DataFile Version 5.1\nNONSENSE\n")
+    with pytest.raises(meshioplusplus.ReadError):
+        _vtk51_py_read(str(p))
+
+
+def test_vtk_missing_cells_section_raises(tmp_path):
+    # UNSTRUCTURED_GRID with POINTS but no CELLS/CELL_TYPES.
+    p = tmp_path / "bad.vtk"
+    p.write_text(
+        "# vtk DataFile Version 5.1\n"
+        "ASCII\n"
+        "DATASET UNSTRUCTURED_GRID\n"
+        "POINTS 1 float\n"
+        "0.0 0.0 0.0\n"
+    )
+    with pytest.raises(meshioplusplus.ReadError):
+        _vtk51_py_read(str(p))
