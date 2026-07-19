@@ -77,6 +77,8 @@ module meshioplusplus
         procedure :: quality_counts => mesh_quality_counts
         procedure :: reorder => mesh_reorder
         procedure :: compute_bandwidth => mesh_compute_bandwidth
+        procedure :: equals => mesh_equals
+        procedure :: diff => mesh_diff
         ! -- building --
         procedure :: set_points => mesh_set_points
         procedure, private :: mesh_add_cell_block_i32
@@ -239,6 +241,38 @@ module meshioplusplus
             type(c_ptr), value :: h
             integer(c_int64_t) :: bw
         end function
+
+        function c_mio_meshes_equal(a, b, atol, rtol, unordered, out_equal) &
+                bind(c, name="mio_meshes_equal") result(s)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: a, b
+            real(c_double), value :: atol, rtol
+            integer(c_int), value :: unordered
+            integer(c_int), intent(out) :: out_equal
+            integer(c_int) :: s
+        end function
+
+        function c_mio_diff(a, b, atol, rtol, unordered, out) &
+                bind(c, name="mio_diff") result(s)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: a, b
+            real(c_double), value :: atol, rtol
+            integer(c_int), value :: unordered
+            type(c_ptr), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_diff_result_verdict(r) &
+                bind(c, name="mio_diff_result_verdict") result(v)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: r
+            integer(c_int) :: v
+        end function
+
+        subroutine c_mio_diff_result_free(r) bind(c, name="mio_diff_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
 
         function c_mio_sniff_format(path, buf, buflen) &
                 bind(c, name="mio_sniff_format") result(n)
@@ -789,6 +823,69 @@ contains
             return
         end if
         bw = int(cbw, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Are two meshes equal within tolerance (abs_err <= atol + rtol*|expected|)?
+    !> `unordered` (default .false.) matches points by spatial proximity. Named
+    !> point_sets/cell_sets are not compared.
+    function mesh_equals(self, other, atol, rtol, unordered, stat, errmsg) result(eq)
+        class(mio_mesh), intent(in) :: self
+        type(mio_mesh), intent(in) :: other
+        real(real64), intent(in), optional :: atol, rtol
+        logical, intent(in), optional :: unordered
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical :: eq
+        real(c_double) :: catol, crtol
+        integer(c_int) :: cuno, ceq, s
+        eq = .false.
+        catol = 1.0e-12_c_double
+        crtol = 1.0e-9_c_double
+        cuno = 0_c_int
+        if (present(atol)) catol = real(atol, c_double)
+        if (present(rtol)) crtol = real(rtol, c_double)
+        if (present(unordered)) then
+            if (unordered) cuno = 1_c_int
+        end if
+        s = c_mio_meshes_equal(self%handle, other%handle, catol, crtol, cuno, ceq)
+        if (s /= 0_c_int) then
+            call handle_failure('equals', mio_error_message(), stat, errmsg)
+            return
+        end if
+        eq = ceq /= 0_c_int
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Compare two meshes; returns the verdict (0 = identical, 1 = equal within
+    !> tolerance, 2 = different). `unordered` matches points by proximity.
+    function mesh_diff(self, other, atol, rtol, unordered, stat, errmsg) result(verdict)
+        class(mio_mesh), intent(in) :: self
+        type(mio_mesh), intent(in) :: other
+        real(real64), intent(in), optional :: atol, rtol
+        logical, intent(in), optional :: unordered
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer :: verdict
+        real(c_double) :: catol, crtol
+        integer(c_int) :: cuno, s
+        type(c_ptr) :: res
+        verdict = 2
+        catol = 1.0e-12_c_double
+        crtol = 1.0e-9_c_double
+        cuno = 0_c_int
+        if (present(atol)) catol = real(atol, c_double)
+        if (present(rtol)) crtol = real(rtol, c_double)
+        if (present(unordered)) then
+            if (unordered) cuno = 1_c_int
+        end if
+        s = c_mio_diff(self%handle, other%handle, catol, crtol, cuno, res)
+        if (s /= 0_c_int) then
+            call handle_failure('diff', mio_error_message(), stat, errmsg)
+            return
+        end if
+        verdict = int(c_mio_diff_result_verdict(res))
+        call c_mio_diff_result_free(res)
         call clear_status(stat, errmsg)
     end function
 

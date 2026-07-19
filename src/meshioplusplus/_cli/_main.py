@@ -8,6 +8,7 @@ from . import (
     _compress,
     _convert,
     _decompress,
+    _diff,
     _extract_surface,
     _info,
     _quality,
@@ -76,6 +77,13 @@ def main(argv=None):
     )
     _reorder.add_args(parser)
     parser.set_defaults(func=_reorder.reorder_cmd)
+
+    parser = subparsers.add_parser(
+        "diff",
+        help="Compare two meshes (nonzero exit code if different)",
+    )
+    _diff.add_args(parser)
+    parser.set_defaults(func=_diff.diff_cmd)
 
     args = parent_parser.parse_args(argv)
 

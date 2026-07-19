@@ -192,7 +192,21 @@ out, node_perm, cell_perms = meshioplusplus.reorder(mesh, return_permutation=Tru
 print(meshioplusplus.compute_bandwidth(mesh), "->", meshioplusplus.compute_bandwidth(out))
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, and `meshioplusplus reorder`.
+#### Comparison (diff)
+
+`meshioplusplus.diff` compares two meshes and reports whether they are equivalent within a tolerance (`abs_err <= atol + rtol*|expected|`), with a structured breakdown (points, cells, data, named sets) and an overall verdict (`identical` / `equal within tolerance` / `different`); `meshes_equal` is the boolean wrapper for test suites. An optional `unordered=True` mode matches nodes by spatial proximity, so a shuffled node order still compares equal. See `doc/diff.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+assert meshioplusplus.meshes_equal(a, b, atol=1e-8)         # ideal in a regression test
+report = meshioplusplus.diff(a, b, unordered=True)          # tolerant to shuffled node order
+print(report["verdict"])
+```
+
+The `meshioplusplus diff a.vtu b.vtu` CLI verb sets a nonzero exit code when meshes differ, for direct use in CI / Makefiles.
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, and `meshioplusplus diff`.
 
 #### Time series
 

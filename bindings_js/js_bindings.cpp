@@ -76,6 +76,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -495,6 +496,95 @@ int compute_bandwidth_js(const val& rMeshObj) {
     });
 }
 
+// Convert an ArrayDiff to a JS object.
+val array_diff_to_val(const meshioplusplus::ArrayDiff& rAd) {
+    val d = val::object();
+    d.set("name", rAd.mName);
+    d.set("shapeMismatch", rAd.mShapeMismatch);
+    d.set("sizeA", static_cast<double>(rAd.mSizeA));
+    d.set("sizeB", static_cast<double>(rAd.mSizeB));
+    d.set("maxAbsError", rAd.mMaxAbsError);
+    d.set("maxRelError", rAd.mMaxRelError);
+    d.set("worstIndex", static_cast<double>(rAd.mWorstIndex));
+    d.set("numExceeding", static_cast<double>(rAd.mNumExceeding));
+    d.set("exact", rAd.mExact);
+    return d;
+}
+
+val data_diff_to_val(const meshioplusplus::DataDiff& rDd) {
+    val d = val::object();
+    val only_a = val::array(), only_b = val::array(), shared = val::array();
+    for (const std::string& s : rDd.mOnlyInA)
+        only_a.call<void>("push", s);
+    for (const std::string& s : rDd.mOnlyInB)
+        only_b.call<void>("push", s);
+    for (const meshioplusplus::ArrayDiff& ad : rDd.mShared)
+        shared.call<void>("push", array_diff_to_val(ad));
+    d.set("onlyInA", only_a);
+    d.set("onlyInB", only_b);
+    d.set("shared", shared);
+    return d;
+}
+
+/**
+ * @brief Compare two meshes. Returns a report object with `verdict`
+ * ("identical" / "equal within tolerance" / "different"), `points`, `blocks`,
+ * `pointData`/`cellData`/`fieldData`, and `messages`. Named point/cell sets are
+ * not compared (not visible to the core).
+ */
+val diff_js(const val& rMeshA, const val& rMeshB, double atol, double rtol, bool unordered) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DiffOptions opts;
+        opts.atol = atol;
+        opts.rtol = rtol;
+        opts.unordered = unordered;
+        meshioplusplus::DiffReport rep =
+            meshioplusplus::diff(val_to_mesh(rMeshA), val_to_mesh(rMeshB), opts);
+        val out = val::object();
+        out.set("verdict", meshioplusplus::diff_verdict_name(rep.mVerdict));
+        out.set("unordered", rep.mUnordered);
+        out.set("correspondenceFailed", rep.mCorrespondenceFailed);
+        out.set("pointCountMismatch", rep.mPointCountMismatch);
+        out.set("points", array_diff_to_val(rep.mPoints));
+        out.set("blockCountMismatch", rep.mBlockCountMismatch);
+        val blocks = val::array();
+        for (const meshioplusplus::BlockDiff& bd : rep.mBlocks) {
+            val d = val::object();
+            d.set("block", static_cast<double>(bd.mBlock));
+            d.set("typeA", bd.mTypeA);
+            d.set("typeB", bd.mTypeB);
+            d.set("countA", static_cast<double>(bd.mCountA));
+            d.set("countB", static_cast<double>(bd.mCountB));
+            d.set("typeMismatch", bd.mTypeMismatch);
+            d.set("countMismatch", bd.mCountMismatch);
+            d.set("connMismatchCount", static_cast<double>(bd.mConnMismatchCount));
+            blocks.call<void>("push", d);
+        }
+        out.set("blocks", blocks);
+        out.set("pointData", data_diff_to_val(rep.mPointData));
+        out.set("cellData", data_diff_to_val(rep.mCellData));
+        out.set("fieldData", data_diff_to_val(rep.mFieldData));
+        val messages = val::array();
+        for (const std::string& s : rep.mMessages)
+            messages.call<void>("push", s);
+        out.set("messages", messages);
+        return out;
+    });
+}
+
+/** @brief Are two meshes equal within tolerance? (verdict != "different") */
+bool meshes_equal_js(const val& rMeshA, const val& rMeshB, double atol, double rtol,
+                     bool unordered) {
+    return with_js_errors([&]() -> bool {
+        meshioplusplus::DiffOptions opts;
+        opts.atol = atol;
+        opts.rtol = rtol;
+        opts.unordered = unordered;
+        return meshioplusplus::diff(val_to_mesh(rMeshA), val_to_mesh(rMeshB), opts).mVerdict !=
+               meshioplusplus::DiffVerdict::Different;
+    });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
@@ -510,4 +600,6 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sniffFormat", &sniff_format_js);
     emscripten::function("reorder", &reorder_js);
     emscripten::function("computeBandwidth", &compute_bandwidth_js);
+    emscripten::function("diff", &diff_js);
+    emscripten::function("meshesEqual", &meshes_equal_js);
 }

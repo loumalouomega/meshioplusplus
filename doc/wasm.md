@@ -60,7 +60,11 @@ mesh-object shape: `extractSurface(mesh [, recordParentIds])`,
 `"morton"`, or `"hilbert"`). `reorder` returns
 `{ mesh, nodePermutation, cellPermutations }` — the renumbered mesh plus the
 applied old→new permutations (`Int32Array`s). See
-[Reordering / renumbering](./reorder.md).
+[Reordering / renumbering](./reorder.md). Comparison is exposed as
+`meshesEqual(meshA, meshB, atol, rtol, unordered)` (boolean) and
+`diff(meshA, meshB, atol, rtol, unordered)` (a report object with `verdict`,
+`points`, `blocks`, `pointData`/`cellData`/`fieldData`); named point/cell sets
+are not compared. See [Mesh comparison (diff)](./diff.md).
 
 ## Format support
 

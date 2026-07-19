@@ -65,6 +65,7 @@
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -275,6 +276,102 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus::compute_bandwidth(cpp);
         },
         py::arg("mesh"));
+
+    // Mesh comparison ("diff"). Returns a nested dict mirroring DiffReport, with
+    // an overall verdict string. See operations/diff.hpp.
+    m.def(
+        "diff",
+        [](py::object pymesh_a, py::object pymesh_b, double atol, double rtol, bool unordered,
+           std::int64_t max_reported) {
+            meshioplusplus_py::PyMeshRefs refs_a, refs_b;
+            meshioplusplus::Mesh a = meshioplusplus_py::py_to_mesh(pymesh_a, refs_a);
+            meshioplusplus::Mesh b = meshioplusplus_py::py_to_mesh(pymesh_b, refs_b);
+            meshioplusplus::DiffOptions opts;
+            opts.atol = atol;
+            opts.rtol = rtol;
+            opts.unordered = unordered;
+            opts.max_reported = max_reported;
+            meshioplusplus::DiffReport rep = meshioplusplus::diff(a, b, opts);
+
+            auto array_diff = [](const meshioplusplus::ArrayDiff& ad) {
+                py::dict d;
+                d["name"] = ad.mName;
+                d["shape_mismatch"] = ad.mShapeMismatch;
+                d["size_a"] = ad.mSizeA;
+                d["size_b"] = ad.mSizeB;
+                d["max_abs_error"] = ad.mMaxAbsError;
+                d["max_rel_error"] = ad.mMaxRelError;
+                d["worst_index"] = ad.mWorstIndex;
+                d["num_exceeding"] = ad.mNumExceeding;
+                d["exact"] = ad.mExact;
+                return d;
+            };
+            auto data_diff = [&](const meshioplusplus::DataDiff& dd) {
+                py::dict d;
+                py::list only_a, only_b, shared;
+                for (const std::string& s : dd.mOnlyInA)
+                    only_a.append(s);
+                for (const std::string& s : dd.mOnlyInB)
+                    only_b.append(s);
+                for (const meshioplusplus::ArrayDiff& ad : dd.mShared)
+                    shared.append(array_diff(ad));
+                d["only_in_a"] = only_a;
+                d["only_in_b"] = only_b;
+                d["shared"] = shared;
+                return d;
+            };
+
+            py::dict out;
+            out["verdict"] = meshioplusplus::diff_verdict_name(rep.mVerdict);
+            out["unordered"] = rep.mUnordered;
+            out["correspondence_failed"] = rep.mCorrespondenceFailed;
+            out["point_count_mismatch"] = rep.mPointCountMismatch;
+            out["num_points_a"] = rep.mNumPointsA;
+            out["num_points_b"] = rep.mNumPointsB;
+            out["points"] = array_diff(rep.mPoints);
+            out["block_count_mismatch"] = rep.mBlockCountMismatch;
+            out["num_blocks_a"] = rep.mNumBlocksA;
+            out["num_blocks_b"] = rep.mNumBlocksB;
+            py::list blocks;
+            for (const meshioplusplus::BlockDiff& bd : rep.mBlocks) {
+                py::dict d;
+                d["block"] = bd.mBlock;
+                d["type_a"] = bd.mTypeA;
+                d["type_b"] = bd.mTypeB;
+                d["count_a"] = bd.mCountA;
+                d["count_b"] = bd.mCountB;
+                d["type_mismatch"] = bd.mTypeMismatch;
+                d["count_mismatch"] = bd.mCountMismatch;
+                d["conn_mismatch_count"] = bd.mConnMismatchCount;
+                py::list firsts;
+                for (std::int64_t f : bd.mFirstMismatches)
+                    firsts.append(f);
+                d["first_mismatches"] = firsts;
+                blocks.append(d);
+            }
+            out["blocks"] = blocks;
+            out["point_data"] = data_diff(rep.mPointData);
+            out["cell_data"] = data_diff(rep.mCellData);
+            out["field_data"] = data_diff(rep.mFieldData);
+            py::list messages;
+            for (const std::string& s : rep.mMessages)
+                messages.append(s);
+            out["messages"] = messages;
+            return out;
+        },
+        py::arg("mesh_a"), py::arg("mesh_b"), py::arg("atol") = 1e-12, py::arg("rtol") = 1e-9,
+        py::arg("unordered") = false, py::arg("max_reported") = 10);
+
+    // Convenience boolean: are two meshes equal within tolerance (ordered)?
+    m.def(
+        "meshes_equal",
+        [](py::object pymesh_a, py::object pymesh_b, double atol, double rtol) {
+            meshioplusplus_py::PyMeshRefs refs_a, refs_b;
+            meshioplusplus::Mesh a = meshioplusplus_py::py_to_mesh(pymesh_a, refs_a);
+            meshioplusplus::Mesh b = meshioplusplus_py::py_to_mesh(pymesh_b, refs_b);
+            return meshioplusplus::meshes_equal(a, b, atol, rtol);
+        },
+        py::arg("mesh_a"), py::arg("mesh_b"), py::arg("atol") = 1e-12, py::arg("rtol") = 1e-9);
 
     // STL writer / reader (ascii or binary).
     m.def(

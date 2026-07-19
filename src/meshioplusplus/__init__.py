@@ -46,6 +46,7 @@ from . import (
     xdmf,
 )
 from .__about__ import __version__
+from ._diff import diff, meshes_equal
 from ._exceptions import ReadError, WriteError
 from ._helpers import (
     deregister_format,
@@ -121,6 +122,8 @@ __all__ = [
     "sniff_format",
     "reorder",
     "compute_bandwidth",
+    "diff",
+    "meshes_equal",
     "Mesh",
     "CellBlock",
     "ReadError",
