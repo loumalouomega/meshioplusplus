@@ -4861,6 +4861,269 @@ void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_de
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/parallel.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/subset.hpp =====
+/**
+ * @file detail/subset.hpp
+ * @brief Shared "build a submesh from a chosen set of cells" helper used by the
+ * `crop` and `split` operations: prune the points to only those referenced by
+ * the kept cells, compact + remap connectivity, and gather all data arrays.
+ *
+ * Header-only free functions in `meshioplusplus::detail` (exempt from the
+ * anonymous-namespace unique-prefix rule the amalgamation imposes on `.cpp`
+ * TUs). Built on the uniform mesh API only, so it works under every backend.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The result of `build_cell_subset`: the pruned submesh plus the index maps.
+struct SubsetResult {
+    Mesh mMesh;
+    /// Int64 shape `(num_points_in,)`, input point index -> output index (-1 if pruned).
+    NDArray mPointMap;
+    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> output
+    /// index within that block (-1 if not kept).
+    std::vector<NDArray> mCellMaps;
+};
+
+/// Row-preserving gather: out[j] = src[idx[j]] (whole trailing dims), dtype kept.
+inline NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx) {
+    const std::vector<std::size_t>& shp = rSrc.Shape();
+    std::size_t cols = 1;
+    for (std::size_t d = 1; d < shp.size(); ++d)
+        cols *= shp[d];
+    std::vector<std::size_t> out_shape = shp;
+    if (out_shape.empty())
+        out_shape = {rIdx.size()};
+    else
+        out_shape[0] = rIdx.size();
+    NDArray out = NDArray::Uninit(rSrc.Dtype(), out_shape);
+    const std::size_t rb = cols * dtype_size(rSrc.Dtype());
+    if (rb == 0)
+        return out;
+    const std::byte* s = rSrc.Data();
+    std::byte* d = out.Data();
+    parallel_for_bw(rIdx.size(), [&](std::size_t j) {
+        std::memcpy(d + j * rb, s + static_cast<std::size_t>(rIdx[j]) * rb, rb);
+    });
+    return out;
+}
+
+/**
+ * @brief Build a submesh containing exactly the chosen cells, pruning points to
+ * only those referenced and remapping connectivity + all data.
+ * @param rMesh the source mesh.
+ * @param rKeptCellsPerBlock per input block, the (ascending) old local cell
+ *        indices to keep.
+ * @param rPointIdName if non-empty, attach an Int64 `point_data` of original
+ *        point indices under this name.
+ * @param rCellIdName if non-empty, attach an Int64 `cell_data` of original cell
+ *        indices under this name (per block).
+ * @return the pruned submesh plus the point/cell index maps.
+ */
+inline SubsetResult build_cell_subset(
+    const Mesh& rMesh, const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
+    const std::string& rPointIdName = "", const std::string& rCellIdName = "",
+    bool drop_empty_blocks = false) {
+    SubsetResult res;
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    const NDArray& points = rMesh.Points();
+
+    // 1) mark used points across all kept cells.
+    std::vector<char> used(n, 0);
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
+        if (cb.IsPolyhedron()) {
+            for (std::int64_t c : kept)
+                for (std::size_t f = 0; f < cb.NumFaces(static_cast<std::size_t>(c)); ++f) {
+                    auto face = cb.Face(static_cast<std::size_t>(c), f);
+                    for (std::size_t k = 0; k < face.second; ++k)
+                        used[static_cast<std::size_t>(face.first[k])] = 1;
+                }
+        } else if (cb.IsRagged()) {
+            for (std::int64_t c : kept)
+                for (std::size_t k = 0; k < cb.RowSize(static_cast<std::size_t>(c)); ++k)
+                    used[static_cast<std::size_t>(cb.Row(static_cast<std::size_t>(c))[k])] = 1;
+        } else {
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            for (std::int64_t c : kept)
+                for (std::size_t k = 0; k < npc; ++k)
+                    used[static_cast<std::size_t>(
+                        read_int(conn, static_cast<std::size_t>(c) * npc + k))] = 1;
+        }
+        ++b;
+    }
+
+    // 2) compact used points -> new index; build gather list.
+    std::vector<std::int64_t> new_point(n, -1);
+    std::vector<std::int64_t> point_src;
+    for (std::size_t g = 0; g < n; ++g)
+        if (used[g]) {
+            new_point[g] = static_cast<std::int64_t>(point_src.size());
+            point_src.push_back(static_cast<std::int64_t>(g));
+        }
+
+    Mesh& out = res.mMesh;
+
+    // 3) points.
+    {
+        NDArray newpts = NDArray::Uninit(points.Dtype(), {point_src.size(), dim});
+        if (!point_src.empty() && dim > 0) {
+            const std::size_t rb = dim * dtype_size(points.Dtype());
+            const std::byte* s = points.Data();
+            std::byte* d = newpts.Data();
+            parallel_for_bw(point_src.size(), [&](std::size_t j) {
+                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
+            });
+        }
+        out.AssignPoints(std::move(newpts));
+    }
+
+    // 4) point_data (gather by point_src when full-length).
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
+        if (rows == n)
+            out.AddPointData(name, subset_gather_rows(a, point_src));
+        else {
+            NDArray c = a;
+            c.MakeOwned();
+            out.AddPointData(name, std::move(c));
+        }
+    }
+    if (!rPointIdName.empty()) {
+        NDArray ids = NDArray::Uninit(DType::Int64, {point_src.size()});
+        std::int64_t* p = ids.As<std::int64_t>();
+        for (std::size_t j = 0; j < point_src.size(); ++j)
+            p[j] = point_src[j];
+        out.AddPointData(rPointIdName, std::move(ids));
+    }
+
+    // 5) cells (remap connectivity to new point indices).
+    b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
+        if (drop_empty_blocks && kept.empty()) {
+            ++b;
+            continue;
+        }
+        const std::string type(cb.Type());
+        if (cb.IsPolyhedron()) {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(kept.size());
+            for (std::size_t i = 0; i < kept.size(); ++i) {
+                const std::size_t c = static_cast<std::size_t>(kept[i]);
+                cells[i].resize(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    cells[i][f].reserve(face.second);
+                    for (std::size_t k = 0; k < face.second; ++k)
+                        cells[i][f].push_back(new_point[static_cast<std::size_t>(face.first[k])]);
+                }
+            }
+            out.AddPolyhedronBlock(type, std::move(cells));
+        } else if (cb.IsRagged()) {
+            std::vector<std::vector<std::int64_t>> rows(kept.size());
+            for (std::size_t i = 0; i < kept.size(); ++i) {
+                const std::size_t c = static_cast<std::size_t>(kept[i]);
+                rows[i].reserve(cb.RowSize(c));
+                for (std::size_t k = 0; k < cb.RowSize(c); ++k)
+                    rows[i].push_back(new_point[static_cast<std::size_t>(cb.Row(c)[k])]);
+            }
+            out.AddPolygonBlock(type, std::move(rows));
+        } else {
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            NDArray outconn = NDArray::Uninit(DType::Int64, {kept.size(), npc});
+            std::int64_t* cd = outconn.As<std::int64_t>();
+            for (std::size_t i = 0; i < kept.size(); ++i) {
+                const std::size_t c = static_cast<std::size_t>(kept[i]);
+                for (std::size_t k = 0; k < npc; ++k)
+                    cd[i * npc + k] =
+                        new_point[static_cast<std::size_t>(read_int(conn, c * npc + k))];
+            }
+            out.AddCellBlock(type, std::move(outconn));
+        }
+        ++b;
+    }
+
+    // 6) cell_data (gather kept cells per block) + optional original cell ids.
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> outblocks;
+        b = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            if (drop_empty_blocks && rKeptCellsPerBlock[b].empty()) {
+                ++b;
+                continue;
+            }
+            const NDArray& src = rMesh.CellData(name, b);
+            const std::size_t rows = src.Shape().empty() ? 0 : src.Shape()[0];
+            if (rows == cb.NumCells())
+                outblocks.push_back(subset_gather_rows(src, rKeptCellsPerBlock[b]));
+            else {
+                NDArray c = src;
+                c.MakeOwned();
+                outblocks.push_back(std::move(c));
+            }
+            ++b;
+        }
+        out.AddCellData(name, std::move(outblocks));
+    }
+    if (!rCellIdName.empty()) {
+        std::vector<NDArray> idblocks;
+        for (const std::vector<std::int64_t>& kept : rKeptCellsPerBlock) {
+            if (drop_empty_blocks && kept.empty())
+                continue;
+            NDArray ids = NDArray::Uninit(DType::Int64, {kept.size()});
+            std::int64_t* p = ids.As<std::int64_t>();
+            for (std::size_t i = 0; i < kept.size(); ++i)
+                p[i] = kept[i];
+            idblocks.push_back(std::move(ids));
+        }
+        out.AddCellData(rCellIdName, std::move(idblocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        NDArray c = rMesh.FieldData(name);
+        c.MakeOwned();
+        out.AddFieldData(name, std::move(c));
+    }
+
+    // 7) index maps.
+    res.mPointMap = NDArray::Uninit(DType::Int64, {n});
+    std::int64_t* pm = res.mPointMap.As<std::int64_t>();
+    for (std::size_t g = 0; g < n; ++g)
+        pm[g] = new_point[g];
+
+    b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
+        std::int64_t* cm = cmap.As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c)
+            cm[c] = -1;
+        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
+        for (std::size_t i = 0; i < kept.size(); ++i)
+            cm[static_cast<std::size_t>(kept[i])] = static_cast<std::int64_t>(i);
+        res.mCellMaps.push_back(std::move(cmap));
+        ++b;
+    }
+
+    return res;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/subset.hpp =====
 // ===== begin cpp/include/meshioplusplus/vtk_common.hpp =====
 /**
  * @file vtk_common.hpp
@@ -9790,6 +10053,145 @@ void error(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) 
 }  // namespace log
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/log.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/clean.hpp =====
+/**
+ * @file operations/clean.hpp
+ * @brief Dependency-free one-pass mesh cleanup: weld coincident points, drop
+ * degenerate and exact-duplicate cells, and remove orphaned (unused) points.
+ *
+ * Each step is individually toggleable. `weld` fuses points within an absolute
+ * tolerance using a spatial-hash bucket grid (never O(N^2)); the surviving point
+ * keeps the value of the *first* contributing point (keep-first). Degenerate
+ * cells (a repeated corner node after welding, or a near-zero measure) and
+ * exact-duplicate cells (identical connectivity, keep-first per block) are
+ * dropped. Orphaned points (referenced by no surviving cell) are removed and the
+ * connectivity is remapped. The applied point/cell index maps are returned so a
+ * caller can remap external per-point / per-cell arrays (the Python-only sets).
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles under
+ * every mesh backend. This is an operation, not a file format — it is not in the
+ * format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options controlling `clean` (each step is independently toggleable).
+struct CleanOptions {
+    bool weld = false;                 ///< Fuse coincident points within `atol`.
+    double atol = 1e-8;                ///< Absolute coincidence tolerance for weld.
+    bool remove_orphans = true;        ///< Drop points referenced by no surviving cell.
+    bool drop_degenerate = true;       ///< Drop degenerate cells (repeated node / zero measure).
+    bool drop_duplicate_cells = true;  ///< Drop exact-duplicate cells (keep-first per block).
+};
+
+/**
+ * @brief The result of `clean`: the cleaned mesh, the index maps, and the counts
+ * of what was welded / removed / dropped.
+ */
+struct CleanResult {
+    /// The cleaned mesh.
+    Mesh mMesh;
+    /// `Int64` shape `(num_points_in,)` mapping each input point index to its
+    /// output point index (or -1 if welded away / removed as an orphan).
+    NDArray mPointMap;
+    /// Per input cell block, an `Int64` shape `(num_cells_in_block,)` array
+    /// mapping each input cell to its output index within that block (or -1 if
+    /// the cell was dropped).
+    std::vector<NDArray> mCellMaps;
+    std::int64_t mPointsWelded = 0;            ///< Points fused away by welding.
+    std::int64_t mPointsRemovedOrphan = 0;     ///< Points removed as orphans.
+    std::int64_t mCellsDroppedDegenerate = 0;  ///< Cells dropped as degenerate.
+    std::int64_t mCellsDroppedDuplicate = 0;   ///< Cells dropped as exact duplicates.
+};
+
+/**
+ * @brief Clean a mesh in one pass (weld / drop-degenerate / drop-duplicate /
+ * remove-orphans, per the options).
+ * @param rMesh the mesh to clean (unmodified).
+ * @param rOpts the cleanup options.
+ * @return a `CleanResult` with the cleaned mesh, index maps, and removal counts.
+ */
+CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/clean.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/crop.hpp =====
+/**
+ * @file operations/crop.hpp
+ * @brief Dependency-free spatial subsetting: extract the part of a mesh inside
+ * an axis-aligned bounding box or a half-space.
+ *
+ * A point is "inside" the bbox when `lo <= p <= hi` component-wise, or inside
+ * the half-space when `(p - point) . normal >= 0`. A cell is kept when ALL of
+ * its nodes are inside (`CropMode::All`, the default) or when ANY node is inside
+ * (`CropMode::Any`). The kept cells form a new mesh with unused points pruned
+ * and connectivity + all data remapped. Optionally the original point/cell ids
+ * are recorded as data arrays.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles under
+ * every mesh backend. This is an operation, not a file format — it is not in the
+ * format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell-keep policy for `crop`.
+enum class CropMode {
+    All,  ///< Keep a cell only if every node is inside the region.
+    Any,  ///< Keep a cell if any node is inside the region.
+};
+
+/**
+ * @brief The result of a crop: the pruned submesh plus the applied index maps
+ * (so the Python shim can remap the shim-only sets).
+ */
+struct CropResult {
+    Mesh mMesh;
+    /// Int64 shape `(num_points_in,)`, input point index -> output index (-1 if pruned).
+    NDArray mPointMap;
+    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> output (-1 if dropped).
+    std::vector<NDArray> mCellMaps;
+};
+
+/**
+ * @brief Crop a mesh to an axis-aligned bounding box.
+ * @param rMesh the input mesh.
+ * @param pLo the box lower corner (3 doubles; unused axes ignored for 2D).
+ * @param pHi the box upper corner (3 doubles).
+ * @param mode keep-all-nodes-inside (default) vs keep-any-node-inside.
+ * @param record_ids attach Int64 `crop:original_point_id` / `crop:original_cell_id`.
+ * @return the pruned submesh and index maps.
+ */
+CropResult crop_bbox(const Mesh& rMesh, const double* pLo, const double* pHi,
+                     CropMode mode = CropMode::All, bool record_ids = false);
+
+/**
+ * @brief Crop a mesh to the half-space `(p - point) . normal >= 0`.
+ * @param rMesh the input mesh.
+ * @param pPoint a point on the plane (3 doubles).
+ * @param pNormal the plane normal (3 doubles); the kept side is where the
+ *        signed distance is non-negative.
+ * @param mode keep-all-nodes-inside (default) vs keep-any-node-inside.
+ * @param record_ids attach Int64 `crop:original_point_id` / `crop:original_cell_id`.
+ * @return the pruned submesh and index maps.
+ */
+CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double* pNormal,
+                          CropMode mode = CropMode::All, bool record_ids = false);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/crop.hpp =====
 // ===== begin cpp/include/meshioplusplus/operations/diff.hpp =====
 /**
  * @file operations/diff.hpp
@@ -10261,6 +10663,134 @@ std::string sniff_format(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/operations/sniff.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/split.hpp =====
+/**
+ * @file operations/split.hpp
+ * @brief Dependency-free partitioning: split one mesh into several submeshes by
+ * cell type, connected component, or an integer cell_data tag.
+ *
+ *  - **Type**: one piece per (first-seen) cell type; key = the meshio type name.
+ *  - **Component**: flood-fill over node-sharing cell adjacency (union-find);
+ *    one piece per connected component; keys `"0"`, `"1"`, ...
+ *  - **Tag**: one piece per distinct value of a named integer `cell_data` array
+ *    (the first integer cell_data when the name is empty); key = the value.
+ *
+ * Each piece is pruned to only its own points, with connectivity and all data
+ * remapped, and the per-piece point/cell index maps are returned (so the Python
+ * shim can remap the shim-only sets). File-writing (the `out_{key}.vtu` pattern)
+ * is a caller concern — the core just returns the pieces.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles under
+ * every mesh backend. This is an operation, not a file format — it is not in the
+ * format registry.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The partitioning criterion for `split`.
+enum class SplitBy {
+    Type,       ///< One piece per cell type.
+    Component,  ///< One piece per connected component (node-sharing).
+    Tag,        ///< One piece per distinct integer cell_data value.
+};
+
+/// One output piece of a `split`.
+struct SplitPiece {
+    std::string mKey;  ///< The piece's key (type name / component index / tag value).
+    Mesh mMesh;        ///< The pruned submesh.
+    /// Int64 shape `(num_points_in,)`, input point index -> this piece's point index (-1 if
+    /// absent).
+    NDArray mPointMap;
+    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> this piece's
+    /// in-block index (-1 if the cell is not in this piece).
+    std::vector<NDArray> mCellMaps;
+};
+
+/// The result of `split`: the ordered pieces.
+struct SplitResult {
+    std::vector<SplitPiece> mPieces;
+};
+
+/**
+ * @brief Parse a criterion name into a `SplitBy`.
+ * @param rName one of `"type"`, `"component"`, `"region"`/`"tag"`
+ * @throws std::invalid_argument on an unknown name
+ */
+SplitBy split_by_from_name(const std::string& rName);
+
+/**
+ * @brief Split a mesh into pieces by the given criterion.
+ * @param rMesh the mesh to split.
+ * @param by the partitioning criterion.
+ * @param rTagName for `SplitBy::Tag`, the integer `cell_data` name to split on
+ *        (empty = auto-detect the first integer cell_data); ignored otherwise.
+ * @return the ordered pieces with their keys and index maps.
+ * @throws std::invalid_argument for `SplitBy::Tag` when no suitable cell_data
+ *         tag is found.
+ */
+SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName = "");
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/split.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/stats.hpp =====
+/**
+ * @file operations/stats.hpp
+ * @brief Dependency-free geometric statistics of a mesh (read-only), the
+ * geometric complement to the topological `info`.
+ *
+ * `compute_stats` reports the bounding box + extents, centroid, per-cell-type
+ * counts, total surface area (of 2D cells plus the boundary of 3D cells), total
+ * signed & unsigned volume of 3D cells, and the count of inverted (negative
+ * signed-volume) cells. The mesh is not modified.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles under
+ * every mesh backend. This is an operation, not a file format — it is not in the
+ * format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Geometric statistics of a mesh (see `compute_stats`).
+struct StatsReport {
+    std::int64_t mNumPoints = 0;  ///< Number of points.
+    std::int64_t mNumCells = 0;   ///< Total number of cells (all blocks).
+    /// Axis-aligned bounding box lower / upper corner and extent (max-min). For a
+    /// 2D mesh the z components are 0.
+    double mBBoxMin[3] = {0, 0, 0};
+    double mBBoxMax[3] = {0, 0, 0};
+    double mExtent[3] = {0, 0, 0};
+    double mCentroid[3] = {0, 0, 0};  ///< Mean of the point coordinates.
+    /// Per cell type (first-seen order): the type name and its cell count.
+    std::vector<std::pair<std::string, std::int64_t>> mCellTypeCounts;
+    double mTotalArea = 0.0;        ///< Area of 2D cells + boundary of 3D cells.
+    double mSignedVolume = 0.0;     ///< Sum of signed volumes of 3D cells.
+    double mUnsignedVolume = 0.0;   ///< Sum of |volume| of 3D cells.
+    std::int64_t mNumInverted = 0;  ///< 3D cells with negative signed volume.
+};
+
+/**
+ * @brief Compute geometric statistics of a mesh (read-only).
+ * @param rMesh the mesh to measure (unmodified).
+ * @return the populated `StatsReport`.
+ */
+StatsReport compute_stats(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/stats.hpp =====
 // ===== begin cpp/include/meshioplusplus/operations/surface.hpp =====
 /**
  * @file operations/surface.hpp
@@ -10321,6 +10851,77 @@ bool has_surface_extractable_cells(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/operations/surface.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/transform.hpp =====
+/**
+ * @file operations/transform.hpp
+ * @brief Dependency-free affine transform of point coordinates: translate,
+ * scale (per-axis or uniform), rotate (axis + angle), a general 4x4 affine
+ * matrix, and a unit-scale convenience.
+ *
+ * `transform` returns a new mesh with the transformed points; connectivity,
+ * `cell_data`, `field_data`, and (by default) `point_data` are carried through
+ * unchanged. Vector/tensor `point_data` can optionally be rotated by the
+ * transform's linear part (`rotate_vector_data`, off by default). An
+ * orientation-reversing transform (negative determinant of the 3x3 linear
+ * block) logs a warning that cell orientation may be flipped.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is not
+ * in the format registry.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief A 4x4 homogeneous affine transform, stored row-major (element `(r, c)`
+ * at `mMatrix[r * 4 + c]`). A point `p` maps to `M * [p.x, p.y, p.z, 1]`.
+ */
+struct AffineTransform {
+    /// Row-major 4x4 matrix; identity by default.
+    std::array<double, 16> mMatrix = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+};
+
+/** @brief A pure translation by `(dx, dy, dz)`. */
+AffineTransform transform_translation(double dx, double dy, double dz);
+
+/** @brief A per-axis scale `(sx, sy, sz)` about the origin. */
+AffineTransform transform_scale(double sx, double sy, double sz);
+
+/** @brief A uniform scale by `factor` about the origin (e.g. unit conversion). */
+AffineTransform transform_units(double factor);
+
+/**
+ * @brief A rotation of `angle_rad` radians about the axis `(ax, ay, az)`
+ * (Rodrigues' formula; the axis is normalized internally).
+ * @throws std::invalid_argument if the axis is (near) zero-length.
+ */
+AffineTransform transform_rotation(double ax, double ay, double az, double angle_rad);
+
+/** @brief Wrap a caller-supplied row-major 4x4 matrix. */
+AffineTransform transform_from_matrix(const double* pMatrix16);
+
+/** @brief Compose two transforms: the result applies `rSecond` after `rFirst`. */
+AffineTransform transform_compose(const AffineTransform& rSecond, const AffineTransform& rFirst);
+
+/**
+ * @brief Apply an affine transform to a mesh's point coordinates.
+ * @param rMesh the input mesh (unmodified).
+ * @param rXform the affine transform to apply.
+ * @param rotate_vector_data when true, rotate vector (trailing dim 3) and
+ *        tensor (trailing dim 9) `point_data` by the transform's 3x3 linear
+ *        block (`R*v` / `R*A*R^T`); off by default.
+ * @return a new mesh with transformed points; connectivity and data preserved.
+ */
+Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vector_data = false);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/transform.hpp =====
 // ===== begin cpp/include/meshioplusplus/registry.hpp =====
 /**
  * @file registry.hpp
@@ -41099,6 +41700,502 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/formats/xdmf.cpp =====
+// ===== begin cpp/src/operations/clean.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+// Row-preserving gather: out[j] = src[idx[j]] (whole trailing dims), dtype kept.
+NDArray clean_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx) {
+    const std::vector<std::size_t>& shp = rSrc.Shape();
+    std::size_t cols = 1;
+    for (std::size_t d = 1; d < shp.size(); ++d)
+        cols *= shp[d];
+    std::vector<std::size_t> out_shape = shp;
+    if (out_shape.empty())
+        out_shape = {rIdx.size()};
+    else
+        out_shape[0] = rIdx.size();
+    NDArray out = NDArray::Uninit(rSrc.Dtype(), out_shape);
+    const std::size_t rb = cols * dtype_size(rSrc.Dtype());
+    if (rb == 0)
+        return out;
+    const std::byte* s = rSrc.Data();
+    std::byte* d = out.Data();
+    parallel_for_bw(rIdx.size(), [&](std::size_t j) {
+        std::memcpy(d + j * rb, s + static_cast<std::size_t>(rIdx[j]) * rb, rb);
+    });
+    return out;
+}
+
+std::int64_t clean_quantize(double v, double atol) {
+    return static_cast<std::int64_t>(std::floor(v / atol));
+}
+
+struct CleanKey {
+    std::int64_t x, y, z;
+    bool operator==(const CleanKey& r) const { return x == r.x && y == r.y && z == r.z; }
+};
+
+struct CleanKeyHash {
+    std::size_t operator()(const CleanKey& k) const {
+        std::size_t h = 1469598103934665603ULL;
+        for (std::int64_t v : {k.x, k.y, k.z}) {
+            h ^= static_cast<std::size_t>(v);
+            h *= 1099511628211ULL;
+        }
+        return h;
+    }
+};
+
+// Spatial-hash weld (keep-first, deterministic). Fills rWeldRep[g] in [0, W) and
+// rRepSource[r] = the first global point that created representative r; returns W.
+std::int64_t clean_build_weld_map(const NDArray& rPts, std::size_t n, std::size_t dim, double atol,
+                                  std::vector<std::int64_t>& rWeldRep,
+                                  std::vector<std::int64_t>& rRepSource) {
+    rWeldRep.assign(n, 0);
+    rRepSource.clear();
+    const std::size_t ddim = std::min<std::size_t>(dim, 3);
+    const double atol2 = atol * atol;
+    std::unordered_map<CleanKey, std::vector<std::int64_t>, CleanKeyHash> grid;
+    for (std::size_t g = 0; g < n; ++g) {
+        double p[3] = {0, 0, 0};
+        for (std::size_t d = 0; d < ddim; ++d)
+            p[d] = detail::read_double(rPts, g * dim + d);
+        const CleanKey k{clean_quantize(p[0], atol), clean_quantize(p[1], atol),
+                         clean_quantize(p[2], atol)};
+        std::int64_t found = -1;
+        for (std::int64_t dz = -1; dz <= 1 && found < 0; ++dz)
+            for (std::int64_t dy = -1; dy <= 1 && found < 0; ++dy)
+                for (std::int64_t dx = -1; dx <= 1 && found < 0; ++dx) {
+                    auto it = grid.find({k.x + dx, k.y + dy, k.z + dz});
+                    if (it == grid.end())
+                        continue;
+                    for (std::int64_t rep : it->second) {
+                        double q[3] = {0, 0, 0};
+                        const std::size_t rg = static_cast<std::size_t>(rRepSource[rep]);
+                        for (std::size_t d = 0; d < ddim; ++d)
+                            q[d] = detail::read_double(rPts, rg * dim + d);
+                        double d2 = 0;
+                        for (std::size_t d = 0; d < ddim; ++d)
+                            d2 += (p[d] - q[d]) * (p[d] - q[d]);
+                        if (d2 <= atol2) {
+                            found = rep;
+                            break;
+                        }
+                    }
+                }
+        if (found >= 0) {
+            rWeldRep[g] = found;
+        } else {
+            const std::int64_t r = static_cast<std::int64_t>(rRepSource.size());
+            rWeldRep[g] = r;
+            rRepSource.push_back(static_cast<std::int64_t>(g));
+            grid[k].push_back(r);
+        }
+    }
+    return static_cast<std::int64_t>(rRepSource.size());
+}
+
+// Unsigned area of a 2D corner polygon (triangle / quad, Newell normal).
+double clean_area(const std::vector<Vec3>& rC, int corners) {
+    if (corners < 3)
+        return 0.0;
+    Vec3 s = {0, 0, 0};
+    for (int i = 0; i < corners; ++i)
+        s = detail::vec3_add(s, detail::vec3_cross(rC[i], rC[(i + 1) % corners]));
+    return 0.5 * detail::vec3_norm(s);
+}
+
+// Unsigned volume of a 3D cell via the divergence theorem over its outward-wound
+// boundary faces (triangulated fan). NaN for types without a face table.
+double clean_volume(const std::vector<Vec3>& rC, CellType ct) {
+    const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
+    if (faces.empty())
+        return std::nan("");
+    double vol6 = 0.0;
+    for (const detail::CellFaceDef& f : faces) {
+        const Vec3 a = rC[f.mNodes[0]];
+        for (int i = 1; i + 1 < f.mNumCorners; ++i)
+            vol6 += detail::triple_product(a, rC[f.mNodes[i]], rC[f.mNodes[i + 1]]);
+    }
+    return std::abs(vol6 / 6.0);
+}
+
+}  // namespace
+
+CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
+    const double eps = 1e-14;
+    CleanResult res;
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    // --- weld (or identity) -> welded representatives -----------------------
+    std::vector<std::int64_t> weld_rep;    // global point -> rep in [0, W)
+    std::vector<std::int64_t> rep_source;  // rep -> first contributing global point
+    std::int64_t W = 0;
+    if (rOpts.weld && n > 0 && dim > 0 && rOpts.atol > 0) {
+        W = clean_build_weld_map(points, n, dim, rOpts.atol, weld_rep, rep_source);
+    } else {
+        weld_rep.resize(n);
+        rep_source.resize(n);
+        for (std::size_t g = 0; g < n; ++g) {
+            weld_rep[g] = static_cast<std::int64_t>(g);
+            rep_source[g] = static_cast<std::int64_t>(g);
+        }
+        W = static_cast<std::int64_t>(n);
+    }
+    res.mPointsWelded = static_cast<std::int64_t>(n) - W;
+
+    // --- per-block cell filtering (rep-space connectivity) ------------------
+    struct BlockOut {
+        std::string type;
+        int kind;  // 0 rect, 1 polygon, 2 polyhedron
+        std::size_t npc = 0;
+        std::vector<std::int64_t> rect_conn;                        // kind 0, flat (kept*npc)
+        std::vector<std::vector<std::int64_t>> poly_rows;           // kind 1
+        std::vector<std::vector<std::vector<std::int64_t>>> polyh;  // kind 2
+        std::vector<std::int64_t> kept_cells;                       // old local indices kept
+    };
+    std::vector<BlockOut> blocks;
+    std::vector<char> rep_used(static_cast<std::size_t>(W), 0);
+
+    for (const auto cb : rMesh.CellRange()) {
+        BlockOut bo;
+        bo.type = std::string(cb.Type());
+        const CellType ct = cell_type_from_name(bo.type);
+        const std::size_t nc = cb.NumCells();
+
+        if (cb.IsPolyhedron()) {
+            bo.kind = 2;
+            for (std::size_t c = 0; c < nc; ++c) {
+                std::vector<std::vector<std::int64_t>> cell(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    cell[f].reserve(face.second);
+                    for (std::size_t k = 0; k < face.second; ++k) {
+                        std::int64_t r = weld_rep[static_cast<std::size_t>(face.first[k])];
+                        cell[f].push_back(r);
+                        rep_used[static_cast<std::size_t>(r)] = 1;
+                    }
+                }
+                bo.polyh.push_back(std::move(cell));
+                bo.kept_cells.push_back(static_cast<std::int64_t>(c));
+            }
+        } else if (cb.IsRagged()) {
+            bo.kind = 1;
+            for (std::size_t c = 0; c < nc; ++c) {
+                std::vector<std::int64_t> row(cb.RowSize(c));
+                for (std::size_t k = 0; k < cb.RowSize(c); ++k) {
+                    std::int64_t r = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
+                    row[k] = r;
+                    rep_used[static_cast<std::size_t>(r)] = 1;
+                }
+                bo.poly_rows.push_back(std::move(row));
+                bo.kept_cells.push_back(static_cast<std::int64_t>(c));
+            }
+        } else {
+            bo.kind = 0;
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            bo.npc = npc;
+            const int corner_count = detail::cell_corner_count(ct);
+            const int cdim = cell_type_dimension(ct);
+            std::unordered_set<std::string> seen;
+            std::vector<std::int64_t> row(npc);
+            for (std::size_t c = 0; c < nc; ++c) {
+                for (std::size_t k = 0; k < npc; ++k)
+                    row[k] =
+                        weld_rep[static_cast<std::size_t>(detail::read_int(conn, c * npc + k))];
+
+                // degenerate: repeated corner node, or near-zero measure.
+                bool degenerate = false;
+                if (rOpts.drop_degenerate) {
+                    const int cc = corner_count > 0 ? corner_count : static_cast<int>(npc);
+                    for (int i = 0; i < cc && !degenerate; ++i)
+                        for (int j = i + 1; j < cc; ++j)
+                            if (row[i] == row[j]) {
+                                degenerate = true;
+                                break;
+                            }
+                    if (!degenerate && corner_count > 0) {
+                        std::vector<Vec3> coords(corner_count);
+                        for (int i = 0; i < corner_count; ++i)
+                            coords[i] = detail::read_point(
+                                points, dim, rep_source[static_cast<std::size_t>(row[i])]);
+                        double measure = std::nan("");
+                        if (cdim == 2)
+                            measure = clean_area(coords, corner_count);
+                        else if (cdim == 3)
+                            measure = clean_volume(coords, ct);
+                        if (!std::isnan(measure) && measure < eps)
+                            degenerate = true;
+                    }
+                }
+                if (degenerate) {
+                    ++res.mCellsDroppedDegenerate;
+                    continue;
+                }
+
+                // exact duplicate: identical sorted connectivity, keep-first.
+                if (rOpts.drop_duplicate_cells) {
+                    std::vector<std::int64_t> sorted(row);
+                    std::sort(sorted.begin(), sorted.end());
+                    std::string key(reinterpret_cast<const char*>(sorted.data()),
+                                    sorted.size() * sizeof(std::int64_t));
+                    if (!seen.insert(std::move(key)).second) {
+                        ++res.mCellsDroppedDuplicate;
+                        continue;
+                    }
+                }
+
+                for (std::size_t k = 0; k < npc; ++k) {
+                    bo.rect_conn.push_back(row[k]);
+                    rep_used[static_cast<std::size_t>(row[k])] = 1;
+                }
+                bo.kept_cells.push_back(static_cast<std::int64_t>(c));
+            }
+        }
+        blocks.push_back(std::move(bo));
+    }
+
+    // --- point compaction (orphan removal) ----------------------------------
+    std::vector<std::int64_t> new_point(static_cast<std::size_t>(W), -1);
+    std::vector<std::int64_t> kept_reps;  // reps surviving, ascending
+    for (std::int64_t r = 0; r < W; ++r) {
+        if (!rOpts.remove_orphans || rep_used[static_cast<std::size_t>(r)]) {
+            new_point[static_cast<std::size_t>(r)] = static_cast<std::int64_t>(kept_reps.size());
+            kept_reps.push_back(r);
+        }
+    }
+    const std::int64_t P = static_cast<std::int64_t>(kept_reps.size());
+    res.mPointsRemovedOrphan = W - P;
+
+    // point gather indices (output row -> source global point, keep-first).
+    std::vector<std::int64_t> point_src(kept_reps.size());
+    for (std::size_t j = 0; j < kept_reps.size(); ++j)
+        point_src[j] = rep_source[static_cast<std::size_t>(kept_reps[j])];
+
+    // --- emit points + point_data ------------------------------------------
+    Mesh& out = res.mMesh;
+    {
+        NDArray newpts = NDArray::Uninit(points.Dtype(), {static_cast<std::size_t>(P), dim});
+        if (P > 0 && dim > 0) {
+            const std::size_t rb = dim * dtype_size(points.Dtype());
+            const std::byte* s = points.Data();
+            std::byte* d = newpts.Data();
+            parallel_for_bw(point_src.size(), [&](std::size_t j) {
+                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
+            });
+        }
+        out.AssignPoints(std::move(newpts));
+    }
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
+        if (rows == n)
+            out.AddPointData(name, clean_gather_rows(a, point_src));
+        else {
+            NDArray c = a;
+            c.MakeOwned();
+            out.AddPointData(name, std::move(c));
+        }
+    }
+
+    // --- emit cells (remap rep-space -> final point index) ------------------
+    res.mCellMaps.clear();
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        BlockOut& bo = blocks[bi];
+        // cell map: old local -> new local (or -1).
+        NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
+        std::int64_t* cm = cmap.As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c)
+            cm[c] = -1;
+        for (std::size_t j = 0; j < bo.kept_cells.size(); ++j)
+            cm[static_cast<std::size_t>(bo.kept_cells[j])] = static_cast<std::int64_t>(j);
+        res.mCellMaps.push_back(std::move(cmap));
+
+        if (bo.kind == 0) {
+            const std::size_t kept = bo.kept_cells.size();
+            NDArray conn = NDArray::Uninit(DType::Int64, {kept, bo.npc});
+            std::int64_t* cd = conn.As<std::int64_t>();
+            for (std::size_t i = 0; i < bo.rect_conn.size(); ++i)
+                cd[i] = new_point[static_cast<std::size_t>(bo.rect_conn[i])];
+            out.AddCellBlock(bo.type, std::move(conn));
+        } else if (bo.kind == 1) {
+            for (auto& row : bo.poly_rows)
+                for (std::int64_t& v : row)
+                    v = new_point[static_cast<std::size_t>(v)];
+            out.AddPolygonBlock(bo.type, std::move(bo.poly_rows));
+        } else {
+            for (auto& cell : bo.polyh)
+                for (auto& face : cell)
+                    for (std::int64_t& v : face)
+                        v = new_point[static_cast<std::size_t>(v)];
+            out.AddPolyhedronBlock(bo.type, std::move(bo.polyh));
+        }
+        ++bi;
+    }
+
+    // --- emit cell_data (gather surviving cells per block) ------------------
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> outblocks;
+        std::size_t b = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const NDArray& src = rMesh.CellData(name, b);
+            const std::size_t rows = src.Shape().empty() ? 0 : src.Shape()[0];
+            if (rows == cb.NumCells())
+                outblocks.push_back(clean_gather_rows(src, blocks[b].kept_cells));
+            else {
+                NDArray c = src;
+                c.MakeOwned();
+                outblocks.push_back(std::move(c));
+            }
+            ++b;
+        }
+        out.AddCellData(name, std::move(outblocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        NDArray c = rMesh.FieldData(name);
+        c.MakeOwned();
+        out.AddFieldData(name, std::move(c));
+    }
+
+    // --- point map (input global -> output point, or -1) --------------------
+    res.mPointMap = NDArray::Uninit(DType::Int64, {n});
+    std::int64_t* pm = res.mPointMap.As<std::int64_t>();
+    for (std::size_t g = 0; g < n; ++g)
+        pm[g] = new_point[static_cast<std::size_t>(weld_rep[g])];
+
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/clean.cpp =====
+// ===== begin cpp/src/operations/crop.cpp =====
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+// Build the per-point inside mask for a predicate `inside(point)`.
+template <class Predicate>
+std::vector<char> crop_point_mask(const Mesh& rMesh, Predicate inside) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    const NDArray& points = rMesh.Points();
+    std::vector<char> mask(n, 0);
+    parallel_for(n, [&](std::size_t g) {
+        mask[g] = inside(detail::read_point(points, dim, static_cast<std::int64_t>(g))) ? 1 : 0;
+    });
+    return mask;
+}
+
+// Collect the kept cells per block under the all/any policy.
+std::vector<std::vector<std::int64_t>> crop_kept_cells(const Mesh& rMesh,
+                                                       const std::vector<char>& rMask,
+                                                       CropMode mode) {
+    std::vector<std::vector<std::int64_t>> kept;
+    kept.reserve(rMesh.NumCellBlocks());
+    const bool all = mode == CropMode::All;
+    for (const auto cb : rMesh.CellRange()) {
+        std::vector<std::int64_t> block;
+        const std::size_t nc = cb.NumCells();
+        for (std::size_t c = 0; c < nc; ++c) {
+            bool any_in = false, all_in = true;
+            auto visit = [&](std::int64_t v) {
+                const bool in = rMask[static_cast<std::size_t>(v)] != 0;
+                any_in = any_in || in;
+                all_in = all_in && in;
+            };
+            if (cb.IsPolyhedron()) {
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    for (std::size_t k = 0; k < face.second; ++k)
+                        visit(face.first[k]);
+                }
+            } else if (cb.IsRagged()) {
+                for (std::size_t k = 0; k < cb.RowSize(c); ++k)
+                    visit(cb.Row(c)[k]);
+            } else {
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t k = 0; k < npc; ++k)
+                    visit(detail::read_int(conn, c * npc + k));
+            }
+            if (all ? all_in : any_in)
+                block.push_back(static_cast<std::int64_t>(c));
+        }
+        kept.push_back(std::move(block));
+    }
+    return kept;
+}
+
+CropResult crop_finish(const Mesh& rMesh, const std::vector<std::vector<std::int64_t>>& rKept,
+                       bool record_ids) {
+    detail::SubsetResult sub =
+        detail::build_cell_subset(rMesh, rKept, record_ids ? "crop:original_point_id" : "",
+                                  record_ids ? "crop:original_cell_id" : "");
+    CropResult res;
+    res.mMesh = std::move(sub.mMesh);
+    res.mPointMap = std::move(sub.mPointMap);
+    res.mCellMaps = std::move(sub.mCellMaps);
+    return res;
+}
+
+}  // namespace
+
+CropResult crop_bbox(const Mesh& rMesh, const double* pLo, const double* pHi, CropMode mode,
+                     bool record_ids) {
+    const std::array<double, 3> lo = {pLo[0], pLo[1], pLo[2]};
+    const std::array<double, 3> hi = {pHi[0], pHi[1], pHi[2]};
+    auto mask = crop_point_mask(rMesh, [&](const Vec3& p) {
+        for (int d = 0; d < 3; ++d)
+            if (p[d] < lo[d] || p[d] > hi[d])
+                return false;
+        return true;
+    });
+    return crop_finish(rMesh, crop_kept_cells(rMesh, mask, mode), record_ids);
+}
+
+CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double* pNormal,
+                          CropMode mode, bool record_ids) {
+    const Vec3 p0 = {pPoint[0], pPoint[1], pPoint[2]};
+    const Vec3 nrm = {pNormal[0], pNormal[1], pNormal[2]};
+    auto mask = crop_point_mask(rMesh, [&](const Vec3& p) {
+        return detail::vec3_dot(detail::vec3_sub(p, p0), nrm) >= 0.0;
+    });
+    return crop_finish(rMesh, crop_kept_cells(rMesh, mask, mode), record_ids);
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/crop.cpp =====
 // ===== begin cpp/src/operations/diff.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -43636,6 +44733,475 @@ std::string sniff_format(const std::string& rPath) {
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/operations/sniff.cpp =====
+// ===== begin cpp/src/operations/split.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// A named list of per-block kept-cell lists (one output piece, pre-prune).
+struct SplitGroup {
+    std::string key;
+    std::vector<std::vector<std::int64_t>> kept;  // per input block
+};
+
+// Ensure every group has one (possibly empty) kept list per input block.
+void split_init_group(SplitGroup& rG, std::size_t nblocks) {
+    rG.kept.assign(nblocks, {});
+}
+
+// Union-find over global cell indices (flood-fill for connected components).
+std::int64_t split_uf_find(std::vector<std::int64_t>& rParent, std::int64_t x) {
+    while (rParent[static_cast<std::size_t>(x)] != x) {
+        rParent[static_cast<std::size_t>(x)] =
+            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(x)])];
+        x = rParent[static_cast<std::size_t>(x)];
+    }
+    return x;
+}
+
+void split_uf_union(std::vector<std::int64_t>& rParent, std::int64_t a, std::int64_t b) {
+    std::int64_t ra = split_uf_find(rParent, a), rb = split_uf_find(rParent, b);
+    if (ra != rb)
+        rParent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
+}
+
+// Visit each node index of one cell (rectangular / polygon / polyhedron).
+template <class F>
+void split_visit_nodes(const Mesh::CellView& rCb, std::size_t c, F&& f) {
+    if (rCb.IsPolyhedron()) {
+        for (std::size_t face = 0; face < rCb.NumFaces(c); ++face) {
+            auto fc = rCb.Face(c, face);
+            for (std::size_t k = 0; k < fc.second; ++k)
+                f(fc.first[k]);
+        }
+    } else if (rCb.IsRagged()) {
+        for (std::size_t k = 0; k < rCb.RowSize(c); ++k)
+            f(rCb.Row(c)[k]);
+    } else {
+        const NDArray& conn = rCb.Conn();
+        const std::size_t npc = rCb.NodesPerCell();
+        for (std::size_t k = 0; k < npc; ++k)
+            f(detail::read_int(conn, c * npc + k));
+    }
+}
+
+std::vector<SplitGroup> split_by_type(const Mesh& rMesh) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<SplitGroup> groups;
+    std::unordered_map<std::string, std::size_t> index;
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type(cb.Type());
+        auto it = index.find(type);
+        std::size_t gi;
+        if (it == index.end()) {
+            gi = groups.size();
+            index[type] = gi;
+            groups.push_back({});
+            groups.back().key = type;
+            split_init_group(groups.back(), nblocks);
+        } else {
+            gi = it->second;
+        }
+        std::vector<std::int64_t>& dst = groups[gi].kept[b];
+        for (std::size_t c = 0; c < cb.NumCells(); ++c)
+            dst.push_back(static_cast<std::int64_t>(c));
+        ++b;
+    }
+    return groups;
+}
+
+std::vector<SplitGroup> split_by_component(const Mesh& rMesh) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::size_t n = rMesh.NumPoints();
+
+    // Global cell numbering (blocks concatenated in order).
+    std::vector<std::size_t> block_base(nblocks + 1, 0);
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        block_base[bi + 1] = block_base[bi] + cb.NumCells();
+        ++bi;
+    }
+    const std::size_t total = block_base[nblocks];
+
+    std::vector<std::int64_t> parent(total);
+    for (std::size_t i = 0; i < total; ++i)
+        parent[i] = static_cast<std::int64_t>(i);
+
+    // Union cells that share a node (first cell per node as the anchor).
+    std::vector<std::int64_t> node_first(n, -1);
+    bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            const std::int64_t gc = static_cast<std::int64_t>(block_base[bi] + c);
+            split_visit_nodes(cb, c, [&](std::int64_t node) {
+                std::int64_t& first = node_first[static_cast<std::size_t>(node)];
+                if (first < 0)
+                    first = gc;
+                else
+                    split_uf_union(parent, first, gc);
+            });
+        }
+        ++bi;
+    }
+
+    // Map component roots to piece indices in first-seen (ascending gc) order.
+    std::vector<SplitGroup> groups;
+    std::unordered_map<std::int64_t, std::size_t> root_index;
+    std::vector<std::size_t> gc_to_group(total, 0);
+    for (std::size_t gc = 0; gc < total; ++gc) {
+        const std::int64_t root = split_uf_find(parent, static_cast<std::int64_t>(gc));
+        auto it = root_index.find(root);
+        std::size_t gi;
+        if (it == root_index.end()) {
+            gi = groups.size();
+            root_index[root] = gi;
+            groups.push_back({});
+            groups.back().key = std::to_string(gi);
+            split_init_group(groups.back(), nblocks);
+        } else {
+            gi = it->second;
+        }
+        gc_to_group[gc] = gi;
+    }
+
+    for (std::size_t b = 0; b < nblocks; ++b)
+        for (std::size_t c = 0; c < block_base[b + 1] - block_base[b]; ++c)
+            groups[gc_to_group[block_base[b] + c]].kept[b].push_back(static_cast<std::int64_t>(c));
+
+    return groups;
+}
+
+bool split_is_integer(DType dt) {
+    switch (dt) {
+        case DType::Int8:
+        case DType::Int16:
+        case DType::Int32:
+        case DType::Int64:
+        case DType::UInt8:
+        case DType::UInt16:
+        case DType::UInt32:
+        case DType::UInt64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The integer cell_data name to split on: `rTagName` if usable, else the first
+// integer cell_data covering every block. Throws if none is found.
+std::string split_resolve_tag(const Mesh& rMesh, const std::string& rTagName) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    auto usable = [&](const std::string& name) {
+        if (!rMesh.HasCellData(name) || rMesh.CellDataNumBlocks(name) != nblocks)
+            return false;
+        std::size_t b = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const NDArray& a = rMesh.CellData(name, b);
+            const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
+            if (!split_is_integer(a.Dtype()) || rows != cb.NumCells())
+                return false;
+            ++b;
+        }
+        return true;
+    };
+    if (!rTagName.empty()) {
+        if (!usable(rTagName))
+            throw std::invalid_argument("split: cell_data '" + rTagName +
+                                        "' is not an integer per-cell tag on every block");
+        return rTagName;
+    }
+    for (const std::string& name : rMesh.CellDataNames())
+        if (usable(name))
+            return name;
+    throw std::invalid_argument("split: no integer cell_data tag found (pass an explicit name)");
+}
+
+std::vector<SplitGroup> split_by_tag(const Mesh& rMesh, const std::string& rTagName) {
+    const std::string name = split_resolve_tag(rMesh, rTagName);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<SplitGroup> groups;
+    std::unordered_map<std::int64_t, std::size_t> index;
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& tag = rMesh.CellData(name, b);
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            const std::int64_t v = detail::read_int(tag, c);
+            auto it = index.find(v);
+            std::size_t gi;
+            if (it == index.end()) {
+                gi = groups.size();
+                index[v] = gi;
+                groups.push_back({});
+                groups.back().key = std::to_string(v);
+                split_init_group(groups.back(), nblocks);
+            } else {
+                gi = it->second;
+            }
+            groups[gi].kept[b].push_back(static_cast<std::int64_t>(c));
+        }
+        ++b;
+    }
+    return groups;
+}
+
+}  // namespace
+
+SplitBy split_by_from_name(const std::string& rName) {
+    if (rName == "type")
+        return SplitBy::Type;
+    if (rName == "component")
+        return SplitBy::Component;
+    if (rName == "region" || rName == "tag")
+        return SplitBy::Tag;
+    throw std::invalid_argument("split: unknown criterion '" + rName +
+                                "' (expected 'type', 'region'/'tag', or 'component')");
+}
+
+SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
+    std::vector<SplitGroup> groups;
+    switch (by) {
+        case SplitBy::Type:
+            groups = split_by_type(rMesh);
+            break;
+        case SplitBy::Component:
+            groups = split_by_component(rMesh);
+            break;
+        case SplitBy::Tag:
+            groups = split_by_tag(rMesh, rTagName);
+            break;
+    }
+
+    SplitResult res;
+    res.mPieces.reserve(groups.size());
+    for (SplitGroup& g : groups) {
+        detail::SubsetResult sub =
+            detail::build_cell_subset(rMesh, g.kept, "", "", /*drop_empty_blocks=*/true);
+        SplitPiece piece;
+        piece.mKey = std::move(g.key);
+        piece.mMesh = std::move(sub.mMesh);
+        piece.mPointMap = std::move(sub.mPointMap);
+        piece.mCellMaps = std::move(sub.mCellMaps);
+        res.mPieces.push_back(std::move(piece));
+    }
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/split.cpp =====
+// ===== begin cpp/src/operations/stats.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+// Unsigned area of a corner polygon (triangle / quad) via the Newell normal.
+double stats_area(const std::vector<Vec3>& rC, int corners) {
+    if (corners < 3)
+        return 0.0;
+    Vec3 s = {0, 0, 0};
+    for (int i = 0; i < corners; ++i)
+        s = detail::vec3_add(s, detail::vec3_cross(rC[i], rC[(i + 1) % corners]));
+    return 0.5 * detail::vec3_norm(s);
+}
+
+// Signed volume of a 3D cell via the divergence theorem over its outward-wound
+// boundary faces (triangulated fan). NaN for types without a face table.
+double stats_signed_volume(const std::vector<Vec3>& rC, CellType ct) {
+    const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
+    if (faces.empty())
+        return std::nan("");
+    double vol6 = 0.0;
+    for (const detail::CellFaceDef& f : faces) {
+        const Vec3 a = rC[f.mNodes[0]];
+        for (int i = 1; i + 1 < f.mNumCorners; ++i)
+            vol6 += detail::triple_product(a, rC[f.mNodes[i]], rC[f.mNodes[i + 1]]);
+    }
+    return vol6 / 6.0;
+}
+
+// Sum the areas of the triangle/quad facets of a (linearized) surface mesh.
+double stats_surface_area(const Mesh& rSurf) {
+    const NDArray& points = rSurf.Points();
+    const std::size_t pdim = rSurf.PointDim();
+    double area = 0.0;
+    for (const auto cb : rSurf.CellRange()) {
+        if (cb.IsRagged() || cb.IsPolyhedron())
+            continue;
+        const CellType ct = cell_type_from_name(cb.Type());
+        const int cc = detail::cell_corner_count(ct);
+        if (cell_type_dimension(ct) != 2 || (cc != 3 && cc != 4))
+            continue;
+        const NDArray& conn = cb.Conn();
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t nc = cb.NumCells();
+        std::vector<double> vals(nc);
+        parallel_for(nc, [&](std::size_t i) {
+            std::vector<Vec3> coords;
+            detail::read_corner_coords(points, pdim, conn, i * npc, static_cast<std::size_t>(cc),
+                                       coords);
+            vals[i] = stats_area(coords, cc);
+        });
+        for (double v : vals)
+            area += v;
+    }
+    return area;
+}
+
+}  // namespace
+
+StatsReport compute_stats(const Mesh& rMesh) {
+    StatsReport rep;
+    const NDArray& points = rMesh.Points();
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    rep.mNumPoints = static_cast<std::int64_t>(n);
+
+    // --- bounding box / centroid (chunked parallel reduction) ---------------
+    if (n > 0 && dim > 0) {
+        const std::size_t ddim = std::min<std::size_t>(dim, 3);
+        const std::size_t grain = 4096;
+        const std::size_t nchunks = (n + grain - 1) / grain;
+        std::vector<std::array<double, 3>> pmin(nchunks), pmax(nchunks), psum(nchunks);
+        parallel_for(
+            nchunks,
+            [&](std::size_t ci) {
+                std::array<double, 3> lmin = {std::numeric_limits<double>::infinity(),
+                                              std::numeric_limits<double>::infinity(),
+                                              std::numeric_limits<double>::infinity()};
+                std::array<double, 3> lmax = {-std::numeric_limits<double>::infinity(),
+                                              -std::numeric_limits<double>::infinity(),
+                                              -std::numeric_limits<double>::infinity()};
+                std::array<double, 3> lsum = {0, 0, 0};
+                const std::size_t start = ci * grain;
+                const std::size_t stop = std::min(n, start + grain);
+                for (std::size_t g = start; g < stop; ++g)
+                    for (std::size_t d = 0; d < ddim; ++d) {
+                        const double v = detail::read_double(points, g * dim + d);
+                        lmin[d] = std::min(lmin[d], v);
+                        lmax[d] = std::max(lmax[d], v);
+                        lsum[d] += v;
+                    }
+                pmin[ci] = lmin;
+                pmax[ci] = lmax;
+                psum[ci] = lsum;
+            },
+            1);
+        std::array<double, 3> gmin = {std::numeric_limits<double>::infinity(),
+                                      std::numeric_limits<double>::infinity(),
+                                      std::numeric_limits<double>::infinity()};
+        std::array<double, 3> gmax = {-std::numeric_limits<double>::infinity(),
+                                      -std::numeric_limits<double>::infinity(),
+                                      -std::numeric_limits<double>::infinity()};
+        std::array<double, 3> gsum = {0, 0, 0};
+        for (std::size_t ci = 0; ci < nchunks; ++ci)
+            for (std::size_t d = 0; d < 3; ++d) {
+                gmin[d] = std::min(gmin[d], pmin[ci][d]);
+                gmax[d] = std::max(gmax[d], pmax[ci][d]);
+                gsum[d] += psum[ci][d];
+            }
+        for (std::size_t d = 0; d < ddim; ++d) {
+            rep.mBBoxMin[d] = gmin[d];
+            rep.mBBoxMax[d] = gmax[d];
+            rep.mExtent[d] = gmax[d] - gmin[d];
+            rep.mCentroid[d] = gsum[d] / static_cast<double>(n);
+        }
+    }
+
+    // --- per-cell-type counts + areas / volumes -----------------------------
+    std::unordered_map<std::string, std::size_t> type_index;
+    bool any_3d = false;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type(cb.Type());
+        const CellType ct = cell_type_from_name(type);
+        const std::size_t nc = cb.NumCells();
+        rep.mNumCells += static_cast<std::int64_t>(nc);
+
+        auto it = type_index.find(type);
+        if (it == type_index.end()) {
+            type_index[type] = rep.mCellTypeCounts.size();
+            rep.mCellTypeCounts.emplace_back(type, static_cast<std::int64_t>(nc));
+        } else {
+            rep.mCellTypeCounts[it->second].second += static_cast<std::int64_t>(nc);
+        }
+
+        if (cb.IsRagged() || cb.IsPolyhedron())
+            continue;
+        const int cc = detail::cell_corner_count(ct);
+        const int cdim = cell_type_dimension(ct);
+        if (cc <= 0)
+            continue;
+        const NDArray& conn = cb.Conn();
+        const std::size_t npc = cb.NodesPerCell();
+
+        if (cdim == 2 && (cc == 3 || cc == 4)) {
+            std::vector<double> vals(nc);
+            parallel_for(nc, [&](std::size_t i) {
+                std::vector<Vec3> coords;
+                detail::read_corner_coords(points, dim, conn, i * npc, static_cast<std::size_t>(cc),
+                                           coords);
+                vals[i] = stats_area(coords, cc);
+            });
+            for (double v : vals)
+                rep.mTotalArea += v;
+        } else if (cdim == 3) {
+            any_3d = true;
+            std::vector<double> vals(nc);
+            parallel_for(nc, [&](std::size_t i) {
+                std::vector<Vec3> coords;
+                detail::read_corner_coords(points, dim, conn, i * npc, static_cast<std::size_t>(cc),
+                                           coords);
+                vals[i] = stats_signed_volume(coords, ct);
+            });
+            for (double v : vals) {
+                if (std::isnan(v))
+                    continue;
+                rep.mSignedVolume += v;
+                rep.mUnsignedVolume += std::abs(v);
+                if (v < 0.0)
+                    ++rep.mNumInverted;
+            }
+        }
+    }
+
+    // --- boundary area of 3D cells (via the surface operation) --------------
+    if (any_3d) {
+        try {
+            rep.mTotalArea += stats_surface_area(extract_surface(rMesh));
+        } catch (...) {
+            // Boundary extraction failed (unsupported cell mix) — leave 3D
+            // boundary area out rather than failing the whole stats report.
+        }
+    }
+
+    return rep;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/stats.cpp =====
 // ===== begin cpp/src/operations/surface.cpp =====
 #include <algorithm>
 #include <array>
@@ -44018,6 +45584,244 @@ bool has_skinnable_cells(const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/operations/surface.cpp =====
+// ===== begin cpp/src/operations/transform.cpp =====
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// A deep copy of an NDArray that always owns its buffer (the source may be a
+// view over foreign memory, e.g. numpy memory on the write path).
+NDArray transform_owned_copy(const NDArray& rArr) {
+    NDArray c = rArr;
+    c.MakeOwned();
+    return c;
+}
+
+// Determinant of the 3x3 linear block of a row-major 4x4 matrix.
+double transform_linear_det(const std::array<double, 16>& rM) {
+    const double a = rM[0], b = rM[1], c = rM[2];
+    const double d = rM[4], e = rM[5], f = rM[6];
+    const double g = rM[8], h = rM[9], i = rM[10];
+    return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+}
+
+// Multiply the row-major 4x4 `rA` by `rB` (result = A * B).
+std::array<double, 16> transform_matmul(const std::array<double, 16>& rA,
+                                        const std::array<double, 16>& rB) {
+    std::array<double, 16> out = {};
+    for (std::size_t r = 0; r < 4; ++r)
+        for (std::size_t c = 0; c < 4; ++c) {
+            double s = 0.0;
+            for (std::size_t k = 0; k < 4; ++k)
+                s += rA[r * 4 + k] * rB[k * 4 + c];
+            out[r * 4 + c] = s;
+        }
+    return out;
+}
+
+// Transform the point coordinates into a fresh array of the same dtype.
+NDArray transform_apply_points(const NDArray& rPoints, std::size_t n, std::size_t dim,
+                               const std::array<double, 16>& rM) {
+    NDArray out = NDArray::Uninit(rPoints.Dtype(), {n, dim});
+    if (n == 0 || dim == 0)
+        return out;
+    detail::dispatch_dtype(rPoints.Dtype(), [&]<class T>() {
+        const T* src = rPoints.As<T>();
+        T* dst = out.As<T>();
+        parallel_for_bw(n, [&](std::size_t i) {
+            const std::size_t base = i * dim;
+            const double x = dim > 0 ? static_cast<double>(src[base + 0]) : 0.0;
+            const double y = dim > 1 ? static_cast<double>(src[base + 1]) : 0.0;
+            const double z = dim > 2 ? static_cast<double>(src[base + 2]) : 0.0;
+            const double nx = rM[0] * x + rM[1] * y + rM[2] * z + rM[3];
+            const double ny = rM[4] * x + rM[5] * y + rM[6] * z + rM[7];
+            const double nz = rM[8] * x + rM[9] * y + rM[10] * z + rM[11];
+            if (dim > 0)
+                dst[base + 0] = static_cast<T>(nx);
+            if (dim > 1)
+                dst[base + 1] = static_cast<T>(ny);
+            if (dim > 2)
+                dst[base + 2] = static_cast<T>(nz);
+        });
+    });
+    return out;
+}
+
+// Rotate vector (cols == 3) or tensor (cols == 9, row-major 3x3) rows of a
+// float point_data array by the 3x3 linear block `rR` (v' = R v, A' = R A R^T).
+// Returns a fresh array of the same dtype. Only Float32/Float64 arrays qualify.
+NDArray transform_rotate_point_data(const NDArray& rArr, std::size_t n, std::size_t cols,
+                                    const std::array<double, 9>& rR) {
+    NDArray out = transform_owned_copy(rArr);
+    detail::dispatch_dtype(rArr.Dtype(), [&]<class T>() {
+        T* p = out.As<T>();
+        if (cols == 3) {
+            parallel_for_bw(n, [&](std::size_t i) {
+                const std::size_t b = i * 3;
+                const double v0 = static_cast<double>(p[b + 0]);
+                const double v1 = static_cast<double>(p[b + 1]);
+                const double v2 = static_cast<double>(p[b + 2]);
+                p[b + 0] = static_cast<T>(rR[0] * v0 + rR[1] * v1 + rR[2] * v2);
+                p[b + 1] = static_cast<T>(rR[3] * v0 + rR[4] * v1 + rR[5] * v2);
+                p[b + 2] = static_cast<T>(rR[6] * v0 + rR[7] * v1 + rR[8] * v2);
+            });
+        } else {  // cols == 9 : A' = R A R^T
+            parallel_for_bw(n, [&](std::size_t i) {
+                const std::size_t b = i * 9;
+                double a[9];
+                for (std::size_t k = 0; k < 9; ++k)
+                    a[k] = static_cast<double>(p[b + k]);
+                // tmp = R * A
+                double tmp[9];
+                for (std::size_t r = 0; r < 3; ++r)
+                    for (std::size_t c = 0; c < 3; ++c)
+                        tmp[r * 3 + c] = rR[r * 3 + 0] * a[0 * 3 + c] +
+                                         rR[r * 3 + 1] * a[1 * 3 + c] +
+                                         rR[r * 3 + 2] * a[2 * 3 + c];
+                // out = tmp * R^T
+                for (std::size_t r = 0; r < 3; ++r)
+                    for (std::size_t c = 0; c < 3; ++c)
+                        p[b + r * 3 + c] = static_cast<T>(tmp[r * 3 + 0] * rR[c * 3 + 0] +
+                                                          tmp[r * 3 + 1] * rR[c * 3 + 1] +
+                                                          tmp[r * 3 + 2] * rR[c * 3 + 2]);
+            });
+        }
+    });
+    return out;
+}
+
+bool transform_is_float(DType dt) {
+    return dt == DType::Float32 || dt == DType::Float64;
+}
+
+}  // namespace
+
+AffineTransform transform_translation(double dx, double dy, double dz) {
+    AffineTransform t;
+    t.mMatrix[3] = dx;
+    t.mMatrix[7] = dy;
+    t.mMatrix[11] = dz;
+    return t;
+}
+
+AffineTransform transform_scale(double sx, double sy, double sz) {
+    AffineTransform t;
+    t.mMatrix[0] = sx;
+    t.mMatrix[5] = sy;
+    t.mMatrix[10] = sz;
+    return t;
+}
+
+AffineTransform transform_units(double factor) {
+    return transform_scale(factor, factor, factor);
+}
+
+AffineTransform transform_rotation(double ax, double ay, double az, double angle_rad) {
+    const double len = std::sqrt(ax * ax + ay * ay + az * az);
+    if (len < 1e-300)
+        throw std::invalid_argument("transform: rotation axis is zero-length");
+    const double x = ax / len, y = ay / len, z = az / len;
+    const double c = std::cos(angle_rad), s = std::sin(angle_rad), t = 1.0 - c;
+    AffineTransform out;
+    auto& m = out.mMatrix;
+    m[0] = t * x * x + c;
+    m[1] = t * x * y - s * z;
+    m[2] = t * x * z + s * y;
+    m[4] = t * x * y + s * z;
+    m[5] = t * y * y + c;
+    m[6] = t * y * z - s * x;
+    m[8] = t * x * z - s * y;
+    m[9] = t * y * z + s * x;
+    m[10] = t * z * z + c;
+    return out;
+}
+
+AffineTransform transform_from_matrix(const double* pMatrix16) {
+    AffineTransform out;
+    for (std::size_t i = 0; i < 16; ++i)
+        out.mMatrix[i] = pMatrix16[i];
+    return out;
+}
+
+AffineTransform transform_compose(const AffineTransform& rSecond, const AffineTransform& rFirst) {
+    AffineTransform out;
+    out.mMatrix = transform_matmul(rSecond.mMatrix, rFirst.mMatrix);
+    return out;
+}
+
+Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vector_data) {
+    const std::array<double, 16>& M = rXform.mMatrix;
+    if (transform_linear_det(M) < 0.0)
+        log::warn(
+            "transform: orientation-reversing (negative determinant); cell orientation "
+            "may be flipped");
+
+    Mesh out;
+
+    // Points (transformed, dtype preserved).
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    out.AssignPoints(transform_apply_points(rMesh.Points(), n, dim, M));
+
+    // Cells (clone; rectangular / polygon / polyhedron).
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron()) {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                cells[c].resize(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    cells[c][f].assign(face.first, face.first + face.second);
+                }
+            }
+            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
+        } else if (cb.IsRagged()) {
+            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        } else {
+            out.AddCellBlock(std::string(cb.Type()), transform_owned_copy(cb.Conn()));
+        }
+    }
+
+    // Point data (optionally rotate vector/tensor float arrays).
+    const std::array<double, 9> R = {M[0], M[1], M[2], M[4], M[5], M[6], M[8], M[9], M[10]};
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t cols = n > 0 ? a.Size() / n : 0;
+        if (rotate_vector_data && transform_is_float(a.Dtype()) && n > 0 &&
+            (cols == 3 || cols == 9))
+            out.AddPointData(name, transform_rotate_point_data(a, n, cols, R));
+        else
+            out.AddPointData(name, transform_owned_copy(a));
+    }
+
+    // Cell data + field data (carried through unchanged).
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+            blocks.push_back(transform_owned_copy(rMesh.CellData(name, b)));
+        out.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, transform_owned_copy(rMesh.FieldData(name)));
+
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/transform.cpp =====
 // ===== begin cpp/src/registry.cpp =====
 /**
  * @file registry.cpp
