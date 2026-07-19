@@ -57,6 +57,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/diff.hpp"
+#include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -449,6 +450,29 @@ mio_mesh* mio_attach_quality(const mio_mesh* mesh) {
         if (!mesh)
             throw meshioplusplus::ReadError("meshio++: mesh is NULL");
         return new mio_mesh{meshioplusplus::attach_quality(mesh->mMesh)};
+    });
+}
+
+mio_mesh* mio_merge(const mio_mesh* const* meshes, int64_t count, int weld, double atol,
+                    int source_tag, int data_policy, int drop_duplicate_cells) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!meshes || count < 1)
+            throw meshioplusplus::ReadError("meshio++: need at least one input mesh");
+        std::vector<const meshioplusplus::Mesh*> ptrs;
+        ptrs.reserve(static_cast<std::size_t>(count));
+        for (int64_t i = 0; i < count; ++i) {
+            if (!meshes[i])
+                throw meshioplusplus::ReadError("meshio++: input mesh is NULL");
+            ptrs.push_back(&meshes[i]->mMesh);
+        }
+        meshioplusplus::MergeOptions opts;
+        opts.weld = weld != 0;
+        opts.atol = atol;
+        opts.source_tag = source_tag != 0;
+        opts.drop_duplicate_cells = drop_duplicate_cells != 0;
+        opts.data_policy = (data_policy == 1) ? meshioplusplus::MergeDataPolicy::Fill
+                                              : meshioplusplus::MergeDataPolicy::Intersection;
+        return new mio_mesh{meshioplusplus::merge(ptrs, opts).mMesh};
     });
 }
 
