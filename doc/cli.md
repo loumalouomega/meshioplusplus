@@ -138,6 +138,37 @@ meshioplusplus reorder part.vtu reordered.vtu --method rcm --report
 
 ---
 
+## meshioplusplus diff
+
+[Compare](./diff.md) two meshes and report whether they are equivalent within a
+tolerance. The **exit code is nonzero when the meshes differ** and zero when they
+are equal, so it drops straight into CI / shell scripts / Makefiles.
+
+```
+meshioplusplus diff [options] INFILE_A INFILE_B
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--atol ATOL` | | Absolute tolerance in `abs_err <= atol + rtol*|expected|` (default `1e-12`) |
+| `--rtol RTOL` | | Relative tolerance (default `1e-9`) |
+| `--unordered` | | Match points by spatial proximity (tolerant to a shuffled node order) |
+| `--exact` | | Only a bitwise-identical result passes (tolerated drift exits nonzero) |
+| `--quiet` | `-q` | Print nothing; communicate equality only via the exit code |
+| `--input-format-a FORMAT` | | Force the format of the first file |
+| `--input-format-b FORMAT` | | Force the format of the second file |
+
+**Examples:**
+
+```sh
+meshioplusplus diff a.vtu b.vtu
+meshioplusplus diff a.vtu b.vtu --atol 1e-8 --rtol 1e-6
+meshioplusplus diff a.msh b.vtu --unordered
+meshioplusplus diff expected.vtu actual.vtu --quiet || echo "regression!"
+```
+
+---
+
 ## meshioplusplus compress
 
 Compress the data in a mesh file (formats that support compression, e.g. VTU).

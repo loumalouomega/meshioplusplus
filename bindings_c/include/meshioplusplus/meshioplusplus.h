@@ -76,6 +76,10 @@ typedef struct mio_mesh mio_mesh;
  *  node/cell permutations. Destroy with mio_reorder_result_free(). */
 typedef struct mio_reorder_result mio_reorder_result;
 
+/** Opaque result of mio_diff(): the structured mesh comparison report. Destroy
+ *  with mio_diff_result_free(). */
+typedef struct mio_diff_result mio_diff_result;
+
 typedef enum mio_status {
     MIO_OK = 0,           /**< success */
     MIO_ERR_READ = 1,     /**< file could not be parsed / read-side failure */
@@ -85,6 +89,14 @@ typedef enum mio_status {
     MIO_ERR_UNSUPPORTED = 5, /**< valid but unsupported (e.g. ragged connectivity) */
     MIO_ERR_INTERNAL = 6     /**< unexpected failure; see mio_last_error() */
 } mio_status;
+
+/** Overall outcome of comparing two meshes (see mio_diff()), in increasing
+ *  order of severity — mirrors meshioplusplus::DiffVerdict. */
+typedef enum mio_diff_verdict {
+    MIO_DIFF_IDENTICAL = 0,             /**< structurally equal, values bitwise-equal */
+    MIO_DIFF_EQUAL_WITHIN_TOLERANCE = 1, /**< values drifted but within tolerance */
+    MIO_DIFF_DIFFERENT = 2               /**< a structural or beyond-tolerance difference */
+} mio_diff_verdict;
 
 /** Element dtypes, matching numpy's fixed-width scalars. */
 typedef enum mio_dtype {
@@ -374,6 +386,70 @@ MIO_API void mio_reorder_result_free(mio_reorder_result* result);
  * @return the bandwidth (0 for a node-less mesh), or -1 on error.
  */
 MIO_API int64_t mio_compute_bandwidth(const mio_mesh* mesh);
+
+/**
+ * Compare two meshes and produce a structured report. Compares points, cell
+ * blocks (types + counts + connectivity), and point/cell/field data within the
+ * tolerance abs_err <= atol + rtol*|expected| (expected taken from mesh `a`).
+ * Named point_sets/cell_sets are NOT compared (they never reach the C++ core).
+ * @param a         first ("expected") mesh.
+ * @param b         second mesh.
+ * @param atol      absolute tolerance.
+ * @param rtol      relative tolerance.
+ * @param unordered nonzero to match points by spatial proximity (tolerant to a
+ *                  shuffled node order) instead of by index.
+ * @param out       receives a new result handle (free with mio_diff_result_free).
+ * @return MIO_OK, or an error status (see mio_last_error()).
+ */
+MIO_API mio_status mio_diff(const mio_mesh* a, const mio_mesh* b, double atol, double rtol,
+                            int unordered, mio_diff_result** out);
+
+/**
+ * Convenience boolean: are two meshes equal within tolerance? (verdict is not
+ * MIO_DIFF_DIFFERENT). Named sets are not considered.
+ * @param a,b       the meshes to compare.
+ * @param atol,rtol tolerances.
+ * @param unordered nonzero for proximity node matching.
+ * @param out_equal receives 1 (equal) or 0 (different).
+ * @return MIO_OK, or an error status (see mio_last_error()).
+ */
+MIO_API mio_status mio_meshes_equal(const mio_mesh* a, const mio_mesh* b, double atol, double rtol,
+                                    int unordered, int* out_equal);
+
+/** Overall verdict of a diff result (MIO_DIFF_DIFFERENT on a NULL result). */
+MIO_API mio_diff_verdict mio_diff_result_verdict(const mio_diff_result* result);
+
+/**
+ * Points comparison summary from a diff result. Any out-param may be NULL.
+ * @param result        a diff result.
+ * @param max_abs_error largest absolute coordinate error.
+ * @param max_rel_error largest relative coordinate error.
+ * @param worst_index   flat index of the worst-offending coordinate, or -1.
+ * @param num_exceeding number of coordinates beyond tolerance.
+ * @return MIO_OK, or an error status.
+ */
+MIO_API mio_status mio_diff_result_point_summary(const mio_diff_result* result,
+                                                 double* max_abs_error, double* max_rel_error,
+                                                 int64_t* worst_index, int64_t* num_exceeding);
+
+/** Number of per-block comparisons in a diff result (-1 on a NULL result). */
+MIO_API int64_t mio_diff_result_num_block_diffs(const mio_diff_result* result);
+
+/**
+ * One block comparison from a diff result. Any out-param may be NULL.
+ * @param result             a diff result.
+ * @param block              block index in [0, mio_diff_result_num_block_diffs).
+ * @param type_mismatch      set to 1 if the two blocks have different cell types.
+ * @param count_mismatch     set to 1 if they have different cell counts.
+ * @param conn_mismatch_count number of cells whose connectivity differs.
+ * @return MIO_OK, MIO_ERR_NOT_FOUND if `block` is out of range, else an error.
+ */
+MIO_API mio_status mio_diff_result_block(const mio_diff_result* result, int64_t block,
+                                         int* type_mismatch, int* count_mismatch,
+                                         int64_t* conn_mismatch_count);
+
+/** Free a diff result. */
+MIO_API void mio_diff_result_free(mio_diff_result* result);
 
 /* ---------------------------------------------------------------------
  * Building a mesh (setters -- all COPY caller memory)

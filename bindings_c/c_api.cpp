@@ -56,6 +56,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -71,6 +72,10 @@ struct mio_reorder_result {
     mio_mesh mMesh;  // owns the renumbered mesh; borrowed via mio_reorder_result_mesh
     meshioplusplus::NDArray mNodePerm;
     std::vector<meshioplusplus::NDArray> mCellPerms;
+};
+
+struct mio_diff_result {
+    meshioplusplus::DiffReport mReport;
 };
 
 namespace {
@@ -550,6 +555,103 @@ int64_t mio_compute_bandwidth(const mio_mesh* mesh) {
             throw meshioplusplus::ReadError("meshio++: mesh is NULL");
         return meshioplusplus::compute_bandwidth(mesh->mMesh);
     });
+}
+
+mio_status mio_diff(const mio_mesh* a, const mio_mesh* b, double atol, double rtol, int unordered,
+                    mio_diff_result** out) {
+    return guarded([&]() -> mio_status {
+        if (!a || !b)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        if (!out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+        meshioplusplus::DiffOptions opts;
+        opts.atol = atol;
+        opts.rtol = rtol;
+        opts.unordered = unordered != 0;
+        *out = new mio_diff_result{meshioplusplus::diff(a->mMesh, b->mMesh, opts)};
+        return MIO_OK;
+    });
+}
+
+mio_status mio_meshes_equal(const mio_mesh* a, const mio_mesh* b, double atol, double rtol,
+                            int unordered, int* out_equal) {
+    return guarded([&]() -> mio_status {
+        if (!a || !b)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        meshioplusplus::DiffOptions opts;
+        opts.atol = atol;
+        opts.rtol = rtol;
+        opts.unordered = unordered != 0;
+        const bool eq = meshioplusplus::diff(a->mMesh, b->mMesh, opts).mVerdict !=
+                        meshioplusplus::DiffVerdict::Different;
+        if (out_equal)
+            *out_equal = eq ? 1 : 0;
+        return MIO_OK;
+    });
+}
+
+mio_diff_verdict mio_diff_result_verdict(const mio_diff_result* result) {
+    if (!result)
+        return MIO_DIFF_DIFFERENT;
+    switch (result->mReport.mVerdict) {
+        case meshioplusplus::DiffVerdict::Identical:
+            return MIO_DIFF_IDENTICAL;
+        case meshioplusplus::DiffVerdict::EqualWithinTolerance:
+            return MIO_DIFF_EQUAL_WITHIN_TOLERANCE;
+        case meshioplusplus::DiffVerdict::Different:
+            return MIO_DIFF_DIFFERENT;
+    }
+    return MIO_DIFF_DIFFERENT;
+}
+
+mio_status mio_diff_result_point_summary(const mio_diff_result* result, double* max_abs_error,
+                                         double* max_rel_error, int64_t* worst_index,
+                                         int64_t* num_exceeding) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        const meshioplusplus::ArrayDiff& p = result->mReport.mPoints;
+        if (max_abs_error)
+            *max_abs_error = p.mMaxAbsError;
+        if (max_rel_error)
+            *max_rel_error = p.mMaxRelError;
+        if (worst_index)
+            *worst_index = p.mWorstIndex;
+        if (num_exceeding)
+            *num_exceeding = p.mNumExceeding;
+        return MIO_OK;
+    });
+}
+
+int64_t mio_diff_result_num_block_diffs(const mio_diff_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mReport.mBlocks.size());
+    });
+}
+
+mio_status mio_diff_result_block(const mio_diff_result* result, int64_t block, int* type_mismatch,
+                                 int* count_mismatch, int64_t* conn_mismatch_count) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (block < 0 || static_cast<std::size_t>(block) >= result->mReport.mBlocks.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: block index out of range");
+        const meshioplusplus::BlockDiff& bd =
+            result->mReport.mBlocks[static_cast<std::size_t>(block)];
+        if (type_mismatch)
+            *type_mismatch = bd.mTypeMismatch ? 1 : 0;
+        if (count_mismatch)
+            *count_mismatch = bd.mCountMismatch ? 1 : 0;
+        if (conn_mismatch_count)
+            *conn_mismatch_count = bd.mConnMismatchCount;
+        return MIO_OK;
+    });
+}
+
+void mio_diff_result_free(mio_diff_result* result) {
+    delete result;
 }
 
 /* ------------------------------------------------------------------ */

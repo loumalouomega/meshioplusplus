@@ -308,6 +308,49 @@ TEST(CApi, MeshOperations) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, Diff) {
+    mio_mesh* a = build_tet_mesh();
+    mio_mesh* b = build_tet_mesh();
+
+    // Identical meshes -> equal, verdict identical.
+    int equal = -1;
+    ASSERT_EQ(mio_meshes_equal(a, b, 1e-12, 1e-9, 0, &equal), MIO_OK) << mio_last_error();
+    EXPECT_EQ(equal, 1);
+    mio_diff_result* res = nullptr;
+    ASSERT_EQ(mio_diff(a, b, 1e-12, 1e-9, 0, &res), MIO_OK) << mio_last_error();
+    ASSERT_NE(res, nullptr);
+    EXPECT_EQ(mio_diff_result_verdict(res), MIO_DIFF_IDENTICAL);
+    EXPECT_EQ(mio_diff_result_num_block_diffs(res), 1);
+    int type_mism = -1, count_mism = -1;
+    std::int64_t conn = -1;
+    ASSERT_EQ(mio_diff_result_block(res, 0, &type_mism, &count_mism, &conn), MIO_OK);
+    EXPECT_EQ(type_mism, 0);
+    EXPECT_EQ(count_mism, 0);
+    EXPECT_EQ(conn, 0);
+    mio_diff_result_free(res);
+    mio_mesh_free(b);
+
+    // A mesh with different connectivity -> different.
+    const std::vector<std::int64_t> conn2 = {0, 1, 2, 3, 0, 2, 3, 4};
+    mio_mesh* c = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(c, MIO_FLOAT64, 5, 3, kPoints.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(c, "tetra", 2, 4, MIO_INT64, conn2.data()), MIO_OK);
+    ASSERT_EQ(mio_meshes_equal(a, c, 1e-12, 1e-9, 0, &equal), MIO_OK);
+    EXPECT_EQ(equal, 0);
+    res = nullptr;
+    ASSERT_EQ(mio_diff(a, c, 1e-12, 1e-9, 0, &res), MIO_OK);
+    EXPECT_EQ(mio_diff_result_verdict(res), MIO_DIFF_DIFFERENT);
+    ASSERT_EQ(mio_diff_result_block(res, 0, nullptr, nullptr, &conn), MIO_OK);
+    EXPECT_EQ(conn, 1);
+    mio_diff_result_free(res);
+    mio_mesh_free(c);
+
+    // NULL mesh is a clean error.
+    EXPECT_EQ(mio_diff(nullptr, a, 1e-12, 1e-9, 0, &res), MIO_ERR_INVALID_ARG);
+
+    mio_mesh_free(a);
+}
+
 TEST(CApi, SniffFormat) {
     const std::string vtu = mt::temp_path("_capi_sniff.vtu");
     mio_mesh* m = build_tet_mesh();

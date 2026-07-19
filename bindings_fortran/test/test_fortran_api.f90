@@ -19,7 +19,8 @@ program test_fortran_api
     type(mio_mesh) :: m, r, c, s, q, ro
     integer(int64) :: qcells, qinv, qdeg, bw
     integer(int64), allocatable :: node_perm(:)
-    logical :: perm_ok
+    logical :: perm_ok, eq
+    integer :: verdict
     real(real64) :: points(3, 5), vec(3, 5)
     real(real64), allocatable :: rpoints(:, :), rdata(:), rvec(:, :)
     real(real64), pointer :: pview(:, :)
@@ -113,6 +114,12 @@ program test_fortran_api
     call check(r%cell_block_num_cells(1) == 2_int64, 'cell block num_cells')
     call check(r%cell_block_nodes_per_cell(1) == 4_int64, 'cell block nodes_per_cell')
     call check(.not. r%cell_block_is_ragged(1), 'cell block is not ragged')
+
+    ! ---- diff / equals -------------------------------------------------
+    eq = m%equals(r, atol=1.0e-8_real64)
+    call check(eq, 'equals: round-trip mesh equals the original within tolerance')
+    verdict = m%diff(r, atol=1.0e-8_real64)
+    call check(verdict <= 1, 'diff: round-trip verdict is identical or within tolerance')
 
     call r%get_points(rpoints)
     call check(size(rpoints, 1) == 3 .and. size(rpoints, 2) == 5, 'points shape (dim, n)')
