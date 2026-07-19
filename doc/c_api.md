@@ -121,12 +121,18 @@ Parameterized writers use each format's Python-reference default (VTU: binary+zl
 
 ## Native command-line binary
 
-The core also ships a **Python-free CLI** — the same verbs as the Python command-line tool, built directly on the C++ core, so it needs neither a Python interpreter nor the pybind11 extension. It is off by default; build it alongside a standalone C++ tree:
+The core also ships a **Python-free CLI** — the same verbs as the Python command-line tool, built directly on the C++ core, so it needs neither a Python interpreter nor the pybind11 extension.
+
+**Prebuilt binaries:** every [GitHub Release](https://github.com/loumalouomega/meshioplusplus/releases) tag (`v*`) ships a ready-to-run, statically-linked `meshioplusplus` executable for Linux (x86_64), macOS (universal x86_64+arm64), and Windows (x86_64) — no install step, no runtime dependency to satisfy (no `libstdc++`/vcredist). These release binaries build with `MESHIOPLUSPLUS_WITH_HDF5/NETCDF/ZLIB=OFF` and the sequential parallel backend, trading those for a single dependency-free file (see `.github/workflows/cli.yml`); build from source (below) for the full HDF5/netCDF/multi-threaded feature set.
+
+**Build from source:** off by default; build it alongside a standalone C++ tree:
 
 ```sh
 build/configure.sh --cli --build          # -DMESHIOPLUSPLUS_BUILD_CLI=ON
 build/cpp-release/meshioplusplus --help
 ```
+
+Pass `-DMESHIOPLUSPLUS_STATIC_RUNTIME=ON` (alongside `--cli`, via a direct CMake configure) for the same statically-linked-runtime behavior as the release binaries: static `libgcc`/`libstdc++` on GNU, static MSVC CRT (`/MT`) on Windows.
 
 The installed executable is named `meshioplusplus` and mirrors the Python verbs:
 
