@@ -65,12 +65,17 @@
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/split.hpp"
+#include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/types.hpp"
@@ -325,6 +330,156 @@ PYBIND11_MODULE(_core, m) {
         py::arg("meshes"), py::arg("weld") = false, py::arg("atol") = 1e-8,
         py::arg("source_tag") = true, py::arg("data_policy") = "intersection",
         py::arg("drop_duplicate_cells") = false);
+
+    // Affine transform of point coordinates. Takes a row-major 4x4 matrix (16
+    // doubles) and returns the transformed mesh. See operations/transform.hpp.
+    m.def(
+        "transform",
+        [](py::object pymesh, const std::vector<double>& matrix, bool rotate_vector_data) {
+            if (matrix.size() != 16)
+                throw std::invalid_argument("transform: matrix must have 16 elements (4x4)");
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::AffineTransform xf =
+                meshioplusplus::transform_from_matrix(matrix.data());
+            meshioplusplus::Mesh out = meshioplusplus::transform(cpp, xf, rotate_vector_data);
+            return meshioplusplus_py::mesh_to_py(std::move(out));
+        },
+        py::arg("mesh"), py::arg("matrix"), py::arg("rotate_vector_data") = false);
+
+    // Mesh cleanup (weld / prune / de-dup). Returns a dict with the cleaned mesh,
+    // the point/cell index maps, and the removal counts. See operations/clean.hpp.
+    m.def(
+        "clean",
+        [](py::object pymesh, bool weld, double atol, bool remove_orphans, bool drop_degenerate,
+           bool drop_duplicate_cells) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::CleanOptions opts;
+            opts.weld = weld;
+            opts.atol = atol;
+            opts.remove_orphans = remove_orphans;
+            opts.drop_degenerate = drop_degenerate;
+            opts.drop_duplicate_cells = drop_duplicate_cells;
+            meshioplusplus::CleanResult r = meshioplusplus::clean(cpp, opts);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPointMap));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            out["points_welded"] = r.mPointsWelded;
+            out["points_removed_orphan"] = r.mPointsRemovedOrphan;
+            out["cells_dropped_degenerate"] = r.mCellsDroppedDegenerate;
+            out["cells_dropped_duplicate"] = r.mCellsDroppedDuplicate;
+            return out;
+        },
+        py::arg("mesh"), py::arg("weld") = false, py::arg("atol") = 1e-8,
+        py::arg("remove_orphans") = true, py::arg("drop_degenerate") = true,
+        py::arg("drop_duplicate_cells") = true);
+
+    // Crop by bounding box / half-space. Return a dict with the pruned mesh and
+    // the point/cell index maps. See operations/crop.hpp.
+    auto crop_result_to_dict = [](meshioplusplus::CropResult&& r) {
+        py::dict out;
+        out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+        out["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPointMap));
+        py::list cell_maps;
+        for (meshioplusplus::NDArray& a : r.mCellMaps)
+            cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+        out["cell_maps"] = cell_maps;
+        return out;
+    };
+    m.def(
+        "crop_bbox",
+        [crop_result_to_dict](py::object pymesh, const std::vector<double>& lo,
+                              const std::vector<double>& hi, const std::string& mode,
+                              bool record_ids) {
+            if (lo.size() != 3 || hi.size() != 3)
+                throw std::invalid_argument("crop_bbox: lo/hi must have 3 elements");
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::CropMode m =
+                (mode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
+            return crop_result_to_dict(
+                meshioplusplus::crop_bbox(cpp, lo.data(), hi.data(), m, record_ids));
+        },
+        py::arg("mesh"), py::arg("lo"), py::arg("hi"), py::arg("mode") = "all",
+        py::arg("record_ids") = false);
+    m.def(
+        "crop_plane",
+        [crop_result_to_dict](py::object pymesh, const std::vector<double>& point,
+                              const std::vector<double>& normal, const std::string& mode,
+                              bool record_ids) {
+            if (point.size() != 3 || normal.size() != 3)
+                throw std::invalid_argument("crop_plane: point/normal must have 3 elements");
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::CropMode m =
+                (mode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
+            return crop_result_to_dict(
+                meshioplusplus::crop_halfspace(cpp, point.data(), normal.data(), m, record_ids));
+        },
+        py::arg("mesh"), py::arg("point"), py::arg("normal"), py::arg("mode") = "all",
+        py::arg("record_ids") = false);
+
+    // Split into pieces (by type / component / integer cell_data tag). Returns a
+    // list of dicts {key, mesh, point_map, cell_maps}. See operations/split.hpp.
+    m.def(
+        "split",
+        [](py::object pymesh, const std::string& by, const std::string& tag_name) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SplitResult r =
+                meshioplusplus::split(cpp, meshioplusplus::split_by_from_name(by), tag_name);
+            py::list pieces;
+            for (meshioplusplus::SplitPiece& p : r.mPieces) {
+                py::dict d;
+                d["key"] = p.mKey;
+                d["mesh"] = meshioplusplus_py::mesh_to_py(std::move(p.mMesh));
+                d["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(p.mPointMap));
+                py::list cell_maps;
+                for (meshioplusplus::NDArray& a : p.mCellMaps)
+                    cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+                d["cell_maps"] = cell_maps;
+                pieces.append(d);
+            }
+            return pieces;
+        },
+        py::arg("mesh"), py::arg("by"), py::arg("tag_name") = "");
+
+    // Geometric statistics (read-only). Returns a dict of the StatsReport fields.
+    // See operations/stats.hpp.
+    m.def(
+        "compute_stats",
+        [](py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::StatsReport r = meshioplusplus::compute_stats(cpp);
+            py::dict out;
+            out["num_points"] = r.mNumPoints;
+            out["num_cells"] = r.mNumCells;
+            out["bbox_min"] = py::make_tuple(r.mBBoxMin[0], r.mBBoxMin[1], r.mBBoxMin[2]);
+            out["bbox_max"] = py::make_tuple(r.mBBoxMax[0], r.mBBoxMax[1], r.mBBoxMax[2]);
+            out["extent"] = py::make_tuple(r.mExtent[0], r.mExtent[1], r.mExtent[2]);
+            out["centroid"] = py::make_tuple(r.mCentroid[0], r.mCentroid[1], r.mCentroid[2]);
+            py::dict counts;
+            for (const auto& kv : r.mCellTypeCounts)
+                counts[py::str(kv.first)] = kv.second;
+            out["cell_type_counts"] = counts;
+            out["total_area"] = r.mTotalArea;
+            out["signed_volume"] = r.mSignedVolume;
+            out["unsigned_volume"] = r.mUnsignedVolume;
+            out["num_inverted"] = r.mNumInverted;
+            return out;
+        },
+        py::arg("mesh"));
 
     // Mesh comparison ("diff"). Returns a nested dict mirroring DiffReport, with
     // an overall verdict string. See operations/diff.hpp.
