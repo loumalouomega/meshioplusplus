@@ -143,19 +143,14 @@ def test_convert_ascii_and_float_format(tmp_path):
     assert is_same_mesh(helpers.tri_mesh, mesh, atol=1.0e-7)
 
 
-@pytest.mark.xfail(
-    raises=RuntimeError,
-    strict=True,
-    reason=(
-        "BUG: `convert -d` iterates `for key in mesh.cell_data` while "
-        "cell_data_to_sets(key) deletes that key -> 'dictionary changed size "
-        "during iteration' (_cli/_convert.py:63-66). Needs list(...) around "
-        "the loop targets. Remove this xfail once fixed."
-    ),
-)
 def test_convert_int_data_to_sets(tmp_path):
     # The `-d`/`--int-data-to-sets` path (converse of `--sets-to-int-data`).
+    # Regression test: `convert -d` used to raise "dictionary changed size
+    # during iteration" because *_data_to_sets(key) mutates the dict being
+    # iterated (fixed by snapshotting the keys in _cli/_convert.py).
     mesh = helpers.tri_mesh.copy()
+    # Both loops (point_data and cell_data) must survive the in-place mutation.
+    mesh.point_data = {"fixed-loose": np.array([0, 0, 1, 1])}
     mesh.cell_data = {"grain0-grain1": [np.array([0, 1])]}
 
     infile = tmp_path / "in.vtu"
