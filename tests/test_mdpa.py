@@ -1964,3 +1964,15 @@ def test_reference_file(filename, ref_num_points, ref_cells_info, ref_geoms_info
         assert len(smp_info["Main_subdomain"]["nodes"]) == 9
         assert len(smp_info["Main_subdomain"]["elements_raw"]) == 8
         assert len(smp_info["Main_subdomain"]["conditions_raw"]) == 4
+
+
+# --- malformed-input / error-path coverage (Python reference reader) ---
+from meshioplusplus.mdpa._mdpa import read as _mdpa_py_read  # noqa: E402
+
+
+def test_mdpa_unterminated_nodes_block_raises(tmp_path):
+    # A `Begin Nodes` section that hits EOF before `End Nodes`.
+    p = tmp_path / "bad.mdpa"
+    p.write_text("Begin Nodes\n1 0.0 0.0 0.0\n")
+    with pytest.raises(meshioplusplus.ReadError):
+        _mdpa_py_read(str(p))

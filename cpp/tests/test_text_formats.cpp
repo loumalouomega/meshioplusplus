@@ -145,3 +145,46 @@ TEST(Netgen, Basic) {
     mt::roundtrip(w, r, mt::tet_mesh(), ".vol");
     mt::roundtrip(w, r, mt::hex_mesh(), ".vol");
 }
+
+// --- Malformed-input reject paths ---
+// These drive the readers' explicit `throw ReadError` branches that self
+// round-trips never reach (medit.cpp:230, tecplot.cpp:185, nastran.cpp:265,
+// netgen.cpp:233).
+
+namespace {
+std::string write_temp(const std::string& suffix, const std::string& contents) {
+    std::string path = mt::temp_path(suffix);
+    std::ofstream f(path);
+    f << contents;
+    return path;
+}
+}  // namespace
+
+TEST(Medit, ReadRejectsMissingVertices) {
+    std::string path = write_temp(".mesh", "MeshVersionFormatted 2\nDimension 3\n");
+    EXPECT_THROW(meshioplusplus::read_medit_ascii(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Tecplot, ReadRejectsMissingVariables) {
+    std::string path = write_temp(".dat", "ZONE N=1 E=1\n");
+    EXPECT_THROW(meshioplusplus::read_tecplot(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Nastran, ReadRejectsForeignFile) {
+    // The C++ reader is sentinel-gated to meshio++-written files.
+    std::string path = write_temp(".bdf", "$ some other tool's bulk data\nGRID,1,,0.,0.,0.\n");
+    EXPECT_THROW(meshioplusplus::read_nastran(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Netgen, ReadRejectsInvalidFile) {
+    std::string path = write_temp(".vol", "this is not a netgen mesh\n");
+    EXPECT_THROW(meshioplusplus::read_netgen(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}

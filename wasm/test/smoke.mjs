@@ -111,6 +111,44 @@ step('unknown format raises a catchable Error, not an abort', () => {
     assert.throws(() => m.readMesh('/does/not/exist.obj'), /Could not open file/);
 });
 
+// A triangle mesh reused across the extra format round-trips below.
+const tri2 = {
+    points: new Float64Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+    dim: 3,
+    cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2, 0, 2, 3]), nodesPerCell: 3 }],
+};
+
+step('PLY binary round-trip', () => {
+    m.writeMesh('/tri.ply', tri2, 'ply');
+    const back = m.readMesh('/tri.ply', 'ply');
+    assert.equal(back.cells.length, 1);
+    assert.equal(back.cells[0].type, 'triangle');
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 0, 2, 3]);
+});
+
+step('OFF ascii round-trip', () => {
+    m.writeMesh('/tri.off', tri2, 'off');
+    const back = m.readMesh('/tri.off', 'off');
+    assert.equal(back.cells[0].type, 'triangle');
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 0, 2, 3]);
+});
+
+step('GMSH ascii round-trip (tetra, volume format)', () => {
+    m.writeMesh('/tet.gmsh.msh', tet, 'gmsh');
+    const back = m.readMesh('/tet.gmsh.msh', 'gmsh');
+    assert.equal(back.cells[0].type, 'tetra');
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
+    assert.equal(back.points.length, 12);
+});
+
+step('malformed file raises a catchable Error, not a WASM abort', () => {
+    m.FS.writeFile('/bad.vtu', '<?xml version="1.0"?><NotVTK></NotVTK>');
+    assert.throws(
+        () => m.readMesh('/bad.vtu', 'vtu'),
+        (err) => err instanceof Error && err.message.length > 0,
+    );
+});
+
 if (failed) {
     console.error('\nSMOKE TEST FAILED');
     process.exit(1);

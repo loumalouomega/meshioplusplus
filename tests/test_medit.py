@@ -137,3 +137,23 @@ def test_reference_file(
     assert tags.keys() == ref_tag_counts.keys()
     for key in tags.keys():
         assert tags[key] == ref_tag_counts[key]
+
+
+# --- malformed-input / error-path coverage (Python reference reader) ---
+# These drive the reader's explicit `raise ReadError` branches directly, since
+# the C++ core (tried first by the shim) may accept some malformed files.
+from meshioplusplus.medit._medit import read as _medit_py_read  # noqa: E402
+
+
+def test_medit_vertices_before_version_raises(tmp_path):
+    p = tmp_path / "bad.mesh"
+    p.write_text("Dimension 3\nVertices\n1\n0 0 0 0\n")
+    with pytest.raises(meshioplusplus.ReadError):
+        _medit_py_read(str(p))
+
+
+def test_medit_non_alpha_keyword_raises(tmp_path):
+    p = tmp_path / "bad.mesh"
+    p.write_text("123 456\n")
+    with pytest.raises(meshioplusplus.ReadError):
+        _medit_py_read(str(p))
