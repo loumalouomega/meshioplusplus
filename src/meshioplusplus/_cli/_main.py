@@ -5,8 +5,10 @@ from ..__about__ import __version__
 from . import (
     _ascii,
     _binary,
+    _clean,
     _compress,
     _convert,
+    _crop,
     _decompress,
     _diff,
     _extract_surface,
@@ -14,6 +16,9 @@ from . import (
     _merge,
     _quality,
     _reorder,
+    _split,
+    _stats,
+    _transform,
 )
 
 
@@ -92,6 +97,41 @@ def main(argv=None):
     )
     _merge.add_args(parser)
     parser.set_defaults(func=_merge.merge_cmd)
+
+    parser = subparsers.add_parser(
+        "transform",
+        help="Affine transform (translate / scale / rotate / matrix / units)",
+    )
+    _transform.add_args(parser)
+    parser.set_defaults(func=_transform.transform_cmd)
+
+    parser = subparsers.add_parser(
+        "clean",
+        help="Weld / prune / de-dup a mesh in one pass",
+    )
+    _clean.add_args(parser)
+    parser.set_defaults(func=_clean.clean_cmd)
+
+    parser = subparsers.add_parser(
+        "crop",
+        help="Subset a mesh by a bounding box or half-space",
+    )
+    _crop.add_args(parser)
+    parser.set_defaults(func=_crop.crop_cmd)
+
+    parser = subparsers.add_parser(
+        "split",
+        help="Partition a mesh into multiple files (type / region / component)",
+    )
+    _split.add_args(parser)
+    parser.set_defaults(func=_split.split_cmd)
+
+    parser = subparsers.add_parser(
+        "stats",
+        help="Print geometric statistics (bbox, area, volume, ...)",
+    )
+    _stats.add_args(parser)
+    parser.set_defaults(func=_stats.stats_cmd)
 
     args = parent_parser.parse_args(argv)
 

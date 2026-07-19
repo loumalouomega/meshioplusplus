@@ -46,6 +46,8 @@ from . import (
     xdmf,
 )
 from .__about__ import __version__
+from ._clean import clean
+from ._crop import crop
 from ._diff import diff, meshes_equal
 from ._exceptions import ReadError, WriteError
 from ._helpers import (
@@ -62,7 +64,10 @@ from ._quality import attach_quality, compute_quality
 from ._reorder import compute_bandwidth, reorder
 from ._skin import extract_skin
 from ._sniff import sniff_format
+from ._split import split
+from ._stats import compute_stats
 from ._surface import extract_surface
+from ._transform import transform
 
 __all__ = [
     "abaqus",
@@ -126,6 +131,11 @@ __all__ = [
     "diff",
     "meshes_equal",
     "merge",
+    "transform",
+    "clean",
+    "crop",
+    "split",
+    "compute_stats",
     "Mesh",
     "CellBlock",
     "ReadError",
