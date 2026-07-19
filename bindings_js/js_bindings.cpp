@@ -77,6 +77,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/diff.hpp"
+#include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -489,6 +490,34 @@ val reorder_js(const val& rMeshObj, const std::string& rMethod) {
     });
 }
 
+/**
+ * @brief Merge a JS array of mesh objects into one (concatenate, optional
+ * welding). `dataPolicy` is "intersection" (default) or "fill". Returns a plain
+ * JS mesh object (point_sets/cell_sets are not carried, as elsewhere in JS).
+ */
+val merge_js(const val& rMeshes, bool weld, double atol, bool sourceTag,
+             const std::string& rDataPolicy, bool dropDuplicateCells) {
+    return with_js_errors([&]() -> val {
+        const unsigned n = rMeshes["length"].as<unsigned>();
+        std::vector<Mesh> owned;
+        owned.reserve(n);
+        for (unsigned i = 0; i < n; ++i)
+            owned.push_back(val_to_mesh(rMeshes[i]));
+        std::vector<const Mesh*> ptrs;
+        ptrs.reserve(owned.size());
+        for (const Mesh& mm : owned)
+            ptrs.push_back(&mm);
+        meshioplusplus::MergeOptions opts;
+        opts.weld = weld;
+        opts.atol = atol;
+        opts.source_tag = sourceTag;
+        opts.drop_duplicate_cells = dropDuplicateCells;
+        opts.data_policy = (rDataPolicy == "fill") ? meshioplusplus::MergeDataPolicy::Fill
+                                                   : meshioplusplus::MergeDataPolicy::Intersection;
+        return mesh_to_val(meshioplusplus::merge(ptrs, opts).mMesh);
+    });
+}
+
 /** @brief Connectivity bandwidth (max |i - j| over node pairs sharing a cell). */
 int compute_bandwidth_js(const val& rMeshObj) {
     return with_js_errors([&]() -> int {
@@ -602,4 +631,5 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("computeBandwidth", &compute_bandwidth_js);
     emscripten::function("diff", &diff_js);
     emscripten::function("meshesEqual", &meshes_equal_js);
+    emscripten::function("merge", &merge_js);
 }

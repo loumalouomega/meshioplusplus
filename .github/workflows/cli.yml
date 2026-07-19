@@ -1,0 +1,265 @@
+name: cli
+
+# Build the standalone native command-line binary (cpp/cli/main.cpp, see
+# doc/c_api.md#native-command-line-binary) for every OS/arch the project
+# supports -- Linux x86_64, Linux arm64, macOS (universal), Windows x86_64 --
+# as a single statically-linked executable with no Python/pybind11 and no
+# runtime library install step required on the target machine. On `v*` tags
+# the four binaries are attached to the tag's GitHub Release (creating it if
+# it doesn't exist yet, mirroring packages.yml).
+#
+# Portability trade-off (matches wheels.yml's manylinux leg): HDF5/netCDF/zlib
+# are OFF and the parallel backend is SEQ, so the release binary has no
+# optional native dependency and no OpenMP/TBB runtime to bundle. HDF5/netCDF
+# formats still work through this binary the same way they don't -- they were
+# never reachable without Python (see the "Documented gaps" note in
+# CLAUDE.md's native-CLI section); users who need them, or multi-threaded
+# operations, should build from source with `build/configure.sh --cli`
+# instead.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "CMakeLists.txt"
+      - "cpp/cli/**"
+      - "cpp/include/**"
+      - "cpp/src/**"
+      - "build/configure.sh"
+      - "build/configure.bat"
+      - ".github/workflows/cli.yml"
+  workflow_dispatch:
+
+env:
+  # Every job builds the same portable configuration; only the toolchain and
+  # packaging step differ per OS.
+  CMAKE_COMMON_ARGS: >-
+    -DCMAKE_BUILD_TYPE=Release
+    -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+    -DMESHIOPLUSPLUS_BUILD_CLI=ON
+    -DMESHIOPLUSPLUS_WITH_HDF5=OFF
+    -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+    -DMESHIOPLUSPLUS_WITH_ZLIB=OFF
+    -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ
+    -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Linux: built inside the same manylinux_2_34 (AlmaLinux 9, glibc 2.34)
+  # container wheels.yml uses, with the same gcc-toolset-13 (needs C++20
+  # <format>) -- this caps the binary's GLIBC floor at 2.34 regardless of the
+  # Ubuntu runner's own (newer) glibc, and MESHIOPLUSPLUS_STATIC_RUNTIME
+  # removes the GLIBCXX/CXXABI dependency entirely (verified below: only
+  # linux-vdso/libc/libm/ld-linux remain).
+  # ---------------------------------------------------------------------------
+  linux-x86_64:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_34_x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # vendored Eigen (unused here: MED needs HDF5, which is OFF)
+
+      - name: Install toolchain
+        run: yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ cmake make
+
+      - name: Configure
+        run: |
+          source /opt/rh/gcc-toolset-13/enable
+          cmake -S . -B build $CMAKE_COMMON_ARGS
+
+      - name: Build
+        run: |
+          source /opt/rh/gcc-toolset-13/enable
+          cmake --build build --target meshioplusplus_cli -j
+
+      - name: Verify static runtime
+        run: |
+          strip build/meshioplusplus
+          ldd build/meshioplusplus
+          # Only baseline glibc/vdso/loader may remain -- no libstdc++/libgcc_s.
+          ! ldd build/meshioplusplus | grep -qE 'libstdc\+\+|libgcc_s'
+          build/meshioplusplus --version
+
+      - name: Package (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="meshioplusplus-cli-${version}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp build/meshioplusplus LICENSE "dist/$name/"
+          tar czf "$name.tar.gz" -C dist "$name"
+
+      - name: Upload artifact (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux-x86_64
+          path: meshioplusplus-cli-*-linux-x86_64.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Linux arm64: same manylinux_2_34 + gcc-toolset-13 recipe as the x86_64 leg,
+  # on GitHub's free-for-public-repos hosted arm64 runner -- native build, no
+  # QEMU/binfmt emulation needed (unlike wheels.yml's cibuildwheel leg, which
+  # goes through the same runner but via cibuildwheel's own container
+  # handling; here we drive `docker`-equivalent execution directly via the
+  # job-level `container:` key, which GitHub Actions runs natively since the
+  # image and runner arches match).
+  # ---------------------------------------------------------------------------
+  linux-arm64:
+    name: Linux arm64
+    runs-on: ubuntu-24.04-arm
+    container: quay.io/pypa/manylinux_2_34_aarch64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # vendored Eigen (unused here: MED needs HDF5, which is OFF)
+
+      - name: Install toolchain
+        run: yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ cmake make
+
+      - name: Configure
+        run: |
+          source /opt/rh/gcc-toolset-13/enable
+          cmake -S . -B build $CMAKE_COMMON_ARGS
+
+      - name: Build
+        run: |
+          source /opt/rh/gcc-toolset-13/enable
+          cmake --build build --target meshioplusplus_cli -j
+
+      - name: Verify static runtime
+        run: |
+          strip build/meshioplusplus
+          ldd build/meshioplusplus
+          # Only baseline glibc/vdso/loader may remain -- no libstdc++/libgcc_s.
+          ! ldd build/meshioplusplus | grep -qE 'libstdc\+\+|libgcc_s'
+          build/meshioplusplus --version
+
+      - name: Package (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="meshioplusplus-cli-${version}-linux-aarch64"
+          mkdir -p "dist/$name"
+          cp build/meshioplusplus LICENSE "dist/$name/"
+          tar czf "$name.tar.gz" -C dist "$name"
+
+      - name: Upload artifact (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux-aarch64
+          path: meshioplusplus-cli-*-linux-aarch64.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # macOS: CMAKE_OSX_ARCHITECTURES builds one universal (x86_64 + arm64) binary
+  # in a single invocation -- no separate builds + lipo needed. Apple Clang has
+  # no static-libc++ equivalent to MESHIOPLUSPLUS_STATIC_RUNTIME's GNU path (it
+  # only guards CMAKE_CXX_COMPILER_ID STREQUAL "GNU"), which is fine: libc++ and
+  # libSystem ship with the OS itself, exactly like glibc on Linux -- nothing
+  # extra to install on the target machine either way.
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: |
+          cmake -S . -B build $CMAKE_COMMON_ARGS \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3
+
+      - name: Build
+        run: cmake --build build --target meshioplusplus_cli -j
+
+      - name: Verify universal binary
+        run: |
+          strip build/meshioplusplus
+          lipo -info build/meshioplusplus
+          build/meshioplusplus --version
+
+      - name: Package (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="meshioplusplus-cli-${version}-macos-universal"
+          mkdir -p "dist/$name"
+          cp build/meshioplusplus LICENSE "dist/$name/"
+          tar czf "$name.tar.gz" -C dist "$name"
+
+      - name: Upload artifact (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-macos-universal
+          path: meshioplusplus-cli-*-macos-universal.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Windows: MESHIOPLUSPLUS_STATIC_RUNTIME's MSVC path sets MSVC_RUNTIME_LIBRARY
+  # to the static CRT (/MT), so the binary needs no Visual C++ Redistributable
+  # on the target machine.
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build $CMAKE_COMMON_ARGS
+
+      - name: Build
+        run: cmake --build build --target meshioplusplus_cli --config Release
+
+      - name: Verify
+        run: build\Release\meshioplusplus.exe --version
+
+      - name: Package (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $name = "meshioplusplus-cli-$version-windows-x86_64"
+          New-Item -ItemType Directory -Path "dist/$name" | Out-Null
+          Copy-Item build/Release/meshioplusplus.exe "dist/$name/"
+          Copy-Item LICENSE "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "$name.zip"
+
+      - name: Upload artifact (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows-x86_64
+          path: meshioplusplus-cli-*-windows-x86_64.zip
+
+  # ---------------------------------------------------------------------------
+  # Attach the three binaries to the tag's GitHub Release (creating it if it
+  # doesn't exist yet -- mirrors packages.yml's release job).
+  # ---------------------------------------------------------------------------
+  release:
+    name: Attach CLI binaries to GitHub Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-x86_64, linux-arm64, macos, windows]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-cli
+          merge-multiple: true
+      - name: Create/update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist-cli/*

@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -78,6 +78,11 @@ jobs:
           cmake --install build --prefix "$PWD/inst"
           export PKG_CONFIG_PATH="$PWD/inst/lib/pkgconfig"
           pkg-config --exists meshioplusplus
+          # Query the version actually installed rather than hardcoding it a
+          # second time -- CMakeLists.txt's project(VERSION ...) is the single
+          # source of truth (see CLAUDE.md's "Version bumps"); this stays in
+          # sync with it automatically.
+          pkg_version="$(pkg-config --modversion meshioplusplus)"
           gcc -std=c99 doc/examples/c_api_example.c \
             $(pkg-config --cflags --libs meshioplusplus) -o /tmp/ex_c
           gfortran doc/examples/fortran_example.f90 \
@@ -89,7 +94,7 @@ jobs:
           cat > CMakeLists.txt <<EOF
           cmake_minimum_required(VERSION 3.15)
           project(consumer LANGUAGES C)
-          find_package(meshioplusplus 6.1 REQUIRED)
+          find_package(meshioplusplus ${pkg_version} REQUIRED)
           add_executable(ex_c $GITHUB_WORKSPACE/doc/examples/c_api_example.c)
           target_link_libraries(ex_c PRIVATE meshioplusplus::meshioplusplus)
           EOF

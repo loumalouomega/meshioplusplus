@@ -66,6 +66,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/operations/diff.hpp"
+#include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -276,6 +277,54 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus::compute_bandwidth(cpp);
         },
         py::arg("mesh"));
+
+    // Mesh merge/weld. Takes a sequence of meshes and returns a dict with the
+    // combined mesh and the per-input point/cell index maps (so the Python shim
+    // can remap the shim-only point_sets/cell_sets). See operations/merge.hpp.
+    m.def(
+        "merge",
+        [](py::sequence pymeshes, bool weld, double atol, bool source_tag,
+           const std::string& data_policy, bool drop_duplicate_cells) {
+            // Convert every input, keeping its numpy buffers alive for the call.
+            std::vector<meshioplusplus_py::PyMeshRefs> refs(py::len(pymeshes));
+            std::vector<meshioplusplus::Mesh> owned;
+            owned.reserve(py::len(pymeshes));
+            std::size_t idx = 0;
+            for (py::handle h : pymeshes) {
+                owned.push_back(meshioplusplus_py::py_to_mesh(
+                    py::reinterpret_borrow<py::object>(h), refs[idx],
+                    /*lenient_field_data=*/false, /*allow_ragged=*/true));
+                ++idx;
+            }
+            std::vector<const meshioplusplus::Mesh*> ptrs;
+            ptrs.reserve(owned.size());
+            for (const meshioplusplus::Mesh& mm : owned)
+                ptrs.push_back(&mm);
+
+            meshioplusplus::MergeOptions opts;
+            opts.weld = weld;
+            opts.atol = atol;
+            opts.source_tag = source_tag;
+            opts.drop_duplicate_cells = drop_duplicate_cells;
+            opts.data_policy = (data_policy == "fill")
+                                   ? meshioplusplus::MergeDataPolicy::Fill
+                                   : meshioplusplus::MergeDataPolicy::Intersection;
+            meshioplusplus::MergeResult r = meshioplusplus::merge(ptrs, opts);
+
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::list point_maps, cell_maps;
+            for (meshioplusplus::NDArray& a : r.mPointMaps)
+                point_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["point_maps"] = point_maps;
+            out["cell_maps"] = cell_maps;
+            return out;
+        },
+        py::arg("meshes"), py::arg("weld") = false, py::arg("atol") = 1e-8,
+        py::arg("source_tag") = true, py::arg("data_policy") = "intersection",
+        py::arg("drop_duplicate_cells") = false);
 
     // Mesh comparison ("diff"). Returns a nested dict mirroring DiffReport, with
     // an overall verdict string. See operations/diff.hpp.

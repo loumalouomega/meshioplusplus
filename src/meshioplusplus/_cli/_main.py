@@ -11,6 +11,7 @@ from . import (
     _diff,
     _extract_surface,
     _info,
+    _merge,
     _quality,
     _reorder,
 )
@@ -84,6 +85,13 @@ def main(argv=None):
     )
     _diff.add_args(parser)
     parser.set_defaults(func=_diff.diff_cmd)
+
+    parser = subparsers.add_parser(
+        "merge",
+        help="Merge two or more meshes into one (optional welding)",
+    )
+    _merge.add_args(parser)
+    parser.set_defaults(func=_merge.merge_cmd)
 
     args = parent_parser.parse_args(argv)
 

@@ -318,6 +318,24 @@ MIO_API mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells,
 MIO_API int64_t mio_sniff_format(const char* path, char* buf, int64_t buflen);
 
 /**
+ * Merge two or more meshes into one (concatenate, with optional welding of
+ * coincident nodes). Cell blocks are merged by type; connectivity is offset so
+ * indices stay valid; point_data/cell_data are combined per `data_policy`.
+ * point_sets/cell_sets are not carried across the C ABI (as elsewhere).
+ * @param meshes   array of `count` non-NULL input mesh handles.
+ * @param count    number of input meshes (>= 1).
+ * @param weld     nonzero to merge coincident nodes within `atol`.
+ * @param atol     absolute coincidence tolerance for welding.
+ * @param source_tag nonzero to add an int64 "source_mesh_id" cell_data.
+ * @param data_policy 0 = intersection (drop partial keys), 1 = fill (NaN).
+ * @param drop_duplicate_cells nonzero (with `weld`) to drop cells that become
+ *                             identical after welding.
+ * @return the merged mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_merge(const mio_mesh* const* meshes, int64_t count, int weld, double atol,
+                            int source_tag, int data_policy, int drop_duplicate_cells);
+
+/**
  * Renumber a mesh (RCM / Morton / Hilbert) as a pure permutation of node and
  * element indices, to reduce sparse-matrix bandwidth / improve cache locality.
  * @param mesh   input mesh.

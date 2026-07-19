@@ -54,6 +54,7 @@ export default defineConfig({
           { text: "Skin extraction", link: "/extract_skin" },
           { text: "Reordering / renumbering", link: "/reorder" },
           { text: "Mesh comparison (diff)", link: "/diff" },
+          { text: "Merge / combine", link: "/merge" },
           { text: "CLI reference", link: "/cli" },
           { text: "XDMF time series", link: "/xdmf_time_series" },
           { text: "Extending meshio++", link: "/extending" },
