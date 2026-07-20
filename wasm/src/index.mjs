@@ -66,6 +66,7 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
+ *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean) => Mesh,
  *   stats: (mesh: Mesh) => object,
  *   dataDrop: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataKeep: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
@@ -137,6 +138,8 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
         split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
         convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
             Module.convertCells(mesh, mode, recordParentIds),
+        refine: (mesh, levels = 1, recordParentIds = false) =>
+            Module.refine(mesh, levels, recordParentIds),
         stats: (mesh) => Module.stats(mesh),
         // Data operations (see doc/data_operations.md): act on point_data /
         // cell_data / field_data only -- the geometry is never modified.

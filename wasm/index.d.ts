@@ -251,6 +251,17 @@ export interface MeshioPlusPlusModule {
    */
   convertCells(mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean): Mesh;
 
+  /**
+   * Uniformly refine a mesh, subdividing every cell into same-type children
+   * (`line` → 2, `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8,
+   * `hexahedron` → 8). New nodes sit at edge / quad-face / body midpoints and
+   * are shared between neighbouring cells, so the result has no hanging nodes.
+   * `levels` applies the templates repeatedly; `0` returns an unchanged copy.
+   * @throws {Error} on a higher-order cell, a `pyramid`, or a ragged
+   *   polygon/polyhedron block — none has a same-type subdivision.
+   */
+  refine(mesh: Mesh, levels?: number, recordParentIds?: boolean): Mesh;
+
   /** Read-only geometric statistics (bbox, areas, volumes, inverted count). */
   stats(mesh: Mesh): object;
 
