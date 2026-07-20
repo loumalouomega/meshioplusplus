@@ -173,6 +173,8 @@ module meshioplusplus
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: refine => mesh_refine
+        procedure :: partition => mesh_partition
+        procedure :: partition_labels => mesh_partition_labels
         procedure :: stats => mesh_stats
         procedure :: compute_bandwidth => mesh_compute_bandwidth
         procedure :: equals => mesh_equals
@@ -561,6 +563,57 @@ module meshioplusplus
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
+
+        function c_mio_partition(h, nparts, method, imbalance, mode, seed, record_ids, &
+                                 ghost_layers, weights_key) &
+                bind(c, name="mio_partition") result(r)
+            import :: c_ptr, c_char, c_int, c_double
+            type(c_ptr), value :: h
+            integer(c_int), value :: nparts
+            character(kind=c_char), dimension(*), intent(in) :: method
+            real(c_double), value :: imbalance
+            character(kind=c_char), dimension(*), intent(in) :: mode
+            integer(c_int), value :: seed, record_ids, ghost_layers
+            character(kind=c_char), dimension(*), intent(in) :: weights_key
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_partition_result_num_pieces(r) &
+                bind(c, name="mio_partition_result_num_pieces") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_partition_result_take_mesh(r, index) &
+                bind(c, name="mio_partition_result_take_mesh") result(m)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            type(c_ptr) :: m
+        end function
+
+        subroutine c_mio_partition_result_free(r) &
+                bind(c, name="mio_partition_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_partition_labels(h, nparts, method, imbalance, mode, seed, &
+                                        weights_key, labels, labels_size) &
+                bind(c, name="mio_partition_labels") result(s)
+            import :: c_ptr, c_char, c_int, c_int64_t, c_double
+            type(c_ptr), value :: h
+            integer(c_int), value :: nparts
+            character(kind=c_char), dimension(*), intent(in) :: method
+            real(c_double), value :: imbalance
+            character(kind=c_char), dimension(*), intent(in) :: mode
+            integer(c_int), value :: seed
+            character(kind=c_char), dimension(*), intent(in) :: weights_key
+            integer(c_int64_t), dimension(*), intent(out) :: labels
+            integer(c_int64_t), value :: labels_size
+            integer(c_int) :: s
+        end function
 
         function c_mio_stats(h, out) bind(c, name="mio_stats") result(s)
             import :: c_ptr, c_int, mio_stats_report
@@ -1728,6 +1781,111 @@ contains
             end if
         end do
         call c_mio_split_result_free(res)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Decompose the mesh into exactly `nparts` balanced pieces (the
+    !> count-driven complement to `split`). method: "sfc" (Hilbert curve cut,
+    !> always available), "kahip" (needs a KaHIP-enabled build; fails by name
+    !> otherwise), or "auto" (default: kahip when built, else sfc). Every piece
+    !> keeps the input's cell-block structure 1:1, so the pieces recombine into
+    !> the input. `weights_key` names a scalar cell_data array of per-cell
+    !> weights. `ghost_layers` is reserved and must be 0.
+    function mesh_partition(self, nparts, method, imbalance, mode, seed, record_ids, &
+                            ghost_layers, weights_key, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in) :: nparts
+        character(*), intent(in), optional :: method
+        real(real64), intent(in), optional :: imbalance
+        character(*), intent(in), optional :: mode
+        integer, intent(in), optional :: seed
+        logical, intent(in), optional :: record_ids
+        integer, intent(in), optional :: ghost_layers
+        character(*), intent(in), optional :: weights_key
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh), allocatable :: out(:)
+        type(c_ptr) :: res
+        integer(c_int64_t) :: count, i
+        character(len=:), allocatable :: cmethod, cmode, cweights
+        real(c_double) :: cimb
+        integer(c_int) :: cseed, crec, cghost
+        cmethod = 'auto'
+        if (present(method)) cmethod = method
+        cimb = 0.03_c_double
+        if (present(imbalance)) cimb = real(imbalance, c_double)
+        cmode = 'eco'
+        if (present(mode)) cmode = mode
+        cseed = 0_c_int
+        if (present(seed)) cseed = int(seed, c_int)
+        crec = 0_c_int
+        if (present(record_ids)) then
+            if (record_ids) crec = 1_c_int
+        end if
+        cghost = 0_c_int
+        if (present(ghost_layers)) cghost = int(ghost_layers, c_int)
+        cweights = ''
+        if (present(weights_key)) cweights = weights_key
+        res = c_mio_partition(self%handle, int(nparts, c_int), c_str(cmethod), cimb, &
+                              c_str(cmode), cseed, crec, cghost, c_str(cweights))
+        if (.not. c_associated(res)) then
+            call handle_failure('partition', mio_error_message(), stat, errmsg)
+            allocate (out(0))
+            return
+        end if
+        count = c_mio_partition_result_num_pieces(res)
+        allocate (out(count))
+        do i = 1, count
+            out(i)%handle = c_mio_partition_result_take_mesh(res, i - 1_c_int64_t)
+        end do
+        call c_mio_partition_result_free(res)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The per-cell part assignment only: a flat block-major Int64 array (the
+    !> mesh's cell blocks concatenated in order), values in [0, nparts). The
+    !> values are part ids, not indices -- no 1-based shift applies.
+    function mesh_partition_labels(self, nparts, method, imbalance, mode, seed, &
+                                   weights_key, stat, errmsg) result(labels)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in) :: nparts
+        character(*), intent(in), optional :: method
+        real(real64), intent(in), optional :: imbalance
+        character(*), intent(in), optional :: mode
+        integer, intent(in), optional :: seed
+        character(*), intent(in), optional :: weights_key
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), allocatable :: labels(:)
+        character(len=:), allocatable :: cmethod, cmode, cweights
+        real(c_double) :: cimb
+        integer(c_int) :: cseed, s
+        integer(c_int64_t) :: total, b
+        integer(c_int64_t), allocatable :: buf(:)
+        cmethod = 'auto'
+        if (present(method)) cmethod = method
+        cimb = 0.03_c_double
+        if (present(imbalance)) cimb = real(imbalance, c_double)
+        cmode = 'eco'
+        if (present(mode)) cmode = mode
+        cseed = 0_c_int
+        if (present(seed)) cseed = int(seed, c_int)
+        cweights = ''
+        if (present(weights_key)) cweights = weights_key
+        total = 0_c_int64_t
+        do b = 1, self%num_cell_blocks()
+            total = total + self%cell_block_num_cells(int(b))
+        end do
+        allocate (buf(max(total, 1_c_int64_t)))
+        s = c_mio_partition_labels(self%handle, int(nparts, c_int), c_str(cmethod), cimb, &
+                                   c_str(cmode), cseed, c_str(cweights), buf, total)
+        if (s /= 0_c_int) then
+            call handle_failure('partition_labels', mio_error_message(), stat, errmsg)
+            allocate (labels(0))
+            return
+        end if
+        allocate (labels(total))
+        if (total > 0) labels = int(buf(1:total), int64)
         call clear_status(stat, errmsg)
     end function
 
