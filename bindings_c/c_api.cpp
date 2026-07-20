@@ -67,6 +67,7 @@
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -108,6 +109,15 @@ struct mio_refine_result {
     mio_mesh mMesh;  // owns the refined mesh; borrowed via _result_mesh
     meshioplusplus::NDArray mPointMap;
     std::vector<meshioplusplus::NDArray> mCellMaps;
+};
+
+struct mio_partition_result {
+    struct Piece {
+        mio_mesh mMesh;  // owns the piece; borrowed via _result_mesh
+        meshioplusplus::NDArray mPointMap;
+        std::vector<meshioplusplus::NDArray> mCellMaps;
+    };
+    std::vector<Piece> mPieces;  // exactly nparts entries, part id == index
 };
 
 struct mio_data_info {
@@ -1004,6 +1014,175 @@ mio_status mio_refine_result_cell_map(const mio_refine_result* result, int64_t b
 
 void mio_refine_result_free(mio_refine_result* result) {
     delete result;
+}
+
+namespace {
+
+// Shared option assembly for mio_partition / mio_partition_labels. NULL strings
+// mean "auto" / "eco" / unweighted (the *_from_name parsers accept "").
+meshioplusplus::PartitionOptions partition_options_from_c(int nparts, const char* method,
+                                                          double imbalance, const char* mode,
+                                                          int seed, int record_ids,
+                                                          int ghost_layers,
+                                                          const char* weights_key) {
+    meshioplusplus::PartitionOptions options;
+    options.mNParts = nparts;
+    options.mMethod = meshioplusplus::partition_method_from_name(method ? method : "");
+    options.mImbalance = imbalance;
+    options.mMode = meshioplusplus::partition_mode_from_name(mode ? mode : "");
+    options.mSeed = seed;
+    options.mRecordIds = record_ids != 0;
+    options.mGhostLayers = ghost_layers;
+    options.mWeightsKey = weights_key ? weights_key : "";
+    return options;
+}
+
+}  // namespace
+
+mio_partition_result* mio_partition(const mio_mesh* mesh, int nparts, const char* method,
+                                    double imbalance, const char* mode, int seed, int record_ids,
+                                    int ghost_layers, const char* weights_key) {
+    return guarded_ptr(static_cast<mio_partition_result*>(nullptr), [&]() -> mio_partition_result* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::PartitionOptions options = partition_options_from_c(
+            nparts, method, imbalance, mode, seed, record_ids, ghost_layers, weights_key);
+        meshioplusplus::PartitionResult r = meshioplusplus::partition(mesh->mMesh, options);
+        auto* out = new mio_partition_result{};
+        out->mPieces.reserve(r.mPieces.size());
+        for (meshioplusplus::PartitionPiece& p : r.mPieces) {
+            mio_partition_result::Piece piece;
+            piece.mMesh = mio_mesh{std::move(p.mMesh)};
+            piece.mPointMap = std::move(p.mPointMap);
+            piece.mCellMaps = std::move(p.mCellMaps);
+            out->mPieces.push_back(std::move(piece));
+        }
+        return out;
+    });
+}
+
+int64_t mio_partition_result_num_pieces(const mio_partition_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mPieces.size());
+    });
+}
+
+int mio_partition_result_part_id(const mio_partition_result* result, int64_t index) {
+    return guarded_ptr(-1, [&]() -> int {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mPieces.size())
+            throw meshioplusplus::ReadError("meshio++: piece index out of range");
+        return static_cast<int>(index);
+    });
+}
+
+const mio_mesh* mio_partition_result_mesh(const mio_partition_result* result, int64_t index) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mPieces.size())
+            return nullptr;
+        return &result->mPieces[static_cast<std::size_t>(index)].mMesh;
+    });
+}
+
+mio_mesh* mio_partition_result_take_mesh(mio_partition_result* result, int64_t index) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mPieces.size())
+            throw meshioplusplus::ReadError("meshio++: piece index out of range");
+        return new mio_mesh{
+            std::move(result->mPieces[static_cast<std::size_t>(index)].mMesh.mMesh)};
+    });
+}
+
+mio_status mio_partition_result_point_map(const mio_partition_result* result, int64_t index,
+                                          const void** data, mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mPieces.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: piece index out of range");
+        const NDArray& a = result->mPieces[static_cast<std::size_t>(index)].mPointMap;
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_partition_result_num_cell_maps(const mio_partition_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        if (result->mPieces.empty())
+            return 0;
+        return static_cast<int64_t>(result->mPieces.front().mCellMaps.size());
+    });
+}
+
+mio_status mio_partition_result_cell_map(const mio_partition_result* result, int64_t index,
+                                         int64_t block, const void** data, mio_dtype* dtype,
+                                         int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mPieces.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: piece index out of range");
+        const mio_partition_result::Piece& piece = result->mPieces[static_cast<std::size_t>(index)];
+        if (block < 0 || static_cast<std::size_t>(block) >= piece.mCellMaps.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
+        const NDArray& a = piece.mCellMaps[static_cast<std::size_t>(block)];
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+void mio_partition_result_free(mio_partition_result* result) {
+    delete result;
+}
+
+mio_status mio_partition_labels(const mio_mesh* mesh, int nparts, const char* method,
+                                double imbalance, const char* mode, int seed,
+                                const char* weights_key, int64_t* labels, int64_t labels_size) {
+    return guarded([&]() -> mio_status {
+        if (!mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        if (!labels)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: labels is NULL");
+        meshioplusplus::PartitionOptions options =
+            partition_options_from_c(nparts, method, imbalance, mode, seed, /*record_ids=*/0,
+                                     /*ghost_layers=*/0, weights_key);
+        std::vector<NDArray> per_block = meshioplusplus::partition_labels(mesh->mMesh, options);
+        int64_t total = 0;
+        for (const NDArray& a : per_block)
+            total += a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        if (labels_size != total)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: labels_size (" +
+                                                 std::to_string(labels_size) +
+                                                 ") does not equal the mesh's total cell count (" +
+                                                 std::to_string(total) + ")");
+        int64_t offset = 0;
+        for (const NDArray& a : per_block) {
+            const int64_t rows = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+            std::memcpy(labels + offset, a.Data(),
+                        static_cast<std::size_t>(rows) * sizeof(int64_t));
+            offset += rows;
+        }
+        return MIO_OK;
+    });
 }
 
 mio_status mio_stats(const mio_mesh* mesh, mio_stats_report* out) {

@@ -1025,6 +1025,95 @@ TEST(CApi, RefineChainsOnABorrowedMesh) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, PartitionPiecesAndMaps) {
+    // A 2x2 quad grid split into 2 parts: exactly nparts pieces, blocks kept
+    // 1:1, cell maps assign every input cell to exactly one piece.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 1, 0, 1, 1,
+                                     0, 2, 1, 0, 0, 2, 0, 1, 2, 0, 2, 2, 0};
+    const std::vector<std::int64_t> conn = {0, 1, 4, 3, 1, 2, 5, 4, 3, 4, 7, 6, 4, 5, 8, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 9, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 4, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_partition_result* r =
+        mio_partition(m, 2, "sfc", 0.03, "eco", 0, /*record_ids=*/1, /*ghost_layers=*/0, "");
+    ASSERT_NE(r, nullptr);
+    ASSERT_EQ(mio_partition_result_num_pieces(r), 2);
+    ASSERT_EQ(mio_partition_result_num_cell_maps(r), 1);
+
+    std::int64_t total_out = 0;
+    std::vector<int> owners(4, 0);
+    for (std::int64_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(mio_partition_result_part_id(r, i), static_cast<int>(i));
+        const mio_mesh* piece = mio_partition_result_mesh(r, i);
+        ASSERT_NE(piece, nullptr);
+        ASSERT_EQ(mio_mesh_num_cell_blocks(piece), 1);  // blocks kept 1:1
+        std::int64_t num_cells = 0;
+        ASSERT_EQ(mio_mesh_cell_block_info(piece, 0, &num_cells, nullptr, nullptr), MIO_OK);
+        total_out += num_cells;
+
+        const void* data = nullptr;
+        mio_dtype dtype = MIO_FLOAT64;
+        std::int64_t n = -1;
+        ASSERT_EQ(mio_partition_result_point_map(r, i, &data, &dtype, &n), MIO_OK);
+        EXPECT_EQ(dtype, MIO_INT64);
+        EXPECT_EQ(n, 9);
+        ASSERT_EQ(mio_partition_result_cell_map(r, i, 0, &data, &dtype, &n), MIO_OK);
+        EXPECT_EQ(n, 4);
+        for (std::int64_t c = 0; c < n; ++c)
+            if (static_cast<const std::int64_t*>(data)[c] >= 0)
+                ++owners[static_cast<std::size_t>(c)];
+    }
+    EXPECT_EQ(total_out, 4);
+    for (int o : owners)
+        EXPECT_EQ(o, 1);  // partition of unity
+
+    mio_mesh* owned = mio_partition_result_take_mesh(r, 0);
+    ASSERT_NE(owned, nullptr);
+    mio_mesh_free(owned);
+    mio_partition_result_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, PartitionLabelsFillsTheCallerBuffer) {
+    mio_mesh* m = build_tet_mesh();  // 2 tetrahedra
+    std::vector<std::int64_t> labels(2, -1);
+    ASSERT_EQ(mio_partition_labels(m, 2, "sfc", 0.03, "eco", 0, "", labels.data(),
+                                   static_cast<std::int64_t>(labels.size())),
+              MIO_OK);
+    for (std::int64_t v : labels) {
+        EXPECT_GE(v, 0);
+        EXPECT_LT(v, 2);
+    }
+    // A wrong buffer size is rejected with a named message, not written past.
+    EXPECT_EQ(mio_partition_labels(m, 2, "sfc", 0.03, "eco", 0, "", labels.data(), 5),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_NE(std::string(mio_last_error()).find("labels_size"), std::string::npos);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, PartitionErrorsAreGuardedNotThrown) {
+    mio_mesh* m = build_tet_mesh();
+    // Bad method name, bad nparts, ghost stub: NULL + last_error, no throw.
+    EXPECT_EQ(mio_partition(m, 2, "metis", 0.03, "eco", 0, 0, 0, ""), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_partition(m, 0, "sfc", 0.03, "eco", 0, 0, 0, ""), nullptr);
+    EXPECT_EQ(mio_partition(m, 2, "sfc", 0.03, "eco", 0, 0, /*ghost_layers=*/1, ""), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("ghost_layers"), std::string::npos);
+    EXPECT_EQ(mio_partition(nullptr, 2, "sfc", 0.03, "eco", 0, 0, 0, ""), nullptr);
+    EXPECT_EQ(mio_partition_result_num_pieces(nullptr), -1);
+    EXPECT_EQ(mio_partition_result_part_id(nullptr, 0), -1);
+    EXPECT_EQ(mio_partition_result_mesh(nullptr, 0), nullptr);
+    EXPECT_EQ(mio_partition_result_point_map(nullptr, 0, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_partition_result_cell_map(nullptr, 0, 0, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    mio_partition_result_free(nullptr);  // NULL-safe
+    EXPECT_EQ(mio_partition_labels(nullptr, 2, "sfc", 0.03, "eco", 0, "", nullptr, 0),
+              MIO_ERR_INVALID_ARG);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RefineErrorsAreGuardedNotThrown) {
     // A pyramid has no same-type subdivision: the C++ exception must be turned
     // into NULL + last_error, never allowed to escape the ABI.

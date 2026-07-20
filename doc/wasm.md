@@ -84,18 +84,28 @@ refinement is exposed as `refine(mesh, levels, recordParentIds)`, subdividing
 every cell into same-type children (`triangle`/`quad` into 4,
 `tetra`/`wedge`/`hexahedron` into 8) with shared mid-entity nodes, so the result
 has no hanging nodes; a higher-order cell, a `pyramid`, or a ragged block throws
-a catchable `Error`. See [transform](./transform.md), [clean](./clean.md),
+a catchable `Error`. Partitioning is exposed as `partition(mesh, nparts, method,
+imbalance, mode, seed, recordIds, ghostLayers, weightsKey)` → an array of
+`{ partId, mesh }` (exactly `nparts` entries, blocks kept 1:1 with the input,
+unlike `split`) and `partitionLabels(mesh, nparts, method, imbalance, mode,
+seed, weightsKey)` → one label array per cell block. **Only the SFC method
+exists in the WASM build** — KaHIP is never compiled in (no Emscripten port,
+and it would bloat the bundle), so `method: "kahip"` throws a catchable `Error`
+naming `MESHIOPLUSPLUS_WITH_KAHIP` and `"auto"` always resolves to SFC. See
+[transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
-[cell conversion](./convert_cells.md), and [refine](./refine.md).
+[cell conversion](./convert_cells.md), [refine](./refine.md), and
+[partitioning](./partition.md).
 
 ::: tip Reachable from `loadMeshioPlusPlus()` since v7.4.0
 Before v7.4.0 the geometry operations above were bound in the WASM module but
 **not forwarded by the package wrapper**, so they were unreachable through
 `loadMeshioPlusPlus()` (only file I/O and the `data_*` operations were). They are
 all forwarded now. The index maps the C++ core returns for
-`cropBbox`/`cropPlane`/`split`/`convertCells`/`refine` are still not carried
-across the JS boundary — use the `recordIds`/`recordParentIds` flags, which
-attach the same provenance as ordinary data arrays.
+`cropBbox`/`cropPlane`/`split`/`convertCells`/`refine`/`partition` are still not
+carried across the JS boundary — use the `recordIds`/`recordParentIds` flags,
+which attach the same provenance as ordinary data arrays (or `partitionLabels`
+for the raw assignment).
 :::
 
 The [data operations](./data_operations.md) — which act on `point_data` /

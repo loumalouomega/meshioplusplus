@@ -16,6 +16,7 @@ from . import (
     _extract_surface,
     _info,
     _merge,
+    _partition,
     _quality,
     _refine,
     _reorder,
@@ -142,6 +143,13 @@ def main(argv=None):
     )
     _refine.add_args(parser)
     parser.set_defaults(func=_refine.refine_cmd)
+
+    parser = subparsers.add_parser(
+        "partition",
+        help="Decompose into N balanced parts (SFC / KaHIP) for domain decomposition",
+    )
+    _partition.add_args(parser)
+    parser.set_defaults(func=_partition.partition_cmd)
 
     parser = subparsers.add_parser(
         "stats",

@@ -73,6 +73,13 @@ export type MergeDataPolicy = 'intersection' | 'fill';
 /** Element-representation conversion performed by `convertCells`. */
 export type ConvertCellsMode = 'linearize' | 'simplexify' | 'elevate';
 
+/** Partitioning backend: SFC is always available; KaHIP is never compiled
+ *  into the WASM build, so `'kahip'` always throws and `'auto'` = `'sfc'`. */
+export type PartitionMethod = 'sfc' | 'kahip' | 'auto';
+
+/** KaHIP preconfiguration (ignored by the SFC method). */
+export type PartitionMode = 'fast' | 'eco' | 'strong';
+
 /** Read-only per-array summary returned by `dataInfo`. See doc/data_info.md. */
 export interface DataArrayInfo {
   location: 'point_data' | 'cell_data' | 'field_data';
@@ -261,6 +268,45 @@ export interface MeshioPlusPlusModule {
    *   polygon/polyhedron block — none has a same-type subdivision.
    */
   refine(mesh: Mesh, levels?: number, recordParentIds?: boolean): Mesh;
+
+  /**
+   * Decompose a mesh into exactly `nparts` balanced pieces for domain
+   * decomposition (the count-driven complement to `split`). Pieces keep the
+   * input's cell-block structure 1:1 (empty blocks included, unlike `split`),
+   * so concatenating them reproduces the input. The index maps are not
+   * carried across the JS boundary — use `recordIds` for the
+   * `partition:original_*_id` arrays, or `partitionLabels` for the raw
+   * assignment. `weightsKey` names a scalar `cell_data` array of per-cell
+   * weights. `ghostLayers` is reserved and must be 0.
+   * @throws {Error} on `method: 'kahip'` (KaHIP is never part of the WASM
+   *   build; the message names `MESHIOPLUSPLUS_WITH_KAHIP`), `nparts < 1`,
+   *   `ghostLayers != 0`, or a bad weights array.
+   */
+  partition(
+    mesh: Mesh,
+    nparts: number,
+    method?: PartitionMethod,
+    imbalance?: number,
+    mode?: PartitionMode,
+    seed?: number,
+    recordIds?: boolean,
+    ghostLayers?: number,
+    weightsKey?: string,
+  ): { partId: number; mesh: Mesh }[];
+
+  /**
+   * The per-cell part assignment only: one array per cell block
+   * (block-aligned, like a `cell_data` entry), values in `[0, nparts)`.
+   */
+  partitionLabels(
+    mesh: Mesh,
+    nparts: number,
+    method?: PartitionMethod,
+    imbalance?: number,
+    mode?: PartitionMode,
+    seed?: number,
+    weightsKey?: string,
+  ): number[][];
 
   /** Read-only geometric statistics (bbox, areas, volumes, inverted count). */
   stats(mesh: Mesh): object;

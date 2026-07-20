@@ -140,6 +140,37 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
             Module.convertCells(mesh, mode, recordParentIds),
         refine: (mesh, levels = 1, recordParentIds = false) =>
             Module.refine(mesh, levels, recordParentIds),
+        partition: (
+            mesh,
+            nparts,
+            method = 'auto',
+            imbalance = 0.03,
+            mode = 'eco',
+            seed = 0,
+            recordIds = false,
+            ghostLayers = 0,
+            weightsKey = '',
+        ) =>
+            Module.partition(
+                mesh,
+                nparts,
+                method,
+                imbalance,
+                mode,
+                seed,
+                recordIds,
+                ghostLayers,
+                weightsKey,
+            ),
+        partitionLabels: (
+            mesh,
+            nparts,
+            method = 'auto',
+            imbalance = 0.03,
+            mode = 'eco',
+            seed = 0,
+            weightsKey = '',
+        ) => Module.partitionLabels(mesh, nparts, method, imbalance, mode, seed, weightsKey),
         stats: (mesh) => Module.stats(mesh),
         // Data operations (see doc/data_operations.md): act on point_data /
         // cell_data / field_data only -- the geometry is never modified.

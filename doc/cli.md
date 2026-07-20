@@ -412,6 +412,46 @@ meshioplusplus refine coarse.vtu fine.vtu --levels 2 --record-parent-ids
 
 ---
 
+## meshioplusplus partition
+
+Decompose a mesh into N balanced parts for domain decomposition (see
+[partitioning](/partition)) — the count-driven complement to `split`.
+
+```
+meshioplusplus partition [options] INFILE OUTPATTERN
+```
+
+`OUTPATTERN` must contain `{part}` (e.g. `out_{part}.vtu`), expanded once per
+piece — except with `--labels-only`, where it is a single plain path.
+
+| Option | Description |
+|--------|-------------|
+| `--nparts N` (`-n`) | Number of parts (required, `>= 1`) |
+| `--method M` | `sfc` (Hilbert curve cut, always available), `kahip` (KaHIP `kaffpa`; needs a KaHIP-enabled build, fails by name otherwise), or `auto` (default: kahip when available, else sfc) |
+| `--imbalance F` | KaHIP only: allowed imbalance fraction in (0, 1) (default `0.03`) |
+| `--mode M` | KaHIP only: `fast` / `eco` / `strong` (default `eco`) |
+| `--seed N` | KaHIP only: random seed (deterministic per seed; default `0`) |
+| `--weights NAME` | Scalar `cell_data` array of per-cell weights to balance instead of the cell count |
+| `--record-ids` | Attach `partition:original_point_id` / `partition:original_cell_id` arrays to every piece |
+| `--labels-only` | Write the input once with the Int64 `partition:part` cell_data attached instead of writing pieces |
+| `--ghost-layers N` | Reserved; only `0` is supported |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Every piece keeps the input's cell-block structure 1:1 (empty blocks included,
+unlike `split`), so the pieces recombine into the input — each cell lands in
+exactly one piece.
+
+**Examples:**
+
+```sh
+meshioplusplus partition domain.msh 'domain_{part}.vtu' --nparts 4
+meshioplusplus partition domain.msh 'domain_{part}.vtu' -n 16 --method kahip --mode strong
+meshioplusplus partition domain.msh labelled.vtu --nparts 4 --labels-only
+meshioplusplus partition domain.msh 'p_{part}.vtu' -n 8 --weights cost --record-ids
+```
+
+---
+
 ## meshioplusplus data
 
 A nested group of nine verbs operating on a mesh's `point_data` / `cell_data` /

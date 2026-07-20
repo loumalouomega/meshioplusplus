@@ -391,6 +391,32 @@ step('refine rejects a cell type with no same-type subdivision', () => {
     assert.throws(() => m.refine(up));
 });
 
+step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
+    const grid = m.refine(cube);  // 8 hexahedra
+    const pieces = m.partition(grid, 2);
+    assert.equal(pieces.length, 2);
+    assert.equal(pieces[0].partId, 0);
+    assert.equal(pieces[1].partId, 1);
+    let total = 0;
+    for (const piece of pieces) {
+        // Blocks are kept 1:1 with the input (unlike split).
+        assert.equal(piece.mesh.cells.length, grid.cells.length);
+        total += piece.mesh.cells[0].data.length / 8;
+    }
+    assert.equal(total, 8);
+
+    const labels = m.partitionLabels(grid, 2);
+    assert.equal(labels.length, 1);
+    assert.equal(labels[0].length, 8);
+    for (const p of labels[0]) {
+        assert.ok(p >= 0 && p < 2);
+    }
+});
+
+step('partition: kahip is compiled out of the WASM build and says so', () => {
+    assert.throws(() => m.partition(cube, 2, 'kahip'), /MESHIOPLUSPLUS_WITH_KAHIP/);
+});
+
 step('geometry operations are reachable through the wrapper', () => {
     // Regression guard for the v7.2.1 class of bug: every geometry op must be
     // forwarded by src/index.mjs, not merely bound in js_bindings.cpp.
@@ -411,6 +437,8 @@ step('geometry operations are reachable through the wrapper', () => {
         'split',
         'convertCells',
         'refine',
+        'partition',
+        'partitionLabels',
         'stats',
         'meshBackend',
     ]) {

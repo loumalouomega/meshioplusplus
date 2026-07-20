@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "7.5.0"
+version = "7.6.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -47,6 +47,9 @@ dependencies = [
 # Pure-Python readers/writers for the optional VTK XML block codecs. Not a
 # default dependency: a build with the C++ codecs needs neither.
 codecs = ["lz4", "zstandard"]
+# The KaHIP Python wheel (MIT): gives the pure-Python fallback the quality
+# partition path when the C++ core was built without MESHIOPLUSPLUS_WITH_KAHIP.
+kahip = ["kahip"]
 all = [
     "netCDF4",
     "h5py"  # CGNS, H5M, MED, XDMF formats

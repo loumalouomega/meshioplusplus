@@ -87,6 +87,7 @@
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -755,6 +756,73 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds) {
     });
 }
 
+namespace {
+
+meshioplusplus::PartitionOptions partition_options_js(int nparts, const std::string& rMethod,
+                                                      double imbalance, const std::string& rMode,
+                                                      int seed, bool recordIds, int ghostLayers,
+                                                      const std::string& rWeightsKey) {
+    meshioplusplus::PartitionOptions options;
+    options.mNParts = nparts;
+    options.mMethod = meshioplusplus::partition_method_from_name(rMethod);
+    options.mImbalance = imbalance;
+    options.mMode = meshioplusplus::partition_mode_from_name(rMode);
+    options.mSeed = seed;
+    options.mRecordIds = recordIds;
+    options.mGhostLayers = ghostLayers;
+    options.mWeightsKey = rWeightsKey;
+    return options;
+}
+
+}  // namespace
+
+/**
+ * @brief Decompose a mesh into `nparts` balanced pieces (`"sfc"` / `"kahip"` /
+ * `"auto"`). Returns a JS array of `{partId, mesh}` objects, exactly `nparts`
+ * entries (pieces may be empty; blocks kept 1:1 with the input, unlike
+ * `split`). The index maps are not carried across the JS boundary (use
+ * `recordIds` for the `partition:original_*_id` arrays, or `partitionLabels`
+ * for the assignment). KaHIP is never compiled into the WASM build, so
+ * `method: "kahip"` throws the error naming `MESHIOPLUSPLUS_WITH_KAHIP`.
+ */
+val partition_js(const val& rMeshObj, int nparts, const std::string& rMethod, double imbalance,
+                 const std::string& rMode, int seed, bool recordIds, int ghostLayers,
+                 const std::string& rWeightsKey) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PartitionResult r = meshioplusplus::partition(
+            val_to_mesh(rMeshObj), partition_options_js(nparts, rMethod, imbalance, rMode, seed,
+                                                        recordIds, ghostLayers, rWeightsKey));
+        val out = val::array();
+        for (meshioplusplus::PartitionPiece& p : r.mPieces) {
+            val piece = val::object();
+            piece.set("partId", p.mPartId);
+            piece.set("mesh", mesh_to_val(p.mMesh));
+            out.call<void>("push", piece);
+        }
+        return out;
+    });
+}
+
+/**
+ * @brief The per-cell part assignment only: a JS array with one Int32Array-like
+ * array per cell block (block-aligned, like a cell_data entry), values in
+ * `[0, nparts)`.
+ */
+val partition_labels_js(const val& rMeshObj, int nparts, const std::string& rMethod,
+                        double imbalance, const std::string& rMode, int seed,
+                        const std::string& rWeightsKey) {
+    return with_js_errors([&]() -> val {
+        std::vector<NDArray> labels = meshioplusplus::partition_labels(
+            val_to_mesh(rMeshObj),
+            partition_options_js(nparts, rMethod, imbalance, rMode, seed,
+                                 /*recordIds=*/false, /*ghostLayers=*/0, rWeightsKey));
+        val out = val::array();
+        for (const NDArray& a : labels)
+            out.call<void>("push", ndarray_to_int32_array(a));
+        return out;
+    });
+}
+
 /**
  * @brief Geometric statistics of a mesh (read-only). Returns an object with
  * `numPoints`, `numCells`, `bboxMin`/`bboxMax`/`extent`/`centroid` (3-arrays),
@@ -1065,6 +1133,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("split", &split_js);
     emscripten::function("convertCells", &convert_cells_js);
     emscripten::function("refine", &refine_js);
+    emscripten::function("partition", &partition_js);
+    emscripten::function("partitionLabels", &partition_labels_js);
     emscripten::function("stats", &stats_js);
     emscripten::function("dataDrop", &data_drop_js);
     emscripten::function("dataKeep", &data_keep_js);

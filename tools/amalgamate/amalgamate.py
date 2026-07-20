@@ -252,6 +252,7 @@ BANNER = """\
 //      MESHIOPLUSPLUS_HAS_NETCDF (Exodus)                    -> link netcdf
 //      MESHIOPLUSPLUS_HAS_ZLIB  (VTU zlib compression)       -> link z
 //      MESHIOPLUSPLUS_HAS_EIGEN (MED transpose fast path)    -> add Eigen to the include path
+//      MESHIOPLUSPLUS_HAS_KAHIP (partition kahip backend)    -> link kahip
 """
 
 DEFAULTS = """\

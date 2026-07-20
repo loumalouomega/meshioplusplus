@@ -76,6 +76,7 @@
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -191,6 +192,11 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_lz4__") = true;
 #else
     m.attr("__has_lz4__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_KAHIP
+    m.attr("__has_kahip__") = true;
+#else
+    m.attr("__has_kahip__") = false;
 #endif
     // Active compile-time parallel backend ("seq"/"stl"/"openmp"/"tbb"): lets
     // callers verify that parallel_for actually threads (STL without TBB is
@@ -652,6 +658,70 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("levels") = 1, py::arg("record_parent_ids") = false);
+
+    // Partition into nparts balanced pieces (SFC or KaHIP). Returns a list of
+    // dicts {part_id, mesh, point_map, cell_maps}. See operations/partition.hpp.
+    m.def(
+        "partition",
+        [](py::object pymesh, int nparts, const std::string& method, double imbalance,
+           const std::string& mode, int seed, bool record_ids, int ghost_layers,
+           const std::string& weights_key) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::PartitionOptions options;
+            options.mNParts = nparts;
+            options.mMethod = meshioplusplus::partition_method_from_name(method);
+            options.mImbalance = imbalance;
+            options.mMode = meshioplusplus::partition_mode_from_name(mode);
+            options.mSeed = seed;
+            options.mRecordIds = record_ids;
+            options.mGhostLayers = ghost_layers;
+            options.mWeightsKey = weights_key;
+            meshioplusplus::PartitionResult r = meshioplusplus::partition(cpp, options);
+            py::list pieces;
+            for (meshioplusplus::PartitionPiece& p : r.mPieces) {
+                py::dict d;
+                d["part_id"] = p.mPartId;
+                d["mesh"] = meshioplusplus_py::mesh_to_py(std::move(p.mMesh));
+                d["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(p.mPointMap));
+                py::list cell_maps;
+                for (meshioplusplus::NDArray& a : p.mCellMaps)
+                    cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+                d["cell_maps"] = cell_maps;
+                pieces.append(d);
+            }
+            return pieces;
+        },
+        py::arg("mesh"), py::arg("nparts"), py::arg("method") = "auto", py::arg("imbalance") = 0.03,
+        py::arg("mode") = "eco", py::arg("seed") = 0, py::arg("record_ids") = false,
+        py::arg("ghost_layers") = 0, py::arg("weights_key") = "");
+
+    // The per-cell part assignment only (block-aligned Int64 arrays). See
+    // operations/partition.hpp.
+    m.def(
+        "partition_labels",
+        [](py::object pymesh, int nparts, const std::string& method, double imbalance,
+           const std::string& mode, int seed, const std::string& weights_key) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::PartitionOptions options;
+            options.mNParts = nparts;
+            options.mMethod = meshioplusplus::partition_method_from_name(method);
+            options.mImbalance = imbalance;
+            options.mMode = meshioplusplus::partition_mode_from_name(mode);
+            options.mSeed = seed;
+            options.mWeightsKey = weights_key;
+            std::vector<meshioplusplus::NDArray> labels =
+                meshioplusplus::partition_labels(cpp, options);
+            py::list out;
+            for (meshioplusplus::NDArray& a : labels)
+                out.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            return out;
+        },
+        py::arg("mesh"), py::arg("nparts"), py::arg("method") = "auto", py::arg("imbalance") = 0.03,
+        py::arg("mode") = "eco", py::arg("seed") = 0, py::arg("weights_key") = "");
 
     // Geometric statistics (read-only). Returns a dict of the StatsReport fields.
     // See operations/stats.hpp.

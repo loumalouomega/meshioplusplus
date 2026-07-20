@@ -92,6 +92,10 @@ typedef struct mio_convert_cells_result mio_convert_cells_result;
  *  maps. Destroy with mio_refine_result_free(). */
 typedef struct mio_refine_result mio_refine_result;
 
+/** Opaque result of mio_partition(): the pieces plus their point/cell index
+ *  maps. Destroy with mio_partition_result_free(). */
+typedef struct mio_partition_result mio_partition_result;
+
 typedef enum mio_status {
     MIO_OK = 0,           /**< success */
     MIO_ERR_READ = 1,     /**< file could not be parsed / read-side failure */
@@ -673,6 +677,111 @@ MIO_API mio_status mio_refine_result_cell_map(const mio_refine_result* result, i
 
 /** Free a refine result (and the mesh it still owns). */
 MIO_API void mio_refine_result_free(mio_refine_result* result);
+
+/**
+ * Decompose a mesh into `nparts` balanced pieces for domain decomposition (the
+ * count-driven complement to mio_split). Methods: "sfc" (Hilbert space-filling
+ * curve cut of the cell centroids — always available, deterministic), "kahip"
+ * (KaHIP kaffpa() on the shared-face dual graph — only in builds with
+ * -DMESHIOPLUSPLUS_WITH_KAHIP=ON; requesting it elsewhere fails with an error
+ * naming that option), or "auto"/NULL/"" (kahip when built, else sfc). Every
+ * piece keeps the input's cell-block structure 1:1 (empty blocks included,
+ * unlike mio_split), so the cell maps index by input block and the pieces
+ * recombine into the input. point_sets/cell_sets are not carried across the
+ * C ABI.
+ * @param nparts       number of pieces (>= 1); the result always has exactly
+ *                     nparts pieces, possibly with empty meshes.
+ * @param method       "sfc", "kahip", "auto" (NULL/"" = "auto").
+ * @param imbalance    kahip only: allowed imbalance fraction in (0, 1)
+ *                     (0.03 = 3%).
+ * @param mode         kahip only: "fast", "eco", "strong" (NULL/"" = "eco").
+ * @param seed         kahip only: random seed (deterministic per seed).
+ * @param record_ids   nonzero to attach Int64 partition:original_point_id
+ *                     point_data and partition:original_cell_id cell_data
+ *                     (original input indices) to every piece.
+ * @param ghost_layers reserved (BFS ghost growth); must be 0 in v1.
+ * @param weights_key  name of a scalar numeric cell_data array of per-cell
+ *                     weights, or NULL/"" for the unweighted rule.
+ * @return a result handle (free with mio_partition_result_free), or NULL on
+ *         failure (see mio_last_error()).
+ */
+MIO_API mio_partition_result* mio_partition(const mio_mesh* mesh, int nparts, const char* method,
+                                            double imbalance, const char* mode, int seed,
+                                            int record_ids, int ghost_layers,
+                                            const char* weights_key);
+
+/** Number of pieces in a partition result (== nparts), or -1 on error. */
+MIO_API int64_t mio_partition_result_num_pieces(const mio_partition_result* result);
+
+/** The part id of piece `index` (== index, in [0, nparts)), or -1 on error. */
+MIO_API int mio_partition_result_part_id(const mio_partition_result* result, int64_t index);
+
+/**
+ * Borrow piece `index`'s mesh. Owned by the result: valid until
+ * mio_partition_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the piece mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_partition_result_mesh(const mio_partition_result* result,
+                                                  int64_t index);
+
+/**
+ * Transfer ownership of piece `index`'s mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_partition_result_take_mesh(mio_partition_result* result, int64_t index);
+
+/**
+ * Zero-copy borrow of piece `index`'s point map (int64, shape
+ * (num_points_in,), input point index -> piece point index, -1 where the point
+ * is not in the piece). The pointer is valid until the result is freed. Any
+ * out-param may be NULL.
+ * @param result a partition result.
+ * @param index  piece index in [0, mio_partition_result_num_pieces).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the input point count.
+ */
+MIO_API mio_status mio_partition_result_point_map(const mio_partition_result* result,
+                                                  int64_t index, const void** data,
+                                                  mio_dtype* dtype, int64_t* n);
+
+/** Number of per-block cell maps in each piece (== the input's cell-block
+ *  count), or -1 on error. */
+MIO_API int64_t mio_partition_result_num_cell_maps(const mio_partition_result* result);
+
+/**
+ * Zero-copy borrow of piece `index`'s cell map for input block `block` (int64,
+ * shape (num_cells_in_block,), input cell -> piece cell index within that
+ * block, -1 where the cell is not in the piece). Any out-param may be NULL.
+ * @param result a partition result.
+ * @param index  piece index in [0, mio_partition_result_num_pieces).
+ * @param block  cell-block index in [0, mio_partition_result_num_cell_maps).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's input cell count.
+ */
+MIO_API mio_status mio_partition_result_cell_map(const mio_partition_result* result, int64_t index,
+                                                 int64_t block, const void** data,
+                                                 mio_dtype* dtype, int64_t* n);
+
+/** Free a partition result (and every piece mesh it still owns). */
+MIO_API void mio_partition_result_free(mio_partition_result* result);
+
+/**
+ * Compute the per-cell part assignment only, without building the pieces.
+ * Fills a caller-allocated flat buffer in block-major global cell order (the
+ * mesh's blocks concatenated in order — recover the block alignment from the
+ * mesh's own per-block cell counts). Parameters as mio_partition (record_ids /
+ * ghost_layers do not apply).
+ * @param labels      caller buffer of labels_size int64 entries; receives
+ *                    values in [0, nparts).
+ * @param labels_size must equal the mesh's total cell count.
+ * @return MIO_OK, or an error status (see mio_last_error()).
+ */
+MIO_API mio_status mio_partition_labels(const mio_mesh* mesh, int nparts, const char* method,
+                                        double imbalance, const char* mode, int seed,
+                                        const char* weights_key, int64_t* labels,
+                                        int64_t labels_size);
 
 /** Geometric statistics of a mesh (see mio_stats). Per-cell-type counts are not
  *  carried across the C ABI (use mio_num_cell_blocks / mio_cell_block_type). */

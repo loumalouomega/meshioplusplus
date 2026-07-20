@@ -373,6 +373,47 @@ program test_fortran_api
         call quadratic%free()
     end block
 
+    ! -- partition: N balanced pieces + flat labels --
+    block
+        type(mio_mesh), allocatable :: pieces(:)
+        integer(int64), allocatable :: labels(:)
+        integer(int64) :: total_in, total_out, i
+        integer :: st, p
+
+        total_in = 0
+        do p = 1, int(m%num_cell_blocks())
+            total_in = total_in + m%cell_block_num_cells(p)
+        end do
+
+        pieces = m%partition(2, method='sfc', stat=st)
+        call check(st == 0, 'partition succeeded')
+        call check(size(pieces) == 2, 'partition returned exactly nparts pieces')
+        total_out = 0
+        do p = 1, size(pieces)
+            call check(pieces(p)%num_cell_blocks() == m%num_cell_blocks(), &
+                       'piece keeps the input block structure')
+            total_out = total_out + pieces(p)%cell_block_num_cells(1)
+        end do
+        call check(total_out == total_in, 'pieces cover every cell exactly once')
+
+        labels = m%partition_labels(2, method='sfc', stat=st)
+        call check(st == 0, 'partition_labels succeeded')
+        call check(size(labels, kind=int64) == total_in, 'labels cover every cell')
+        call check(all(labels >= 0) .and. all(labels < 2), 'labels lie in [0, nparts)')
+
+        do p = 1, size(pieces)
+            call pieces(p)%free()
+        end do
+        deallocate (pieces)
+
+        ! ghost_layers is a v1 stub and must fail through stat, not abort.
+        pieces = m%partition(2, ghost_layers=1, stat=st)
+        call check(st /= 0, 'partition rejects ghost_layers /= 0')
+        do i = 1, size(pieces)
+            call pieces(i)%free()
+        end do
+    end block
+
     call m%free()
     call r%free()
     call c%free()

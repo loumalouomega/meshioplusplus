@@ -67,6 +67,7 @@ from ._helpers import (
 )
 from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
+from ._partition import partition, partition_labels
 from ._quality import attach_quality, compute_quality
 from ._refine import refine
 from ._reorder import compute_bandwidth, reorder
@@ -146,6 +147,8 @@ __all__ = [
     "split",
     "convert_cells",
     "refine",
+    "partition",
+    "partition_labels",
     "compute_stats",
     "data_manage",
     "data_drop",

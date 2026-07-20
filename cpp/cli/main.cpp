@@ -49,6 +49,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -371,6 +372,9 @@ void print_usage(std::ostream& os) {
           "  split                   Partition into multiple files (type/region/component)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
           "  refine                  Uniformly subdivide every cell (same-type children)\n"
+          "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
+          "                            OUT pattern needs {part}; --labels-only writes one\n"
+          "                            file with the partition:part cell_data instead\n"
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
           "  data <verb>             Inspect / rename / average / compute on data arrays\n\n"
           "  -v, --version           Display version information\n"
@@ -987,6 +991,81 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
 
     auto result = meshioplusplus::refine(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+// The {part} analogue of replace_key (kept separate so split stays untouched).
+std::string partition_replace_part(const std::string& rPattern, int part) {
+    const std::string token = "{part}";
+    const std::string value = std::to_string(part);
+    std::string out = rPattern;
+    std::size_t pos = out.find(token);
+    while (pos != std::string::npos) {
+        out.replace(pos, token.size(), value);
+        pos = out.find(token, pos + value.size());
+    }
+    return out;
+}
+
+int cmd_partition(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"nparts", {"-n"}, true},
+                                  {"method", {}, true},
+                                  {"imbalance", {}, true},
+                                  {"mode", {}, true},
+                                  {"seed", {}, true},
+                                  {"weights", {}, true},
+                                  {"ghost-layers", {}, true},
+                                  {"record-ids", {}, false},
+                                  {"labels-only", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error(
+            "partition requires exactly INFILE and OUTPATTERN (with {part}, or a "
+            "plain path with --labels-only)");
+    if (opt_value(p, "nparts").empty())
+        throw std::runtime_error("partition: --nparts N is required");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::PartitionOptions options;
+    options.mNParts = std::stoi(opt_value(p, "nparts"));
+    options.mMethod = meshioplusplus::partition_method_from_name(opt_value(p, "method", "auto"));
+    options.mImbalance = std::stod(opt_value(p, "imbalance", "0.03"));
+    options.mMode = meshioplusplus::partition_mode_from_name(opt_value(p, "mode", "eco"));
+    options.mSeed = std::stoi(opt_value(p, "seed", "0"));
+    options.mRecordIds = has_flag(p, "record-ids");
+    options.mGhostLayers = std::stoi(opt_value(p, "ghost-layers", "0"));
+    options.mWeightsKey = opt_value(p, "weights");
+
+    std::string out_fmt = opt_value(p, "output-format");
+    if (has_flag(p, "labels-only")) {
+        std::vector<meshioplusplus::NDArray> labels =
+            meshioplusplus::partition_labels(mesh, options);
+        mesh.AddCellData("partition:part", std::move(labels));
+        write_mesh_cli(p.positionals[1], mesh, out_fmt);
+        return 0;
+    }
+
+    if (p.positionals[1].find("{part}") == std::string::npos)
+        throw std::runtime_error(
+            "partition: output pattern must contain '{part}' (e.g. out_{part}.vtu), or "
+            "pass --labels-only");
+    auto result = meshioplusplus::partition(mesh, options);
+    if (!has_flag(p, "quiet"))
+        std::cout << "partitioned into " << result.mPieces.size() << " piece(s)\n";
+    for (auto& piece : result.mPieces) {
+        std::string path = partition_replace_part(p.positionals[1], piece.mPartId);
+        std::int64_t ncells = 0;
+        for (const auto cb : piece.mMesh.CellRange())
+            ncells += static_cast<std::int64_t>(cb.NumCells());
+        if (!has_flag(p, "quiet"))
+            std::cout << "  " << piece.mPartId << ": " << piece.mMesh.NumPoints() << " points, "
+                      << ncells << " cells -> " << path << "\n";
+        write_mesh_cli(path, piece.mMesh, out_fmt);
+    }
     return 0;
 }
 
@@ -1709,6 +1788,8 @@ int main(int argc, char** argv) {
             return cmd_convert_cells(rest);
         if (cmd == "refine")
             return cmd_refine(rest);
+        if (cmd == "partition")
+            return cmd_partition(rest);
         if (cmd == "data")
             return cmd_data(rest);
         if (cmd == "stats")

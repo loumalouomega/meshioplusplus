@@ -191,15 +191,42 @@ def _split_py(mesh, by, tag):
 # --------------------------------------------------------------------------- #
 # set remapping (per piece)                                                    #
 # --------------------------------------------------------------------------- #
+def _cell_set_is_remappable(mesh, blocks):
+    """Whether a ``cell_sets`` entry is per-block cell-index lists.
+
+    Formats can stash other per-block side data in ``cell_sets`` — gmsh's
+    ``gmsh:bounding_entities`` holds entity tags (negative values included),
+    not cell indices. Split reorders/drops blocks, so such entries cannot be
+    carried meaningfully and are skipped rather than crashed on.
+    """
+    for b, cb in enumerate(mesh.cells):
+        if b >= len(blocks) or blocks[b] is None:
+            continue
+        idx = np.asarray(blocks[b]).reshape(-1)
+        if len(idx) == 0:
+            continue
+        if idx.dtype.kind not in "iu":
+            return False
+        if idx.min() < 0 or idx.max() >= len(cb.data):
+            return False
+    return True
+
+
 def _remap_piece_sets(src, out, point_map, cell_maps):
     point_sets = getattr(src, "point_sets", None)
     if point_sets:
         pm = np.asarray(point_map, dtype=np.int64)
         new_ps = {}
         for name, idx in point_sets.items():
-            mapped = pm[np.asarray(idx, dtype=np.int64)]
+            idx = np.asarray(idx)
+            if idx.dtype.kind not in "iu" or (
+                len(idx) and (idx.min() < 0 or idx.max() >= len(pm))
+            ):
+                continue  # not point indices -- cannot be remapped
+            mapped = pm[idx.astype(np.int64)]
             new_ps[name] = mapped[mapped >= 0]
-        out.point_sets = new_ps
+        if new_ps:
+            out.point_sets = new_ps
     cell_sets = getattr(src, "cell_sets", None)
     if cell_sets and cell_maps is not None:
         emit_blocks = [
@@ -207,11 +234,13 @@ def _remap_piece_sets(src, out, point_map, cell_maps):
         ]
         new_cs = {}
         for name, blocks in cell_sets.items():
+            if not _cell_set_is_remappable(src, blocks):
+                continue  # side data, not cell indices -- cannot be carried
             out_blocks = []
             for b in emit_blocks:
                 if b < len(blocks) and blocks[b] is not None:
                     mapped = np.asarray(cell_maps[b], dtype=np.int64)[
-                        np.asarray(blocks[b], dtype=np.int64)
+                        np.asarray(blocks[b], dtype=np.int64).reshape(-1)
                     ]
                     out_blocks.append(mapped[mapped >= 0])
                 else:

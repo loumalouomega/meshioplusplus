@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 7.5.0
+  VERSION 7.6.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -71,6 +71,19 @@ if(MESHIOPLUSPLUS_WITH_LZ4 AND NOT EMSCRIPTEN)
     find_path(LZ4_INCLUDE_DIR lz4.h)
     find_library(LZ4_LIBRARY NAMES lz4 liblz4)
   endif()
+endif()
+
+# KaHIP (MIT), the optional quality backend of the partition operation. OFF by
+# default so the default build stays dependency-free; the SFC method is the
+# always-available fallback. Bring-your-own install located via the in-repo
+# cmake/FindKaHIP.cmake (KAHIP_ROOT prefix / pkg-config) -- never vendored,
+# never auto-downloaded. Only the serial kaffpa interface is linked (no ParHIP,
+# hence no MPI). Never probed under Emscripten -- no port exists, and a host
+# library must not be picked up for a wasm target.
+option(MESHIOPLUSPLUS_WITH_KAHIP "Build the KaHIP partition backend" OFF)
+if(MESHIOPLUSPLUS_WITH_KAHIP AND NOT EMSCRIPTEN)
+  list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+  find_package(KaHIP QUIET)
 endif()
 
 # Optional heavy dependencies. When absent, the corresponding format sources
@@ -207,6 +220,15 @@ if(MESHIOPLUSPLUS_WITH_LZ4 AND (lz4_FOUND OR LZ4_LIBRARY))
   endif()
 elseif(MESHIOPLUSPLUS_WITH_LZ4)
   message(STATUS "meshio++: lz4 requested but not found - lz4 files fall back to Python")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_KAHIP AND KAHIP_FOUND)
+  message(STATUS "meshio++: KaHIP partition backend enabled (${KAHIP_LIBRARIES})")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_KAHIP)
+  target_link_libraries(meshioplusplus_core_obj PUBLIC kahip::kahip)
+elseif(MESHIOPLUSPLUS_WITH_KAHIP)
+  message(STATUS "meshio++: KaHIP requested but not found (set KAHIP_ROOT) - "
+                 "partition method 'kahip' will raise")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_HDF5 AND HDF5_FOUND)
@@ -503,6 +525,9 @@ if(MESHIOPLUSPLUS_BUILD_C_API)
   endif()
   if(ZLIB_FOUND)
     string(APPEND MIO_PC_LIBS_PRIVATE " -lz")
+  endif()
+  if(MESHIOPLUSPLUS_WITH_KAHIP AND KAHIP_FOUND)
+    string(APPEND MIO_PC_LIBS_PRIVATE " -lkahip")
   endif()
   configure_file(cmake/meshioplusplus.pc.in
                  ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus.pc @ONLY)
