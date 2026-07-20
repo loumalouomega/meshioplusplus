@@ -73,6 +73,7 @@
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
 
@@ -97,6 +98,12 @@ struct mio_split_result {
 
 struct mio_data_info {
     meshioplusplus::DataInfoReport mReport;
+};
+
+/// Opaque handle behind mio_read_metadata_*; modelled on mio_data_info above,
+/// since the summary is variable-length (cell blocks, name lists).
+struct mio_read_metadata {
+    meshioplusplus::MeshMetadata mMeta;
 };
 
 namespace {
@@ -411,6 +418,219 @@ mio_mesh* mio_read(const char* path, const char* format) {
         if (it == meshioplusplus::registry_readers().end())
             throw meshioplusplus::ReadError(unknown_format_message(fmt, /*for_write=*/false));
         return new mio_mesh{it->second(path)};
+    });
+}
+
+namespace {
+
+/** @brief Resolve a read format, falling back to a content sniff. */
+std::string capi_resolve_read_format(const char* pPath, const char* pFormat) {
+    try {
+        return meshioplusplus::resolve_format(pPath, format_or_empty(pFormat));
+    } catch (const meshioplusplus::ReadError&) {
+        // Extension gave nothing: fall back to a conservative content sniff.
+        std::string sniffed = meshioplusplus::sniff_format(pPath);
+        if (sniffed.empty())
+            throw;
+        return sniffed;
+    }
+}
+
+/** @brief `mio_read_opts` -> `ReadOptions`; NULL means the defaults. */
+meshioplusplus::ReadOptions capi_read_options(const mio_read_opts* pOpts) {
+    meshioplusplus::ReadOptions out;
+    if (!pOpts)
+        return out;
+    out.mPointsOnly = pOpts->points_only != 0;
+    out.mMetadataOnly = pOpts->metadata_only != 0;
+    // A NULL array pointer means "every array"; a non-NULL pointer with count 0
+    // means "no arrays". Collapsing the two here would silently turn an
+    // explicit "none" into "everything".
+    if (pOpts->arrays) {
+        std::vector<std::string> names;
+        names.reserve(static_cast<std::size_t>(pOpts->num_arrays));
+        for (std::int64_t i = 0; i < pOpts->num_arrays; ++i)
+            names.emplace_back(pOpts->arrays[i] ? pOpts->arrays[i] : "");
+        out.mDataArrays = std::move(names);  // setters copy, per the ABI contract
+    }
+    switch (pOpts->mmap_mode) {
+        case 1:
+            out.mMmap = meshioplusplus::MmapMode::On;
+            break;
+        case 2:
+            out.mMmap = meshioplusplus::MmapMode::Off;
+            break;
+        default:
+            out.mMmap = meshioplusplus::MmapMode::Auto;
+            break;
+    }
+    return out;
+}
+
+/** @brief The name list for a `mio_data_location`. */
+const std::vector<std::string>& capi_metadata_names(const meshioplusplus::MeshMetadata& rMeta,
+                                                    int location) {
+    switch (location) {
+        case MIO_DATA_POINT:
+            return rMeta.mPointDataNames;
+        case MIO_DATA_CELL:
+            return rMeta.mCellDataNames;
+        case MIO_DATA_FIELD:
+            return rMeta.mFieldDataNames;
+        default:
+            throw meshioplusplus::ReadError("meshio++: unknown data location");
+    }
+}
+
+}  // namespace
+
+void mio_read_opts_init(mio_read_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_read_opts{};  // value-initialized: all zero == read everything
+}
+
+mio_mesh* mio_read_ex(const char* path, const char* format, const mio_read_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!path)
+            throw meshioplusplus::ReadError("meshio++: path is NULL");
+        const std::string fmt = capi_resolve_read_format(path, format);
+        if (!meshioplusplus::registry_readers().count(fmt) &&
+            !meshioplusplus::registry_reader_supports_options(fmt))
+            throw meshioplusplus::ReadError(unknown_format_message(fmt, /*for_write=*/false));
+        return new mio_mesh{meshioplusplus::registry_read(path, fmt, capi_read_options(opts))};
+    });
+}
+
+mio_read_metadata* mio_read_metadata_create(const char* path, const char* format) {
+    return guarded_ptr(static_cast<mio_read_metadata*>(nullptr), [&]() -> mio_read_metadata* {
+        if (!path)
+            throw meshioplusplus::ReadError("meshio++: path is NULL");
+        const std::string fmt = capi_resolve_read_format(path, format);
+        return new mio_read_metadata{
+            meshioplusplus::registry_read_metadata(path, fmt, meshioplusplus::ReadOptions{})};
+    });
+}
+
+int64_t mio_read_metadata_num_points(const mio_read_metadata* meta) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(meta->mMeta.mNumPoints);
+    });
+}
+
+int64_t mio_read_metadata_point_dim(const mio_read_metadata* meta) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(meta->mMeta.mPointDim);
+    });
+}
+
+int64_t mio_read_metadata_num_cells(const mio_read_metadata* meta) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(meta->mMeta.NumCells());
+    });
+}
+
+int64_t mio_read_metadata_num_cell_blocks(const mio_read_metadata* meta) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(meta->mMeta.mCellBlocks.size());
+    });
+}
+
+mio_status mio_read_metadata_cell_block(const mio_read_metadata* meta, int64_t index,
+                                        int64_t* num_cells, int64_t* num_nodes_per_cell,
+                                        int* is_ragged) {
+    return guarded([&]() -> mio_status {
+        if (!meta)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: metadata handle is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= meta->mMeta.mCellBlocks.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: cell block index out of range");
+        const meshioplusplus::CellBlockInfo& block =
+            meta->mMeta.mCellBlocks[static_cast<std::size_t>(index)];
+        if (num_cells)
+            *num_cells = static_cast<std::int64_t>(block.mNumCells);
+        if (num_nodes_per_cell)
+            *num_nodes_per_cell = static_cast<std::int64_t>(block.mNodesPerCell);
+        if (is_ragged)
+            *is_ragged = block.mRagged ? 1 : 0;
+        return MIO_OK;
+    });
+}
+
+int64_t mio_read_metadata_cell_block_type(const mio_read_metadata* meta, int64_t index, char* buf,
+                                          int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= meta->mMeta.mCellBlocks.size())
+            throw meshioplusplus::ReadError("meshio++: cell block index out of range");
+        return copy_string(meta->mMeta.mCellBlocks[static_cast<std::size_t>(index)].mType, buf,
+                           buflen);
+    });
+}
+
+int64_t mio_read_metadata_num_names(const mio_read_metadata* meta, int location) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(capi_metadata_names(meta->mMeta, location).size());
+    });
+}
+
+int64_t mio_read_metadata_name(const mio_read_metadata* meta, int location, int64_t index,
+                               char* buf, int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        const std::vector<std::string>& names = capi_metadata_names(meta->mMeta, location);
+        if (index < 0 || static_cast<std::size_t>(index) >= names.size())
+            throw meshioplusplus::ReadError("meshio++: name index out of range");
+        return copy_string(names[static_cast<std::size_t>(index)], buf, buflen);
+    });
+}
+
+mio_status mio_read_metadata_bbox(const mio_read_metadata* meta, double* min, double* max) {
+    return guarded([&]() -> mio_status {
+        if (!meta)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: metadata handle is NULL");
+        if (!meta->mMeta.mHasBBox)
+            return fail(MIO_ERR_NOT_FOUND,
+                        "meshio++: no bounding box in this summary (a native metadata path "
+                        "does not decode the point coordinates)");
+        for (int d = 0; d < 3; ++d) {
+            if (min)
+                min[d] = meta->mMeta.mBBoxMin[d];
+            if (max)
+                max[d] = meta->mMeta.mBBoxMax[d];
+        }
+        return MIO_OK;
+    });
+}
+
+int mio_read_metadata_fell_back(const mio_read_metadata* meta) {
+    return guarded_ptr(-1, [&]() -> int {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return meta->mMeta.mFellBackToFullRead ? 1 : 0;
+    });
+}
+
+void mio_read_metadata_free(mio_read_metadata* meta) {
+    delete meta;
+}
+
+int mio_reader_supports_options(const char* format) {
+    return guarded_ptr(-1, [&]() -> int {
+        if (!format)
+            throw meshioplusplus::ReadError("meshio++: format is NULL");
+        return meshioplusplus::registry_reader_supports_options(format) ? 1 : 0;
     });
 }
 
