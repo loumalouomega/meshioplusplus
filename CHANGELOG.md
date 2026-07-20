@@ -8,6 +8,50 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.4.0 (2026-07-20)
+
+A new dependency-free mesh operation, plus a WebAssembly fix that makes every
+*existing* geometry operation reachable from the published package for the first time.
+
+- **`convert_cells` — convert a mesh's element representation.** A mesh operation (not a
+  file format), dependency-free and available on every binding surface, with three modes:
+  - `linearize` — every higher-order cell becomes its linear base (`tetra10` → `tetra`,
+    `hexahedron27` → `hexahedron`, ...), keeping the corner connectivity verbatim and
+    pruning the nodes that become unreferenced (connectivity, `point_data` and
+    `point_sets` are remapped). Cell count is unchanged, so `cell_data` passes through.
+  - `simplexify` — every cell is decomposed into simplices of the same topological
+    dimension: quad → 2 triangles, polygon(n) → (n−2)-triangle fan, hexahedron → 6 tetra
+    (a canonical Freudenthal fan around the main diagonal 0–6), wedge → 3 tetra,
+    pyramid → 2 tetra. The children reuse the parent's own corner nodes, so no points are
+    added, and each parent's `cell_data` row is replicated to its children. Higher-order
+    input is linearized first. Every emitted simplex is positively oriented for a
+    well-oriented input, and volume is conserved — both pinned by tests.
+  - `elevate` — linear cells are promoted to their serendipity quadratic counterpart
+    (`triangle` → `triangle6`, `hexahedron` → `hexahedron20`, ...), creating one new node
+    per unique edge at the edge midpoint with `point_data` set to the endpoint mean. The
+    full-Lagrange targets that need face/body centres (`quad9`, `hexahedron27`) are an
+    explicit non-goal of this version and raise by name.
+
+  All three modes are idempotent on cells they do not apply to, so they are safe on a
+  mixed-order mesh, and output is byte-identical across the MESHIO/NATIVE/KRATOS backends
+  and any thread count (the mid-edge numbering is assigned by a serial pass over a
+  parallel-filled buffer, never a concurrent hash insert).
+
+  Exposed as Python `meshioplusplus.convert_cells(mesh, mode=..., record_parent_ids=...)`,
+  C `mio_convert_cells` (+ the `mio_convert_cells_result` handle), Fortran
+  `m%convert_cells(mode, ...)`, WASM `convertCells(...)`, and a `convert-cells` verb on
+  both the Python and native CLIs.
+
+- **WebAssembly: every geometry operation is now reachable from `loadMeshioPlusPlus()`.**
+  `wasm/src/index.mjs` previously forwarded only file I/O and the five `data_*` operations,
+  so `extractSurface`, `extractSkin`, `attachQuality`, `sniffFormat`, `reorder`,
+  `computeBandwidth`, `diff`, `meshesEqual`, `merge`, `transform`, `clean`, `cropBbox`,
+  `cropPlane`, `split`, `stats` and `meshBackend` were bound in `js_bindings.cpp` but
+  unreachable through the package's own API — the same class of bug fixed for the data
+  operations in v7.2.1. All of them (plus the new `convertCells`) are now forwarded by the
+  wrapper, declared in `wasm/index.d.ts`, and exercised **through the wrapper** by
+  `wasm/test/smoke.mjs`, which is what would have caught the original breakage.
+
 ## v7.3.0 (2026-07-20)
 
 Three additive I/O performance features. **Default behaviour is unchanged**: `read()`,
