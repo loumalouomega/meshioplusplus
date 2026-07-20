@@ -19,8 +19,14 @@ def _unit_cube():
     return meshioplusplus.Mesh(
         np.array(
             [
-                [0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
-                [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+                [0.0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
             ]
         ),
         [("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]]))],
@@ -149,12 +155,26 @@ def test_adjacent_hexes_refine_conformingly():
     mesh = meshioplusplus.Mesh(
         np.array(
             [
-                [0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
-                [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
-                [0, 0, 2], [1, 0, 2], [1, 1, 2], [0, 1, 2],
+                [0.0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
+                [0, 0, 2],
+                [1, 0, 2],
+                [1, 1, 2],
+                [0, 1, 2],
             ]
         ),
-        [("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7], [4, 5, 6, 7, 8, 9, 10, 11]]))],
+        [
+            (
+                "hexahedron",
+                np.array([[0, 1, 2, 3, 4, 5, 6, 7], [4, 5, 6, 7, 8, 9, 10, 11]]),
+            )
+        ],
     )
     out = refine(mesh)
     # A conforming 2x2x4 lattice of hexahedra has 3x3x5 nodes.
@@ -245,9 +265,7 @@ def test_ragged_block_raises():
         refine(mesh)
 
 
-@pytest.mark.parametrize(
-    "factory", [_two_triangles, _unit_quad, _unit_tet, _unit_cube]
-)
+@pytest.mark.parametrize("factory", [_two_triangles, _unit_quad, _unit_tet, _unit_cube])
 def test_cpp_matches_python(factory):
     core = pytest.importorskip("meshioplusplus._core")
     from meshioplusplus._refine import _refine_py

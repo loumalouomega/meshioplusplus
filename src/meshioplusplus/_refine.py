@@ -41,14 +41,29 @@ _EDGES = {
     "quad": [(0, 1), (1, 2), (2, 3), (3, 0)],
     "tetra": [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)],
     "hexahedron": [
-        (0, 1), (1, 2), (2, 3), (3, 0),
-        (4, 5), (5, 6), (6, 7), (7, 4),
-        (0, 4), (1, 5), (2, 6), (3, 7),
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
     ],
     "wedge": [
-        (0, 1), (1, 2), (2, 0),
-        (3, 4), (4, 5), (5, 3),
-        (0, 3), (1, 4), (2, 5),
+        (0, 1),
+        (1, 2),
+        (2, 0),
+        (3, 4),
+        (4, 5),
+        (5, 3),
+        (0, 3),
+        (1, 4),
+        (2, 5),
     ],
 }
 
@@ -58,8 +73,12 @@ _QUAD_FACES = {
     "tetra": [],
     "quad": [(0, 1, 2, 3)],
     "hexahedron": [
-        (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6),
-        (3, 0, 4, 7), (0, 1, 2, 3), (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+        (0, 1, 2, 3),
+        (4, 5, 6, 7),
     ],
     "wedge": [(0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5)],
 }
@@ -82,20 +101,34 @@ _CHILDREN = {
     # Four corner tetrahedra, then the residual octahedron split along the fixed
     # interior diagonal 4-9 with the remaining ring 6->7->8->5.
     "tetra": [
-        (0, 4, 6, 7), (4, 1, 5, 8), (6, 5, 2, 9), (7, 8, 9, 3),
-        (4, 9, 6, 7), (4, 9, 7, 8), (4, 9, 8, 5), (4, 9, 5, 6),
+        (0, 4, 6, 7),
+        (4, 1, 5, 8),
+        (6, 5, 2, 9),
+        (7, 8, 9, 3),
+        (4, 9, 6, 7),
+        (4, 9, 7, 8),
+        (4, 9, 8, 5),
+        (4, 9, 5, 6),
     ],
     "wedge": [
-        (0, 6, 8, 12, 15, 17), (6, 1, 7, 15, 13, 16),
-        (8, 7, 2, 17, 16, 14), (6, 7, 8, 15, 16, 17),
-        (12, 15, 17, 3, 9, 11), (15, 13, 16, 9, 4, 10),
-        (17, 16, 14, 11, 10, 5), (15, 16, 17, 9, 10, 11),
+        (0, 6, 8, 12, 15, 17),
+        (6, 1, 7, 15, 13, 16),
+        (8, 7, 2, 17, 16, 14),
+        (6, 7, 8, 15, 16, 17),
+        (12, 15, 17, 3, 9, 11),
+        (15, 13, 16, 9, 4, 10),
+        (17, 16, 14, 11, 10, 5),
+        (15, 16, 17, 9, 10, 11),
     ],
     "hexahedron": [
-        (0, 8, 24, 11, 16, 20, 26, 23), (8, 1, 9, 24, 20, 17, 21, 26),
-        (11, 24, 10, 3, 23, 26, 22, 19), (24, 9, 2, 10, 26, 21, 18, 22),
-        (16, 20, 26, 23, 4, 12, 25, 15), (20, 17, 21, 26, 12, 5, 13, 25),
-        (23, 26, 22, 19, 15, 25, 14, 7), (26, 21, 18, 22, 25, 13, 6, 14),
+        (0, 8, 24, 11, 16, 20, 26, 23),
+        (8, 1, 9, 24, 20, 17, 21, 26),
+        (11, 24, 10, 3, 23, 26, 22, 19),
+        (24, 9, 2, 10, 26, 21, 18, 22),
+        (16, 20, 26, 23, 4, 12, 25, 15),
+        (20, 17, 21, 26, 12, 5, 13, 25),
+        (23, 26, 22, 19, 15, 25, 14, 7),
+        (26, 21, 18, 22, 25, 13, 6, 14),
     ],
 }
 
@@ -158,9 +191,7 @@ def _refine_once_py(mesh):
         slot_id[i] = found
 
     body_base = n + len(new_nodes)
-    n_bodies = sum(
-        len(data) for cell_type, data in blocks if cell_type in _HAS_BODY
-    )
+    n_bodies = sum(len(data) for cell_type, data in blocks if cell_type in _HAS_BODY)
     n_out = body_base + n_bodies
 
     def _extend(values):
@@ -199,8 +230,10 @@ def _refine_once_py(mesh):
         children = _CHILDREN[cell_type]
         ncells = len(data)
 
-        local = np.empty((ncells, ncorners + nslots + (1 if cell_type in _HAS_BODY else 0)),
-                         dtype=np.int64)
+        local = np.empty(
+            (ncells, ncorners + nslots + (1 if cell_type in _HAS_BODY else 0)),
+            dtype=np.int64,
+        )
         local[:, :ncorners] = data[:, :ncorners]
         if nslots:
             local[:, ncorners : ncorners + nslots] = slot_id[
@@ -328,7 +361,9 @@ def _remap_sets(src, out, point_map, cell_maps):
                         continue
                     expanded.append(np.arange(first[c], ends[c], dtype=np.int64))
                 remapped.append(
-                    np.concatenate(expanded) if expanded else np.empty(0, dtype=np.int64)
+                    np.concatenate(expanded)
+                    if expanded
+                    else np.empty(0, dtype=np.int64)
                 )
             new_cs[name] = remapped
         out.cell_sets = new_cs
