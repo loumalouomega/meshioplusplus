@@ -2,10 +2,11 @@
 
 import numpy as np
 import pytest
-from .helpers_data import assert_same_geometry, data_mesh
 
 import meshioplusplus as mp
 from meshioplusplus._data_calc import _calc_py
+
+from .helpers_data import assert_same_geometry, data_mesh
 
 
 def test_norm_equals_the_euclidean_magnitude():

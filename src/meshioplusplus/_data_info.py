@@ -42,9 +42,7 @@ def _summarize(location, name, arrays, num_blocks):
         num_values += int(arr.size)
         num_entries += int(flat.shape[0])
 
-    pooled = (
-        np.concatenate(parts) if parts else np.empty((0, ncomp), dtype=float)
-    )
+    pooled = np.concatenate(parts) if parts else np.empty((0, ncomp), dtype=float)
     finite = np.isfinite(pooled)
     nan_count = int(np.isnan(pooled).sum())
     inf_count = int(np.isinf(pooled).sum())

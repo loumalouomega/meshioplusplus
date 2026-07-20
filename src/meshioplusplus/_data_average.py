@@ -113,7 +113,9 @@ def _cell_measures(mesh, block):
     for face in faces:
         a = pts[:, face[0]]
         for i in range(1, len(face) - 1):
-            vol6 += np.einsum("ij,ij->i", a, np.cross(pts[:, face[i]], pts[:, face[i + 1]]))
+            vol6 += np.einsum(
+                "ij,ij->i", a, np.cross(pts[:, face[i]], pts[:, face[i + 1]])
+            )
     return np.abs(vol6 / 6.0)
 
 

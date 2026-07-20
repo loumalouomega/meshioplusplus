@@ -2,10 +2,11 @@
 
 import numpy as np
 import pytest
-from .helpers_data import assert_same_geometry, data_mesh
 
 import meshioplusplus as mp
 from meshioplusplus._data_condition import _condition_py
+
+from .helpers_data import assert_same_geometry, data_mesh
 
 
 def test_clamp_bounds_values_correctly():
@@ -58,9 +59,7 @@ def test_component_scope_conditions_each_component_independently():
 
 def test_magnitude_scope_preserves_direction():
     m = data_mesh()
-    out = mp.data_condition(
-        m, "point", ["v"], mode="normalize", scope="magnitude"
-    )
+    out = mp.data_condition(m, "point", ["v"], mode="normalize", scope="magnitude")
     got = out.point_data["v"]
     # Row 3 was (1,1,0): it must still point along (1,1,0).
     assert got[3, 0] == pytest.approx(got[3, 1])

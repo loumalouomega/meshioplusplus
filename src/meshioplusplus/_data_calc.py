@@ -303,7 +303,9 @@ def _calc_py(mesh, expression, location, output, overwrite):
     for name in sorted(referenced):
         if name not in source:
             keys = available_keys(mesh, loc)
-            detail = f"available: {', '.join(keys)}" if keys else f"the mesh has no {loc}"
+            detail = (
+                f"available: {', '.join(keys)}" if keys else f"the mesh has no {loc}"
+            )
             _fail(f"unknown {loc} array '{name}' ({detail})")
 
     out = copy.deepcopy(mesh)
@@ -324,9 +326,7 @@ def _calc_py(mesh, expression, location, output, overwrite):
         for name in referenced:
             got = len(np.asarray(source[name]))
             if got != rows:
-                _fail(
-                    f"array '{name}' has {got} rows but point_data needs {rows}"
-                )
+                _fail(f"array '{name}' has {got} rows but point_data needs {rows}")
         out.point_data[output] = run(rows, lambda n: source[n])
         return out
 

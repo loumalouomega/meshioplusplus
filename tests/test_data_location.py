@@ -2,10 +2,11 @@
 
 import numpy as np
 import pytest
-from .helpers_data import assert_same_geometry, data_mesh
 
 import meshioplusplus as mp
 from meshioplusplus._data_average import _to_cell_py, _to_point_py
+
+from .helpers_data import assert_same_geometry, data_mesh
 
 
 def test_point_to_cell_equals_the_hand_computed_cell_means():
@@ -118,11 +119,16 @@ def test_cpp_matches_python():
     for weighted in (False, True):
         cpp = mp.cell_data_to_point_data(m, keys=["mat"], weighted=weighted)
         py = _to_point_py(
-            m, ["mat"], "measure" if weighted else "uniform", "", "", True, "ignore", 0.0
+            m,
+            ["mat"],
+            "measure" if weighted else "uniform",
+            "",
+            "",
+            True,
+            "ignore",
+            0.0,
         )
-        assert np.allclose(
-            cpp.point_data["mat"], py.point_data["mat"], equal_nan=True
-        )
+        assert np.allclose(cpp.point_data["mat"], py.point_data["mat"], equal_nan=True)
 
 
 def test_roundtrip_write_read(tmp_path):

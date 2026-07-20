@@ -2,10 +2,11 @@
 
 import numpy as np
 import pytest
-from .helpers_data import assert_same_geometry, data_mesh
 
 import meshioplusplus as mp
 from meshioplusplus._data_manage import _manage_py
+
+from .helpers_data import assert_same_geometry, data_mesh
 
 
 def test_rename_changes_the_key_and_preserves_values():
@@ -44,9 +45,9 @@ def test_drop_removes_exactly_the_named_arrays():
 
 def test_drop_multiple_names_and_locations():
     m = data_mesh()
-    out = mp.data_manage(
-        m, drop=[("point", "T"), ("point", "v"), ("cell", "tag")]
-    )["mesh"]
+    out = mp.data_manage(m, drop=[("point", "T"), ("point", "v"), ("cell", "tag")])[
+        "mesh"
+    ]
     assert out.point_data == {}
     assert set(out.cell_data) == {"mat"}
 
@@ -99,9 +100,7 @@ def test_two_renames_to_the_same_target_raise():
 
 def test_swapping_two_names_is_allowed():
     m = data_mesh()
-    out = mp.data_manage(
-        m, rename=[("point", "T", "v"), ("point", "v", "T")]
-    )["mesh"]
+    out = mp.data_manage(m, rename=[("point", "T", "v"), ("point", "v", "T")])["mesh"]
     # The old "v" (a 3-vector) is now called "T" and vice versa.
     assert out.point_data["T"].shape == m.point_data["v"].shape
     assert out.point_data["v"].shape == m.point_data["T"].shape
@@ -109,9 +108,7 @@ def test_swapping_two_names_is_allowed():
 
 def test_report_lists_what_was_dropped_and_renamed():
     m = data_mesh()
-    r = mp.data_manage(
-        m, drop=[("point", "T")], rename=[("field", "meta", "metadata")]
-    )
+    r = mp.data_manage(m, drop=[("point", "T")], rename=[("field", "meta", "metadata")])
     assert r["dropped"] == ["point_data:T"]
     assert r["renamed"] == [("field_data:meta", "field_data:metadata")]
 

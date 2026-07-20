@@ -2,10 +2,11 @@
 
 import numpy as np
 import pytest
-from .helpers_data import data_mesh
 
 import meshioplusplus as mp
 from meshioplusplus._data_info import _info_py
+
+from .helpers_data import data_mesh
 
 
 def by_name(arrays, location, name):

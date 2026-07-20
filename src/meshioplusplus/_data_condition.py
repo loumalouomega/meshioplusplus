@@ -121,8 +121,17 @@ def _apply_nan_policy(values, nan_policy, nan_replacement, name):
 
 
 def _condition_py(
-    mesh, location, names, mode, scope, lo, hi, nan_policy, nan_replacement,
-    suffix, preserve_dtype,
+    mesh,
+    location,
+    names,
+    mode,
+    scope,
+    lo,
+    hi,
+    nan_policy,
+    nan_replacement,
+    suffix,
+    preserve_dtype,
 ):
     """Pure-Python reference for :func:`data_condition`."""
     loc = normalize_location(location)
@@ -161,14 +170,14 @@ def _condition_py(
         pooled = (
             np.concatenate([_magnitudes(a, ncomp) for a in arrays]).reshape(-1, 1)
             if magnitude
-            else np.concatenate([np.asarray(a, dtype=float).reshape(-1, ncomp) for a in arrays])
+            else np.concatenate(
+                [np.asarray(a, dtype=float).reshape(-1, ncomp) for a in arrays]
+            )
         )
         stat_comp = 1 if magnitude else ncomp
         mins, maxs, means, stds, counts = _finite_stats(pooled, stat_comp)
         if mode != "clamp":
-            scale, offset = _build(
-                mode, lo, hi, mins, maxs, means, stds, counts, name
-            )
+            scale, offset = _build(mode, lo, hi, mins, maxs, means, stds, counts, name)
 
         results = []
         for a in arrays:
@@ -181,7 +190,9 @@ def _condition_py(
                 else:
                     target_mag = scale[0] * mags + offset[0]
                 with np.errstate(invalid="ignore", divide="ignore"):
-                    factor = np.where(mags > 0, target_mag / np.where(mags > 0, mags, 1.0), 0.0)
+                    factor = np.where(
+                        mags > 0, target_mag / np.where(mags > 0, mags, 1.0), 0.0
+                    )
                 res = flat * factor.reshape(-1, 1)
                 res = np.where(np.isfinite(mags).reshape(-1, 1), res, flat)
             elif mode == "clamp":
@@ -192,7 +203,9 @@ def _condition_py(
             res = _apply_nan_policy(res, nan_policy, nan_replacement, name)
             if mode == "clamp" and preserve_dtype:
                 res = res.astype(np.asarray(a).dtype)
-            shaped = res.reshape(np.asarray(a).shape) if ncomp > 1 else res.reshape(rows)
+            shaped = (
+                res.reshape(np.asarray(a).shape) if ncomp > 1 else res.reshape(rows)
+            )
             results.append(shaped)
 
         if loc == "cell_data":
@@ -240,7 +253,15 @@ def data_condition(
     loc = normalize_location(location)
     names = list(keys) if keys else []
     args = (
-        loc, names, mode, scope, lo, hi, nan_policy, nan_replacement, suffix,
+        loc,
+        names,
+        mode,
+        scope,
+        lo,
+        hi,
+        nan_policy,
+        nan_replacement,
+        suffix,
         preserve_dtype,
     )
     try:
@@ -249,8 +270,17 @@ def data_condition(
         return _condition_py(mesh, *args)
     try:
         out = _core.data_condition(
-            mesh, loc, names, mode, scope, lo, hi, nan_policy, nan_replacement,
-            suffix, preserve_dtype,
+            mesh,
+            loc,
+            names,
+            mode,
+            scope,
+            lo,
+            hi,
+            nan_policy,
+            nan_replacement,
+            suffix,
+            preserve_dtype,
         )
     except ValueError:
         raise

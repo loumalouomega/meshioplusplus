@@ -91,9 +91,7 @@ def _split_assignment(value):
 
 def add_info_args(parser):
     _add_io_args(parser, with_output=False)
-    parser.add_argument(
-        "--json", action="store_true", help="emit the summary as JSON"
-    )
+    parser.add_argument("--json", action="store_true", help="emit the summary as JSON")
 
 
 def info_cmd(args):
@@ -106,8 +104,10 @@ def info_cmd(args):
     if not arrays:
         print("  (the mesh carries no data arrays)")
         return 0
-    header = f"  {'location':<11} {'name':<20} {'dtype':<6} {'comp':>4} " \
-             f"{'entries':>8} {'min':>12} {'max':>12} {'mean':>12} {'nan':>5} {'inf':>5}"
+    header = (
+        f"  {'location':<11} {'name':<20} {'dtype':<6} {'comp':>4} "
+        f"{'entries':>8} {'min':>12} {'max':>12} {'mean':>12} {'nan':>5} {'inf':>5}"
+    )
     print(header)
     print("  " + "-" * (len(header) - 2))
     for a in arrays:
@@ -448,18 +448,30 @@ def normalize_cmd(args):
 # --- group wiring ----------------------------------------------------------
 
 _VERBS = (
-    ("info", "Summarize every data array (dtype, shape, min/max/mean, NaN/inf)",
-     add_info_args, info_cmd),
+    (
+        "info",
+        "Summarize every data array (dtype, shape, min/max/mean, NaN/inf)",
+        add_info_args,
+        info_cmd,
+    ),
     ("rename", "Rename data arrays", add_rename_args, rename_cmd),
     ("drop", "Drop data arrays by name", add_drop_args, drop_cmd),
     ("keep", "Keep only the named data arrays", add_keep_args, keep_cmd),
     ("to-cell", "Average point_data onto the cells", add_to_cell_args, to_cell_cmd),
     ("to-point", "Average cell_data onto the points", add_to_point_args, to_point_cmd),
-    ("calc", "Derive a new array from an elementwise expression",
-     add_calc_args, calc_cmd),
+    (
+        "calc",
+        "Derive a new array from an elementwise expression",
+        add_calc_args,
+        calc_cmd,
+    ),
     ("clamp", "Clamp values into [min, max]", add_clamp_args, clamp_cmd),
-    ("normalize", "Rescale values to a target range (or zero mean / unit std)",
-     add_normalize_args, normalize_cmd),
+    (
+        "normalize",
+        "Rescale values to a target range (or zero mean / unit std)",
+        add_normalize_args,
+        normalize_cmd,
+    ),
 )
 
 

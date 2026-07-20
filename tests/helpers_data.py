@@ -48,7 +48,10 @@ def data_mesh():
         ]
     )
     m.cell_data["mat"] = [np.array([1.0, 2.0]), np.array([3.0])]
-    m.cell_data["tag"] = [np.array([10, 20], dtype=np.int32), np.array([30], dtype=np.int32)]
+    m.cell_data["tag"] = [
+        np.array([10, 20], dtype=np.int32),
+        np.array([30], dtype=np.int32),
+    ]
     m.field_data["meta"] = np.array([1.0, 2.0, 3.0])
     return m
 
