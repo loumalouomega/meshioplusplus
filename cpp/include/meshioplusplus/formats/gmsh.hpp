@@ -60,6 +60,7 @@
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -126,6 +127,23 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
  * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
  *       Python fallback does, for files containing `$Periodic`
  */
-Mesh read_gmsh(const std::string& rPath);
+Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a `.msh` without reading its node coordinates or connectivity.
+ *
+ * **Format 4.1 only.** 4.1 groups elements into typed blocks whose headers carry
+ * the type and count, so the summary walks block headers and skips each
+ * payload -- by exact byte arithmetic for binary, line counts for ascii.
+ * Format 2.2 stores a type per element, so there is no cheap path to have;
+ * `read_gmsh_metadata` throws for it and `registry_read_metadata` falls back to
+ * a full read (reporting `mFellBackToFullRead`).
+ *
+ * @param rPath filesystem path to summarize
+ * @return the summary; `mHasBBox` is false (reading it would defeat the point)
+ * @throws ReadError for format 2.2, `$Entities`/`$Periodic`, or an unsupported
+ *         element type -- exactly what `read_gmsh` rejects
+ */
+MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

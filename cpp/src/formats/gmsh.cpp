@@ -25,12 +25,14 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -107,16 +109,18 @@ std::string gmsh_trim(const std::string& rS) {
 }
 
 struct GmshCursor {
-    const std::string& mBuf;
+    // A view, not a reference to a std::string: the buffer may be a memory
+    // mapping rather than an owned string (see detail/file_source.hpp).
+    std::string_view mBuf;
     std::size_t mPos = 0;
-    explicit GmshCursor(const std::string& rB) : mBuf(rB) {}
+    explicit GmshCursor(std::string_view b) : mBuf(b) {}
     bool eof() const { return mPos >= mBuf.size(); }
 
     std::string read_line() {
         std::size_t start = mPos;
         while (mPos < mBuf.size() && mBuf[mPos] != '\n')
             ++mPos;
-        std::string line = mBuf.substr(start, mPos - start);
+        std::string line(mBuf.substr(start, mPos - start));
         if (mPos < mBuf.size())
             ++mPos;
         if (!line.empty() && line.back() == '\r')
@@ -139,7 +143,11 @@ struct GmshCursor {
         }
     }
     double next_double() {
-        const char* base = mBuf.c_str();
+        // strtod scans for a terminator. A buffered source is a std::string
+        // (NUL-terminated); a mapped one relies on the kernel zero-filling the
+        // final partial page -- which is exactly why FileSource declines to map
+        // files whose size is an exact page multiple.
+        const char* base = mBuf.data();
         char* endp = nullptr;
         double v = std::strtod(base + mPos, &endp);
         if (endp == base + mPos)
@@ -288,8 +296,14 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
 }
 
 // NodeData / ElementData
+/**
+ * @param rOpts when the section's name is not wanted, the value block is
+ *        skipped wholesale via `skip_to_end` -- no allocation and no parsing of
+ *        the `nitems * ncomp` values. The name sits at the top of the section,
+ *        before the values, so this costs nothing to decide.
+ */
 void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
-               std::unordered_map<std::string, NDArray>& rOut) {
+               std::unordered_map<std::string, NDArray>& rOut, const ReadOptions& rOpts) {
     std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
     std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
@@ -309,6 +323,11 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
         itags[i] = std::stoll(gmsh_trim(rCur.read_line()));
     std::size_t ncomp = static_cast<std::size_t>(itags[1]);
     std::size_t nitems = static_cast<std::size_t>(itags[2]);
+
+    if (!rOpts.WantsAnyData() || !rOpts.WantsArray(name)) {
+        rCur.skip_to_end(rTag);  // never touch the nitems * ncomp values
+        return;
+    }
 
     NDArray data(DType::Float64, {nitems, ncomp});
     double* dp = data.As<double>();
@@ -467,7 +486,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
     rCur.skip_to_end("Elements");
 }
 
-Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size) {
+Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const ReadOptions& rOpts) {
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<std::array<std::int64_t, 2>> dim_tags;
@@ -492,9 +511,9 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size) {
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
-            read_data(rCur, "NodeData", is_ascii, point_data);
+            read_data(rCur, "NodeData", is_ascii, point_data, rOpts);
         else if (env == "ElementData")
-            read_data(rCur, "ElementData", is_ascii, cell_data_raw);
+            read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts);
         else
             rCur.skip_to_end(env);
     }
@@ -527,13 +546,20 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size) {
     for (auto& kv : field_data)
         mesh.AddFieldData(kv.first, std::move(kv.second));
 
-    // Node entity (dim, tag) -> gmsh:dim_tags point data.
-    NDArray dt(DType::Int64, {dim_tags.size(), 2});
-    parallel_for_bw(dim_tags.size(), [&](std::size_t i) {
-        dt.As<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
-        dt.As<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
-    });
-    mesh.AddPointData("gmsh:dim_tags", std::move(dt));
+    // Node entity (dim, tag) -> gmsh:dim_tags point data. Structural rather
+    // than user data, but it lands in mesh.point_data all the same, so it obeys
+    // the same filter: "points_only" must mean no point_data, with no
+    // exceptions the caller has to know about. (A points_only mesh is an
+    // explicitly lossy request; preserving this for round-tripping would make
+    // the contract inconsistent instead of useful.)
+    if (rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:dim_tags")) {
+        NDArray dt(DType::Int64, {dim_tags.size(), 2});
+        parallel_for_bw(dim_tags.size(), [&](std::size_t i) {
+            dt.As<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
+            dt.As<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
+        });
+        mesh.AddPointData("gmsh:dim_tags", std::move(dt));
+    }
 
     std::vector<NDArray> geom_blocks;
     for (auto& b : eblocks) {
@@ -580,27 +606,148 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size) {
         }
         mesh.AddCellData(kv.first, std::move(per_block));
     }
-    if (!geom_blocks.empty())
+    if (!geom_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
         mesh.AddCellData("gmsh:geometrical", std::move(geom_blocks));
 
     return mesh;
 }
 
+/**
+ * @brief Walk a 4.1 `$Nodes`/`$Elements` section far enough to describe it,
+ *        skipping the bulk payload.
+ *
+ * Scoped to format 4.1 deliberately. 4.1 groups elements into typed blocks
+ * whose headers carry the type and count, so a summary is nearly free. Format
+ * 2.2's `$Elements` is a flat list where **every element carries its own type**,
+ * so summarizing it would cost essentially a full parse -- there is no cheap
+ * path to have, and pretending otherwise would just move the work around.
+ * 2.2 therefore keeps the honest full-read fallback.
+ */
+struct GmshMeta41 {
+    std::size_t mNumPoints = 0;
+    std::vector<CellBlockInfo> mBlocks;
+    std::vector<std::string> mPointDataNames;
+    std::vector<std::string> mCellDataNames;
+    bool mHasDimTags = false;
+};
+
+/// Consume the remainder of the current line.
+void gmsh_finish_line(GmshCursor& rCur) {
+    while (!rCur.eof() && rCur.mBuf[rCur.mPos] != '\n')
+        ++rCur.mPos;
+    if (!rCur.eof())
+        ++rCur.mPos;
+}
+
+void gmsh_scan_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshMeta41& rMeta) {
+    auto rd_size = [&]() -> std::int64_t {
+        return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
+    };
+    const std::int64_t num_blocks = rd_size();
+    const std::int64_t num_nodes = rd_size();
+    rd_size();  // min tag
+    rd_size();  // max tag
+    rMeta.mNumPoints = static_cast<std::size_t>(num_nodes < 0 ? 0 : num_nodes);
+    // Every 4.1 file yields gmsh:dim_tags, built from the per-node entity.
+    rMeta.mHasDimTags = num_nodes > 0;
+
+    if (is_ascii) {
+        // Coordinates are the bulk here and are never needed for a summary, so
+        // skip to the terminator rather than tokenizing them.
+        gmsh_finish_line(rCur);
+        rCur.skip_to_end("Nodes");
+        return;
+    }
+    // Binary: advance by the exact payload size instead of scanning, since raw
+    // bytes could otherwise contain anything that looks like a terminator.
+    for (std::int64_t b = 0; b < num_blocks; ++b) {
+        rCur.read_i32();  // dim
+        rCur.read_i32();  // entity tag
+        rCur.read_i32();  // parametric
+        const std::int64_t in_block = static_cast<std::int64_t>(rCur.read_uint(data_size));
+        rCur.mPos += static_cast<std::size_t>(in_block) * static_cast<std::size_t>(data_size);
+        rCur.mPos += static_cast<std::size_t>(in_block) * 3u * 8u;
+    }
+    rCur.skip_to_end("Nodes");
+}
+
+void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshMeta41& rMeta) {
+    auto rd_size = [&]() -> std::int64_t {
+        return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
+    };
+    const std::int64_t num_blocks = rd_size();
+    rd_size();  // num elements
+    rd_size();  // min tag
+    rd_size();  // max tag
+    const auto& g2m = gmsh_to_meshio_type();
+    const auto& nnpc = num_nodes_per_cell();
+    if (is_ascii)
+        gmsh_finish_line(rCur);
+
+    for (std::int64_t b = 0; b < num_blocks; ++b) {
+        int etype = 0;
+        std::int64_t num_ele = 0;
+        if (is_ascii) {
+            rCur.next_int();  // entity dim
+            rCur.next_int();  // entity tag
+            etype = static_cast<int>(rCur.next_int());
+            num_ele = rCur.next_int();
+            gmsh_finish_line(rCur);
+        } else {
+            rCur.read_i32();  // entity dim
+            rCur.read_i32();  // entity tag
+            etype = rCur.read_i32();
+            num_ele = static_cast<std::int64_t>(rCur.read_uint(data_size));
+        }
+
+        auto it = g2m.find(etype);
+        if (it == g2m.end())
+            throw ReadError("Gmsh element type " + std::to_string(etype) +
+                            " not supported by the C++ reader");
+        const std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
+
+        CellBlockInfo info;
+        info.mType = it->second;
+        info.mNumCells = static_cast<std::size_t>(num_ele < 0 ? 0 : num_ele);
+        info.mNodesPerCell = n;
+        rMeta.mBlocks.push_back(std::move(info));
+
+        // Skip the block's connectivity: one line per element (ascii) or
+        // num_ele * (tag + n nodes) fixed-width integers (binary).
+        if (is_ascii) {
+            for (std::int64_t e = 0; e < num_ele; ++e)
+                gmsh_finish_line(rCur);
+        } else {
+            rCur.mPos +=
+                static_cast<std::size_t>(num_ele) * (n + 1u) * static_cast<std::size_t>(data_size);
+        }
+    }
+    rCur.skip_to_end("Elements");
+}
+
+/// Read a `$NodeData`/`$ElementData` section's name, then skip its values.
+std::string gmsh_scan_data_name(GmshCursor& rCur, const std::string& rTag) {
+    const std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
+    std::string name;
+    for (std::int64_t i = 0; i < num_str; ++i) {
+        const std::string line = gmsh_trim(rCur.read_line());
+        if (i == 0) {
+            const std::size_t q1 = line.find('"'), q2 = line.rfind('"');
+            name = (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1) : line;
+        }
+    }
+    rCur.skip_to_end(rTag);
+    return name;
+}
 }  // namespace
 
-Mesh read_gmsh(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    // Bulk slurp (seek+read) rather than char-by-char istreambuf_iterator.
-    in.seekg(0, std::ios::end);
-    std::streamoff flen = in.tellg();
-    in.seekg(0, std::ios::beg);
-    std::string buf;
-    if (flen > 0) {
-        buf.resize(static_cast<std::size_t>(flen));
-        in.read(buf.data(), flen);
-    }
+Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
+    // Memory-mapped where that pays (see detail/file_source.hpp), copied
+    // otherwise. The source is function-local: every parsed value is copied
+    // into owning mesh storage below, so nothing in the returned Mesh points
+    // back into this buffer.
+    const detail::FileSource source(rPath, rOpts.mMmap);
+    const std::string_view buf = source.View();
     GmshCursor cur(buf);
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
@@ -620,7 +767,7 @@ Mesh read_gmsh(const std::string& rPath) {
     cur.skip_to_end("MeshFormat");
 
     if (version == "4.1" || version == "4")
-        return read_gmsh41_body(cur, is_ascii, data_size);
+        return read_gmsh41_body(cur, is_ascii, data_size, rOpts);
     if (version.rfind("2", 0) != 0)
         throw ReadError("C++ Gmsh reader handles versions 2.2 and 4.1 only");
 
@@ -645,9 +792,9 @@ Mesh read_gmsh(const std::string& rPath) {
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
-            read_data(cur, "NodeData", is_ascii, point_data);
+            read_data(cur, "NodeData", is_ascii, point_data, rOpts);
         else if (env == "ElementData")
-            read_data(cur, "ElementData", is_ascii, cell_data_raw);
+            read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts);
         else
             cur.skip_to_end(env);
     }
@@ -717,9 +864,9 @@ Mesh read_gmsh(const std::string& rPath) {
         }
         mesh.AddCellData(kv.first, std::move(per_block));
     }
-    if (!physical_blocks.empty())
+    if (!physical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:physical"))
         mesh.AddCellData("gmsh:physical", std::move(physical_blocks));
-    if (!geometrical_blocks.empty())
+    if (!geometrical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
         mesh.AddCellData("gmsh:geometrical", std::move(geometrical_blocks));
 
     return mesh;
@@ -1130,6 +1277,71 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
             continue;
         write_data(os, "ElementData", name, rMesh, binary);
     }
+}
+
+MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    const detail::FileSource source(rPath, rOpts.mMmap);
+    GmshCursor cur(source.View());
+
+    if (gmsh_trim(cur.read_line()) != "$MeshFormat")
+        throw ReadError("Expected $MeshFormat");
+    std::istringstream fss(cur.read_line());
+    std::string version;
+    int file_type = 0, data_size = 8;
+    fss >> version >> file_type >> data_size;
+    const bool is_ascii = (file_type == 0);
+    if (!is_ascii) {
+        cur.read_i32();  // endianness marker
+        if (cur.mPos < source.Size() && source.View()[cur.mPos] == '\n')
+            ++cur.mPos;
+    }
+    cur.skip_to_end("MeshFormat");
+
+    // Only 4.1 has typed element blocks whose headers make a summary cheap;
+    // 2.2 stores a per-element type, so declining here costs a full read but
+    // never a wrong answer (registry_read_metadata falls back).
+    if (version != "4.1" && version != "4")
+        throw ReadError("Gmsh: only format 4.1 has a header-only metadata path");
+
+    GmshMeta41 meta;
+    while (!cur.eof()) {
+        const std::string line = cur.next_nonblank();
+        if (line.empty())
+            break;
+        if (line[0] != '$')
+            throw ReadError("Gmsh: unexpected line " + line);
+        const std::string env = gmsh_trim(line.substr(1));
+        if (env == "Nodes")
+            gmsh_scan_nodes_41(cur, is_ascii, data_size, meta);
+        else if (env == "Elements")
+            gmsh_scan_elements_41(cur, is_ascii, data_size, meta);
+        else if (env == "NodeData")
+            meta.mPointDataNames.push_back(gmsh_scan_data_name(cur, "NodeData"));
+        else if (env == "ElementData")
+            meta.mCellDataNames.push_back(gmsh_scan_data_name(cur, "ElementData"));
+        else if (env == "Entities" || env == "Periodic")
+            throw ReadError("Gmsh $" + env + " not supported by the C++ reader");
+        else
+            cur.skip_to_end(env);
+    }
+
+    MeshMetadata out;
+    out.mNumPoints = meta.mNumPoints;
+    out.mPointDim = 3;  // gmsh coordinates are always 3-D
+    out.mCellBlocks = std::move(meta.mBlocks);
+    out.mPointDataNames = std::move(meta.mPointDataNames);
+    out.mCellDataNames = std::move(meta.mCellDataNames);
+    // The reader synthesizes these from the entity structure, so a summary must
+    // list them too or it would disagree with a real read.
+    if (meta.mHasDimTags)
+        out.mPointDataNames.push_back("gmsh:dim_tags");
+    if (!out.mCellBlocks.empty())
+        out.mCellDataNames.push_back("gmsh:geometrical");
+    std::sort(out.mPointDataNames.begin(), out.mPointDataNames.end());
+    std::sort(out.mCellDataNames.begin(), out.mCellDataNames.end());
+
+    out.mHasBBox = false;  // would require decoding the coordinates
+    return out;
 }
 
 }  // namespace meshioplusplus
