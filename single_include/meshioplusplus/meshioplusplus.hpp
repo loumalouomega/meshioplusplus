@@ -3170,6 +3170,9 @@ inline void bswap_inplace(char* pP, int n) {
  * 4 = mid(1,2), 5 = mid(2,0); for `quad8`/`quad9` mid node 4 = mid(0,1),
  * 5 = mid(1,2), 6 = mid(2,3), 7 = mid(3,0) (quad9 node 8 is the face center,
  * on no edge).
+ *
+ * `cell_edges` is looked up once per cell (not per node/scalar), so its table
+ * lookup lives in `cpp/src/detail/cell_edges.cpp` rather than inline here.
  */
 
 // System includes
@@ -3204,45 +3207,7 @@ struct CellEdgeDef {
  * @param SurfaceType The surface cell type to query.
  * @return Reference to the process-wide edge table (empty if unsupported).
  */
-inline const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType) {
-    using CT = CellType;
-    static const std::vector<CellEdgeDef> empty = {};
-    static const std::vector<CellEdgeDef> triangle = {
-        {CT::Line, 2, 2, {0, 1}},
-        {CT::Line, 2, 2, {1, 2}},
-        {CT::Line, 2, 2, {2, 0}},
-    };
-    static const std::vector<CellEdgeDef> triangle6 = {
-        {CT::Line3, 2, 3, {0, 1, 3}},
-        {CT::Line3, 2, 3, {1, 2, 4}},
-        {CT::Line3, 2, 3, {2, 0, 5}},
-    };
-    static const std::vector<CellEdgeDef> quad = {
-        {CT::Line, 2, 2, {0, 1}},
-        {CT::Line, 2, 2, {1, 2}},
-        {CT::Line, 2, 2, {2, 3}},
-        {CT::Line, 2, 2, {3, 0}},
-    };
-    static const std::vector<CellEdgeDef> quad8 = {
-        {CT::Line3, 2, 3, {0, 1, 4}},
-        {CT::Line3, 2, 3, {1, 2, 5}},
-        {CT::Line3, 2, 3, {2, 3, 6}},
-        {CT::Line3, 2, 3, {3, 0, 7}},
-    };
-    switch (SurfaceType) {
-        case CT::Triangle:
-            return triangle;
-        case CT::Triangle6:
-            return triangle6;
-        case CT::Quad:
-            return quad;
-        case CT::Quad8:
-        case CT::Quad9:  // same edges as quad8; node 8 (center) is on no edge
-            return quad8;
-        default:
-            return empty;
-    }
-}
+const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType);
 
 /**
  * @brief Whether the surface extractor supports a surface cell type's edges.
@@ -3287,6 +3252,9 @@ inline bool surface_edge_supported(CellType Type) {
  * KEEP IN SYNC: `src/meshioplusplus/_skin.py` carries the Python twin of
  * these tables for the pure-Python fallback — any change here must be
  * mirrored there.
+ *
+ * `cell_faces` is looked up once per cell (not per node/scalar), so its table
+ * lookup lives in `cpp/src/detail/cell_faces.cpp` rather than inline here.
  */
 
 // System includes
@@ -3321,99 +3289,7 @@ struct CellFaceDef {
  * @param VolumeType The volume cell type to query.
  * @return Reference to the process-wide face table (empty if unsupported).
  */
-inline const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
-    using CT = CellType;
-    static const std::vector<CellFaceDef> empty = {};
-    static const std::vector<CellFaceDef> tetra = {
-        {CT::Triangle, 3, 3, {0, 1, 3}},
-        {CT::Triangle, 3, 3, {1, 2, 3}},
-        {CT::Triangle, 3, 3, {2, 0, 3}},
-        {CT::Triangle, 3, 3, {0, 2, 1}},
-    };
-    static const std::vector<CellFaceDef> tetra10 = {
-        {CT::Triangle6, 3, 6, {0, 1, 3, 4, 8, 7}},
-        {CT::Triangle6, 3, 6, {1, 2, 3, 5, 9, 8}},
-        {CT::Triangle6, 3, 6, {2, 0, 3, 6, 7, 9}},
-        {CT::Triangle6, 3, 6, {0, 2, 1, 6, 5, 4}},
-    };
-    static const std::vector<CellFaceDef> hexahedron = {
-        {CT::Quad, 4, 4, {0, 4, 7, 3}}, {CT::Quad, 4, 4, {1, 2, 6, 5}},
-        {CT::Quad, 4, 4, {0, 1, 5, 4}}, {CT::Quad, 4, 4, {3, 7, 6, 2}},
-        {CT::Quad, 4, 4, {0, 3, 2, 1}}, {CT::Quad, 4, 4, {4, 5, 6, 7}},
-    };
-    static const std::vector<CellFaceDef> hexahedron20 = {
-        {CT::Quad8, 4, 8, {0, 4, 7, 3, 16, 15, 19, 11}},
-        {CT::Quad8, 4, 8, {1, 2, 6, 5, 9, 18, 13, 17}},
-        {CT::Quad8, 4, 8, {0, 1, 5, 4, 8, 17, 12, 16}},
-        {CT::Quad8, 4, 8, {3, 7, 6, 2, 19, 14, 18, 10}},
-        {CT::Quad8, 4, 8, {0, 3, 2, 1, 11, 10, 9, 8}},
-        {CT::Quad8, 4, 8, {4, 5, 6, 7, 12, 13, 14, 15}},
-    };
-    // VTK face-center numbering: 20=(0,1,5,4), 21=(1,2,6,5), 22=(2,3,7,6),
-    // 23=(3,0,4,7), 24=bottom (0,1,2,3), 25=top (4,5,6,7); 26 = body center.
-    static const std::vector<CellFaceDef> hexahedron27 = {
-        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 23}},
-        {CT::Quad9, 4, 9, {1, 2, 6, 5, 9, 18, 13, 17, 21}},
-        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 20}},
-        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 22}},
-        {CT::Quad9, 4, 9, {0, 3, 2, 1, 11, 10, 9, 8, 24}},
-        {CT::Quad9, 4, 9, {4, 5, 6, 7, 12, 13, 14, 15, 25}},
-    };
-    static const std::vector<CellFaceDef> wedge = {
-        {CT::Triangle, 3, 3, {0, 2, 1}}, {CT::Triangle, 3, 3, {3, 4, 5}},
-        {CT::Quad, 4, 4, {0, 1, 4, 3}},  {CT::Quad, 4, 4, {1, 2, 5, 4}},
-        {CT::Quad, 4, 4, {2, 0, 3, 5}},
-    };
-    static const std::vector<CellFaceDef> wedge15 = {
-        {CT::Triangle6, 3, 6, {0, 2, 1, 8, 7, 6}},
-        {CT::Triangle6, 3, 6, {3, 4, 5, 9, 10, 11}},
-        {CT::Quad8, 4, 8, {0, 1, 4, 3, 6, 13, 9, 12}},
-        {CT::Quad8, 4, 8, {1, 2, 5, 4, 7, 14, 10, 13}},
-        {CT::Quad8, 4, 8, {2, 0, 3, 5, 8, 12, 11, 14}},
-    };
-    static const std::vector<CellFaceDef> pyramid = {
-        {CT::Quad, 4, 4, {0, 3, 2, 1}},  {CT::Triangle, 3, 3, {0, 1, 4}},
-        {CT::Triangle, 3, 3, {1, 2, 4}}, {CT::Triangle, 3, 3, {2, 3, 4}},
-        {CT::Triangle, 3, 3, {3, 0, 4}},
-    };
-    static const std::vector<CellFaceDef> pyramid13 = {
-        {CT::Quad8, 4, 8, {0, 3, 2, 1, 8, 7, 6, 5}}, {CT::Triangle6, 3, 6, {0, 1, 4, 5, 10, 9}},
-        {CT::Triangle6, 3, 6, {1, 2, 4, 6, 11, 10}}, {CT::Triangle6, 3, 6, {2, 3, 4, 7, 12, 11}},
-        {CT::Triangle6, 3, 6, {3, 0, 4, 8, 9, 12}},
-    };
-    // pyramid14 = pyramid13 plus node 13 at the base-face center.
-    static const std::vector<CellFaceDef> pyramid14 = {
-        {CT::Quad9, 4, 9, {0, 3, 2, 1, 8, 7, 6, 5, 13}},
-        {CT::Triangle6, 3, 6, {0, 1, 4, 5, 10, 9}},
-        {CT::Triangle6, 3, 6, {1, 2, 4, 6, 11, 10}},
-        {CT::Triangle6, 3, 6, {2, 3, 4, 7, 12, 11}},
-        {CT::Triangle6, 3, 6, {3, 0, 4, 8, 9, 12}},
-    };
-    switch (VolumeType) {
-        case CT::Tetra:
-            return tetra;
-        case CT::Tetra10:
-            return tetra10;
-        case CT::Hexahedron:
-            return hexahedron;
-        case CT::Hexahedron20:
-            return hexahedron20;
-        case CT::Hexahedron27:
-            return hexahedron27;
-        case CT::Wedge:
-            return wedge;
-        case CT::Wedge15:
-            return wedge15;
-        case CT::Pyramid:
-            return pyramid;
-        case CT::Pyramid13:
-            return pyramid13;
-        case CT::Pyramid14:
-            return pyramid14;
-        default:
-            return empty;
-    }
-}
+const std::vector<CellFaceDef>& cell_faces(CellType VolumeType);
 
 /**
  * @brief Whether the skin extractor supports a volume cell type.
@@ -3427,224 +3303,6 @@ inline bool skin_supported(CellType Type) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/cell_faces.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/geometry.hpp =====
-/**
- * @file geometry.hpp
- * @brief Small, dependency-free 3D vector primitives and mesh-coordinate
- * readers shared by the mesh-operations layer (`operations/quality.cpp`,
- * `operations/surface.cpp`).
- *
- * `Vec3` is a plain `std::array<double, 3>`; every helper is a free inline
- * function in `meshioplusplus::detail` (header-only, so it is exempt from the
- * anonymous-namespace unique-prefix rule the amalgamation imposes on `.cpp`
- * translation units). Coordinates are pulled out of an `NDArray` through
- * `detail::read_double`, so these work regardless of the point/connectivity
- * dtype and under every mesh backend.
- */
-
-// System includes
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/// A point/vector in 3D. 2D meshes are padded with z = 0 on read.
-using Vec3 = std::array<double, 3>;
-
-/** @brief Component-wise difference `a - b`. */
-inline Vec3 vec3_sub(const Vec3& a, const Vec3& b) {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-
-/** @brief Component-wise sum `a + b`. */
-inline Vec3 vec3_add(const Vec3& a, const Vec3& b) {
-    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
-}
-
-/** @brief Scalar multiple `s * a`. */
-inline Vec3 vec3_scale(const Vec3& a, double s) {
-    return {a[0] * s, a[1] * s, a[2] * s};
-}
-
-/** @brief Dot product `a . b`. */
-inline double vec3_dot(const Vec3& a, const Vec3& b) {
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-/** @brief Cross product `a x b`. */
-inline Vec3 vec3_cross(const Vec3& a, const Vec3& b) {
-    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-}
-
-/** @brief Squared Euclidean length `a . a`. */
-inline double vec3_norm_sq(const Vec3& a) {
-    return vec3_dot(a, a);
-}
-
-/** @brief Euclidean length `|a|`. */
-inline double vec3_norm(const Vec3& a) {
-    return std::sqrt(vec3_norm_sq(a));
-}
-
-/**
- * @brief Unit vector along `a`, or the zero vector when `|a| < eps`.
- * @param a Vector to normalize.
- * @param eps Length below which `a` is treated as degenerate.
- * @return `a / |a|`, or `{0,0,0}` if `|a| < eps`.
- */
-inline Vec3 vec3_normalize(const Vec3& a, double eps = 1e-300) {
-    const double n = vec3_norm(a);
-    if (n < eps)
-        return {0.0, 0.0, 0.0};
-    return vec3_scale(a, 1.0 / n);
-}
-
-/** @brief Scalar triple product `a . (b x c)` (signed volume of the parallelepiped). */
-inline double triple_product(const Vec3& a, const Vec3& b, const Vec3& c) {
-    return vec3_dot(a, vec3_cross(b, c));
-}
-
-/** @brief Determinant of the 3x3 matrix whose columns are `c0`, `c1`, `c2`. */
-inline double det3(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
-    return triple_product(c0, c1, c2);
-}
-
-/**
- * @brief Reads global point @p nodeId as a `Vec3`, padding z = 0 when the mesh
- * is 2D (`pointDim == 2`).
- * @param rPoints The `(num_points, pointDim)` point array.
- * @param pointDim Spatial dimension of the points (2 or 3).
- * @param nodeId Global point index.
- * @return The point's coordinates, with unused components set to 0.
- */
-inline Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId) {
-    Vec3 p = {0.0, 0.0, 0.0};
-    const std::size_t base = static_cast<std::size_t>(nodeId) * pointDim;
-    const std::size_t k = pointDim < 3 ? pointDim : 3;
-    for (std::size_t c = 0; c < k; ++c)
-        p[c] = read_double(rPoints, base + c);
-    return p;
-}
-
-/**
- * @brief Reads the first @p n connectivity entries of one cell row into @p rOut
- * as `Vec3` coordinates (used to gather a cell's corner nodes).
- * @param rPoints The point array.
- * @param pointDim Spatial dimension of the points.
- * @param rConn The block connectivity array.
- * @param rowOffset Flat offset of the cell's row (`cell * nodes_per_cell`).
- * @param n Number of leading entries to read (the corner count).
- * @param rOut Cleared and filled with @p n coordinates.
- */
-inline void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
-                               std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut) {
-    rOut.clear();
-    rOut.reserve(n);
-    for (std::size_t k = 0; k < n; ++k)
-        rOut.push_back(read_point(rPoints, pointDim, read_int(rConn, rowOffset + k)));
-}
-
-/**
- * @brief Number of corner (linear-parent) nodes of a cell type. Corners are
- * always the leading connectivity entries in meshio/VTK ordering, so a
- * quadratic cell can be reduced to its linear parent by reading the first
- * `cell_corner_count(type)` nodes.
- * @param type The cell type to query.
- * @return The corner count, or 0 for variable-node-count / unsupported types
- *         (`Polygon`, `Polyhedron`, the VTK Lagrange family, `Custom`) — the
- *         caller must skip those.
- */
-inline int cell_corner_count(CellType type) {
-    switch (type) {
-        case CellType::Vertex:
-            return 1;
-        case CellType::Line:
-        case CellType::Line3:
-        case CellType::Line4:
-        case CellType::Line5:
-        case CellType::Line6:
-        case CellType::Line7:
-        case CellType::Line8:
-        case CellType::Line9:
-        case CellType::Line10:
-        case CellType::Line11:
-            return 2;
-        case CellType::Triangle:
-        case CellType::Triangle6:
-        case CellType::Triangle10:
-        case CellType::Triangle15:
-        case CellType::Triangle21:
-        case CellType::Triangle28:
-        case CellType::Triangle36:
-        case CellType::Triangle45:
-        case CellType::Triangle55:
-        case CellType::Triangle66:
-            return 3;
-        case CellType::Quad:
-        case CellType::Quad8:
-        case CellType::Quad9:
-        case CellType::Quad16:
-        case CellType::Quad25:
-        case CellType::Quad36:
-        case CellType::Quad49:
-        case CellType::Quad64:
-        case CellType::Quad81:
-        case CellType::Quad100:
-        case CellType::Quad121:
-            return 4;
-        case CellType::Tetra:
-        case CellType::Tetra10:
-        case CellType::Tetra20:
-        case CellType::Tetra35:
-        case CellType::Tetra56:
-        case CellType::Tetra84:
-        case CellType::Tetra120:
-        case CellType::Tetra165:
-        case CellType::Tetra220:
-        case CellType::Tetra286:
-            return 4;
-        case CellType::Hexahedron:
-        case CellType::Hexahedron20:
-        case CellType::Hexahedron24:
-        case CellType::Hexahedron27:
-        case CellType::Hexahedron64:
-        case CellType::Hexahedron125:
-        case CellType::Hexahedron216:
-        case CellType::Hexahedron343:
-        case CellType::Hexahedron512:
-        case CellType::Hexahedron729:
-        case CellType::Hexahedron1000:
-        case CellType::Hexahedron1331:
-            return 8;
-        case CellType::Wedge:
-        case CellType::Wedge15:
-        case CellType::Wedge18:
-        case CellType::Wedge40:
-        case CellType::Wedge75:
-        case CellType::Wedge126:
-        case CellType::Wedge196:
-        case CellType::Wedge288:
-        case CellType::Wedge405:
-        case CellType::Wedge550:
-            return 6;
-        case CellType::Pyramid:
-        case CellType::Pyramid13:
-        case CellType::Pyramid14:
-            return 5;
-        default:  // Polygon, Polyhedron, VtkLagrange*, Custom
-            return 0;
-    }
-}
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/geometry.hpp =====
 // ===== begin cpp/include/meshioplusplus/mesh.hpp =====
 /**
  * @file mesh.hpp
@@ -3813,320 +3471,6 @@ std::size_t data_num_components(const NDArray& rArray);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/operations/data_common.hpp =====
-// ===== begin cpp/include/meshioplusplus/parallel.hpp =====
-/**
- * @file parallel.hpp
- * @brief `parallel_for`/`parallel_for_bw`: a backend-agnostic parallel loop
- * over a compile-time-selected SEQ/STL/OpenMP/TBB implementation.
- *
- * The active backend is chosen at compile time by the `MESHIOPLUSPLUS_PARALLEL_*`
- * preprocessor definitions (set from CMake's `MESHIOPLUSPLUS_PARALLEL_BACKEND` =
- * `AUTO|SEQ|STL|OPENMP|TBB`; `AUTO` prefers OpenMP — portable across
- * manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB) if
- * detected, else SEQ). `parallel_backend_name()`/`_core.__parallel_backend__`
- * report which one is active. Iterations passed to `parallel_for` must be
- * independent (no cross-iteration state) since they may run concurrently in
- * any order; the first exception thrown by any iteration is captured and
- * rethrown once the parallel region has joined (via `detail::FirstException`),
- * so callers see ordinary C++ exception semantics rather than `std::terminate`
- * or a lost exception.
- *
- * There are two flavors, distinguished by how many threads they are allowed
- * to use:
- *  - `parallel_for` — uses all available cores (up to `max_threads` if
- *    non-zero). Appropriate for compute-bound loops where per-element work
- *    is real computation, e.g. zlib/base64 encode-decode in
- *    `detail/vtu_binary.hpp` and ASCII value formatting.
- *  - `parallel_for_bw` — caps the thread count to `parallel_bandwidth_threads`
- *    (4). Appropriate for memory-bandwidth-bound loops — byte-swap,
- *    transpose, index gather — which saturate a socket's memory bandwidth
- *    with only a few threads and then *regress* as thread count grows
- *    further (more cache contention and dispatch overhead without more
- *    usable bandwidth), unlike compute-bound loops which keep scaling to all
- *    cores.
- *
- * To add a new backend (e.g. Kokkos, HPX): add one CMake branch that defines
- * a new `MESHIOPLUSPLUS_PARALLEL_<NAME>` macro and links the dependency, then
- * add one `#elif defined(MESHIOPLUSPLUS_PARALLEL_<NAME>)` branch in
- * `detail::parallel_for_impl` below (and extend `parallel_backend_name()`
- * to report it).
- */
-
-// System includes
-#include <algorithm>
-#include <atomic>
-#include <cstddef>
-#include <exception>
-#include <utility>
-
-#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
-#include <execution>
-#include <thread>
-#include <vector>
-#endif
-
-// External includes
-#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-#include <omp.h>
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-#include <tbb/blocked_range.h>
-#include <tbb/global_control.h>
-#include <tbb/parallel_for.h>
-#endif
-
-namespace meshioplusplus {
-
-/**
- * @brief Default grain size (minimum iterations per dispatched chunk) for
- * `parallel_for`/`parallel_for_bw` when the caller doesn't override it.
- *
- * Below this many total iterations, `parallel_for` runs sequentially rather
- * than paying parallel dispatch overhead (see the `n <= grain` check in
- * `parallel_for` below). Callers with atypically coarse or fine per-iteration
- * work (e.g. one whole zlib block per iteration) pass an explicit smaller
- * `grain` (often `1`) so each iteration dispatches individually.
- */
-inline constexpr std::size_t parallel_grain_default = 2048;
-
-/**
- * @brief Thread cap used by `parallel_for_bw` for memory-bandwidth-bound loops.
- *
- * Memory-bandwidth-bound loops (byte-swap, transpose, gather) saturate a
- * socket's bandwidth with only a few threads and then *regress* as thread
- * overhead and cache contention grow — unlike compute-bound loops (zlib,
- * base64) which scale to all cores. Cap the bandwidth-bound loops here.
- */
-inline constexpr unsigned parallel_bandwidth_threads = 4;
-
-/**
- * @brief Name of the parallel backend selected at compile time.
- *
- * Reflects whichever of `MESHIOPLUSPLUS_PARALLEL_STL`/`_OPENMP`/`_TBB` was
- * defined (by CMake, based on `MESHIOPLUSPLUS_PARALLEL_BACKEND`); none of
- * them defined means the sequential fallback. Exposed to Python as
- * `_core.__parallel_backend__` so tests/diagnostics can assert which backend
- * actually built.
- * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"seq"`.
- */
-constexpr const char* parallel_backend_name() {
-#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
-    return "stl";
-#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    return "openmp";
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-    return "tbb";
-#else
-    return "seq";
-#endif
-}
-
-namespace detail {
-
-/**
- * @brief Captures the first exception thrown by any parallel iteration, to
- * be rethrown by the caller after the parallel region joins.
- *
- * Iterations run on multiple threads cannot let a C++ exception escape
- * across the parallelism boundary (OpenMP/TBB would `std::terminate`), so
- * each backend wraps its per-iteration body in `Run()`, which catches
- * everything and records only the *first* exception (subsequent ones from
- * other threads are discarded — `mRaised` is a one-shot latch via
- * `std::atomic_flag`). After the parallel region has fully joined, the
- * caller calls `RethrowIfAny()` to surface that exception on the calling
- * thread with normal C++ semantics.
- */
-class FirstException {
-public:
-    template <class Body>
-    void Run(Body&& body) noexcept {
-        try {
-            body();
-        } catch (...) {
-            if (!mRaised.test_and_set(std::memory_order_acq_rel))
-                mEptr = std::current_exception();
-        }
-    }
-    void RethrowIfAny() {
-        if (mEptr)
-            std::rethrow_exception(mEptr);
-    }
-
-private:
-    std::atomic_flag mRaised = ATOMIC_FLAG_INIT;
-    std::exception_ptr mEptr;
-};
-
-/**
- * @brief Backend-specific dispatch of `n` independent iterations of `f`.
- *
- * Exactly one `#if`/`#elif` branch compiles, selected by the
- * `MESHIOPLUSPLUS_PARALLEL_*` macro CMake defined:
- *  - **STL**: splits `[0, n)` into up to `hardware_concurrency() * 4` chunks
- *    (fewer if `grain`/`max_threads` constrain it further) and runs them via
- *    `std::for_each(std::execution::par, ...)` over a small chunk table
- *    (iterated explicitly because PSTL algorithms require
- *    `Cpp17ForwardIterator`s, which `iota_view` iterators don't satisfy on
- *    every implementation).
- *  - **OpenMP**: `#pragma omp parallel for schedule(dynamic, chunk)` with
- *    `chunk = max(grain/4, 1)`. Dynamic (not static) scheduling matters on
- *    hybrid P+E-core CPUs, where a static split would leave slow E-cores as
- *    stragglers while fast P-cores idle at the join; `grain/4` keeps
- *    dispatch overhead negligible for fine-grained loops while still
- *    honouring explicitly coarse callers (e.g. VTU zlib blocks pass
- *    `grain=1` because each iteration is already a whole compress, so
- *    per-iteration dispatch is exactly what's wanted — the chunk size must
- *    never be floored above the caller's `grain`).
- *  - **TBB**: `tbb::parallel_for` over a `blocked_range` of grain size
- *    `grain`, optionally under a `tbb::global_control` limiting
- *    `max_allowed_parallelism` to `max_threads`.
- *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
- *    unused (cast to `void` to silence warnings).
- *
- * Every branch funnels per-iteration exceptions through a `FirstException`
- * so exactly one is rethrown after the region joins.
- *
- * @tparam F Callable invoked as `f(std::size_t i)` for each `i` in `[0, n)`.
- * @param n Number of iterations.
- * @param rF The per-iteration body (iterations must be independent).
- * @param grain Minimum unit of work per dispatched chunk/task.
- * @param max_threads Cap on threads used (0 = no cap, use all available).
- */
-template <class F>
-void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_threads) {
-#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
-    struct Chunk {
-        std::size_t mBegin, mEnd;
-    };
-    const std::size_t hw = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    std::size_t max_chunks = hw * 4;
-    if (max_threads)
-        max_chunks = std::min<std::size_t>(max_chunks, max_threads);
-    const std::size_t by_grain = (n + grain - 1) / grain;
-    const std::size_t nchunks = std::max<std::size_t>(1, std::min(max_chunks, by_grain));
-    const std::size_t per = (n + nchunks - 1) / nchunks;
-    // PSTL algorithms require Cpp17ForwardIterators (iota_view iterators do
-    // not qualify on all implementations), so iterate a small chunk table.
-    std::vector<Chunk> chunks;
-    chunks.reserve(nchunks);
-    for (std::size_t b = 0; b < n; b += per)
-        chunks.push_back({b, std::min(b + per, n)});
-    FirstException exc;
-    std::for_each(std::execution::par, chunks.begin(), chunks.end(), [&](const Chunk& c) {
-        exc.Run([&] {
-            for (std::size_t i = c.mBegin; i < c.mEnd; ++i)
-                rF(i);
-        });
-    });
-    exc.RethrowIfAny();
-#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    FirstException exc;
-    const long long nn = static_cast<long long>(n);
-    const int nt = max_threads ? std::min<int>(static_cast<int>(max_threads), omp_get_max_threads())
-                               : omp_get_max_threads();
-    // Dynamic scheduling: on hybrid CPUs (P + E cores) a static split makes the
-    // slow cores stragglers while the fast ones idle at the join; moderately
-    // sized dynamic chunks self-balance with negligible dispatch overhead.
-    // grain/4 keeps dispatch rare for fine-grained loops while honouring
-    // explicitly coarse loops (e.g. the VTU zlib blocks pass grain=1: each
-    // iteration is a whole compress, so per-iteration dispatch is ideal).
-    const long long chunk = static_cast<long long>(std::max<std::size_t>(grain / 4, 1));
-#pragma omp parallel for schedule(dynamic, chunk) num_threads(nt)
-    for (long long i = 0; i < nn; ++i) {
-        exc.Run([&] { rF(static_cast<std::size_t>(i)); });
-    }
-    exc.RethrowIfAny();
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-    FirstException exc;
-    auto body = [&] {
-        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, n, grain),
-                          [&](const tbb::blocked_range<std::size_t>& r) {
-                              exc.Run([&] {
-                                  for (std::size_t i = r.begin(); i != r.end(); ++i)
-                                      rF(i);
-                              });
-                          });
-    };
-    if (max_threads) {
-        tbb::global_control gc(tbb::global_control::max_allowed_parallelism, max_threads);
-        body();
-    } else {
-        body();
-    }
-    exc.RethrowIfAny();
-#else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
-    (void)grain;
-    (void)max_threads;
-    for (std::size_t i = 0; i < n; ++i)
-        rF(i);
-#endif
-}
-
-}  // namespace detail
-
-/**
- * @brief Runs `n` independent iterations of `f(i)`, in parallel when it's
- * worthwhile, using the compile-time-selected backend (see
- * `parallel_backend_name()`).
- *
- * If `n <= grain`, runs sequentially in-line — the fixed cost of dispatching
- * a parallel region isn't worth it for small workloads. Otherwise delegates
- * to `detail::parallel_for_impl`. `f` must be safe to invoke concurrently
- * from multiple threads for different `i` (no shared mutable state without
- * external synchronization); the first exception any invocation throws is
- * captured and rethrown on the calling thread after all iterations
- * complete (partial results/side effects from other iterations are not
- * rolled back).
- *
- * @tparam F Callable invoked as `f(std::size_t i)`.
- * @param n Number of iterations; a no-op if `n == 0`.
- * @param f The per-iteration body.
- * @param grain Minimum number of iterations to bother parallelizing, and
- *              (backend-dependent) the target chunk size once it does;
- *              defaults to `parallel_grain_default` (2048). Pass a small
- *              value (e.g. `1`) when each iteration is already coarse work
- *              (a whole zlib block, a whole compress) so dispatch happens
- *              per-iteration rather than being batched further.
- * @param max_threads Cap on threads used; `0` (the default) means "use all
- *                     available". Pass `parallel_bandwidth_threads`
- *                     (or call `parallel_for_bw` instead) for
- *                     memory-bandwidth-bound loops.
- */
-template <class F>
-void parallel_for(std::size_t n, F&& f, std::size_t grain = parallel_grain_default,
-                  unsigned max_threads = 0) {
-    if (n == 0)
-        return;
-    if (n <= grain) {
-        for (std::size_t i = 0; i < n; ++i)
-            f(i);
-        return;
-    }
-    detail::parallel_for_impl(n, f, grain, max_threads);
-}
-
-/**
- * @brief `parallel_for`, thread-capped for memory-bandwidth-bound loops.
- *
- * Convenience wrapper that forwards to `parallel_for` with
- * `max_threads = parallel_bandwidth_threads` (4). Use this for byte-swap,
- * transpose, and index-gather loops: they saturate a socket's memory
- * bandwidth with only a few threads and then *regress* — more threads add
- * cache contention and dispatch overhead without more usable bandwidth —
- * unlike genuinely compute-bound loops (zlib/base64), which should use
- * plain `parallel_for` to scale across all cores.
- *
- * @tparam F Callable invoked as `f(std::size_t i)`.
- * @param n Number of iterations; a no-op if `n == 0`.
- * @param f The per-iteration body.
- * @param grain Minimum iterations per chunk; see `parallel_for`'s `grain`.
- */
-template <class F>
-void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_default) {
-    parallel_for(n, std::forward<F>(f), grain, parallel_bandwidth_threads);
-}
-
-}  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/parallel.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/data_ops.hpp =====
 /**
  * @file data_ops.hpp
@@ -4145,15 +3489,20 @@ void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_de
  * does not compile. This mirrors every other operation, all of which return a
  * new mesh.
  *
- * These are `detail::` inline helpers, so they are exempt from the
- * unique-prefix rule the anonymous-namespace helpers in `cpp/src/**.cpp` follow
- * for the single-header amalgamation.
+ * `clone_mesh<TFilter>` is a template (the filter is a caller-supplied lambda
+ * type) and so must stay defined here; `FiniteStats::Add`/`Merge` are called
+ * per element inside `accumulate_stats`'s inner loop, so that struct stays
+ * inline too. Every other function is called once per array or once per cell
+ * (never once per scalar), so those bodies live in
+ * `cpp/src/detail/data_ops.cpp` instead.
+ *
+ * These are `detail::` helpers, so they are exempt from the unique-prefix rule
+ * the anonymous-namespace helpers in `cpp/src/**.cpp` follow for the
+ * single-header amalgamation.
  */
 
 // System includes
-#include <algorithm>
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -4165,11 +3514,7 @@ namespace detail {
 
 /// A deep copy of an `NDArray` that always owns its buffer (safe even when the
 /// source is a view over foreign memory, as it is on the Python boundary).
-inline NDArray data_owned_copy(const NDArray& rArray) {
-    NDArray c = rArray;
-    c.MakeOwned();
-    return c;
-}
+NDArray data_owned_copy(const NDArray& rArray);
 
 /**
  * @brief Copies only the geometry of @p rMesh — points and every cell block,
@@ -4181,31 +3526,7 @@ inline NDArray data_owned_copy(const NDArray& rArray) {
  * @param rMesh the mesh whose geometry is copied.
  * @return a new mesh with identical geometry and no data.
  */
-inline Mesh clone_geometry(const Mesh& rMesh) {
-    Mesh out;
-    out.AssignPoints(data_owned_copy(rMesh.Points()));
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron()) {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                cells[c].resize(cb.NumFaces(c));
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    auto face = cb.Face(c, f);
-                    cells[c][f].assign(face.first, face.first + face.second);
-                }
-            }
-            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
-        } else if (cb.IsRagged()) {
-            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
-            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
-        } else {
-            out.AddCellBlock(std::string(cb.Type()), data_owned_copy(cb.Conn()));
-        }
-    }
-    return out;
-}
+Mesh clone_geometry(const Mesh& rMesh);
 
 /**
  * @brief Clones @p rMesh, letting @p rFilter decide the fate of each data array.
@@ -4261,6 +3582,11 @@ inline Mesh clone_mesh(const Mesh& rMesh) {
  * is the policy documented in `operations/data_common.hpp`. Instances combine
  * associatively via `Merge`, so a parallel chunked reduction can fold per-chunk
  * instances serially afterwards and stay deterministic.
+ *
+ * `Add`/`Merge` are called once per element (respectively once per chunk)
+ * inside `accumulate_stats`'s hot loop, so they stay inline here rather than
+ * moving to a `.cpp` -- at that call frequency the function-call boundary
+ * itself would be measurable.
  */
 struct FiniteStats {
     double mMin = 0.0;            ///< Smallest finite value (valid iff mNumFinite > 0).
@@ -4348,78 +3674,11 @@ struct FiniteStats {
  * @param rStats per-component accumulators, resized to @p NumComponents and
  *        *folded into* (not reset), so several arrays can share one reduction.
  */
-inline void accumulate_stats(const NDArray& rArray, std::size_t NumComponents,
-                             std::vector<FiniteStats>& rStats) {
-    if (rStats.size() < NumComponents)
-        rStats.resize(NumComponents);
-    const std::size_t total = rArray.Size();
-    if (total == 0 || NumComponents == 0)
-        return;
-    const std::size_t nrows = total / NumComponents;
-
-    const std::size_t grain = 4096;
-    const std::size_t nchunks = (nrows + grain - 1) / grain;
-    std::vector<std::vector<FiniteStats>> partial(nchunks);
-    parallel_for(
-        nchunks,
-        [&](std::size_t ci) {
-            std::vector<FiniteStats> local(NumComponents);
-            const std::size_t begin = ci * grain;
-            const std::size_t end = std::min(begin + grain, nrows);
-            for (std::size_t r = begin; r < end; ++r)
-                for (std::size_t k = 0; k < NumComponents; ++k)
-                    local[k].Add(read_double(rArray, r * NumComponents + k));
-            partial[ci] = std::move(local);
-        },
-        1);
-    for (const std::vector<FiniteStats>& chunk : partial)
-        for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
-            rStats[k].Merge(chunk[k]);
-}
+void accumulate_stats(const NDArray& rArray, std::size_t NumComponents,
+                      std::vector<FiniteStats>& rStats);
 
 /// Collapses per-component stats into one whole-array accumulator.
-inline FiniteStats combine_components(const std::vector<FiniteStats>& rStats) {
-    FiniteStats all;
-    for (const FiniteStats& s : rStats)
-        all.Merge(s);
-    return all;
-}
-
-/**
- * @brief Unsigned area of a corner polygon (triangle / quad) via the Newell
- * normal. Mirrors `stats_area` in `operations/stats.cpp`.
- * @param rCoords the corner coordinates.
- * @param Corners how many of them form the polygon.
- * @return the unsigned area, or 0 for fewer than 3 corners.
- */
-inline double polygon_area(const std::vector<Vec3>& rCoords, int Corners) {
-    if (Corners < 3)
-        return 0.0;
-    Vec3 s = {0, 0, 0};
-    for (int i = 0; i < Corners; ++i)
-        s = vec3_add(s, vec3_cross(rCoords[i], rCoords[(i + 1) % Corners]));
-    return 0.5 * vec3_norm(s);
-}
-
-/**
- * @brief Signed volume of a 3D cell via the divergence theorem over its
- * outward-wound boundary faces. Mirrors `stats_signed_volume`.
- * @param rCoords the cell's corner coordinates.
- * @param Type the cell type, which supplies the face table.
- * @return the signed volume, or NaN for a type with no face table.
- */
-inline double cell_signed_volume(const std::vector<Vec3>& rCoords, CellType Type) {
-    const std::vector<CellFaceDef>& faces = cell_faces(Type);
-    if (faces.empty())
-        return std::nan("");
-    double vol6 = 0.0;
-    for (const CellFaceDef& f : faces) {
-        const Vec3 a = rCoords[f.mNodes[0]];
-        for (int i = 1; i + 1 < f.mNumCorners; ++i)
-            vol6 += triple_product(a, rCoords[f.mNodes[i]], rCoords[f.mNodes[i + 1]]);
-    }
-    return vol6 / 6.0;
-}
+FiniteStats combine_components(const std::vector<FiniteStats>& rStats);
 
 /**
  * @brief The |measure| of one cell — length for a 1D cell, area for a 2D cell,
@@ -4433,82 +3692,12 @@ inline double cell_signed_volume(const std::vector<Vec3>& rCoords, CellType Type
  * @param Index the cell index within the block.
  * @return the unsigned measure, or NaN.
  */
-inline double cell_measure(const NDArray& rPoints, std::size_t PointDim,
-                           const Mesh::CellView& rCell, std::size_t Index) {
-    if (rCell.IsRagged() || rCell.IsPolyhedron())
-        return std::nan("");
-    const CellType ct = cell_type_from_name(rCell.Type());
-    const int corners = cell_corner_count(ct);
-    if (corners <= 0)
-        return std::nan("");
-    std::vector<Vec3> coords;
-    read_corner_coords(rPoints, PointDim, rCell.Conn(), Index * rCell.NodesPerCell(),
-                       static_cast<std::size_t>(corners), coords);
-    const int dim = cell_type_dimension(ct);
-    if (dim == 3) {
-        const double v = cell_signed_volume(coords, ct);
-        return std::isnan(v) ? v : std::fabs(v);
-    }
-    if (dim == 2)
-        return polygon_area(coords, corners);
-    if (dim == 1 && corners >= 2)
-        return vec3_norm(vec3_sub(coords[1], coords[0]));
-    return std::nan("");
-}
+double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
+                    std::size_t Index);
 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/data_ops.hpp =====
-// ===== begin cpp/include/meshioplusplus/exceptions.hpp =====
-/**
- * @file exceptions.hpp
- * @brief meshio I/O exception types thrown by the C++ core's readers/writers.
- *
- * These are the only exception types the C++ format readers/writers throw on
- * I/O failure (malformed input, unsupported constructs, filesystem errors,
- * etc.). The pybind11 binding layer catches them and re-raises the
- * equivalent Python `meshioplusplus.ReadError` / `meshioplusplus.WriteError`
- * classes, so callers on the Python side see identical behaviour whether a
- * format is handled by the C++ core or by the pure-Python fallback. Because
- * the shim pattern (`__init__.py`) catches *any* exception from the C++ path
- * to decide whether to fall back to Python, throwing these (rather than
- * e.g. asserting or returning error codes) is what makes that fallback work.
- */
-
-// System includes
-#include <stdexcept>
-#include <string>
-
-namespace meshioplusplus {
-
-/**
- * @brief Thrown by C++ readers when the input file/stream cannot be parsed.
- *
- * Covers malformed content, missing required sections, and unsupported
- * constructs that a given format's C++ reader deliberately does not handle
- * (in which case the format's Python shim catches this and falls back to the
- * pure-Python reference reader). Maps 1:1 to Python's `meshioplusplus.ReadError`.
- */
-struct ReadError : std::runtime_error {
-    ReadError() : std::runtime_error("") {}
-    explicit ReadError(const std::string& rMsg) : std::runtime_error(rMsg) {}
-};
-
-/**
- * @brief Thrown by C++ writers when a mesh cannot be serialized to a format.
- *
- * Covers unsupported cell types, ragged/ill-formed mesh data the writer does
- * not accept, and any other output-side constraint violation (in which case
- * the format's Python shim catches this and falls back to the pure-Python
- * reference writer). Maps 1:1 to Python's `meshioplusplus.WriteError`.
- */
-struct WriteError : std::runtime_error {
-    WriteError() : std::runtime_error("") {}
-    explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
-};
-
-}  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/exceptions.hpp =====
 // ===== begin cpp/include/meshioplusplus/read_options.hpp =====
 /**
  * @file read_options.hpp
@@ -4723,37 +3912,19 @@ MeshMetadata metadata_from_mesh(const Mesh& rMesh);
  * in the returned mesh**. A gtest reads a file, then deletes and overwrites it,
  * and re-validates the mesh, so a violation fails loudly rather than becoming a
  * use-after-free in someone else's process.
+ *
+ * Implementation (`cpp/src/file_source.cpp`) is out-of-line: every platform
+ * header (`<windows.h>`, `<sys/mman.h>`, ...) stays there rather than leaking
+ * into every translation unit -- and every amalgamation consumer -- that merely
+ * needs the declarations below.
  */
 
 // System includes
 #include <cstddef>
-#include <cstdio>
-#include <cstdlib>
-#include <fstream>
 #include <string>
 #include <string_view>
-#include <utility>
 
 // Project includes
-
-#if defined(__EMSCRIPTEN__)
-// No mapping under Emscripten: the virtual FS has nothing to map.
-#elif defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-// This header reaches user translation units through the amalgamation, so
-// <windows.h> must not be allowed to define min/max macros there.
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 namespace meshioplusplus {
 namespace detail {
@@ -4775,30 +3946,18 @@ public:
      *        `mmap_auto_threshold_bytes`.
      * @throws ReadError only if the file cannot be read at all.
      */
-    explicit FileSource(const std::string& rPath, Mode mode = Mode::Auto) {
-        if (mode != Mode::Buffered && TryMap(rPath, mode == Mode::Mmap))
-            return;
-        LoadBuffered(rPath);
-    }
+    explicit FileSource(const std::string& rPath, Mode mode = Mode::Auto);
 
     /** @brief Open honouring a `ReadOptions`' mmap preference. */
-    FileSource(const std::string& rPath, MmapMode mmap_mode)
-        : FileSource(rPath, FromMmapMode(mmap_mode)) {}
+    FileSource(const std::string& rPath, MmapMode mmap_mode);
 
-    ~FileSource() { Release(); }
+    ~FileSource();
 
     FileSource(const FileSource&) = delete;
     FileSource& operator=(const FileSource&) = delete;
 
-    FileSource(FileSource&& rOther) noexcept { MoveFrom(std::move(rOther)); }
-
-    FileSource& operator=(FileSource&& rOther) noexcept {
-        if (this != &rOther) {
-            Release();
-            MoveFrom(std::move(rOther));
-        }
-        return *this;
-    }
+    FileSource(FileSource&& rOther) noexcept;
+    FileSource& operator=(FileSource&& rOther) noexcept;
 
     /** @brief First byte of the file contents; never null (may be empty). */
     const char* Data() const { return mpData ? mpData : mBuffer.data(); }
@@ -4813,33 +3972,10 @@ public:
     bool IsMapped() const { return mMapped; }
 
 private:
-    static Mode FromMmapMode(MmapMode mmap_mode) {
-        switch (mmap_mode) {
-            case MmapMode::On:
-                return Mode::Mmap;
-            case MmapMode::Off:
-                return Mode::Buffered;
-            default:
-                return Mode::Auto;
-        }
-    }
+    static Mode FromMmapMode(MmapMode mmap_mode);
 
     /** @brief Read the whole file into `mBuffer` with one bulk read. */
-    void LoadBuffered(const std::string& rPath) {
-        std::ifstream in(rPath, std::ios::binary);
-        if (!in)
-            throw ReadError("Could not open file: " + rPath);
-        in.seekg(0, std::ios::end);
-        const std::streamoff len = in.tellg();
-        in.seekg(0, std::ios::beg);
-        if (len > 0) {
-            mBuffer.resize(static_cast<std::size_t>(len));
-            in.read(mBuffer.data(), len);
-        }
-        mSize = mBuffer.size();
-        mpData = nullptr;
-        mMapped = false;
-    }
+    void LoadBuffered(const std::string& rPath);
 
     /**
      * @brief Attempt to map @p rPath.
@@ -4847,66 +3983,7 @@ private:
      * @return false when mapping is unavailable or not worth it -- never throws,
      *         so the caller simply falls back.
      */
-    bool TryMap(const std::string& rPath, bool force) {
-#if defined(__EMSCRIPTEN__)
-        (void)rPath;
-        (void)force;
-        return false;  // nothing to map on the virtual filesystem
-#elif defined(_WIN32)
-        HANDLE file = CreateFileA(rPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE)
-            return false;
-        LARGE_INTEGER size;
-        if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 ||
-            !WorthMapping(size.QuadPart, force)) {
-            CloseHandle(file);
-            return false;
-        }
-        HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
-        if (!mapping) {
-            CloseHandle(file);
-            return false;
-        }
-        void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
-        if (!view) {
-            CloseHandle(mapping);
-            CloseHandle(file);
-            return false;
-        }
-        mpData = static_cast<const char*>(view);
-        mSize = static_cast<std::size_t>(size.QuadPart);
-        mWinFile = file;
-        mWinMapping = mapping;
-        mMapped = true;
-        return true;
-#else
-        const int fd = ::open(rPath.c_str(), O_RDONLY);
-        if (fd < 0)
-            return false;
-        struct stat st{};
-        // Only regular files: a pipe or character device has no meaningful size
-        // and cannot be mapped.
-        if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
-            !WorthMapping(static_cast<long long>(st.st_size), force)) {
-            ::close(fd);
-            return false;
-        }
-        void* addr =
-            ::mmap(nullptr, static_cast<std::size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
-        ::close(fd);  // the mapping keeps its own reference to the file
-        if (addr == MAP_FAILED)
-            return false;
-#if defined(POSIX_MADV_SEQUENTIAL)
-        // Parsers walk the buffer front to back.
-        ::posix_madvise(addr, static_cast<std::size_t>(st.st_size), POSIX_MADV_SEQUENTIAL);
-#endif
-        mpData = static_cast<const char*>(addr);
-        mSize = static_cast<std::size_t>(st.st_size);
-        mMapped = true;
-        return true;
-#endif
-    }
+    bool TryMap(const std::string& rPath, bool force);
 
     /**
      * @brief Whether a mapping of @p size bytes would have a readable zero byte
@@ -4920,20 +3997,7 @@ private:
      * fault. Refusing to map those (a ~1-in-4096 case) buys the guarantee back
      * for the cost of a buffered read.
      */
-    static bool HasTerminatorSlack(long long size) {
-#if defined(__EMSCRIPTEN__)
-        (void)size;
-        return false;
-#elif defined(_WIN32)
-        SYSTEM_INFO info;
-        GetSystemInfo(&info);
-        const long long page = static_cast<long long>(info.dwPageSize);
-        return page > 0 && (size % page) != 0;
-#else
-        const long long page = static_cast<long long>(::sysconf(_SC_PAGESIZE));
-        return page > 0 && (size % page) != 0;
-#endif
-    }
+    static bool HasTerminatorSlack(long long size);
 
     /**
      * @brief Whether a file of @p size bytes is worth mapping under `Auto`.
@@ -4943,68 +4007,21 @@ private:
      * `MESHIOPLUSPLUS_MMAP_THRESHOLD` overrides it (bytes) for benchmarking; 0
      * means always map.
      */
-    static bool WorthMapping(long long size, bool force) {
-        // Applies even to an explicit request: `Mmap` is a preference, and
-        // silently trading a guarantee for it would be the wrong bargain.
-        if (!HasTerminatorSlack(size))
-            return false;
-        if (force)
-            return true;
-        static const std::size_t threshold = [] {
-            if (const char* env = std::getenv("MESHIOPLUSPLUS_MMAP_THRESHOLD")) {
-                char* end = nullptr;
-                const unsigned long long v = std::strtoull(env, &end, 10);
-                if (end && end != env)
-                    return static_cast<std::size_t>(v);
-            }
-            return mmap_auto_threshold_bytes;
-        }();
-        return static_cast<std::size_t>(size) >= threshold;
-    }
+    static bool WorthMapping(long long size, bool force);
 
-    void Release() {
-#if defined(__EMSCRIPTEN__)
-#elif defined(_WIN32)
-        if (mMapped && mpData)
-            UnmapViewOfFile(mpData);
-        if (mWinMapping)
-            CloseHandle(mWinMapping);
-        if (mWinFile && mWinFile != INVALID_HANDLE_VALUE)
-            CloseHandle(mWinFile);
-        mWinMapping = nullptr;
-        mWinFile = nullptr;
-#else
-        if (mMapped && mpData && mSize)
-            ::munmap(const_cast<char*>(mpData), mSize);
-#endif
-        mpData = nullptr;
-        mSize = 0;
-        mMapped = false;
-    }
-
-    void MoveFrom(FileSource&& rOther) noexcept {
-        mBuffer = std::move(rOther.mBuffer);
-        mpData = rOther.mpData;
-        mSize = rOther.mSize;
-        mMapped = rOther.mMapped;
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-        mWinFile = rOther.mWinFile;
-        mWinMapping = rOther.mWinMapping;
-        rOther.mWinFile = nullptr;
-        rOther.mWinMapping = nullptr;
-#endif
-        rOther.mpData = nullptr;
-        rOther.mSize = 0;
-        rOther.mMapped = false;
-    }
+    void Release();
+    void MoveFrom(FileSource&& rOther) noexcept;
 
     std::string mBuffer;           ///< Backing store when not mapped.
     const char* mpData = nullptr;  ///< Mapped address, or null when buffered.
     std::size_t mSize = 0;
     bool mMapped = false;
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    HANDLE mWinFile = nullptr;
-    HANDLE mWinMapping = nullptr;
+    // void*, not HANDLE: HANDLE is void* under the hood, and using it directly
+    // here would drag <windows.h> into every consumer of this header. The
+    // .cpp casts back to HANDLE where it actually calls the Win32 API.
+    void* mWinFile = nullptr;
+    void* mWinMapping = nullptr;
 #endif
 };
 
@@ -5080,6 +4097,138 @@ std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&...
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/format_compat.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/geometry.hpp =====
+/**
+ * @file geometry.hpp
+ * @brief Small, dependency-free 3D vector primitives and mesh-coordinate
+ * readers shared by the mesh-operations layer (`operations/quality.cpp`,
+ * `operations/surface.cpp`).
+ *
+ * `Vec3` is a plain `std::array<double, 3>`; the `vec3_*`/`triple_product`/
+ * `det3` primitives are tiny per-operation arithmetic invoked repeatedly
+ * inside per-cell hot loops (surface normals, quality metrics), so they stay
+ * `inline` here rather than moving to a `.cpp` — at that call frequency,
+ * removing the function-call boundary is what lets the compiler fold/
+ * vectorize the surrounding loop. `read_point`/`read_corner_coords`/
+ * `cell_corner_count` are each called once per cell (not once per scalar), so
+ * their bodies live in `cpp/src/detail/geometry.cpp` instead.
+ *
+ * Coordinates are pulled out of an `NDArray` through `detail::read_double`, so
+ * these work regardless of the point/connectivity dtype and under every mesh
+ * backend.
+ */
+
+// System includes
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A point/vector in 3D. 2D meshes are padded with z = 0 on read.
+using Vec3 = std::array<double, 3>;
+
+/** @brief Component-wise difference `a - b`. */
+inline Vec3 vec3_sub(const Vec3& a, const Vec3& b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+/** @brief Component-wise sum `a + b`. */
+inline Vec3 vec3_add(const Vec3& a, const Vec3& b) {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+}
+
+/** @brief Scalar multiple `s * a`. */
+inline Vec3 vec3_scale(const Vec3& a, double s) {
+    return {a[0] * s, a[1] * s, a[2] * s};
+}
+
+/** @brief Dot product `a . b`. */
+inline double vec3_dot(const Vec3& a, const Vec3& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+/** @brief Cross product `a x b`. */
+inline Vec3 vec3_cross(const Vec3& a, const Vec3& b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+/** @brief Squared Euclidean length `a . a`. */
+inline double vec3_norm_sq(const Vec3& a) {
+    return vec3_dot(a, a);
+}
+
+/** @brief Euclidean length `|a|`. */
+inline double vec3_norm(const Vec3& a) {
+    return std::sqrt(vec3_norm_sq(a));
+}
+
+/**
+ * @brief Unit vector along `a`, or the zero vector when `|a| < eps`.
+ * @param a Vector to normalize.
+ * @param eps Length below which `a` is treated as degenerate.
+ * @return `a / |a|`, or `{0,0,0}` if `|a| < eps`.
+ */
+inline Vec3 vec3_normalize(const Vec3& a, double eps = 1e-300) {
+    const double n = vec3_norm(a);
+    if (n < eps)
+        return {0.0, 0.0, 0.0};
+    return vec3_scale(a, 1.0 / n);
+}
+
+/** @brief Scalar triple product `a . (b x c)` (signed volume of the parallelepiped). */
+inline double triple_product(const Vec3& a, const Vec3& b, const Vec3& c) {
+    return vec3_dot(a, vec3_cross(b, c));
+}
+
+/** @brief Determinant of the 3x3 matrix whose columns are `c0`, `c1`, `c2`. */
+inline double det3(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
+    return triple_product(c0, c1, c2);
+}
+
+/**
+ * @brief Reads global point @p nodeId as a `Vec3`, padding z = 0 when the mesh
+ * is 2D (`pointDim == 2`).
+ * @param rPoints The `(num_points, pointDim)` point array.
+ * @param pointDim Spatial dimension of the points (2 or 3).
+ * @param nodeId Global point index.
+ * @return The point's coordinates, with unused components set to 0.
+ */
+Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId);
+
+/**
+ * @brief Reads the first @p n connectivity entries of one cell row into @p rOut
+ * as `Vec3` coordinates (used to gather a cell's corner nodes).
+ * @param rPoints The point array.
+ * @param pointDim Spatial dimension of the points.
+ * @param rConn The block connectivity array.
+ * @param rowOffset Flat offset of the cell's row (`cell * nodes_per_cell`).
+ * @param n Number of leading entries to read (the corner count).
+ * @param rOut Cleared and filled with @p n coordinates.
+ */
+void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
+                        std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut);
+
+/**
+ * @brief Number of corner (linear-parent) nodes of a cell type. Corners are
+ * always the leading connectivity entries in meshio/VTK ordering, so a
+ * quadratic cell can be reduced to its linear parent by reading the first
+ * `cell_corner_count(type)` nodes.
+ * @param type The cell type to query.
+ * @return The corner count, or 0 for variable-node-count / unsupported types
+ *         (`Polygon`, `Polyhedron`, the VTK Lagrange family, `Custom`) — the
+ *         caller must skip those.
+ */
+int cell_corner_count(CellType type);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/geometry.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
 /**
  * @file hdf5_util.hpp
@@ -5101,6 +4250,13 @@ std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&...
  * `MESHIOPLUSPLUS_HAS_HDF5` is not defined, i.e. when the build has no HDF5
  * library — the HDF-dependent C++ code paths are then simply absent and
  * callers fall back to the pure-Python (h5py-based) implementation.
+ *
+ * `Hid`'s methods and `SilenceErrors` are small RAII glue (a handful of lines
+ * each), so they stay inline; every free function below is called once per
+ * dataset/attribute/group (never once per element), so bodies live in
+ * `cpp/src/detail/hdf5_util.cpp` (itself `#ifdef`-guarded to compile to an
+ * empty TU when HDF5 is absent, matching every HDF5-backed format's own
+ * `.cpp`) rather than inline here.
  */
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -5110,7 +4266,6 @@ std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&...
 
 // System includes
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -5165,12 +4320,7 @@ private:
  * @return Owning `Hid` for the open file.
  * @throws ReadError if the file cannot be opened.
  */
-inline Hid open_file_read(const std::string& rPath) {
-    Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
-    if (!f.Valid())
-        throw ReadError("HDF5: could not open file " + rPath);
-    return f;
-}
+Hid open_file_read(const std::string& rPath);
 
 /**
  * @brief Creates a new HDF5 file, truncating any existing file at `path`.
@@ -5178,12 +4328,7 @@ inline Hid open_file_read(const std::string& rPath) {
  * @return Owning `Hid` for the new file.
  * @throws WriteError if the file cannot be created.
  */
-inline Hid create_file(const std::string& rPath) {
-    Hid f(H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), H5Fclose);
-    if (!f.Valid())
-        throw WriteError("HDF5: could not create file " + rPath);
-    return f;
-}
+Hid create_file(const std::string& rPath);
 
 /**
  * @brief Whether a link named `name` exists directly under group/file `loc`.
@@ -5191,9 +4336,7 @@ inline Hid create_file(const std::string& rPath) {
  * @param rName Link name to test.
  * @return `true` if the link exists.
  */
-inline bool exists(hid_t loc, const std::string& rName) {
-    return H5Lexists(loc, rName.c_str(), H5P_DEFAULT) > 0;
-}
+bool exists(hid_t loc, const std::string& rName);
 
 /**
  * @brief Opens an existing HDF5 group.
@@ -5202,12 +4345,7 @@ inline bool exists(hid_t loc, const std::string& rName) {
  * @return Owning `Hid` for the opened group.
  * @throws ReadError if the group does not exist.
  */
-inline Hid open_group(hid_t loc, const std::string& rName) {
-    Hid g(H5Gopen2(loc, rName.c_str(), H5P_DEFAULT), H5Gclose);
-    if (!g.Valid())
-        throw ReadError("HDF5: missing group '" + rName + "'");
-    return g;
-}
+Hid open_group(hid_t loc, const std::string& rName);
 
 /**
  * @brief Creates a new HDF5 group.
@@ -5216,12 +4354,7 @@ inline Hid open_group(hid_t loc, const std::string& rName) {
  * @return Owning `Hid` for the new group.
  * @throws WriteError if the group cannot be created.
  */
-inline Hid create_group(hid_t loc, const std::string& rName) {
-    Hid g(H5Gcreate2(loc, rName.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT), H5Gclose);
-    if (!g.Valid())
-        throw WriteError("HDF5: could not create group '" + rName + "'");
-    return g;
-}
+Hid create_group(hid_t loc, const std::string& rName);
 
 /**
  * @brief Maps a `meshioplusplus::DType` to the native in-memory HDF5 type used
@@ -5231,31 +4364,7 @@ inline Hid create_group(hid_t loc, const std::string& rName) {
  * @return The matching `H5T_NATIVE_*` constant (defaults to
  *         `H5T_NATIVE_DOUBLE` for an unrecognized/invalid `dt`).
  */
-inline hid_t native_type(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return H5T_NATIVE_FLOAT;
-        case DType::Float64:
-            return H5T_NATIVE_DOUBLE;
-        case DType::Int8:
-            return H5T_NATIVE_INT8;
-        case DType::Int16:
-            return H5T_NATIVE_INT16;
-        case DType::Int32:
-            return H5T_NATIVE_INT32;
-        case DType::Int64:
-            return H5T_NATIVE_INT64;
-        case DType::UInt8:
-            return H5T_NATIVE_UINT8;
-        case DType::UInt16:
-            return H5T_NATIVE_UINT16;
-        case DType::UInt32:
-            return H5T_NATIVE_UINT32;
-        case DType::UInt64:
-            return H5T_NATIVE_UINT64;
-    }
-    return H5T_NATIVE_DOUBLE;
-}
+hid_t native_type(DType dt);
 
 /**
  * @brief Maps a `meshioplusplus::DType` to the on-disk (file) HDF5 type to use
@@ -5267,31 +4376,7 @@ inline hid_t native_type(DType dt) {
  * @param dt The dtype to convert.
  * @return The matching `H5T_*LE` constant (defaults to `H5T_IEEE_F64LE`).
  */
-inline hid_t file_type(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return H5T_IEEE_F32LE;
-        case DType::Float64:
-            return H5T_IEEE_F64LE;
-        case DType::Int8:
-            return H5T_STD_I8LE;
-        case DType::Int16:
-            return H5T_STD_I16LE;
-        case DType::Int32:
-            return H5T_STD_I32LE;
-        case DType::Int64:
-            return H5T_STD_I64LE;
-        case DType::UInt8:
-            return H5T_STD_U8LE;
-        case DType::UInt16:
-            return H5T_STD_U16LE;
-        case DType::UInt32:
-            return H5T_STD_U32LE;
-        case DType::UInt64:
-            return H5T_STD_U64LE;
-    }
-    return H5T_IEEE_F64LE;
-}
+hid_t file_type(DType dt);
 
 /**
  * @brief Converts a stored HDF5 datatype (of a dataset or attribute) to the
@@ -5300,26 +4385,7 @@ inline hid_t file_type(DType dt) {
  * @return The matching `DType`.
  * @throws ReadError if `type_id`'s class is neither float nor integer.
  */
-inline DType dtype_from_h5(hid_t type_id) {
-    H5T_class_t cls = H5Tget_class(type_id);
-    std::size_t sz = H5Tget_size(type_id);
-    if (cls == H5T_FLOAT)
-        return sz == 4 ? DType::Float32 : DType::Float64;
-    if (cls == H5T_INTEGER) {
-        bool is_signed = H5Tget_sign(type_id) != H5T_SGN_NONE;
-        switch (sz) {
-            case 1:
-                return is_signed ? DType::Int8 : DType::UInt8;
-            case 2:
-                return is_signed ? DType::Int16 : DType::UInt16;
-            case 4:
-                return is_signed ? DType::Int32 : DType::UInt32;
-            default:
-                return is_signed ? DType::Int64 : DType::UInt64;
-        }
-    }
-    throw ReadError("HDF5: unsupported datatype class");
-}
+DType dtype_from_h5(hid_t type_id);
 
 /**
  * @brief Reads a full HDF5 dataset into a freshly-allocated, owning `NDArray`.
@@ -5336,53 +4402,7 @@ inline DType dtype_from_h5(hid_t type_id) {
  * @return A new owning `NDArray` holding the dataset's contents.
  * @throws ReadError if the dataset is missing or the read fails.
  */
-inline NDArray read_dataset(hid_t loc, const std::string& rName) {
-    Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
-    if (!d.Valid())
-        throw ReadError("HDF5: missing dataset '" + rName + "'");
-    Hid space(H5Dget_space(d), H5Sclose);
-    int ndim = H5Sget_simple_extent_ndims(space);
-    std::vector<hsize_t> hdims(ndim > 0 ? ndim : 0);
-    if (ndim > 0)
-        H5Sget_simple_extent_dims(space, hdims.data(), nullptr);
-    Hid dt(H5Dget_type(d), H5Tclose);
-
-    std::vector<std::size_t> shape(hdims.begin(), hdims.end());
-    if (shape.empty())
-        shape.push_back(1);  // scalar -> length-1
-
-    DType mdt;
-    if (H5Tget_class(dt) == H5T_ARRAY) {
-        Hid base(H5Tget_super(dt), H5Tclose);
-        mdt = dtype_from_h5(base);
-        int arank = H5Tget_array_ndims(dt);
-        std::vector<hsize_t> adims(arank > 0 ? arank : 0);
-        if (arank > 0)
-            H5Tget_array_dims2(dt, adims.data());
-        for (hsize_t ad : adims)
-            shape.push_back(static_cast<std::size_t>(ad));
-    } else {
-        mdt = dtype_from_h5(dt);
-    }
-
-    NDArray out(mdt, shape);
-    if (out.Size() > 0) {
-        // For ARRAY-typed datasets the memory type must be the matching array
-        // type; for scalar types the plain native type suffices.
-        if (H5Tget_class(dt) == H5T_ARRAY) {
-            int arank = H5Tget_array_ndims(dt);
-            std::vector<hsize_t> adims(arank > 0 ? arank : 0);
-            if (arank > 0)
-                H5Tget_array_dims2(dt, adims.data());
-            Hid mem(H5Tarray_create2(native_type(mdt), arank, adims.data()), H5Tclose);
-            if (H5Dread(d, mem, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0)
-                throw ReadError("HDF5: failed reading dataset '" + rName + "'");
-        } else if (H5Dread(d, native_type(mdt), H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0) {
-            throw ReadError("HDF5: failed reading dataset '" + rName + "'");
-        }
-    }
-    return out;
-}
+NDArray read_dataset(hid_t loc, const std::string& rName);
 
 /**
  * @brief Writes a full dataset in one call, optionally gzip-compressed.
@@ -5400,29 +4420,7 @@ inline NDArray read_dataset(hid_t loc, const std::string& rName) {
  *                   compression (the default).
  * @throws WriteError if the dataset cannot be created or the write fails.
  */
-inline void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr,
-                          int gzip_level = -1) {
-    std::vector<hsize_t> hdims(rArr.Shape().begin(), rArr.Shape().end());
-    if (hdims.empty())
-        hdims.push_back(0);
-    Hid space(H5Screate_simple(static_cast<int>(hdims.size()), hdims.data(), nullptr), H5Sclose);
-
-    Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
-    if (gzip_level >= 0 && rArr.Size() > 0) {
-        H5Pset_chunk(dcpl, static_cast<int>(hdims.size()), hdims.data());
-        H5Pset_deflate(dcpl, static_cast<unsigned>(gzip_level));
-    }
-
-    Hid d(H5Dcreate2(loc, rName.c_str(), file_type(rArr.Dtype()), space, H5P_DEFAULT, dcpl,
-                     H5P_DEFAULT),
-          H5Dclose);
-    if (!d.Valid())
-        throw WriteError("HDF5: could not create dataset '" + rName + "'");
-    if (rArr.Size() > 0) {
-        if (H5Dwrite(d, native_type(rArr.Dtype()), H5S_ALL, H5S_ALL, H5P_DEFAULT, rArr.Data()) < 0)
-            throw WriteError("HDF5: failed writing dataset '" + rName + "'");
-    }
-}
+void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int gzip_level = -1);
 
 // ---- attribute helpers ----
 
@@ -5432,9 +4430,7 @@ inline void write_dataset(hid_t loc, const std::string& rName, const NDArray& rA
  * @param rName Attribute name to test.
  * @return `true` if the attribute exists.
  */
-inline bool has_attr(hid_t loc, const std::string& rName) {
-    return H5Aexists(loc, rName.c_str()) > 0;
-}
+bool has_attr(hid_t loc, const std::string& rName);
 
 /**
  * @brief Reads a scalar integer attribute.
@@ -5443,15 +4439,7 @@ inline bool has_attr(hid_t loc, const std::string& rName) {
  * @return The attribute's value as `int64_t`.
  * @throws ReadError if the attribute is missing or unreadable.
  */
-inline std::int64_t read_attr_int(hid_t loc, const std::string& rName) {
-    Hid a(H5Aopen(loc, rName.c_str(), H5P_DEFAULT), H5Aclose);
-    if (!a.Valid())
-        throw ReadError("HDF5: missing attribute '" + rName + "'");
-    std::int64_t v = 0;
-    if (H5Aread(a, H5T_NATIVE_INT64, &v) < 0)
-        throw ReadError("HDF5: failed reading attribute '" + rName + "'");
-    return v;
-}
+std::int64_t read_attr_int(hid_t loc, const std::string& rName);
 
 /**
  * @brief Writes a scalar integer attribute.
@@ -5461,14 +4449,8 @@ inline std::int64_t read_attr_int(hid_t loc, const std::string& rName) {
  * @param ftype On-disk integer type to store as (default `H5T_STD_I64LE`).
  * @throws WriteError if the attribute cannot be created.
  */
-inline void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v,
-                           hid_t ftype = H5T_STD_I64LE) {
-    Hid space(H5Screate(H5S_SCALAR), H5Sclose);
-    Hid a(H5Acreate2(loc, rName.c_str(), ftype, space, H5P_DEFAULT, H5P_DEFAULT), H5Aclose);
-    if (!a.Valid())
-        throw WriteError("HDF5: could not create attribute '" + rName + "'");
-    H5Awrite(a, H5T_NATIVE_INT64, &v);
-}
+void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v,
+                    hid_t ftype = H5T_STD_I64LE);
 
 /**
  * @brief Reads a string attribute, handling both variable- and fixed-length
@@ -5482,39 +4464,7 @@ inline void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v,
  * @return The attribute's value as a `std::string`.
  * @throws ReadError if the attribute is missing or unreadable.
  */
-inline std::string read_attr_string(hid_t loc, const std::string& rName) {
-    Hid a(H5Aopen(loc, rName.c_str(), H5P_DEFAULT), H5Aclose);
-    if (!a.Valid())
-        throw ReadError("HDF5: missing attribute '" + rName + "'");
-    Hid t(H5Aget_type(a), H5Tclose);
-    if (H5Tis_variable_str(t) > 0) {
-        char* p = nullptr;
-        Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
-        H5Tset_size(mt, H5T_VARIABLE);
-        H5Tset_cset(mt, H5Tget_cset(t));
-        if (H5Aread(a, mt, &p) < 0 || p == nullptr)
-            throw ReadError("HDF5: failed reading attribute '" + rName + "'");
-        std::string out(p);
-        H5free_memory(p);
-        return out;
-    }
-    std::size_t sz = H5Tget_size(t);
-    std::vector<char> buf(sz + 1, '\0');
-    Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
-    H5Tset_size(mt, sz);
-    H5Tset_cset(mt, H5Tget_cset(t));
-    // NULLPAD memory type: converting a NULLPAD file string into a NULLTERM
-    // memory string of the same size would truncate the last character to
-    // make room for the terminator.
-    H5Tset_strpad(mt, H5T_STR_NULLPAD);
-    if (H5Aread(a, mt, buf.data()) < 0)
-        throw ReadError("HDF5: failed reading attribute '" + rName + "'");
-    // trim trailing NULs/spaces
-    std::string out(buf.data(), strnlen(buf.data(), sz));
-    while (!out.empty() && out.back() == ' ')
-        out.pop_back();
-    return out;
-}
+std::string read_attr_string(hid_t loc, const std::string& rName);
 
 /**
  * @brief Writes a string attribute the way h5py does by default:
@@ -5527,17 +4477,7 @@ inline std::string read_attr_string(hid_t loc, const std::string& rName) {
  * @param rValue String value to write.
  * @throws WriteError if the attribute cannot be created.
  */
-inline void write_attr_string(hid_t loc, const std::string& rName, const std::string& rValue) {
-    Hid space(H5Screate(H5S_SCALAR), H5Sclose);
-    Hid t(H5Tcopy(H5T_C_S1), H5Tclose);
-    H5Tset_size(t, H5T_VARIABLE);
-    H5Tset_cset(t, H5T_CSET_UTF8);
-    Hid a(H5Acreate2(loc, rName.c_str(), t, space, H5P_DEFAULT, H5P_DEFAULT), H5Aclose);
-    if (!a.Valid())
-        throw WriteError("HDF5: could not create attribute '" + rName + "'");
-    const char* p = rValue.c_str();
-    H5Awrite(a, t, &p);
-}
+void write_attr_string(hid_t loc, const std::string& rName, const std::string& rValue);
 
 /**
  * @brief Lists the link (child) names directly under a group, in HDF5's
@@ -5545,21 +4485,7 @@ inline void write_attr_string(hid_t loc, const std::string& rName, const std::st
  * @param loc Group handle to list.
  * @return Child link names, in name order.
  */
-inline std::vector<std::string> group_links(hid_t loc) {
-    H5G_info_t info;
-    H5Gget_info(loc, &info);
-    std::vector<std::string> names;
-    names.reserve(info.nlinks);
-    for (hsize_t i = 0; i < info.nlinks; ++i) {
-        ssize_t len =
-            H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
-        std::string name(static_cast<std::size_t>(len), '\0');
-        H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
-                           static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
-        names.push_back(std::move(name));
-    }
-    return names;
-}
+std::vector<std::string> group_links(hid_t loc);
 
 /**
  * @brief Like `group_links`, but iterates in HDF5 link *creation* order when
@@ -5573,23 +4499,7 @@ inline std::vector<std::string> group_links(hid_t loc) {
  * @param loc Group handle to list.
  * @return Child link names, in creation order if indexed, else name order.
  */
-inline std::vector<std::string> group_links_crt(hid_t loc) {
-    H5G_info_t info;
-    H5Gget_info(loc, &info);
-    std::vector<std::string> names;
-    names.reserve(info.nlinks);
-    for (hsize_t i = 0; i < info.nlinks; ++i) {
-        ssize_t len = H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, nullptr, 0,
-                                         H5P_DEFAULT);
-        if (len < 0)
-            return group_links(loc);  // creation order not indexed
-        std::string name(static_cast<std::size_t>(len), '\0');
-        H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, name.data(),
-                           static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
-        names.push_back(std::move(name));
-    }
-    return names;
-}
+std::vector<std::string> group_links_crt(hid_t loc);
 
 /**
  * @brief RAII guard that silences HDF5's default stderr error-stack printing
@@ -5637,14 +4547,16 @@ struct SilenceErrors {
  * by the pure-Python fallback writers — the arithmetic (down to expression
  * order, which fixes the floating-point rounding) must stay identical so
  * TikZ output is byte-identical across the two implementations.
+ *
+ * `camera_basis` is called once per write, and `project_surface` once per
+ * mesh (its own per-point/per-face loops are unaffected by where the
+ * function itself is compiled), so both bodies live in
+ * `cpp/src/detail/projection.cpp` rather than inline here.
  */
 
 // System includes
-#include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstdint>
-#include <string>
 #include <vector>
 
 // Project includes
@@ -5667,56 +4579,7 @@ struct CameraBasis {
  * @param roll In-screen rotation in degrees about the view direction.
  * @return The `{u, v, w}` basis described in the file header.
  */
-inline CameraBasis camera_basis(double azimuth, double elevation, double roll) {
-    constexpr double deg = 3.141592653589793 / 180.0;
-    const double az = azimuth * deg;
-    const double el = elevation * deg;
-    const double caz = std::cos(az);
-    const double saz = std::sin(az);
-    const double cel = std::cos(el);
-    const double sel = std::sin(el);
-    const double w0 = cel * caz;
-    const double w1 = cel * saz;
-    const double w2 = sel;
-
-    double u0, u1, u2;
-    if (std::fabs(w2) > 1.0 - 1.0e-12) {
-        // Looking straight along z: use y as the up reference.
-        // u = normalize(cross((0,1,0), w))
-        const double n = std::sqrt(w2 * w2 + w0 * w0);
-        u0 = w2 / n;
-        u1 = 0.0;
-        u2 = -w0 / n;
-    } else {
-        // u = normalize(cross((0,0,1), w))
-        const double n = std::sqrt(w1 * w1 + w0 * w0);
-        u0 = -w1 / n;
-        u1 = w0 / n;
-        u2 = 0.0;
-    }
-    // v = cross(w, u)
-    double v0 = w1 * u2 - w2 * u1;
-    double v1 = w2 * u0 - w0 * u2;
-    double v2 = w0 * u1 - w1 * u0;
-
-    if (roll != 0.0) {
-        const double cr = std::cos(roll * deg);
-        const double sr = std::sin(roll * deg);
-        const double ru0 = cr * u0 + sr * v0;
-        const double ru1 = cr * u1 + sr * v1;
-        const double ru2 = cr * u2 + sr * v2;
-        const double rv0 = -sr * u0 + cr * v0;
-        const double rv1 = -sr * u1 + cr * v1;
-        const double rv2 = -sr * u2 + cr * v2;
-        u0 = ru0;
-        u1 = ru1;
-        u2 = ru2;
-        v0 = rv0;
-        v1 = rv1;
-        v2 = rv2;
-    }
-    return CameraBasis{{u0, u1, u2}, {v0, v1, v2}, {w0, w1, w2}};
-}
+CameraBasis camera_basis(double azimuth, double elevation, double roll);
 
 /** @brief One drawable face of a projected surface: 2-4 corner point ids. */
 struct ProjectedFace {
@@ -5750,64 +4613,7 @@ struct ProjectedSurface {
  * @param roll In-screen rotation in degrees.
  * @return Projected screen coordinates per point and the sorted face list.
  */
-inline ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double elevation,
-                                        double roll) {
-    const CameraBasis cam = camera_basis(azimuth, elevation, roll);
-    const NDArray& points = rMesh.Points();
-    const std::size_t num_points = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-
-    ProjectedSurface out;
-    out.mX.resize(num_points);
-    out.mY.resize(num_points);
-    std::vector<double> depth(num_points);
-    for (std::size_t i = 0; i < num_points; ++i) {
-        const double px = (0 < dim) ? read_double(points, i * dim + 0) : 0.0;
-        const double py = (1 < dim) ? read_double(points, i * dim + 1) : 0.0;
-        const double pz = (2 < dim) ? read_double(points, i * dim + 2) : 0.0;
-        out.mX[i] = px * cam.mU[0] + py * cam.mU[1] + pz * cam.mU[2];
-        out.mY[i] = px * cam.mV[0] + py * cam.mV[1] + pz * cam.mV[2];
-        depth[i] = px * cam.mW[0] + py * cam.mW[1] + pz * cam.mW[2];
-    }
-
-    for (const auto cb : rMesh.CellRange()) {
-        const std::string& type = cb.Type();
-        std::uint8_t n_corner = 0;
-        bool is_line = false;
-        if (type == "line") {
-            n_corner = 2;
-            is_line = true;
-        } else if (type == "triangle" || type == "triangle6") {
-            n_corner = 3;
-        } else if (type == "quad" || type == "quad8" || type == "quad9") {
-            n_corner = 4;
-        } else {
-            continue;
-        }
-        const NDArray& conn = cb.Conn();
-        const std::size_t ncols = cols(conn);
-        const std::size_t n = cb.NumCells();
-        for (std::size_t r = 0; r < n; ++r) {
-            ProjectedFace face;
-            face.mNodes = {-1, -1, -1, -1};
-            face.mNumNodes = n_corner;
-            face.mIsLine = is_line;
-            double d = 0.0;
-            for (std::uint8_t k = 0; k < n_corner; ++k) {
-                const std::int64_t p = read_int(conn, r * ncols + k);
-                face.mNodes[k] = p;
-                d += depth[static_cast<std::size_t>(p)];
-            }
-            face.mDepth = d / static_cast<double>(n_corner);
-            out.mFaces.push_back(face);
-        }
-    }
-
-    std::stable_sort(
-        out.mFaces.begin(), out.mFaces.end(),
-        [](const ProjectedFace& rA, const ProjectedFace& rB) { return rA.mDepth < rB.mDepth; });
-    return out;
-}
+ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double elevation, double roll);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -5881,15 +4687,15 @@ private:
  * `crop` and `split` operations: prune the points to only those referenced by
  * the kept cells, compact + remap connectivity, and gather all data arrays.
  *
- * Header-only free functions in `meshioplusplus::detail` (exempt from the
- * anonymous-namespace unique-prefix rule the amalgamation imposes on `.cpp`
- * TUs). Built on the uniform mesh API only, so it works under every backend.
+ * Free functions in `meshioplusplus::detail`, each called once per crop/split
+ * operation (not per element), so their bodies live in
+ * `cpp/src/detail/subset.cpp` rather than inline here. Built on the uniform
+ * mesh API only, so it works under every backend.
  */
 
 // System includes
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -5909,27 +4715,7 @@ struct SubsetResult {
 };
 
 /// Row-preserving gather: out[j] = src[idx[j]] (whole trailing dims), dtype kept.
-inline NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx) {
-    const std::vector<std::size_t>& shp = rSrc.Shape();
-    std::size_t cols = 1;
-    for (std::size_t d = 1; d < shp.size(); ++d)
-        cols *= shp[d];
-    std::vector<std::size_t> out_shape = shp;
-    if (out_shape.empty())
-        out_shape = {rIdx.size()};
-    else
-        out_shape[0] = rIdx.size();
-    NDArray out = NDArray::Uninit(rSrc.Dtype(), out_shape);
-    const std::size_t rb = cols * dtype_size(rSrc.Dtype());
-    if (rb == 0)
-        return out;
-    const std::byte* s = rSrc.Data();
-    std::byte* d = out.Data();
-    parallel_for_bw(rIdx.size(), [&](std::size_t j) {
-        std::memcpy(d + j * rb, s + static_cast<std::size_t>(rIdx[j]) * rb, rb);
-    });
-    return out;
-}
+NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx);
 
 /**
  * @brief Build a submesh containing exactly the chosen cells, pruning points to
@@ -5943,393 +4729,14 @@ inline NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::in
  *        indices under this name (per block).
  * @return the pruned submesh plus the point/cell index maps.
  */
-inline SubsetResult build_cell_subset(
-    const Mesh& rMesh, const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
-    const std::string& rPointIdName = "", const std::string& rCellIdName = "",
-    bool drop_empty_blocks = false) {
-    SubsetResult res;
-    const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    const NDArray& points = rMesh.Points();
-
-    // 1) mark used points across all kept cells.
-    std::vector<char> used(n, 0);
-    std::size_t b = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
-        if (cb.IsPolyhedron()) {
-            for (std::int64_t c : kept)
-                for (std::size_t f = 0; f < cb.NumFaces(static_cast<std::size_t>(c)); ++f) {
-                    auto face = cb.Face(static_cast<std::size_t>(c), f);
-                    for (std::size_t k = 0; k < face.second; ++k)
-                        used[static_cast<std::size_t>(face.first[k])] = 1;
-                }
-        } else if (cb.IsRagged()) {
-            for (std::int64_t c : kept)
-                for (std::size_t k = 0; k < cb.RowSize(static_cast<std::size_t>(c)); ++k)
-                    used[static_cast<std::size_t>(cb.Row(static_cast<std::size_t>(c))[k])] = 1;
-        } else {
-            const NDArray& conn = cb.Conn();
-            const std::size_t npc = cb.NodesPerCell();
-            for (std::int64_t c : kept)
-                for (std::size_t k = 0; k < npc; ++k)
-                    used[static_cast<std::size_t>(
-                        read_int(conn, static_cast<std::size_t>(c) * npc + k))] = 1;
-        }
-        ++b;
-    }
-
-    // 2) compact used points -> new index; build gather list.
-    std::vector<std::int64_t> new_point(n, -1);
-    std::vector<std::int64_t> point_src;
-    for (std::size_t g = 0; g < n; ++g)
-        if (used[g]) {
-            new_point[g] = static_cast<std::int64_t>(point_src.size());
-            point_src.push_back(static_cast<std::int64_t>(g));
-        }
-
-    Mesh& out = res.mMesh;
-
-    // 3) points.
-    {
-        NDArray newpts = NDArray::Uninit(points.Dtype(), {point_src.size(), dim});
-        if (!point_src.empty() && dim > 0) {
-            const std::size_t rb = dim * dtype_size(points.Dtype());
-            const std::byte* s = points.Data();
-            std::byte* d = newpts.Data();
-            parallel_for_bw(point_src.size(), [&](std::size_t j) {
-                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
-            });
-        }
-        out.AssignPoints(std::move(newpts));
-    }
-
-    // 4) point_data (gather by point_src when full-length).
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
-        if (rows == n)
-            out.AddPointData(name, subset_gather_rows(a, point_src));
-        else {
-            NDArray c = a;
-            c.MakeOwned();
-            out.AddPointData(name, std::move(c));
-        }
-    }
-    if (!rPointIdName.empty()) {
-        NDArray ids = NDArray::Uninit(DType::Int64, {point_src.size()});
-        std::int64_t* p = ids.As<std::int64_t>();
-        for (std::size_t j = 0; j < point_src.size(); ++j)
-            p[j] = point_src[j];
-        out.AddPointData(rPointIdName, std::move(ids));
-    }
-
-    // 5) cells (remap connectivity to new point indices).
-    b = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
-        if (drop_empty_blocks && kept.empty()) {
-            ++b;
-            continue;
-        }
-        const std::string type(cb.Type());
-        if (cb.IsPolyhedron()) {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(kept.size());
-            for (std::size_t i = 0; i < kept.size(); ++i) {
-                const std::size_t c = static_cast<std::size_t>(kept[i]);
-                cells[i].resize(cb.NumFaces(c));
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    auto face = cb.Face(c, f);
-                    cells[i][f].reserve(face.second);
-                    for (std::size_t k = 0; k < face.second; ++k)
-                        cells[i][f].push_back(new_point[static_cast<std::size_t>(face.first[k])]);
-                }
-            }
-            out.AddPolyhedronBlock(type, std::move(cells));
-        } else if (cb.IsRagged()) {
-            std::vector<std::vector<std::int64_t>> rows(kept.size());
-            for (std::size_t i = 0; i < kept.size(); ++i) {
-                const std::size_t c = static_cast<std::size_t>(kept[i]);
-                rows[i].reserve(cb.RowSize(c));
-                for (std::size_t k = 0; k < cb.RowSize(c); ++k)
-                    rows[i].push_back(new_point[static_cast<std::size_t>(cb.Row(c)[k])]);
-            }
-            out.AddPolygonBlock(type, std::move(rows));
-        } else {
-            const NDArray& conn = cb.Conn();
-            const std::size_t npc = cb.NodesPerCell();
-            NDArray outconn = NDArray::Uninit(DType::Int64, {kept.size(), npc});
-            std::int64_t* cd = outconn.As<std::int64_t>();
-            for (std::size_t i = 0; i < kept.size(); ++i) {
-                const std::size_t c = static_cast<std::size_t>(kept[i]);
-                for (std::size_t k = 0; k < npc; ++k)
-                    cd[i * npc + k] =
-                        new_point[static_cast<std::size_t>(read_int(conn, c * npc + k))];
-            }
-            out.AddCellBlock(type, std::move(outconn));
-        }
-        ++b;
-    }
-
-    // 6) cell_data (gather kept cells per block) + optional original cell ids.
-    for (const std::string& name : rMesh.CellDataNames()) {
-        std::vector<NDArray> outblocks;
-        b = 0;
-        for (const auto cb : rMesh.CellRange()) {
-            if (drop_empty_blocks && rKeptCellsPerBlock[b].empty()) {
-                ++b;
-                continue;
-            }
-            const NDArray& src = rMesh.CellData(name, b);
-            const std::size_t rows = src.Shape().empty() ? 0 : src.Shape()[0];
-            if (rows == cb.NumCells())
-                outblocks.push_back(subset_gather_rows(src, rKeptCellsPerBlock[b]));
-            else {
-                NDArray c = src;
-                c.MakeOwned();
-                outblocks.push_back(std::move(c));
-            }
-            ++b;
-        }
-        out.AddCellData(name, std::move(outblocks));
-    }
-    if (!rCellIdName.empty()) {
-        std::vector<NDArray> idblocks;
-        for (const std::vector<std::int64_t>& kept : rKeptCellsPerBlock) {
-            if (drop_empty_blocks && kept.empty())
-                continue;
-            NDArray ids = NDArray::Uninit(DType::Int64, {kept.size()});
-            std::int64_t* p = ids.As<std::int64_t>();
-            for (std::size_t i = 0; i < kept.size(); ++i)
-                p[i] = kept[i];
-            idblocks.push_back(std::move(ids));
-        }
-        out.AddCellData(rCellIdName, std::move(idblocks));
-    }
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        NDArray c = rMesh.FieldData(name);
-        c.MakeOwned();
-        out.AddFieldData(name, std::move(c));
-    }
-
-    // 7) index maps.
-    res.mPointMap = NDArray::Uninit(DType::Int64, {n});
-    std::int64_t* pm = res.mPointMap.As<std::int64_t>();
-    for (std::size_t g = 0; g < n; ++g)
-        pm[g] = new_point[g];
-
-    b = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
-        std::int64_t* cm = cmap.As<std::int64_t>();
-        for (std::size_t c = 0; c < cb.NumCells(); ++c)
-            cm[c] = -1;
-        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
-        for (std::size_t i = 0; i < kept.size(); ++i)
-            cm[static_cast<std::size_t>(kept[i])] = static_cast<std::int64_t>(i);
-        res.mCellMaps.push_back(std::move(cmap));
-        ++b;
-    }
-
-    return res;
-}
+SubsetResult build_cell_subset(const Mesh& rMesh,
+                               const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
+                               const std::string& rPointIdName = "",
+                               const std::string& rCellIdName = "", bool drop_empty_blocks = false);
 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/subset.hpp =====
-// ===== begin cpp/include/meshioplusplus/vtk_common.hpp =====
-/**
- * @file vtk_common.hpp
- * @brief VTK cell-type metadata shared by the VTU and VTK legacy format
- * implementations, ported from `src/meshio/_vtk_common.py`.
- *
- * Holds the meshio-type <-> VTK-cell-type-id maps (`meshio_to_vtk_type`/
- * `vtk_to_meshio_type`), the one node-order quirk that differs between the
- * two conventions (`meshio_to_vtk_order`/`vtk_to_meshio_order`, for the
- * linear wedge), and `is_special_cell`, which flags the cell types whose
- * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_*
- * family) and therefore need the offsets-based reconstruction in
- * `detail/vtk_cells.hpp` rather than a plain fixed-width connectivity slice.
- */
-
-// System includes
-#include <string>
-#include <unordered_map>
-#include <vector>
-
-namespace meshioplusplus {
-
-/**
- * @brief Maps a meshio cell-type name to its VTK cell type id.
- *
- * Inverse of `vtk_to_meshio_type()`. Lazily constructed once (function-local
- * `static`) and returned by `const&`. Covers linear and quadratic standard
- * VTK cells plus the Lagrange (68-74) and Bezier (75-81) high-order
- * families.
- * @return Reference to the process-wide singleton lookup table.
- */
-inline const std::unordered_map<std::string, int>& meshio_to_vtk_type() {
-    static const std::unordered_map<std::string, int> m = {
-        {"empty", 0},
-        {"vertex", 1},
-        {"line", 3},
-        {"triangle", 5},
-        {"polygon", 7},
-        {"pixel", 8},
-        {"quad", 9},
-        {"tetra", 10},
-        {"hexahedron", 12},
-        {"wedge", 13},
-        {"pyramid", 14},
-        {"penta_prism", 15},
-        {"hexa_prism", 16},
-        {"line3", 21},
-        {"triangle6", 22},
-        {"quad8", 23},
-        {"tetra10", 24},
-        {"hexahedron20", 25},
-        {"wedge15", 26},
-        {"pyramid13", 27},
-        {"quad9", 28},
-        {"hexahedron27", 29},
-        {"quad6", 30},
-        {"wedge12", 31},
-        {"wedge18", 32},
-        {"hexahedron24", 33},
-        {"triangle7", 34},
-        {"line4", 35},
-        {"polyhedron", 42},
-        {"VTK_LAGRANGE_CURVE", 68},
-        {"VTK_LAGRANGE_TRIANGLE", 69},
-        {"VTK_LAGRANGE_QUADRILATERAL", 70},
-        {"VTK_LAGRANGE_TETRAHEDRON", 71},
-        {"VTK_LAGRANGE_HEXAHEDRON", 72},
-        {"VTK_LAGRANGE_WEDGE", 73},
-        {"VTK_LAGRANGE_PYRAMID", 74},
-        {"VTK_BEZIER_CURVE", 75},
-        {"VTK_BEZIER_TRIANGLE", 76},
-        {"VTK_BEZIER_QUADRILATERAL", 77},
-        {"VTK_BEZIER_TETRAHEDRON", 78},
-        {"VTK_BEZIER_HEXAHEDRON", 79},
-        {"VTK_BEZIER_WEDGE", 80},
-        {"VTK_BEZIER_PYRAMID", 81},
-    };
-    return m;
-}
-
-/**
- * @brief Node-index permutation applied when writing a meshio cell block's
- * connectivity out in VTK order.
- *
- * Only the linear `"wedge"` differs between the two conventions (meshio/gmsh
- * prism ordering vs. `vtkWedge`'s); every other supported type has identical
- * ordering, signaled by returning an empty vector (callers should treat
- * empty as "no permutation needed", not as an error).
- * @param meshio_type The meshio cell-type name.
- * @return `result[j]` = the meshio-order index to place at VTK-order
- *         position `j`; empty if the ordering is already identical.
- */
-inline std::vector<int> meshio_to_vtk_order(const std::string& rMeshioType) {
-    if (rMeshioType == "wedge")
-        return {0, 2, 1, 3, 5, 4};
-    return {};
-}
-
-/**
- * @brief Maps a VTK cell type id to a meshio cell-type name.
- *
- * Covers only the subset meshio itself can represent (matches
- * `vtk_to_meshio_type` in `_vtk_common.py`); ids meshio has no equivalent
- * for are simply absent from the map, and callers (e.g.
- * `detail::reconstruct_cells`) must treat a failed lookup as an unsupported
- * cell type. Lazily constructed once (function-local `static`) and returned
- * by `const&`.
- * @return Reference to the process-wide singleton lookup table.
- */
-inline const std::unordered_map<int, std::string>& vtk_to_meshio_type() {
-    static const std::unordered_map<int, std::string> m = {
-        {0, "empty"},
-        {1, "vertex"},
-        {3, "line"},
-        {5, "triangle"},
-        {7, "polygon"},
-        {8, "pixel"},
-        {9, "quad"},
-        {10, "tetra"},
-        {12, "hexahedron"},
-        {13, "wedge"},
-        {14, "pyramid"},
-        {15, "penta_prism"},
-        {16, "hexa_prism"},
-        {21, "line3"},
-        {22, "triangle6"},
-        {23, "quad8"},
-        {24, "tetra10"},
-        {25, "hexahedron20"},
-        {26, "wedge15"},
-        {27, "pyramid13"},
-        {28, "quad9"},
-        {29, "hexahedron27"},
-        {30, "quad6"},
-        {31, "wedge12"},
-        {32, "wedge18"},
-        {33, "hexahedron24"},
-        {34, "triangle7"},
-        {35, "line4"},
-        {42, "polyhedron"},
-        {68, "VTK_LAGRANGE_CURVE"},
-        {69, "VTK_LAGRANGE_TRIANGLE"},
-        {70, "VTK_LAGRANGE_QUADRILATERAL"},
-        {71, "VTK_LAGRANGE_TETRAHEDRON"},
-        {72, "VTK_LAGRANGE_HEXAHEDRON"},
-        {73, "VTK_LAGRANGE_WEDGE"},
-        {74, "VTK_LAGRANGE_PYRAMID"},
-        {75, "VTK_BEZIER_CURVE"},
-        {76, "VTK_BEZIER_TRIANGLE"},
-        {77, "VTK_BEZIER_QUADRILATERAL"},
-        {78, "VTK_BEZIER_TETRAHEDRON"},
-        {79, "VTK_BEZIER_HEXAHEDRON"},
-        {80, "VTK_BEZIER_WEDGE"},
-        {81, "VTK_BEZIER_PYRAMID"},
-    };
-    return m;
-}
-
-/**
- * @brief Inverse of `meshio_to_vtk_order`, applied when reading VTK
- * connectivity back into meshio order.
- *
- * Only the linear wedge (VTK type id 13) differs; its permutation
- * `[0,2,1,3,5,4]` happens to be its own inverse, so the same literal serves
- * both directions. Empty means no permutation needed.
- * @param vtk_type The VTK cell type id being read.
- * @return `result[j]` = the VTK-order index to place at meshio-order
- *         position `j`; empty if the ordering is already identical.
- */
-inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
-    if (vtk_type == 13)
-        return {0, 2, 1, 3, 5, 4};
-    return {};
-}
-
-/**
- * @brief Whether a meshio cell type has a variable node count per cell in a
- * VTK/VTU connectivity+offsets representation.
- *
- * True for `"polygon"` and every `VTK_LAGRANGE_*` type. These cannot be
- * described by a single fixed nodes-per-cell count, so
- * `detail::reconstruct_cells` (vtk_cells.hpp) reconstructs them from the
- * end-offsets array (grouping same-size runs) instead of slicing a uniform
- * `(num_cells, n)` block.
- * @param meshio_type The meshio cell-type name to test.
- * @return `true` if `meshio_type` needs offsets-based reconstruction.
- */
-inline bool is_special_cell(const std::string& rMeshioType) {
-    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0;
-}
-
-}  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/vtk_common.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/vtk_cells.hpp =====
 /**
  * @file vtk_cells.hpp
@@ -6348,12 +4755,17 @@ inline bool is_special_cell(const std::string& rMeshioType) {
  * It leans heavily on `parallel_for_bw`/`parallel_copy_i64` (memory-gather
  * and memory-fault-bound work) since reconstructing connectivity is pure
  * data movement, not compute.
+ *
+ * Every function here is called once per file read (or once per contiguous
+ * run within it), never once per element, so bodies live in
+ * `cpp/src/detail/vtk_cells.cpp` rather than inline here — moving them does
+ * not change the granularity of their own internal `parallel_for_bw` loops,
+ * which are unaffected by which translation unit compiles the enclosing
+ * function.
  */
 
 // System includes
-#include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -6381,24 +4793,7 @@ namespace detail {
  * @param pSrc Source buffer, at least `n` elements.
  * @param n Number of `int64_t` elements to copy.
  */
-inline void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n) {
-    constexpr std::size_t kChunk = 1u << 19;  // 512Ki elements (4 MiB) per task
-    const std::size_t nchunks = (n + kChunk - 1) / kChunk;
-    if (nchunks <= 1) {
-        std::memcpy(pDst, pSrc, n * sizeof(std::int64_t));
-        return;
-    }
-    // grain=1: each chunk is already coarse (4 MiB), so dispatch per chunk —
-    // otherwise the default grain (2048) would run these few chunks serially.
-    parallel_for_bw(
-        nchunks,
-        [&](std::size_t c) {
-            const std::size_t off = c * kChunk;
-            const std::size_t len = std::min(kChunk, n - off);
-            std::memcpy(pDst + off, pSrc + off, len * sizeof(std::int64_t));
-        },
-        1);
-}
+void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n);
 
 /**
  * @brief Extracts rows `[r0, r1)` of a 2-D (or column-vector) `NDArray` into
@@ -6411,19 +4806,36 @@ inline void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std:
  * @param r1 One past the last row to include (exclusive).
  * @return A new owning `NDArray` with `r1 - r0` rows, same dtype/row-width as `rA`.
  */
-inline NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
-    std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
-    std::size_t isz = dtype_size(rA.Dtype());
-    std::size_t rowbytes = nc * isz;
-    std::vector<std::size_t> shape = rA.Shape();
-    if (shape.empty())
-        shape = {0};
-    shape[0] = r1 - r0;
-    NDArray out = NDArray::Uninit(rA.Dtype(), shape);  // fully overwritten below
-    if (r1 > r0)
-        std::memcpy(out.Data(), rA.Data() + r0 * rowbytes, (r1 - r0) * rowbytes);
-    return out;
-}
+NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1);
+
+/**
+ * @brief The cell-block *shape* `reconstruct_cells` would produce, without
+ *        touching connectivity.
+ *
+ * Backs the VTU/VTP metadata path: `types` is one byte per cell and `offsets`
+ * is only consulted for the variable-node-count types, so a summary costs a
+ * fraction of a full reconstruction.
+ *
+ * The run-grouping here **duplicates** `reconstruct_cells`' -- consecutive
+ * same-type runs, further split by per-cell size for `is_special_cell` types.
+ * That duplication is deliberate (the two have very different inner loops and
+ * merging them would slow the hot one down) but it can drift, so it is pinned
+ * by a test asserting this function agrees with `metadata_from_mesh` applied to
+ * a real reconstruction, rather than by comment alone.
+ *
+ * @param rOffsets End offsets, one per cell; may be **empty** when no special
+ *                 cell type is present, since only those consult it.
+ * @param rTypes VTK cell type id for each cell.
+ * @return One entry per output block, in the same order as the blocks
+ *         `reconstruct_cells` would append.
+ * @throws ReadError on the same unsupported types `reconstruct_cells` rejects,
+ *         so a summary never claims a file is readable when it is not.
+ */
+std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
+                                           const std::vector<std::int64_t>& rTypes);
+
+/** @brief Whether any type in @p rTypes needs `offsets` to be summarized. */
+bool cells_need_offsets(const std::vector<std::int64_t>& rTypes);
 
 /**
  * @brief Reconstructs meshio cell blocks (and the matching per-block
@@ -6466,203 +4878,9 @@ inline NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
  *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
  *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
  */
-/**
- * @brief The cell-block *shape* `reconstruct_cells` would produce, without
- *        touching connectivity.
- *
- * Backs the VTU/VTP metadata path: `types` is one byte per cell and `offsets`
- * is only consulted for the variable-node-count types, so a summary costs a
- * fraction of a full reconstruction.
- *
- * The run-grouping here **duplicates** `reconstruct_cells`' -- consecutive
- * same-type runs, further split by per-cell size for `is_special_cell` types.
- * That duplication is deliberate (the two have very different inner loops and
- * merging them would slow the hot one down) but it can drift, so it is pinned
- * by a test asserting this function agrees with `metadata_from_mesh` applied to
- * a real reconstruction, rather than by comment alone.
- *
- * @param rOffsets End offsets, one per cell; may be **empty** when no special
- *                 cell type is present, since only those consult it.
- * @param rTypes VTK cell type id for each cell.
- * @return One entry per output block, in the same order as the blocks
- *         `reconstruct_cells` would append.
- * @throws ReadError on the same unsupported types `reconstruct_cells` rejects,
- *         so a summary never claims a file is readable when it is not.
- */
-inline std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
-                                                  const std::vector<std::int64_t>& rTypes) {
-    const auto& vmap = vtk_to_meshio_type();
-    const std::size_t ncells = rTypes.size();
-    std::vector<CellBlockInfo> blocks;
-
-    std::size_t start = 0;
-    while (start < ncells) {
-        std::size_t end = start + 1;
-        while (end < ncells && rTypes[end] == rTypes[start])
-            ++end;
-
-        const int vtk_type = static_cast<int>(rTypes[start]);
-        if (vtk_type == 42)
-            throw ReadError("polyhedron cells are not supported by the C++ reader");
-        auto it = vmap.find(vtk_type);
-        if (it == vmap.end())
-            throw ReadError("VTK cell type " + std::to_string(vtk_type) +
-                            " not supported by the C++ reader");
-        const std::string& meshio_type = it->second;
-
-        if (is_special_cell(meshio_type)) {
-            if (rOffsets.size() < end)
-                throw ReadError("VTU summary needs 'offsets' for variable-size cell type " +
-                                meshio_type);
-            // Split the run further wherever the per-cell node count changes.
-            std::size_t i = start;
-            while (i < end) {
-                const std::int64_t prev = (i == 0) ? 0 : rOffsets[i - 1];
-                const std::int64_t sz = rOffsets[i] - prev;
-                std::size_t j = i + 1;
-                while (j < end && rOffsets[j] - rOffsets[j - 1] == sz)
-                    ++j;
-                CellBlockInfo info;
-                info.mType = meshio_type;
-                info.mNumCells = j - i;
-                info.mNodesPerCell = static_cast<std::size_t>(sz);
-                blocks.push_back(std::move(info));
-                i = j;
-            }
-        } else {
-            auto nit = num_nodes_per_cell().find(meshio_type);
-            if (nit == num_nodes_per_cell().end())
-                throw ReadError("Unknown node count for cell type " + meshio_type);
-            CellBlockInfo info;
-            info.mType = meshio_type;
-            info.mNumCells = end - start;
-            info.mNodesPerCell = static_cast<std::size_t>(nit->second);
-            blocks.push_back(std::move(info));
-        }
-        start = end;
-    }
-    return blocks;
-}
-
-/** @brief Whether any type in @p rTypes needs `offsets` to be summarized. */
-inline bool cells_need_offsets(const std::vector<std::int64_t>& rTypes) {
-    const auto& vmap = vtk_to_meshio_type();
-    for (std::int64_t t : rTypes) {
-        auto it = vmap.find(static_cast<int>(t));
-        if (it != vmap.end() && is_special_cell(it->second))
-            return true;
-    }
-    return false;
-}
-
-inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
-                              const std::vector<std::int64_t>& rTypes,
-                              const std::unordered_map<std::string, NDArray>& rCellDataRaw,
-                              Mesh& rMesh) {
-    const auto& vmap = vtk_to_meshio_type();
-    const std::size_t ncells = rTypes.size();
-
-    auto add_cd = [&](std::size_t start, std::size_t end) {
-        for (const auto& kv : rCellDataRaw)
-            rMesh.AppendCellData(kv.first, slice_rows(kv.second, start, end));
-    };
-
-    std::size_t start = 0;
-    while (start < ncells) {
-        std::size_t end = start + 1;
-        while (end < ncells && rTypes[end] == rTypes[start])
-            ++end;
-
-        int vtk_type = static_cast<int>(rTypes[start]);
-        if (vtk_type == 42)
-            throw ReadError("polyhedron cells are not supported by the C++ reader");
-        auto it = vmap.find(vtk_type);
-        if (it == vmap.end())
-            throw ReadError("VTK cell type " + std::to_string(vtk_type) +
-                            " not supported by the C++ reader");
-        const std::string& meshio_type = it->second;
-
-        if (is_special_cell(meshio_type)) {
-            std::int64_t first_node = (start == 0) ? 0 : rOffsets[start - 1];
-            std::vector<std::int64_t> start_cn;
-            start_cn.reserve(end - start + 1);
-            start_cn.push_back(first_node);
-            for (std::size_t i = start; i < end; ++i)
-                start_cn.push_back(rOffsets[i]);
-            std::vector<std::int64_t> sizes(end - start);
-            for (std::size_t i = 0; i < sizes.size(); ++i)
-                sizes[i] = start_cn[i + 1] - start_cn[i];
-
-            std::size_t i = 0;
-            while (i < sizes.size()) {
-                std::size_t j = i;
-                while (j < sizes.size() && sizes[j] == sizes[i])
-                    ++j;
-                std::int64_t sz = sizes[i];
-                std::size_t m = j - i;
-                NDArray data = NDArray::Uninit(DType::Int64, {m, static_cast<std::size_t>(sz)});
-                std::int64_t* out = data.As<std::int64_t>();
-                const std::size_t ii = i;
-                // Contiguous uniform-size sub-run -> block memcpy.
-                const std::int64_t sub_first = start_cn[ii];
-                bool sub_regular = true;
-                for (std::size_t r = 0; sub_regular && r < m; ++r)
-                    if (rOffsets[start + ii + r] !=
-                        sub_first + static_cast<std::int64_t>(r + 1) * sz)
-                        sub_regular = false;
-                if (sub_regular) {
-                    parallel_copy_i64(out, pConn + sub_first, m * static_cast<std::size_t>(sz));
-                } else {
-                    parallel_for_bw(m, [&](std::size_t r) {
-                        std::int64_t endoff = rOffsets[start + ii + r];
-                        std::int64_t base = endoff - sz;
-                        for (std::int64_t c = 0; c < sz; ++c)
-                            out[r * sz + c] = pConn[base + c];
-                    });
-                }
-                rMesh.AddCellBlock(meshio_type, std::move(data));
-                add_cd(start + i, start + j);
-                i = j;
-            }
-        } else {
-            auto nit = num_nodes_per_cell().find(meshio_type);
-            if (nit == num_nodes_per_cell().end())
-                throw ReadError("Unknown node count for cell type " + meshio_type);
-            int n = nit->second;
-            std::vector<int> order = vtk_to_meshio_order(vtk_type);
-            std::size_t m = end - start;
-            NDArray data = NDArray::Uninit(DType::Int64, {m, static_cast<std::size_t>(n)});
-            std::int64_t* out = data.As<std::int64_t>();
-            const int* ord = order.empty() ? nullptr : order.data();
-            const std::size_t ss = start;
-            // Regular run (offsets advance by exactly n per cell) with identity
-            // node order -> the run's connectivity is one contiguous slice:
-            // block memcpy instead of a per-row gather.
-            const std::int64_t first = (ss == 0) ? 0 : rOffsets[ss - 1];
-            bool regular = true;
-            for (std::size_t r = 0; regular && r < m; ++r)
-                if (rOffsets[ss + r] !=
-                    first + static_cast<std::int64_t>((r + 1) * static_cast<std::size_t>(n)))
-                    regular = false;
-            if (!ord && regular) {
-                // Contiguous slice -> parallel block copy (fault-bound).
-                parallel_copy_i64(out, pConn + first, m * static_cast<std::size_t>(n));
-            } else {
-                parallel_for_bw(m, [&](std::size_t r) {
-                    std::int64_t endoff = rOffsets[ss + r];
-                    std::int64_t base = endoff - n;
-                    for (int j = 0; j < n; ++j) {
-                        int col = ord ? ord[j] : j;
-                        out[r * n + j] = pConn[base + col];
-                    }
-                });
-            }
-            rMesh.AddCellBlock(meshio_type, std::move(data));
-            add_cd(start, end);
-        }
-        start = end;
-    }
-}
+void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                       const std::vector<std::int64_t>& rTypes,
+                       const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -6670,55 +4888,49 @@ inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::
 // ===== begin cpp/include/meshioplusplus/detail/vtu_binary.hpp =====
 /**
  * @file vtu_binary.hpp
- * @brief Base64 and VTU "binary" `DataArray` codecs (raw and zlib-compressed),
- * shared helpers behind the VTU (VTK XML) reader/writer's binary I/O.
+ * @brief Base64 and VTU "binary" `DataArray` codecs (raw and zlib/zstd/lz4
+ * -compressed), shared helpers behind the VTU (VTK XML) reader/writer's
+ * binary I/O.
  *
- * VTU's binary encoding wraps raw little-endian bytes (optionally
- * zlib-deflated in fixed-size blocks) as base64 text inside the XML. This
- * header provides both halves: plain base64 encode/decode
- * (`b64encode`/`b64decode`), and the VTU-specific framing on top of it —
- * `vtu_decode_uncompressed`/`vtu_encode_binary(zlib_compress=false)` for the
- * uncompressed scheme (a little-endian byte-count header followed by raw
- * data) and `vtu_decode_zlib`/`vtu_encode_binary(zlib_compress=true)` for the
- * compressed block scheme (num_blocks / max_block_size / last_block_size
- * header, then each block's compressed size, then the concatenated deflated
- * blocks). zlib support is conditionally compiled on
- * `MESHIOPLUSPLUS_HAS_ZLIB`; without it, the zlib-specific functions throw
- * rather than compiling out entirely, since they're still callable — the
- * absence is discovered at runtime and routes the caller to the Python
- * fallback. Both directions parallelize per independent unit of work
- * (base64 3-byte groups; zlib blocks) via `parallel_for`, since base64/zlib
- * are genuinely compute-bound (unlike the memory-bandwidth-bound gather/
- * byteswap work elsewhere, which uses `parallel_for_bw` instead).
+ * VTU's binary encoding wraps raw little-endian bytes (optionally compressed
+ * in fixed-size blocks) as base64 text inside the XML. This header declares
+ * both halves: plain base64 encode/decode (`b64encode`/`b64decode`), and the
+ * VTU-specific framing on top of it — `vtu_decode_uncompressed`/
+ * `vtu_encode_binary(codec=None)` for the uncompressed scheme (a
+ * little-endian byte-count header followed by raw data) and
+ * `vtu_decode_blocks`/`vtu_encode_binary(codec=...)` for the compressed block
+ * scheme (num_blocks / max_block_size / last_block_size header, then each
+ * block's compressed size, then the concatenated compressed blocks). All
+ * codecs share this one block framing; only the per-block compressor differs
+ * (`VtkCodec`). zlib/zstd/lz4 support is conditionally compiled on the
+ * matching `MESHIOPLUSPLUS_HAS_*` macro; without it, the codec is still
+ * *selectable* but decoding/encoding with it throws rather than compiling out
+ * entirely — the absence is discovered at runtime and routes the caller to
+ * the Python fallback. Both directions parallelize per independent unit of
+ * work (base64 3-byte groups; compressed blocks) via `parallel_for`, since
+ * base64/compression are genuinely compute-bound (unlike the
+ * memory-bandwidth-bound gather/byteswap work elsewhere, which uses
+ * `parallel_for_bw` instead).
+ *
+ * Every function here is called once per data array or once per ~32 KiB
+ * block — both far coarser than per-scalar — so bodies (and the zlib/zstd/lz4
+ * `<...>` headers they need) live in `cpp/src/detail/vtu_binary.cpp` rather
+ * than inline here. Keeping the codec headers out of this header also keeps
+ * them out of every translation unit (and amalgamation consumer) that merely
+ * needs the declarations below.
  */
 
 // System includes
-#include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <vector>
-
-// External includes
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-#include <zlib.h>
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ZSTD
-#include <zstd.h>
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_LZ4
-#include <lz4.h>
-#endif
-
-// Project includes
 
 namespace meshioplusplus {
 namespace detail {
 
 /** @brief The standard base64 alphabet (RFC 4648), indexed by 6-bit value. */
-inline const char* b64_table() {
-    return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-}
+const char* b64_table();
 
 /**
  * @brief Base64-encodes `len` bytes of `data`.
@@ -6733,36 +4945,7 @@ inline const char* b64_table() {
  * @param len Number of bytes in `pData`.
  * @return The base64-encoded text, `'='`-padded to a multiple of 4 characters.
  */
-inline std::string b64encode(const unsigned char* pData, std::size_t len) {
-    const char* tbl = b64_table();
-    // Every 3-byte group maps to 4 output chars at a deterministic offset:
-    // pre-size the output and write by index -> parallel over groups.
-    const std::size_t ngroups = len / 3;  // full groups
-    std::string out(((len + 2) / 3) * 4, '\0');
-    parallel_for(ngroups, [&](std::size_t g) {
-        const std::size_t i = g * 3;
-        unsigned n =
-            (unsigned(pData[i]) << 16) | (unsigned(pData[i + 1]) << 8) | unsigned(pData[i + 2]);
-        char* o = out.data() + g * 4;
-        o[0] = tbl[(n >> 18) & 63];
-        o[1] = tbl[(n >> 12) & 63];
-        o[2] = tbl[(n >> 6) & 63];
-        o[3] = tbl[n & 63];
-    });
-    const std::size_t i = ngroups * 3;
-    if (i < len) {  // trailing 1- or 2-byte group with '=' padding
-        const bool two = (i + 1 < len);
-        unsigned n = unsigned(pData[i]) << 16;
-        if (two)
-            n |= unsigned(pData[i + 1]) << 8;
-        char* o = out.data() + ngroups * 4;
-        o[0] = tbl[(n >> 18) & 63];
-        o[1] = tbl[(n >> 12) & 63];
-        o[2] = two ? tbl[(n >> 6) & 63] : '=';
-        o[3] = '=';
-    }
-    return out;
-}
+std::string b64encode(const unsigned char* pData, std::size_t len);
 
 /**
  * @brief Base64-decodes `len` characters of `s`.
@@ -6776,36 +4959,7 @@ inline std::string b64encode(const unsigned char* pData, std::size_t len) {
  * @param len Number of characters in `pS` to consider.
  * @return The decoded raw bytes.
  */
-inline std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
-    static int8_t inv[256];
-    static bool init = false;
-    if (!init) {
-        for (int i = 0; i < 256; ++i)
-            inv[i] = -1;
-        const char* tbl = b64_table();
-        for (int i = 0; i < 64; ++i)
-            inv[(unsigned char)tbl[i]] = static_cast<int8_t>(i);
-        init = true;
-    }
-    std::vector<unsigned char> out;
-    out.reserve(len / 4 * 3);
-    int buf = 0, bits = 0;
-    for (std::size_t i = 0; i < len; ++i) {
-        char ch = pS[i];
-        if (ch == '=' || ch == '\n' || ch == '\r' || ch == ' ' || ch == '\t')
-            continue;
-        int v = inv[(unsigned char)ch];
-        if (v < 0)
-            continue;
-        buf = (buf << 6) | v;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<unsigned char>((buf >> bits) & 0xFF));
-        }
-    }
-    return out;
-}
+std::vector<unsigned char> b64decode(const char* pS, std::size_t len);
 
 /**
  * @brief Block-compression codec of a VTK XML "binary" DataArray.
@@ -6824,284 +4978,44 @@ enum class VtkCodec {
 };
 
 /** @brief The `compressor=` attribute a codec is recorded under, or "" for None. */
-inline const char* vtk_codec_compressor(VtkCodec codec) {
-    switch (codec) {
-        case VtkCodec::Zlib:
-            return "vtkZLibDataCompressor";
-        case VtkCodec::LZ4:
-            return "vtkLZ4DataCompressor";
-        case VtkCodec::ZSTD:
-            return "vtkZSTDDataCompressor";
-        case VtkCodec::LZMA:
-            return "vtkLZMADataCompressor";
-        default:
-            return "";
-    }
-}
+const char* vtk_codec_compressor(VtkCodec codec);
 
 /** @brief Short user-facing codec name (`--codec` values). */
-inline const char* vtk_codec_name(VtkCodec codec) {
-    switch (codec) {
-        case VtkCodec::Zlib:
-            return "zlib";
-        case VtkCodec::LZ4:
-            return "lz4";
-        case VtkCodec::ZSTD:
-            return "zstd";
-        case VtkCodec::LZMA:
-            return "lzma";
-        default:
-            return "none";
-    }
-}
-
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-/**
- * @brief Compresses one block with zlib's default `compress()` (a single
- * deflate call, no streaming).
- * @param pSrc Bytes to compress.
- * @param n Number of bytes in `pSrc`.
- * @return The compressed bytes (sized to zlib's actual output, not the bound).
- * @throws WriteError if zlib does not return `Z_OK`.
- */
-inline std::vector<unsigned char> zlib_compress_block(const unsigned char* pSrc, std::size_t n) {
-    uLongf bound = compressBound(static_cast<uLong>(n));
-    std::vector<unsigned char> out(bound);
-    uLongf destLen = bound;
-    int r = compress(out.data(), &destLen, pSrc, static_cast<uLong>(n));
-    if (r != Z_OK)
-        throw WriteError("zlib compression failed");
-    out.resize(destLen);
-    return out;
-}
-
-/**
- * @brief Decompresses one zlib-compressed block whose decompressed size is
- * already known.
- * @param pSrc Compressed bytes.
- * @param n Number of compressed bytes in `pSrc`.
- * @param expected Exact expected decompressed size (from the VTU block header).
- * @return The decompressed bytes.
- * @throws ReadError if zlib does not return `Z_OK`.
- */
-inline std::vector<unsigned char> zlib_decompress(const unsigned char* pSrc, std::size_t n,
-                                                  std::size_t expected) {
-    std::vector<unsigned char> out(expected);
-    uLongf destLen = static_cast<uLongf>(expected);
-    int r = uncompress(out.data(), &destLen, pSrc, static_cast<uLong>(n));
-    if (r != Z_OK)
-        throw ReadError("zlib decompression failed");
-    out.resize(destLen);
-    return out;
-}
-#endif  // MESHIOPLUSPLUS_HAS_ZLIB
-
-#ifdef MESHIOPLUSPLUS_HAS_ZSTD
-/**
- * @brief Compresses one block as a single raw zstd frame.
- *
- * One frame per block, matching the zlib path: VTU's own header already records
- * each block's compressed and decompressed size, so no zstd framing metadata is
- * needed on top.
- * @throws WriteError if zstd reports an error.
- */
-inline std::vector<unsigned char> zstd_compress_block(const unsigned char* pSrc, std::size_t n) {
-    const std::size_t bound = ZSTD_compressBound(n);
-    std::vector<unsigned char> out(bound);
-    const std::size_t written = ZSTD_compress(out.data(), bound, pSrc, n, ZSTD_CLEVEL_DEFAULT);
-    if (ZSTD_isError(written))
-        throw WriteError(std::string("zstd compression failed: ") + ZSTD_getErrorName(written));
-    out.resize(written);
-    return out;
-}
-
-/**
- * @brief Decompresses one zstd block whose decompressed size is already known.
- * @param expected Exact size from the VTU block header -- so the frame's own
- *        content-size field is never consulted.
- * @throws ReadError if zstd reports an error or the size disagrees.
- */
-inline std::vector<unsigned char> zstd_decompress(const unsigned char* pSrc, std::size_t n,
-                                                  std::size_t expected) {
-    std::vector<unsigned char> out(expected);
-    const std::size_t written = ZSTD_decompress(out.data(), expected, pSrc, n);
-    if (ZSTD_isError(written))
-        throw ReadError(std::string("zstd decompression failed: ") + ZSTD_getErrorName(written));
-    out.resize(written);
-    return out;
-}
-#endif  // MESHIOPLUSPLUS_HAS_ZSTD
-
-#ifdef MESHIOPLUSPLUS_HAS_LZ4
-/**
- * @brief Compresses one block in LZ4's **raw block** format.
- *
- * Raw block, not the LZ4 *frame* format -- this is what `vtkLZ4DataCompressor`
- * emits (its `SetAccelerationLevel` knob is the tell that it calls
- * `LZ4_compress_fast`), so files written here stay readable by VTK/ParaView.
- * Acceleration 1 is LZ4's default.
- * @throws WriteError if lz4 reports an error.
- */
-inline std::vector<unsigned char> lz4_compress_block(const unsigned char* pSrc, std::size_t n) {
-    const int src_size = static_cast<int>(n);
-    const int bound = LZ4_compressBound(src_size);
-    if (bound <= 0)
-        throw WriteError("lz4 compression failed: block too large");
-    std::vector<unsigned char> out(static_cast<std::size_t>(bound));
-    const int written =
-        LZ4_compress_fast(reinterpret_cast<const char*>(pSrc), reinterpret_cast<char*>(out.data()),
-                          src_size, bound, /*acceleration=*/1);
-    if (written <= 0)
-        throw WriteError("lz4 compression failed");
-    out.resize(static_cast<std::size_t>(written));
-    return out;
-}
-
-/**
- * @brief Decompresses one raw-block-format LZ4 block.
- * @param expected Exact decompressed size from the VTU block header. Passing it
- *        as the output capacity is what makes `LZ4_decompress_safe` bounded --
- *        a corrupt block cannot overrun the buffer.
- * @throws ReadError if lz4 reports an error.
- */
-inline std::vector<unsigned char> lz4_decompress(const unsigned char* pSrc, std::size_t n,
-                                                 std::size_t expected) {
-    std::vector<unsigned char> out(expected);
-    const int written = LZ4_decompress_safe(reinterpret_cast<const char*>(pSrc),
-                                            reinterpret_cast<char*>(out.data()),
-                                            static_cast<int>(n), static_cast<int>(expected));
-    if (written < 0)
-        throw ReadError("lz4 decompression failed");
-    out.resize(static_cast<std::size_t>(written));
-    return out;
-}
-#endif  // MESHIOPLUSPLUS_HAS_LZ4
+const char* vtk_codec_name(VtkCodec codec);
 
 /**
  * @name Per-codec block dispatch
  *
  * These always exist and throw at runtime when the codec was not compiled in --
- * deliberately, and for the same reason the zlib helpers above are shaped that
- * way (see the file header): a *link* error would make the absence a build
- * failure, whereas a ReadError/WriteError routes the caller to the Python
- * fallback, which is the documented contract. The message names the CMake
- * option to turn on, in the spirit of `registry_compiled_out()`.
+ * deliberately: a *link* error would make the absence a build failure,
+ * whereas a ReadError/WriteError routes the caller to the Python fallback,
+ * which is the documented contract. The message names the CMake option to
+ * turn on, in the spirit of `registry_compiled_out()`.
  * @{
  */
 
 /** @brief Whether @p codec can be decoded by this build. */
-inline bool vtk_codec_available(VtkCodec codec) {
-    switch (codec) {
-        case VtkCodec::None:
-            return true;
-        case VtkCodec::Zlib:
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-            return true;
-#else
-            return false;
-#endif
-        case VtkCodec::LZ4:
-#ifdef MESHIOPLUSPLUS_HAS_LZ4
-            return true;
-#else
-            return false;
-#endif
-        case VtkCodec::ZSTD:
-#ifdef MESHIOPLUSPLUS_HAS_ZSTD
-            return true;
-#else
-            return false;
-#endif
-        default:
-            return false;  // LZMA is recognized but never implemented here
-    }
-}
+bool vtk_codec_available(VtkCodec codec);
 
 /** @brief The CMake option that would enable @p codec. */
-inline std::string vtk_codec_build_option(VtkCodec codec) {
-    switch (codec) {
-        case VtkCodec::Zlib:
-            return "MESHIOPLUSPLUS_WITH_ZLIB=ON";
-        case VtkCodec::LZ4:
-            return "MESHIOPLUSPLUS_WITH_LZ4=ON";
-        case VtkCodec::ZSTD:
-            return "MESHIOPLUSPLUS_WITH_ZSTD=ON";
-        default:
-            return "";
-    }
-}
+std::string vtk_codec_build_option(VtkCodec codec);
 
 /** @brief Actionable "this build cannot do that" message. */
-inline std::string vtk_codec_missing_message(VtkCodec codec, bool for_write) {
-    const std::string what = for_write ? "compression" : "decompression";
-    if (codec == VtkCodec::LZMA)
-        return "VTK XML lzma " + what + " is not implemented by the C++ core";
-    return "VTK XML " + std::string(vtk_codec_name(codec)) + " " + what +
-           " requires a build with -D" + vtk_codec_build_option(codec);
-}
+std::string vtk_codec_missing_message(VtkCodec codec, bool for_write);
 
 /** @throws ReadError when @p codec cannot be decoded by this build. */
-inline void vtk_codec_require_read(VtkCodec codec) {
-    if (!vtk_codec_available(codec))
-        throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
-}
+void vtk_codec_require_read(VtkCodec codec);
 
 /** @throws WriteError when @p codec cannot be encoded by this build. */
-inline void vtk_codec_require_write(VtkCodec codec) {
-    if (!vtk_codec_available(codec))
-        throw WriteError(vtk_codec_missing_message(codec, /*for_write=*/true));
-}
+void vtk_codec_require_write(VtkCodec codec);
 
 /** @brief Compress one block with @p codec. Callers must have required it. */
-inline std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec,
-                                                           const unsigned char* pSrc,
-                                                           std::size_t n) {
-    switch (codec) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-        case VtkCodec::Zlib:
-            return zlib_compress_block(pSrc, n);
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ZSTD
-        case VtkCodec::ZSTD:
-            return zstd_compress_block(pSrc, n);
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_LZ4
-        case VtkCodec::LZ4:
-            return lz4_compress_block(pSrc, n);
-#endif
-        default:
-            break;
-    }
-    (void)pSrc;
-    (void)n;
-    throw WriteError(vtk_codec_missing_message(codec, /*for_write=*/true));
-}
+std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsigned char* pSrc,
+                                                    std::size_t n);
 
 /** @brief Decompress one block with @p codec into @p expected bytes. */
-inline std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec,
-                                                             const unsigned char* pSrc,
-                                                             std::size_t n, std::size_t expected) {
-    switch (codec) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-        case VtkCodec::Zlib:
-            return zlib_decompress(pSrc, n, expected);
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ZSTD
-        case VtkCodec::ZSTD:
-            return zstd_decompress(pSrc, n, expected);
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_LZ4
-        case VtkCodec::LZ4:
-            return lz4_decompress(pSrc, n, expected);
-#endif
-        default:
-            break;
-    }
-    (void)pSrc;
-    (void)n;
-    (void)expected;
-    throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
-}
+std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsigned char* pSrc,
+                                                      std::size_t n, std::size_t expected);
 /** @} */
 
 /**
@@ -7111,12 +5025,7 @@ inline std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec,
  *            VTU header_type item size).
  * @return The decoded value, widened to `uint64_t`.
  */
-inline std::uint64_t read_uint_le(const unsigned char* pP, std::size_t isz) {
-    std::uint64_t v = 0;
-    for (std::size_t i = 0; i < isz; ++i)
-        v |= static_cast<std::uint64_t>(pP[i]) << (8 * i);
-    return v;
-}
+std::uint64_t read_uint_le(const unsigned char* pP, std::size_t isz);
 
 /**
  * @brief Decodes an uncompressed VTU "binary" `DataArray`: base64 text of a
@@ -7128,166 +5037,62 @@ inline std::uint64_t read_uint_le(const unsigned char* pP, std::size_t isz) {
  * @throws ReadError if the decoded data is shorter than the header, or
  *         shorter than the header declares.
  */
-inline std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std::size_t len,
-                                                          std::size_t hsz) {
-    std::vector<unsigned char> all = b64decode(pText, len);
-    if (all.size() < hsz)
-        throw ReadError("VTU binary data too short");
-    std::uint64_t total = read_uint_le(all.data(), hsz);
-    if (all.size() < hsz + total)
-        throw ReadError("VTU binary data truncated");
-    return std::vector<unsigned char>(all.begin() + hsz, all.begin() + hsz + total);
-}
+std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std::size_t len,
+                                                   std::size_t hsz);
 
 /**
- * @brief Decodes a zlib-compressed VTU "binary" `DataArray` (the VTK block
- * compression scheme).
+ * @brief Decodes a compressed VTU "binary" `DataArray` (the VTK block
+ * compression scheme), with @p codec selecting the per-block compressor.
  *
  * The format, all base64-encoded: a header of `num_blocks`, `max_block`,
  * `last_block` (each `hsz` bytes), then `num_blocks` compressed-size
- * entries, then the concatenated deflated blocks themselves (each block
+ * entries, then the concatenated compressed blocks themselves (each block
  * `max_block` bytes decompressed, except the last which is `last_block`).
  * Decoded in three passes: decode just enough base64 to learn
  * `num_blocks`, decode the rest of the header to get each block's
  * compressed size, then base64-decode the block data. Input offsets are a
  * cheap sequential prefix sum of the per-block compressed sizes; output
  * offsets are `k * max_block` by construction, so with both known up front
- * the per-block `inflate` calls are independent and run under
+ * the per-block decompress calls are independent and run under
  * `parallel_for` with `grain=1` (each ~32 KiB block is a full unit of
- * inflate work, so per-block dispatch is exactly right — this is
+ * inflate/decompress work, so per-block dispatch is exactly right — this is
  * compute-bound work, unlike the memory-gather use of `parallel_for_bw`
  * elsewhere).
  *
  * @param pText Base64-encoded DataArray text.
  * @param len Length of `pText` in characters.
  * @param hsz `header_type` item size in bytes (4 for `UInt32`, 8 for `UInt64`).
+ * @param codec block-compression codec recorded in the file.
  * @return The decoded, decompressed raw payload bytes (all blocks concatenated).
- * @throws ReadError if built without `MESHIOPLUSPLUS_HAS_ZLIB`, or if the
+ * @throws ReadError if @p codec was not compiled into this build, or if the
  *         header/data is truncated, or if any block fails to decompress.
  */
-inline std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
-                                                    std::size_t hsz, VtkCodec codec) {
-    // Every codec is checked here rather than at the per-block call so an
-    // absent one is reported before any work is done -- and as a ReadError,
-    // never a link error, which is what keeps the Python fallback reachable.
-    vtk_codec_require_read(codec);
-
-    std::size_t first_chars = ((hsz + 2) / 3) * 4;
-    if (len < first_chars)
-        throw ReadError("VTU compressed-block header too short");
-    std::vector<unsigned char> hb = b64decode(pText, first_chars);
-    std::uint64_t num_blocks = read_uint_le(hb.data(), hsz);
-
-    std::size_t num_header_bytes = hsz * (3 + static_cast<std::size_t>(num_blocks));
-    std::size_t num_header_chars = ((num_header_bytes + 2) / 3) * 4;
-    if (len < num_header_chars)
-        throw ReadError("VTU compressed-block header truncated");
-    std::vector<unsigned char> header = b64decode(pText, num_header_chars);
-
-    std::uint64_t max_block = read_uint_le(header.data() + hsz, hsz);
-    std::uint64_t last_block = read_uint_le(header.data() + 2 * hsz, hsz);
-    std::vector<std::uint64_t> comp_sizes(num_blocks);
-    for (std::uint64_t k = 0; k < num_blocks; ++k)
-        comp_sizes[k] = read_uint_le(header.data() + (3 + k) * hsz, hsz);
-
-    std::vector<unsigned char> blockdata =
-        b64decode(pText + num_header_chars, len - num_header_chars);
-
-    // Input offsets are a (cheap, sequential) prefix sum of comp_sizes; the
-    // output offset of block k is k*max_block per the VTU block scheme -> the
-    // per-block inflate runs in parallel into a pre-sized buffer.
-    std::vector<std::size_t> in_off(static_cast<std::size_t>(num_blocks) + 1, 0);
-    for (std::uint64_t k = 0; k < num_blocks; ++k)
-        in_off[static_cast<std::size_t>(k) + 1] =
-            in_off[static_cast<std::size_t>(k)] + static_cast<std::size_t>(comp_sizes[k]);
-
-    const std::size_t total = num_blocks ? static_cast<std::size_t>(num_blocks - 1) *
-                                                   static_cast<std::size_t>(max_block) +
-                                               static_cast<std::size_t>(last_block)
-                                         : 0;
-    std::vector<unsigned char> out(total);
-    parallel_for(
-        static_cast<std::size_t>(num_blocks),
-        [&](std::size_t k) {
-            std::size_t expected = (k + 1 == num_blocks) ? static_cast<std::size_t>(last_block)
-                                                         : static_cast<std::size_t>(max_block);
-            auto dec =
-                vtk_codec_decompress_block(codec, blockdata.data() + in_off[k],
-                                           static_cast<std::size_t>(comp_sizes[k]), expected);
-            std::memcpy(out.data() + k * static_cast<std::size_t>(max_block), dec.data(),
-                        std::min(dec.size(), expected));
-        },
-        /*grain=*/1);  // each block is 32 KB of inflate work
-    return out;
-}
+std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len, std::size_t hsz,
+                                             VtkCodec codec);
 
 /**
  * @brief Encodes raw little-endian bytes as a VTU "binary" `DataArray` text,
- * either uncompressed or zlib-compressed (block scheme).
+ * either uncompressed or compressed with @p codec (block scheme).
  *
- * Uncompressed (`zlib_compress == false`): a 4-byte little-endian length
+ * Uncompressed (`codec == VtkCodec::None`): a 4-byte little-endian length
  * header followed by the raw bytes, base64-encoded as one unit.
  *
- * Compressed (`zlib_compress == true`): splits `data` into fixed 32 KiB
- * blocks, deflates each independently under `parallel_for` with `grain=1`
- * (each block is a full, sizeable unit of compute — one whole deflate call
- * — so per-block dispatch is ideal; this is compute-bound, unlike the
- * memory-gather work that uses `parallel_for_bw`), then emits the
+ * Compressed: splits `data` into fixed 32 KiB blocks, compresses each
+ * independently under `parallel_for` with `grain=1` (each block is a full,
+ * sizeable unit of compute — one whole compress call — so per-block dispatch
+ * is ideal; this is compute-bound, unlike the memory-gather work that uses
+ * `parallel_for_bw`), then emits the
  * `num_blocks`/`max_block`/`last_block_size`/per-block-compressed-size
  * header followed by the concatenated compressed blocks, all base64-encoded.
  *
  * @param pData Raw bytes to encode (already in the file's target byte order).
  * @param nbytes Number of bytes in `pData`.
- * @param zlib_compress Whether to zlib-compress (block scheme) or emit raw.
+ * @param codec block-compression codec to use, or `VtkCodec::None` for raw.
  * @return The base64-encoded VTU `DataArray` text.
- * @throws WriteError if `zlib_compress` is requested but the build lacks
- *         `MESHIOPLUSPLUS_HAS_ZLIB`.
+ * @throws WriteError if @p codec is requested but was not compiled into this
+ *         build.
  */
-inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes,
-                                     VtkCodec codec) {
-    if (codec == VtkCodec::None) {
-        std::vector<unsigned char> buf(4 + nbytes);
-        std::uint32_t header = static_cast<std::uint32_t>(nbytes);
-        std::memcpy(buf.data(), &header, 4);
-        if (nbytes)
-            std::memcpy(buf.data() + 4, pData, nbytes);
-        return b64encode(buf.data(), buf.size());
-    }
-
-    vtk_codec_require_write(codec);
-    const std::uint32_t max_block = 32768;
-    std::uint32_t num_blocks = static_cast<std::uint32_t>((nbytes + max_block - 1) / max_block);
-    std::uint32_t last_block_size =
-        num_blocks ? static_cast<std::uint32_t>(nbytes - std::size_t(num_blocks - 1) * max_block)
-                   : max_block;
-
-    // Blocks are independent -> compress in parallel into pre-sized slots.
-    std::vector<std::vector<unsigned char> > blocks(num_blocks);
-    parallel_for(
-        num_blocks,
-        [&](std::size_t b) {
-            std::size_t off = b * max_block;
-            std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
-            blocks[b] = vtk_codec_compress_block(codec, pData + off, len);
-        },
-        /*grain=*/1);  // each block is 32 KB of deflate work
-
-    std::vector<std::uint32_t> header;
-    header.reserve(3 + num_blocks);
-    header.push_back(num_blocks);
-    header.push_back(max_block);
-    header.push_back(last_block_size);
-    for (const auto& b : blocks)
-        header.push_back(static_cast<std::uint32_t>(b.size()));
-
-    std::string out = b64encode(reinterpret_cast<const unsigned char*>(header.data()),
-                                header.size() * sizeof(std::uint32_t));
-    std::vector<unsigned char> concat;
-    for (const auto& b : blocks)
-        concat.insert(concat.end(), b.begin(), b.end());
-    out += b64encode(concat.data(), concat.size());
-    return out;
-}
+std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -7311,14 +5116,15 @@ inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nby
  * pugixml in its implementation section): the readers each keep a thin local
  * wrapper that pulls the `format`/`type`/`NumberOfComponents` attributes off
  * a `<DataArray>` node and dispatches to `vtu_parse_ascii`/`vtu_parse_binary`.
+ *
+ * Every function here is called once per data array or once per parsed
+ * value inside the ASCII path (where `snprintf`/`strtod` already dominate the
+ * cost far past any function-call overhead), so bodies live in
+ * `cpp/src/detail/vtk_xml.cpp` rather than inline here.
  */
 
 // System includes
-#include <cctype>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -7333,31 +5139,7 @@ namespace detail {
  * @param dt The dtype.
  * @return The VTK type name (e.g. `"Float64"`, `"Int32"`).
  */
-inline const char* vtu_type_str(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return "Float32";
-        case DType::Float64:
-            return "Float64";
-        case DType::Int8:
-            return "Int8";
-        case DType::Int16:
-            return "Int16";
-        case DType::Int32:
-            return "Int32";
-        case DType::Int64:
-            return "Int64";
-        case DType::UInt8:
-            return "UInt8";
-        case DType::UInt16:
-            return "UInt16";
-        case DType::UInt32:
-            return "UInt32";
-        case DType::UInt64:
-            return "UInt64";
-    }
-    return "Float64";
-}
+const char* vtu_type_str(DType dt);
 
 /**
  * @brief Map a VTK-XML type-name string to the `NDArray` dtype.
@@ -7365,40 +5147,14 @@ inline const char* vtu_type_str(DType dt) {
  * @return The matching dtype.
  * @throws ReadError on an unknown type name.
  */
-inline DType dtype_from_vtu(const std::string& rS) {
-    if (rS == "Float32")
-        return DType::Float32;
-    if (rS == "Float64")
-        return DType::Float64;
-    if (rS == "Int8")
-        return DType::Int8;
-    if (rS == "Int16")
-        return DType::Int16;
-    if (rS == "Int32")
-        return DType::Int32;
-    if (rS == "Int64")
-        return DType::Int64;
-    if (rS == "UInt8")
-        return DType::UInt8;
-    if (rS == "UInt16")
-        return DType::UInt16;
-    if (rS == "UInt32")
-        return DType::UInt32;
-    if (rS == "UInt64")
-        return DType::UInt64;
-    throw ReadError("Illegal VTU data type '" + rS + "'");
-}
+DType dtype_from_vtu(const std::string& rS);
 
 /**
  * @brief Emit one float in VTK's `%.11e` ASCII format followed by a newline.
  * @param rOs Output stream.
  * @param v The value.
  */
-inline void vtu_ascii_double(std::ostream& rOs, double v) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.11e", v);
-    rOs << buf << '\n';
-}
+void vtu_ascii_double(std::ostream& rOs, double v);
 
 /**
  * @brief Emit a whole `NDArray` in ASCII, one value per line (floats via
@@ -7406,16 +5162,7 @@ inline void vtu_ascii_double(std::ostream& rOs, double v) {
  * @param rOs Output stream.
  * @param rA The array.
  */
-inline void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
-    const bool flt = is_float_dtype(rA.Dtype());
-    const std::size_t n = rA.Size();
-    for (std::size_t i = 0; i < n; ++i) {
-        if (flt)
-            vtu_ascii_double(rOs, read_double(rA, i));
-        else
-            rOs << read_int(rA, i) << '\n';
-    }
-}
+void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA);
 
 /**
  * @brief Store one parsed value into a dtype-erased array slot.
@@ -7424,40 +5171,7 @@ inline void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
  * @param d The value when `rA` is a float dtype.
  * @param v The value when `rA` is an integer dtype.
  */
-inline void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
-    switch (rA.Dtype()) {
-        case DType::Float32:
-            rA.As<float>()[i] = static_cast<float>(d);
-            break;
-        case DType::Float64:
-            rA.As<double>()[i] = d;
-            break;
-        case DType::Int8:
-            rA.As<std::int8_t>()[i] = static_cast<std::int8_t>(v);
-            break;
-        case DType::Int16:
-            rA.As<std::int16_t>()[i] = static_cast<std::int16_t>(v);
-            break;
-        case DType::Int32:
-            rA.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
-            break;
-        case DType::Int64:
-            rA.As<std::int64_t>()[i] = v;
-            break;
-        case DType::UInt8:
-            rA.As<std::uint8_t>()[i] = static_cast<std::uint8_t>(v);
-            break;
-        case DType::UInt16:
-            rA.As<std::uint16_t>()[i] = static_cast<std::uint16_t>(v);
-            break;
-        case DType::UInt32:
-            rA.As<std::uint32_t>()[i] = static_cast<std::uint32_t>(v);
-            break;
-        case DType::UInt64:
-            rA.As<std::uint64_t>()[i] = static_cast<std::uint64_t>(v);
-            break;
-    }
-}
+void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v);
 
 /**
  * @brief Parse whitespace-separated ASCII DataArray text into a flat array.
@@ -7465,51 +5179,14 @@ inline void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
  * @param dt Target dtype (drives float vs integer parsing).
  * @return A 1-D owning array of every parsed value.
  */
-inline NDArray vtu_parse_ascii(const char* pText, DType dt) {
-    const bool isflt = is_float_dtype(dt);
-    std::vector<double> dv;
-    std::vector<std::int64_t> iv;
-    const char* p = pText ? pText : "";
-    while (*p) {
-        while (*p && std::isspace(static_cast<unsigned char>(*p)))
-            ++p;
-        if (!*p)
-            break;
-        char* endp = nullptr;
-        if (isflt) {
-            double x = std::strtod(p, &endp);
-            if (endp == p)
-                break;
-            dv.push_back(x);
-        } else {
-            long long x = std::strtoll(p, &endp, 10);
-            if (endp == p)
-                break;
-            iv.push_back(static_cast<std::int64_t>(x));
-        }
-        p = endp;
-    }
-    std::size_t n = isflt ? dv.size() : iv.size();
-    NDArray a(dt, {n});
-    for (std::size_t i = 0; i < n; ++i)
-        vtu_store(a, i, isflt ? dv[i] : 0.0, isflt ? 0 : iv[i]);
-    return a;
-}
+NDArray vtu_parse_ascii(const char* pText, DType dt);
 
 /**
  * @brief Trim leading/trailing whitespace from a C string.
  * @param pS The string (may be null).
  * @return The trimmed copy.
  */
-inline std::string vtu_strip(const char* pS) {
-    std::string t = pS ? pS : "";
-    std::size_t b = 0, e = t.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(t[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(t[e - 1])))
-        --e;
-    return t.substr(b, e - b);
-}
+std::string vtu_strip(const char* pS);
 
 /**
  * @brief Decode a base64 "binary" DataArray payload into a flat array.
@@ -7519,32 +5196,14 @@ inline std::string vtu_strip(const char* pS) {
  * @param hsz Header integer size in bytes (4 for UInt32, 8 for UInt64).
  * @return A 1-D owning array over the decoded bytes.
  */
-inline NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec,
-                                std::size_t hsz) {
-    std::vector<unsigned char> bytes;
-    if (codec == VtkCodec::None)
-        bytes = vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
-    else
-        bytes = vtu_decode_blocks(rText.c_str(), rText.size(), hsz, codec);
-    std::size_t isz = dtype_size(dt);
-    std::size_t n = isz ? bytes.size() / isz : 0;
-    NDArray a(dt, {n});
-    if (n)
-        std::memcpy(a.Data(), bytes.data(), n * isz);
-    return a;
-}
+NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std::size_t hsz);
 
 /**
  * @brief Widen a dtype-erased integer array to a `std::int64_t` vector.
  * @param rA The array.
  * @return The widened values.
  */
-inline std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
-    std::vector<std::int64_t> v(rA.Size());
-    for (std::size_t i = 0; i < rA.Size(); ++i)
-        v[i] = read_int(rA, i);
-    return v;
-}
+std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -7564,12 +5223,14 @@ inline std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
  * rather than one array per block — `concat_cell_data`/`split_raw_cell_data`
  * are what let this header's callers go between meshio's per-block
  * `cell_data` representation and that concatenated-raw representation.
+ *
+ * Each function here is called once per cell-type-name lookup or once per
+ * data array (not per element), so bodies live in
+ * `cpp/src/detail/xdmf_common.cpp` rather than inline here.
  */
 
 // System includes
-#include <cstring>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -7583,32 +5244,7 @@ namespace xdmfcommon {
  * @return The corresponding XDMF `TopologyType` string (e.g. `"Triangle"`).
  * @throws WriteError if `t` has no XDMF equivalent.
  */
-inline const char* meshio_to_xdmf(const std::string& rT) {
-    static const std::unordered_map<std::string, const char*> m = {
-        {"vertex", "Polyvertex"},
-        {"line", "Polyline"},
-        {"line3", "Edge_3"},
-        {"quad", "Quadrilateral"},
-        {"quad8", "Quadrilateral_8"},
-        {"quad9", "Quadrilateral_9"},
-        {"pyramid", "Pyramid"},
-        {"pyramid13", "Pyramid_13"},
-        {"tetra", "Tetrahedron"},
-        {"triangle", "Triangle"},
-        {"triangle6", "Triangle_6"},
-        {"tetra10", "Tetrahedron_10"},
-        {"wedge", "Wedge"},
-        {"wedge15", "Wedge_15"},
-        {"wedge18", "Wedge_18"},
-        {"hexahedron", "Hexahedron"},
-        {"hexahedron20", "Hexahedron_20"},
-        {"hexahedron24", "Hexahedron_24"},
-        {"hexahedron27", "Hexahedron_27"}};
-    auto it = m.find(rT);
-    if (it == m.end())
-        throw WriteError("XDMF: unsupported cell type " + rT);
-    return it->second;
-}
+const char* meshio_to_xdmf(const std::string& rT);
 
 /**
  * @brief Maps an XDMF topology type name to a meshio cell-type name.
@@ -7620,39 +5256,7 @@ inline const char* meshio_to_xdmf(const std::string& rT) {
  * @return The corresponding meshio cell-type name.
  * @throws ReadError if `t` is not a recognized topology type.
  */
-inline std::string xdmf_to_meshio(const std::string& rT) {
-    static const std::unordered_map<std::string, std::string> m = {
-        {"Polyvertex", "vertex"},
-        {"Polyline", "line"},
-        {"Edge_3", "line3"},
-        {"Quadrilateral", "quad"},
-        {"Quadrilateral_8", "quad8"},
-        {"Quad_8", "quad8"},
-        {"Quadrilateral_9", "quad9"},
-        {"Quad_9", "quad9"},
-        {"Pyramid", "pyramid"},
-        {"Pyramid_13", "pyramid13"},
-        {"Tetrahedron", "tetra"},
-        {"Triangle", "triangle"},
-        {"Triangle_6", "triangle6"},
-        {"Tri_6", "triangle6"},
-        {"Tetrahedron_10", "tetra10"},
-        {"Tet_10", "tetra10"},
-        {"Wedge", "wedge"},
-        {"Wedge_15", "wedge15"},
-        {"Wedge_18", "wedge18"},
-        {"Hexahedron", "hexahedron"},
-        {"Hexahedron_20", "hexahedron20"},
-        {"Hex_20", "hexahedron20"},
-        {"Hexahedron_24", "hexahedron24"},
-        {"Hex_24", "hexahedron24"},
-        {"Hexahedron_27", "hexahedron27"},
-        {"Hex_27", "hexahedron27"}};
-    auto it = m.find(rT);
-    if (it == m.end())
-        throw ReadError("XDMF: unsupported topology type " + rT);
-    return it->second;
-}
+std::string xdmf_to_meshio(const std::string& rT);
 
 /**
  * @brief Concatenates one cell-data name's per-block arrays along axis 0
@@ -7667,24 +5271,7 @@ inline std::string xdmf_to_meshio(const std::string& rT) {
  * @return A new array with the same trailing shape as the first block and
  *         first dimension equal to the sum of each block's row count.
  */
-inline NDArray concat_cell_data(const Mesh& rMesh, const std::string& rName) {
-    const std::size_t nblocks = rMesh.CellDataNumBlocks(rName);
-    std::size_t total_rows = 0;
-    std::vector<std::size_t> shape = rMesh.CellData(rName, 0).Shape();
-    for (std::size_t b = 0; b < nblocks; ++b) {
-        const auto& bshape = rMesh.CellData(rName, b).Shape();
-        total_rows += bshape.empty() ? 0 : bshape[0];
-    }
-    shape[0] = total_rows;
-    NDArray out(rMesh.CellData(rName, 0).Dtype(), shape);
-    std::size_t off = 0;
-    for (std::size_t b = 0; b < nblocks; ++b) {
-        const NDArray& blk = rMesh.CellData(rName, b);
-        std::memcpy(out.Data() + off, blk.Data(), blk.Nbytes());
-        off += blk.Nbytes();
-    }
-    return out;
-}
+NDArray concat_cell_data(const Mesh& rMesh, const std::string& rName);
 
 /**
  * @brief Splits a raw, whole-mesh cell-data array (as read from XDMF/HMF)
@@ -7698,28 +5285,62 @@ inline NDArray concat_cell_data(const Mesh& rMesh, const std::string& rName) {
  *              appear in `raw`; must sum to `raw`'s row count.
  * @return One `NDArray` per entry in `sizes`, each holding that block's slice.
  */
-inline std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
-                                                const std::vector<std::size_t>& rSizes) {
-    std::size_t ncols = rRaw.Ndim() >= 2 ? rRaw.Shape()[1] : 1;
-    std::size_t off = 0;
-    std::vector<NDArray> blocks;
-    for (std::size_t bs : rSizes) {
-        std::vector<std::size_t> bshape = rRaw.Shape();
-        if (!bshape.empty())
-            bshape[0] = bs;
-        NDArray b(rRaw.Dtype(), bshape);
-        std::size_t elems = bs * ncols;
-        std::memcpy(b.Data(), rRaw.Data() + off * ncols * dtype_size(rRaw.Dtype()),
-                    elems * dtype_size(rRaw.Dtype()));
-        off += bs;
-        blocks.push_back(std::move(b));
-    }
-    return blocks;
-}
+std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
+                                         const std::vector<std::size_t>& rSizes);
 
 }  // namespace xdmfcommon
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/xdmf_common.hpp =====
+// ===== begin cpp/include/meshioplusplus/exceptions.hpp =====
+/**
+ * @file exceptions.hpp
+ * @brief meshio I/O exception types thrown by the C++ core's readers/writers.
+ *
+ * These are the only exception types the C++ format readers/writers throw on
+ * I/O failure (malformed input, unsupported constructs, filesystem errors,
+ * etc.). The pybind11 binding layer catches them and re-raises the
+ * equivalent Python `meshioplusplus.ReadError` / `meshioplusplus.WriteError`
+ * classes, so callers on the Python side see identical behaviour whether a
+ * format is handled by the C++ core or by the pure-Python fallback. Because
+ * the shim pattern (`__init__.py`) catches *any* exception from the C++ path
+ * to decide whether to fall back to Python, throwing these (rather than
+ * e.g. asserting or returning error codes) is what makes that fallback work.
+ */
+
+// System includes
+#include <stdexcept>
+#include <string>
+
+namespace meshioplusplus {
+
+/**
+ * @brief Thrown by C++ readers when the input file/stream cannot be parsed.
+ *
+ * Covers malformed content, missing required sections, and unsupported
+ * constructs that a given format's C++ reader deliberately does not handle
+ * (in which case the format's Python shim catches this and falls back to the
+ * pure-Python reference reader). Maps 1:1 to Python's `meshioplusplus.ReadError`.
+ */
+struct ReadError : std::runtime_error {
+    ReadError() : std::runtime_error("") {}
+    explicit ReadError(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
+/**
+ * @brief Thrown by C++ writers when a mesh cannot be serialized to a format.
+ *
+ * Covers unsupported cell types, ragged/ill-formed mesh data the writer does
+ * not accept, and any other output-side constraint violation (in which case
+ * the format's Python shim catches this and falls back to the pure-Python
+ * reference writer). Maps 1:1 to Python's `meshioplusplus.WriteError`.
+ */
+struct WriteError : std::runtime_error {
+    WriteError() : std::runtime_error("") {}
+    explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/exceptions.hpp =====
 // ===== begin cpp/include/meshioplusplus/formats/abaqus.hpp =====
 /**
  * @file abaqus.hpp
@@ -12896,6 +10517,320 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/operations/transform.hpp =====
+// ===== begin cpp/include/meshioplusplus/parallel.hpp =====
+/**
+ * @file parallel.hpp
+ * @brief `parallel_for`/`parallel_for_bw`: a backend-agnostic parallel loop
+ * over a compile-time-selected SEQ/STL/OpenMP/TBB implementation.
+ *
+ * The active backend is chosen at compile time by the `MESHIOPLUSPLUS_PARALLEL_*`
+ * preprocessor definitions (set from CMake's `MESHIOPLUSPLUS_PARALLEL_BACKEND` =
+ * `AUTO|SEQ|STL|OPENMP|TBB`; `AUTO` prefers OpenMP — portable across
+ * manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB) if
+ * detected, else SEQ). `parallel_backend_name()`/`_core.__parallel_backend__`
+ * report which one is active. Iterations passed to `parallel_for` must be
+ * independent (no cross-iteration state) since they may run concurrently in
+ * any order; the first exception thrown by any iteration is captured and
+ * rethrown once the parallel region has joined (via `detail::FirstException`),
+ * so callers see ordinary C++ exception semantics rather than `std::terminate`
+ * or a lost exception.
+ *
+ * There are two flavors, distinguished by how many threads they are allowed
+ * to use:
+ *  - `parallel_for` — uses all available cores (up to `max_threads` if
+ *    non-zero). Appropriate for compute-bound loops where per-element work
+ *    is real computation, e.g. zlib/base64 encode-decode in
+ *    `detail/vtu_binary.hpp` and ASCII value formatting.
+ *  - `parallel_for_bw` — caps the thread count to `parallel_bandwidth_threads`
+ *    (4). Appropriate for memory-bandwidth-bound loops — byte-swap,
+ *    transpose, index gather — which saturate a socket's memory bandwidth
+ *    with only a few threads and then *regress* as thread count grows
+ *    further (more cache contention and dispatch overhead without more
+ *    usable bandwidth), unlike compute-bound loops which keep scaling to all
+ *    cores.
+ *
+ * To add a new backend (e.g. Kokkos, HPX): add one CMake branch that defines
+ * a new `MESHIOPLUSPLUS_PARALLEL_<NAME>` macro and links the dependency, then
+ * add one `#elif defined(MESHIOPLUSPLUS_PARALLEL_<NAME>)` branch in
+ * `detail::parallel_for_impl` below (and extend `parallel_backend_name()`
+ * to report it).
+ */
+
+// System includes
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <exception>
+#include <utility>
+
+#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
+#include <execution>
+#include <thread>
+#include <vector>
+#endif
+
+// External includes
+#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+#include <omp.h>
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+#include <tbb/blocked_range.h>
+#include <tbb/global_control.h>
+#include <tbb/parallel_for.h>
+#endif
+
+namespace meshioplusplus {
+
+/**
+ * @brief Default grain size (minimum iterations per dispatched chunk) for
+ * `parallel_for`/`parallel_for_bw` when the caller doesn't override it.
+ *
+ * Below this many total iterations, `parallel_for` runs sequentially rather
+ * than paying parallel dispatch overhead (see the `n <= grain` check in
+ * `parallel_for` below). Callers with atypically coarse or fine per-iteration
+ * work (e.g. one whole zlib block per iteration) pass an explicit smaller
+ * `grain` (often `1`) so each iteration dispatches individually.
+ */
+inline constexpr std::size_t parallel_grain_default = 2048;
+
+/**
+ * @brief Thread cap used by `parallel_for_bw` for memory-bandwidth-bound loops.
+ *
+ * Memory-bandwidth-bound loops (byte-swap, transpose, gather) saturate a
+ * socket's bandwidth with only a few threads and then *regress* as thread
+ * overhead and cache contention grow — unlike compute-bound loops (zlib,
+ * base64) which scale to all cores. Cap the bandwidth-bound loops here.
+ */
+inline constexpr unsigned parallel_bandwidth_threads = 4;
+
+/**
+ * @brief Name of the parallel backend selected at compile time.
+ *
+ * Reflects whichever of `MESHIOPLUSPLUS_PARALLEL_STL`/`_OPENMP`/`_TBB` was
+ * defined (by CMake, based on `MESHIOPLUSPLUS_PARALLEL_BACKEND`); none of
+ * them defined means the sequential fallback. Exposed to Python as
+ * `_core.__parallel_backend__` so tests/diagnostics can assert which backend
+ * actually built.
+ * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"seq"`.
+ */
+constexpr const char* parallel_backend_name() {
+#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
+    return "stl";
+#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+    return "openmp";
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    return "tbb";
+#else
+    return "seq";
+#endif
+}
+
+namespace detail {
+
+/**
+ * @brief Captures the first exception thrown by any parallel iteration, to
+ * be rethrown by the caller after the parallel region joins.
+ *
+ * Iterations run on multiple threads cannot let a C++ exception escape
+ * across the parallelism boundary (OpenMP/TBB would `std::terminate`), so
+ * each backend wraps its per-iteration body in `Run()`, which catches
+ * everything and records only the *first* exception (subsequent ones from
+ * other threads are discarded — `mRaised` is a one-shot latch via
+ * `std::atomic_flag`). After the parallel region has fully joined, the
+ * caller calls `RethrowIfAny()` to surface that exception on the calling
+ * thread with normal C++ semantics.
+ */
+class FirstException {
+public:
+    template <class Body>
+    void Run(Body&& body) noexcept {
+        try {
+            body();
+        } catch (...) {
+            if (!mRaised.test_and_set(std::memory_order_acq_rel))
+                mEptr = std::current_exception();
+        }
+    }
+    void RethrowIfAny() {
+        if (mEptr)
+            std::rethrow_exception(mEptr);
+    }
+
+private:
+    std::atomic_flag mRaised = ATOMIC_FLAG_INIT;
+    std::exception_ptr mEptr;
+};
+
+/**
+ * @brief Backend-specific dispatch of `n` independent iterations of `f`.
+ *
+ * Exactly one `#if`/`#elif` branch compiles, selected by the
+ * `MESHIOPLUSPLUS_PARALLEL_*` macro CMake defined:
+ *  - **STL**: splits `[0, n)` into up to `hardware_concurrency() * 4` chunks
+ *    (fewer if `grain`/`max_threads` constrain it further) and runs them via
+ *    `std::for_each(std::execution::par, ...)` over a small chunk table
+ *    (iterated explicitly because PSTL algorithms require
+ *    `Cpp17ForwardIterator`s, which `iota_view` iterators don't satisfy on
+ *    every implementation).
+ *  - **OpenMP**: `#pragma omp parallel for schedule(dynamic, chunk)` with
+ *    `chunk = max(grain/4, 1)`. Dynamic (not static) scheduling matters on
+ *    hybrid P+E-core CPUs, where a static split would leave slow E-cores as
+ *    stragglers while fast P-cores idle at the join; `grain/4` keeps
+ *    dispatch overhead negligible for fine-grained loops while still
+ *    honouring explicitly coarse callers (e.g. VTU zlib blocks pass
+ *    `grain=1` because each iteration is already a whole compress, so
+ *    per-iteration dispatch is exactly what's wanted — the chunk size must
+ *    never be floored above the caller's `grain`).
+ *  - **TBB**: `tbb::parallel_for` over a `blocked_range` of grain size
+ *    `grain`, optionally under a `tbb::global_control` limiting
+ *    `max_allowed_parallelism` to `max_threads`.
+ *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
+ *    unused (cast to `void` to silence warnings).
+ *
+ * Every branch funnels per-iteration exceptions through a `FirstException`
+ * so exactly one is rethrown after the region joins.
+ *
+ * @tparam F Callable invoked as `f(std::size_t i)` for each `i` in `[0, n)`.
+ * @param n Number of iterations.
+ * @param rF The per-iteration body (iterations must be independent).
+ * @param grain Minimum unit of work per dispatched chunk/task.
+ * @param max_threads Cap on threads used (0 = no cap, use all available).
+ */
+template <class F>
+void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_threads) {
+#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
+    struct Chunk {
+        std::size_t mBegin, mEnd;
+    };
+    const std::size_t hw = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    std::size_t max_chunks = hw * 4;
+    if (max_threads)
+        max_chunks = std::min<std::size_t>(max_chunks, max_threads);
+    const std::size_t by_grain = (n + grain - 1) / grain;
+    const std::size_t nchunks = std::max<std::size_t>(1, std::min(max_chunks, by_grain));
+    const std::size_t per = (n + nchunks - 1) / nchunks;
+    // PSTL algorithms require Cpp17ForwardIterators (iota_view iterators do
+    // not qualify on all implementations), so iterate a small chunk table.
+    std::vector<Chunk> chunks;
+    chunks.reserve(nchunks);
+    for (std::size_t b = 0; b < n; b += per)
+        chunks.push_back({b, std::min(b + per, n)});
+    FirstException exc;
+    std::for_each(std::execution::par, chunks.begin(), chunks.end(), [&](const Chunk& c) {
+        exc.Run([&] {
+            for (std::size_t i = c.mBegin; i < c.mEnd; ++i)
+                rF(i);
+        });
+    });
+    exc.RethrowIfAny();
+#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+    FirstException exc;
+    const long long nn = static_cast<long long>(n);
+    const int nt = max_threads ? std::min<int>(static_cast<int>(max_threads), omp_get_max_threads())
+                               : omp_get_max_threads();
+    // Dynamic scheduling: on hybrid CPUs (P + E cores) a static split makes the
+    // slow cores stragglers while the fast ones idle at the join; moderately
+    // sized dynamic chunks self-balance with negligible dispatch overhead.
+    // grain/4 keeps dispatch rare for fine-grained loops while honouring
+    // explicitly coarse loops (e.g. the VTU zlib blocks pass grain=1: each
+    // iteration is a whole compress, so per-iteration dispatch is ideal).
+    const long long chunk = static_cast<long long>(std::max<std::size_t>(grain / 4, 1));
+#pragma omp parallel for schedule(dynamic, chunk) num_threads(nt)
+    for (long long i = 0; i < nn; ++i) {
+        exc.Run([&] { rF(static_cast<std::size_t>(i)); });
+    }
+    exc.RethrowIfAny();
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    FirstException exc;
+    auto body = [&] {
+        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, n, grain),
+                          [&](const tbb::blocked_range<std::size_t>& r) {
+                              exc.Run([&] {
+                                  for (std::size_t i = r.begin(); i != r.end(); ++i)
+                                      rF(i);
+                              });
+                          });
+    };
+    if (max_threads) {
+        tbb::global_control gc(tbb::global_control::max_allowed_parallelism, max_threads);
+        body();
+    } else {
+        body();
+    }
+    exc.RethrowIfAny();
+#else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
+    (void)grain;
+    (void)max_threads;
+    for (std::size_t i = 0; i < n; ++i)
+        rF(i);
+#endif
+}
+
+}  // namespace detail
+
+/**
+ * @brief Runs `n` independent iterations of `f(i)`, in parallel when it's
+ * worthwhile, using the compile-time-selected backend (see
+ * `parallel_backend_name()`).
+ *
+ * If `n <= grain`, runs sequentially in-line — the fixed cost of dispatching
+ * a parallel region isn't worth it for small workloads. Otherwise delegates
+ * to `detail::parallel_for_impl`. `f` must be safe to invoke concurrently
+ * from multiple threads for different `i` (no shared mutable state without
+ * external synchronization); the first exception any invocation throws is
+ * captured and rethrown on the calling thread after all iterations
+ * complete (partial results/side effects from other iterations are not
+ * rolled back).
+ *
+ * @tparam F Callable invoked as `f(std::size_t i)`.
+ * @param n Number of iterations; a no-op if `n == 0`.
+ * @param f The per-iteration body.
+ * @param grain Minimum number of iterations to bother parallelizing, and
+ *              (backend-dependent) the target chunk size once it does;
+ *              defaults to `parallel_grain_default` (2048). Pass a small
+ *              value (e.g. `1`) when each iteration is already coarse work
+ *              (a whole zlib block, a whole compress) so dispatch happens
+ *              per-iteration rather than being batched further.
+ * @param max_threads Cap on threads used; `0` (the default) means "use all
+ *                     available". Pass `parallel_bandwidth_threads`
+ *                     (or call `parallel_for_bw` instead) for
+ *                     memory-bandwidth-bound loops.
+ */
+template <class F>
+void parallel_for(std::size_t n, F&& f, std::size_t grain = parallel_grain_default,
+                  unsigned max_threads = 0) {
+    if (n == 0)
+        return;
+    if (n <= grain) {
+        for (std::size_t i = 0; i < n; ++i)
+            f(i);
+        return;
+    }
+    detail::parallel_for_impl(n, f, grain, max_threads);
+}
+
+/**
+ * @brief `parallel_for`, thread-capped for memory-bandwidth-bound loops.
+ *
+ * Convenience wrapper that forwards to `parallel_for` with
+ * `max_threads = parallel_bandwidth_threads` (4). Use this for byte-swap,
+ * transpose, and index-gather loops: they saturate a socket's memory
+ * bandwidth with only a few threads and then *regress* — more threads add
+ * cache contention and dispatch overhead without more usable bandwidth —
+ * unlike genuinely compute-bound loops (zlib/base64), which should use
+ * plain `parallel_for` to scale across all cores.
+ *
+ * @tparam F Callable invoked as `f(std::size_t i)`.
+ * @param n Number of iterations; a no-op if `n == 0`.
+ * @param f The per-iteration body.
+ * @param grain Minimum iterations per chunk; see `parallel_for`'s `grain`.
+ */
+template <class F>
+void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_default) {
+    parallel_for(n, std::forward<F>(f), grain, parallel_bandwidth_threads);
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/parallel.hpp =====
 // ===== begin cpp/include/meshioplusplus/registry.hpp =====
 /**
  * @file registry.hpp
@@ -13096,6 +11031,199 @@ bool has_skinnable_cells(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/skin.hpp =====
+// ===== begin cpp/include/meshioplusplus/vtk_common.hpp =====
+/**
+ * @file vtk_common.hpp
+ * @brief VTK cell-type metadata shared by the VTU and VTK legacy format
+ * implementations, ported from `src/meshio/_vtk_common.py`.
+ *
+ * Holds the meshio-type <-> VTK-cell-type-id maps (`meshio_to_vtk_type`/
+ * `vtk_to_meshio_type`), the one node-order quirk that differs between the
+ * two conventions (`meshio_to_vtk_order`/`vtk_to_meshio_order`, for the
+ * linear wedge), and `is_special_cell`, which flags the cell types whose
+ * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_*
+ * family) and therefore need the offsets-based reconstruction in
+ * `detail/vtk_cells.hpp` rather than a plain fixed-width connectivity slice.
+ */
+
+// System includes
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace meshioplusplus {
+
+/**
+ * @brief Maps a meshio cell-type name to its VTK cell type id.
+ *
+ * Inverse of `vtk_to_meshio_type()`. Lazily constructed once (function-local
+ * `static`) and returned by `const&`. Covers linear and quadratic standard
+ * VTK cells plus the Lagrange (68-74) and Bezier (75-81) high-order
+ * families.
+ * @return Reference to the process-wide singleton lookup table.
+ */
+inline const std::unordered_map<std::string, int>& meshio_to_vtk_type() {
+    static const std::unordered_map<std::string, int> m = {
+        {"empty", 0},
+        {"vertex", 1},
+        {"line", 3},
+        {"triangle", 5},
+        {"polygon", 7},
+        {"pixel", 8},
+        {"quad", 9},
+        {"tetra", 10},
+        {"hexahedron", 12},
+        {"wedge", 13},
+        {"pyramid", 14},
+        {"penta_prism", 15},
+        {"hexa_prism", 16},
+        {"line3", 21},
+        {"triangle6", 22},
+        {"quad8", 23},
+        {"tetra10", 24},
+        {"hexahedron20", 25},
+        {"wedge15", 26},
+        {"pyramid13", 27},
+        {"quad9", 28},
+        {"hexahedron27", 29},
+        {"quad6", 30},
+        {"wedge12", 31},
+        {"wedge18", 32},
+        {"hexahedron24", 33},
+        {"triangle7", 34},
+        {"line4", 35},
+        {"polyhedron", 42},
+        {"VTK_LAGRANGE_CURVE", 68},
+        {"VTK_LAGRANGE_TRIANGLE", 69},
+        {"VTK_LAGRANGE_QUADRILATERAL", 70},
+        {"VTK_LAGRANGE_TETRAHEDRON", 71},
+        {"VTK_LAGRANGE_HEXAHEDRON", 72},
+        {"VTK_LAGRANGE_WEDGE", 73},
+        {"VTK_LAGRANGE_PYRAMID", 74},
+        {"VTK_BEZIER_CURVE", 75},
+        {"VTK_BEZIER_TRIANGLE", 76},
+        {"VTK_BEZIER_QUADRILATERAL", 77},
+        {"VTK_BEZIER_TETRAHEDRON", 78},
+        {"VTK_BEZIER_HEXAHEDRON", 79},
+        {"VTK_BEZIER_WEDGE", 80},
+        {"VTK_BEZIER_PYRAMID", 81},
+    };
+    return m;
+}
+
+/**
+ * @brief Node-index permutation applied when writing a meshio cell block's
+ * connectivity out in VTK order.
+ *
+ * Only the linear `"wedge"` differs between the two conventions (meshio/gmsh
+ * prism ordering vs. `vtkWedge`'s); every other supported type has identical
+ * ordering, signaled by returning an empty vector (callers should treat
+ * empty as "no permutation needed", not as an error).
+ * @param meshio_type The meshio cell-type name.
+ * @return `result[j]` = the meshio-order index to place at VTK-order
+ *         position `j`; empty if the ordering is already identical.
+ */
+inline std::vector<int> meshio_to_vtk_order(const std::string& rMeshioType) {
+    if (rMeshioType == "wedge")
+        return {0, 2, 1, 3, 5, 4};
+    return {};
+}
+
+/**
+ * @brief Maps a VTK cell type id to a meshio cell-type name.
+ *
+ * Covers only the subset meshio itself can represent (matches
+ * `vtk_to_meshio_type` in `_vtk_common.py`); ids meshio has no equivalent
+ * for are simply absent from the map, and callers (e.g.
+ * `detail::reconstruct_cells`) must treat a failed lookup as an unsupported
+ * cell type. Lazily constructed once (function-local `static`) and returned
+ * by `const&`.
+ * @return Reference to the process-wide singleton lookup table.
+ */
+inline const std::unordered_map<int, std::string>& vtk_to_meshio_type() {
+    static const std::unordered_map<int, std::string> m = {
+        {0, "empty"},
+        {1, "vertex"},
+        {3, "line"},
+        {5, "triangle"},
+        {7, "polygon"},
+        {8, "pixel"},
+        {9, "quad"},
+        {10, "tetra"},
+        {12, "hexahedron"},
+        {13, "wedge"},
+        {14, "pyramid"},
+        {15, "penta_prism"},
+        {16, "hexa_prism"},
+        {21, "line3"},
+        {22, "triangle6"},
+        {23, "quad8"},
+        {24, "tetra10"},
+        {25, "hexahedron20"},
+        {26, "wedge15"},
+        {27, "pyramid13"},
+        {28, "quad9"},
+        {29, "hexahedron27"},
+        {30, "quad6"},
+        {31, "wedge12"},
+        {32, "wedge18"},
+        {33, "hexahedron24"},
+        {34, "triangle7"},
+        {35, "line4"},
+        {42, "polyhedron"},
+        {68, "VTK_LAGRANGE_CURVE"},
+        {69, "VTK_LAGRANGE_TRIANGLE"},
+        {70, "VTK_LAGRANGE_QUADRILATERAL"},
+        {71, "VTK_LAGRANGE_TETRAHEDRON"},
+        {72, "VTK_LAGRANGE_HEXAHEDRON"},
+        {73, "VTK_LAGRANGE_WEDGE"},
+        {74, "VTK_LAGRANGE_PYRAMID"},
+        {75, "VTK_BEZIER_CURVE"},
+        {76, "VTK_BEZIER_TRIANGLE"},
+        {77, "VTK_BEZIER_QUADRILATERAL"},
+        {78, "VTK_BEZIER_TETRAHEDRON"},
+        {79, "VTK_BEZIER_HEXAHEDRON"},
+        {80, "VTK_BEZIER_WEDGE"},
+        {81, "VTK_BEZIER_PYRAMID"},
+    };
+    return m;
+}
+
+/**
+ * @brief Inverse of `meshio_to_vtk_order`, applied when reading VTK
+ * connectivity back into meshio order.
+ *
+ * Only the linear wedge (VTK type id 13) differs; its permutation
+ * `[0,2,1,3,5,4]` happens to be its own inverse, so the same literal serves
+ * both directions. Empty means no permutation needed.
+ * @param vtk_type The VTK cell type id being read.
+ * @return `result[j]` = the VTK-order index to place at meshio-order
+ *         position `j`; empty if the ordering is already identical.
+ */
+inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
+    if (vtk_type == 13)
+        return {0, 2, 1, 3, 5, 4};
+    return {};
+}
+
+/**
+ * @brief Whether a meshio cell type has a variable node count per cell in a
+ * VTK/VTU connectivity+offsets representation.
+ *
+ * True for `"polygon"` and every `VTK_LAGRANGE_*` type. These cannot be
+ * described by a single fixed nodes-per-cell count, so
+ * `detail::reconstruct_cells` (vtk_cells.hpp) reconstructs them from the
+ * end-offsets array (grouping same-size runs) instead of slicing a uniform
+ * `(num_cells, n)` block.
+ * @param meshio_type The meshio cell-type name to test.
+ * @return `true` if `meshio_type` needs offsets-based reconstruction.
+ */
+inline bool is_special_cell(const std::string& rMeshioType) {
+    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/vtk_common.hpp =====
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
@@ -27843,6 +25971,2229 @@ namespace pugi
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 // ===== end cpp/third_party/pugixml/pugixml.cpp =====
+// ===== begin cpp/src/detail/cell_edges.cpp =====
+
+namespace meshioplusplus {
+namespace detail {
+
+const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType) {
+    using CT = CellType;
+    static const std::vector<CellEdgeDef> empty = {};
+    static const std::vector<CellEdgeDef> triangle = {
+        {CT::Line, 2, 2, {0, 1}},
+        {CT::Line, 2, 2, {1, 2}},
+        {CT::Line, 2, 2, {2, 0}},
+    };
+    static const std::vector<CellEdgeDef> triangle6 = {
+        {CT::Line3, 2, 3, {0, 1, 3}},
+        {CT::Line3, 2, 3, {1, 2, 4}},
+        {CT::Line3, 2, 3, {2, 0, 5}},
+    };
+    static const std::vector<CellEdgeDef> quad = {
+        {CT::Line, 2, 2, {0, 1}},
+        {CT::Line, 2, 2, {1, 2}},
+        {CT::Line, 2, 2, {2, 3}},
+        {CT::Line, 2, 2, {3, 0}},
+    };
+    static const std::vector<CellEdgeDef> quad8 = {
+        {CT::Line3, 2, 3, {0, 1, 4}},
+        {CT::Line3, 2, 3, {1, 2, 5}},
+        {CT::Line3, 2, 3, {2, 3, 6}},
+        {CT::Line3, 2, 3, {3, 0, 7}},
+    };
+    switch (SurfaceType) {
+        case CT::Triangle:
+            return triangle;
+        case CT::Triangle6:
+            return triangle6;
+        case CT::Quad:
+            return quad;
+        case CT::Quad8:
+        case CT::Quad9:  // same edges as quad8; node 8 (center) is on no edge
+            return quad8;
+        default:
+            return empty;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/cell_edges.cpp =====
+// ===== begin cpp/src/detail/cell_faces.cpp =====
+
+namespace meshioplusplus {
+namespace detail {
+
+const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
+    using CT = CellType;
+    static const std::vector<CellFaceDef> empty = {};
+    static const std::vector<CellFaceDef> tetra = {
+        {CT::Triangle, 3, 3, {0, 1, 3}},
+        {CT::Triangle, 3, 3, {1, 2, 3}},
+        {CT::Triangle, 3, 3, {2, 0, 3}},
+        {CT::Triangle, 3, 3, {0, 2, 1}},
+    };
+    static const std::vector<CellFaceDef> tetra10 = {
+        {CT::Triangle6, 3, 6, {0, 1, 3, 4, 8, 7}},
+        {CT::Triangle6, 3, 6, {1, 2, 3, 5, 9, 8}},
+        {CT::Triangle6, 3, 6, {2, 0, 3, 6, 7, 9}},
+        {CT::Triangle6, 3, 6, {0, 2, 1, 6, 5, 4}},
+    };
+    static const std::vector<CellFaceDef> hexahedron = {
+        {CT::Quad, 4, 4, {0, 4, 7, 3}}, {CT::Quad, 4, 4, {1, 2, 6, 5}},
+        {CT::Quad, 4, 4, {0, 1, 5, 4}}, {CT::Quad, 4, 4, {3, 7, 6, 2}},
+        {CT::Quad, 4, 4, {0, 3, 2, 1}}, {CT::Quad, 4, 4, {4, 5, 6, 7}},
+    };
+    static const std::vector<CellFaceDef> hexahedron20 = {
+        {CT::Quad8, 4, 8, {0, 4, 7, 3, 16, 15, 19, 11}},
+        {CT::Quad8, 4, 8, {1, 2, 6, 5, 9, 18, 13, 17}},
+        {CT::Quad8, 4, 8, {0, 1, 5, 4, 8, 17, 12, 16}},
+        {CT::Quad8, 4, 8, {3, 7, 6, 2, 19, 14, 18, 10}},
+        {CT::Quad8, 4, 8, {0, 3, 2, 1, 11, 10, 9, 8}},
+        {CT::Quad8, 4, 8, {4, 5, 6, 7, 12, 13, 14, 15}},
+    };
+    // VTK face-center numbering: 20=(0,1,5,4), 21=(1,2,6,5), 22=(2,3,7,6),
+    // 23=(3,0,4,7), 24=bottom (0,1,2,3), 25=top (4,5,6,7); 26 = body center.
+    static const std::vector<CellFaceDef> hexahedron27 = {
+        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 23}},
+        {CT::Quad9, 4, 9, {1, 2, 6, 5, 9, 18, 13, 17, 21}},
+        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 20}},
+        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 22}},
+        {CT::Quad9, 4, 9, {0, 3, 2, 1, 11, 10, 9, 8, 24}},
+        {CT::Quad9, 4, 9, {4, 5, 6, 7, 12, 13, 14, 15, 25}},
+    };
+    static const std::vector<CellFaceDef> wedge = {
+        {CT::Triangle, 3, 3, {0, 2, 1}}, {CT::Triangle, 3, 3, {3, 4, 5}},
+        {CT::Quad, 4, 4, {0, 1, 4, 3}},  {CT::Quad, 4, 4, {1, 2, 5, 4}},
+        {CT::Quad, 4, 4, {2, 0, 3, 5}},
+    };
+    static const std::vector<CellFaceDef> wedge15 = {
+        {CT::Triangle6, 3, 6, {0, 2, 1, 8, 7, 6}},
+        {CT::Triangle6, 3, 6, {3, 4, 5, 9, 10, 11}},
+        {CT::Quad8, 4, 8, {0, 1, 4, 3, 6, 13, 9, 12}},
+        {CT::Quad8, 4, 8, {1, 2, 5, 4, 7, 14, 10, 13}},
+        {CT::Quad8, 4, 8, {2, 0, 3, 5, 8, 12, 11, 14}},
+    };
+    static const std::vector<CellFaceDef> pyramid = {
+        {CT::Quad, 4, 4, {0, 3, 2, 1}},  {CT::Triangle, 3, 3, {0, 1, 4}},
+        {CT::Triangle, 3, 3, {1, 2, 4}}, {CT::Triangle, 3, 3, {2, 3, 4}},
+        {CT::Triangle, 3, 3, {3, 0, 4}},
+    };
+    static const std::vector<CellFaceDef> pyramid13 = {
+        {CT::Quad8, 4, 8, {0, 3, 2, 1, 8, 7, 6, 5}}, {CT::Triangle6, 3, 6, {0, 1, 4, 5, 10, 9}},
+        {CT::Triangle6, 3, 6, {1, 2, 4, 6, 11, 10}}, {CT::Triangle6, 3, 6, {2, 3, 4, 7, 12, 11}},
+        {CT::Triangle6, 3, 6, {3, 0, 4, 8, 9, 12}},
+    };
+    // pyramid14 = pyramid13 plus node 13 at the base-face center.
+    static const std::vector<CellFaceDef> pyramid14 = {
+        {CT::Quad9, 4, 9, {0, 3, 2, 1, 8, 7, 6, 5, 13}},
+        {CT::Triangle6, 3, 6, {0, 1, 4, 5, 10, 9}},
+        {CT::Triangle6, 3, 6, {1, 2, 4, 6, 11, 10}},
+        {CT::Triangle6, 3, 6, {2, 3, 4, 7, 12, 11}},
+        {CT::Triangle6, 3, 6, {3, 0, 4, 8, 9, 12}},
+    };
+    switch (VolumeType) {
+        case CT::Tetra:
+            return tetra;
+        case CT::Tetra10:
+            return tetra10;
+        case CT::Hexahedron:
+            return hexahedron;
+        case CT::Hexahedron20:
+            return hexahedron20;
+        case CT::Hexahedron27:
+            return hexahedron27;
+        case CT::Wedge:
+            return wedge;
+        case CT::Wedge15:
+            return wedge15;
+        case CT::Pyramid:
+            return pyramid;
+        case CT::Pyramid13:
+            return pyramid13;
+        case CT::Pyramid14:
+            return pyramid14;
+        default:
+            return empty;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/cell_faces.cpp =====
+// ===== begin cpp/src/detail/data_ops.cpp =====
+#include <algorithm>
+#include <cmath>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+NDArray data_owned_copy(const NDArray& rArray) {
+    NDArray c = rArray;
+    c.MakeOwned();
+    return c;
+}
+
+Mesh clone_geometry(const Mesh& rMesh) {
+    Mesh out;
+    out.AssignPoints(data_owned_copy(rMesh.Points()));
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron()) {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                cells[c].resize(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    cells[c][f].assign(face.first, face.first + face.second);
+                }
+            }
+            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
+        } else if (cb.IsRagged()) {
+            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        } else {
+            out.AddCellBlock(std::string(cb.Type()), data_owned_copy(cb.Conn()));
+        }
+    }
+    return out;
+}
+
+void accumulate_stats(const NDArray& rArray, std::size_t NumComponents,
+                      std::vector<FiniteStats>& rStats) {
+    if (rStats.size() < NumComponents)
+        rStats.resize(NumComponents);
+    const std::size_t total = rArray.Size();
+    if (total == 0 || NumComponents == 0)
+        return;
+    const std::size_t nrows = total / NumComponents;
+
+    const std::size_t grain = 4096;
+    const std::size_t nchunks = (nrows + grain - 1) / grain;
+    std::vector<std::vector<FiniteStats>> partial(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            std::vector<FiniteStats> local(NumComponents);
+            const std::size_t begin = ci * grain;
+            const std::size_t end = std::min(begin + grain, nrows);
+            for (std::size_t r = begin; r < end; ++r)
+                for (std::size_t k = 0; k < NumComponents; ++k)
+                    local[k].Add(read_double(rArray, r * NumComponents + k));
+            partial[ci] = std::move(local);
+        },
+        1);
+    for (const std::vector<FiniteStats>& chunk : partial)
+        for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
+            rStats[k].Merge(chunk[k]);
+}
+
+FiniteStats combine_components(const std::vector<FiniteStats>& rStats) {
+    FiniteStats all;
+    for (const FiniteStats& s : rStats)
+        all.Merge(s);
+    return all;
+}
+
+namespace {
+
+/**
+ * @brief Unsigned area of a corner polygon (triangle / quad) via the Newell
+ * normal. Mirrors `stats_area` in `operations/stats.cpp`. Internal to
+ * `cell_measure`, so not exposed in the header.
+ * @param rCoords the corner coordinates.
+ * @param Corners how many of them form the polygon.
+ * @return the unsigned area, or 0 for fewer than 3 corners.
+ */
+double dataops_polygon_area(const std::vector<Vec3>& rCoords, int Corners) {
+    if (Corners < 3)
+        return 0.0;
+    Vec3 s = {0, 0, 0};
+    for (int i = 0; i < Corners; ++i)
+        s = vec3_add(s, vec3_cross(rCoords[i], rCoords[(i + 1) % Corners]));
+    return 0.5 * vec3_norm(s);
+}
+
+/**
+ * @brief Signed volume of a 3D cell via the divergence theorem over its
+ * outward-wound boundary faces. Mirrors `stats_signed_volume`. Internal to
+ * `cell_measure`, so not exposed in the header.
+ * @param rCoords the cell's corner coordinates.
+ * @param Type the cell type, which supplies the face table.
+ * @return the signed volume, or NaN for a type with no face table.
+ */
+double dataops_cell_signed_volume(const std::vector<Vec3>& rCoords, CellType Type) {
+    const std::vector<CellFaceDef>& faces = cell_faces(Type);
+    if (faces.empty())
+        return std::nan("");
+    double vol6 = 0.0;
+    for (const CellFaceDef& f : faces) {
+        const Vec3 a = rCoords[f.mNodes[0]];
+        for (int i = 1; i + 1 < f.mNumCorners; ++i)
+            vol6 += triple_product(a, rCoords[f.mNodes[i]], rCoords[f.mNodes[i + 1]]);
+    }
+    return vol6 / 6.0;
+}
+
+}  // namespace
+
+double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
+                    std::size_t Index) {
+    if (rCell.IsRagged() || rCell.IsPolyhedron())
+        return std::nan("");
+    const CellType ct = cell_type_from_name(rCell.Type());
+    const int corners = cell_corner_count(ct);
+    if (corners <= 0)
+        return std::nan("");
+    std::vector<Vec3> coords;
+    read_corner_coords(rPoints, PointDim, rCell.Conn(), Index * rCell.NodesPerCell(),
+                       static_cast<std::size_t>(corners), coords);
+    const int dim = cell_type_dimension(ct);
+    if (dim == 3) {
+        const double v = dataops_cell_signed_volume(coords, ct);
+        return std::isnan(v) ? v : std::fabs(v);
+    }
+    if (dim == 2)
+        return dataops_polygon_area(coords, corners);
+    if (dim == 1 && corners >= 2)
+        return vec3_norm(vec3_sub(coords[1], coords[0]));
+    return std::nan("");
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/data_ops.cpp =====
+// ===== begin cpp/src/detail/geometry.cpp =====
+
+namespace meshioplusplus {
+namespace detail {
+
+Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId) {
+    Vec3 p = {0.0, 0.0, 0.0};
+    const std::size_t base = static_cast<std::size_t>(nodeId) * pointDim;
+    const std::size_t k = pointDim < 3 ? pointDim : 3;
+    for (std::size_t c = 0; c < k; ++c)
+        p[c] = read_double(rPoints, base + c);
+    return p;
+}
+
+void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
+                        std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut) {
+    rOut.clear();
+    rOut.reserve(n);
+    for (std::size_t k = 0; k < n; ++k)
+        rOut.push_back(read_point(rPoints, pointDim, read_int(rConn, rowOffset + k)));
+}
+
+int cell_corner_count(CellType type) {
+    switch (type) {
+        case CellType::Vertex:
+            return 1;
+        case CellType::Line:
+        case CellType::Line3:
+        case CellType::Line4:
+        case CellType::Line5:
+        case CellType::Line6:
+        case CellType::Line7:
+        case CellType::Line8:
+        case CellType::Line9:
+        case CellType::Line10:
+        case CellType::Line11:
+            return 2;
+        case CellType::Triangle:
+        case CellType::Triangle6:
+        case CellType::Triangle10:
+        case CellType::Triangle15:
+        case CellType::Triangle21:
+        case CellType::Triangle28:
+        case CellType::Triangle36:
+        case CellType::Triangle45:
+        case CellType::Triangle55:
+        case CellType::Triangle66:
+            return 3;
+        case CellType::Quad:
+        case CellType::Quad8:
+        case CellType::Quad9:
+        case CellType::Quad16:
+        case CellType::Quad25:
+        case CellType::Quad36:
+        case CellType::Quad49:
+        case CellType::Quad64:
+        case CellType::Quad81:
+        case CellType::Quad100:
+        case CellType::Quad121:
+            return 4;
+        case CellType::Tetra:
+        case CellType::Tetra10:
+        case CellType::Tetra20:
+        case CellType::Tetra35:
+        case CellType::Tetra56:
+        case CellType::Tetra84:
+        case CellType::Tetra120:
+        case CellType::Tetra165:
+        case CellType::Tetra220:
+        case CellType::Tetra286:
+            return 4;
+        case CellType::Hexahedron:
+        case CellType::Hexahedron20:
+        case CellType::Hexahedron24:
+        case CellType::Hexahedron27:
+        case CellType::Hexahedron64:
+        case CellType::Hexahedron125:
+        case CellType::Hexahedron216:
+        case CellType::Hexahedron343:
+        case CellType::Hexahedron512:
+        case CellType::Hexahedron729:
+        case CellType::Hexahedron1000:
+        case CellType::Hexahedron1331:
+            return 8;
+        case CellType::Wedge:
+        case CellType::Wedge15:
+        case CellType::Wedge18:
+        case CellType::Wedge40:
+        case CellType::Wedge75:
+        case CellType::Wedge126:
+        case CellType::Wedge196:
+        case CellType::Wedge288:
+        case CellType::Wedge405:
+        case CellType::Wedge550:
+            return 6;
+        case CellType::Pyramid:
+        case CellType::Pyramid13:
+        case CellType::Pyramid14:
+            return 5;
+        default:  // Polygon, Polyhedron, VtkLagrange*, Custom
+            return 0;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/geometry.cpp =====
+// ===== begin cpp/src/detail/hdf5_util.cpp =====
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+
+// System includes
+#include <cstring>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace h5 {
+
+Hid open_file_read(const std::string& rPath) {
+    Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+    if (!f.Valid())
+        throw ReadError("HDF5: could not open file " + rPath);
+    return f;
+}
+
+Hid create_file(const std::string& rPath) {
+    Hid f(H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), H5Fclose);
+    if (!f.Valid())
+        throw WriteError("HDF5: could not create file " + rPath);
+    return f;
+}
+
+bool exists(hid_t loc, const std::string& rName) {
+    return H5Lexists(loc, rName.c_str(), H5P_DEFAULT) > 0;
+}
+
+Hid open_group(hid_t loc, const std::string& rName) {
+    Hid g(H5Gopen2(loc, rName.c_str(), H5P_DEFAULT), H5Gclose);
+    if (!g.Valid())
+        throw ReadError("HDF5: missing group '" + rName + "'");
+    return g;
+}
+
+Hid create_group(hid_t loc, const std::string& rName) {
+    Hid g(H5Gcreate2(loc, rName.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT), H5Gclose);
+    if (!g.Valid())
+        throw WriteError("HDF5: could not create group '" + rName + "'");
+    return g;
+}
+
+hid_t native_type(DType dt) {
+    switch (dt) {
+        case DType::Float32:
+            return H5T_NATIVE_FLOAT;
+        case DType::Float64:
+            return H5T_NATIVE_DOUBLE;
+        case DType::Int8:
+            return H5T_NATIVE_INT8;
+        case DType::Int16:
+            return H5T_NATIVE_INT16;
+        case DType::Int32:
+            return H5T_NATIVE_INT32;
+        case DType::Int64:
+            return H5T_NATIVE_INT64;
+        case DType::UInt8:
+            return H5T_NATIVE_UINT8;
+        case DType::UInt16:
+            return H5T_NATIVE_UINT16;
+        case DType::UInt32:
+            return H5T_NATIVE_UINT32;
+        case DType::UInt64:
+            return H5T_NATIVE_UINT64;
+    }
+    return H5T_NATIVE_DOUBLE;
+}
+
+hid_t file_type(DType dt) {
+    switch (dt) {
+        case DType::Float32:
+            return H5T_IEEE_F32LE;
+        case DType::Float64:
+            return H5T_IEEE_F64LE;
+        case DType::Int8:
+            return H5T_STD_I8LE;
+        case DType::Int16:
+            return H5T_STD_I16LE;
+        case DType::Int32:
+            return H5T_STD_I32LE;
+        case DType::Int64:
+            return H5T_STD_I64LE;
+        case DType::UInt8:
+            return H5T_STD_U8LE;
+        case DType::UInt16:
+            return H5T_STD_U16LE;
+        case DType::UInt32:
+            return H5T_STD_U32LE;
+        case DType::UInt64:
+            return H5T_STD_U64LE;
+    }
+    return H5T_IEEE_F64LE;
+}
+
+DType dtype_from_h5(hid_t type_id) {
+    H5T_class_t cls = H5Tget_class(type_id);
+    std::size_t sz = H5Tget_size(type_id);
+    if (cls == H5T_FLOAT)
+        return sz == 4 ? DType::Float32 : DType::Float64;
+    if (cls == H5T_INTEGER) {
+        bool is_signed = H5Tget_sign(type_id) != H5T_SGN_NONE;
+        switch (sz) {
+            case 1:
+                return is_signed ? DType::Int8 : DType::UInt8;
+            case 2:
+                return is_signed ? DType::Int16 : DType::UInt16;
+            case 4:
+                return is_signed ? DType::Int32 : DType::UInt32;
+            default:
+                return is_signed ? DType::Int64 : DType::UInt64;
+        }
+    }
+    throw ReadError("HDF5: unsupported datatype class");
+}
+
+NDArray read_dataset(hid_t loc, const std::string& rName) {
+    Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
+    if (!d.Valid())
+        throw ReadError("HDF5: missing dataset '" + rName + "'");
+    Hid space(H5Dget_space(d), H5Sclose);
+    int ndim = H5Sget_simple_extent_ndims(space);
+    std::vector<hsize_t> hdims(ndim > 0 ? ndim : 0);
+    if (ndim > 0)
+        H5Sget_simple_extent_dims(space, hdims.data(), nullptr);
+    Hid dt(H5Dget_type(d), H5Tclose);
+
+    std::vector<std::size_t> shape(hdims.begin(), hdims.end());
+    if (shape.empty())
+        shape.push_back(1);  // scalar -> length-1
+
+    DType mdt;
+    if (H5Tget_class(dt) == H5T_ARRAY) {
+        Hid base(H5Tget_super(dt), H5Tclose);
+        mdt = dtype_from_h5(base);
+        int arank = H5Tget_array_ndims(dt);
+        std::vector<hsize_t> adims(arank > 0 ? arank : 0);
+        if (arank > 0)
+            H5Tget_array_dims2(dt, adims.data());
+        for (hsize_t ad : adims)
+            shape.push_back(static_cast<std::size_t>(ad));
+    } else {
+        mdt = dtype_from_h5(dt);
+    }
+
+    NDArray out(mdt, shape);
+    if (out.Size() > 0) {
+        // For ARRAY-typed datasets the memory type must be the matching array
+        // type; for scalar types the plain native type suffices.
+        if (H5Tget_class(dt) == H5T_ARRAY) {
+            int arank = H5Tget_array_ndims(dt);
+            std::vector<hsize_t> adims(arank > 0 ? arank : 0);
+            if (arank > 0)
+                H5Tget_array_dims2(dt, adims.data());
+            Hid mem(H5Tarray_create2(native_type(mdt), arank, adims.data()), H5Tclose);
+            if (H5Dread(d, mem, H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0)
+                throw ReadError("HDF5: failed reading dataset '" + rName + "'");
+        } else if (H5Dread(d, native_type(mdt), H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0) {
+            throw ReadError("HDF5: failed reading dataset '" + rName + "'");
+        }
+    }
+    return out;
+}
+
+void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int gzip_level) {
+    std::vector<hsize_t> hdims(rArr.Shape().begin(), rArr.Shape().end());
+    if (hdims.empty())
+        hdims.push_back(0);
+    Hid space(H5Screate_simple(static_cast<int>(hdims.size()), hdims.data(), nullptr), H5Sclose);
+
+    Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
+    if (gzip_level >= 0 && rArr.Size() > 0) {
+        H5Pset_chunk(dcpl, static_cast<int>(hdims.size()), hdims.data());
+        H5Pset_deflate(dcpl, static_cast<unsigned>(gzip_level));
+    }
+
+    Hid d(H5Dcreate2(loc, rName.c_str(), file_type(rArr.Dtype()), space, H5P_DEFAULT, dcpl,
+                     H5P_DEFAULT),
+          H5Dclose);
+    if (!d.Valid())
+        throw WriteError("HDF5: could not create dataset '" + rName + "'");
+    if (rArr.Size() > 0) {
+        if (H5Dwrite(d, native_type(rArr.Dtype()), H5S_ALL, H5S_ALL, H5P_DEFAULT, rArr.Data()) < 0)
+            throw WriteError("HDF5: failed writing dataset '" + rName + "'");
+    }
+}
+
+bool has_attr(hid_t loc, const std::string& rName) {
+    return H5Aexists(loc, rName.c_str()) > 0;
+}
+
+std::int64_t read_attr_int(hid_t loc, const std::string& rName) {
+    Hid a(H5Aopen(loc, rName.c_str(), H5P_DEFAULT), H5Aclose);
+    if (!a.Valid())
+        throw ReadError("HDF5: missing attribute '" + rName + "'");
+    std::int64_t v = 0;
+    if (H5Aread(a, H5T_NATIVE_INT64, &v) < 0)
+        throw ReadError("HDF5: failed reading attribute '" + rName + "'");
+    return v;
+}
+
+void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v, hid_t ftype) {
+    Hid space(H5Screate(H5S_SCALAR), H5Sclose);
+    Hid a(H5Acreate2(loc, rName.c_str(), ftype, space, H5P_DEFAULT, H5P_DEFAULT), H5Aclose);
+    if (!a.Valid())
+        throw WriteError("HDF5: could not create attribute '" + rName + "'");
+    H5Awrite(a, H5T_NATIVE_INT64, &v);
+}
+
+std::string read_attr_string(hid_t loc, const std::string& rName) {
+    Hid a(H5Aopen(loc, rName.c_str(), H5P_DEFAULT), H5Aclose);
+    if (!a.Valid())
+        throw ReadError("HDF5: missing attribute '" + rName + "'");
+    Hid t(H5Aget_type(a), H5Tclose);
+    if (H5Tis_variable_str(t) > 0) {
+        char* p = nullptr;
+        Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
+        H5Tset_size(mt, H5T_VARIABLE);
+        H5Tset_cset(mt, H5Tget_cset(t));
+        if (H5Aread(a, mt, &p) < 0 || p == nullptr)
+            throw ReadError("HDF5: failed reading attribute '" + rName + "'");
+        std::string out(p);
+        H5free_memory(p);
+        return out;
+    }
+    std::size_t sz = H5Tget_size(t);
+    std::vector<char> buf(sz + 1, '\0');
+    Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
+    H5Tset_size(mt, sz);
+    H5Tset_cset(mt, H5Tget_cset(t));
+    // NULLPAD memory type: converting a NULLPAD file string into a NULLTERM
+    // memory string of the same size would truncate the last character to
+    // make room for the terminator.
+    H5Tset_strpad(mt, H5T_STR_NULLPAD);
+    if (H5Aread(a, mt, buf.data()) < 0)
+        throw ReadError("HDF5: failed reading attribute '" + rName + "'");
+    // trim trailing NULs/spaces
+    std::string out(buf.data(), strnlen(buf.data(), sz));
+    while (!out.empty() && out.back() == ' ')
+        out.pop_back();
+    return out;
+}
+
+void write_attr_string(hid_t loc, const std::string& rName, const std::string& rValue) {
+    Hid space(H5Screate(H5S_SCALAR), H5Sclose);
+    Hid t(H5Tcopy(H5T_C_S1), H5Tclose);
+    H5Tset_size(t, H5T_VARIABLE);
+    H5Tset_cset(t, H5T_CSET_UTF8);
+    Hid a(H5Acreate2(loc, rName.c_str(), t, space, H5P_DEFAULT, H5P_DEFAULT), H5Aclose);
+    if (!a.Valid())
+        throw WriteError("HDF5: could not create attribute '" + rName + "'");
+    const char* p = rValue.c_str();
+    H5Awrite(a, t, &p);
+}
+
+std::vector<std::string> group_links(hid_t loc) {
+    H5G_info_t info;
+    H5Gget_info(loc, &info);
+    std::vector<std::string> names;
+    names.reserve(info.nlinks);
+    for (hsize_t i = 0; i < info.nlinks; ++i) {
+        ssize_t len =
+            H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
+        std::string name(static_cast<std::size_t>(len), '\0');
+        H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
+                           static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
+        names.push_back(std::move(name));
+    }
+    return names;
+}
+
+std::vector<std::string> group_links_crt(hid_t loc) {
+    H5G_info_t info;
+    H5Gget_info(loc, &info);
+    std::vector<std::string> names;
+    names.reserve(info.nlinks);
+    for (hsize_t i = 0; i < info.nlinks; ++i) {
+        ssize_t len = H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, nullptr, 0,
+                                         H5P_DEFAULT);
+        if (len < 0)
+            return group_links(loc);  // creation order not indexed
+        std::string name(static_cast<std::size_t>(len), '\0');
+        H5Lget_name_by_idx(loc, ".", H5_INDEX_CRT_ORDER, H5_ITER_INC, i, name.data(),
+                           static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
+        names.push_back(std::move(name));
+    }
+    return names;
+}
+
+}  // namespace h5
+}  // namespace meshioplusplus
+
+#endif  // MESHIOPLUSPLUS_HAS_HDF5
+// ===== end cpp/src/detail/hdf5_util.cpp =====
+// ===== begin cpp/src/detail/projection.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+CameraBasis camera_basis(double azimuth, double elevation, double roll) {
+    constexpr double deg = 3.141592653589793 / 180.0;
+    const double az = azimuth * deg;
+    const double el = elevation * deg;
+    const double caz = std::cos(az);
+    const double saz = std::sin(az);
+    const double cel = std::cos(el);
+    const double sel = std::sin(el);
+    const double w0 = cel * caz;
+    const double w1 = cel * saz;
+    const double w2 = sel;
+
+    double u0, u1, u2;
+    if (std::fabs(w2) > 1.0 - 1.0e-12) {
+        // Looking straight along z: use y as the up reference.
+        // u = normalize(cross((0,1,0), w))
+        const double n = std::sqrt(w2 * w2 + w0 * w0);
+        u0 = w2 / n;
+        u1 = 0.0;
+        u2 = -w0 / n;
+    } else {
+        // u = normalize(cross((0,0,1), w))
+        const double n = std::sqrt(w1 * w1 + w0 * w0);
+        u0 = -w1 / n;
+        u1 = w0 / n;
+        u2 = 0.0;
+    }
+    // v = cross(w, u)
+    double v0 = w1 * u2 - w2 * u1;
+    double v1 = w2 * u0 - w0 * u2;
+    double v2 = w0 * u1 - w1 * u0;
+
+    if (roll != 0.0) {
+        const double cr = std::cos(roll * deg);
+        const double sr = std::sin(roll * deg);
+        const double ru0 = cr * u0 + sr * v0;
+        const double ru1 = cr * u1 + sr * v1;
+        const double ru2 = cr * u2 + sr * v2;
+        const double rv0 = -sr * u0 + cr * v0;
+        const double rv1 = -sr * u1 + cr * v1;
+        const double rv2 = -sr * u2 + cr * v2;
+        u0 = ru0;
+        u1 = ru1;
+        u2 = ru2;
+        v0 = rv0;
+        v1 = rv1;
+        v2 = rv2;
+    }
+    return CameraBasis{{u0, u1, u2}, {v0, v1, v2}, {w0, w1, w2}};
+}
+
+ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double elevation, double roll) {
+    const CameraBasis cam = camera_basis(azimuth, elevation, roll);
+    const NDArray& points = rMesh.Points();
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    ProjectedSurface out;
+    out.mX.resize(num_points);
+    out.mY.resize(num_points);
+    std::vector<double> depth(num_points);
+    for (std::size_t i = 0; i < num_points; ++i) {
+        const double px = (0 < dim) ? read_double(points, i * dim + 0) : 0.0;
+        const double py = (1 < dim) ? read_double(points, i * dim + 1) : 0.0;
+        const double pz = (2 < dim) ? read_double(points, i * dim + 2) : 0.0;
+        out.mX[i] = px * cam.mU[0] + py * cam.mU[1] + pz * cam.mU[2];
+        out.mY[i] = px * cam.mV[0] + py * cam.mV[1] + pz * cam.mV[2];
+        depth[i] = px * cam.mW[0] + py * cam.mW[1] + pz * cam.mW[2];
+    }
+
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& type = cb.Type();
+        std::uint8_t n_corner = 0;
+        bool is_line = false;
+        if (type == "line") {
+            n_corner = 2;
+            is_line = true;
+        } else if (type == "triangle" || type == "triangle6") {
+            n_corner = 3;
+        } else if (type == "quad" || type == "quad8" || type == "quad9") {
+            n_corner = 4;
+        } else {
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t ncols = cols(conn);
+        const std::size_t n = cb.NumCells();
+        for (std::size_t r = 0; r < n; ++r) {
+            ProjectedFace face;
+            face.mNodes = {-1, -1, -1, -1};
+            face.mNumNodes = n_corner;
+            face.mIsLine = is_line;
+            double d = 0.0;
+            for (std::uint8_t k = 0; k < n_corner; ++k) {
+                const std::int64_t p = read_int(conn, r * ncols + k);
+                face.mNodes[k] = p;
+                d += depth[static_cast<std::size_t>(p)];
+            }
+            face.mDepth = d / static_cast<double>(n_corner);
+            out.mFaces.push_back(face);
+        }
+    }
+
+    std::stable_sort(
+        out.mFaces.begin(), out.mFaces.end(),
+        [](const ProjectedFace& rA, const ProjectedFace& rB) { return rA.mDepth < rB.mDepth; });
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/projection.cpp =====
+// ===== begin cpp/src/detail/subset.cpp =====
+#include <cstring>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx) {
+    const std::vector<std::size_t>& shp = rSrc.Shape();
+    std::size_t cols = 1;
+    for (std::size_t d = 1; d < shp.size(); ++d)
+        cols *= shp[d];
+    std::vector<std::size_t> out_shape = shp;
+    if (out_shape.empty())
+        out_shape = {rIdx.size()};
+    else
+        out_shape[0] = rIdx.size();
+    NDArray out = NDArray::Uninit(rSrc.Dtype(), out_shape);
+    const std::size_t rb = cols * dtype_size(rSrc.Dtype());
+    if (rb == 0)
+        return out;
+    const std::byte* s = rSrc.Data();
+    std::byte* d = out.Data();
+    parallel_for_bw(rIdx.size(), [&](std::size_t j) {
+        std::memcpy(d + j * rb, s + static_cast<std::size_t>(rIdx[j]) * rb, rb);
+    });
+    return out;
+}
+
+SubsetResult build_cell_subset(const Mesh& rMesh,
+                               const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
+                               const std::string& rPointIdName, const std::string& rCellIdName,
+                               bool drop_empty_blocks) {
+    SubsetResult res;
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    const NDArray& points = rMesh.Points();
+
+    // 1) mark used points across all kept cells.
+    std::vector<char> used(n, 0);
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
+        if (cb.IsPolyhedron()) {
+            for (std::int64_t c : kept)
+                for (std::size_t f = 0; f < cb.NumFaces(static_cast<std::size_t>(c)); ++f) {
+                    auto face = cb.Face(static_cast<std::size_t>(c), f);
+                    for (std::size_t k = 0; k < face.second; ++k)
+                        used[static_cast<std::size_t>(face.first[k])] = 1;
+                }
+        } else if (cb.IsRagged()) {
+            for (std::int64_t c : kept)
+                for (std::size_t k = 0; k < cb.RowSize(static_cast<std::size_t>(c)); ++k)
+                    used[static_cast<std::size_t>(cb.Row(static_cast<std::size_t>(c))[k])] = 1;
+        } else {
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            for (std::int64_t c : kept)
+                for (std::size_t k = 0; k < npc; ++k)
+                    used[static_cast<std::size_t>(
+                        read_int(conn, static_cast<std::size_t>(c) * npc + k))] = 1;
+        }
+        ++b;
+    }
+
+    // 2) compact used points -> new index; build gather list.
+    std::vector<std::int64_t> new_point(n, -1);
+    std::vector<std::int64_t> point_src;
+    for (std::size_t g = 0; g < n; ++g)
+        if (used[g]) {
+            new_point[g] = static_cast<std::int64_t>(point_src.size());
+            point_src.push_back(static_cast<std::int64_t>(g));
+        }
+
+    Mesh& out = res.mMesh;
+
+    // 3) points.
+    {
+        NDArray newpts = NDArray::Uninit(points.Dtype(), {point_src.size(), dim});
+        if (!point_src.empty() && dim > 0) {
+            const std::size_t rb = dim * dtype_size(points.Dtype());
+            const std::byte* s = points.Data();
+            std::byte* d = newpts.Data();
+            parallel_for_bw(point_src.size(), [&](std::size_t j) {
+                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
+            });
+        }
+        out.AssignPoints(std::move(newpts));
+    }
+
+    // 4) point_data (gather by point_src when full-length).
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
+        if (rows == n)
+            out.AddPointData(name, subset_gather_rows(a, point_src));
+        else {
+            NDArray c = a;
+            c.MakeOwned();
+            out.AddPointData(name, std::move(c));
+        }
+    }
+    if (!rPointIdName.empty()) {
+        NDArray ids = NDArray::Uninit(DType::Int64, {point_src.size()});
+        std::int64_t* p = ids.As<std::int64_t>();
+        for (std::size_t j = 0; j < point_src.size(); ++j)
+            p[j] = point_src[j];
+        out.AddPointData(rPointIdName, std::move(ids));
+    }
+
+    // 5) cells (remap connectivity to new point indices).
+    b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
+        if (drop_empty_blocks && kept.empty()) {
+            ++b;
+            continue;
+        }
+        const std::string type(cb.Type());
+        if (cb.IsPolyhedron()) {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(kept.size());
+            for (std::size_t i = 0; i < kept.size(); ++i) {
+                const std::size_t c = static_cast<std::size_t>(kept[i]);
+                cells[i].resize(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    cells[i][f].reserve(face.second);
+                    for (std::size_t k = 0; k < face.second; ++k)
+                        cells[i][f].push_back(new_point[static_cast<std::size_t>(face.first[k])]);
+                }
+            }
+            out.AddPolyhedronBlock(type, std::move(cells));
+        } else if (cb.IsRagged()) {
+            std::vector<std::vector<std::int64_t>> rows(kept.size());
+            for (std::size_t i = 0; i < kept.size(); ++i) {
+                const std::size_t c = static_cast<std::size_t>(kept[i]);
+                rows[i].reserve(cb.RowSize(c));
+                for (std::size_t k = 0; k < cb.RowSize(c); ++k)
+                    rows[i].push_back(new_point[static_cast<std::size_t>(cb.Row(c)[k])]);
+            }
+            out.AddPolygonBlock(type, std::move(rows));
+        } else {
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            NDArray outconn = NDArray::Uninit(DType::Int64, {kept.size(), npc});
+            std::int64_t* cd = outconn.As<std::int64_t>();
+            for (std::size_t i = 0; i < kept.size(); ++i) {
+                const std::size_t c = static_cast<std::size_t>(kept[i]);
+                for (std::size_t k = 0; k < npc; ++k)
+                    cd[i * npc + k] =
+                        new_point[static_cast<std::size_t>(read_int(conn, c * npc + k))];
+            }
+            out.AddCellBlock(type, std::move(outconn));
+        }
+        ++b;
+    }
+
+    // 6) cell_data (gather kept cells per block) + optional original cell ids.
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> outblocks;
+        b = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            if (drop_empty_blocks && rKeptCellsPerBlock[b].empty()) {
+                ++b;
+                continue;
+            }
+            const NDArray& src = rMesh.CellData(name, b);
+            const std::size_t rows = src.Shape().empty() ? 0 : src.Shape()[0];
+            if (rows == cb.NumCells())
+                outblocks.push_back(subset_gather_rows(src, rKeptCellsPerBlock[b]));
+            else {
+                NDArray c = src;
+                c.MakeOwned();
+                outblocks.push_back(std::move(c));
+            }
+            ++b;
+        }
+        out.AddCellData(name, std::move(outblocks));
+    }
+    if (!rCellIdName.empty()) {
+        std::vector<NDArray> idblocks;
+        for (const std::vector<std::int64_t>& kept : rKeptCellsPerBlock) {
+            if (drop_empty_blocks && kept.empty())
+                continue;
+            NDArray ids = NDArray::Uninit(DType::Int64, {kept.size()});
+            std::int64_t* p = ids.As<std::int64_t>();
+            for (std::size_t i = 0; i < kept.size(); ++i)
+                p[i] = kept[i];
+            idblocks.push_back(std::move(ids));
+        }
+        out.AddCellData(rCellIdName, std::move(idblocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        NDArray c = rMesh.FieldData(name);
+        c.MakeOwned();
+        out.AddFieldData(name, std::move(c));
+    }
+
+    // 7) index maps.
+    res.mPointMap = NDArray::Uninit(DType::Int64, {n});
+    std::int64_t* pm = res.mPointMap.As<std::int64_t>();
+    for (std::size_t g = 0; g < n; ++g)
+        pm[g] = new_point[g];
+
+    b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
+        std::int64_t* cm = cmap.As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c)
+            cm[c] = -1;
+        const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
+        for (std::size_t i = 0; i < kept.size(); ++i)
+            cm[static_cast<std::size_t>(kept[i])] = static_cast<std::int64_t>(i);
+        res.mCellMaps.push_back(std::move(cmap));
+        ++b;
+    }
+
+    return res;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/subset.cpp =====
+// ===== begin cpp/src/detail/vtk_cells.cpp =====
+#include <algorithm>
+#include <cstring>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n) {
+    constexpr std::size_t kChunk = 1u << 19;  // 512Ki elements (4 MiB) per task
+    const std::size_t nchunks = (n + kChunk - 1) / kChunk;
+    if (nchunks <= 1) {
+        std::memcpy(pDst, pSrc, n * sizeof(std::int64_t));
+        return;
+    }
+    // grain=1: each chunk is already coarse (4 MiB), so dispatch per chunk —
+    // otherwise the default grain (2048) would run these few chunks serially.
+    parallel_for_bw(
+        nchunks,
+        [&](std::size_t c) {
+            const std::size_t off = c * kChunk;
+            const std::size_t len = std::min(kChunk, n - off);
+            std::memcpy(pDst + off, pSrc + off, len * sizeof(std::int64_t));
+        },
+        1);
+}
+
+NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
+    std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    std::size_t isz = dtype_size(rA.Dtype());
+    std::size_t rowbytes = nc * isz;
+    std::vector<std::size_t> shape = rA.Shape();
+    if (shape.empty())
+        shape = {0};
+    shape[0] = r1 - r0;
+    NDArray out = NDArray::Uninit(rA.Dtype(), shape);  // fully overwritten below
+    if (r1 > r0)
+        std::memcpy(out.Data(), rA.Data() + r0 * rowbytes, (r1 - r0) * rowbytes);
+    return out;
+}
+
+std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
+                                           const std::vector<std::int64_t>& rTypes) {
+    const auto& vmap = vtk_to_meshio_type();
+    const std::size_t ncells = rTypes.size();
+    std::vector<CellBlockInfo> blocks;
+
+    std::size_t start = 0;
+    while (start < ncells) {
+        std::size_t end = start + 1;
+        while (end < ncells && rTypes[end] == rTypes[start])
+            ++end;
+
+        const int vtk_type = static_cast<int>(rTypes[start]);
+        if (vtk_type == 42)
+            throw ReadError("polyhedron cells are not supported by the C++ reader");
+        auto it = vmap.find(vtk_type);
+        if (it == vmap.end())
+            throw ReadError("VTK cell type " + std::to_string(vtk_type) +
+                            " not supported by the C++ reader");
+        const std::string& meshio_type = it->second;
+
+        if (is_special_cell(meshio_type)) {
+            if (rOffsets.size() < end)
+                throw ReadError("VTU summary needs 'offsets' for variable-size cell type " +
+                                meshio_type);
+            // Split the run further wherever the per-cell node count changes.
+            std::size_t i = start;
+            while (i < end) {
+                const std::int64_t prev = (i == 0) ? 0 : rOffsets[i - 1];
+                const std::int64_t sz = rOffsets[i] - prev;
+                std::size_t j = i + 1;
+                while (j < end && rOffsets[j] - rOffsets[j - 1] == sz)
+                    ++j;
+                CellBlockInfo info;
+                info.mType = meshio_type;
+                info.mNumCells = j - i;
+                info.mNodesPerCell = static_cast<std::size_t>(sz);
+                blocks.push_back(std::move(info));
+                i = j;
+            }
+        } else {
+            auto nit = num_nodes_per_cell().find(meshio_type);
+            if (nit == num_nodes_per_cell().end())
+                throw ReadError("Unknown node count for cell type " + meshio_type);
+            CellBlockInfo info;
+            info.mType = meshio_type;
+            info.mNumCells = end - start;
+            info.mNodesPerCell = static_cast<std::size_t>(nit->second);
+            blocks.push_back(std::move(info));
+        }
+        start = end;
+    }
+    return blocks;
+}
+
+bool cells_need_offsets(const std::vector<std::int64_t>& rTypes) {
+    const auto& vmap = vtk_to_meshio_type();
+    for (std::int64_t t : rTypes) {
+        auto it = vmap.find(static_cast<int>(t));
+        if (it != vmap.end() && is_special_cell(it->second))
+            return true;
+    }
+    return false;
+}
+
+void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                       const std::vector<std::int64_t>& rTypes,
+                       const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh) {
+    const auto& vmap = vtk_to_meshio_type();
+    const std::size_t ncells = rTypes.size();
+
+    auto add_cd = [&](std::size_t start, std::size_t end) {
+        for (const auto& kv : rCellDataRaw)
+            rMesh.AppendCellData(kv.first, slice_rows(kv.second, start, end));
+    };
+
+    std::size_t start = 0;
+    while (start < ncells) {
+        std::size_t end = start + 1;
+        while (end < ncells && rTypes[end] == rTypes[start])
+            ++end;
+
+        int vtk_type = static_cast<int>(rTypes[start]);
+        if (vtk_type == 42)
+            throw ReadError("polyhedron cells are not supported by the C++ reader");
+        auto it = vmap.find(vtk_type);
+        if (it == vmap.end())
+            throw ReadError("VTK cell type " + std::to_string(vtk_type) +
+                            " not supported by the C++ reader");
+        const std::string& meshio_type = it->second;
+
+        if (is_special_cell(meshio_type)) {
+            std::int64_t first_node = (start == 0) ? 0 : rOffsets[start - 1];
+            std::vector<std::int64_t> start_cn;
+            start_cn.reserve(end - start + 1);
+            start_cn.push_back(first_node);
+            for (std::size_t i = start; i < end; ++i)
+                start_cn.push_back(rOffsets[i]);
+            std::vector<std::int64_t> sizes(end - start);
+            for (std::size_t i = 0; i < sizes.size(); ++i)
+                sizes[i] = start_cn[i + 1] - start_cn[i];
+
+            std::size_t i = 0;
+            while (i < sizes.size()) {
+                std::size_t j = i;
+                while (j < sizes.size() && sizes[j] == sizes[i])
+                    ++j;
+                std::int64_t sz = sizes[i];
+                std::size_t m = j - i;
+                NDArray data = NDArray::Uninit(DType::Int64, {m, static_cast<std::size_t>(sz)});
+                std::int64_t* out = data.As<std::int64_t>();
+                const std::size_t ii = i;
+                // Contiguous uniform-size sub-run -> block memcpy.
+                const std::int64_t sub_first = start_cn[ii];
+                bool sub_regular = true;
+                for (std::size_t r = 0; sub_regular && r < m; ++r)
+                    if (rOffsets[start + ii + r] !=
+                        sub_first + static_cast<std::int64_t>(r + 1) * sz)
+                        sub_regular = false;
+                if (sub_regular) {
+                    parallel_copy_i64(out, pConn + sub_first, m * static_cast<std::size_t>(sz));
+                } else {
+                    parallel_for_bw(m, [&](std::size_t r) {
+                        std::int64_t endoff = rOffsets[start + ii + r];
+                        std::int64_t base = endoff - sz;
+                        for (std::int64_t c = 0; c < sz; ++c)
+                            out[r * sz + c] = pConn[base + c];
+                    });
+                }
+                rMesh.AddCellBlock(meshio_type, std::move(data));
+                add_cd(start + i, start + j);
+                i = j;
+            }
+        } else {
+            auto nit = num_nodes_per_cell().find(meshio_type);
+            if (nit == num_nodes_per_cell().end())
+                throw ReadError("Unknown node count for cell type " + meshio_type);
+            int n = nit->second;
+            std::vector<int> order = vtk_to_meshio_order(vtk_type);
+            std::size_t m = end - start;
+            NDArray data = NDArray::Uninit(DType::Int64, {m, static_cast<std::size_t>(n)});
+            std::int64_t* out = data.As<std::int64_t>();
+            const int* ord = order.empty() ? nullptr : order.data();
+            const std::size_t ss = start;
+            // Regular run (offsets advance by exactly n per cell) with identity
+            // node order -> the run's connectivity is one contiguous slice:
+            // block memcpy instead of a per-row gather.
+            const std::int64_t first = (ss == 0) ? 0 : rOffsets[ss - 1];
+            bool regular = true;
+            for (std::size_t r = 0; regular && r < m; ++r)
+                if (rOffsets[ss + r] !=
+                    first + static_cast<std::int64_t>((r + 1) * static_cast<std::size_t>(n)))
+                    regular = false;
+            if (!ord && regular) {
+                // Contiguous slice -> parallel block copy (fault-bound).
+                parallel_copy_i64(out, pConn + first, m * static_cast<std::size_t>(n));
+            } else {
+                parallel_for_bw(m, [&](std::size_t r) {
+                    std::int64_t endoff = rOffsets[ss + r];
+                    std::int64_t base = endoff - n;
+                    for (int j = 0; j < n; ++j) {
+                        int col = ord ? ord[j] : j;
+                        out[r * n + j] = pConn[base + col];
+                    }
+                });
+            }
+            rMesh.AddCellBlock(meshio_type, std::move(data));
+            add_cd(start, end);
+        }
+        start = end;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/vtk_cells.cpp =====
+// ===== begin cpp/src/detail/vtk_xml.cpp =====
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+const char* vtu_type_str(DType dt) {
+    switch (dt) {
+        case DType::Float32:
+            return "Float32";
+        case DType::Float64:
+            return "Float64";
+        case DType::Int8:
+            return "Int8";
+        case DType::Int16:
+            return "Int16";
+        case DType::Int32:
+            return "Int32";
+        case DType::Int64:
+            return "Int64";
+        case DType::UInt8:
+            return "UInt8";
+        case DType::UInt16:
+            return "UInt16";
+        case DType::UInt32:
+            return "UInt32";
+        case DType::UInt64:
+            return "UInt64";
+    }
+    return "Float64";
+}
+
+DType dtype_from_vtu(const std::string& rS) {
+    if (rS == "Float32")
+        return DType::Float32;
+    if (rS == "Float64")
+        return DType::Float64;
+    if (rS == "Int8")
+        return DType::Int8;
+    if (rS == "Int16")
+        return DType::Int16;
+    if (rS == "Int32")
+        return DType::Int32;
+    if (rS == "Int64")
+        return DType::Int64;
+    if (rS == "UInt8")
+        return DType::UInt8;
+    if (rS == "UInt16")
+        return DType::UInt16;
+    if (rS == "UInt32")
+        return DType::UInt32;
+    if (rS == "UInt64")
+        return DType::UInt64;
+    throw ReadError("Illegal VTU data type '" + rS + "'");
+}
+
+void vtu_ascii_double(std::ostream& rOs, double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.11e", v);
+    rOs << buf << '\n';
+}
+
+void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA) {
+    const bool flt = is_float_dtype(rA.Dtype());
+    const std::size_t n = rA.Size();
+    for (std::size_t i = 0; i < n; ++i) {
+        if (flt)
+            vtu_ascii_double(rOs, read_double(rA, i));
+        else
+            rOs << read_int(rA, i) << '\n';
+    }
+}
+
+void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
+    switch (rA.Dtype()) {
+        case DType::Float32:
+            rA.As<float>()[i] = static_cast<float>(d);
+            break;
+        case DType::Float64:
+            rA.As<double>()[i] = d;
+            break;
+        case DType::Int8:
+            rA.As<std::int8_t>()[i] = static_cast<std::int8_t>(v);
+            break;
+        case DType::Int16:
+            rA.As<std::int16_t>()[i] = static_cast<std::int16_t>(v);
+            break;
+        case DType::Int32:
+            rA.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
+            break;
+        case DType::Int64:
+            rA.As<std::int64_t>()[i] = v;
+            break;
+        case DType::UInt8:
+            rA.As<std::uint8_t>()[i] = static_cast<std::uint8_t>(v);
+            break;
+        case DType::UInt16:
+            rA.As<std::uint16_t>()[i] = static_cast<std::uint16_t>(v);
+            break;
+        case DType::UInt32:
+            rA.As<std::uint32_t>()[i] = static_cast<std::uint32_t>(v);
+            break;
+        case DType::UInt64:
+            rA.As<std::uint64_t>()[i] = static_cast<std::uint64_t>(v);
+            break;
+    }
+}
+
+NDArray vtu_parse_ascii(const char* pText, DType dt) {
+    const bool isflt = is_float_dtype(dt);
+    std::vector<double> dv;
+    std::vector<std::int64_t> iv;
+    const char* p = pText ? pText : "";
+    while (*p) {
+        while (*p && std::isspace(static_cast<unsigned char>(*p)))
+            ++p;
+        if (!*p)
+            break;
+        char* endp = nullptr;
+        if (isflt) {
+            double x = std::strtod(p, &endp);
+            if (endp == p)
+                break;
+            dv.push_back(x);
+        } else {
+            long long x = std::strtoll(p, &endp, 10);
+            if (endp == p)
+                break;
+            iv.push_back(static_cast<std::int64_t>(x));
+        }
+        p = endp;
+    }
+    std::size_t n = isflt ? dv.size() : iv.size();
+    NDArray a(dt, {n});
+    for (std::size_t i = 0; i < n; ++i)
+        vtu_store(a, i, isflt ? dv[i] : 0.0, isflt ? 0 : iv[i]);
+    return a;
+}
+
+std::string vtu_strip(const char* pS) {
+    std::string t = pS ? pS : "";
+    std::size_t b = 0, e = t.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(t[b])))
+        ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(t[e - 1])))
+        --e;
+    return t.substr(b, e - b);
+}
+
+NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std::size_t hsz) {
+    std::vector<unsigned char> bytes;
+    if (codec == VtkCodec::None)
+        bytes = vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
+    else
+        bytes = vtu_decode_blocks(rText.c_str(), rText.size(), hsz, codec);
+    std::size_t isz = dtype_size(dt);
+    std::size_t n = isz ? bytes.size() / isz : 0;
+    NDArray a(dt, {n});
+    if (n)
+        std::memcpy(a.Data(), bytes.data(), n * isz);
+    return a;
+}
+
+std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
+    std::vector<std::int64_t> v(rA.Size());
+    for (std::size_t i = 0; i < rA.Size(); ++i)
+        v[i] = read_int(rA, i);
+    return v;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/vtk_xml.cpp =====
+// ===== begin cpp/src/detail/vtu_binary.cpp =====
+#include <algorithm>
+#include <cstring>
+
+// External includes
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+#include <zstd.h>
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+#include <lz4.h>
+#endif
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+const char* b64_table() {
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+}
+
+std::string b64encode(const unsigned char* pData, std::size_t len) {
+    const char* tbl = b64_table();
+    // Every 3-byte group maps to 4 output chars at a deterministic offset:
+    // pre-size the output and write by index -> parallel over groups.
+    const std::size_t ngroups = len / 3;  // full groups
+    std::string out(((len + 2) / 3) * 4, '\0');
+    parallel_for(ngroups, [&](std::size_t g) {
+        const std::size_t i = g * 3;
+        unsigned n =
+            (unsigned(pData[i]) << 16) | (unsigned(pData[i + 1]) << 8) | unsigned(pData[i + 2]);
+        char* o = out.data() + g * 4;
+        o[0] = tbl[(n >> 18) & 63];
+        o[1] = tbl[(n >> 12) & 63];
+        o[2] = tbl[(n >> 6) & 63];
+        o[3] = tbl[n & 63];
+    });
+    const std::size_t i = ngroups * 3;
+    if (i < len) {  // trailing 1- or 2-byte group with '=' padding
+        const bool two = (i + 1 < len);
+        unsigned n = unsigned(pData[i]) << 16;
+        if (two)
+            n |= unsigned(pData[i + 1]) << 8;
+        char* o = out.data() + ngroups * 4;
+        o[0] = tbl[(n >> 18) & 63];
+        o[1] = tbl[(n >> 12) & 63];
+        o[2] = two ? tbl[(n >> 6) & 63] : '=';
+        o[3] = '=';
+    }
+    return out;
+}
+
+std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
+    static int8_t inv[256];
+    static bool init = false;
+    if (!init) {
+        for (int i = 0; i < 256; ++i)
+            inv[i] = -1;
+        const char* tbl = b64_table();
+        for (int i = 0; i < 64; ++i)
+            inv[(unsigned char)tbl[i]] = static_cast<int8_t>(i);
+        init = true;
+    }
+    std::vector<unsigned char> out;
+    out.reserve(len / 4 * 3);
+    int buf = 0, bits = 0;
+    for (std::size_t i = 0; i < len; ++i) {
+        char ch = pS[i];
+        if (ch == '=' || ch == '\n' || ch == '\r' || ch == ' ' || ch == '\t')
+            continue;
+        int v = inv[(unsigned char)ch];
+        if (v < 0)
+            continue;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<unsigned char>((buf >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+const char* vtk_codec_compressor(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "vtkZLibDataCompressor";
+        case VtkCodec::LZ4:
+            return "vtkLZ4DataCompressor";
+        case VtkCodec::ZSTD:
+            return "vtkZSTDDataCompressor";
+        case VtkCodec::LZMA:
+            return "vtkLZMADataCompressor";
+        default:
+            return "";
+    }
+}
+
+const char* vtk_codec_name(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "zlib";
+        case VtkCodec::LZ4:
+            return "lz4";
+        case VtkCodec::ZSTD:
+            return "zstd";
+        case VtkCodec::LZMA:
+            return "lzma";
+        default:
+            return "none";
+    }
+}
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+/**
+ * @brief Compresses one block with zlib's default `compress()` (a single
+ * deflate call, no streaming).
+ * @throws WriteError if zlib does not return `Z_OK`.
+ */
+std::vector<unsigned char> zlib_compress_block(const unsigned char* pSrc, std::size_t n) {
+    uLongf bound = compressBound(static_cast<uLong>(n));
+    std::vector<unsigned char> out(bound);
+    uLongf destLen = bound;
+    int r = compress(out.data(), &destLen, pSrc, static_cast<uLong>(n));
+    if (r != Z_OK)
+        throw WriteError("zlib compression failed");
+    out.resize(destLen);
+    return out;
+}
+
+/**
+ * @brief Decompresses one zlib-compressed block whose decompressed size is
+ * already known.
+ * @throws ReadError if zlib does not return `Z_OK`.
+ */
+std::vector<unsigned char> zlib_decompress(const unsigned char* pSrc, std::size_t n,
+                                           std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    uLongf destLen = static_cast<uLongf>(expected);
+    int r = uncompress(out.data(), &destLen, pSrc, static_cast<uLong>(n));
+    if (r != Z_OK)
+        throw ReadError("zlib decompression failed");
+    out.resize(destLen);
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_ZLIB
+
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+/**
+ * @brief Compresses one block as a single raw zstd frame.
+ *
+ * One frame per block, matching the zlib path: VTU's own header already records
+ * each block's compressed and decompressed size, so no zstd framing metadata is
+ * needed on top.
+ * @throws WriteError if zstd reports an error.
+ */
+std::vector<unsigned char> zstd_compress_block(const unsigned char* pSrc, std::size_t n) {
+    const std::size_t bound = ZSTD_compressBound(n);
+    std::vector<unsigned char> out(bound);
+    const std::size_t written = ZSTD_compress(out.data(), bound, pSrc, n, ZSTD_CLEVEL_DEFAULT);
+    if (ZSTD_isError(written))
+        throw WriteError(std::string("zstd compression failed: ") + ZSTD_getErrorName(written));
+    out.resize(written);
+    return out;
+}
+
+/**
+ * @brief Decompresses one zstd block whose decompressed size is already known.
+ * @param expected Exact size from the VTU block header -- so the frame's own
+ *        content-size field is never consulted.
+ * @throws ReadError if zstd reports an error or the size disagrees.
+ */
+std::vector<unsigned char> zstd_decompress(const unsigned char* pSrc, std::size_t n,
+                                           std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    const std::size_t written = ZSTD_decompress(out.data(), expected, pSrc, n);
+    if (ZSTD_isError(written))
+        throw ReadError(std::string("zstd decompression failed: ") + ZSTD_getErrorName(written));
+    out.resize(written);
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_ZSTD
+
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+/**
+ * @brief Compresses one block in LZ4's **raw block** format.
+ *
+ * Raw block, not the LZ4 *frame* format -- this is what `vtkLZ4DataCompressor`
+ * emits (its `SetAccelerationLevel` knob is the tell that it calls
+ * `LZ4_compress_fast`), so files written here stay readable by VTK/ParaView.
+ * Acceleration 1 is LZ4's default.
+ * @throws WriteError if lz4 reports an error.
+ */
+std::vector<unsigned char> lz4_compress_block(const unsigned char* pSrc, std::size_t n) {
+    const int src_size = static_cast<int>(n);
+    const int bound = LZ4_compressBound(src_size);
+    if (bound <= 0)
+        throw WriteError("lz4 compression failed: block too large");
+    std::vector<unsigned char> out(static_cast<std::size_t>(bound));
+    const int written =
+        LZ4_compress_fast(reinterpret_cast<const char*>(pSrc), reinterpret_cast<char*>(out.data()),
+                          src_size, bound, /*acceleration=*/1);
+    if (written <= 0)
+        throw WriteError("lz4 compression failed");
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+
+/**
+ * @brief Decompresses one raw-block-format LZ4 block.
+ * @param expected Exact decompressed size from the VTU block header. Passing it
+ *        as the output capacity is what makes `LZ4_decompress_safe` bounded --
+ *        a corrupt block cannot overrun the buffer.
+ * @throws ReadError if lz4 reports an error.
+ */
+std::vector<unsigned char> lz4_decompress(const unsigned char* pSrc, std::size_t n,
+                                          std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    const int written = LZ4_decompress_safe(reinterpret_cast<const char*>(pSrc),
+                                            reinterpret_cast<char*>(out.data()),
+                                            static_cast<int>(n), static_cast<int>(expected));
+    if (written < 0)
+        throw ReadError("lz4 decompression failed");
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_LZ4
+
+bool vtk_codec_available(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::None:
+            return true;
+        case VtkCodec::Zlib:
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+            return true;
+#else
+            return false;
+#endif
+        case VtkCodec::LZ4:
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+            return true;
+#else
+            return false;
+#endif
+        case VtkCodec::ZSTD:
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+            return true;
+#else
+            return false;
+#endif
+        default:
+            return false;  // LZMA is recognized but never implemented here
+    }
+}
+
+std::string vtk_codec_build_option(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "MESHIOPLUSPLUS_WITH_ZLIB=ON";
+        case VtkCodec::LZ4:
+            return "MESHIOPLUSPLUS_WITH_LZ4=ON";
+        case VtkCodec::ZSTD:
+            return "MESHIOPLUSPLUS_WITH_ZSTD=ON";
+        default:
+            return "";
+    }
+}
+
+std::string vtk_codec_missing_message(VtkCodec codec, bool for_write) {
+    const std::string what = for_write ? "compression" : "decompression";
+    if (codec == VtkCodec::LZMA)
+        return "VTK XML lzma " + what + " is not implemented by the C++ core";
+    return "VTK XML " + std::string(vtk_codec_name(codec)) + " " + what +
+           " requires a build with -D" + vtk_codec_build_option(codec);
+}
+
+void vtk_codec_require_read(VtkCodec codec) {
+    if (!vtk_codec_available(codec))
+        throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
+}
+
+void vtk_codec_require_write(VtkCodec codec) {
+    if (!vtk_codec_available(codec))
+        throw WriteError(vtk_codec_missing_message(codec, /*for_write=*/true));
+}
+
+std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsigned char* pSrc,
+                                                    std::size_t n) {
+    switch (codec) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        case VtkCodec::Zlib:
+            return zlib_compress_block(pSrc, n);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+        case VtkCodec::ZSTD:
+            return zstd_compress_block(pSrc, n);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+        case VtkCodec::LZ4:
+            return lz4_compress_block(pSrc, n);
+#endif
+        default:
+            break;
+    }
+    (void)pSrc;
+    (void)n;
+    throw WriteError(vtk_codec_missing_message(codec, /*for_write=*/true));
+}
+
+std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsigned char* pSrc,
+                                                      std::size_t n, std::size_t expected) {
+    switch (codec) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        case VtkCodec::Zlib:
+            return zlib_decompress(pSrc, n, expected);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+        case VtkCodec::ZSTD:
+            return zstd_decompress(pSrc, n, expected);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+        case VtkCodec::LZ4:
+            return lz4_decompress(pSrc, n, expected);
+#endif
+        default:
+            break;
+    }
+    (void)pSrc;
+    (void)n;
+    (void)expected;
+    throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
+}
+
+std::uint64_t read_uint_le(const unsigned char* pP, std::size_t isz) {
+    std::uint64_t v = 0;
+    for (std::size_t i = 0; i < isz; ++i)
+        v |= static_cast<std::uint64_t>(pP[i]) << (8 * i);
+    return v;
+}
+
+std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std::size_t len,
+                                                   std::size_t hsz) {
+    std::vector<unsigned char> all = b64decode(pText, len);
+    if (all.size() < hsz)
+        throw ReadError("VTU binary data too short");
+    std::uint64_t total = read_uint_le(all.data(), hsz);
+    if (all.size() < hsz + total)
+        throw ReadError("VTU binary data truncated");
+    return std::vector<unsigned char>(all.begin() + hsz, all.begin() + hsz + total);
+}
+
+std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len, std::size_t hsz,
+                                             VtkCodec codec) {
+    // Every codec is checked here rather than at the per-block call so an
+    // absent one is reported before any work is done -- and as a ReadError,
+    // never a link error, which is what keeps the Python fallback reachable.
+    vtk_codec_require_read(codec);
+
+    std::size_t first_chars = ((hsz + 2) / 3) * 4;
+    if (len < first_chars)
+        throw ReadError("VTU compressed-block header too short");
+    std::vector<unsigned char> hb = b64decode(pText, first_chars);
+    std::uint64_t num_blocks = read_uint_le(hb.data(), hsz);
+
+    std::size_t num_header_bytes = hsz * (3 + static_cast<std::size_t>(num_blocks));
+    std::size_t num_header_chars = ((num_header_bytes + 2) / 3) * 4;
+    if (len < num_header_chars)
+        throw ReadError("VTU compressed-block header truncated");
+    std::vector<unsigned char> header = b64decode(pText, num_header_chars);
+
+    std::uint64_t max_block = read_uint_le(header.data() + hsz, hsz);
+    std::uint64_t last_block = read_uint_le(header.data() + 2 * hsz, hsz);
+    std::vector<std::uint64_t> comp_sizes(num_blocks);
+    for (std::uint64_t k = 0; k < num_blocks; ++k)
+        comp_sizes[k] = read_uint_le(header.data() + (3 + k) * hsz, hsz);
+
+    std::vector<unsigned char> blockdata =
+        b64decode(pText + num_header_chars, len - num_header_chars);
+
+    // Input offsets are a (cheap, sequential) prefix sum of comp_sizes; the
+    // output offset of block k is k*max_block per the VTU block scheme -> the
+    // per-block inflate runs in parallel into a pre-sized buffer.
+    std::vector<std::size_t> in_off(static_cast<std::size_t>(num_blocks) + 1, 0);
+    for (std::uint64_t k = 0; k < num_blocks; ++k)
+        in_off[static_cast<std::size_t>(k) + 1] =
+            in_off[static_cast<std::size_t>(k)] + static_cast<std::size_t>(comp_sizes[k]);
+
+    const std::size_t total = num_blocks ? static_cast<std::size_t>(num_blocks - 1) *
+                                                   static_cast<std::size_t>(max_block) +
+                                               static_cast<std::size_t>(last_block)
+                                         : 0;
+    std::vector<unsigned char> out(total);
+    parallel_for(
+        static_cast<std::size_t>(num_blocks),
+        [&](std::size_t k) {
+            std::size_t expected = (k + 1 == num_blocks) ? static_cast<std::size_t>(last_block)
+                                                         : static_cast<std::size_t>(max_block);
+            auto dec =
+                vtk_codec_decompress_block(codec, blockdata.data() + in_off[k],
+                                           static_cast<std::size_t>(comp_sizes[k]), expected);
+            std::memcpy(out.data() + k * static_cast<std::size_t>(max_block), dec.data(),
+                        std::min(dec.size(), expected));
+        },
+        /*grain=*/1);  // each block is 32 KB of inflate work
+    return out;
+}
+
+std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, VtkCodec codec) {
+    if (codec == VtkCodec::None) {
+        std::vector<unsigned char> buf(4 + nbytes);
+        std::uint32_t header = static_cast<std::uint32_t>(nbytes);
+        std::memcpy(buf.data(), &header, 4);
+        if (nbytes)
+            std::memcpy(buf.data() + 4, pData, nbytes);
+        return b64encode(buf.data(), buf.size());
+    }
+
+    vtk_codec_require_write(codec);
+    const std::uint32_t max_block = 32768;
+    std::uint32_t num_blocks = static_cast<std::uint32_t>((nbytes + max_block - 1) / max_block);
+    std::uint32_t last_block_size =
+        num_blocks ? static_cast<std::uint32_t>(nbytes - std::size_t(num_blocks - 1) * max_block)
+                   : max_block;
+
+    // Blocks are independent -> compress in parallel into pre-sized slots.
+    std::vector<std::vector<unsigned char> > blocks(num_blocks);
+    parallel_for(
+        num_blocks,
+        [&](std::size_t b) {
+            std::size_t off = b * max_block;
+            std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
+            blocks[b] = vtk_codec_compress_block(codec, pData + off, len);
+        },
+        /*grain=*/1);  // each block is 32 KB of deflate work
+
+    std::vector<std::uint32_t> header;
+    header.reserve(3 + num_blocks);
+    header.push_back(num_blocks);
+    header.push_back(max_block);
+    header.push_back(last_block_size);
+    for (const auto& b : blocks)
+        header.push_back(static_cast<std::uint32_t>(b.size()));
+
+    std::string out = b64encode(reinterpret_cast<const unsigned char*>(header.data()),
+                                header.size() * sizeof(std::uint32_t));
+    std::vector<unsigned char> concat;
+    for (const auto& b : blocks)
+        concat.insert(concat.end(), b.begin(), b.end());
+    out += b64encode(concat.data(), concat.size());
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/vtu_binary.cpp =====
+// ===== begin cpp/src/detail/xdmf_common.cpp =====
+#include <cstring>
+#include <unordered_map>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace xdmfcommon {
+
+const char* meshio_to_xdmf(const std::string& rT) {
+    static const std::unordered_map<std::string, const char*> m = {
+        {"vertex", "Polyvertex"},
+        {"line", "Polyline"},
+        {"line3", "Edge_3"},
+        {"quad", "Quadrilateral"},
+        {"quad8", "Quadrilateral_8"},
+        {"quad9", "Quadrilateral_9"},
+        {"pyramid", "Pyramid"},
+        {"pyramid13", "Pyramid_13"},
+        {"tetra", "Tetrahedron"},
+        {"triangle", "Triangle"},
+        {"triangle6", "Triangle_6"},
+        {"tetra10", "Tetrahedron_10"},
+        {"wedge", "Wedge"},
+        {"wedge15", "Wedge_15"},
+        {"wedge18", "Wedge_18"},
+        {"hexahedron", "Hexahedron"},
+        {"hexahedron20", "Hexahedron_20"},
+        {"hexahedron24", "Hexahedron_24"},
+        {"hexahedron27", "Hexahedron_27"}};
+    auto it = m.find(rT);
+    if (it == m.end())
+        throw WriteError("XDMF: unsupported cell type " + rT);
+    return it->second;
+}
+
+std::string xdmf_to_meshio(const std::string& rT) {
+    static const std::unordered_map<std::string, std::string> m = {
+        {"Polyvertex", "vertex"},
+        {"Polyline", "line"},
+        {"Edge_3", "line3"},
+        {"Quadrilateral", "quad"},
+        {"Quadrilateral_8", "quad8"},
+        {"Quad_8", "quad8"},
+        {"Quadrilateral_9", "quad9"},
+        {"Quad_9", "quad9"},
+        {"Pyramid", "pyramid"},
+        {"Pyramid_13", "pyramid13"},
+        {"Tetrahedron", "tetra"},
+        {"Triangle", "triangle"},
+        {"Triangle_6", "triangle6"},
+        {"Tri_6", "triangle6"},
+        {"Tetrahedron_10", "tetra10"},
+        {"Tet_10", "tetra10"},
+        {"Wedge", "wedge"},
+        {"Wedge_15", "wedge15"},
+        {"Wedge_18", "wedge18"},
+        {"Hexahedron", "hexahedron"},
+        {"Hexahedron_20", "hexahedron20"},
+        {"Hex_20", "hexahedron20"},
+        {"Hexahedron_24", "hexahedron24"},
+        {"Hex_24", "hexahedron24"},
+        {"Hexahedron_27", "hexahedron27"},
+        {"Hex_27", "hexahedron27"}};
+    auto it = m.find(rT);
+    if (it == m.end())
+        throw ReadError("XDMF: unsupported topology type " + rT);
+    return it->second;
+}
+
+NDArray concat_cell_data(const Mesh& rMesh, const std::string& rName) {
+    const std::size_t nblocks = rMesh.CellDataNumBlocks(rName);
+    std::size_t total_rows = 0;
+    std::vector<std::size_t> shape = rMesh.CellData(rName, 0).Shape();
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto& bshape = rMesh.CellData(rName, b).Shape();
+        total_rows += bshape.empty() ? 0 : bshape[0];
+    }
+    shape[0] = total_rows;
+    NDArray out(rMesh.CellData(rName, 0).Dtype(), shape);
+    std::size_t off = 0;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const NDArray& blk = rMesh.CellData(rName, b);
+        std::memcpy(out.Data() + off, blk.Data(), blk.Nbytes());
+        off += blk.Nbytes();
+    }
+    return out;
+}
+
+std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
+                                         const std::vector<std::size_t>& rSizes) {
+    std::size_t ncols = rRaw.Ndim() >= 2 ? rRaw.Shape()[1] : 1;
+    std::size_t off = 0;
+    std::vector<NDArray> blocks;
+    for (std::size_t bs : rSizes) {
+        std::vector<std::size_t> bshape = rRaw.Shape();
+        if (!bshape.empty())
+            bshape[0] = bs;
+        NDArray b(rRaw.Dtype(), bshape);
+        std::size_t elems = bs * ncols;
+        std::memcpy(b.Data(), rRaw.Data() + off * ncols * dtype_size(rRaw.Dtype()),
+                    elems * dtype_size(rRaw.Dtype()));
+        off += bs;
+        blocks.push_back(std::move(b));
+    }
+    return blocks;
+}
+
+}  // namespace xdmfcommon
+}  // namespace meshioplusplus
+// ===== end cpp/src/detail/xdmf_common.cpp =====
+// ===== begin cpp/src/file_source.cpp =====
+#include <cstdlib>
+#include <fstream>
+#include <utility>
+
+// Project includes
+
+#if defined(__EMSCRIPTEN__)
+// No mapping under Emscripten: the virtual FS has nothing to map.
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+// Only this translation unit (and the IMPLEMENTATION-guarded slice of the
+// amalgamated header) ever includes <windows.h> for FileSource, but NOMINMAX
+// is still required: without it, <windows.h> defines min/max macros that
+// would break any std::min/std::max call later in the same TU.
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace meshioplusplus {
+namespace detail {
+
+FileSource::FileSource(const std::string& rPath, Mode mode) {
+    if (mode != Mode::Buffered && TryMap(rPath, mode == Mode::Mmap))
+        return;
+    LoadBuffered(rPath);
+}
+
+FileSource::FileSource(const std::string& rPath, MmapMode mmap_mode)
+    : FileSource(rPath, FromMmapMode(mmap_mode)) {}
+
+FileSource::~FileSource() {
+    Release();
+}
+
+FileSource::FileSource(FileSource&& rOther) noexcept {
+    MoveFrom(std::move(rOther));
+}
+
+FileSource& FileSource::operator=(FileSource&& rOther) noexcept {
+    if (this != &rOther) {
+        Release();
+        MoveFrom(std::move(rOther));
+    }
+    return *this;
+}
+
+FileSource::Mode FileSource::FromMmapMode(MmapMode mmap_mode) {
+    switch (mmap_mode) {
+        case MmapMode::On:
+            return Mode::Mmap;
+        case MmapMode::Off:
+            return Mode::Buffered;
+        default:
+            return Mode::Auto;
+    }
+}
+
+void FileSource::LoadBuffered(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
+    in.seekg(0, std::ios::end);
+    const std::streamoff len = in.tellg();
+    in.seekg(0, std::ios::beg);
+    if (len > 0) {
+        mBuffer.resize(static_cast<std::size_t>(len));
+        in.read(mBuffer.data(), len);
+    }
+    mSize = mBuffer.size();
+    mpData = nullptr;
+    mMapped = false;
+}
+
+bool FileSource::TryMap(const std::string& rPath, bool force) {
+#if defined(__EMSCRIPTEN__)
+    (void)rPath;
+    (void)force;
+    return false;  // nothing to map on the virtual filesystem
+#elif defined(_WIN32)
+    HANDLE file = CreateFileA(rPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    LARGE_INTEGER size;
+    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || !WorthMapping(size.QuadPart, force)) {
+        CloseHandle(file);
+        return false;
+    }
+    HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!mapping) {
+        CloseHandle(file);
+        return false;
+    }
+    void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+    if (!view) {
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return false;
+    }
+    mpData = static_cast<const char*>(view);
+    mSize = static_cast<std::size_t>(size.QuadPart);
+    mWinFile = file;
+    mWinMapping = mapping;
+    mMapped = true;
+    return true;
+#else
+    const int fd = ::open(rPath.c_str(), O_RDONLY);
+    if (fd < 0)
+        return false;
+    struct stat st{};
+    // Only regular files: a pipe or character device has no meaningful size
+    // and cannot be mapped.
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+        !WorthMapping(static_cast<long long>(st.st_size), force)) {
+        ::close(fd);
+        return false;
+    }
+    void* addr =
+        ::mmap(nullptr, static_cast<std::size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
+    ::close(fd);  // the mapping keeps its own reference to the file
+    if (addr == MAP_FAILED)
+        return false;
+#if defined(POSIX_MADV_SEQUENTIAL)
+    // Parsers walk the buffer front to back.
+    ::posix_madvise(addr, static_cast<std::size_t>(st.st_size), POSIX_MADV_SEQUENTIAL);
+#endif
+    mpData = static_cast<const char*>(addr);
+    mSize = static_cast<std::size_t>(st.st_size);
+    mMapped = true;
+    return true;
+#endif
+}
+
+bool FileSource::HasTerminatorSlack(long long size) {
+#if defined(__EMSCRIPTEN__)
+    (void)size;
+    return false;
+#elif defined(_WIN32)
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    const long long page = static_cast<long long>(info.dwPageSize);
+    return page > 0 && (size % page) != 0;
+#else
+    const long long page = static_cast<long long>(::sysconf(_SC_PAGESIZE));
+    return page > 0 && (size % page) != 0;
+#endif
+}
+
+bool FileSource::WorthMapping(long long size, bool force) {
+    // Applies even to an explicit request: `Mmap` is a preference, and
+    // silently trading a guarantee for it would be the wrong bargain.
+    if (!HasTerminatorSlack(size))
+        return false;
+    if (force)
+        return true;
+    static const std::size_t threshold = [] {
+        if (const char* env = std::getenv("MESHIOPLUSPLUS_MMAP_THRESHOLD")) {
+            char* end = nullptr;
+            const unsigned long long v = std::strtoull(env, &end, 10);
+            if (end && end != env)
+                return static_cast<std::size_t>(v);
+        }
+        return mmap_auto_threshold_bytes;
+    }();
+    return static_cast<std::size_t>(size) >= threshold;
+}
+
+void FileSource::Release() {
+#if defined(__EMSCRIPTEN__)
+#elif defined(_WIN32)
+    if (mMapped && mpData)
+        UnmapViewOfFile(mpData);
+    if (mWinMapping)
+        CloseHandle(static_cast<HANDLE>(mWinMapping));
+    if (mWinFile && mWinFile != INVALID_HANDLE_VALUE)
+        CloseHandle(static_cast<HANDLE>(mWinFile));
+    mWinMapping = nullptr;
+    mWinFile = nullptr;
+#else
+    if (mMapped && mpData && mSize)
+        ::munmap(const_cast<char*>(mpData), mSize);
+#endif
+    mpData = nullptr;
+    mSize = 0;
+    mMapped = false;
+}
+
+void FileSource::MoveFrom(FileSource&& rOther) noexcept {
+    mBuffer = std::move(rOther.mBuffer);
+    mpData = rOther.mpData;
+    mSize = rOther.mSize;
+    mMapped = rOther.mMapped;
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    mWinFile = rOther.mWinFile;
+    mWinMapping = rOther.mWinMapping;
+    rOther.mWinFile = nullptr;
+    rOther.mWinMapping = nullptr;
+#endif
+    rOther.mpData = nullptr;
+    rOther.mSize = 0;
+    rOther.mMapped = false;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/src/file_source.cpp =====
 // ===== begin cpp/src/formats/abaqus.cpp =====
 #include <cctype>
 #include <cstdint>
