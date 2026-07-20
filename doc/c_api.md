@@ -155,3 +155,39 @@ Format dispatch reuses the shared registry (with a content-sniff fallback on rea
 - **Ragged cell blocks** (polygons/polyhedra of varying size) cannot be built through the C API, and on meshes read from files their connectivity is not accessible (`mio_mesh_cell_block_conn` returns `MIO_ERR_UNSUPPORTED`; counts, type and `is_ragged` still work).
 - **Side-channel metadata** is dropped: `point_sets`/`cell_sets` (`ansysinp`, `unv`), MED families/groups, OpenFOAM cell tags. Use the Python API when you need those.
 - A `mio_mesh` handle is not thread-safe; distinct handles may be used from distinct threads freely.
+
+## Selective reads and file summaries
+
+`mio_read` is unchanged. `mio_read_ex(path, format, opts)` adds the selective-read options,
+and `mio_read_metadata_create` returns an opaque summary handle in the style of
+`mio_split_result` / `mio_data_info`.
+
+```c
+mio_read_opts opts;
+mio_read_opts_init(&opts);      /* always -- never zero-fill by hand */
+opts.points_only = 1;
+mio_mesh* mesh = mio_read_ex("big.vtu", "vtu", &opts);
+
+mio_read_metadata* meta = mio_read_metadata_create("big.vtu", NULL);
+int64_t np = mio_read_metadata_num_points(meta);
+int fell_back = mio_read_metadata_fell_back(meta);   /* 1 => the file was read in full */
+mio_read_metadata_free(meta);
+```
+
+A `NULL` `opts.arrays` means *every* array; a non-`NULL` pointer with `num_arrays == 0` means
+*none*. That distinction is load-bearing and is preserved throughout.
+
+`mio_read_metadata_bbox` returns `MIO_ERR_NOT_FOUND` when no bounding box was computed —
+the normal case for a native summary, which never decodes the point coordinates. It does not
+report a zero box.
+
+**ABI note:** `mio_read_opts` is part of the installed library's permanent ABI. It carries
+reserved capacity and may only ever grow additively — never reorder, resize or repurpose an
+existing field. Always initialize through `mio_read_opts_init()` so fields added later default
+sensibly in code compiled against an older header.
+
+### Optional codecs in packages
+
+Conan gains `with_zstd` / `with_lz4` and vcpkg gains `zstd` / `lz4` features, both **off by
+default** (unlike `with_hdf5`/`with_netcdf`/`with_zlib`). zlib remains the default codec, so
+existing package IDs and consumers are unaffected. See [Compression codecs](codecs.md).

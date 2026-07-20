@@ -140,3 +140,21 @@ node wasm/test/smoke.mjs
 ```
 
 `build/configure-wasm.sh` always configures with `-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` (no Python/pybind11 involved), `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ` (OpenMP/TBB/the parallel STL have no meaningful story on this target yet), `-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE` (the fastest [in-memory mesh backend](cpp_backends.md) — canonical Float64/Int64 storage, so the embind typed-array boundary needs no dtype dispatch; the JS API shape is unchanged, and `meshBackend()` on the loaded module reports `"native"`), and HDF5/netCDF off. See `--help` for the `--without-zlib`/`--build-type` options. CI (`.github/workflows/wasm.yml`) builds and smoke-tests on every push/PR and publishes to npm on `v*` tags.
+
+## Selective reads, metadata, and codecs
+
+`readMeshSelective(path, { format, pointsOnly, arrays })` and `readMetadata(path, format)`
+mirror the Python API; `readerSupportsOptions(format)` reports whether a format has a native
+selective path. `arrays: null` reads every data array, `arrays: []` reads none.
+
+```javascript
+const mesh = m.readMeshSelective('big.vtu', { arrays: ['u'] });
+const meta = m.readMetadata('big.vtu');   // meta.fellBackToFullRead
+```
+
+**Memory mapping is unavailable** here — the Emscripten virtual filesystem has nothing to map,
+so `FileSource` always uses buffered reads. The option is accepted and ignored.
+
+**zstd and lz4 are compiled out**, consistent with the HDF5/netCDF-backed formats: there is no
+Emscripten port for either. zlib (`-sUSE_ZLIB=1`) is unchanged and remains the default codec,
+so every file the WASM build wrote before it still round-trips.

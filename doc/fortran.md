@@ -86,3 +86,26 @@ If `stat` is **absent** and the call fails, the message is printed and the progr
 | Module-level | `mio_convert(in, out [, in_format, out_format])`, `mio_version()`, `mio_mesh_backend()`, `mio_format_readable(f)`, `mio_format_writable(f)`, `mio_error_message()` |
 
 The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](https://github.com/loumalouomega/meshioplusplus/blob/main/doc/examples/fortran_example.f90); format support and the v1 limitations (ragged blocks, side-channel metadata) are identical to the [C API](/c_api#format-support), which this module wraps. Copy-getters deliver `real(real64)` regardless of the stored dtype (float32/int32/int64 are converted); Fortran on Windows/MSVC is untested in v1.
+
+## Selective reads and file summaries
+
+`read` takes optional `points_only` and `arrays`, and the module-level `mio_read_metadata`
+returns a `type(mio_metadata)`:
+
+```fortran
+type(mio_mesh) :: m
+type(mio_metadata) :: meta
+
+call m%read('big.msh', points_only=.true.)
+call m%read('big.msh', arrays=['u   ', 'p   '])   ! fixed-length, as Fortran requires
+
+meta = mio_read_metadata('big.vtu')
+print *, meta%num_points, meta%num_cells
+print *, meta%fell_back_to_full_read      ! .true. => the file was read in full
+```
+
+A zero-sized `arrays` means *no* arrays, which is distinct from omitting the argument (every
+array). Names are trimmed and NUL-terminated internally; the copies outlive the call.
+
+`meta%cell_blocks` is an array of `type(mio_cell_block_info)`, and the name lists use the
+exported `STRBUF_LEN` convention, as `split` and `data_info` do.
