@@ -316,6 +316,103 @@ step('zstd/lz4 are compiled out of the WASM build', () => {
     assert.ok(!text.includes('vtkLZ4DataCompressor'));
 });
 
+// The geometry operations below are reached through the package wrapper
+// (src/index.mjs), not `Module.*` directly. That is the whole point: an embind
+// binding the wrapper does not forward is unreachable from
+// loadMeshioPlusPlus(), which is exactly how these ops shipped broken before.
+
+const cube = {
+    points: new Float64Array([
+        0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1,
+    ]),
+    dim: 3,
+    cells: [
+        { type: 'hexahedron', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7]), nodesPerCell: 8 },
+    ],
+    point_data: {},
+    cell_data: {},
+    field_data: {},
+};
+
+step('convertCells simplexify: one hexahedron -> 6 tetra', () => {
+    const out = m.convertCells(cube, 'simplexify');
+    assert.equal(out.cells.length, 1);
+    assert.equal(out.cells[0].type, 'tetra');
+    assert.equal(out.cells[0].data.length, 6 * 4);
+    // The decomposition reuses the parent's own corner nodes.
+    assert.equal(out.points.length, 24);
+});
+
+step('convertCells elevate/linearize round-trips', () => {
+    const up = m.convertCells(tet, 'elevate');
+    assert.equal(up.cells[0].type, 'tetra10');
+    assert.equal(up.points.length, (4 + 6) * 3);
+    const down = m.convertCells(up, 'linearize');
+    assert.equal(down.cells[0].type, 'tetra');
+    assert.equal(down.points.length, 12);
+});
+
+step('convertCells rejects a full-Lagrange elevate target', () => {
+    const quad9 = {
+        points: new Float64Array(9 * 3),
+        dim: 3,
+        cells: [
+            {
+                type: 'quad9',
+                data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+                nodesPerCell: 9,
+            },
+        ],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    assert.throws(() => m.convertCells(quad9, 'elevate'));
+});
+
+step('geometry operations are reachable through the wrapper', () => {
+    // Regression guard for the v7.2.1 class of bug: every geometry op must be
+    // forwarded by src/index.mjs, not merely bound in js_bindings.cpp.
+    for (const name of [
+        'extractSurface',
+        'extractSkin',
+        'attachQuality',
+        'sniffFormat',
+        'reorder',
+        'computeBandwidth',
+        'diff',
+        'meshesEqual',
+        'merge',
+        'transform',
+        'clean',
+        'cropBbox',
+        'cropPlane',
+        'split',
+        'convertCells',
+        'stats',
+        'meshBackend',
+    ]) {
+        assert.equal(typeof m[name], 'function', `${name} is not forwarded by the wrapper`);
+    }
+});
+
+step('a forwarded geometry operation actually runs', () => {
+    const skin = m.extractSurface(cube);
+    assert.equal(skin.cells[0].type, 'quad');
+    assert.equal(skin.cells[0].data.length, 6 * 4);
+
+    const s = m.stats(cube);
+    assert.equal(s.numPoints, 8);
+    assert.equal(s.numInverted, 0);
+
+    const pieces = m.split(cube, 'type');
+    assert.equal(pieces.length, 1);
+    assert.equal(pieces[0].key, 'hexahedron');
+
+    assert.equal(m.meshesEqual(cube, cube), true);
+    assert.equal(typeof m.meshBackend(), 'string');
+});
+
 if (failed) {
     console.error('\nSMOKE TEST FAILED');
     process.exit(1);

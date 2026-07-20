@@ -8,6 +8,7 @@ from . import (
     _clean,
     _compress,
     _convert,
+    _convert_cells,
     _crop,
     _data,
     _decompress,
@@ -126,6 +127,13 @@ def main(argv=None):
     )
     _split.add_args(parser)
     parser.set_defaults(func=_split.split_cmd)
+
+    parser = subparsers.add_parser(
+        "convert-cells",
+        help="Convert the element representation (linearize / simplexify / elevate)",
+    )
+    _convert_cells.add_args(parser)
+    parser.set_defaults(func=_convert_cells.convert_cells_cmd)
 
     parser = subparsers.add_parser(
         "stats",

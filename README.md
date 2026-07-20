@@ -93,6 +93,7 @@ meshioplusplus clean      in.vtu out.vtu --weld              # weld / prune / de
 meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
 meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # partition
 meshioplusplus stats      mesh.vtu                           # geometric statistics
+meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -252,7 +253,25 @@ pieces = meshioplusplus.split(mesh, by="type")             # {"triangle": ..., .
 s = meshioplusplus.compute_stats(mesh)                     # dict of measures
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, and `meshioplusplus stats`.
+#### Cell conversion (linearize / simplexify / elevate)
+
+**`meshioplusplus.convert_cells`** converts a mesh's *element representation* — which cell types it is built from — while leaving the object it describes intact. See `doc/convert_cells.md`.
+
+- **`mode="linearize"`** — every higher-order cell becomes its linear base (`tetra10` → `tetra`, `hexahedron27` → `hexahedron`), keeping the corner connectivity verbatim and pruning the nodes that become unreferenced.
+- **`mode="simplexify"`** — every cell is decomposed into simplices of the same topological dimension (`quad` → 2 `triangle`, `hexahedron` → 6 `tetra`, `wedge` → 3, `pyramid` → 2, an n-gon into an (n−2)-triangle fan). No points are added, each parent's `cell_data` is replicated to its children, and every emitted simplex is positively oriented with volume conserved.
+- **`mode="elevate"`** — every linear cell is promoted to its serendipity quadratic counterpart (`triangle` → `triangle6`, `hexahedron` → `hexahedron20`), adding one node per unique edge at the edge midpoint with `point_data` set to the endpoint mean.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+linear = meshioplusplus.convert_cells(mesh, mode="linearize")
+tets = meshioplusplus.convert_cells(mesh, mode="simplexify")   # hexes -> tetra
+quadratic = meshioplusplus.convert_cells(mesh, mode="elevate")
+```
+
+Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-order mesh, and output is byte-identical across mesh backends and thread counts.
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, `meshioplusplus stats`, and `meshioplusplus convert-cells`.
 
 #### Data operations (rename / average / calc / condition / summarize)
 

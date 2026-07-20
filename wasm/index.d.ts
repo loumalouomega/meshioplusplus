@@ -58,6 +58,21 @@ export type CellPointWeight = 'uniform' | 'measure';
  *  excluded from reductions regardless of this setting. */
 export type NanPolicy = 'ignore' | 'replace' | 'fail';
 
+/** Cell-keeping rule for the crop operations: every node inside, or any. */
+export type CropMode = 'all' | 'any';
+
+/** Partitioning criterion for `split`. */
+export type SplitBy = 'type' | 'component' | 'region' | 'tag';
+
+/** Node-renumbering method for `reorder`. */
+export type ReorderMethod = 'rcm' | 'morton' | 'hilbert';
+
+/** How `merge` reconciles data arrays that are not present in every input. */
+export type MergeDataPolicy = 'intersection' | 'fill';
+
+/** Element-representation conversion performed by `convertCells`. */
+export type ConvertCellsMode = 'linearize' | 'simplexify' | 'elevate';
+
 /** Read-only per-array summary returned by `dataInfo`. See doc/data_info.md. */
 export interface DataArrayInfo {
   location: 'point_data' | 'cell_data' | 'field_data';
@@ -154,6 +169,90 @@ export interface MeshioPlusPlusModule {
 
   /** The shared cell-type -> topological-dimension table (0-3). */
   topologicalDimension(): Record<string, number>;
+
+  /** The mesh backend this build was compiled with ("meshio"/"native"/"kratos"). */
+  meshBackend(): string;
+
+  /**
+   * Mesh operations: computations ON a mesh (not file formats). The index maps
+   * the C++ core returns for `cropBbox`/`cropPlane`/`split`/`convertCells` are
+   * not carried across the JS boundary -- use the `recordIds`/`recordParentIds`
+   * flags to get the same provenance as data arrays instead.
+   */
+
+  /** Extract the boundary of a mesh (faces of a volume, edges of a surface). */
+  extractSurface(mesh: Mesh, recordParentIds?: boolean): Mesh;
+
+  /** Extract the skin of a volume mesh (the volume-only special case). */
+  extractSkin(mesh: Mesh, linearize?: boolean): Mesh;
+
+  /** Return a clone with the quality metrics attached as `quality:*` cell_data. */
+  attachQuality(mesh: Mesh): Mesh;
+
+  /** Guess a file's format from its leading bytes, or `""` if ambiguous. */
+  sniffFormat(path: string): string;
+
+  /** Renumber nodes/cells to reduce bandwidth or improve locality. */
+  reorder(mesh: Mesh, method?: ReorderMethod): { mesh: Mesh; nodePermutation: Int32Array; cellPermutations: Int32Array[] };
+
+  /** Connectivity bandwidth: max over cells of (max node index - min node index). */
+  computeBandwidth(mesh: Mesh): number;
+
+  /** Structured comparison of two meshes. */
+  diff(a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean): object;
+
+  /** Whether two meshes are equal within tolerance. */
+  meshesEqual(a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean): boolean;
+
+  /** Combine several meshes into one, optionally welding coincident points. */
+  merge(
+    meshes: Mesh[],
+    weld?: boolean,
+    atol?: number,
+    sourceTag?: boolean,
+    dataPolicy?: MergeDataPolicy,
+    dropDuplicateCells?: boolean,
+  ): Mesh;
+
+  /** Apply a row-major 4x4 affine transform to the point coordinates. */
+  transform(mesh: Mesh, matrix: number[], rotateVectorData?: boolean): Mesh;
+
+  /** Weld / prune / de-duplicate in one pass. */
+  clean(
+    mesh: Mesh,
+    weld?: boolean,
+    atol?: number,
+    removeOrphans?: boolean,
+    dropDegenerate?: boolean,
+    dropDuplicateCells?: boolean,
+  ): Mesh;
+
+  /** Subset a mesh to an axis-aligned bounding box. */
+  cropBbox(mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean): Mesh;
+
+  /** Subset a mesh to the half-space `(p - point) . normal >= 0`. */
+  cropPlane(
+    mesh: Mesh,
+    point: number[],
+    normal: number[],
+    mode?: CropMode,
+    recordIds?: boolean,
+  ): Mesh;
+
+  /** Partition a mesh into submeshes by type, connected component, or tag. */
+  split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];
+
+  /**
+   * Convert the element representation: drop higher-order nodes
+   * (`"linearize"`), decompose into same-dimension simplices (`"simplexify"`),
+   * or promote linear cells to serendipity quadratic (`"elevate"`).
+   * @throws {Error} on a polyhedron block under `"simplexify"`, or a
+   *   full-Lagrange target (quad9/hexahedron27) under `"elevate"`.
+   */
+  convertCells(mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean): Mesh;
+
+  /** Read-only geometric statistics (bbox, areas, volumes, inverted count). */
+  stats(mesh: Mesh): object;
 
   /**
    * Data operations: act on `point_data`/`cell_data`/`field_data` only -- the

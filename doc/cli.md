@@ -345,6 +345,38 @@ meshioplusplus stats mesh.vtu --json
 
 ---
 
+## meshioplusplus convert-cells
+
+Convert a mesh's element representation (see [convert_cells](/convert_cells)).
+Distinct from `convert`, which changes the *file format*.
+
+```
+meshioplusplus convert-cells [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--mode linearize\|simplexify\|elevate` | Conversion to perform (default `linearize`) |
+| `--record-parent-ids` | Attach `convert:parent_cell` cell_data of the source cell indices |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+`linearize` drops higher-order nodes (`tetra10` → `tetra`) and prunes the points
+that become unreferenced; `simplexify` decomposes cells into simplices of the
+same dimension (`hexahedron` → 6 `tetra`); `elevate` promotes linear cells to
+serendipity quadratic (`triangle` → `triangle6`), adding a node per unique edge.
+A polyhedron block under `simplexify`, and `quad9`/`hexahedron27` under
+`elevate`, are errors.
+
+**Examples:**
+
+```sh
+meshioplusplus convert-cells in.msh out.vtu --mode linearize
+meshioplusplus convert-cells in.msh out.vtu --mode simplexify --record-parent-ids
+meshioplusplus convert-cells in.msh out.vtu --mode elevate
+```
+
+---
+
 ## meshioplusplus data
 
 A nested group of nine verbs operating on a mesh's `point_data` / `cell_data` /

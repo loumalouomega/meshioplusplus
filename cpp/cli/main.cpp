@@ -63,6 +63,7 @@
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -367,6 +368,7 @@ void print_usage(std::ostream& os) {
           "  clean                   Weld / prune / de-dup a mesh\n"
           "  crop                    Subset by bounding box or half-space\n"
           "  split                   Partition into multiple files (type/region/component)\n"
+          "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
           "  data <verb>             Inspect / rename / average / compute on data arrays\n\n"
           "  -v, --version           Display version information\n"
@@ -943,6 +945,26 @@ int cmd_split(const std::vector<std::string>& rArgs) {
                       << ncells << " cells -> " << path << "\n";
         write_mesh_cli(path, piece.mMesh, out_fmt);
     }
+    return 0;
+}
+
+int cmd_convert_cells(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"mode", {}, true},
+                                  {"record-parent-ids", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("convert-cells requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::ConvertCellsOptions options;
+    options.mMode = meshioplusplus::convert_cells_mode_from_name(opt_value(p, "mode", "linearize"));
+    options.mRecordParentIds = has_flag(p, "record-parent-ids");
+
+    auto result = meshioplusplus::convert_cells(mesh, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -1661,6 +1683,8 @@ int main(int argc, char** argv) {
             return cmd_crop(rest);
         if (cmd == "split")
             return cmd_split(rest);
+        if (cmd == "convert-cells")
+            return cmd_convert_cells(rest);
         if (cmd == "data")
             return cmd_data(rest);
         if (cmd == "stats")

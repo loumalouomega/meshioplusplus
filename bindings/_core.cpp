@@ -66,6 +66,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -604,6 +605,29 @@ PYBIND11_MODULE(_core, m) {
             return pieces;
         },
         py::arg("mesh"), py::arg("by"), py::arg("tag_name") = "");
+
+    // Convert the element representation (linearize / simplexify / elevate).
+    // Returns a dict {mesh, point_map, cell_maps}. See operations/convert_cells.hpp.
+    m.def(
+        "convert_cells",
+        [](py::object pymesh, const std::string& mode, bool record_parent_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ConvertCellsOptions options;
+            options.mMode = meshioplusplus::convert_cells_mode_from_name(mode);
+            options.mRecordParentIds = record_parent_ids;
+            meshioplusplus::ConvertCellsResult r = meshioplusplus::convert_cells(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPointMap));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            return out;
+        },
+        py::arg("mesh"), py::arg("mode") = "linearize", py::arg("record_parent_ids") = false);
 
     // Geometric statistics (read-only). Returns a dict of the StatsReport fields.
     // See operations/stats.hpp.

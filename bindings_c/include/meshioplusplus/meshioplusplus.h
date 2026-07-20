@@ -84,6 +84,10 @@ typedef struct mio_diff_result mio_diff_result;
  *  mio_split_result_free(). */
 typedef struct mio_split_result mio_split_result;
 
+/** Opaque result of mio_convert_cells(): the converted mesh plus the point/cell
+ *  index maps. Destroy with mio_convert_cells_result_free(). */
+typedef struct mio_convert_cells_result mio_convert_cells_result;
+
 typedef enum mio_status {
     MIO_OK = 0,           /**< success */
     MIO_ERR_READ = 1,     /**< file could not be parsed / read-side failure */
@@ -535,6 +539,72 @@ MIO_API mio_mesh* mio_split_result_take_mesh(mio_split_result* result, int64_t i
 
 /** Free a split result (and any pieces it still owns). */
 MIO_API void mio_split_result_free(mio_split_result* result);
+
+/**
+ * Convert the element representation of a mesh. point_sets/cell_sets are not
+ * carried across the C ABI.
+ * @param mode               "linearize" (higher-order cells -> their linear
+ *                           base, pruning the orphaned nodes), "simplexify"
+ *                           (decompose into same-dimension simplices), or
+ *                           "elevate" (linear -> serendipity quadratic, adding
+ *                           one node per unique edge).
+ * @param record_parent_ids  nonzero to attach a convert:parent_cell cell_data
+ *                           array of per-block source cell indices.
+ * @return a result handle (free with mio_convert_cells_result_free), or NULL on
+ *         failure — a polyhedron block under "simplexify" and the full-Lagrange
+ *         targets (quad9/hexahedron27) under "elevate" both fail.
+ */
+MIO_API mio_convert_cells_result* mio_convert_cells(const mio_mesh* mesh, const char* mode,
+                                                    int record_parent_ids);
+
+/**
+ * Borrow the converted mesh. Owned by the result: valid until
+ * mio_convert_cells_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the converted mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_convert_cells_result_mesh(const mio_convert_cells_result* result);
+
+/**
+ * Transfer ownership of the converted mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_convert_cells_result_take_mesh(mio_convert_cells_result* result);
+
+/**
+ * Zero-copy borrow of the point map (int64, shape (num_points_in,), input point
+ * index -> output index, -1 when the point was pruned). The pointer is valid
+ * until the result is freed. Any out-param may be NULL.
+ * @param result a convert-cells result.
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the input point count.
+ */
+MIO_API mio_status mio_convert_cells_result_point_map(const mio_convert_cells_result* result,
+                                                      const void** data, mio_dtype* dtype,
+                                                      int64_t* n);
+
+/** Number of per-block cell maps in a convert-cells result, or -1 on error. */
+MIO_API int64_t mio_convert_cells_result_num_cell_maps(const mio_convert_cells_result* result);
+
+/**
+ * Zero-copy borrow of cell block `block`'s cell map (int64, shape
+ * (num_cells_in_block,), input cell -> the index of its FIRST child in the
+ * corresponding output block). Under "linearize"/"elevate" there is one child
+ * per parent, so the map is the identity; under "simplexify" a parent's
+ * children occupy the contiguous range starting at this index. Any out-param
+ * may be NULL.
+ * @param result a convert-cells result.
+ * @param block  cell-block index in [0, mio_convert_cells_result_num_cell_maps).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's input cell count.
+ */
+MIO_API mio_status mio_convert_cells_result_cell_map(const mio_convert_cells_result* result,
+                                                     int64_t block, const void** data,
+                                                     mio_dtype* dtype, int64_t* n);
+
+/** Free a convert-cells result (and the mesh it still owns). */
+MIO_API void mio_convert_cells_result_free(mio_convert_cells_result* result);
 
 /** Geometric statistics of a mesh (see mio_stats). Per-cell-type counts are not
  *  carried across the C ABI (use mio_num_cell_blocks / mio_cell_block_type). */
