@@ -95,13 +95,19 @@ same policy the Kratos reviewers required of the original integration).
 
   ```bash
   git clone --depth 1 --branch v3.25 https://github.com/KaHIP/KaHIP.git
-  cmake -S KaHIP -B KaHIP/build -DCMAKE_BUILD_TYPE=Release -DPARHIP=OFF \
+  cmake -S KaHIP -B KaHIP/build -DCMAKE_BUILD_TYPE=Release -DPARHIP=OFF -DNOMPI=ON \
         -DCMAKE_INSTALL_PREFIX="$HOME/kahip-install"
   cmake --build KaHIP/build -j && cmake --install KaHIP/build
 
   CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_KAHIP=ON -DKAHIP_ROOT=$HOME/kahip-install" \
       pip install meshioplusplus --no-binary meshioplusplus
   ```
+
+  `-DNOMPI=ON` is required, not just `-DPARHIP=OFF`: KaHIP's own CMakeLists.txt
+  does an unconditional `find_package(MPI REQUIRED)` unless `NOMPI` is set,
+  since `kaffpaE` (not only ParHIP) also depends on MPI — meshio++ only ever
+  links the serial `kaffpa` interface, so this build has no MPI dependency at
+  all despite what KaHIP's own default configure implies.
 
   The in-repo `cmake/FindKaHIP.cmake` honours `KAHIP_ROOT`/`KAHIP_DIR`
   (environment or cache), standard prefixes, and pkg-config; an in-source
