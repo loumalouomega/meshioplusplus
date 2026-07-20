@@ -27,7 +27,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "7.2.1"
+    version = "7.3.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -42,6 +42,8 @@ class MeshioplusplusConan(ConanFile):
         "with_hdf5": [True, False],
         "with_netcdf": [True, False],
         "with_zlib": [True, False],
+        "with_zstd": [True, False],
+        "with_lz4": [True, False],
         "with_eigen": [True, False],
         "fortran": [True, False],
     }
@@ -50,6 +52,10 @@ class MeshioplusplusConan(ConanFile):
         "with_hdf5": True,
         "with_netcdf": True,
         "with_zlib": True,
+        # Off by default, unlike zlib/hdf5/netcdf: zlib stays the write default,
+        # so a package without these reads and writes exactly what it always did.
+        "with_zstd": False,
+        "with_lz4": False,
         "with_eigen": False,  # submodule not in a source export -> fallback transpose
         "fortran": False,
     }
@@ -81,6 +87,10 @@ class MeshioplusplusConan(ConanFile):
     def requirements(self):
         if self.options.with_zlib:
             self.requires("zlib/[>=1.2.11 <2]")
+        if self.options.with_zstd:
+            self.requires("zstd/[>=1.5 <2]")
+        if self.options.with_lz4:
+            self.requires("lz4/[>=1.9 <2]")
         if self.options.with_netcdf:
             self.requires("netcdf/[>=4.8 <5]")
         if self.options.with_hdf5:
@@ -108,6 +118,8 @@ class MeshioplusplusConan(ConanFile):
             self.options.with_netcdf
         )
         tc.cache_variables["MESHIOPLUSPLUS_WITH_ZLIB"] = bool(self.options.with_zlib)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_ZSTD"] = bool(self.options.with_zstd)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_LZ4"] = bool(self.options.with_lz4)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_EIGEN"] = bool(self.options.with_eigen)
         tc.generate()
 
