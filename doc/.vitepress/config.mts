@@ -63,6 +63,7 @@ export default defineConfig({
           { text: "Crop (bbox / half-space)", link: "/crop" },
           { text: "Split / partition", link: "/split" },
           { text: "Geometric statistics", link: "/stats" },
+          { text: "Cell conversion", link: "/convert_cells" },
           { text: "Data operations", link: "/data_operations" },
           { text: "· Array management", link: "/data_manage" },
           { text: "· Location averaging", link: "/data_average" },
