@@ -1296,8 +1296,11 @@ private:
  */
 
 // System includes
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <type_traits>
 
 // Project includes
 
@@ -1448,6 +1451,60 @@ decltype(auto) dispatch_dtype(DType dt, F&& f) {
             return f.template operator()<std::uint64_t>();
     }
     return f.template operator()<double>();  // unreachable
+}
+
+/**
+ * @brief Writes `v` into element `i` of `rA`, regardless of `rA`'s dtype.
+ *
+ * The inverse of `read_double`, used by the data operations to store a value
+ * computed in `double` back into an array of the caller's chosen dtype. For an
+ * integer destination the value is rounded to nearest rather than truncated,
+ * and saturated into the destination's representable range, so a conditioning
+ * or averaging result never wraps around silently. A non-finite value stored
+ * into an integer destination becomes 0.
+ * @param rA Destination array.
+ * @param i Flat (linear) element index into `rA`'s buffer.
+ * @param v The value to store.
+ */
+inline void write_double(NDArray& rA, std::size_t i, double v) {
+    dispatch_dtype(rA.Dtype(), [&]<class T>() {
+        if constexpr (std::is_floating_point_v<T>) {
+            rA.As<T>()[i] = static_cast<T>(v);
+        } else {
+            if (!std::isfinite(v)) {
+                rA.As<T>()[i] = static_cast<T>(0);
+                return;
+            }
+            // Compare in long double so the bounds themselves survive the
+            // round-trip for the 64-bit destination types.
+            const long double r = std::round(static_cast<long double>(v));
+            const long double lo = static_cast<long double>(std::numeric_limits<T>::min());
+            const long double hi = static_cast<long double>(std::numeric_limits<T>::max());
+            rA.As<T>()[i] = static_cast<T>(r < lo ? lo : (r > hi ? hi : r));
+        }
+    });
+}
+
+/**
+ * @brief Writes the integer `v` into element `i` of `rA`, regardless of dtype.
+ *
+ * Saturates into the destination's range for an integer destination; a
+ * floating-point destination gets a plain cast.
+ * @param rA Destination array.
+ * @param i Flat (linear) element index into `rA`'s buffer.
+ * @param v The value to store.
+ */
+inline void write_int(NDArray& rA, std::size_t i, std::int64_t v) {
+    dispatch_dtype(rA.Dtype(), [&]<class T>() {
+        if constexpr (std::is_floating_point_v<T>) {
+            rA.As<T>()[i] = static_cast<T>(v);
+        } else {
+            const long double r = static_cast<long double>(v);
+            const long double lo = static_cast<long double>(std::numeric_limits<T>::min());
+            const long double hi = static_cast<long double>(std::numeric_limits<T>::max());
+            rA.As<T>()[i] = static_cast<T>(r < lo ? lo : (r > hi ? hi : r));
+        }
+    });
 }
 
 }  // namespace detail
@@ -3370,75 +3427,6 @@ inline bool skin_supported(CellType Type) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/cell_faces.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/format_compat.hpp =====
-/**
- * @file format_compat.hpp
- * @brief Portable stand-in for `std::format` on toolchains whose `<format>`
- * is unavailable (e.g. GCC < 13's libstdc++, or clang built against such a
- * libstdc++ - the header does not exist there, so it cannot even be
- * `#include`d, let alone used).
- *
- * Availability is detected through `<version>`'s `__cpp_lib_format` feature
- * test macro rather than `__has_include(<format>)`: `<version>` is
- * guaranteed to exist for any C++20 standard library, and only defines the
- * macro when the library actually implements the feature - so querying it
- * never risks the same "file not found" this header exists to work around.
- *
- * The fallback formatter supports only bare `"{}"` placeholders (no format
- * specs, no positional arguments, no escaping of literal braces) - the only
- * pattern the log/error messages in this codebase use.
- */
-
-// System includes
-#include <sstream>
-#include <string>
-#include <string_view>
-#include <utility>
-#include <version>
-
-#if !defined(MESHIOPLUSPLUS_FORCE_NO_STD_FORMAT) && defined(__cpp_lib_format) && \
-    __cpp_lib_format >= 201907L
-#define MESHIOPLUSPLUS_HAS_STD_FORMAT 1
-#include <format>
-#endif
-
-namespace meshioplusplus {
-namespace detail {
-
-#ifdef MESHIOPLUSPLUS_HAS_STD_FORMAT
-
-/** @brief Forwards to `std::format` (compile-time checked format string). */
-template <class... Args>
-std::string format_compat(std::format_string<Args...> rFmt, Args&&... rArgs) {
-    return std::format(rFmt, std::forward<Args>(rArgs)...);
-}
-
-#else
-
-/** @brief No-argument overload: the format string, verbatim. */
-inline std::string format_compat(std::string_view rFmt) {
-    return std::string(rFmt);
-}
-
-/**
- * @brief Recursively substitutes each `"{}"` in `rFmt` with the next argument
- * (via `operator<<`), left to right.
- */
-template <class T, class... Rest>
-std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&... rRest) {
-    const std::size_t pos = rFmt.find("{}");
-    if (pos == std::string_view::npos)
-        return std::string(rFmt);
-    std::ostringstream out;
-    out << rFmt.substr(0, pos) << rValue;
-    return out.str() + format_compat(rFmt.substr(pos + 2), rRest...);
-}
-
-#endif
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/format_compat.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/geometry.hpp =====
 /**
  * @file geometry.hpp
@@ -3657,6 +3645,889 @@ inline int cell_corner_count(CellType type) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/geometry.hpp =====
+// ===== begin cpp/include/meshioplusplus/mesh.hpp =====
+/**
+ * @file mesh.hpp
+ * @brief Compile-time mesh-backend dispatch: selects which in-memory mesh
+ * structure `meshioplusplus::Mesh` is.
+ *
+ * meshio++ has three interchangeable mesh backends, selected at build time
+ * by the `MESHIOPLUSPLUS_MESH_BACKEND` CMake option (exactly one of the
+ * `MESHIOPLUSPLUS_MESH_BACKEND_*` macros is defined — mirroring the
+ * `MESHIOPLUSPLUS_PARALLEL_*` parallel-backend pattern in `parallel.hpp`):
+ *
+ *  - **MESHIO** (`backends/meshio_mesh.hpp`, the default): the
+ *    meshio-mirroring `Mesh`/`CellBlock` over dtype-erased `NDArray`s.
+ *    Required when the pybind11 extension is built — the zero-copy numpy
+ *    boundary (`bindings/np_conversions.hpp`) is written against it.
+ *  - **NATIVE** (`backends/native_mesh.hpp`): canonical statically-typed
+ *    storage — Float64 points, Int64 connectivity, `CellType` enum,
+ *    CSR-shaped ragged blocks. The fastest pure-C++ consumer surface; used
+ *    by the WebAssembly build.
+ *  - **KRATOS** (`backends/kratos_mesh.hpp`): a Kratos-Multiphysics-style
+ *    `ModelPart` (Nodes/Elements/Conditions/SubModelParts) behind the same
+ *    API, for near-costless exchange with Kratos (see `kratos_bridge.hpp`).
+ *
+ * All three implement the uniform format-facing API documented in
+ * `mesh_api.hpp`; format code compiles unchanged under any of them. To add
+ * a backend: add one CMake branch defining a new
+ * `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>` macro, one `#elif` below, and a
+ * `backends/<name>_mesh.hpp` implementing the API.
+ */
+
+// Project includes
+
+#if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
+namespace meshioplusplus {
+using Mesh = NativeMesh;
+}
+#elif defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
+namespace meshioplusplus {
+using Mesh = KratosMesh;
+}
+#else  // MESHIOPLUSPLUS_MESH_BACKEND_MESHIO (and the no-macro default)
+// backends/meshio_mesh.hpp defines `struct Mesh` directly (no alias) so the
+// pybind11 binding layer sees literally the same type as before the
+// backends existed.
+#endif
+// ===== end cpp/include/meshioplusplus/mesh.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/data_common.hpp =====
+/**
+ * @file operations/data_common.hpp
+ * @brief Shared vocabulary for the *data* operations — the ones that act on a
+ * mesh's `point_data` / `cell_data` / `field_data` arrays rather than on its
+ * geometry.
+ *
+ * `DataLocation` and `NanPolicy` appear in the public signature of every data
+ * operation, so they live here rather than in `detail/`. The `*_from_name`
+ * parsers exist because both CLIs and the WASM binding pass these enums across
+ * their boundary as plain strings.
+ *
+ * ### The non-finite (NaN / inf) policy, documented once
+ *
+ * Every data operation follows the same rule:
+ *
+ * - Non-finite values are **always excluded from every reduction** — min, max,
+ *   mean, standard deviation, and the accumulators used by point/cell
+ *   averaging. An array that is entirely non-finite therefore reduces to NaN.
+ * - What reaches the *output* is chosen by `NanPolicy`: `Ignore` (the default)
+ *   passes the value through unchanged, `Replace` substitutes the caller's
+ *   replacement value, and `Fail` throws.
+ * - `data_info` never throws — it *counts* non-finite values instead.
+ * - Division by zero inside `data_calc` produces an IEEE infinity or NaN and is
+ *   deliberately **not** an error.
+ *
+ * Everything here is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. These are operations, not file formats — they are
+ * not in the format registry.
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which of a mesh's three data maps an array lives in.
+enum class DataLocation {
+    Point,  ///< `point_data` — one row per mesh point.
+    Cell,   ///< `cell_data` — one array *per cell block*, one row per cell.
+    Field,  ///< `field_data` — mesh-global, no entity correspondence.
+};
+
+/// What happens to non-finite values on the way to the output (see the file
+/// comment: they are excluded from reductions regardless of this setting).
+enum class NanPolicy {
+    Ignore,   ///< Pass NaN/inf through to the output unchanged (default).
+    Replace,  ///< Substitute the caller's replacement value.
+    Fail,     ///< Throw `std::invalid_argument` naming the array and index.
+};
+
+/**
+ * @brief Parses a location name.
+ * @param rName one of `point`/`point_data`/`node`, `cell`/`cell_data`/`element`,
+ *        `field`/`field_data` (case-sensitive).
+ * @return the matching `DataLocation`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+DataLocation data_location_from_name(const std::string& rName);
+
+/**
+ * @brief The canonical name of a location, as used in diagnostics.
+ * @param Location the location to name.
+ * @return `"point_data"`, `"cell_data"` or `"field_data"`.
+ */
+const char* data_location_name(DataLocation Location);
+
+/**
+ * @brief Parses a NaN-policy name.
+ * @param rName one of `ignore`, `replace`, `fail`.
+ * @return the matching `NanPolicy`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+NanPolicy nan_policy_from_name(const std::string& rName);
+
+/**
+ * @brief The names present at @p Location, sorted.
+ *
+ * Goes through the uniform API's `*DataNames()` accessors, which guarantee
+ * sorted order on every backend.
+ * @param rMesh the mesh to inspect.
+ * @param Location which data map to list.
+ * @return the sorted array names.
+ */
+std::vector<std::string> data_names(const Mesh& rMesh, DataLocation Location);
+
+/**
+ * @brief Whether @p rName exists at @p Location in @p rMesh.
+ * @param rMesh the mesh to inspect.
+ * @param Location which data map to look in.
+ * @param rName the array name.
+ * @return `true` if present.
+ */
+bool data_has(const Mesh& rMesh, DataLocation Location, const std::string& rName);
+
+/**
+ * @brief Builds the standard "unknown key" diagnostic, listing what *is* there.
+ *
+ * Produces e.g. `meshio++: no point_data array named 'foo' (available: T, p, u)`
+ * or, when the location is empty, `... (the mesh has no point_data)`.
+ * @param rMesh the mesh whose available keys are listed.
+ * @param Location the location that was searched.
+ * @param rName the key that was not found.
+ * @return the formatted message.
+ */
+std::string data_unknown_key_message(const Mesh& rMesh, DataLocation Location,
+                                     const std::string& rName);
+
+/**
+ * @brief Number of components of an array — the product of its trailing
+ * dimensions, with a 1-D (or shapeless) array counting as 1 component.
+ * @param rArray the array to measure.
+ * @return the component count (at least 1).
+ */
+std::size_t data_num_components(const NDArray& rArray);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/data_common.hpp =====
+// ===== begin cpp/include/meshioplusplus/parallel.hpp =====
+/**
+ * @file parallel.hpp
+ * @brief `parallel_for`/`parallel_for_bw`: a backend-agnostic parallel loop
+ * over a compile-time-selected SEQ/STL/OpenMP/TBB implementation.
+ *
+ * The active backend is chosen at compile time by the `MESHIOPLUSPLUS_PARALLEL_*`
+ * preprocessor definitions (set from CMake's `MESHIOPLUSPLUS_PARALLEL_BACKEND` =
+ * `AUTO|SEQ|STL|OPENMP|TBB`; `AUTO` prefers OpenMP — portable across
+ * manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB) if
+ * detected, else SEQ). `parallel_backend_name()`/`_core.__parallel_backend__`
+ * report which one is active. Iterations passed to `parallel_for` must be
+ * independent (no cross-iteration state) since they may run concurrently in
+ * any order; the first exception thrown by any iteration is captured and
+ * rethrown once the parallel region has joined (via `detail::FirstException`),
+ * so callers see ordinary C++ exception semantics rather than `std::terminate`
+ * or a lost exception.
+ *
+ * There are two flavors, distinguished by how many threads they are allowed
+ * to use:
+ *  - `parallel_for` — uses all available cores (up to `max_threads` if
+ *    non-zero). Appropriate for compute-bound loops where per-element work
+ *    is real computation, e.g. zlib/base64 encode-decode in
+ *    `detail/vtu_binary.hpp` and ASCII value formatting.
+ *  - `parallel_for_bw` — caps the thread count to `parallel_bandwidth_threads`
+ *    (4). Appropriate for memory-bandwidth-bound loops — byte-swap,
+ *    transpose, index gather — which saturate a socket's memory bandwidth
+ *    with only a few threads and then *regress* as thread count grows
+ *    further (more cache contention and dispatch overhead without more
+ *    usable bandwidth), unlike compute-bound loops which keep scaling to all
+ *    cores.
+ *
+ * To add a new backend (e.g. Kokkos, HPX): add one CMake branch that defines
+ * a new `MESHIOPLUSPLUS_PARALLEL_<NAME>` macro and links the dependency, then
+ * add one `#elif defined(MESHIOPLUSPLUS_PARALLEL_<NAME>)` branch in
+ * `detail::parallel_for_impl` below (and extend `parallel_backend_name()`
+ * to report it).
+ */
+
+// System includes
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <exception>
+#include <utility>
+
+#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
+#include <execution>
+#include <thread>
+#include <vector>
+#endif
+
+// External includes
+#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+#include <omp.h>
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+#include <tbb/blocked_range.h>
+#include <tbb/global_control.h>
+#include <tbb/parallel_for.h>
+#endif
+
+namespace meshioplusplus {
+
+/**
+ * @brief Default grain size (minimum iterations per dispatched chunk) for
+ * `parallel_for`/`parallel_for_bw` when the caller doesn't override it.
+ *
+ * Below this many total iterations, `parallel_for` runs sequentially rather
+ * than paying parallel dispatch overhead (see the `n <= grain` check in
+ * `parallel_for` below). Callers with atypically coarse or fine per-iteration
+ * work (e.g. one whole zlib block per iteration) pass an explicit smaller
+ * `grain` (often `1`) so each iteration dispatches individually.
+ */
+inline constexpr std::size_t parallel_grain_default = 2048;
+
+/**
+ * @brief Thread cap used by `parallel_for_bw` for memory-bandwidth-bound loops.
+ *
+ * Memory-bandwidth-bound loops (byte-swap, transpose, gather) saturate a
+ * socket's bandwidth with only a few threads and then *regress* as thread
+ * overhead and cache contention grow — unlike compute-bound loops (zlib,
+ * base64) which scale to all cores. Cap the bandwidth-bound loops here.
+ */
+inline constexpr unsigned parallel_bandwidth_threads = 4;
+
+/**
+ * @brief Name of the parallel backend selected at compile time.
+ *
+ * Reflects whichever of `MESHIOPLUSPLUS_PARALLEL_STL`/`_OPENMP`/`_TBB` was
+ * defined (by CMake, based on `MESHIOPLUSPLUS_PARALLEL_BACKEND`); none of
+ * them defined means the sequential fallback. Exposed to Python as
+ * `_core.__parallel_backend__` so tests/diagnostics can assert which backend
+ * actually built.
+ * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"seq"`.
+ */
+constexpr const char* parallel_backend_name() {
+#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
+    return "stl";
+#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+    return "openmp";
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    return "tbb";
+#else
+    return "seq";
+#endif
+}
+
+namespace detail {
+
+/**
+ * @brief Captures the first exception thrown by any parallel iteration, to
+ * be rethrown by the caller after the parallel region joins.
+ *
+ * Iterations run on multiple threads cannot let a C++ exception escape
+ * across the parallelism boundary (OpenMP/TBB would `std::terminate`), so
+ * each backend wraps its per-iteration body in `Run()`, which catches
+ * everything and records only the *first* exception (subsequent ones from
+ * other threads are discarded — `mRaised` is a one-shot latch via
+ * `std::atomic_flag`). After the parallel region has fully joined, the
+ * caller calls `RethrowIfAny()` to surface that exception on the calling
+ * thread with normal C++ semantics.
+ */
+class FirstException {
+public:
+    template <class Body>
+    void Run(Body&& body) noexcept {
+        try {
+            body();
+        } catch (...) {
+            if (!mRaised.test_and_set(std::memory_order_acq_rel))
+                mEptr = std::current_exception();
+        }
+    }
+    void RethrowIfAny() {
+        if (mEptr)
+            std::rethrow_exception(mEptr);
+    }
+
+private:
+    std::atomic_flag mRaised = ATOMIC_FLAG_INIT;
+    std::exception_ptr mEptr;
+};
+
+/**
+ * @brief Backend-specific dispatch of `n` independent iterations of `f`.
+ *
+ * Exactly one `#if`/`#elif` branch compiles, selected by the
+ * `MESHIOPLUSPLUS_PARALLEL_*` macro CMake defined:
+ *  - **STL**: splits `[0, n)` into up to `hardware_concurrency() * 4` chunks
+ *    (fewer if `grain`/`max_threads` constrain it further) and runs them via
+ *    `std::for_each(std::execution::par, ...)` over a small chunk table
+ *    (iterated explicitly because PSTL algorithms require
+ *    `Cpp17ForwardIterator`s, which `iota_view` iterators don't satisfy on
+ *    every implementation).
+ *  - **OpenMP**: `#pragma omp parallel for schedule(dynamic, chunk)` with
+ *    `chunk = max(grain/4, 1)`. Dynamic (not static) scheduling matters on
+ *    hybrid P+E-core CPUs, where a static split would leave slow E-cores as
+ *    stragglers while fast P-cores idle at the join; `grain/4` keeps
+ *    dispatch overhead negligible for fine-grained loops while still
+ *    honouring explicitly coarse callers (e.g. VTU zlib blocks pass
+ *    `grain=1` because each iteration is already a whole compress, so
+ *    per-iteration dispatch is exactly what's wanted — the chunk size must
+ *    never be floored above the caller's `grain`).
+ *  - **TBB**: `tbb::parallel_for` over a `blocked_range` of grain size
+ *    `grain`, optionally under a `tbb::global_control` limiting
+ *    `max_allowed_parallelism` to `max_threads`.
+ *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
+ *    unused (cast to `void` to silence warnings).
+ *
+ * Every branch funnels per-iteration exceptions through a `FirstException`
+ * so exactly one is rethrown after the region joins.
+ *
+ * @tparam F Callable invoked as `f(std::size_t i)` for each `i` in `[0, n)`.
+ * @param n Number of iterations.
+ * @param rF The per-iteration body (iterations must be independent).
+ * @param grain Minimum unit of work per dispatched chunk/task.
+ * @param max_threads Cap on threads used (0 = no cap, use all available).
+ */
+template <class F>
+void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_threads) {
+#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
+    struct Chunk {
+        std::size_t mBegin, mEnd;
+    };
+    const std::size_t hw = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    std::size_t max_chunks = hw * 4;
+    if (max_threads)
+        max_chunks = std::min<std::size_t>(max_chunks, max_threads);
+    const std::size_t by_grain = (n + grain - 1) / grain;
+    const std::size_t nchunks = std::max<std::size_t>(1, std::min(max_chunks, by_grain));
+    const std::size_t per = (n + nchunks - 1) / nchunks;
+    // PSTL algorithms require Cpp17ForwardIterators (iota_view iterators do
+    // not qualify on all implementations), so iterate a small chunk table.
+    std::vector<Chunk> chunks;
+    chunks.reserve(nchunks);
+    for (std::size_t b = 0; b < n; b += per)
+        chunks.push_back({b, std::min(b + per, n)});
+    FirstException exc;
+    std::for_each(std::execution::par, chunks.begin(), chunks.end(), [&](const Chunk& c) {
+        exc.Run([&] {
+            for (std::size_t i = c.mBegin; i < c.mEnd; ++i)
+                rF(i);
+        });
+    });
+    exc.RethrowIfAny();
+#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+    FirstException exc;
+    const long long nn = static_cast<long long>(n);
+    const int nt = max_threads ? std::min<int>(static_cast<int>(max_threads), omp_get_max_threads())
+                               : omp_get_max_threads();
+    // Dynamic scheduling: on hybrid CPUs (P + E cores) a static split makes the
+    // slow cores stragglers while the fast ones idle at the join; moderately
+    // sized dynamic chunks self-balance with negligible dispatch overhead.
+    // grain/4 keeps dispatch rare for fine-grained loops while honouring
+    // explicitly coarse loops (e.g. the VTU zlib blocks pass grain=1: each
+    // iteration is a whole compress, so per-iteration dispatch is ideal).
+    const long long chunk = static_cast<long long>(std::max<std::size_t>(grain / 4, 1));
+#pragma omp parallel for schedule(dynamic, chunk) num_threads(nt)
+    for (long long i = 0; i < nn; ++i) {
+        exc.Run([&] { rF(static_cast<std::size_t>(i)); });
+    }
+    exc.RethrowIfAny();
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    FirstException exc;
+    auto body = [&] {
+        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, n, grain),
+                          [&](const tbb::blocked_range<std::size_t>& r) {
+                              exc.Run([&] {
+                                  for (std::size_t i = r.begin(); i != r.end(); ++i)
+                                      rF(i);
+                              });
+                          });
+    };
+    if (max_threads) {
+        tbb::global_control gc(tbb::global_control::max_allowed_parallelism, max_threads);
+        body();
+    } else {
+        body();
+    }
+    exc.RethrowIfAny();
+#else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
+    (void)grain;
+    (void)max_threads;
+    for (std::size_t i = 0; i < n; ++i)
+        rF(i);
+#endif
+}
+
+}  // namespace detail
+
+/**
+ * @brief Runs `n` independent iterations of `f(i)`, in parallel when it's
+ * worthwhile, using the compile-time-selected backend (see
+ * `parallel_backend_name()`).
+ *
+ * If `n <= grain`, runs sequentially in-line — the fixed cost of dispatching
+ * a parallel region isn't worth it for small workloads. Otherwise delegates
+ * to `detail::parallel_for_impl`. `f` must be safe to invoke concurrently
+ * from multiple threads for different `i` (no shared mutable state without
+ * external synchronization); the first exception any invocation throws is
+ * captured and rethrown on the calling thread after all iterations
+ * complete (partial results/side effects from other iterations are not
+ * rolled back).
+ *
+ * @tparam F Callable invoked as `f(std::size_t i)`.
+ * @param n Number of iterations; a no-op if `n == 0`.
+ * @param f The per-iteration body.
+ * @param grain Minimum number of iterations to bother parallelizing, and
+ *              (backend-dependent) the target chunk size once it does;
+ *              defaults to `parallel_grain_default` (2048). Pass a small
+ *              value (e.g. `1`) when each iteration is already coarse work
+ *              (a whole zlib block, a whole compress) so dispatch happens
+ *              per-iteration rather than being batched further.
+ * @param max_threads Cap on threads used; `0` (the default) means "use all
+ *                     available". Pass `parallel_bandwidth_threads`
+ *                     (or call `parallel_for_bw` instead) for
+ *                     memory-bandwidth-bound loops.
+ */
+template <class F>
+void parallel_for(std::size_t n, F&& f, std::size_t grain = parallel_grain_default,
+                  unsigned max_threads = 0) {
+    if (n == 0)
+        return;
+    if (n <= grain) {
+        for (std::size_t i = 0; i < n; ++i)
+            f(i);
+        return;
+    }
+    detail::parallel_for_impl(n, f, grain, max_threads);
+}
+
+/**
+ * @brief `parallel_for`, thread-capped for memory-bandwidth-bound loops.
+ *
+ * Convenience wrapper that forwards to `parallel_for` with
+ * `max_threads = parallel_bandwidth_threads` (4). Use this for byte-swap,
+ * transpose, and index-gather loops: they saturate a socket's memory
+ * bandwidth with only a few threads and then *regress* — more threads add
+ * cache contention and dispatch overhead without more usable bandwidth —
+ * unlike genuinely compute-bound loops (zlib/base64), which should use
+ * plain `parallel_for` to scale across all cores.
+ *
+ * @tparam F Callable invoked as `f(std::size_t i)`.
+ * @param n Number of iterations; a no-op if `n == 0`.
+ * @param f The per-iteration body.
+ * @param grain Minimum iterations per chunk; see `parallel_for`'s `grain`.
+ */
+template <class F>
+void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_default) {
+    parallel_for(n, std::forward<F>(f), grain, parallel_bandwidth_threads);
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/parallel.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/data_ops.hpp =====
+/**
+ * @file data_ops.hpp
+ * @brief Header-only helpers shared by the *data* operations (`data_manage`,
+ * `data_average`, `data_calc`, `data_condition`, `data_info`).
+ *
+ * The centrepiece is `clone_mesh`, which rebuilds a mesh through the uniform
+ * API while a caller-supplied filter decides, per data array, whether it is
+ * kept and under what name. Every data operation is "clone the geometry
+ * verbatim, then rewrite some data arrays", so this is the one place that has
+ * to get the geometry copy right — including the ragged/polyhedron cases.
+ *
+ * A fresh `Mesh` is built rather than mutated because the uniform mesh API is
+ * strictly additive (no backend offers a remove-or-rename for data arrays) and
+ * the KRATOS backend's `Mesh` is not copy-constructible, so `Mesh out = in;`
+ * does not compile. This mirrors every other operation, all of which return a
+ * new mesh.
+ *
+ * These are `detail::` inline helpers, so they are exempt from the
+ * unique-prefix rule the anonymous-namespace helpers in `cpp/src/**.cpp` follow
+ * for the single-header amalgamation.
+ */
+
+// System includes
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A deep copy of an `NDArray` that always owns its buffer (safe even when the
+/// source is a view over foreign memory, as it is on the Python boundary).
+inline NDArray data_owned_copy(const NDArray& rArray) {
+    NDArray c = rArray;
+    c.MakeOwned();
+    return c;
+}
+
+/**
+ * @brief Copies only the geometry of @p rMesh — points and every cell block,
+ * including ragged polygon and polyhedron blocks — into a fresh mesh.
+ *
+ * No data arrays are carried; the caller adds whichever it wants afterwards.
+ * The polyhedron branch is tested before the ragged one because a polyhedron
+ * block is also ragged.
+ * @param rMesh the mesh whose geometry is copied.
+ * @return a new mesh with identical geometry and no data.
+ */
+inline Mesh clone_geometry(const Mesh& rMesh) {
+    Mesh out;
+    out.AssignPoints(data_owned_copy(rMesh.Points()));
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron()) {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                cells[c].resize(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    cells[c][f].assign(face.first, face.first + face.second);
+                }
+            }
+            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
+        } else if (cb.IsRagged()) {
+            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        } else {
+            out.AddCellBlock(std::string(cb.Type()), data_owned_copy(cb.Conn()));
+        }
+    }
+    return out;
+}
+
+/**
+ * @brief Clones @p rMesh, letting @p rFilter decide the fate of each data array.
+ *
+ * The filter is invoked once per array as
+ * `bool(DataLocation location, const std::string& name, std::string& newName)`.
+ * Returning `false` drops the array; returning `true` keeps it under
+ * `newName`, which starts out equal to `name` and may be rewritten in place to
+ * rename. Geometry is always copied verbatim.
+ *
+ * Arrays are visited in the sorted order the uniform API guarantees, so the
+ * result is byte-identical across backends.
+ * @tparam TFilter the filter callable.
+ * @param rMesh the mesh to clone.
+ * @param rFilter the per-array keep/rename decision.
+ * @return the rewritten mesh.
+ */
+template <class TFilter>
+Mesh clone_mesh(const Mesh& rMesh, TFilter&& rFilter) {
+    Mesh out = clone_geometry(rMesh);
+    for (const std::string& name : rMesh.PointDataNames()) {
+        std::string target = name;
+        if (rFilter(DataLocation::Point, name, target))
+            out.AddPointData(target, data_owned_copy(rMesh.PointData(name)));
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::string target = name;
+        if (rFilter(DataLocation::Cell, name, target)) {
+            std::vector<NDArray> blocks;
+            blocks.reserve(rMesh.CellDataNumBlocks(name));
+            for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+                blocks.push_back(data_owned_copy(rMesh.CellData(name, b)));
+            out.AddCellData(target, std::move(blocks));
+        }
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        std::string target = name;
+        if (rFilter(DataLocation::Field, name, target))
+            out.AddFieldData(target, data_owned_copy(rMesh.FieldData(name)));
+    }
+    return out;
+}
+
+/// Clones @p rMesh whole — geometry plus every data array, unchanged.
+inline Mesh clone_mesh(const Mesh& rMesh) {
+    return clone_mesh(rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
+}
+
+/**
+ * @brief Running min / max / sum over the *finite* values of a data array.
+ *
+ * Non-finite values are counted but never contribute to the reduction, which
+ * is the policy documented in `operations/data_common.hpp`. Instances combine
+ * associatively via `Merge`, so a parallel chunked reduction can fold per-chunk
+ * instances serially afterwards and stay deterministic.
+ */
+struct FiniteStats {
+    double mMin = 0.0;            ///< Smallest finite value (valid iff mNumFinite > 0).
+    double mMax = 0.0;            ///< Largest finite value (valid iff mNumFinite > 0).
+    double mSum = 0.0;            ///< Sum of the finite values.
+    double mSumSq = 0.0;          ///< Sum of the squares of the finite values.
+    std::int64_t mNumFinite = 0;  ///< Count of finite values seen.
+    std::int64_t mNumNan = 0;     ///< Count of NaN values seen.
+    std::int64_t mNumInf = 0;     ///< Count of +/-inf values seen.
+
+    /// Folds one value in.
+    void Add(double v) {
+        if (std::isnan(v)) {
+            ++mNumNan;
+            return;
+        }
+        if (std::isinf(v)) {
+            ++mNumInf;
+            return;
+        }
+        if (mNumFinite == 0) {
+            mMin = v;
+            mMax = v;
+        } else {
+            if (v < mMin)
+                mMin = v;
+            if (v > mMax)
+                mMax = v;
+        }
+        mSum += v;
+        mSumSq += v * v;
+        ++mNumFinite;
+    }
+
+    /// Folds another (independently accumulated) instance in.
+    void Merge(const FiniteStats& rOther) {
+        if (rOther.mNumFinite > 0) {
+            if (mNumFinite == 0) {
+                mMin = rOther.mMin;
+                mMax = rOther.mMax;
+            } else {
+                if (rOther.mMin < mMin)
+                    mMin = rOther.mMin;
+                if (rOther.mMax > mMax)
+                    mMax = rOther.mMax;
+            }
+            mSum += rOther.mSum;
+            mSumSq += rOther.mSumSq;
+            mNumFinite += rOther.mNumFinite;
+        }
+        mNumNan += rOther.mNumNan;
+        mNumInf += rOther.mNumInf;
+    }
+
+    /// Mean of the finite values, or NaN when there were none.
+    double Mean() const {
+        return mNumFinite > 0 ? mSum / static_cast<double>(mNumFinite) : std::nan("");
+    }
+
+    /// Population standard deviation (1/N) of the finite values, or NaN.
+    double StdDev() const {
+        if (mNumFinite <= 0)
+            return std::nan("");
+        const double n = static_cast<double>(mNumFinite);
+        const double mean = mSum / n;
+        const double var = mSumSq / n - mean * mean;
+        return var > 0.0 ? std::sqrt(var) : 0.0;
+    }
+
+    /// Smallest finite value, or NaN when there were none.
+    double Min() const { return mNumFinite > 0 ? mMin : std::nan(""); }
+
+    /// Largest finite value, or NaN when there were none.
+    double Max() const { return mNumFinite > 0 ? mMax : std::nan(""); }
+};
+
+/**
+ * @brief Reduces @p rArray into per-component `FiniteStats`.
+ *
+ * Chunked with `parallel_for` and combined serially, mirroring the bounding-box
+ * reduction in `operations/stats.cpp`, so the result does not depend on the
+ * thread count.
+ * @param rArray the array to reduce.
+ * @param NumComponents its component count (see `data_num_components`).
+ * @param rStats per-component accumulators, resized to @p NumComponents and
+ *        *folded into* (not reset), so several arrays can share one reduction.
+ */
+inline void accumulate_stats(const NDArray& rArray, std::size_t NumComponents,
+                             std::vector<FiniteStats>& rStats) {
+    if (rStats.size() < NumComponents)
+        rStats.resize(NumComponents);
+    const std::size_t total = rArray.Size();
+    if (total == 0 || NumComponents == 0)
+        return;
+    const std::size_t nrows = total / NumComponents;
+
+    const std::size_t grain = 4096;
+    const std::size_t nchunks = (nrows + grain - 1) / grain;
+    std::vector<std::vector<FiniteStats>> partial(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            std::vector<FiniteStats> local(NumComponents);
+            const std::size_t begin = ci * grain;
+            const std::size_t end = std::min(begin + grain, nrows);
+            for (std::size_t r = begin; r < end; ++r)
+                for (std::size_t k = 0; k < NumComponents; ++k)
+                    local[k].Add(read_double(rArray, r * NumComponents + k));
+            partial[ci] = std::move(local);
+        },
+        1);
+    for (const std::vector<FiniteStats>& chunk : partial)
+        for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
+            rStats[k].Merge(chunk[k]);
+}
+
+/// Collapses per-component stats into one whole-array accumulator.
+inline FiniteStats combine_components(const std::vector<FiniteStats>& rStats) {
+    FiniteStats all;
+    for (const FiniteStats& s : rStats)
+        all.Merge(s);
+    return all;
+}
+
+/**
+ * @brief Unsigned area of a corner polygon (triangle / quad) via the Newell
+ * normal. Mirrors `stats_area` in `operations/stats.cpp`.
+ * @param rCoords the corner coordinates.
+ * @param Corners how many of them form the polygon.
+ * @return the unsigned area, or 0 for fewer than 3 corners.
+ */
+inline double polygon_area(const std::vector<Vec3>& rCoords, int Corners) {
+    if (Corners < 3)
+        return 0.0;
+    Vec3 s = {0, 0, 0};
+    for (int i = 0; i < Corners; ++i)
+        s = vec3_add(s, vec3_cross(rCoords[i], rCoords[(i + 1) % Corners]));
+    return 0.5 * vec3_norm(s);
+}
+
+/**
+ * @brief Signed volume of a 3D cell via the divergence theorem over its
+ * outward-wound boundary faces. Mirrors `stats_signed_volume`.
+ * @param rCoords the cell's corner coordinates.
+ * @param Type the cell type, which supplies the face table.
+ * @return the signed volume, or NaN for a type with no face table.
+ */
+inline double cell_signed_volume(const std::vector<Vec3>& rCoords, CellType Type) {
+    const std::vector<CellFaceDef>& faces = cell_faces(Type);
+    if (faces.empty())
+        return std::nan("");
+    double vol6 = 0.0;
+    for (const CellFaceDef& f : faces) {
+        const Vec3 a = rCoords[f.mNodes[0]];
+        for (int i = 1; i + 1 < f.mNumCorners; ++i)
+            vol6 += triple_product(a, rCoords[f.mNodes[i]], rCoords[f.mNodes[i + 1]]);
+    }
+    return vol6 / 6.0;
+}
+
+/**
+ * @brief The |measure| of one cell — length for a 1D cell, area for a 2D cell,
+ * volume for a 3D one — used to weight the cell-to-point average.
+ *
+ * Returns NaN when the measure is not computable (a ragged or polyhedron block,
+ * or a type with no face table); callers fall back to a unit weight.
+ * @param rPoints the mesh points.
+ * @param PointDim the point dimension.
+ * @param rCell the cell block view.
+ * @param Index the cell index within the block.
+ * @return the unsigned measure, or NaN.
+ */
+inline double cell_measure(const NDArray& rPoints, std::size_t PointDim,
+                           const Mesh::CellView& rCell, std::size_t Index) {
+    if (rCell.IsRagged() || rCell.IsPolyhedron())
+        return std::nan("");
+    const CellType ct = cell_type_from_name(rCell.Type());
+    const int corners = cell_corner_count(ct);
+    if (corners <= 0)
+        return std::nan("");
+    std::vector<Vec3> coords;
+    read_corner_coords(rPoints, PointDim, rCell.Conn(), Index * rCell.NodesPerCell(),
+                       static_cast<std::size_t>(corners), coords);
+    const int dim = cell_type_dimension(ct);
+    if (dim == 3) {
+        const double v = cell_signed_volume(coords, ct);
+        return std::isnan(v) ? v : std::fabs(v);
+    }
+    if (dim == 2)
+        return polygon_area(coords, corners);
+    if (dim == 1 && corners >= 2)
+        return vec3_norm(vec3_sub(coords[1], coords[0]));
+    return std::nan("");
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/data_ops.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/format_compat.hpp =====
+/**
+ * @file format_compat.hpp
+ * @brief Portable stand-in for `std::format` on toolchains whose `<format>`
+ * is unavailable (e.g. GCC < 13's libstdc++, or clang built against such a
+ * libstdc++ - the header does not exist there, so it cannot even be
+ * `#include`d, let alone used).
+ *
+ * Availability is detected through `<version>`'s `__cpp_lib_format` feature
+ * test macro rather than `__has_include(<format>)`: `<version>` is
+ * guaranteed to exist for any C++20 standard library, and only defines the
+ * macro when the library actually implements the feature - so querying it
+ * never risks the same "file not found" this header exists to work around.
+ *
+ * The fallback formatter supports only bare `"{}"` placeholders (no format
+ * specs, no positional arguments, no escaping of literal braces) - the only
+ * pattern the log/error messages in this codebase use.
+ */
+
+// System includes
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <version>
+
+#if !defined(MESHIOPLUSPLUS_FORCE_NO_STD_FORMAT) && defined(__cpp_lib_format) && \
+    __cpp_lib_format >= 201907L
+#define MESHIOPLUSPLUS_HAS_STD_FORMAT 1
+#include <format>
+#endif
+
+namespace meshioplusplus {
+namespace detail {
+
+#ifdef MESHIOPLUSPLUS_HAS_STD_FORMAT
+
+/** @brief Forwards to `std::format` (compile-time checked format string). */
+template <class... Args>
+std::string format_compat(std::format_string<Args...> rFmt, Args&&... rArgs) {
+    return std::format(rFmt, std::forward<Args>(rArgs)...);
+}
+
+#else
+
+/** @brief No-argument overload: the format string, verbatim. */
+inline std::string format_compat(std::string_view rFmt) {
+    return std::string(rFmt);
+}
+
+/**
+ * @brief Recursively substitutes each `"{}"` in `rFmt` with the next argument
+ * (via `operator<<`), left to right.
+ */
+template <class T, class... Rest>
+std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&... rRest) {
+    const std::size_t pos = rFmt.find("{}");
+    if (pos == std::string_view::npos)
+        return std::string(rFmt);
+    std::ostringstream out;
+    out << rFmt.substr(0, pos) << rValue;
+    return out.str() + format_compat(rFmt.substr(pos + 2), rRest...);
+}
+
+#endif
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/format_compat.hpp =====
 // ===== begin cpp/include/meshioplusplus/exceptions.hpp =====
 /**
  * @file exceptions.hpp
@@ -4243,52 +5114,6 @@ struct SilenceErrors {
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
-// ===== begin cpp/include/meshioplusplus/mesh.hpp =====
-/**
- * @file mesh.hpp
- * @brief Compile-time mesh-backend dispatch: selects which in-memory mesh
- * structure `meshioplusplus::Mesh` is.
- *
- * meshio++ has three interchangeable mesh backends, selected at build time
- * by the `MESHIOPLUSPLUS_MESH_BACKEND` CMake option (exactly one of the
- * `MESHIOPLUSPLUS_MESH_BACKEND_*` macros is defined — mirroring the
- * `MESHIOPLUSPLUS_PARALLEL_*` parallel-backend pattern in `parallel.hpp`):
- *
- *  - **MESHIO** (`backends/meshio_mesh.hpp`, the default): the
- *    meshio-mirroring `Mesh`/`CellBlock` over dtype-erased `NDArray`s.
- *    Required when the pybind11 extension is built — the zero-copy numpy
- *    boundary (`bindings/np_conversions.hpp`) is written against it.
- *  - **NATIVE** (`backends/native_mesh.hpp`): canonical statically-typed
- *    storage — Float64 points, Int64 connectivity, `CellType` enum,
- *    CSR-shaped ragged blocks. The fastest pure-C++ consumer surface; used
- *    by the WebAssembly build.
- *  - **KRATOS** (`backends/kratos_mesh.hpp`): a Kratos-Multiphysics-style
- *    `ModelPart` (Nodes/Elements/Conditions/SubModelParts) behind the same
- *    API, for near-costless exchange with Kratos (see `kratos_bridge.hpp`).
- *
- * All three implement the uniform format-facing API documented in
- * `mesh_api.hpp`; format code compiles unchanged under any of them. To add
- * a backend: add one CMake branch defining a new
- * `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>` macro, one `#elif` below, and a
- * `backends/<name>_mesh.hpp` implementing the API.
- */
-
-// Project includes
-
-#if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
-namespace meshioplusplus {
-using Mesh = NativeMesh;
-}
-#elif defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
-namespace meshioplusplus {
-using Mesh = KratosMesh;
-}
-#else  // MESHIOPLUSPLUS_MESH_BACKEND_MESHIO (and the no-macro default)
-// backends/meshio_mesh.hpp defines `struct Mesh` directly (no alias) so the
-// pybind11 binding layer sees literally the same type as before the
-// backends existed.
-#endif
-// ===== end cpp/include/meshioplusplus/mesh.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/projection.hpp =====
 /**
  * @file projection.hpp
@@ -4547,320 +5372,6 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
-// ===== begin cpp/include/meshioplusplus/parallel.hpp =====
-/**
- * @file parallel.hpp
- * @brief `parallel_for`/`parallel_for_bw`: a backend-agnostic parallel loop
- * over a compile-time-selected SEQ/STL/OpenMP/TBB implementation.
- *
- * The active backend is chosen at compile time by the `MESHIOPLUSPLUS_PARALLEL_*`
- * preprocessor definitions (set from CMake's `MESHIOPLUSPLUS_PARALLEL_BACKEND` =
- * `AUTO|SEQ|STL|OPENMP|TBB`; `AUTO` prefers OpenMP — portable across
- * manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB) if
- * detected, else SEQ). `parallel_backend_name()`/`_core.__parallel_backend__`
- * report which one is active. Iterations passed to `parallel_for` must be
- * independent (no cross-iteration state) since they may run concurrently in
- * any order; the first exception thrown by any iteration is captured and
- * rethrown once the parallel region has joined (via `detail::FirstException`),
- * so callers see ordinary C++ exception semantics rather than `std::terminate`
- * or a lost exception.
- *
- * There are two flavors, distinguished by how many threads they are allowed
- * to use:
- *  - `parallel_for` — uses all available cores (up to `max_threads` if
- *    non-zero). Appropriate for compute-bound loops where per-element work
- *    is real computation, e.g. zlib/base64 encode-decode in
- *    `detail/vtu_binary.hpp` and ASCII value formatting.
- *  - `parallel_for_bw` — caps the thread count to `parallel_bandwidth_threads`
- *    (4). Appropriate for memory-bandwidth-bound loops — byte-swap,
- *    transpose, index gather — which saturate a socket's memory bandwidth
- *    with only a few threads and then *regress* as thread count grows
- *    further (more cache contention and dispatch overhead without more
- *    usable bandwidth), unlike compute-bound loops which keep scaling to all
- *    cores.
- *
- * To add a new backend (e.g. Kokkos, HPX): add one CMake branch that defines
- * a new `MESHIOPLUSPLUS_PARALLEL_<NAME>` macro and links the dependency, then
- * add one `#elif defined(MESHIOPLUSPLUS_PARALLEL_<NAME>)` branch in
- * `detail::parallel_for_impl` below (and extend `parallel_backend_name()`
- * to report it).
- */
-
-// System includes
-#include <algorithm>
-#include <atomic>
-#include <cstddef>
-#include <exception>
-#include <utility>
-
-#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
-#include <execution>
-#include <thread>
-#include <vector>
-#endif
-
-// External includes
-#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-#include <omp.h>
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-#include <tbb/blocked_range.h>
-#include <tbb/global_control.h>
-#include <tbb/parallel_for.h>
-#endif
-
-namespace meshioplusplus {
-
-/**
- * @brief Default grain size (minimum iterations per dispatched chunk) for
- * `parallel_for`/`parallel_for_bw` when the caller doesn't override it.
- *
- * Below this many total iterations, `parallel_for` runs sequentially rather
- * than paying parallel dispatch overhead (see the `n <= grain` check in
- * `parallel_for` below). Callers with atypically coarse or fine per-iteration
- * work (e.g. one whole zlib block per iteration) pass an explicit smaller
- * `grain` (often `1`) so each iteration dispatches individually.
- */
-inline constexpr std::size_t parallel_grain_default = 2048;
-
-/**
- * @brief Thread cap used by `parallel_for_bw` for memory-bandwidth-bound loops.
- *
- * Memory-bandwidth-bound loops (byte-swap, transpose, gather) saturate a
- * socket's bandwidth with only a few threads and then *regress* as thread
- * overhead and cache contention grow — unlike compute-bound loops (zlib,
- * base64) which scale to all cores. Cap the bandwidth-bound loops here.
- */
-inline constexpr unsigned parallel_bandwidth_threads = 4;
-
-/**
- * @brief Name of the parallel backend selected at compile time.
- *
- * Reflects whichever of `MESHIOPLUSPLUS_PARALLEL_STL`/`_OPENMP`/`_TBB` was
- * defined (by CMake, based on `MESHIOPLUSPLUS_PARALLEL_BACKEND`); none of
- * them defined means the sequential fallback. Exposed to Python as
- * `_core.__parallel_backend__` so tests/diagnostics can assert which backend
- * actually built.
- * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"seq"`.
- */
-constexpr const char* parallel_backend_name() {
-#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
-    return "stl";
-#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    return "openmp";
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-    return "tbb";
-#else
-    return "seq";
-#endif
-}
-
-namespace detail {
-
-/**
- * @brief Captures the first exception thrown by any parallel iteration, to
- * be rethrown by the caller after the parallel region joins.
- *
- * Iterations run on multiple threads cannot let a C++ exception escape
- * across the parallelism boundary (OpenMP/TBB would `std::terminate`), so
- * each backend wraps its per-iteration body in `Run()`, which catches
- * everything and records only the *first* exception (subsequent ones from
- * other threads are discarded — `mRaised` is a one-shot latch via
- * `std::atomic_flag`). After the parallel region has fully joined, the
- * caller calls `RethrowIfAny()` to surface that exception on the calling
- * thread with normal C++ semantics.
- */
-class FirstException {
-public:
-    template <class Body>
-    void Run(Body&& body) noexcept {
-        try {
-            body();
-        } catch (...) {
-            if (!mRaised.test_and_set(std::memory_order_acq_rel))
-                mEptr = std::current_exception();
-        }
-    }
-    void RethrowIfAny() {
-        if (mEptr)
-            std::rethrow_exception(mEptr);
-    }
-
-private:
-    std::atomic_flag mRaised = ATOMIC_FLAG_INIT;
-    std::exception_ptr mEptr;
-};
-
-/**
- * @brief Backend-specific dispatch of `n` independent iterations of `f`.
- *
- * Exactly one `#if`/`#elif` branch compiles, selected by the
- * `MESHIOPLUSPLUS_PARALLEL_*` macro CMake defined:
- *  - **STL**: splits `[0, n)` into up to `hardware_concurrency() * 4` chunks
- *    (fewer if `grain`/`max_threads` constrain it further) and runs them via
- *    `std::for_each(std::execution::par, ...)` over a small chunk table
- *    (iterated explicitly because PSTL algorithms require
- *    `Cpp17ForwardIterator`s, which `iota_view` iterators don't satisfy on
- *    every implementation).
- *  - **OpenMP**: `#pragma omp parallel for schedule(dynamic, chunk)` with
- *    `chunk = max(grain/4, 1)`. Dynamic (not static) scheduling matters on
- *    hybrid P+E-core CPUs, where a static split would leave slow E-cores as
- *    stragglers while fast P-cores idle at the join; `grain/4` keeps
- *    dispatch overhead negligible for fine-grained loops while still
- *    honouring explicitly coarse callers (e.g. VTU zlib blocks pass
- *    `grain=1` because each iteration is already a whole compress, so
- *    per-iteration dispatch is exactly what's wanted — the chunk size must
- *    never be floored above the caller's `grain`).
- *  - **TBB**: `tbb::parallel_for` over a `blocked_range` of grain size
- *    `grain`, optionally under a `tbb::global_control` limiting
- *    `max_allowed_parallelism` to `max_threads`.
- *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
- *    unused (cast to `void` to silence warnings).
- *
- * Every branch funnels per-iteration exceptions through a `FirstException`
- * so exactly one is rethrown after the region joins.
- *
- * @tparam F Callable invoked as `f(std::size_t i)` for each `i` in `[0, n)`.
- * @param n Number of iterations.
- * @param rF The per-iteration body (iterations must be independent).
- * @param grain Minimum unit of work per dispatched chunk/task.
- * @param max_threads Cap on threads used (0 = no cap, use all available).
- */
-template <class F>
-void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_threads) {
-#if defined(MESHIOPLUSPLUS_PARALLEL_STL)
-    struct Chunk {
-        std::size_t mBegin, mEnd;
-    };
-    const std::size_t hw = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    std::size_t max_chunks = hw * 4;
-    if (max_threads)
-        max_chunks = std::min<std::size_t>(max_chunks, max_threads);
-    const std::size_t by_grain = (n + grain - 1) / grain;
-    const std::size_t nchunks = std::max<std::size_t>(1, std::min(max_chunks, by_grain));
-    const std::size_t per = (n + nchunks - 1) / nchunks;
-    // PSTL algorithms require Cpp17ForwardIterators (iota_view iterators do
-    // not qualify on all implementations), so iterate a small chunk table.
-    std::vector<Chunk> chunks;
-    chunks.reserve(nchunks);
-    for (std::size_t b = 0; b < n; b += per)
-        chunks.push_back({b, std::min(b + per, n)});
-    FirstException exc;
-    std::for_each(std::execution::par, chunks.begin(), chunks.end(), [&](const Chunk& c) {
-        exc.Run([&] {
-            for (std::size_t i = c.mBegin; i < c.mEnd; ++i)
-                rF(i);
-        });
-    });
-    exc.RethrowIfAny();
-#elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    FirstException exc;
-    const long long nn = static_cast<long long>(n);
-    const int nt = max_threads ? std::min<int>(static_cast<int>(max_threads), omp_get_max_threads())
-                               : omp_get_max_threads();
-    // Dynamic scheduling: on hybrid CPUs (P + E cores) a static split makes the
-    // slow cores stragglers while the fast ones idle at the join; moderately
-    // sized dynamic chunks self-balance with negligible dispatch overhead.
-    // grain/4 keeps dispatch rare for fine-grained loops while honouring
-    // explicitly coarse loops (e.g. the VTU zlib blocks pass grain=1: each
-    // iteration is a whole compress, so per-iteration dispatch is ideal).
-    const long long chunk = static_cast<long long>(std::max<std::size_t>(grain / 4, 1));
-#pragma omp parallel for schedule(dynamic, chunk) num_threads(nt)
-    for (long long i = 0; i < nn; ++i) {
-        exc.Run([&] { rF(static_cast<std::size_t>(i)); });
-    }
-    exc.RethrowIfAny();
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-    FirstException exc;
-    auto body = [&] {
-        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, n, grain),
-                          [&](const tbb::blocked_range<std::size_t>& r) {
-                              exc.Run([&] {
-                                  for (std::size_t i = r.begin(); i != r.end(); ++i)
-                                      rF(i);
-                              });
-                          });
-    };
-    if (max_threads) {
-        tbb::global_control gc(tbb::global_control::max_allowed_parallelism, max_threads);
-        body();
-    } else {
-        body();
-    }
-    exc.RethrowIfAny();
-#else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
-    (void)grain;
-    (void)max_threads;
-    for (std::size_t i = 0; i < n; ++i)
-        rF(i);
-#endif
-}
-
-}  // namespace detail
-
-/**
- * @brief Runs `n` independent iterations of `f(i)`, in parallel when it's
- * worthwhile, using the compile-time-selected backend (see
- * `parallel_backend_name()`).
- *
- * If `n <= grain`, runs sequentially in-line — the fixed cost of dispatching
- * a parallel region isn't worth it for small workloads. Otherwise delegates
- * to `detail::parallel_for_impl`. `f` must be safe to invoke concurrently
- * from multiple threads for different `i` (no shared mutable state without
- * external synchronization); the first exception any invocation throws is
- * captured and rethrown on the calling thread after all iterations
- * complete (partial results/side effects from other iterations are not
- * rolled back).
- *
- * @tparam F Callable invoked as `f(std::size_t i)`.
- * @param n Number of iterations; a no-op if `n == 0`.
- * @param f The per-iteration body.
- * @param grain Minimum number of iterations to bother parallelizing, and
- *              (backend-dependent) the target chunk size once it does;
- *              defaults to `parallel_grain_default` (2048). Pass a small
- *              value (e.g. `1`) when each iteration is already coarse work
- *              (a whole zlib block, a whole compress) so dispatch happens
- *              per-iteration rather than being batched further.
- * @param max_threads Cap on threads used; `0` (the default) means "use all
- *                     available". Pass `parallel_bandwidth_threads`
- *                     (or call `parallel_for_bw` instead) for
- *                     memory-bandwidth-bound loops.
- */
-template <class F>
-void parallel_for(std::size_t n, F&& f, std::size_t grain = parallel_grain_default,
-                  unsigned max_threads = 0) {
-    if (n == 0)
-        return;
-    if (n <= grain) {
-        for (std::size_t i = 0; i < n; ++i)
-            f(i);
-        return;
-    }
-    detail::parallel_for_impl(n, f, grain, max_threads);
-}
-
-/**
- * @brief `parallel_for`, thread-capped for memory-bandwidth-bound loops.
- *
- * Convenience wrapper that forwards to `parallel_for` with
- * `max_threads = parallel_bandwidth_threads` (4). Use this for byte-swap,
- * transpose, and index-gather loops: they saturate a socket's memory
- * bandwidth with only a few threads and then *regress* — more threads add
- * cache contention and dispatch overhead without more usable bandwidth —
- * unlike genuinely compute-bound loops (zlib/base64), which should use
- * plain `parallel_for` to scale across all cores.
- *
- * @tparam F Callable invoked as `f(std::size_t i)`.
- * @param n Number of iterations; a no-op if `n == 0`.
- * @param f The per-iteration body.
- * @param grain Minimum iterations per chunk; see `parallel_for`'s `grain`.
- */
-template <class F>
-void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_default) {
-    parallel_for(n, std::forward<F>(f), grain, parallel_bandwidth_threads);
-}
-
-}  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/parallel.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/subset.hpp =====
 /**
  * @file detail/subset.hpp
@@ -10192,6 +10703,514 @@ CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double*
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/operations/crop.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/data_average.hpp =====
+/**
+ * @file operations/data_average.hpp
+ * @brief Moves data between the point and cell locations by averaging, without
+ * touching the geometry.
+ *
+ * `point_data_to_cell_data` gives each cell the mean of the values at its own
+ * nodes. `cell_data_to_point_data` gives each point the mean of the values on
+ * the cells incident to it, optionally weighted by each cell's |measure| (area
+ * for a 2D cell, volume for a 3D one) so that large cells count for more.
+ *
+ * Both work component-wise, so scalar, vector and tensor arrays are all handled
+ * the same way. Because a mean is not an integer, the output is **always**
+ * `Float64` regardless of the input dtype.
+ *
+ * Non-finite values follow the policy documented in
+ * `operations/data_common.hpp`: they never contribute to an average, and a
+ * point or cell with no finite contribution at all yields NaN.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is not
+ * in the format registry.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Weighting for the cell_data -> point_data direction.
+enum class CellPointWeight {
+    Uniform,  ///< Every incident cell contributes equally.
+    Measure,  ///< Weight by |cell measure| (length / area / volume by dimension).
+};
+
+/// Options for both averaging directions.
+struct DataAverageOptions {
+    /// Names to convert; empty means every array at the source location.
+    std::vector<std::string> names;
+    /// Weighting, cell -> point only; ignored in the other direction.
+    CellPointWeight weight = CellPointWeight::Uniform;
+    /// Output name is `prefix + input name` (empty keeps the same name).
+    std::string prefix;
+    /// Output name is `input name + suffix` (empty keeps the same name).
+    std::string suffix;
+    /// When false, an output name that already exists at the target location
+    /// is an error rather than being overwritten.
+    bool overwrite = true;
+    /// What reaches the output for non-finite results.
+    NanPolicy nan_policy = NanPolicy::Ignore;
+    /// Replacement used when `nan_policy` is `Replace`.
+    double nan_replacement = 0.0;
+};
+
+/**
+ * @brief Averages `point_data` onto the cells: each cell's value is the mean
+ * over its own nodes.
+ *
+ * Ragged polygon blocks average over the row's nodes; polyhedron blocks average
+ * over the *distinct* nodes across all their faces.
+ * @param rMesh the source mesh (unmodified).
+ * @param rOpts which arrays to convert and how to name the results.
+ * @return a new mesh carrying the produced `cell_data` alongside everything the
+ *         input already had.
+ * @throws std::invalid_argument on an unknown name, on an output-name collision
+ *         when `overwrite` is false, or under `NanPolicy::Fail`.
+ */
+Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts = {});
+
+/**
+ * @brief Averages `cell_data` onto the points: each point's value is the
+ * (optionally measure-weighted) mean over the cells incident to it.
+ *
+ * A point touched by no cell — or by no cell with a finite value — gets NaN.
+ * Cells whose measure cannot be computed (ragged and polyhedron blocks) fall
+ * back to a unit weight under `CellPointWeight::Measure`, with one warning per
+ * call.
+ * @param rMesh the source mesh (unmodified).
+ * @param rOpts which arrays to convert, the weighting, and result naming.
+ * @return a new mesh carrying the produced `point_data` alongside everything
+ *         the input already had.
+ * @throws std::invalid_argument on an unknown name, on a `cell_data` array
+ *         whose block count disagrees with the mesh, on an output-name
+ *         collision when `overwrite` is false, or under `NanPolicy::Fail`.
+ */
+Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts = {});
+
+/**
+ * @brief Parses a weighting name.
+ * @param rName one of `uniform`/`simple`, or `measure`/`area`/`volume`.
+ * @return the matching `CellPointWeight`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+CellPointWeight cell_point_weight_from_name(const std::string& rName);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/data_average.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/data_calc.hpp =====
+/**
+ * @file operations/data_calc.hpp
+ * @brief Derives a new data array from an elementwise expression over the
+ * existing arrays at one location.
+ *
+ * The evaluator is a small hand-written tokenizer plus recursive-descent
+ * parser — there is **no** external parser library and **no** evaluation of
+ * arbitrary code. Only the tokens below are accepted; anything else is a
+ * diagnosed error.
+ *
+ * ### Grammar
+ * @code
+ * expr    := term (('+'|'-') term)*
+ * term    := unary (('*'|'/') unary)*
+ * unary   := ('-'|'+') unary | primary
+ * primary := number | ident | ident '(' expr (',' expr)* ')' | '(' expr ')'
+ * @endcode
+ *
+ * Functions: `abs(x)`, `sqrt(x)`, `min(a,b)`, `max(a,b)`, and `norm(v)` for the
+ * Euclidean magnitude of a vector. Exponentiation is deliberately absent.
+ *
+ * Identifiers may contain `:` and `.` after their first character, so a mesh's
+ * own conventional names (`gmsh:physical`, `quality:scaled_jacobian`) can be
+ * referenced directly. A name containing spaces or operator characters can be
+ * written between backticks: `` `my array` ``.
+ *
+ * ### Values
+ * Every operand is either a scalar (1 component) or a vector/tensor of up to
+ * `DATA_CALC_MAX_COMPONENTS` components. Binary operators require matching
+ * component counts, except that a scalar broadcasts against a wider operand.
+ * `norm` always produces a scalar. Arithmetic is performed in `double` and the
+ * result is stored in `DataCalcOptions::dtype`.
+ *
+ * Division by zero yields an IEEE infinity or NaN and is not an error, per the
+ * policy in `operations/data_common.hpp`.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is not
+ * in the format registry.
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Widest value the evaluator handles — covers scalars, 3-vectors and 3x3
+/// tensors. Bounding this is what lets the element loop use stack buffers and
+/// allocate nothing.
+inline constexpr std::size_t DATA_CALC_MAX_COMPONENTS = 16;
+
+/// Deepest expression nesting accepted, guarding the recursive-descent parser
+/// against a stack overflow from hostile input (expressions reach this code
+/// from the C ABI and the CLIs).
+inline constexpr std::size_t DATA_CALC_MAX_DEPTH = 64;
+
+/// Options for `data_calc`.
+struct DataCalcOptions {
+    /// Where operands are looked up and the result is stored.
+    DataLocation location = DataLocation::Point;
+    /// Name of the new array. Required.
+    std::string output;
+    /// Whether an existing array of that name may be replaced.
+    bool overwrite = false;
+    /// Dtype of the produced array; the arithmetic itself is always `double`.
+    DType dtype = DType::Float64;
+};
+
+/**
+ * @brief Evaluates @p rExpression elementwise and stores the result as a new
+ * array at `rOpts.location`.
+ *
+ * For `DataLocation::Cell` the expression is evaluated once per cell block, so
+ * the produced `cell_data` always has exactly one array per block.
+ * @param rMesh the source mesh (unmodified).
+ * @param rExpression the expression text (see the file comment for the grammar).
+ * @param rOpts the output name, location and dtype.
+ * @return a new mesh carrying the derived array alongside everything the input
+ *         already had.
+ * @throws std::invalid_argument on any lexical, syntactic, name-resolution,
+ *         arity, component-width or row-count error. Every message is prefixed
+ *         `meshio++: data_calc: ` and, where meaningful, carries the 0-based
+ *         character position within the expression.
+ */
+Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalcOptions& rOpts);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/data_calc.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/data_condition.hpp =====
+/**
+ * @file operations/data_condition.hpp
+ * @brief Value conditioning for data arrays: clamp, normalize, standardize.
+ *
+ * - `Clamp` maps each value to `min(max(x, lo), hi)`.
+ * - `Normalize` maps the array's own `[min, max]` linearly onto `[lo, hi]`
+ *   (`[0, 1]` by default).
+ * - `Standardize` maps to zero mean and unit standard deviation (population
+ *   standard deviation, divisor N).
+ *
+ * `ConditionScope::Component` (the default) treats each trailing component
+ * independently, so each column of a vector array is conditioned on its own
+ * statistics. `ConditionScope::Magnitude` instead computes statistics over each
+ * row's Euclidean magnitude and rescales whole rows, preserving direction.
+ *
+ * For a `cell_data` array the statistics are computed **jointly over all cell
+ * blocks** and one transform is then applied to every block — the only
+ * consistent meaning for normalizing an array that happens to be split across
+ * blocks.
+ *
+ * Degenerate reductions are handled rather than producing NaN: `Normalize` on a
+ * constant array fills `lo` and warns, and `Standardize` with zero standard
+ * deviation fills `0` and warns.
+ *
+ * Non-finite values follow the policy documented in
+ * `operations/data_common.hpp` — always excluded from the statistics, with
+ * `NanPolicy` deciding what reaches the output.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is not
+ * in the format registry.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which conditioning transform to apply.
+enum class ConditionMode {
+    Clamp,        ///< `x -> min(max(x, lo), hi)`.
+    Normalize,    ///< Affine map from the array's `[min, max]` onto `[lo, hi]`.
+    Standardize,  ///< `(x - mean) / stddev`.
+};
+
+/// Whether components are conditioned independently or by row magnitude.
+enum class ConditionScope {
+    Component,  ///< Each trailing component independently (default).
+    Magnitude,  ///< Statistics over row magnitude; rows rescaled, direction kept.
+};
+
+/// Options for `data_condition`.
+struct DataConditionOptions {
+    /// Which data map the arrays live in.
+    DataLocation location = DataLocation::Point;
+    /// Names to condition; empty means every array at the location.
+    std::vector<std::string> names;
+    /// The transform to apply.
+    ConditionMode mode = ConditionMode::Clamp;
+    /// Component-wise or by row magnitude.
+    ConditionScope scope = ConditionScope::Component;
+    /// Clamp lower bound, or Normalize target lower bound.
+    double lo = 0.0;
+    /// Clamp upper bound, or Normalize target upper bound.
+    double hi = 1.0;
+    /// What reaches the output for non-finite values.
+    NanPolicy nan_policy = NanPolicy::Ignore;
+    /// Replacement used when `nan_policy` is `Replace`.
+    double nan_replacement = 0.0;
+    /// Empty replaces the array in place; otherwise the result is stored as
+    /// `name + suffix` and the original is left alone.
+    std::string suffix;
+    /// `Clamp` only: keep the input dtype instead of producing `Float64`.
+    /// `Normalize` and `Standardize` always produce `Float64`.
+    bool preserve_dtype = true;
+};
+
+/**
+ * @brief Conditions the values of the selected data arrays.
+ * @param rMesh the source mesh (unmodified).
+ * @param rOpts which arrays, which transform, and how to store the result.
+ * @return a new mesh with the conditioned arrays; geometry is untouched.
+ * @throws std::invalid_argument on an unknown name, on a `cell_data` array
+ *         whose block count disagrees with the mesh, on `lo > hi`, or under
+ *         `NanPolicy::Fail`.
+ */
+Mesh data_condition(const Mesh& rMesh, const DataConditionOptions& rOpts);
+
+/**
+ * @brief Parses a conditioning-mode name.
+ * @param rName one of `clamp`, `normalize`/`rescale`, `standardize`/`zscore`.
+ * @return the matching `ConditionMode`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+ConditionMode condition_mode_from_name(const std::string& rName);
+
+/**
+ * @brief Parses a conditioning-scope name.
+ * @param rName one of `component`, `magnitude`.
+ * @return the matching `ConditionScope`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+ConditionScope condition_scope_from_name(const std::string& rName);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/data_condition.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/data_info.hpp =====
+/**
+ * @file operations/data_info.hpp
+ * @brief Read-only per-array summary of everything a mesh's data maps carry.
+ *
+ * `data_info` is the *data* view that complements the topological `info` verb
+ * and the geometric `compute_stats`: for every `point_data`, `cell_data` and
+ * `field_data` array it reports the location, dtype, shape and component count,
+ * the number of entries, min / max / mean (whole-array and per component), and
+ * the counts of NaN and infinite values. The mesh is not modified.
+ *
+ * Unlike the other data operations this one **never throws** on non-finite
+ * values — it counts them, which is the whole point of the report.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is not
+ * in the format registry.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Read-only summary of one data array (see `data_info`).
+struct DataArrayInfo {
+    DataLocation mLocation = DataLocation::Point;  ///< Which data map it lives in.
+    std::string mName;                             ///< The array name.
+    DType mDtype = DType::Float64;                 ///< Its dtype, as stored.
+    /// Shape as stored. For `cell_data` this is block 0's shape; see `mNumBlocks`.
+    std::vector<std::size_t> mShape;
+    /// `cell_data`: the number of cell blocks. 1 for the other locations.
+    std::int64_t mNumBlocks = 1;
+    /// Rows: points, cells summed over all blocks, or the field length.
+    std::int64_t mNumEntries = 0;
+    /// Product of the trailing dimensions (1 for a scalar array).
+    std::int64_t mNumComponents = 1;
+    /// `mNumEntries * mNumComponents`.
+    std::int64_t mNumValues = 0;
+    double mMin = 0.0;                      ///< Smallest finite value, or NaN when there are none.
+    double mMax = 0.0;                      ///< Largest finite value, or NaN when there are none.
+    double mMean = 0.0;                     ///< Mean of the finite values, or NaN.
+    std::vector<double> mMinPerComponent;   ///< Size `mNumComponents`.
+    std::vector<double> mMaxPerComponent;   ///< Size `mNumComponents`.
+    std::vector<double> mMeanPerComponent;  ///< Size `mNumComponents`.
+    std::int64_t mNumNan = 0;               ///< Count of NaN values.
+    std::int64_t mNumInf = 0;               ///< Count of +/-inf values.
+    std::int64_t mNumFinite = 0;            ///< Count of finite values.
+    /// `cell_data` whose blocks disagree in component count. Reported rather
+    /// than thrown, since `data_info` is a diagnostic.
+    bool mInconsistentBlocks = false;
+};
+
+/// The full read-only report (see `data_info`).
+struct DataInfoReport {
+    /// `point_data`, then `cell_data`, then `field_data`; each group in the
+    /// sorted-name order the uniform API guarantees.
+    std::vector<DataArrayInfo> mArrays;
+    std::int64_t mNumPointData = 0;  ///< Number of `point_data` arrays.
+    std::int64_t mNumCellData = 0;   ///< Number of `cell_data` arrays.
+    std::int64_t mNumFieldData = 0;  ///< Number of `field_data` arrays.
+};
+
+/**
+ * @brief Summarizes every data array a mesh carries (read-only).
+ * @param rMesh the mesh to inspect (unmodified).
+ * @return the populated report.
+ */
+DataInfoReport data_info(const Mesh& rMesh);
+
+/**
+ * @brief Summarizes one named data array.
+ * @param rMesh the mesh to inspect (unmodified).
+ * @param Location which data map the array lives in.
+ * @param rName the array name.
+ * @return the populated summary.
+ * @throws std::invalid_argument, listing the available keys, if absent.
+ */
+DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation Location, const std::string& rName);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/data_info.hpp =====
+// ===== begin cpp/include/meshioplusplus/operations/data_manage.hpp =====
+/**
+ * @file operations/data_manage.hpp
+ * @brief Array management for a mesh's data: rename, drop, and keep-only.
+ *
+ * `data_manage` rewrites *which* data arrays a mesh carries and under what
+ * names. Values are copied verbatim — no array's contents, dtype or shape is
+ * ever reinterpreted — and the geometry (points and every cell block) comes
+ * through bit-identical.
+ *
+ * The three phases run in a fixed, documented order: **keep**, then **drop**,
+ * then **rename**. `keep` is a whitelist that only applies to the locations it
+ * actually mentions, so `keep({{Point, "T"}})` prunes `point_data` down to `T`
+ * while leaving `cell_data` and `field_data` completely untouched.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is not
+ * in the format registry.
+ */
+
+// System includes
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// One (location, name) key identifying a single data array.
+struct DataKey {
+    DataLocation location = DataLocation::Point;  ///< Which data map.
+    std::string name;                             ///< The array name.
+};
+
+/// One rename request: `from` -> `to`, within a single location.
+struct DataRename {
+    DataLocation location = DataLocation::Point;  ///< Which data map.
+    std::string from;                             ///< Existing array name.
+    std::string to;                               ///< New array name.
+};
+
+/// Options for `data_manage` (see the file comment for the phase order).
+struct DataManageOptions {
+    /// Whitelist, applied first. Only affects the locations that appear in it:
+    /// a location mentioned by no entry passes through untouched.
+    std::vector<DataKey> keep;
+    /// Arrays to remove, applied after `keep`.
+    std::vector<DataKey> drop;
+    /// Renames, applied last.
+    std::vector<DataRename> rename;
+    /// Skip entries whose key does not exist instead of throwing.
+    bool ignore_missing = false;
+};
+
+/// Result of `data_manage`.
+struct DataManageResult {
+    Mesh mMesh;  ///< The rewritten mesh (geometry bit-identical to the input).
+    /// Arrays that were removed, as `"point_data:T"`, sorted.
+    std::vector<std::string> mDropped;
+    /// Renames that were applied, as `("point_data:old", "point_data:new")`.
+    std::vector<std::pair<std::string, std::string>> mRenamed;
+};
+
+/**
+ * @brief Rewrites which data arrays @p rMesh carries.
+ *
+ * All validation runs against the *input* mesh before anything is cloned, so a
+ * bad key costs nothing.
+ * @param rMesh the mesh to rewrite (unmodified).
+ * @param rOpts the keep / drop / rename requests.
+ * @return the rewritten mesh plus what was dropped and renamed.
+ * @throws std::invalid_argument on an unknown key (unless `ignore_missing`), on
+ *         a rename whose target already exists and is not itself being renamed
+ *         away, on two renames targeting the same name, or on two renames of
+ *         the same source.
+ */
+DataManageResult data_manage(const Mesh& rMesh, const DataManageOptions& rOpts);
+
+/**
+ * @brief Drops the named arrays at one location.
+ * @param rMesh the mesh to rewrite (unmodified).
+ * @param Location which data map to drop from.
+ * @param rNames the array names to remove.
+ * @param IgnoreMissing skip names that do not exist instead of throwing.
+ * @return the rewritten mesh.
+ * @throws std::invalid_argument on an unknown name (unless @p IgnoreMissing).
+ */
+Mesh data_drop(const Mesh& rMesh, DataLocation Location, const std::vector<std::string>& rNames,
+               bool IgnoreMissing = false);
+
+/**
+ * @brief Keeps only the named arrays at one location, dropping the rest there.
+ *
+ * The other two locations are left untouched.
+ * @param rMesh the mesh to rewrite (unmodified).
+ * @param Location which data map to prune.
+ * @param rNames the array names to retain.
+ * @param IgnoreMissing skip names that do not exist instead of throwing.
+ * @return the rewritten mesh.
+ * @throws std::invalid_argument on an unknown name (unless @p IgnoreMissing).
+ */
+Mesh data_keep(const Mesh& rMesh, DataLocation Location, const std::vector<std::string>& rNames,
+               bool IgnoreMissing = false);
+
+/**
+ * @brief Renames one array, preserving its values, dtype and shape.
+ * @param rMesh the mesh to rewrite (unmodified).
+ * @param Location which data map the array lives in.
+ * @param rFrom the existing name.
+ * @param rTo the new name.
+ * @return the rewritten mesh.
+ * @throws std::invalid_argument if @p rFrom does not exist or @p rTo already does.
+ */
+Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rFrom,
+                 const std::string& rTo);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/operations/data_manage.hpp =====
 // ===== begin cpp/include/meshioplusplus/operations/diff.hpp =====
 /**
  * @file operations/diff.hpp
@@ -42196,6 +43215,1696 @@ CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double*
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/operations/crop.cpp =====
+// ===== begin cpp/src/operations/data_average.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// Output shape for `rows` entries of `ncomp` components: 1-D when scalar, so
+/// scalar data stays scalar (the same rule merge/clean follow).
+std::vector<std::size_t> davg_shape(std::size_t rows, std::size_t ncomp) {
+    if (ncomp <= 1)
+        return {rows};
+    return {rows, ncomp};
+}
+
+/// Applies the NaN policy to one produced value.
+double davg_apply_nan_policy(double v, const DataAverageOptions& rOpts, const char* pWhat,
+                             const std::string& rName, std::size_t index) {
+    if (std::isfinite(v))
+        return v;
+    switch (rOpts.nan_policy) {
+        case NanPolicy::Ignore:
+            return v;
+        case NanPolicy::Replace:
+            return rOpts.nan_replacement;
+        case NanPolicy::Fail:
+            throw std::invalid_argument(
+                std::string("meshio++: data_average: non-finite value for ") + pWhat + " " +
+                std::to_string(index) + " of '" + rName + "'");
+    }
+    return v;
+}
+
+/// The target name for one input array, per prefix/suffix.
+std::string davg_target_name(const std::string& rName, const DataAverageOptions& rOpts) {
+    return rOpts.prefix + rName + rOpts.suffix;
+}
+
+/// Resolves the requested names, validating each against the source location.
+std::vector<std::string> davg_resolve_names(const Mesh& rMesh, DataLocation source,
+                                            const DataAverageOptions& rOpts) {
+    if (rOpts.names.empty())
+        return data_names(rMesh, source);
+    for (const std::string& n : rOpts.names)
+        if (!data_has(rMesh, source, n))
+            throw std::invalid_argument(data_unknown_key_message(rMesh, source, n));
+    return rOpts.names;
+}
+
+/// Rejects an output name that already exists when overwriting is disabled.
+void davg_check_target(const Mesh& rMesh, DataLocation target, const std::string& rTarget,
+                       const DataAverageOptions& rOpts) {
+    if (!rOpts.overwrite && data_has(rMesh, target, rTarget))
+        throw std::invalid_argument(std::string("meshio++: data_average: ") +
+                                    data_location_name(target) + " '" + rTarget +
+                                    "' already exists (pass overwrite=true to replace it)");
+}
+
+/// The node ids of one cell, covering rectangular, polygon and polyhedron
+/// blocks. For a polyhedron the *distinct* nodes across all faces are used.
+void davg_cell_nodes(const Mesh::CellView& rCell, std::size_t index,
+                     std::vector<std::int64_t>& rNodes) {
+    rNodes.clear();
+    if (rCell.IsPolyhedron()) {
+        std::unordered_set<std::int64_t> seen;
+        for (std::size_t f = 0; f < rCell.NumFaces(index); ++f) {
+            const auto face = rCell.Face(index, f);
+            for (std::size_t i = 0; i < face.second; ++i)
+                if (seen.insert(face.first[i]).second)
+                    rNodes.push_back(face.first[i]);
+        }
+        return;
+    }
+    if (rCell.IsRagged()) {
+        const std::int64_t* row = rCell.Row(index);
+        rNodes.assign(row, row + rCell.RowSize(index));
+        return;
+    }
+    // Connectivity dtype is not guaranteed to be Int64 (a MESHIO-backed mesh
+    // often carries Int32 straight from numpy), so read it dtype-agnostically.
+    const std::size_t npc = rCell.NodesPerCell();
+    const NDArray& conn = rCell.Conn();
+    rNodes.reserve(npc);
+    for (std::size_t k = 0; k < npc; ++k)
+        rNodes.push_back(detail::read_int(conn, index * npc + k));
+}
+
+}  // namespace
+
+CellPointWeight cell_point_weight_from_name(const std::string& rName) {
+    if (rName == "uniform" || rName == "simple")
+        return CellPointWeight::Uniform;
+    if (rName == "measure" || rName == "area" || rName == "volume")
+        return CellPointWeight::Measure;
+    throw std::invalid_argument("meshio++: unknown averaging weight '" + rName +
+                                "' (expected 'uniform' or 'measure')");
+}
+
+Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
+    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Point, rOpts);
+    for (const std::string& n : names)
+        davg_check_target(rMesh, DataLocation::Cell, davg_target_name(n, rOpts), rOpts);
+
+    Mesh out = detail::clone_mesh(rMesh);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (nblocks == 0)
+        return out;
+
+    for (const std::string& name : names) {
+        const NDArray& src = rMesh.PointData(name);
+        const std::size_t ncomp = data_num_components(src);
+        const std::size_t npoints = rMesh.NumPoints();
+
+        // One output array per cell block — the uniform API requires exactly
+        // NumCellBlocks() of them.
+        std::vector<NDArray> blocks;
+        blocks.reserve(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const auto cb = rMesh.Cells(b);
+            const std::size_t nc = cb.NumCells();
+            NDArray dst(DType::Float64, davg_shape(nc, ncomp));
+            double* pdst = dst.As<double>();
+
+            // Pure gather: each cell reads only its own nodes, so this is safe
+            // to run in parallel and is genuine per-element compute.
+            parallel_for(nc, [&](std::size_t c) {
+                std::vector<std::int64_t> nodes;
+                davg_cell_nodes(cb, c, nodes);
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    std::int64_t count = 0;
+                    for (std::int64_t node : nodes) {
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const double v =
+                            detail::read_double(src, static_cast<std::size_t>(node) * ncomp + k);
+                        if (std::isfinite(v)) {
+                            sum += v;
+                            ++count;
+                        }
+                    }
+                    pdst[c * ncomp + k] =
+                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
+                }
+            });
+
+            // The NaN policy is applied serially afterwards so that a `Fail`
+            // throw is deterministic rather than racing between threads.
+            for (std::size_t i = 0; i < nc * ncomp; ++i)
+                pdst[i] =
+                    davg_apply_nan_policy(pdst[i], rOpts, "cell", name, i / (ncomp ? ncomp : 1));
+            blocks.push_back(std::move(dst));
+        }
+        out.AddCellData(davg_target_name(name, rOpts), std::move(blocks));
+    }
+    return out;
+}
+
+Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
+    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Cell, rOpts);
+    for (const std::string& n : names)
+        davg_check_target(rMesh, DataLocation::Point, davg_target_name(n, rOpts), rOpts);
+
+    Mesh out = detail::clone_mesh(rMesh);
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (npoints == 0 || nblocks == 0)
+        return out;
+
+    // Per-cell weights, computed once and reused by every array.
+    std::vector<std::vector<double>> weights(nblocks);
+    bool warned_measure = false;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        weights[b].assign(cb.NumCells(), 1.0);
+        if (rOpts.weight != CellPointWeight::Measure)
+            continue;
+        const NDArray& points = rMesh.Points();
+        const std::size_t pdim = rMesh.PointDim();
+        std::vector<double>& w = weights[b];
+        parallel_for(cb.NumCells(),
+                     [&](std::size_t c) { w[c] = detail::cell_measure(points, pdim, cb, c); });
+        for (double& v : w) {
+            if (!std::isfinite(v) || v <= 0.0) {
+                v = 1.0;
+                if (!warned_measure) {
+                    warned_measure = true;
+                    log::warn(
+                        "data_average: cell measure unavailable for some cells (ragged or "
+                        "unsupported type); falling back to a unit weight there");
+                }
+            }
+        }
+    }
+
+    for (const std::string& name : names) {
+        if (rMesh.CellDataNumBlocks(name) != nblocks)
+            throw std::invalid_argument("meshio++: data_average: cell_data '" + name + "' has " +
+                                        std::to_string(rMesh.CellDataNumBlocks(name)) +
+                                        " block(s) but the mesh has " + std::to_string(nblocks) +
+                                        " cell block(s)");
+
+        const std::size_t ncomp = data_num_components(rMesh.CellData(name, 0));
+        std::vector<double> sum(npoints * ncomp, 0.0);
+        std::vector<double> wsum(npoints * ncomp, 0.0);
+
+        // --- accumulation: SERIAL on purpose (scatter; FP add is not
+        // --- associative, so a parallel version would be thread-count
+        // --- dependent and non-reproducible across backends).
+        std::vector<std::int64_t> nodes;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const auto cb = rMesh.Cells(b);
+            const NDArray& src = rMesh.CellData(name, b);
+            if (data_num_components(src) != ncomp)
+                throw std::invalid_argument("meshio++: data_average: cell_data '" + name +
+                                            "' has inconsistent component counts across blocks");
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                davg_cell_nodes(cb, c, nodes);
+                const double w = weights[b][c];
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    const double v = detail::read_double(src, c * ncomp + k);
+                    if (!std::isfinite(v))
+                        continue;
+                    for (std::int64_t node : nodes) {
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const std::size_t idx = static_cast<std::size_t>(node) * ncomp + k;
+                        sum[idx] += w * v;
+                        wsum[idx] += w;
+                    }
+                }
+            }
+        }
+
+        // --- final divide: bandwidth-bound, safe to parallelise -------------
+        NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
+        double* pdst = dst.As<double>();
+        parallel_for_bw(npoints * ncomp, [&](std::size_t i) {
+            pdst[i] = wsum[i] > 0.0 ? sum[i] / wsum[i] : std::nan("");
+        });
+        for (std::size_t i = 0; i < npoints * ncomp; ++i)
+            pdst[i] = davg_apply_nan_policy(pdst[i], rOpts, "point", name, i / (ncomp ? ncomp : 1));
+
+        out.AddPointData(davg_target_name(name, rOpts), std::move(dst));
+    }
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/data_average.cpp =====
+// ===== begin cpp/src/operations/data_calc.cpp =====
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdlib>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+[[noreturn]] void calc_fail(const std::string& rMessage) {
+    throw std::invalid_argument("meshio++: data_calc: " + rMessage);
+}
+
+[[noreturn]] void calc_fail_at(const std::string& rMessage, std::size_t pos) {
+    calc_fail(rMessage + " at position " + std::to_string(pos));
+}
+
+// ---------------------------------------------------------------------------
+// Tokenizer
+// ---------------------------------------------------------------------------
+
+enum class CalcTokenType {
+    Number,
+    Ident,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    LParen,
+    RParen,
+    Comma,
+    End,
+};
+
+struct CalcToken {
+    CalcTokenType mType = CalcTokenType::End;
+    double mValue = 0.0;   ///< Set for Number.
+    std::string mText;     ///< Set for Ident.
+    std::size_t mPos = 0;  ///< 0-based offset of the token's first character.
+};
+
+bool calc_ident_start(char c) {
+    return std::isalpha(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+bool calc_ident_body(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == ':' || c == '.';
+}
+
+std::vector<CalcToken> calc_tokenize(const std::string& rText) {
+    std::vector<CalcToken> out;
+    std::size_t i = 0;
+    const std::size_t n = rText.size();
+    while (i < n) {
+        const char c = rText[i];
+        if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+            ++i;
+            continue;
+        }
+        CalcToken t;
+        t.mPos = i;
+        if (std::isdigit(static_cast<unsigned char>(c)) != 0 ||
+            (c == '.' && i + 1 < n &&
+             std::isdigit(static_cast<unsigned char>(rText[i + 1])) != 0)) {
+            const char* begin = rText.c_str() + i;
+            char* end = nullptr;
+            const double v = std::strtod(begin, &end);
+            if (end == begin)
+                calc_fail_at("malformed number", i);
+            t.mType = CalcTokenType::Number;
+            t.mValue = v;
+            i += static_cast<std::size_t>(end - begin);
+            out.push_back(std::move(t));
+            continue;
+        }
+        if (c == '`') {
+            // Backtick-quoted identifier, for names with spaces or operator
+            // characters that the bare identifier rule cannot express.
+            const std::size_t close = rText.find('`', i + 1);
+            if (close == std::string::npos)
+                calc_fail_at("unterminated `-quoted name", i);
+            t.mType = CalcTokenType::Ident;
+            t.mText = rText.substr(i + 1, close - i - 1);
+            if (t.mText.empty())
+                calc_fail_at("empty `-quoted name", i);
+            i = close + 1;
+            out.push_back(std::move(t));
+            continue;
+        }
+        if (calc_ident_start(c)) {
+            std::size_t j = i + 1;
+            while (j < n && calc_ident_body(rText[j]))
+                ++j;
+            // A trailing ':' or '.' is punctuation, not part of the name.
+            while (j > i + 1 && (rText[j - 1] == ':' || rText[j - 1] == '.'))
+                --j;
+            t.mType = CalcTokenType::Ident;
+            t.mText = rText.substr(i, j - i);
+            i = j;
+            out.push_back(std::move(t));
+            continue;
+        }
+        switch (c) {
+            case '+':
+                t.mType = CalcTokenType::Plus;
+                break;
+            case '-':
+                t.mType = CalcTokenType::Minus;
+                break;
+            case '*':
+                t.mType = CalcTokenType::Star;
+                break;
+            case '/':
+                t.mType = CalcTokenType::Slash;
+                break;
+            case '(':
+                t.mType = CalcTokenType::LParen;
+                break;
+            case ')':
+                t.mType = CalcTokenType::RParen;
+                break;
+            case ',':
+                t.mType = CalcTokenType::Comma;
+                break;
+            default:
+                calc_fail_at(std::string("unexpected character '") + c + "'", i);
+        }
+        ++i;
+        out.push_back(std::move(t));
+    }
+    CalcToken end;
+    end.mType = CalcTokenType::End;
+    end.mPos = n;
+    out.push_back(std::move(end));
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Parser -> flat node pool
+// ---------------------------------------------------------------------------
+
+enum class CalcNodeType {
+    Const,
+    Array,
+    Neg,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Abs,
+    Sqrt,
+    Min,
+    Max,
+    Norm,
+};
+
+struct CalcNode {
+    CalcNodeType mType = CalcNodeType::Const;
+    double mConst = 0.0;
+    std::size_t mOperand = 0;  ///< Index into the resolved-operand table (Array).
+    std::size_t mLhs = 0;      ///< Index into the node pool.
+    std::size_t mRhs = 0;      ///< Index into the node pool.
+    std::size_t mWidth = 1;    ///< Component count, filled by the inference pass.
+    std::size_t mPos = 0;      ///< Source position, for diagnostics.
+    std::string mName;         ///< Array name (Array nodes only).
+};
+
+/// The known function names, and their arity.
+struct CalcFuncDef {
+    const char* mName;
+    CalcNodeType mType;
+    int mArity;
+};
+
+const CalcFuncDef CALC_FUNCS[] = {
+    {"abs", CalcNodeType::Abs, 1}, {"sqrt", CalcNodeType::Sqrt, 1}, {"min", CalcNodeType::Min, 2},
+    {"max", CalcNodeType::Max, 2}, {"norm", CalcNodeType::Norm, 1},
+};
+
+std::string calc_known_funcs() {
+    std::string s;
+    for (const CalcFuncDef& f : CALC_FUNCS) {
+        if (!s.empty())
+            s += ", ";
+        s += f.mName;
+    }
+    return s;
+}
+
+class CalcParser {
+public:
+    CalcParser(const std::vector<CalcToken>& rTokens, std::vector<CalcNode>& rPool)
+        : mrTokens(rTokens), mrPool(rPool) {}
+
+    /// Parses the whole token stream; returns the root node index.
+    std::size_t ParseAll() {
+        const std::size_t root = ParseExpr(0);
+        if (Peek().mType != CalcTokenType::End)
+            calc_fail_at("trailing input after the expression", Peek().mPos);
+        return root;
+    }
+
+private:
+    const CalcToken& Peek() const { return mrTokens[mPos]; }
+    const CalcToken& Take() { return mrTokens[mPos++]; }
+
+    std::size_t Emit(CalcNode node) {
+        mrPool.push_back(std::move(node));
+        return mrPool.size() - 1;
+    }
+
+    void CheckDepth(std::size_t depth) {
+        if (depth > DATA_CALC_MAX_DEPTH)
+            calc_fail("expression nests deeper than " + std::to_string(DATA_CALC_MAX_DEPTH) +
+                      " levels");
+    }
+
+    std::size_t ParseExpr(std::size_t depth) {
+        CheckDepth(depth);
+        std::size_t lhs = ParseTerm(depth + 1);
+        for (;;) {
+            const CalcTokenType t = Peek().mType;
+            if (t != CalcTokenType::Plus && t != CalcTokenType::Minus)
+                return lhs;
+            const CalcToken& op = Take();
+            const std::size_t rhs = ParseTerm(depth + 1);
+            CalcNode n;
+            n.mType = t == CalcTokenType::Plus ? CalcNodeType::Add : CalcNodeType::Sub;
+            n.mLhs = lhs;
+            n.mRhs = rhs;
+            n.mPos = op.mPos;
+            lhs = Emit(std::move(n));
+        }
+    }
+
+    std::size_t ParseTerm(std::size_t depth) {
+        CheckDepth(depth);
+        std::size_t lhs = ParseUnary(depth + 1);
+        for (;;) {
+            const CalcTokenType t = Peek().mType;
+            if (t != CalcTokenType::Star && t != CalcTokenType::Slash)
+                return lhs;
+            const CalcToken& op = Take();
+            const std::size_t rhs = ParseUnary(depth + 1);
+            CalcNode n;
+            n.mType = t == CalcTokenType::Star ? CalcNodeType::Mul : CalcNodeType::Div;
+            n.mLhs = lhs;
+            n.mRhs = rhs;
+            n.mPos = op.mPos;
+            lhs = Emit(std::move(n));
+        }
+    }
+
+    std::size_t ParseUnary(std::size_t depth) {
+        CheckDepth(depth);
+        const CalcTokenType t = Peek().mType;
+        if (t == CalcTokenType::Plus) {
+            Take();
+            return ParseUnary(depth + 1);
+        }
+        if (t == CalcTokenType::Minus) {
+            const CalcToken& op = Take();
+            const std::size_t operand = ParseUnary(depth + 1);
+            CalcNode n;
+            n.mType = CalcNodeType::Neg;
+            n.mLhs = operand;
+            n.mPos = op.mPos;
+            return Emit(std::move(n));
+        }
+        return ParsePrimary(depth + 1);
+    }
+
+    std::size_t ParsePrimary(std::size_t depth) {
+        CheckDepth(depth);
+        const CalcToken& tok = Peek();
+        if (tok.mType == CalcTokenType::End)
+            calc_fail("unexpected end of expression");
+        if (tok.mType == CalcTokenType::Number) {
+            Take();
+            CalcNode n;
+            n.mType = CalcNodeType::Const;
+            n.mConst = tok.mValue;
+            n.mPos = tok.mPos;
+            return Emit(std::move(n));
+        }
+        if (tok.mType == CalcTokenType::LParen) {
+            Take();
+            const std::size_t inner = ParseExpr(depth + 1);
+            if (Peek().mType != CalcTokenType::RParen)
+                calc_fail_at("expected ')'", Peek().mPos);
+            Take();
+            return inner;
+        }
+        if (tok.mType == CalcTokenType::Ident) {
+            const CalcToken ident = Take();
+            if (Peek().mType != CalcTokenType::LParen) {
+                CalcNode n;
+                n.mType = CalcNodeType::Array;
+                n.mName = ident.mText;
+                n.mPos = ident.mPos;
+                return Emit(std::move(n));
+            }
+            // A call: the name must be one of the fixed functions.
+            const CalcFuncDef* def = nullptr;
+            for (const CalcFuncDef& f : CALC_FUNCS)
+                if (ident.mText == f.mName)
+                    def = &f;
+            if (def == nullptr)
+                calc_fail_at(
+                    "unknown function '" + ident.mText + "' (known: " + calc_known_funcs() + ")",
+                    ident.mPos);
+            Take();  // '('
+            std::vector<std::size_t> args;
+            if (Peek().mType != CalcTokenType::RParen) {
+                for (;;) {
+                    args.push_back(ParseExpr(depth + 1));
+                    if (Peek().mType != CalcTokenType::Comma)
+                        break;
+                    Take();
+                }
+            }
+            if (Peek().mType != CalcTokenType::RParen)
+                calc_fail_at("expected ')'", Peek().mPos);
+            Take();
+            if (static_cast<int>(args.size()) != def->mArity)
+                calc_fail_at("'" + ident.mText + "' takes exactly " + std::to_string(def->mArity) +
+                                 (def->mArity == 1 ? " argument (got " : " arguments (got ") +
+                                 std::to_string(args.size()) + ")",
+                             ident.mPos);
+            CalcNode n;
+            n.mType = def->mType;
+            n.mLhs = args[0];
+            if (args.size() > 1)
+                n.mRhs = args[1];
+            n.mPos = ident.mPos;
+            return Emit(std::move(n));
+        }
+        calc_fail_at("unexpected token", tok.mPos);
+    }
+
+    const std::vector<CalcToken>& mrTokens;
+    std::vector<CalcNode>& mrPool;
+    std::size_t mPos = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Pass A: width inference + operand resolution
+// ---------------------------------------------------------------------------
+
+/// One distinct array referenced by the expression.
+struct CalcOperand {
+    std::string mName;
+    std::size_t mWidth = 1;
+    /// Values widened to double, laid out row-major as row * mWidth + k.
+    /// Filled per cell block for the Cell location.
+    std::vector<double> mValues;
+};
+
+const char* calc_node_op_name(CalcNodeType t) {
+    switch (t) {
+        case CalcNodeType::Add:
+            return "+";
+        case CalcNodeType::Sub:
+            return "-";
+        case CalcNodeType::Mul:
+            return "*";
+        case CalcNodeType::Div:
+            return "/";
+        case CalcNodeType::Min:
+            return "min";
+        case CalcNodeType::Max:
+            return "max";
+        default:
+            return "?";
+    }
+}
+
+/// Combines two operand widths, allowing a scalar to broadcast.
+std::size_t calc_combine_width(std::size_t a, std::size_t b, CalcNodeType t, std::size_t pos) {
+    if (a == b)
+        return a;
+    if (a == 1)
+        return b;
+    if (b == 1)
+        return a;
+    calc_fail_at("cannot combine a " + std::to_string(a) + "-component array with a " +
+                     std::to_string(b) + "-component array in '" + calc_node_op_name(t) + "'",
+                 pos);
+}
+
+/// Walks the pool, resolving array names and filling in every node's width.
+/// @return the widths of the distinct operands, in `rOperands` order.
+void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMesh,
+                DataLocation location, std::vector<CalcOperand>& rOperands) {
+    std::unordered_map<std::string, std::size_t> seen;
+    // The pool is built bottom-up by the parser, so a single forward sweep
+    // visits every node after its children.
+    for (std::size_t i = 0; i <= root; ++i) {
+        CalcNode& n = rPool[i];
+        switch (n.mType) {
+            case CalcNodeType::Const:
+                n.mWidth = 1;
+                break;
+            case CalcNodeType::Array: {
+                if (!data_has(rMesh, location, n.mName))
+                    calc_fail_at(
+                        "unknown " + std::string(data_location_name(location)) + " array '" +
+                            n.mName + "' (" +
+                            [&] {
+                                const std::vector<std::string> av = data_names(rMesh, location);
+                                if (av.empty())
+                                    return std::string("the mesh has no ") +
+                                           data_location_name(location);
+                                std::string s = "available: ";
+                                for (std::size_t k = 0; k < av.size(); ++k) {
+                                    if (k != 0)
+                                        s += ", ";
+                                    s += av[k];
+                                }
+                                return s;
+                            }() +
+                            ")",
+                        n.mPos);
+                const auto it = seen.find(n.mName);
+                if (it != seen.end()) {
+                    n.mOperand = it->second;
+                    n.mWidth = rOperands[it->second].mWidth;
+                    break;
+                }
+                const NDArray& arr = location == DataLocation::Point  ? rMesh.PointData(n.mName)
+                                     : location == DataLocation::Cell ? rMesh.CellData(n.mName, 0)
+                                                                      : rMesh.FieldData(n.mName);
+                CalcOperand op;
+                op.mName = n.mName;
+                op.mWidth = data_num_components(arr);
+                if (op.mWidth > DATA_CALC_MAX_COMPONENTS)
+                    calc_fail_at("array '" + n.mName + "' has " + std::to_string(op.mWidth) +
+                                     " components, more than the supported maximum of " +
+                                     std::to_string(DATA_CALC_MAX_COMPONENTS),
+                                 n.mPos);
+                n.mOperand = rOperands.size();
+                n.mWidth = op.mWidth;
+                seen.emplace(n.mName, rOperands.size());
+                rOperands.push_back(std::move(op));
+                break;
+            }
+            case CalcNodeType::Neg:
+            case CalcNodeType::Abs:
+            case CalcNodeType::Sqrt:
+                n.mWidth = rPool[n.mLhs].mWidth;
+                break;
+            case CalcNodeType::Norm:
+                n.mWidth = 1;
+                break;
+            case CalcNodeType::Add:
+            case CalcNodeType::Sub:
+            case CalcNodeType::Mul:
+            case CalcNodeType::Div:
+            case CalcNodeType::Min:
+            case CalcNodeType::Max:
+                n.mWidth =
+                    calc_combine_width(rPool[n.mLhs].mWidth, rPool[n.mRhs].mWidth, n.mType, n.mPos);
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pass C: the element evaluator
+// ---------------------------------------------------------------------------
+
+/// Evaluates node `idx` for row `row`, writing up to DATA_CALC_MAX_COMPONENTS
+/// values into `pOut`. Returns the width actually produced.
+std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
+                      const std::vector<CalcOperand>& rOperands, std::size_t row, double* pOut) {
+    const CalcNode& n = rPool[idx];
+    switch (n.mType) {
+        case CalcNodeType::Const:
+            pOut[0] = n.mConst;
+            return 1;
+        case CalcNodeType::Array: {
+            const CalcOperand& op = rOperands[n.mOperand];
+            const double* src = op.mValues.data() + row * op.mWidth;
+            for (std::size_t k = 0; k < op.mWidth; ++k)
+                pOut[k] = src[k];
+            return op.mWidth;
+        }
+        case CalcNodeType::Neg: {
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, pOut);
+            for (std::size_t k = 0; k < w; ++k)
+                pOut[k] = -pOut[k];
+            return w;
+        }
+        case CalcNodeType::Abs: {
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, pOut);
+            for (std::size_t k = 0; k < w; ++k)
+                pOut[k] = std::fabs(pOut[k]);
+            return w;
+        }
+        case CalcNodeType::Sqrt: {
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, pOut);
+            for (std::size_t k = 0; k < w; ++k)
+                pOut[k] = std::sqrt(pOut[k]);
+            return w;
+        }
+        case CalcNodeType::Norm: {
+            double buf[DATA_CALC_MAX_COMPONENTS];
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, buf);
+            double acc = 0.0;
+            for (std::size_t k = 0; k < w; ++k)
+                acc += buf[k] * buf[k];
+            pOut[0] = std::sqrt(acc);
+            return 1;
+        }
+        default:
+            break;
+    }
+    // Binary operators, with scalar broadcast on either side.
+    double lhs[DATA_CALC_MAX_COMPONENTS];
+    double rhs[DATA_CALC_MAX_COMPONENTS];
+    const std::size_t lw = calc_eval(rPool, n.mLhs, rOperands, row, lhs);
+    const std::size_t rw = calc_eval(rPool, n.mRhs, rOperands, row, rhs);
+    const std::size_t w = lw > rw ? lw : rw;
+    for (std::size_t k = 0; k < w; ++k) {
+        const double a = lhs[lw == 1 ? 0 : k];
+        const double b = rhs[rw == 1 ? 0 : k];
+        switch (n.mType) {
+            case CalcNodeType::Add:
+                pOut[k] = a + b;
+                break;
+            case CalcNodeType::Sub:
+                pOut[k] = a - b;
+                break;
+            case CalcNodeType::Mul:
+                pOut[k] = a * b;
+                break;
+            case CalcNodeType::Div:
+                pOut[k] = a / b;
+                break;
+            case CalcNodeType::Min:
+                pOut[k] = a < b ? a : b;
+                break;
+            case CalcNodeType::Max:
+                pOut[k] = a > b ? a : b;
+                break;
+            default:
+                pOut[k] = 0.0;
+                break;
+        }
+    }
+    return w;
+}
+
+/// Pass B for one group of rows: widen every referenced array to double.
+/// @param rSource supplies the NDArray for an operand (differs per cell block).
+template <class TSource>
+void calc_load_operands(std::vector<CalcOperand>& rOperands, std::size_t rows, TSource&& rSource,
+                        const char* pWhat) {
+    for (CalcOperand& op : rOperands) {
+        const NDArray& arr = rSource(op.mName);
+        const std::size_t got = detail::rows(arr);
+        if (got != rows)
+            calc_fail("array '" + op.mName + "' has " + std::to_string(got) + " rows but " + pWhat +
+                      " needs " + std::to_string(rows));
+        if (data_num_components(arr) != op.mWidth)
+            calc_fail("array '" + op.mName + "' has inconsistent component counts across blocks");
+        op.mValues.resize(rows * op.mWidth);
+        double* dst = op.mValues.data();
+        // Bandwidth-bound widening gather, not compute.
+        parallel_for_bw(rows * op.mWidth,
+                        [&](std::size_t i) { dst[i] = detail::read_double(arr, i); });
+    }
+}
+
+/// Runs the element loop over `rows` entries into a fresh array.
+NDArray calc_run(const std::vector<CalcNode>& rPool, std::size_t root,
+                 const std::vector<CalcOperand>& rOperands, std::size_t rows, std::size_t width,
+                 DType dtype) {
+    NDArray dst = NDArray::Uninit(
+        dtype, width <= 1 ? std::vector<std::size_t>{rows} : std::vector<std::size_t>{rows, width});
+    parallel_for(rows, [&](std::size_t r) {
+        double buf[DATA_CALC_MAX_COMPONENTS];
+        const std::size_t w = calc_eval(rPool, root, rOperands, r, buf);
+        for (std::size_t k = 0; k < width; ++k)
+            detail::write_double(dst, r * width + k, buf[w == 1 ? 0 : k]);
+    });
+    return dst;
+}
+
+}  // namespace
+
+Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalcOptions& rOpts) {
+    if (rOpts.output.empty())
+        calc_fail("an output array name is required");
+    if (!rOpts.overwrite && data_has(rMesh, rOpts.location, rOpts.output))
+        calc_fail("output name '" + rOpts.output + "' already exists in " +
+                  data_location_name(rOpts.location) + " (pass overwrite=true to replace it)");
+
+    const std::vector<CalcToken> tokens = calc_tokenize(rExpression);
+    if (tokens.size() == 1)  // just the End token
+        calc_fail("the expression is empty");
+
+    std::vector<CalcNode> pool;
+    CalcParser parser(tokens, pool);
+    const std::size_t root = parser.ParseAll();
+
+    std::vector<CalcOperand> operands;
+    calc_infer(pool, root, rMesh, rOpts.location, operands);
+
+    const std::size_t width = pool[root].mWidth;
+    if (width > DATA_CALC_MAX_COMPONENTS)
+        calc_fail("result has " + std::to_string(width) +
+                  " components, more than the supported maximum of " +
+                  std::to_string(DATA_CALC_MAX_COMPONENTS));
+
+    Mesh out = detail::clone_mesh(rMesh);
+
+    if (rOpts.location == DataLocation::Point) {
+        const std::size_t rows = rMesh.NumPoints();
+        calc_load_operands(
+            operands, rows,
+            [&](const std::string& n) -> const NDArray& { return rMesh.PointData(n); },
+            "point_data");
+        out.AddPointData(rOpts.output, calc_run(pool, root, operands, rows, width, rOpts.dtype));
+        return out;
+    }
+
+    if (rOpts.location == DataLocation::Field) {
+        // Field data has no entity correspondence, so the "row count" is simply
+        // the common length of every referenced array.
+        std::size_t rows = 0;
+        for (const CalcOperand& op : operands) {
+            const std::size_t r = detail::rows(rMesh.FieldData(op.mName));
+            if (rows == 0)
+                rows = r;
+            else if (r != rows)
+                calc_fail("field_data arrays disagree in length (" + std::to_string(rows) + " vs " +
+                          std::to_string(r) + ")");
+        }
+        calc_load_operands(
+            operands, rows,
+            [&](const std::string& n) -> const NDArray& { return rMesh.FieldData(n); },
+            "field_data");
+        out.AddFieldData(rOpts.output, calc_run(pool, root, operands, rows, width, rOpts.dtype));
+        return out;
+    }
+
+    // Cell location: evaluate once per block, producing exactly one array per
+    // cell block as the uniform API requires.
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    for (const CalcOperand& op : operands)
+        if (rMesh.CellDataNumBlocks(op.mName) != nblocks)
+            calc_fail("cell_data '" + op.mName + "' has " +
+                      std::to_string(rMesh.CellDataNumBlocks(op.mName)) +
+                      " block(s) but the mesh has " + std::to_string(nblocks) + " cell block(s)");
+
+    std::vector<NDArray> blocks;
+    blocks.reserve(nblocks);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t rows = rMesh.Cells(b).NumCells();
+        calc_load_operands(
+            operands, rows,
+            [&](const std::string& n) -> const NDArray& { return rMesh.CellData(n, b); },
+            "cell_data");
+        blocks.push_back(calc_run(pool, root, operands, rows, width, rOpts.dtype));
+    }
+    out.AddCellData(rOpts.output, std::move(blocks));
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/data_calc.cpp =====
+// ===== begin cpp/src/operations/data_common.cpp =====
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+DataLocation data_location_from_name(const std::string& rName) {
+    if (rName == "point" || rName == "point_data" || rName == "node")
+        return DataLocation::Point;
+    if (rName == "cell" || rName == "cell_data" || rName == "element")
+        return DataLocation::Cell;
+    if (rName == "field" || rName == "field_data")
+        return DataLocation::Field;
+    throw std::invalid_argument("meshio++: unknown data location '" + rName +
+                                "' (expected 'point', 'cell' or 'field')");
+}
+
+const char* data_location_name(DataLocation Location) {
+    switch (Location) {
+        case DataLocation::Point:
+            return "point_data";
+        case DataLocation::Cell:
+            return "cell_data";
+        case DataLocation::Field:
+            return "field_data";
+    }
+    return "point_data";  // unreachable
+}
+
+NanPolicy nan_policy_from_name(const std::string& rName) {
+    if (rName == "ignore")
+        return NanPolicy::Ignore;
+    if (rName == "replace")
+        return NanPolicy::Replace;
+    if (rName == "fail")
+        return NanPolicy::Fail;
+    throw std::invalid_argument("meshio++: unknown NaN policy '" + rName +
+                                "' (expected 'ignore', 'replace' or 'fail')");
+}
+
+std::vector<std::string> data_names(const Mesh& rMesh, DataLocation Location) {
+    switch (Location) {
+        case DataLocation::Point:
+            return rMesh.PointDataNames();
+        case DataLocation::Cell:
+            return rMesh.CellDataNames();
+        case DataLocation::Field:
+            return rMesh.FieldDataNames();
+    }
+    return {};  // unreachable
+}
+
+bool data_has(const Mesh& rMesh, DataLocation Location, const std::string& rName) {
+    switch (Location) {
+        case DataLocation::Point:
+            return rMesh.HasPointData(rName);
+        case DataLocation::Cell:
+            return rMesh.HasCellData(rName);
+        case DataLocation::Field:
+            return rMesh.HasFieldData(rName);
+    }
+    return false;  // unreachable
+}
+
+std::string data_unknown_key_message(const Mesh& rMesh, DataLocation Location,
+                                     const std::string& rName) {
+    const char* loc = data_location_name(Location);
+    const std::vector<std::string> available = data_names(rMesh, Location);
+    std::string msg = "meshio++: no ";
+    msg += loc;
+    msg += " array named '" + rName + "' (";
+    if (available.empty()) {
+        msg += "the mesh has no ";
+        msg += loc;
+    } else {
+        msg += "available: ";
+        for (std::size_t i = 0; i < available.size(); ++i) {
+            if (i != 0)
+                msg += ", ";
+            msg += available[i];
+        }
+    }
+    msg += ")";
+    return msg;
+}
+
+std::size_t data_num_components(const NDArray& rArray) {
+    const std::vector<std::size_t>& shape = rArray.Shape();
+    if (shape.size() < 2)
+        return 1;
+    std::size_t n = 1;
+    for (std::size_t d = 1; d < shape.size(); ++d)
+        n *= shape[d];
+    return n == 0 ? 1 : n;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/data_common.cpp =====
+// ===== begin cpp/src/operations/data_condition.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// The affine map `y = scale * x + offset` a mode/scope resolves to, per
+/// component (or a single entry when conditioning by magnitude).
+struct DcondTransform {
+    double mScale = 1.0;
+    double mOffset = 0.0;
+    bool mClamp = false;  ///< Clamp mode: saturate into [mLo, mHi] instead.
+    double mLo = 0.0;
+    double mHi = 1.0;
+};
+
+/// Applies the NaN policy to one produced value.
+double dcond_apply_nan_policy(double v, const DataConditionOptions& rOpts, const std::string& rName,
+                              std::size_t index) {
+    if (std::isfinite(v))
+        return v;
+    switch (rOpts.nan_policy) {
+        case NanPolicy::Ignore:
+            return v;
+        case NanPolicy::Replace:
+            return rOpts.nan_replacement;
+        case NanPolicy::Fail:
+            throw std::invalid_argument("meshio++: data_condition: non-finite value at index " +
+                                        std::to_string(index) + " of '" + rName + "'");
+    }
+    return v;
+}
+
+/// Builds the transform for one component from its statistics.
+DcondTransform dcond_build(const detail::FiniteStats& rStats, const DataConditionOptions& rOpts,
+                           const std::string& rName, bool& rWarnedConstant) {
+    DcondTransform t;
+    switch (rOpts.mode) {
+        case ConditionMode::Clamp:
+            t.mClamp = true;
+            t.mLo = rOpts.lo;
+            t.mHi = rOpts.hi;
+            return t;
+        case ConditionMode::Normalize: {
+            const double lo = rStats.Min();
+            const double hi = rStats.Max();
+            if (rStats.mNumFinite == 0 || !(hi > lo)) {
+                // Constant (or entirely non-finite) array: everything maps to
+                // the target lower bound. Warn once per array.
+                if (!rWarnedConstant) {
+                    rWarnedConstant = true;
+                    log::warn(
+                        "data_condition: '{}' has no value range to normalize (constant or "
+                        "non-finite); filling with the target lower bound",
+                        rName);
+                }
+                t.mScale = 0.0;
+                t.mOffset = rOpts.lo;
+                return t;
+            }
+            t.mScale = (rOpts.hi - rOpts.lo) / (hi - lo);
+            t.mOffset = rOpts.lo - t.mScale * lo;
+            return t;
+        }
+        case ConditionMode::Standardize: {
+            const double sd = rStats.StdDev();
+            const double mean = rStats.Mean();
+            if (rStats.mNumFinite == 0 || !(sd > 0.0)) {
+                if (!rWarnedConstant) {
+                    rWarnedConstant = true;
+                    log::warn("data_condition: '{}' has zero standard deviation; filling with 0",
+                              rName);
+                }
+                t.mScale = 0.0;
+                t.mOffset = 0.0;
+                return t;
+            }
+            t.mScale = 1.0 / sd;
+            t.mOffset = -mean / sd;
+            return t;
+        }
+    }
+    return t;
+}
+
+/// Applies one transform to a single value.
+double dcond_apply(const DcondTransform& rT, double v) {
+    if (!std::isfinite(v))
+        return v;  // policy handled separately; never fold NaN into arithmetic
+    if (rT.mClamp)
+        return v < rT.mLo ? rT.mLo : (v > rT.mHi ? rT.mHi : v);
+    return rT.mScale * v + rT.mOffset;
+}
+
+/// Reduces the row magnitudes of an array into one accumulator.
+void dcond_accumulate_magnitude(const NDArray& rArray, std::size_t ncomp,
+                                detail::FiniteStats& rStats) {
+    const std::size_t total = rArray.Size();
+    if (total == 0 || ncomp == 0)
+        return;
+    const std::size_t nrows = total / ncomp;
+    const std::size_t grain = 4096;
+    const std::size_t nchunks = (nrows + grain - 1) / grain;
+    std::vector<detail::FiniteStats> partial(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            detail::FiniteStats local;
+            const std::size_t begin = ci * grain;
+            const std::size_t end = std::min(begin + grain, nrows);
+            for (std::size_t r = begin; r < end; ++r) {
+                double acc = 0.0;
+                bool finite = true;
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    const double v = detail::read_double(rArray, r * ncomp + k);
+                    if (!std::isfinite(v)) {
+                        finite = false;
+                        break;
+                    }
+                    acc += v * v;
+                }
+                local.Add(finite ? std::sqrt(acc) : std::nan(""));
+            }
+            partial[ci] = local;
+        },
+        1);
+    for (const detail::FiniteStats& p : partial)
+        rStats.Merge(p);
+}
+
+/// The dtype the output array should carry.
+DType dcond_output_dtype(const NDArray& rSource, const DataConditionOptions& rOpts) {
+    if (rOpts.mode == ConditionMode::Clamp && rOpts.preserve_dtype)
+        return rSource.Dtype();
+    return DType::Float64;
+}
+
+/// Conditions one array (component scope).
+NDArray dcond_transform_component(const NDArray& rSource, std::size_t ncomp,
+                                  const std::vector<DcondTransform>& rTransforms,
+                                  const DataConditionOptions& rOpts, const std::string& rName) {
+    NDArray dst = NDArray::Uninit(dcond_output_dtype(rSource, rOpts), rSource.Shape());
+    const std::size_t total = rSource.Size();
+    // Elementwise and bandwidth-bound.
+    parallel_for_bw(total, [&](std::size_t i) {
+        const double v = detail::read_double(rSource, i);
+        detail::write_double(dst, i, dcond_apply(rTransforms[i % ncomp], v));
+    });
+    // The NaN policy runs serially so a `Fail` throw is deterministic.
+    if (rOpts.nan_policy != NanPolicy::Ignore)
+        for (std::size_t i = 0; i < total; ++i) {
+            const double v = detail::read_double(dst, i);
+            detail::write_double(dst, i, dcond_apply_nan_policy(v, rOpts, rName, i));
+        }
+    return dst;
+}
+
+/// Conditions one array (magnitude scope): each row is rescaled by the factor
+/// that its magnitude would have received, so the direction is preserved.
+NDArray dcond_transform_magnitude(const NDArray& rSource, std::size_t ncomp,
+                                  const DcondTransform& rT, const DataConditionOptions& rOpts,
+                                  const std::string& rName) {
+    NDArray dst = NDArray::Uninit(dcond_output_dtype(rSource, rOpts), rSource.Shape());
+    const std::size_t total = rSource.Size();
+    const std::size_t nrows = ncomp > 0 ? total / ncomp : 0;
+    parallel_for_bw(nrows, [&](std::size_t r) {
+        double acc = 0.0;
+        bool finite = true;
+        for (std::size_t k = 0; k < ncomp; ++k) {
+            const double v = detail::read_double(rSource, r * ncomp + k);
+            if (!std::isfinite(v)) {
+                finite = false;
+                break;
+            }
+            acc += v * v;
+        }
+        const double mag = finite ? std::sqrt(acc) : std::nan("");
+        // Scale the whole row so its magnitude becomes the conditioned value.
+        // A zero-magnitude row has no direction to preserve and stays zero.
+        const double target = dcond_apply(rT, mag);
+        const double factor = (finite && mag > 0.0) ? target / mag : (finite ? 0.0 : mag);
+        for (std::size_t k = 0; k < ncomp; ++k) {
+            const double v = detail::read_double(rSource, r * ncomp + k);
+            detail::write_double(dst, r * ncomp + k, finite ? v * factor : v);
+        }
+    });
+    if (rOpts.nan_policy != NanPolicy::Ignore)
+        for (std::size_t i = 0; i < total; ++i) {
+            const double v = detail::read_double(dst, i);
+            detail::write_double(dst, i, dcond_apply_nan_policy(v, rOpts, rName, i));
+        }
+    return dst;
+}
+
+/// Resolves the requested names, validating each.
+std::vector<std::string> dcond_resolve_names(const Mesh& rMesh, const DataConditionOptions& rOpts) {
+    if (rOpts.names.empty())
+        return data_names(rMesh, rOpts.location);
+    for (const std::string& n : rOpts.names)
+        if (!data_has(rMesh, rOpts.location, n))
+            throw std::invalid_argument(data_unknown_key_message(rMesh, rOpts.location, n));
+    return rOpts.names;
+}
+
+}  // namespace
+
+ConditionMode condition_mode_from_name(const std::string& rName) {
+    if (rName == "clamp")
+        return ConditionMode::Clamp;
+    if (rName == "normalize" || rName == "rescale")
+        return ConditionMode::Normalize;
+    if (rName == "standardize" || rName == "zscore")
+        return ConditionMode::Standardize;
+    throw std::invalid_argument("meshio++: unknown conditioning mode '" + rName +
+                                "' (expected 'clamp', 'normalize' or 'standardize')");
+}
+
+ConditionScope condition_scope_from_name(const std::string& rName) {
+    if (rName == "component")
+        return ConditionScope::Component;
+    if (rName == "magnitude")
+        return ConditionScope::Magnitude;
+    throw std::invalid_argument("meshio++: unknown conditioning scope '" + rName +
+                                "' (expected 'component' or 'magnitude')");
+}
+
+Mesh data_condition(const Mesh& rMesh, const DataConditionOptions& rOpts) {
+    if (rOpts.mode == ConditionMode::Clamp && rOpts.lo > rOpts.hi)
+        throw std::invalid_argument(
+            "meshio++: data_condition: clamp bounds are inverted (lo=" + std::to_string(rOpts.lo) +
+            " > hi=" + std::to_string(rOpts.hi) + ")");
+    if (rOpts.mode == ConditionMode::Normalize && rOpts.lo > rOpts.hi)
+        throw std::invalid_argument(
+            "meshio++: data_condition: normalize target range is inverted (lo=" +
+            std::to_string(rOpts.lo) + " > hi=" + std::to_string(rOpts.hi) + ")");
+
+    const std::vector<std::string> names = dcond_resolve_names(rMesh, rOpts);
+    Mesh out = detail::clone_mesh(rMesh);
+    const bool magnitude = rOpts.scope == ConditionScope::Magnitude;
+
+    for (const std::string& name : names) {
+        const std::string target = name + rOpts.suffix;
+
+        if (rOpts.location == DataLocation::Cell) {
+            const std::size_t nblocks = rMesh.NumCellBlocks();
+            if (rMesh.CellDataNumBlocks(name) != nblocks)
+                throw std::invalid_argument(
+                    "meshio++: data_condition: cell_data '" + name + "' has " +
+                    std::to_string(rMesh.CellDataNumBlocks(name)) + " block(s) but the mesh has " +
+                    std::to_string(nblocks) + " cell block(s)");
+            if (nblocks == 0)
+                continue;
+            const std::size_t ncomp = data_num_components(rMesh.CellData(name, 0));
+
+            // Statistics across ALL blocks first.
+            std::vector<detail::FiniteStats> stats;
+            detail::FiniteStats magstats;
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const NDArray& src = rMesh.CellData(name, b);
+                if (data_num_components(src) != ncomp)
+                    throw std::invalid_argument(
+                        "meshio++: data_condition: cell_data '" + name +
+                        "' has inconsistent component counts across blocks");
+                if (magnitude)
+                    dcond_accumulate_magnitude(src, ncomp, magstats);
+                else
+                    detail::accumulate_stats(src, ncomp, stats);
+            }
+
+            bool warned = false;
+            std::vector<DcondTransform> transforms;
+            DcondTransform magt;
+            if (magnitude) {
+                magt = dcond_build(magstats, rOpts, name, warned);
+            } else {
+                transforms.reserve(ncomp);
+                for (std::size_t k = 0; k < ncomp; ++k)
+                    transforms.push_back(dcond_build(stats[k], rOpts, name, warned));
+            }
+
+            std::vector<NDArray> blocks;
+            blocks.reserve(nblocks);
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const NDArray& src = rMesh.CellData(name, b);
+                blocks.push_back(
+                    magnitude ? dcond_transform_magnitude(src, ncomp, magt, rOpts, name)
+                              : dcond_transform_component(src, ncomp, transforms, rOpts, name));
+            }
+            out.AddCellData(target, std::move(blocks));
+            continue;
+        }
+
+        const NDArray& src =
+            rOpts.location == DataLocation::Point ? rMesh.PointData(name) : rMesh.FieldData(name);
+        const std::size_t ncomp = data_num_components(src);
+        bool warned = false;
+        NDArray dst;
+        if (magnitude) {
+            detail::FiniteStats magstats;
+            dcond_accumulate_magnitude(src, ncomp, magstats);
+            const DcondTransform t = dcond_build(magstats, rOpts, name, warned);
+            dst = dcond_transform_magnitude(src, ncomp, t, rOpts, name);
+        } else {
+            std::vector<detail::FiniteStats> stats;
+            detail::accumulate_stats(src, ncomp, stats);
+            std::vector<DcondTransform> transforms;
+            transforms.reserve(ncomp);
+            for (std::size_t k = 0; k < ncomp; ++k)
+                transforms.push_back(dcond_build(stats[k], rOpts, name, warned));
+            dst = dcond_transform_component(src, ncomp, transforms, rOpts, name);
+        }
+        if (rOpts.location == DataLocation::Point)
+            out.AddPointData(target, std::move(dst));
+        else
+            out.AddFieldData(target, std::move(dst));
+    }
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/data_condition.cpp =====
+// ===== begin cpp/src/operations/data_info.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// Fills the reduction-derived fields of `rInfo` from per-component stats.
+void dinfo_finish(DataArrayInfo& rInfo, const std::vector<detail::FiniteStats>& rStats) {
+    rInfo.mMinPerComponent.reserve(rStats.size());
+    rInfo.mMaxPerComponent.reserve(rStats.size());
+    rInfo.mMeanPerComponent.reserve(rStats.size());
+    for (const detail::FiniteStats& s : rStats) {
+        rInfo.mMinPerComponent.push_back(s.Min());
+        rInfo.mMaxPerComponent.push_back(s.Max());
+        rInfo.mMeanPerComponent.push_back(s.Mean());
+    }
+    const detail::FiniteStats all = detail::combine_components(rStats);
+    rInfo.mMin = all.Min();
+    rInfo.mMax = all.Max();
+    rInfo.mMean = all.Mean();
+    rInfo.mNumNan = all.mNumNan;
+    rInfo.mNumInf = all.mNumInf;
+    rInfo.mNumFinite = all.mNumFinite;
+}
+
+/// Summarizes a single (non-cell) array.
+DataArrayInfo dinfo_simple(DataLocation location, const std::string& rName, const NDArray& rArray) {
+    DataArrayInfo info;
+    info.mLocation = location;
+    info.mName = rName;
+    info.mDtype = rArray.Dtype();
+    info.mShape = rArray.Shape();
+    info.mNumBlocks = 1;
+    const std::size_t ncomp = data_num_components(rArray);
+    info.mNumComponents = static_cast<std::int64_t>(ncomp);
+    info.mNumValues = static_cast<std::int64_t>(rArray.Size());
+    info.mNumEntries = ncomp > 0 ? static_cast<std::int64_t>(rArray.Size() / ncomp) : 0;
+
+    std::vector<detail::FiniteStats> stats;
+    detail::accumulate_stats(rArray, ncomp, stats);
+    if (stats.empty())
+        stats.resize(ncomp);
+    dinfo_finish(info, stats);
+    return info;
+}
+
+/// Summarizes one cell_data array across all of its blocks.
+DataArrayInfo dinfo_cell(const Mesh& rMesh, const std::string& rName) {
+    DataArrayInfo info;
+    info.mLocation = DataLocation::Cell;
+    info.mName = rName;
+    const std::size_t nblocks = rMesh.CellDataNumBlocks(rName);
+    info.mNumBlocks = static_cast<std::int64_t>(nblocks);
+    if (nblocks == 0) {
+        info.mNumComponents = 1;
+        dinfo_finish(info, std::vector<detail::FiniteStats>(1));
+        return info;
+    }
+
+    const NDArray& first = rMesh.CellData(rName, 0);
+    info.mDtype = first.Dtype();
+    info.mShape = first.Shape();
+    const std::size_t ncomp = data_num_components(first);
+    info.mNumComponents = static_cast<std::int64_t>(ncomp);
+
+    std::vector<detail::FiniteStats> stats;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const NDArray& block = rMesh.CellData(rName, b);
+        if (data_num_components(block) != ncomp) {
+            // Diagnostic, not an error: report it and skip the odd block so the
+            // rest of the summary is still usable.
+            info.mInconsistentBlocks = true;
+            continue;
+        }
+        info.mNumValues += static_cast<std::int64_t>(block.Size());
+        info.mNumEntries += static_cast<std::int64_t>(block.Size() / (ncomp > 0 ? ncomp : 1));
+        detail::accumulate_stats(block, ncomp, stats);
+    }
+    if (stats.empty())
+        stats.resize(ncomp);
+    dinfo_finish(info, stats);
+    return info;
+}
+
+}  // namespace
+
+DataInfoReport data_info(const Mesh& rMesh) {
+    DataInfoReport report;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        report.mArrays.push_back(dinfo_simple(DataLocation::Point, name, rMesh.PointData(name)));
+        ++report.mNumPointData;
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        report.mArrays.push_back(dinfo_cell(rMesh, name));
+        ++report.mNumCellData;
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        report.mArrays.push_back(dinfo_simple(DataLocation::Field, name, rMesh.FieldData(name)));
+        ++report.mNumFieldData;
+    }
+    return report;
+}
+
+DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation Location, const std::string& rName) {
+    if (!data_has(rMesh, Location, rName))
+        throw std::invalid_argument(data_unknown_key_message(rMesh, Location, rName));
+    switch (Location) {
+        case DataLocation::Point:
+            return dinfo_simple(Location, rName, rMesh.PointData(rName));
+        case DataLocation::Cell:
+            return dinfo_cell(rMesh, rName);
+        case DataLocation::Field:
+            return dinfo_simple(Location, rName, rMesh.FieldData(rName));
+    }
+    return DataArrayInfo{};  // unreachable
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/data_info.cpp =====
+// ===== begin cpp/src/operations/data_manage.cpp =====
+#include <array>
+#include <algorithm>
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// The three locations, in the order they are reported.
+constexpr std::array<DataLocation, 3> DMANAGE_LOCATIONS = {DataLocation::Point, DataLocation::Cell,
+                                                           DataLocation::Field};
+
+/// Index of a location within `DMANAGE_LOCATIONS`.
+std::size_t dmanage_index(DataLocation loc) {
+    switch (loc) {
+        case DataLocation::Point:
+            return 0;
+        case DataLocation::Cell:
+            return 1;
+        case DataLocation::Field:
+            return 2;
+    }
+    return 0;  // unreachable
+}
+
+/// "point_data:T", the form used in the dropped/renamed report lists.
+std::string dmanage_qualified(DataLocation loc, const std::string& rName) {
+    return std::string(data_location_name(loc)) + ":" + rName;
+}
+
+/// Throws unless `rName` exists at `loc` (or the caller asked to ignore that).
+/// @return whether the key exists.
+bool dmanage_require(const Mesh& rMesh, DataLocation loc, const std::string& rName,
+                     bool ignore_missing) {
+    if (data_has(rMesh, loc, rName))
+        return true;
+    if (ignore_missing)
+        return false;
+    throw std::invalid_argument(data_unknown_key_message(rMesh, loc, rName));
+}
+
+/// Per-location decision tables built once from the options.
+struct DmanagePlan {
+    /// Whether a whitelist applies at this location at all.
+    std::array<bool, 3> mHasKeep = {false, false, false};
+    /// The whitelist, when `mHasKeep` is set.
+    std::array<std::unordered_set<std::string>, 3> mKeep;
+    /// Names to remove.
+    std::array<std::unordered_set<std::string>, 3> mDrop;
+    /// Renames, old name -> new name.
+    std::array<std::unordered_map<std::string, std::string>, 3> mRename;
+};
+
+}  // namespace
+
+DataManageResult data_manage(const Mesh& rMesh, const DataManageOptions& rOpts) {
+    DmanagePlan plan;
+
+    // --- validate + build the keep whitelists -------------------------------
+    for (const DataKey& k : rOpts.keep) {
+        const std::size_t li = dmanage_index(k.location);
+        // A location named at all switches on whitelisting there, even if the
+        // key itself turns out to be missing and ignored — "keep nothing from
+        // point_data" must still drop everything in point_data.
+        plan.mHasKeep[li] = true;
+        if (dmanage_require(rMesh, k.location, k.name, rOpts.ignore_missing))
+            plan.mKeep[li].insert(k.name);
+    }
+
+    // --- validate + build the drop sets --------------------------------------
+    for (const DataKey& k : rOpts.drop) {
+        if (dmanage_require(rMesh, k.location, k.name, rOpts.ignore_missing))
+            plan.mDrop[dmanage_index(k.location)].insert(k.name);
+    }
+
+    // --- validate + build the rename maps ------------------------------------
+    // Sources and targets are both checked for collisions. A rename whose
+    // source survives keep/drop but whose target collides with another array
+    // that is *not* itself being renamed away would silently clobber it.
+    std::array<std::unordered_set<std::string>, 3> rename_targets;
+    for (const DataRename& r : rOpts.rename) {
+        const std::size_t li = dmanage_index(r.location);
+        const char* loc = data_location_name(r.location);
+        if (!dmanage_require(rMesh, r.location, r.from, rOpts.ignore_missing))
+            continue;
+        if (r.to.empty())
+            throw std::invalid_argument(std::string("meshio++: data_manage: cannot rename ") + loc +
+                                        " '" + r.from + "' to an empty name");
+        if (plan.mRename[li].count(r.from) != 0)
+            throw std::invalid_argument(std::string("meshio++: data_manage: ") + loc + " '" +
+                                        r.from + "' is renamed twice");
+        if (!rename_targets[li].insert(r.to).second)
+            throw std::invalid_argument(std::string("meshio++: data_manage: two renames both "
+                                                    "target ") +
+                                        loc + " '" + r.to + "'");
+        plan.mRename[li].emplace(r.from, r.to);
+    }
+    // Target-collision check, once every rename source is known.
+    for (const DataRename& r : rOpts.rename) {
+        const std::size_t li = dmanage_index(r.location);
+        if (plan.mRename[li].count(r.from) == 0)
+            continue;  // skipped as missing
+        if (r.to == r.from)
+            continue;
+        const bool target_exists = data_has(rMesh, r.location, r.to);
+        const bool target_renamed_away = plan.mRename[li].count(r.to) != 0;
+        const bool target_dropped = plan.mDrop[li].count(r.to) != 0 ||
+                                    (plan.mHasKeep[li] && plan.mKeep[li].count(r.to) == 0);
+        if (target_exists && !target_renamed_away && !target_dropped)
+            throw std::invalid_argument(std::string("meshio++: data_manage: cannot rename ") +
+                                        data_location_name(r.location) + " '" + r.from + "' to '" +
+                                        r.to + "' (that name already exists)");
+    }
+
+    // --- rewrite -------------------------------------------------------------
+    DataManageResult result;
+    std::vector<std::string> dropped;
+    std::vector<std::pair<std::string, std::string>> renamed;
+    result.mMesh = detail::clone_mesh(rMesh, [&](DataLocation loc, const std::string& rName,
+                                                 std::string& rTarget) {
+        const std::size_t li = dmanage_index(loc);
+        if (plan.mHasKeep[li] && plan.mKeep[li].count(rName) == 0) {
+            dropped.push_back(dmanage_qualified(loc, rName));
+            return false;
+        }
+        if (plan.mDrop[li].count(rName) != 0) {
+            dropped.push_back(dmanage_qualified(loc, rName));
+            return false;
+        }
+        const auto it = plan.mRename[li].find(rName);
+        if (it != plan.mRename[li].end() && it->second != rName) {
+            rTarget = it->second;
+            renamed.emplace_back(dmanage_qualified(loc, rName), dmanage_qualified(loc, it->second));
+        }
+        return true;
+    });
+
+    std::sort(dropped.begin(), dropped.end());
+    result.mDropped = std::move(dropped);
+    result.mRenamed = std::move(renamed);
+    return result;
+}
+
+Mesh data_drop(const Mesh& rMesh, DataLocation Location, const std::vector<std::string>& rNames,
+               bool IgnoreMissing) {
+    DataManageOptions opts;
+    opts.ignore_missing = IgnoreMissing;
+    for (const std::string& n : rNames)
+        opts.drop.push_back(DataKey{Location, n});
+    return data_manage(rMesh, opts).mMesh;
+}
+
+Mesh data_keep(const Mesh& rMesh, DataLocation Location, const std::vector<std::string>& rNames,
+               bool IgnoreMissing) {
+    // Validate the requested names against the input first, so an unknown key
+    // is reported the same way `drop` reports one.
+    std::unordered_set<std::string> wanted;
+    for (const std::string& n : rNames)
+        if (dmanage_require(rMesh, Location, n, IgnoreMissing))
+            wanted.insert(n);
+
+    // Expressed as the complement — drop everything at this location that was
+    // not asked for. This keeps an empty `rNames` meaningful (drop the lot)
+    // without needing a "whitelist is active" sentinel key.
+    DataManageOptions opts;
+    for (const std::string& n : data_names(rMesh, Location))
+        if (wanted.count(n) == 0)
+            opts.drop.push_back(DataKey{Location, n});
+    return data_manage(rMesh, opts).mMesh;
+}
+
+Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rFrom,
+                 const std::string& rTo) {
+    DataManageOptions opts;
+    opts.rename.push_back(DataRename{Location, rFrom, rTo});
+    return data_manage(rMesh, opts).mMesh;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/operations/data_manage.cpp =====
 // ===== begin cpp/src/operations/diff.cpp =====
 #include <algorithm>
 #include <cmath>
