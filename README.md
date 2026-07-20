@@ -93,6 +93,11 @@ meshioplusplus clean      in.vtu out.vtu --weld              # weld / prune / de
 meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
 meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # partition
 meshioplusplus stats      mesh.vtu                           # geometric statistics
+
+meshioplusplus data info  mesh.vtu                           # summarize data arrays
+meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
+meshioplusplus data to-cell  in.vtu out.vtu --keys T         # point -> cell average
+meshioplusplus data normalize in.vtu out.vtu --cell damage --to 0,1
 ```
 
 with any of the supported formats.
@@ -248,6 +253,28 @@ s = meshioplusplus.compute_stats(mesh)                     # dict of measures
 ```
 
 These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, and `meshioplusplus stats`.
+
+#### Data operations (rename / average / calc / condition / summarize)
+
+A second bundle operates on the **data arrays** a mesh carries (`point_data` / `cell_data` / `field_data`) rather than on its geometry, which none of them ever modifies:
+
+- **`meshioplusplus.data_rename` / `data_drop` / `data_keep`** — rewrite which arrays a mesh carries and under what names; values, dtypes and shapes are copied verbatim. See `doc/data_manage.md`.
+- **`meshioplusplus.point_data_to_cell_data` / `cell_data_to_point_data`** — move data between locations by averaging, optionally weighted by cell area/volume. See `doc/data_average.md`.
+- **`meshioplusplus.data_calc`** — derive a new array from an elementwise expression (`+ - * /`, parentheses, `abs`/`sqrt`/`min`/`max`/`norm`) evaluated by a hand-written parser — no external parser library, no arbitrary-code path. See `doc/data_calc.md`.
+- **`meshioplusplus.data_condition`** — clamp, normalize to a target range, or standardize to zero mean / unit standard deviation, per component or by row magnitude. See `doc/data_condition.md`.
+- **`meshioplusplus.data_info`** — a read-only per-array summary (dtype, shape, components, min/max/mean, NaN/inf counts) — the data-side complement to `info` and `compute_stats`. See `doc/data_info.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.data_calc(mesh, "norm(velocity)", location="point", output="speed")
+out = meshioplusplus.point_data_to_cell_data(out, keys=["speed"], suffix="_c")
+out = meshioplusplus.data_condition(out, "cell", ["speed_c"], mode="normalize")
+out = meshioplusplus.data_rename(out, "point", "T", "temperature")
+arrays = meshioplusplus.data_info(out)                     # list of per-array dicts
+```
+
+These are likewise exposed across every binding surface, and as the nine CLI verbs under the `meshioplusplus data` group (`info`, `rename`, `drop`, `keep`, `to-cell`, `to-point`, `calc`, `clamp`, `normalize`). See `doc/data_operations.md`.
 
 #### Time series
 
