@@ -17,6 +17,133 @@ from .._exceptions import CorruptionError, ReadError
 from .._mesh import CellBlock, Mesh
 from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type, vtk_cells_from_data
 
+
+class _OptionalCodec:
+    """A zlib-like ``compress``/``decompress`` pair backed by an optional module.
+
+    lz4 and zstd are not in the standard library, so the pure-Python reference
+    path can only handle them when the matching extra is installed. Failing here
+    with a named, actionable error beats an ImportError from deep inside the
+    parser -- and beats silently producing a different codec.
+
+    Install with: ``pip install "meshioplusplus[codecs]"``.
+    """
+
+    def __init__(self, name: str, extra: str):
+        self._name = name
+        self._extra = extra
+
+    def _missing(self):
+        return ReadError(
+            f"{self._name}-compressed VTK XML needs the '{self._extra}' package "
+            f'(pip install "meshioplusplus[codecs]"), or a C++ core built with '
+            f"-DMESHIOPLUSPLUS_WITH_{self._name.upper()}=ON"
+        )
+
+    def compress(self, data, *args, **kwargs):
+        raise self._missing()
+
+    def decompress(self, data, *args, **kwargs):
+        raise self._missing()
+
+
+class _Lz4Codec(_OptionalCodec):
+    """LZ4 raw *block* format, matching ``vtkLZ4DataCompressor``."""
+
+    def __init__(self):
+        super().__init__("lz4", "lz4")
+
+    def compress(self, data, *args, **kwargs):
+        try:
+            import lz4.block
+        except ImportError:
+            raise self._missing() from None
+        return lz4.block.compress(data, mode="default", store_size=False)
+
+    def decompress(self, data, uncompressed_size=None, **kwargs):
+        try:
+            import lz4.block
+        except ImportError:
+            raise self._missing() from None
+        if uncompressed_size is None:
+            raise ReadError("lz4 block decompression needs the decompressed size")
+        return lz4.block.decompress(data, uncompressed_size=uncompressed_size)
+
+
+class _ZstdCodec(_OptionalCodec):
+    """Raw zstd frames, one per VTU block."""
+
+    def __init__(self):
+        super().__init__("zstd", "zstandard")
+
+    def compress(self, data, *args, **kwargs):
+        try:
+            import zstandard
+        except ImportError:
+            raise self._missing() from None
+        return zstandard.ZstdCompressor().compress(data)
+
+    def decompress(self, data, uncompressed_size=None, **kwargs):
+        try:
+            import zstandard
+        except ImportError:
+            raise self._missing() from None
+        return zstandard.ZstdDecompressor().decompress(data)
+
+
+_lz4 = _Lz4Codec()
+_zstd = _ZstdCodec()
+
+#: ``compression=`` keyword value -> the ``compressor=`` attribute it writes.
+_COMPRESSION_TO_ATTR = {
+    "zlib": "vtkZLibDataCompressor",
+    "lzma": "vtkLZMADataCompressor",
+    "lz4": "vtkLZ4DataCompressor",
+    "zstd": "vtkZSTDDataCompressor",
+}
+
+
+class _SizeTolerantCodec:
+    """Wraps a stdlib codec so it accepts (and ignores) ``uncompressed_size``.
+
+    zlib and lzma record the decompressed size themselves; LZ4's raw block
+    format does not. Passing the size unconditionally at the call site keeps
+    that difference out of the reader loop.
+    """
+
+    def __init__(self, module):
+        self._module = module
+
+    def compress(self, data, *args, **kwargs):
+        return self._module.compress(data, *args, **kwargs)
+
+    def decompress(self, data, uncompressed_size=None, **kwargs):
+        return self._module.decompress(data, **kwargs)
+
+
+def _compressor_for(name: str):
+    """``compressor=`` attribute -> a zlib-like compress/decompress pair.
+
+    Resolved lazily rather than as a module-level dict: ``lzma`` is imported on
+    demand elsewhere in this file (it can be missing from a stripped CPython),
+    so binding it at import time would break the module entirely.
+
+    lz4 is a real VTK compressor; zstd is a meshio++ extension, since VTK ships
+    no ZSTD compressor.
+    """
+    if name == "vtkZLibDataCompressor":
+        return _SizeTolerantCodec(zlib)
+    if name == "vtkLZ4DataCompressor":
+        return _lz4
+    if name == "vtkZSTDDataCompressor":
+        return _zstd
+    if name == "vtkLZMADataCompressor":
+        import lzma
+
+        return _SizeTolerantCodec(lzma)
+    raise ReadError(f"Unknown VTK XML compressor '{name}'")
+
+
 # Paraview 5.8.1's built-in Python doesn't have lzma.
 try:
     import lzma
@@ -234,7 +361,7 @@ def _parse_raw_binary(filename):
             i += block_size + dtype.itemsize
 
     else:
-        c = {"vtkLZMADataCompressor": lzma, "vtkZLibDataCompressor": zlib}[compressor]
+        c = _compressor_for(compressor)
         root.attrib.pop("compressor")
 
         # raise ReadError("Compressed raw binary VTU files not supported.")
@@ -320,6 +447,8 @@ class VtuReader:
             assert root.attrib["compressor"] in [
                 "vtkLZMADataCompressor",
                 "vtkZLibDataCompressor",
+                "vtkLZ4DataCompressor",
+                "vtkZSTDDataCompressor",
             ]
             self.compression = root.attrib["compressor"]
         else:
@@ -490,8 +619,8 @@ class VtuReader:
         header = np.frombuffer(byte_string, header_dtype)
 
         # num_blocks = header[0]
-        # max_uncompressed_block_size = header[1]
-        # last_compressed_block_size = header[2]
+        max_uncompressed_block_size = int(header[1])
+        last_uncompressed_block_size = int(header[2])
         block_sizes = header[3:]
 
         # Read the block data
@@ -506,15 +635,25 @@ class VtuReader:
         np.cumsum(block_sizes, out=byte_offsets[1:])
 
         assert self.compression is not None
-        c = {"vtkLZMADataCompressor": lzma, "vtkZLibDataCompressor": zlib}[
-            self.compression
-        ]
+        c = _compressor_for(self.compression)  # already the compressor= attribute
 
         # process the compressed data
+        # Every block decompresses to max_uncompressed_block_size except the
+        # last. zlib/lzma infer that themselves, but LZ4's raw block format
+        # cannot -- it has no size field -- so it is passed explicitly. The VTU
+        # header carries it, which is exactly why the raw block format is
+        # usable here at all.
         block_data = np.concatenate(
             [
                 np.frombuffer(
-                    c.decompress(byte_array[byte_offsets[k] : byte_offsets[k + 1]]),
+                    c.decompress(
+                        byte_array[byte_offsets[k] : byte_offsets[k + 1]],
+                        uncompressed_size=(
+                            last_uncompressed_block_size
+                            if k + 1 == num_blocks
+                            else max_uncompressed_block_size
+                        ),
+                    ),
                     dtype=dtype,
                 )
                 for k in range(num_blocks)
@@ -663,6 +802,8 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         compressions = {
             "lzma": "vtkLZMADataCompressor",
             "zlib": "vtkZLibDataCompressor",
+            "lz4": "vtkLZ4DataCompressor",
+            "zstd": "vtkZSTDDataCompressor",
         }
         assert compression in compressions
         vtk_file.set("compressor", compressions[compression])
@@ -718,7 +859,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             # necessary because the header, written first, needs to know the
             # lengths of all blocks. Also, the blocks are encoded _after_ having
             # been concatenated.
-            c = {"lzma": lzma, "zlib": zlib}[compression]
+            c = _compressor_for(_COMPRESSION_TO_ATTR[compression])
             compressed_blocks = [
                 # This compress is the slowest part of the writer
                 c.compress(block)

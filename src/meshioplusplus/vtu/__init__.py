@@ -9,16 +9,20 @@ def _has_polyhedron(mesh):
     return any(c.type.startswith("polyhedron") for c in mesh.cells)
 
 
-def read(filename):
+def read(filename, points_only=False, arrays=None):
     """Read a VTU file.
 
     Uses the C++ core for ascii and inline binary (uncompressed or zlib) files,
     falling back to the reference Python reader for anything it doesn't handle
     (lzma, appended/raw binary, polyhedron, multi-piece).
     """
+    # points_only/arrays reach the C++ reader, which skips the unwanted
+    # <DataArray>/section bodies outright. The Python fallback below has no
+    # selective support, so _helpers.read trims its result instead -- same
+    # answer, just without the saving.
     if not is_buffer(filename, "r"):
         try:
-            return _core.vtu_read(str(filename))
+            return _core.vtu_read(str(filename), points_only=points_only, arrays=arrays)
         except Exception:
             pass
     return _py_read(filename)
@@ -33,7 +37,15 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     fallback also catches any limitation hit by the C++ path, so behaviour is
     identical to the pure-Python implementation.
     """
-    cpp_compression_ok = compression is None or compression == "zlib"
+    # zstd/lz4 reach the C++ writer when this build has them; otherwise the
+    # Python reference path handles it (needing the `codecs` extra), so a
+    # request never silently degrades to a different codec.
+    _CPP_CODECS = {None: "none", "zlib": "zlib", "lz4": "lz4", "zstd": "zstd"}
+    cpp_compression_ok = compression in _CPP_CODECS
+    if compression == "lz4" and not getattr(_core, "__has_lz4__", False):
+        cpp_compression_ok = False
+    if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
+        cpp_compression_ok = False
     if (
         header_type is None
         and cpp_compression_ok
@@ -41,7 +53,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         and not _has_polyhedron(mesh)
     ):
         try:
-            _core.vtu_write(str(filename), mesh, binary, compression == "zlib")
+            _core.vtu_write_codec(str(filename), mesh, binary, _CPP_CODECS[compression])
             return
         except Exception:
             pass
