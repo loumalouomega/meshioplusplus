@@ -77,6 +77,7 @@
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
@@ -628,6 +629,29 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("mode") = "linearize", py::arg("record_parent_ids") = false);
+
+    // Uniform refinement: subdivide every cell into same-type children.
+    // Returns a dict {mesh, point_map, cell_maps}. See operations/refine.hpp.
+    m.def(
+        "refine",
+        [](py::object pymesh, int levels, bool record_parent_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RefineOptions options;
+            options.mLevels = levels;
+            options.mRecordParentIds = record_parent_ids;
+            meshioplusplus::RefineResult r = meshioplusplus::refine(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPointMap));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            return out;
+        },
+        py::arg("mesh"), py::arg("levels") = 1, py::arg("record_parent_ids") = false);
 
     // Geometric statistics (read-only). Returns a dict of the StatsReport fields.
     // See operations/stats.hpp.
