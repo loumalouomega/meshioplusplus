@@ -51,6 +51,12 @@
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
 #include <zlib.h>
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+#include <zstd.h>
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+#include <lz4.h>
+#endif
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
@@ -151,6 +157,54 @@ inline std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
     return out;
 }
 
+/**
+ * @brief Block-compression codec of a VTK XML "binary" DataArray.
+ *
+ * All codecs share VTU's block framing verbatim (num_blocks / max_block /
+ * last_block / per-block compressed sizes, fixed 32 KiB blocks); only the
+ * per-block compressor differs, which is what lets one framing implementation
+ * serve them all.
+ */
+enum class VtkCodec {
+    None,  ///< raw bytes behind a byte-count header
+    Zlib,  ///< vtkZLibDataCompressor -- the default, and the only one always available
+    LZ4,   ///< vtkLZ4DataCompressor -- a real VTK compressor
+    ZSTD,  ///< vtkZSTDDataCompressor -- a meshio++ extension; VTK has no ZSTD compressor
+    LZMA   ///< vtkLZMADataCompressor -- recognized but not implemented (Python fallback)
+};
+
+/** @brief The `compressor=` attribute a codec is recorded under, or "" for None. */
+inline const char* vtk_codec_compressor(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "vtkZLibDataCompressor";
+        case VtkCodec::LZ4:
+            return "vtkLZ4DataCompressor";
+        case VtkCodec::ZSTD:
+            return "vtkZSTDDataCompressor";
+        case VtkCodec::LZMA:
+            return "vtkLZMADataCompressor";
+        default:
+            return "";
+    }
+}
+
+/** @brief Short user-facing codec name (`--codec` values). */
+inline const char* vtk_codec_name(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "zlib";
+        case VtkCodec::LZ4:
+            return "lz4";
+        case VtkCodec::ZSTD:
+            return "zstd";
+        case VtkCodec::LZMA:
+            return "lzma";
+        default:
+            return "none";
+    }
+}
+
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
 /**
  * @brief Compresses one block with zlib's default `compress()` (a single
@@ -191,6 +245,214 @@ inline std::vector<unsigned char> zlib_decompress(const unsigned char* pSrc, std
     return out;
 }
 #endif  // MESHIOPLUSPLUS_HAS_ZLIB
+
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+/**
+ * @brief Compresses one block as a single raw zstd frame.
+ *
+ * One frame per block, matching the zlib path: VTU's own header already records
+ * each block's compressed and decompressed size, so no zstd framing metadata is
+ * needed on top.
+ * @throws WriteError if zstd reports an error.
+ */
+inline std::vector<unsigned char> zstd_compress_block(const unsigned char* pSrc, std::size_t n) {
+    const std::size_t bound = ZSTD_compressBound(n);
+    std::vector<unsigned char> out(bound);
+    const std::size_t written = ZSTD_compress(out.data(), bound, pSrc, n, ZSTD_CLEVEL_DEFAULT);
+    if (ZSTD_isError(written))
+        throw WriteError(std::string("zstd compression failed: ") + ZSTD_getErrorName(written));
+    out.resize(written);
+    return out;
+}
+
+/**
+ * @brief Decompresses one zstd block whose decompressed size is already known.
+ * @param expected Exact size from the VTU block header -- so the frame's own
+ *        content-size field is never consulted.
+ * @throws ReadError if zstd reports an error or the size disagrees.
+ */
+inline std::vector<unsigned char> zstd_decompress(const unsigned char* pSrc, std::size_t n,
+                                                  std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    const std::size_t written = ZSTD_decompress(out.data(), expected, pSrc, n);
+    if (ZSTD_isError(written))
+        throw ReadError(std::string("zstd decompression failed: ") + ZSTD_getErrorName(written));
+    out.resize(written);
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_ZSTD
+
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+/**
+ * @brief Compresses one block in LZ4's **raw block** format.
+ *
+ * Raw block, not the LZ4 *frame* format -- this is what `vtkLZ4DataCompressor`
+ * emits (its `SetAccelerationLevel` knob is the tell that it calls
+ * `LZ4_compress_fast`), so files written here stay readable by VTK/ParaView.
+ * Acceleration 1 is LZ4's default.
+ * @throws WriteError if lz4 reports an error.
+ */
+inline std::vector<unsigned char> lz4_compress_block(const unsigned char* pSrc, std::size_t n) {
+    const int src_size = static_cast<int>(n);
+    const int bound = LZ4_compressBound(src_size);
+    if (bound <= 0)
+        throw WriteError("lz4 compression failed: block too large");
+    std::vector<unsigned char> out(static_cast<std::size_t>(bound));
+    const int written =
+        LZ4_compress_fast(reinterpret_cast<const char*>(pSrc), reinterpret_cast<char*>(out.data()),
+                          src_size, bound, /*acceleration=*/1);
+    if (written <= 0)
+        throw WriteError("lz4 compression failed");
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+
+/**
+ * @brief Decompresses one raw-block-format LZ4 block.
+ * @param expected Exact decompressed size from the VTU block header. Passing it
+ *        as the output capacity is what makes `LZ4_decompress_safe` bounded --
+ *        a corrupt block cannot overrun the buffer.
+ * @throws ReadError if lz4 reports an error.
+ */
+inline std::vector<unsigned char> lz4_decompress(const unsigned char* pSrc, std::size_t n,
+                                                 std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    const int written = LZ4_decompress_safe(reinterpret_cast<const char*>(pSrc),
+                                            reinterpret_cast<char*>(out.data()),
+                                            static_cast<int>(n), static_cast<int>(expected));
+    if (written < 0)
+        throw ReadError("lz4 decompression failed");
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_LZ4
+
+/**
+ * @name Per-codec block dispatch
+ *
+ * These always exist and throw at runtime when the codec was not compiled in --
+ * deliberately, and for the same reason the zlib helpers above are shaped that
+ * way (see the file header): a *link* error would make the absence a build
+ * failure, whereas a ReadError/WriteError routes the caller to the Python
+ * fallback, which is the documented contract. The message names the CMake
+ * option to turn on, in the spirit of `registry_compiled_out()`.
+ * @{
+ */
+
+/** @brief Whether @p codec can be decoded by this build. */
+inline bool vtk_codec_available(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::None:
+            return true;
+        case VtkCodec::Zlib:
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+            return true;
+#else
+            return false;
+#endif
+        case VtkCodec::LZ4:
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+            return true;
+#else
+            return false;
+#endif
+        case VtkCodec::ZSTD:
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+            return true;
+#else
+            return false;
+#endif
+        default:
+            return false;  // LZMA is recognized but never implemented here
+    }
+}
+
+/** @brief The CMake option that would enable @p codec. */
+inline std::string vtk_codec_build_option(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "MESHIOPLUSPLUS_WITH_ZLIB=ON";
+        case VtkCodec::LZ4:
+            return "MESHIOPLUSPLUS_WITH_LZ4=ON";
+        case VtkCodec::ZSTD:
+            return "MESHIOPLUSPLUS_WITH_ZSTD=ON";
+        default:
+            return "";
+    }
+}
+
+/** @brief Actionable "this build cannot do that" message. */
+inline std::string vtk_codec_missing_message(VtkCodec codec, bool for_write) {
+    const std::string what = for_write ? "compression" : "decompression";
+    if (codec == VtkCodec::LZMA)
+        return "VTK XML lzma " + what + " is not implemented by the C++ core";
+    return "VTK XML " + std::string(vtk_codec_name(codec)) + " " + what +
+           " requires a build with -D" + vtk_codec_build_option(codec);
+}
+
+/** @throws ReadError when @p codec cannot be decoded by this build. */
+inline void vtk_codec_require_read(VtkCodec codec) {
+    if (!vtk_codec_available(codec))
+        throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
+}
+
+/** @throws WriteError when @p codec cannot be encoded by this build. */
+inline void vtk_codec_require_write(VtkCodec codec) {
+    if (!vtk_codec_available(codec))
+        throw WriteError(vtk_codec_missing_message(codec, /*for_write=*/true));
+}
+
+/** @brief Compress one block with @p codec. Callers must have required it. */
+inline std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec,
+                                                           const unsigned char* pSrc,
+                                                           std::size_t n) {
+    switch (codec) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        case VtkCodec::Zlib:
+            return zlib_compress_block(pSrc, n);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+        case VtkCodec::ZSTD:
+            return zstd_compress_block(pSrc, n);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+        case VtkCodec::LZ4:
+            return lz4_compress_block(pSrc, n);
+#endif
+        default:
+            break;
+    }
+    (void)pSrc;
+    (void)n;
+    throw WriteError(vtk_codec_missing_message(codec, /*for_write=*/true));
+}
+
+/** @brief Decompress one block with @p codec into @p expected bytes. */
+inline std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec,
+                                                             const unsigned char* pSrc,
+                                                             std::size_t n, std::size_t expected) {
+    switch (codec) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        case VtkCodec::Zlib:
+            return zlib_decompress(pSrc, n, expected);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+        case VtkCodec::ZSTD:
+            return zstd_decompress(pSrc, n, expected);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+        case VtkCodec::LZ4:
+            return lz4_decompress(pSrc, n, expected);
+#endif
+        default:
+            break;
+    }
+    (void)pSrc;
+    (void)n;
+    (void)expected;
+    throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
+}
+/** @} */
 
 /**
  * @brief Reads a little-endian unsigned integer of `isz` bytes from `p`.
@@ -253,24 +515,23 @@ inline std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std
  * @throws ReadError if built without `MESHIOPLUSPLUS_HAS_ZLIB`, or if the
  *         header/data is truncated, or if any block fails to decompress.
  */
-inline std::vector<unsigned char> vtu_decode_zlib(const char* pText, std::size_t len,
-                                                  std::size_t hsz) {
-#ifndef MESHIOPLUSPLUS_HAS_ZLIB
-    (void)pText;
-    (void)len;
-    (void)hsz;
-    throw ReadError("VTU zlib decompression requires a zlib-enabled build");
-#else
+inline std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
+                                                    std::size_t hsz, VtkCodec codec) {
+    // Every codec is checked here rather than at the per-block call so an
+    // absent one is reported before any work is done -- and as a ReadError,
+    // never a link error, which is what keeps the Python fallback reachable.
+    vtk_codec_require_read(codec);
+
     std::size_t first_chars = ((hsz + 2) / 3) * 4;
     if (len < first_chars)
-        throw ReadError("VTU zlib header too short");
+        throw ReadError("VTU compressed-block header too short");
     std::vector<unsigned char> hb = b64decode(pText, first_chars);
     std::uint64_t num_blocks = read_uint_le(hb.data(), hsz);
 
     std::size_t num_header_bytes = hsz * (3 + static_cast<std::size_t>(num_blocks));
     std::size_t num_header_chars = ((num_header_bytes + 2) / 3) * 4;
     if (len < num_header_chars)
-        throw ReadError("VTU zlib header truncated");
+        throw ReadError("VTU compressed-block header truncated");
     std::vector<unsigned char> header = b64decode(pText, num_header_chars);
 
     std::uint64_t max_block = read_uint_le(header.data() + hsz, hsz);
@@ -300,14 +561,14 @@ inline std::vector<unsigned char> vtu_decode_zlib(const char* pText, std::size_t
         [&](std::size_t k) {
             std::size_t expected = (k + 1 == num_blocks) ? static_cast<std::size_t>(last_block)
                                                          : static_cast<std::size_t>(max_block);
-            auto dec = zlib_decompress(blockdata.data() + in_off[k],
-                                       static_cast<std::size_t>(comp_sizes[k]), expected);
+            auto dec =
+                vtk_codec_decompress_block(codec, blockdata.data() + in_off[k],
+                                           static_cast<std::size_t>(comp_sizes[k]), expected);
             std::memcpy(out.data() + k * static_cast<std::size_t>(max_block), dec.data(),
                         std::min(dec.size(), expected));
         },
         /*grain=*/1);  // each block is 32 KB of inflate work
     return out;
-#endif  // MESHIOPLUSPLUS_HAS_ZLIB
 }
 
 /**
@@ -333,8 +594,8 @@ inline std::vector<unsigned char> vtu_decode_zlib(const char* pText, std::size_t
  *         `MESHIOPLUSPLUS_HAS_ZLIB`.
  */
 inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes,
-                                     bool zlib_compress) {
-    if (!zlib_compress) {
+                                     VtkCodec codec) {
+    if (codec == VtkCodec::None) {
         std::vector<unsigned char> buf(4 + nbytes);
         std::uint32_t header = static_cast<std::uint32_t>(nbytes);
         std::memcpy(buf.data(), &header, 4);
@@ -343,9 +604,7 @@ inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nby
         return b64encode(buf.data(), buf.size());
     }
 
-#ifndef MESHIOPLUSPLUS_HAS_ZLIB
-    throw WriteError("VTU zlib compression requires a zlib-enabled build");
-#else
+    vtk_codec_require_write(codec);
     const std::uint32_t max_block = 32768;
     std::uint32_t num_blocks = static_cast<std::uint32_t>((nbytes + max_block - 1) / max_block);
     std::uint32_t last_block_size =
@@ -359,7 +618,7 @@ inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nby
         [&](std::size_t b) {
             std::size_t off = b * max_block;
             std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
-            blocks[b] = zlib_compress_block(pData + off, len);
+            blocks[b] = vtk_codec_compress_block(codec, pData + off, len);
         },
         /*grain=*/1);  // each block is 32 KB of deflate work
 
@@ -378,7 +637,6 @@ inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nby
         concat.insert(concat.end(), b.begin(), b.end());
     out += b64encode(concat.data(), concat.size());
     return out;
-#endif  // MESHIOPLUSPLUS_HAS_ZLIB
 }
 
 }  // namespace detail
