@@ -91,10 +91,11 @@ meshioplusplus merge      a.vtu b.vtu out.vtu    # merge meshes (optional --weld
 meshioplusplus transform  in.vtu out.vtu --translate 1,2,3   # affine transform
 meshioplusplus clean      in.vtu out.vtu --weld              # weld / prune / de-dup
 meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
-meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # partition
+meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # split by criterion
 meshioplusplus stats      mesh.vtu                           # geometric statistics
 meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
 meshioplusplus refine     in.vtu out.vtu --levels 2          # uniform subdivision
+meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -288,7 +289,24 @@ tagged = meshioplusplus.refine(mesh, record_parent_ids=True)
 
 Children inherit the parent's orientation (zero newly-inverted cells for a well-oriented input), and volume is conserved — exactly for `tetra` always, and for `wedge`/`hexahedron` when the parent is affine. Higher-order cells, `pyramid`, and ragged blocks have no same-type subdivision and raise by name.
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, and `meshioplusplus refine`.
+#### Partitioning
+
+**`meshioplusplus.partition`** decomposes a mesh into exactly N balanced pieces for domain decomposition — the count-driven complement to the criterion-driven `split`. See `doc/partition.md`.
+
+- **SFC** (the default fallback, always available, dependency-free): cells are cut into contiguous ranges along a Hilbert space-filling curve of their centroids — equal-weight part sizes differ by at most one cell, `weights=<cell_data>` balances a per-cell cost instead, and the assignment is deterministic and byte-identical across mesh backends and thread counts.
+- **KaHIP** (the optional quality path): the shared-face dual graph goes through [KaHIP](https://github.com/KaHIP/KaHIP)'s serial `kaffpa()`, which actively minimizes the edge cut. Configure `imbalance` (default 3%), `mode` (`fast`/`eco`/`strong`, default `eco` — eco/strong carry the quality) and `seed`. **KaHIP is MIT-licensed like meshio++ itself, so enabling it changes nothing about licensing**; it is bring-your-own (`-DMESHIOPLUSPLUS_WITH_KAHIP=ON` + `KAHIP_ROOT`, Conan `with_kahip`, vcpkg feature `kahip` — next to the HDF5/zstd-style optional deps), links only the serial interface (no MPI), and `pip install meshioplusplus[kahip]` gives pure-Python installs the same quality path via the MIT `kahip` wheel. Requesting it where absent fails by name — never a silent downgrade.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+pieces = meshioplusplus.partition(mesh, 4)                    # list of 4 meshes
+labels = meshioplusplus.partition_labels(mesh, 4)             # per-block Int64 part ids
+quality = meshioplusplus.partition(mesh, 16, method="kahip", mode="strong")
+```
+
+Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece (`ghost_layers` is reserved for halo growth and raises for now).
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, and `meshioplusplus partition`.
 
 #### Data operations (rename / average / calc / condition / summarize)
 
