@@ -1,9 +1,112 @@
 <!--pytest-codeblocks:skipfile-->
 # Changelog
 
-This document only describes _breaking_ changes in meshio++. If you are interested in bug
-fixes, enhancements etc., best follow [the meshio++ project on
-GitHub](https://github.com/loumalouomega/meshioplusplus).
+This document records every released version of meshio++ — new formats, new operations,
+notable enhancements, and breaking changes. Breaking changes are called out explicitly as
+**Breaking:**; everything else is additive unless stated otherwise.
+
+**Keep this file current: add an entry in the same change as every version bump.** See the
+"Version bumps" section of `CLAUDE.md`.
+
+## v7.2.0 (2026-07-19)
+
+- **New data operations** — five dependency-free operations acting on a mesh's
+  `point_data` / `cell_data` / `field_data` arrays rather than on its geometry, which none of
+  them ever modifies:
+  - **`data_manage`** (`data_drop` / `data_keep` / `data_rename`): rewrite which arrays a mesh
+    carries and under what names. Values, dtypes and shapes are copied verbatim; an unknown key
+    raises listing every available key. Phases apply in the order keep → drop → rename.
+  - **`point_data_to_cell_data` / `cell_data_to_point_data`**: move data between locations by
+    averaging. Point→cell is the mean over each cell's own nodes; cell→point is the mean over
+    the incident cells, optionally weighted by each cell's |measure| (area/volume). Output is
+    always `float64`, since a mean is not an integer.
+  - **`data_calc`**: derive a new array from an elementwise expression over existing arrays at
+    the same location. The evaluator is a hand-written tokenizer plus recursive-descent parser
+    supporting `+ - * /`, unary minus, parentheses, numeric literals, array names, and
+    `abs`/`sqrt`/`min`/`max`/`norm` — **no external parser library and no evaluation of
+    arbitrary code**. Identifiers may contain `:` (so `gmsh:physical` works) and backtick
+    quoting handles names with spaces.
+  - **`data_condition`**: clamp to `[lo, hi]`, normalize onto a target range (default `[0, 1]`),
+    or standardize to zero mean / unit standard deviation — per component or by row magnitude.
+    For `cell_data` the statistics are computed jointly across all cell blocks.
+  - **`data_info`**: a read-only per-array summary (location, dtype, shape, components, entry
+    count, min/max/mean whole-array and per component, NaN/inf counts) — the data-side
+    complement to the topological `info` and the geometric `stats`.
+- **Documented NaN/inf policy**, shared by all five: non-finite values are always excluded from
+  every reduction, and `nan_policy` (`ignore` / `replace` / `fail`) decides only what reaches
+  the output. `data_info` never raises — it counts them.
+- **New nested CLI group `meshioplusplus data <verb>`** with nine verbs (`info`, `rename`,
+  `drop`, `keep`, `to-cell`, `to-point`, `calc`, `clamp`, `normalize`), in both the Python CLI
+  and the Python-free native binary. This is the project's first two-level subcommand.
+- Exposed across every binding surface: pybind (`meshioplusplus.data_*`), the C API
+  (`mio_data_*` plus the opaque `mio_data_info` handle), the Fortran module (type-bound
+  `data_*` procedures), and WASM (`dataCalc`, `dataInfo`, …). Fortran additionally exports
+  `STRBUF_LEN`, which consumers need in order to declare the `keys` out-argument of `split`
+  and `data_info`.
+- Documented flat-ABI gap: the combined `data_manage` (keep + drop + rename in one call) is not
+  exposed over the C ABI; the three primitives compose to the same effect.
+- Documented at `doc/data_manage.md`, `doc/data_average.md`, `doc/data_calc.md`,
+  `doc/data_condition.md` and `doc/data_info.md`. Not breaking.
+
+## v7.1.0 (2026-07-19)
+
+- **New CLI verbs for the editing and statistics operations**: `meshioplusplus transform`,
+  `clean`, `crop`, `split` and `stats` in both the Python CLI and the native binary, with the
+  matching README/`doc/cli.md` documentation.
+
+## v7.0.0 (2026-07-19)
+
+- **Breaking: the default branch moved from `main` to `master`** — CI workflow references and
+  the README badges were updated accordingly; consumers pinning the branch in a URL need to
+  follow.
+- **Breaking: `find_package(meshioplusplus)` consumers must require version 7.0**; the packaged
+  CMake config version was bumped with the release.
+- **New mesh operations**: `transform` (affine transform of point coordinates, with
+  translate/scale/rotate/matrix/units builders and optional vector/tensor rotation), `clean`
+  (one-pass weld / drop-degenerate / drop-duplicate / remove-orphans), `crop` (subset by
+  bounding box or half-space), `split` (partition by cell type, connected component, or integer
+  tag), and `stats` (bounding box, centroid, per-cell-type counts, area, signed/unsigned volume,
+  inverted-cell count). All are exposed across Python, the C API, Fortran, WASM and both CLIs,
+  and share `detail/subset.hpp` for the prune-and-remap step.
+- **arm64 support across the release artifacts**: Linux arm64 wheels, native CLI binaries and
+  Conan packages are now built natively on GitHub's hosted arm64 runners (no QEMU).
+- **Static runtime linking** (`MESHIOPLUSPLUS_STATIC_RUNTIME`, hoisted to a top-level option) so
+  the prebuilt CLI binaries carry no `libstdc++`/`libgcc_s` dependency, including the MSVC
+  static CRT on Windows.
+
+## v6.9.0 (2026-07-19)
+
+- **New `diff` operation and CLI verb**: compare two meshes with absolute/relative tolerances,
+  reporting per-section differences (points, cells, each data map) with max abs/rel error and
+  the worst index. An `unordered` mode matches points by proximity via a bucket-grid hash.
+  `meshioplusplus diff A B` **exits non-zero when the meshes differ**, for use in CI and
+  Makefiles. Named `point_sets`/`cell_sets` are compared in the Python shim only.
+- **New `merge` operation and CLI verb**: combine two or more meshes, either concatenating or
+  welding coincident points within a tolerance (spatial-hash bucket grid, no O(N²)), with
+  `source_mesh_id` tagging, intersection/fill data policies, and optional duplicate-cell
+  dropping.
+
+## v6.8.0 (2026-07-19)
+
+- **New `reorder` operation and CLI verb**: renumber nodes and elements by reverse Cuthill–McKee,
+  Morton order, or Hilbert order, as a pure permutation that preserves all geometry and data and
+  returns the applied permutations. `compute_bandwidth` reports the connectivity bandwidth.
+- **New standalone, Python-free native CLI binary** (`meshioplusplus_cli`, installed as
+  `meshioplusplus`), built over the shared format registry and the operations layer. Prebuilt
+  statically-linked binaries for Linux x86_64/arm64, macOS universal and Windows x86_64 are
+  attached to every `v*` tag's GitHub Release.
+- **Doxygen API reference** for the C++/C headers, generated in CI and published alongside the
+  VitePress site at `/api/`.
+
+## v6.7.0 (2026-07-19)
+
+- **New `extract_surface` operation**: the dimension-aware generalization of `extract_skin` —
+  boundary faces of a 3D volume mesh, or boundary edges of a 2D surface mesh — sharing one
+  implementation with the skin extractor. Optional `record_parent_ids` attaches the owning input
+  cell index as `surface:parent_cell`.
+- **New `sniff_format` operation**: content-based format detection from a file's leading bytes,
+  wired in as a **read-only** fallback when the extension yields nothing. It returns a format
+  only on a confident signature match, never guessing at ambiguous magics.
 
 ## v6.6.0 (2026-07-18)
 
