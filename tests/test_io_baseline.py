@@ -27,6 +27,14 @@ import meshioplusplus
 
 _core = pytest.importorskip("meshioplusplus._core")
 
+# zlib is found via find_package like HDF5/netCDF (see CMakeLists.txt's
+# MESHIOPLUSPLUS_WITH_ZLIB comment) and so can be compiled out too (e.g.
+# Windows CI, which has no system zlib). These tests call `_core` directly,
+# bypassing the write()/read() shims' Python fallback, so they need the guard.
+requires_zlib = pytest.mark.skipif(
+    not getattr(_core, "__has_zlib__", False), reason="build has no zlib"
+)
+
 
 def _baseline_mesh() -> meshioplusplus.Mesh:
     """A small mesh exercising 2 cell blocks, point_data and cell_data.
@@ -141,6 +149,7 @@ def _decoded_payloads(text: str) -> list[bytes]:
     return out
 
 
+@requires_zlib
 @pytest.mark.parametrize("fmt", ["vtu", "vtp"])
 def test_zlib_payload_matches_uncompressed(tmp_path, fmt):
     """Compression must change only the framing, never the payload bytes."""
@@ -159,7 +168,8 @@ def test_zlib_payload_matches_uncompressed(tmp_path, fmt):
 
 @pytest.mark.parametrize("fmt", ["vtu", "vtp"])
 @pytest.mark.parametrize(
-    "binary,zlib_on", [(False, False), (True, False), (True, True)]
+    "binary,zlib_on",
+    [(False, False), (True, False), pytest.param(True, True, marks=requires_zlib)],
 )
 def test_roundtrip_is_lossless(tmp_path, fmt, binary, zlib_on):
     src = _baseline_mesh()

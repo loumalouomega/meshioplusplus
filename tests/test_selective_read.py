@@ -38,7 +38,14 @@ def _mesh():
 
 def _write(tmp_path, fmt):
     path = tmp_path / f"m{EXT[fmt]}"
-    meshioplusplus.write(path, _mesh())
+    # ascii for vtu/vtp: these tests are about selective-read/metadata
+    # plumbing, not codecs, and the default `compression="zlib"` would make
+    # the native metadata/read path depend on zlib being compiled in (it
+    # isn't on Windows CI -- see CMakeLists.txt's MESHIOPLUSPLUS_WITH_ZLIB
+    # comment), silently forcing the full-read fallback these tests assert
+    # against.
+    kwargs = {"binary": False} if fmt in ("vtu", "vtp") else {}
+    meshioplusplus.write(path, _mesh(), **kwargs)
     return path
 
 

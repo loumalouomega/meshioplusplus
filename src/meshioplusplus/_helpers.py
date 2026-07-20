@@ -142,7 +142,19 @@ def read_metadata(filename, file_format: Union[str, None] = None) -> dict:
     # rather than in each format shim: read_metadata has no per-format Python
     # twin, so one fallback covers every format at once.
     mesh = read(filename, file_format)
-    return _metadata_from_mesh(mesh, file_format)
+    resolved_format = file_format
+    if resolved_format is None and not is_buffer(filename, "r"):
+        # The C++ attempt above never got a name to report either (it was
+        # given "" too), so resolve it the same way `_read_file` would --
+        # otherwise a file_format=None caller silently gets format="" here.
+        path = Path(filename)
+        try:
+            resolved_format = _filetypes_from_path(path)[0]
+        except ReadError:
+            from ._sniff import sniff_format
+
+            resolved_format = sniff_format(path) or None
+    return _metadata_from_mesh(mesh, resolved_format)
 
 
 def _metadata_from_mesh(mesh, file_format: Union[str, None]) -> dict:

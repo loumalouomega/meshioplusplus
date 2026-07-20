@@ -19,6 +19,7 @@ from meshioplusplus.vtu import _vtu as _vtu_py
 
 _core = pytest.importorskip("meshioplusplus._core")
 
+HAS_ZLIB = getattr(_core, "__has_zlib__", False)
 HAS_ZSTD = getattr(_core, "__has_zstd__", False)
 HAS_LZ4 = getattr(_core, "__has_lz4__", False)
 
@@ -30,6 +31,13 @@ ATTR = {
     "zstd": "vtkZSTDDataCompressor",
 }
 
+# Unlike zstd/lz4 (default OFF), zlib defaults ON in CMake -- but it is still
+# found via find_package, same as HDF5/netCDF, so a system without it (e.g.
+# Windows CI, see CMakeLists.txt's MESHIOPLUSPLUS_WITH_ZLIB comment) compiles
+# it out too. `meshioplusplus.write`/`.read` never notice (the Python fallback
+# picks up zlib from the stdlib); only tests that call `_core` directly need
+# this guard.
+requires_zlib = pytest.mark.skipif(not HAS_ZLIB, reason="build has no zlib")
 requires_zstd = pytest.mark.skipif(not HAS_ZSTD, reason="build has no zstd")
 requires_lz4 = pytest.mark.skipif(not HAS_LZ4, reason="build has no lz4")
 
@@ -49,9 +57,11 @@ def _assert_same(got, src):
         np.testing.assert_allclose(np.asarray(got.point_data[name]), arr)
 
 
-def test_zlib_is_always_available():
-    """The default codec must work regardless of the optional ones."""
-    assert getattr(_core, "__has_zlib__", False)
+def test_zlib_capability_flag_exists():
+    """Present as a boolean even when off (find_package can fail, e.g. Windows
+    CI with no system zlib), matching the zstd/lz4 flags -- callers can branch
+    without hasattr regardless of build configuration."""
+    assert isinstance(getattr(_core, "__has_zlib__", None), bool)
 
 
 def test_capability_flags_exist():
@@ -91,7 +101,7 @@ def test_codec_round_trip(tmp_path, fmt, codec):
 @pytest.mark.parametrize(
     "codec",
     [
-        "zlib",
+        pytest.param("zlib", marks=requires_zlib),
         pytest.param("lz4", marks=requires_lz4),
         pytest.param("zstd", marks=requires_zstd),
     ],
