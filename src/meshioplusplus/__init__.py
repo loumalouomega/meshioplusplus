@@ -47,6 +47,7 @@ from . import (
 )
 from .__about__ import __version__
 from ._clean import clean
+from ._convert_cells import convert_cells
 from ._crop import crop
 from ._data_average import cell_data_to_point_data, point_data_to_cell_data
 from ._data_calc import data_calc
@@ -142,6 +143,7 @@ __all__ = [
     "clean",
     "crop",
     "split",
+    "convert_cells",
     "compute_stats",
     "data_manage",
     "data_drop",
