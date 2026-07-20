@@ -23,11 +23,13 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/byteswap.hpp"
+#include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -101,10 +103,12 @@ void store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
 }
 
 struct VtkCursor {
-    const std::string& mBuf;
+    // A view, not a reference to a std::string: the buffer may be a memory
+    // mapping rather than an owned string (see detail/file_source.hpp).
+    std::string_view mBuf;
     std::size_t mPos = 0;
 
-    explicit VtkCursor(const std::string& rB) : mBuf(rB) {}
+    explicit VtkCursor(std::string_view b) : mBuf(b) {}
 
     bool Eof() const { return mPos >= mBuf.size(); }
 
@@ -112,7 +116,7 @@ struct VtkCursor {
         std::size_t start = mPos;
         while (mPos < mBuf.size() && mBuf[mPos] != '\n')
             ++mPos;
-        std::string line = mBuf.substr(start, mPos - start);
+        std::string line(mBuf.substr(start, mPos - start));
         if (mPos < mBuf.size())
             ++mPos;  // skip '\n'
         if (!line.empty() && line.back() == '\r')
@@ -134,7 +138,11 @@ struct VtkCursor {
         const std::size_t isz = dtype_size(dt);
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
-            const char* base = mBuf.c_str();
+            // strtod/strtoll scan for a terminator: a buffered source is a
+            // std::string, and a mapping relies on the kernel's zero-filled
+            // final page -- which is why FileSource declines page-multiple
+            // sized files.
+            const char* base = mBuf.data();
             for (std::size_t i = 0; i < count; ++i) {
                 char* endp = nullptr;
                 if (flt) {
@@ -196,19 +204,11 @@ std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {
 }  // namespace
 
 Mesh read_vtk(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    // Bulk slurp (seek+read) rather than char-by-char istreambuf_iterator.
-    in.seekg(0, std::ios::end);
-    std::streamoff len = in.tellg();
-    in.seekg(0, std::ios::beg);
-    std::string buf;
-    if (len > 0) {
-        buf.resize(static_cast<std::size_t>(len));
-        in.read(buf.data(), len);
-    }
-    VtkCursor cur(buf);
+    // Mapped where that pays, copied otherwise. Function-local: every parsed
+    // value is copied into owning mesh storage, so nothing in the returned Mesh
+    // points back into this buffer.
+    const detail::FileSource source(rPath);
+    VtkCursor cur(source.View());
 
     std::string header = cur.ReadLine();
     const bool is_v5 = header.find("Version 5") != std::string::npos;
