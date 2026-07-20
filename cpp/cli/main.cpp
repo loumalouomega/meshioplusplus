@@ -74,6 +74,7 @@
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
+#include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -208,7 +209,8 @@ std::string compiled_out_hint(const std::string& rFormat) {
     return "";
 }
 
-Mesh read_mesh_cli(const std::string& rPath, const std::string& rFormat) {
+Mesh read_mesh_cli(const std::string& rPath, const std::string& rFormat,
+                   const meshioplusplus::ReadOptions& rOpts = {}) {
     std::string fmt;
     try {
         fmt = meshioplusplus::resolve_format(rPath, rFormat);
@@ -217,11 +219,12 @@ Mesh read_mesh_cli(const std::string& rPath, const std::string& rFormat) {
         if (fmt.empty())
             throw;
     }
-    const auto& readers = meshioplusplus::registry_readers();
-    auto it = readers.find(fmt);
-    if (it == readers.end())
+    if (!meshioplusplus::registry_readers().count(fmt) &&
+        !meshioplusplus::registry_reader_supports_options(fmt))
         throw ReadError("no reader for format '" + fmt + "'" + compiled_out_hint(fmt));
-    return it->second(rPath);
+    // registry_read honours the options where the format supports them and
+    // falls back to a full read where it does not.
+    return meshioplusplus::registry_read(rPath, fmt, rOpts);
 }
 
 void write_mesh_cli(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat) {
@@ -348,10 +351,12 @@ void print_usage(std::ostream& os) {
           "Mesh input/output tools (native C++ CLI, no Python required).\n\n"
           "commands:\n"
           "  convert (c)             Convert between mesh formats\n"
-          "  info (i)                Print mesh info\n"
+          "                            --points-only / --arrays a,b narrow what is read\n"
+          "  info (i)                Print mesh info (--fast summarizes from the header)\n"
           "  ascii (a)               Rewrite a file in its ASCII variant (in place)\n"
           "  binary (b)              Rewrite a file in its binary variant (in place)\n"
           "  compress                Compress a mesh file (in place)\n"
+          "                            --codec zlib|lz4|zstd for vtu/vtp\n"
           "  decompress              Decompress a mesh file (in place)\n"
           "  quality (q)             Print mesh quality metrics\n"
           "  extract-surface (surface)  Extract the boundary surface/edges\n"
@@ -370,6 +375,26 @@ void print_usage(std::ostream& os) {
           "       CLI (they live only in the Python Mesh); use the Python CLI for those.\n";
 }
 
+/// "a,b" -> {"a", "b"}, skipping empty entries.
+std::vector<std::string> data_split_names(const std::string& rValue) {
+    std::vector<std::string> out;
+    std::size_t start = 0;
+    while (start <= rValue.size()) {
+        const std::size_t comma = rValue.find(',', start);
+        const std::size_t end = comma == std::string::npos ? rValue.size() : comma;
+        std::string part = rValue.substr(start, end - start);
+        // trim
+        const std::size_t b = part.find_first_not_of(" \t");
+        const std::size_t e = part.find_last_not_of(" \t");
+        if (b != std::string::npos)
+            out.push_back(part.substr(b, e - b + 1));
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    return out;
+}
+
 int cmd_convert(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -378,6 +403,8 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"ascii", {"-a"}, false},
                                   {"sets-to-int-data", {"-s"}, false},
                                   {"int-data-to-sets", {"-d"}, false},
+                                  {"points-only", {}, false},
+                                  {"arrays", {}, true},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("convert requires exactly INFILE and OUTFILE");
@@ -394,7 +421,18 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     std::string float_fmt = opt_value(p, "float-format");
     bool ascii = has_flag(p, "ascii");
 
-    Mesh mesh = read_mesh_cli(infile, in_fmt);
+    // Selective read: --points-only drops every data array, --arrays keeps only
+    // the named ones. Connectivity is kept either way, so the output is still a
+    // usable mesh -- only the data is narrowed.
+    meshioplusplus::ReadOptions opts;
+    opts.mPointsOnly = has_flag(p, "points-only");
+    if (has_opt(p, "arrays")) {
+        if (opts.mPointsOnly)
+            throw std::runtime_error("--points-only and --arrays are mutually exclusive");
+        opts.mDataArrays = data_split_names(opt_value(p, "arrays"));
+    }
+
+    Mesh mesh = read_mesh_cli(infile, in_fmt, opts);
 
     if (ascii) {
         std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
@@ -408,8 +446,58 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+/// Print the header-only summary behind `info --fast`.
+void print_metadata_summary(const meshioplusplus::MeshMetadata& rMeta) {
+    std::cout << "<meshio++ mesh summary>\n";
+    std::cout << "  Format: " << (rMeta.mFormat.empty() ? "unknown" : rMeta.mFormat) << "\n";
+    std::cout << "  Number of points: " << rMeta.mNumPoints << "\n";
+    if (rMeta.mCellBlocks.empty()) {
+        std::cout << "  No cells.\n";
+    } else {
+        std::cout << "  Number of cells:\n";
+        for (const auto& block : rMeta.mCellBlocks)
+            std::cout << "    " << block.mType << ": " << block.mNumCells << "\n";
+    }
+    const std::pair<const char*, const std::vector<std::string>*> sections[] = {
+        {"Point data", &rMeta.mPointDataNames},
+        {"Cell data", &rMeta.mCellDataNames},
+        {"Field data", &rMeta.mFieldDataNames},
+    };
+    for (const auto& section : sections) {
+        if (section.second->empty())
+            continue;
+        std::cout << "  " << section.first << ": ";
+        for (std::size_t i = 0; i < section.second->size(); ++i)
+            std::cout << (i ? ", " : "") << (*section.second)[i];
+        std::cout << "\n";
+    }
+    if (rMeta.mHasBBox) {
+        std::cout << "  Bounding box: [" << rMeta.mBBoxMin[0] << ", " << rMeta.mBBoxMin[1] << ", "
+                  << rMeta.mBBoxMin[2] << "] - [" << rMeta.mBBoxMax[0] << ", " << rMeta.mBBoxMax[1]
+                  << ", " << rMeta.mBBoxMax[2] << "]\n";
+    }
+    // Say plainly when "fast" was not, rather than implying a saving that did
+    // not happen.
+    if (rMeta.mFellBackToFullRead)
+        std::cout << "  (no header-only path for this format; the file was read in full)\n";
+}
+
 int cmd_info(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}});
+    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}, {"fast", {}, false}});
+    if (has_flag(p, "fast")) {
+        if (p.positionals.size() != 1)
+            throw std::runtime_error("info requires exactly one INFILE");
+        std::string fmt;
+        try {
+            fmt = meshioplusplus::resolve_format(p.positionals[0], opt_value(p, "input-format"));
+        } catch (const ReadError&) {
+            fmt = meshioplusplus::sniff_format(p.positionals[0]);
+            if (fmt.empty())
+                throw;
+        }
+        print_metadata_summary(meshioplusplus::registry_read_metadata(p.positionals[0], fmt, {}));
+        return 0;
+    }
     if (p.positionals.size() != 1)
         throw std::runtime_error("info requires exactly INFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -485,8 +573,21 @@ int cmd_ascii_binary(const std::vector<std::string>& rArgs, bool binary) {
     return 0;
 }
 
+/// `--codec` value -> VtkCodec, rejecting anything that is not a block codec.
+meshioplusplus::detail::VtkCodec codec_from_name(const std::string& rName) {
+    using meshioplusplus::detail::VtkCodec;
+    if (rName == "zlib")
+        return VtkCodec::Zlib;
+    if (rName == "lz4")
+        return VtkCodec::LZ4;
+    if (rName == "zstd")
+        return VtkCodec::ZSTD;
+    throw std::runtime_error("unknown --codec '" + rName + "' (expected zlib, lz4 or zstd)");
+}
+
 int cmd_compress(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}, {"max", {"-max"}, false}});
+    auto p = cli_parse(
+        rArgs, {{"input-format", {"-i"}, true}, {"max", {"-max"}, false}, {"codec", {}, true}});
     if (p.positionals.size() != 1)
         throw std::runtime_error("compress requires exactly INFILE");
     const std::string& infile = p.positionals[0];
@@ -496,12 +597,27 @@ int cmd_compress(const std::vector<std::string>& rArgs) {
     Mesh mesh = read_mesh_cli(infile, opt_value(p, "input-format"));
     std::string fmt = meshioplusplus::resolve_format(infile, opt_value(p, "input-format"));
 
+    // --codec only means something where a block codec is actually chosen.
+    // Accepting and ignoring it elsewhere would be the worst outcome: the user
+    // would believe they got zstd and silently get gzip (or plain binary).
+    const bool has_codec = has_opt(p, "codec");
+    if (has_codec && fmt != "vtu" && fmt != "vtp")
+        throw std::runtime_error("--codec is not applicable to '" + fmt +
+                                 "'; it selects the VTK XML block codec and only "
+                                 "vtu/vtp have one");
+
     if (fmt == "ansys" || fmt == "gmsh" || fmt == "ply" || fmt == "stl" || fmt == "vtk") {
         write_binary_variant(infile, mesh, fmt, /*binary=*/true, "");
-    } else if (fmt == "vtu") {
-        if (max)
+    } else if (fmt == "vtu" || fmt == "vtp") {
+        meshioplusplus::detail::VtkCodec codec = meshioplusplus::detail::VtkCodec::Zlib;
+        if (has_codec)
+            codec = codec_from_name(opt_value(p, "codec"));
+        else if (max)
             std::cerr << "note: the native CLI has no lzma variant; using zlib\n";
-        meshioplusplus::write_vtu(infile, mesh, /*binary=*/true, /*zlib=*/true);
+        if (fmt == "vtu")
+            meshioplusplus::write_vtu_codec(infile, mesh, /*binary=*/true, codec);
+        else
+            meshioplusplus::write_vtp_codec(infile, mesh, /*binary=*/true, codec);
     } else if (fmt == "xdmf") {
         meshioplusplus::write_xdmf(infile, mesh, "HDF", gzip);
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -908,26 +1024,6 @@ meshioplusplus::DataLocation data_location_of_flag(int i) {
         default:
             return meshioplusplus::DataLocation::Field;
     }
-}
-
-/// "a,b" -> {"a", "b"}, skipping empty entries.
-std::vector<std::string> data_split_names(const std::string& rValue) {
-    std::vector<std::string> out;
-    std::size_t start = 0;
-    while (start <= rValue.size()) {
-        const std::size_t comma = rValue.find(',', start);
-        const std::size_t end = comma == std::string::npos ? rValue.size() : comma;
-        std::string part = rValue.substr(start, end - start);
-        // trim
-        const std::size_t b = part.find_first_not_of(" \t");
-        const std::size_t e = part.find_last_not_of(" \t");
-        if (b != std::string::npos)
-            out.push_back(part.substr(b, e - b + 1));
-        if (comma == std::string::npos)
-            break;
-        start = comma + 1;
-    }
-    return out;
 }
 
 /// "OLD:NEW" split on the LAST colon, because data names routinely contain
