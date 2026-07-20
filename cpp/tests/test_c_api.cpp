@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,8 @@
 #include "mesh_fixtures.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/vtu.hpp"
 #endif
 
 namespace {
@@ -721,3 +724,159 @@ TEST(CApi, DataNullArgumentsAreRejected) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Selective reads (mio_read_ex) and the opaque file summary (mio_read_metadata)
+// ---------------------------------------------------------------------------
+
+TEST(CApi, ReadOptsInitIsReadEverything) {
+    mio_read_opts opts;
+    mio_read_opts_init(&opts);
+    EXPECT_EQ(opts.points_only, 0);
+    EXPECT_EQ(opts.metadata_only, 0);
+    EXPECT_EQ(opts.arrays, nullptr);
+    EXPECT_EQ(opts.num_arrays, 0);
+    EXPECT_EQ(opts.mmap_mode, 0);
+    for (int i = 0; i < 6; ++i)
+        EXPECT_EQ(opts.reserved[i], 0) << "reserved must stay zero for ABI growth";
+}
+
+TEST(CApi, ReadExPointsOnlyDropsDataKeepsGeometry) {
+    const std::string path = mt::temp_path(".vtu");
+    meshioplusplus::write_vtu(path, mt::data_mesh(), /*binary=*/true, /*zlib=*/false);
+
+    mio_mesh* full = mio_read(path.c_str(), "vtu");
+    ASSERT_NE(full, nullptr);
+
+    mio_read_opts opts;
+    mio_read_opts_init(&opts);
+    opts.points_only = 1;
+    mio_mesh* bare = mio_read_ex(path.c_str(), "vtu", &opts);
+    ASSERT_NE(bare, nullptr) << mio_last_error();
+
+    EXPECT_EQ(mio_mesh_num_point_data(bare), 0);
+    EXPECT_EQ(mio_mesh_num_cell_data(bare), 0);
+    EXPECT_GT(mio_mesh_num_point_data(full), 0);
+    EXPECT_EQ(mio_mesh_num_points(bare), mio_mesh_num_points(full));
+    EXPECT_EQ(mio_mesh_num_cell_blocks(bare), mio_mesh_num_cell_blocks(full));
+
+    mio_mesh_free(bare);
+    mio_mesh_free(full);
+    std::filesystem::remove(path);
+}
+
+TEST(CApi, ReadExArraysSubsetAndExplicitNone) {
+    const std::string path = mt::temp_path(".vtu");
+    const meshioplusplus::Mesh source = mt::data_mesh();
+    ASSERT_GE(source.PointDataNames().size(), 2u);
+    const std::string keep = source.PointDataNames().front();
+    meshioplusplus::write_vtu(path, source, /*binary=*/true, /*zlib=*/false);
+
+    mio_read_opts opts;
+    mio_read_opts_init(&opts);
+    const char* names[1] = {keep.c_str()};
+    opts.arrays = names;
+    opts.num_arrays = 1;
+    mio_mesh* subset = mio_read_ex(path.c_str(), "vtu", &opts);
+    ASSERT_NE(subset, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_point_data(subset), 1);
+    mio_mesh_free(subset);
+
+    // Non-NULL pointer with count 0 means "no arrays" -- distinct from NULL.
+    mio_read_opts none;
+    mio_read_opts_init(&none);
+    none.arrays = names;
+    none.num_arrays = 0;
+    mio_mesh* empty = mio_read_ex(path.c_str(), "vtu", &none);
+    ASSERT_NE(empty, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_point_data(empty), 0);
+    mio_mesh_free(empty);
+
+    std::filesystem::remove(path);
+}
+
+TEST(CApi, ReadExWithNullOptsMatchesPlainRead) {
+    const std::string path = mt::temp_path(".vtu");
+    meshioplusplus::write_vtu(path, mt::data_mesh(), /*binary=*/true, /*zlib=*/false);
+
+    mio_mesh* a = mio_read(path.c_str(), "vtu");
+    mio_mesh* b = mio_read_ex(path.c_str(), "vtu", nullptr);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(a), mio_mesh_num_points(b));
+    EXPECT_EQ(mio_mesh_num_point_data(a), mio_mesh_num_point_data(b));
+    mio_mesh_free(a);
+    mio_mesh_free(b);
+    std::filesystem::remove(path);
+}
+
+TEST(CApi, ReadMetadataReportsShapeAndNames) {
+    const std::string path = mt::temp_path(".vtu");
+    const meshioplusplus::Mesh source = mt::data_mesh();
+    meshioplusplus::write_vtu(path, source, /*binary=*/true, /*zlib=*/false);
+
+    mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), "vtu");
+    ASSERT_NE(meta, nullptr) << mio_last_error();
+
+    EXPECT_EQ(mio_read_metadata_num_points(meta), static_cast<int64_t>(source.NumPoints()));
+    EXPECT_EQ(mio_read_metadata_num_cell_blocks(meta),
+              static_cast<int64_t>(source.NumCellBlocks()));
+    EXPECT_GT(mio_read_metadata_num_cells(meta), 0);
+    EXPECT_EQ(mio_read_metadata_fell_back(meta), 0) << "vtu has a native metadata path";
+
+    int64_t ncells = 0, npc = 0;
+    int ragged = -1;
+    ASSERT_EQ(mio_read_metadata_cell_block(meta, 0, &ncells, &npc, &ragged), MIO_OK);
+    EXPECT_EQ(ncells, static_cast<int64_t>(source.Cells(0).NumCells()));
+    EXPECT_EQ(ragged, 0);
+
+    char buf[64];
+    const int64_t n = mio_read_metadata_cell_block_type(meta, 0, buf, sizeof(buf));
+    ASSERT_GT(n, 0);
+    EXPECT_EQ(std::string(buf), std::string(source.Cells(0).Type()));
+
+    EXPECT_EQ(mio_read_metadata_num_names(meta, MIO_DATA_POINT),
+              static_cast<int64_t>(source.PointDataNames().size()));
+    ASSERT_EQ(mio_read_metadata_name(meta, MIO_DATA_POINT, 0, buf, sizeof(buf)),
+              static_cast<int64_t>(source.PointDataNames().front().size()));
+    EXPECT_EQ(std::string(buf), source.PointDataNames().front());
+
+    // A native summary never decodes the coordinates, so it has no bbox.
+    EXPECT_EQ(mio_read_metadata_bbox(meta, nullptr, nullptr), MIO_ERR_NOT_FOUND);
+
+    mio_read_metadata_free(meta);
+    std::filesystem::remove(path);
+}
+
+TEST(CApi, ReadMetadataFallbackFlagsItselfAndHasBBox) {
+    const std::string path = mt::temp_path(".stl");
+    meshioplusplus::write_stl(path, mt::tri_mesh(), /*binary=*/false, /*skin=*/true);
+
+    mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), "stl");
+    ASSERT_NE(meta, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_read_metadata_fell_back(meta), 1);
+
+    double lo[3], hi[3];
+    EXPECT_EQ(mio_read_metadata_bbox(meta, lo, hi), MIO_OK);
+    for (int d = 0; d < 3; ++d)
+        EXPECT_LE(lo[d], hi[d]);
+
+    mio_read_metadata_free(meta);
+    std::filesystem::remove(path);
+}
+
+TEST(CApi, ReadMetadataErrorsAreGuardedNotThrown) {
+    EXPECT_EQ(mio_read_metadata_create(nullptr, "vtu"), nullptr);
+    EXPECT_EQ(mio_read_metadata_num_points(nullptr), -1);
+    EXPECT_EQ(mio_read_metadata_fell_back(nullptr), -1);
+    EXPECT_EQ(mio_read_metadata_cell_block(nullptr, 0, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_reader_supports_options(nullptr), -1);
+    mio_read_metadata_free(nullptr);  // NULL-safe
+    EXPECT_NE(std::string(mio_last_error()), "");
+}
+
+TEST(CApi, ReaderSupportsOptions) {
+    EXPECT_EQ(mio_reader_supports_options("vtu"), 1);
+    EXPECT_EQ(mio_reader_supports_options("stl"), 0);
+}
