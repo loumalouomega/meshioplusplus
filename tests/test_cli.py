@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -202,3 +204,249 @@ def test_info_unused_points_warns(monkeypatch, capsys):
     monkeypatch.setattr(meshioplusplus._cli._info, "read", lambda *a, **k: mesh)
     meshioplusplus._cli.main(["info", "ignored"])
     assert "not part of any cell" in capsys.readouterr().err
+
+
+# --- the nested `data` command group ---------------------------------------
+
+
+def _data_cli_mesh():
+    """A two-block mesh carrying point and cell data, for the data verbs."""
+    m = meshioplusplus.Mesh(
+        np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ]
+        ),
+        [
+            ("triangle", np.array([[0, 1, 2], [0, 2, 3]])),
+            ("quad", np.array([[1, 4, 5, 2]])),
+        ],
+    )
+    m.point_data["T"] = np.array([0.0, 1.0, 11.0, 10.0, 2.0, 12.0])
+    m.point_data["velocity"] = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ]
+    )
+    m.cell_data["mat"] = [np.array([1.0, 2.0]), np.array([3.0])]
+    return m
+
+
+@pytest.fixture()
+def data_infile(tmp_path):
+    path = tmp_path / "in.vtu"
+    meshioplusplus.write(path, _data_cli_mesh())
+    return path
+
+
+def test_data_info(data_infile, capsys):
+    rc = meshioplusplus._cli.main(["data", "info", str(data_infile)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "T" in out
+    assert "velocity" in out
+    assert "mat" in out
+
+
+def test_data_info_json(data_infile, capsys):
+    rc = meshioplusplus._cli.main(["data", "info", str(data_infile), "--json"])
+    assert rc == 0
+    arrays = json.loads(capsys.readouterr().out)
+    names = {(a["location"], a["name"]) for a in arrays}
+    assert ("point_data", "T") in names
+    assert ("cell_data", "mat") in names
+
+
+def test_data_calc(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "calc",
+            str(data_infile),
+            str(out),
+            "--point",
+            "speed = norm(velocity)",
+        ]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    expected = np.linalg.norm(_data_cli_mesh().point_data["velocity"], axis=1)
+    assert np.allclose(mesh.point_data["speed"], expected)
+
+
+def test_data_to_cell(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "to-cell",
+            str(data_infile),
+            str(out),
+            "--keys",
+            "T",
+            "--target-suffix",
+            "_c",
+        ]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    assert "T_c" in mesh.cell_data
+
+
+def test_data_to_point_weighted(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        ["data", "to-point", str(data_infile), str(out), "--keys", "mat", "--weighted"]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    # Point 2 is shared by both triangles (area 1/2) and the quad (area 1).
+    assert mesh.point_data["mat"][2] == pytest.approx(2.25)
+
+
+def test_data_clamp(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "clamp",
+            str(data_infile),
+            str(out),
+            "--point",
+            "T",
+            "--min",
+            "0",
+            "--max",
+            "10",
+        ]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    assert mesh.point_data["T"].max() == pytest.approx(10.0)
+
+
+def test_data_normalize(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "normalize",
+            str(data_infile),
+            str(out),
+            "--cell",
+            "mat",
+            "--to",
+            "0,1",
+        ]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    values = np.concatenate([np.asarray(b) for b in mesh.cell_data["mat"]])
+    assert values.min() == pytest.approx(0.0)
+    assert values.max() == pytest.approx(1.0)
+
+
+def test_data_normalize_zero_mean(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        ["data", "normalize", str(data_infile), str(out), "--point", "T", "--zero-mean"]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    assert mesh.point_data["T"].mean() == pytest.approx(0.0, abs=1e-12)
+    assert mesh.point_data["T"].std() == pytest.approx(1.0)
+
+
+def test_data_rename(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        ["data", "rename", str(data_infile), str(out), "--point", "T:temperature"]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    assert "temperature" in mesh.point_data
+    assert "T" not in mesh.point_data
+
+
+def test_data_rename_splits_on_the_last_colon(tmp_path):
+    # Data names routinely contain colons, so `--point gmsh:physical:tag` must
+    # rename `gmsh:physical` to `tag`.
+    mesh = _data_cli_mesh()
+    mesh.point_data["gmsh:physical"] = np.arange(6.0)
+    infile = tmp_path / "in.vtu"
+    outfile = tmp_path / "out.vtu"
+    meshioplusplus.write(infile, mesh)
+    rc = meshioplusplus._cli.main(
+        ["data", "rename", str(infile), str(outfile), "--point", "gmsh:physical:tag"]
+    )
+    assert rc == 0
+    back = meshioplusplus.read(outfile)
+    assert "tag" in back.point_data
+    assert "gmsh:physical" not in back.point_data
+
+
+def test_data_drop(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        ["data", "drop", str(data_infile), str(out), "--point", "T,velocity"]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    assert "T" not in mesh.point_data
+    assert "velocity" not in mesh.point_data
+    assert "mat" in mesh.cell_data
+
+
+def test_data_keep(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        ["data", "keep", str(data_infile), str(out), "--point", "T"]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    assert set(mesh.point_data) == {"T"}
+    # A location the whitelist does not mention is untouched.
+    assert "mat" in mesh.cell_data
+
+
+def test_data_without_a_verb_exits_2():
+    with pytest.raises(SystemExit) as exc:
+        meshioplusplus._cli.main(["data"])
+    assert exc.value.code == 2
+
+
+def test_data_unknown_verb_exits_2():
+    with pytest.raises(SystemExit) as exc:
+        meshioplusplus._cli.main(["data", "nonsense"])
+    assert exc.value.code == 2
+
+
+def test_data_geometry_is_never_modified(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    meshioplusplus._cli.main(
+        [
+            "data",
+            "calc",
+            str(data_infile),
+            str(out),
+            "--point",
+            "speed = norm(velocity)",
+        ]
+    )
+    before = meshioplusplus.read(data_infile)
+    after = meshioplusplus.read(out)
+    assert np.array_equal(before.points, after.points)
+    for a, b in zip(before.cells, after.cells):
+        assert a.type == b.type
+        assert np.array_equal(np.asarray(a.data), np.asarray(b.data))
