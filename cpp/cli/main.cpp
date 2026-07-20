@@ -50,6 +50,7 @@
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -369,6 +370,7 @@ void print_usage(std::ostream& os) {
           "  crop                    Subset by bounding box or half-space\n"
           "  split                   Partition into multiple files (type/region/component)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
+          "  refine                  Uniformly subdivide every cell (same-type children)\n"
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
           "  data <verb>             Inspect / rename / average / compute on data arrays\n\n"
           "  -v, --version           Display version information\n"
@@ -964,6 +966,26 @@ int cmd_convert_cells(const std::vector<std::string>& rArgs) {
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
 
     auto result = meshioplusplus::convert_cells(mesh, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_refine(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"levels", {}, true},
+                                  {"record-parent-ids", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("refine requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::RefineOptions options;
+    options.mLevels = std::stoi(opt_value(p, "levels", "1"));
+    options.mRecordParentIds = has_flag(p, "record-parent-ids");
+
+    auto result = meshioplusplus::refine(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
     return 0;
 }
@@ -1685,6 +1707,8 @@ int main(int argc, char** argv) {
             return cmd_split(rest);
         if (cmd == "convert-cells")
             return cmd_convert_cells(rest);
+        if (cmd == "refine")
+            return cmd_refine(rest);
         if (cmd == "data")
             return cmd_data(rest);
         if (cmd == "stats")
