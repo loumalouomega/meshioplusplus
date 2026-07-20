@@ -459,6 +459,191 @@ typedef struct mio_stats_report {
  */
 MIO_API mio_status mio_stats(const mio_mesh* mesh, mio_stats_report* out);
 
+/* ------------------------------------------------------------------------- */
+/* Data operations                                                           */
+/*                                                                           */
+/* These act on a mesh's point_data / cell_data / field_data arrays rather    */
+/* than on its geometry, which they never modify. Each returns a NEW mesh     */
+/* (free it with mio_mesh_free) or NULL on failure; see mio_last_error().     */
+/*                                                                           */
+/* Name lists cross as an array of C strings plus an explicit count (the same */
+/* convention as mio_merge), not NULL-terminated -- easier for Fortran to     */
+/* build. Passing count == 0 means "every array at that location" for the     */
+/* averaging and conditioning entry points.                                   */
+/*                                                                           */
+/* Documented flat-ABI gap: the combined data_manage (keep + drop + rename in */
+/* one call) is not exposed, since an array-of-triples-of-enum-and-two-string */
+/* parameter is unwieldy and the three primitives below compose to the same   */
+/* effect. Likewise point/cell SETS never reach the C++ core at all.           */
+/* ------------------------------------------------------------------------- */
+
+/** Which of a mesh's three data maps an array lives in. */
+typedef enum mio_data_location {
+    MIO_DATA_POINT = 0, /**< point_data -- one row per mesh point */
+    MIO_DATA_CELL = 1,  /**< cell_data -- one array per cell block */
+    MIO_DATA_FIELD = 2  /**< field_data -- mesh-global */
+} mio_data_location;
+
+/** Weighting for mio_data_cell_to_point. */
+typedef enum mio_cell_point_weight {
+    MIO_WEIGHT_UNIFORM = 0, /**< every incident cell contributes equally */
+    MIO_WEIGHT_MEASURE = 1  /**< weight by |cell measure| (length/area/volume) */
+} mio_cell_point_weight;
+
+/** Conditioning transform for mio_data_condition. */
+typedef enum mio_condition_mode {
+    MIO_COND_CLAMP = 0,      /**< x -> min(max(x, lo), hi) */
+    MIO_COND_NORMALIZE = 1,  /**< map the array's [min,max] onto [lo,hi] */
+    MIO_COND_STANDARDIZE = 2 /**< (x - mean) / stddev */
+} mio_condition_mode;
+
+/** Whether conditioning treats components independently or by row magnitude. */
+typedef enum mio_condition_scope {
+    MIO_SCOPE_COMPONENT = 0, /**< each trailing component independently */
+    MIO_SCOPE_MAGNITUDE = 1  /**< by row magnitude; direction preserved */
+} mio_condition_scope;
+
+/** What reaches the output for non-finite (NaN/inf) values. They are ALWAYS
+ *  excluded from reductions regardless of this setting. */
+typedef enum mio_nan_policy {
+    MIO_NAN_IGNORE = 0,  /**< pass through unchanged */
+    MIO_NAN_REPLACE = 1, /**< substitute the caller's replacement value */
+    MIO_NAN_FAIL = 2     /**< fail with MIO_ERR_INVALID_ARG */
+} mio_nan_policy;
+
+/**
+ * Drop the named data arrays at one location.
+ * @param mesh           input mesh (unmodified).
+ * @param location       which data map to drop from.
+ * @param names          array of `count` names.
+ * @param count          number of entries in `names`.
+ * @param ignore_missing non-zero to skip names that do not exist.
+ * @return a new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_data_drop(const mio_mesh* mesh, mio_data_location location,
+                                const char* const* names, int64_t count, int ignore_missing);
+
+/**
+ * Keep only the named data arrays at one location, dropping the rest there.
+ * The other two locations are left untouched; `count == 0` drops everything at
+ * `location`.
+ * @return a new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_data_keep(const mio_mesh* mesh, mio_data_location location,
+                                const char* const* names, int64_t count, int ignore_missing);
+
+/**
+ * Rename one data array, preserving its values, dtype and shape.
+ * @return a new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_data_rename(const mio_mesh* mesh, mio_data_location location,
+                                  const char* from_name, const char* to_name);
+
+/**
+ * Average point_data onto the cells: each cell's value is the mean over its own
+ * nodes. The output is always Float64. `count == 0` converts every point_data
+ * array.
+ * @return a new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_data_point_to_cell(const mio_mesh* mesh, const char* const* names,
+                                         int64_t count, const char* suffix);
+
+/**
+ * Average cell_data onto the points: each point's value is the (optionally
+ * measure-weighted) mean over the incident cells. A point touched by no cell
+ * gets NaN. The output is always Float64.
+ * @return a new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_data_cell_to_point(const mio_mesh* mesh, const char* const* names,
+                                         int64_t count, mio_cell_point_weight weight,
+                                         const char* suffix);
+
+/**
+ * Evaluate an elementwise expression over the arrays at `location` and store
+ * the result there as `output_name`.
+ *
+ * The grammar accepts + - * / unary minus, parentheses, numeric literals,
+ * array names, and the functions abs, sqrt, min, max and norm. Nothing else is
+ * evaluated -- there is no arbitrary-code path.
+ * @param mesh        input mesh (unmodified).
+ * @param expression  the expression text.
+ * @param location    where operands are looked up and the result is stored.
+ * @param output_name name of the new array (required).
+ * @param overwrite   non-zero to allow replacing an existing array.
+ * @return a new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_data_calc(const mio_mesh* mesh, const char* expression,
+                                mio_data_location location, const char* output_name,
+                                int overwrite);
+
+/**
+ * Condition the values of the selected data arrays (clamp / normalize /
+ * standardize). For cell_data the statistics are computed jointly across all
+ * cell blocks. `count == 0` conditions every array at `location`.
+ * @param lo,hi           clamp bounds, or the normalize target range.
+ * @param nan_replacement used when `nan_policy` is MIO_NAN_REPLACE.
+ * @param suffix          NULL or "" replaces in place; otherwise the result is
+ *                        stored as name+suffix.
+ * @return a new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_data_condition(const mio_mesh* mesh, mio_data_location location,
+                                     const char* const* names, int64_t count,
+                                     mio_condition_mode mode, double lo, double hi,
+                                     mio_condition_scope scope, mio_nan_policy nan_policy,
+                                     double nan_replacement, const char* suffix);
+
+/** Opaque per-array data summary. Destroy with mio_data_info_free(). */
+typedef struct mio_data_info mio_data_info;
+
+/** Fixed-size summary of one data array (see mio_data_info_entry). Per-component
+ *  statistics are retrieved separately with mio_data_info_component(). */
+typedef struct mio_data_array_info {
+    int location;           /**< a mio_data_location */
+    int dtype;              /**< a mio_dtype, as stored */
+    int64_t num_blocks;     /**< cell_data: number of cell blocks; else 1 */
+    int64_t num_entries;    /**< rows: points / cells over all blocks / length */
+    int64_t num_components; /**< product of the trailing dimensions */
+    int64_t num_values;     /**< num_entries * num_components */
+    double min;             /**< over finite values; NaN when there are none */
+    double max;             /**< over finite values; NaN when there are none */
+    double mean;            /**< over finite values; NaN when there are none */
+    int64_t num_nan;        /**< count of NaN values */
+    int64_t num_inf;        /**< count of +/-inf values */
+    int64_t num_finite;     /**< count of finite values */
+    int inconsistent_blocks; /**< cell_data blocks disagree in component count */
+} mio_data_array_info;
+
+/**
+ * Summarize every data array a mesh carries (read-only).
+ * @return a result handle (free with mio_data_info_free), or NULL on failure.
+ */
+MIO_API mio_data_info* mio_data_info_create(const mio_mesh* mesh);
+
+/** @return the number of arrays described, or -1 on error. */
+MIO_API int64_t mio_data_info_count(const mio_data_info* info);
+
+/**
+ * Copy the `index`-th array's name into `buf`.
+ * @return the required length excluding the NUL (so a value >= buflen means the
+ *         name was truncated), or -1 on error.
+ */
+MIO_API int64_t mio_data_info_name(const mio_data_info* info, int64_t index, char* buf,
+                                   int64_t buflen);
+
+/** Fill `out` with the `index`-th array's summary. */
+MIO_API mio_status mio_data_info_entry(const mio_data_info* info, int64_t index,
+                                       mio_data_array_info* out);
+
+/**
+ * Per-component statistics of the `index`-th array. Any out pointer may be NULL.
+ * @param comp component index, in [0, num_components).
+ */
+MIO_API mio_status mio_data_info_component(const mio_data_info* info, int64_t index, int64_t comp,
+                                           double* min, double* max, double* mean);
+
+/** Destroy a summary handle. Safe to call with NULL. */
+MIO_API void mio_data_info_free(mio_data_info* info);
+
 /**
  * Renumber a mesh (RCM / Morton / Hilbert) as a pure permutation of node and
  * element indices, to reduce sparse-matrix bandwidth / improve cache locality.
