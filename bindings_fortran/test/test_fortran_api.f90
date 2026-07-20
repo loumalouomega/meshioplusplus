@@ -340,6 +340,39 @@ program test_fortran_api
         call check(st /= 0, 'convert_cells rejects an unknown mode')
     end block
 
+    ! -- refine: uniform subdivision into same-type children --
+    block
+        type(mio_mesh) :: one, two, quadratic, bad
+        integer(int64), allocatable :: pmap(:)
+        integer(int64) :: n0
+        integer :: st
+
+        n0 = m%cell_block_num_cells(1)
+
+        one = m%refine(1, point_map=pmap, stat=st)
+        call check(st == 0, 'refine succeeded')
+        call check(one%cell_block_num_cells(1) == n0*8, 'refine split each tetra into 8')
+        call check(one%num_points() > m%num_points(), 'refine added mid-edge nodes')
+        call check(allocated(pmap), 'refine returned a point map')
+        call check(size(pmap) == m%num_points(), 'point map covers the input points')
+
+        ! levels=2 matches applying one level twice.
+        two = m%refine(2, stat=st)
+        call check(st == 0, 'refine levels=2 succeeded')
+        call check(two%cell_block_num_cells(1) == n0*64, &
+                   'two levels split each tetra into 64')
+
+        ! A cell type with no same-type subdivision fails through stat.
+        quadratic = m%convert_cells('elevate', stat=st)
+        call check(st == 0, 'built a tetra10 mesh to reject')
+        bad = quadratic%refine(1, stat=st)
+        call check(st /= 0, 'refine rejects higher-order cells')
+
+        call one%free()
+        call two%free()
+        call quadratic%free()
+    end block
+
     call m%free()
     call r%free()
     call c%free()
