@@ -50,6 +50,23 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   numNodesPerCell: () => Object<string, number>,
  *   topologicalDimension: () => Object<string, number>,
+ *   meshBackend: () => string,
+ *   extractSurface: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
+ *   extractSkin: (mesh: Mesh, linearize?: boolean) => Mesh,
+ *   attachQuality: (mesh: Mesh) => Mesh,
+ *   sniffFormat: (path: string) => string,
+ *   reorder: (mesh: Mesh, method?: string) => object,
+ *   computeBandwidth: (mesh: Mesh) => number,
+ *   diff: (a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean) => object,
+ *   meshesEqual: (a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean) => boolean,
+ *   merge: (meshes: Mesh[], weld?: boolean, atol?: number, sourceTag?: boolean, dataPolicy?: string, dropDuplicateCells?: boolean) => Mesh,
+ *   transform: (mesh: Mesh, matrix: number[], rotateVectorData?: boolean) => Mesh,
+ *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean) => Mesh,
+ *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean) => Mesh,
+ *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
+ *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
+ *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
+ *   stats: (mesh: Mesh) => object,
  *   dataDrop: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataKeep: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataRename: (mesh: Mesh, location: string, from: string, to: string) => Mesh,
@@ -80,6 +97,47 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
             Module.convert(inPath, inFormat, outPath, outFormat),
         numNodesPerCell: () => Module.numNodesPerCell(),
         topologicalDimension: () => Module.topologicalDimension(),
+        meshBackend: () => Module.meshBackend(),
+        // Mesh operations (see doc/*.md per operation): computations ON a mesh,
+        // not file formats. Index maps (crop/split/convertCells) are not carried
+        // across the JS boundary -- use the record*Ids flags instead.
+        extractSurface: (mesh, recordParentIds = false) =>
+            Module.extractSurface(mesh, recordParentIds),
+        extractSkin: (mesh, linearize = false) => Module.extractSkin(mesh, linearize),
+        attachQuality: (mesh) => Module.attachQuality(mesh),
+        sniffFormat: (path) => Module.sniffFormat(path),
+        reorder: (mesh, method = 'rcm') => Module.reorder(mesh, method),
+        computeBandwidth: (mesh) => Module.computeBandwidth(mesh),
+        diff: (a, b, atol = 0, rtol = 0, unordered = false) =>
+            Module.diff(a, b, atol, rtol, unordered),
+        meshesEqual: (a, b, atol = 0, rtol = 0, unordered = false) =>
+            Module.meshesEqual(a, b, atol, rtol, unordered),
+        merge: (
+            meshes,
+            weld = false,
+            atol = 1e-12,
+            sourceTag = true,
+            dataPolicy = 'intersection',
+            dropDuplicateCells = false,
+        ) => Module.merge(meshes, weld, atol, sourceTag, dataPolicy, dropDuplicateCells),
+        transform: (mesh, matrix, rotateVectorData = false) =>
+            Module.transform(mesh, matrix, rotateVectorData),
+        clean: (
+            mesh,
+            weld = false,
+            atol = 1e-12,
+            removeOrphans = true,
+            dropDegenerate = true,
+            dropDuplicateCells = true,
+        ) => Module.clean(mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells),
+        cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false) =>
+            Module.cropBbox(mesh, lo, hi, mode, recordIds),
+        cropPlane: (mesh, point, normal, mode = 'all', recordIds = false) =>
+            Module.cropPlane(mesh, point, normal, mode, recordIds),
+        split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
+        convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
+            Module.convertCells(mesh, mode, recordParentIds),
+        stats: (mesh) => Module.stats(mesh),
         // Data operations (see doc/data_operations.md): act on point_data /
         // cell_data / field_data only -- the geometry is never modified.
         dataDrop: (mesh, location, names = [], ignoreMissing = false) =>
