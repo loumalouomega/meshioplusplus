@@ -40,7 +40,7 @@
 // Project includes
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/cell_type.hpp"
-#include "meshioplusplus/detail/cell_edges.hpp"
+#include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
@@ -144,46 +144,24 @@ struct CcellsElevateSpec {
     std::vector<std::array<std::uint8_t, 2>> mEdges;
 };
 
-// Edge orderings transcribed from the meshio/VTK quadratic node layouts and
-// cross-checked against detail/cell_faces.hpp's mid-node columns. The 2D entries
-// are taken straight from detail/cell_edges.hpp, whose row order already matches
-// triangle6 nodes 3-5 and quad8 nodes 4-7; the volume types have no shared table
-// (cell_edges.hpp tabulates surface cells only), so they are listed here.
+// Edge orderings come from detail/cell_subdivision.hpp, which is the single
+// owner of "the edges of type T, in the order T's quadratic mid-node slots
+// expect" -- shared with operations/refine.cpp, which needs the identical order
+// for the same reason. (It in turn delegates the 2D rows to
+// detail/cell_edges.hpp.) Keeping one table is what stops the two operations
+// from drifting: a mismatched order still yields a valid, positively-oriented
+// mesh, just one whose quadratic mid-nodes are permuted.
 const std::unordered_map<CellType, CcellsElevateSpec>& ccells_elevate_table() {
     static const std::unordered_map<CellType, CcellsElevateSpec> table = [] {
-        auto from_cell_edges = [](CellType source) {
-            std::vector<std::array<std::uint8_t, 2>> edges;
-            for (const detail::CellEdgeDef& ed : detail::cell_edges(source))
-                edges.push_back({ed.mNodes[0], ed.mNodes[1]});
-            return edges;
-        };
+        auto edges_of = [](CellType source) { return detail::cell_refine_edges(source); };
         std::unordered_map<CellType, CcellsElevateSpec> t;
-        t[CellType::Line] = {CellType::Line3, 2, {{0, 1}}};
-        t[CellType::Triangle] = {CellType::Triangle6, 3, from_cell_edges(CellType::Triangle)};
-        t[CellType::Quad] = {CellType::Quad8, 4, from_cell_edges(CellType::Quad)};
-        t[CellType::Tetra] = {
-            CellType::Tetra10, 4, {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}}};
-        t[CellType::Hexahedron] = {CellType::Hexahedron20,
-                                   8,
-                                   {{0, 1},
-                                    {1, 2},
-                                    {2, 3},
-                                    {3, 0},
-                                    {4, 5},
-                                    {5, 6},
-                                    {6, 7},
-                                    {7, 4},
-                                    {0, 4},
-                                    {1, 5},
-                                    {2, 6},
-                                    {3, 7}}};
-        t[CellType::Wedge] = {
-            CellType::Wedge15,
-            6,
-            {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5}, {5, 3}, {0, 3}, {1, 4}, {2, 5}}};
-        t[CellType::Pyramid] = {CellType::Pyramid13,
-                                5,
-                                {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {0, 4}, {1, 4}, {2, 4}, {3, 4}}};
+        t[CellType::Line] = {CellType::Line3, 2, edges_of(CellType::Line)};
+        t[CellType::Triangle] = {CellType::Triangle6, 3, edges_of(CellType::Triangle)};
+        t[CellType::Quad] = {CellType::Quad8, 4, edges_of(CellType::Quad)};
+        t[CellType::Tetra] = {CellType::Tetra10, 4, edges_of(CellType::Tetra)};
+        t[CellType::Hexahedron] = {CellType::Hexahedron20, 8, edges_of(CellType::Hexahedron)};
+        t[CellType::Wedge] = {CellType::Wedge15, 6, edges_of(CellType::Wedge)};
+        t[CellType::Pyramid] = {CellType::Pyramid13, 5, edges_of(CellType::Pyramid)};
         return t;
     }();
     return table;
