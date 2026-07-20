@@ -8,6 +8,56 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.3.0 (2026-07-20)
+
+Three additive I/O performance features. **Default behaviour is unchanged**: `read()`,
+`write()` and every existing file are byte-for-byte as before, and the default build gains
+no new dependency.
+
+- **Selective / partial reads and `read_metadata()`** — read only what you need.
+  - `read(path, points_only=True)` returns geometry (points *and* connectivity) with no data
+    arrays; `read(path, arrays=["u", "v"])` returns only the named ones. `arrays=None` means
+    every array and `arrays=[]` means none — a deliberate distinction, preserved all the way
+    down to the C ABI. Names absent from a file are ignored, not an error.
+  - `read_metadata(path)` summarizes a file — point/cell counts, per-block cell types,
+    data-array names — without loading the heavy arrays.
+  - **VTU, VTP, XDMF and Gmsh** skip the unwanted array bodies outright, and all four plus
+    **Gmsh 4.1** have native header-only metadata paths (Gmsh 2.2 declines and falls back, since
+    it stores a type per element). Every other format is
+    read in full and filtered, which is correct but not faster; `read_metadata`'s
+    `fell_back_to_full_read` says which happened, so a summary never implies a saving that did
+    not occur. XDMF is the cheapest case (every `<DataItem>` declares its shape, so counts are
+    exact without touching any payload, and on the HDF path without opening the `.h5` at all).
+  - Honest scope note: for VTU/VTP the file is still read and XML-parsed — pugixml always
+    materializes PCDATA. What is skipped is base64 decoding, decompression, allocation and
+    byte-swapping. That is a large constant factor, not an asymptotic change.
+  - Exposed everywhere: Python `read`/`read_metadata`, pybind `points_only`/`arrays` kwargs,
+    C `mio_read_ex` + `mio_read_opts` + the opaque `mio_read_metadata` handle (`mio_read` is
+    unchanged), Fortran `mesh%read(..., points_only=, arrays=)` and `mio_read_metadata`, WASM
+    `readMeshSelective`/`readMetadata`, and both CLIs (`info --fast`,
+    `convert --points-only|--arrays a,b`).
+- **Memory-mapped reading** — `detail::FileSource` maps whole files where that pays (POSIX
+  `mmap`, Windows `MapViewOfFile`, always buffered under Emscripten), removing a full-file copy
+  and the peak-RSS doubling it causes. `Auto` maps regular files at or above 16 MiB
+  (`MESHIOPLUSPLUS_MMAP_THRESHOLD` overrides); anything unmappable falls back silently, so
+  mapping is advisory and never fails a read. This is a memory-footprint feature more than a
+  throughput one. All five whole-file readers use it — gmsh, vtk, ensight, ugrid's ASCII branch
+  and openfoam, the last gaining most since it previously paid for two extra full-file copies.
+- **Optional zstd and lz4 codecs** for VTK XML block compression — `MESHIOPLUSPLUS_WITH_ZSTD`
+  / `_LZ4` (both **off** by default) → `_core.__has_zstd__` / `__has_lz4__`, plus Conan
+  `with_zstd`/`with_lz4` and vcpkg `zstd`/`lz4` features. **zlib remains the default
+  everywhere.**
+  - `lz4` writes `vtkLZ4DataCompressor` in LZ4's raw block format — a real VTK compressor, so
+    such files stay readable by VTK and ParaView. Verified both directions against VTK 9.6.
+  - `zstd` writes `vtkZSTDDataCompressor`, which is a **meshio++ extension**: VTK ships no ZSTD
+    compressor, so ParaView will report an unknown compressor rather than misread the file.
+  - A build without a codec reports an error naming the CMake option to enable, and the
+    pure-Python reference supports both via the new `codecs` extra
+    (`pip install "meshioplusplus[codecs]"`). A file needing a codec available in *neither* is
+    genuinely unreadable — a new failure class, and it fails by name.
+  - `--codec zlib|lz4|zstd` on both CLIs' `compress`; **rejected** for formats with no block
+    codec rather than silently ignored.
+
 ## v7.2.1 (2026-07-20)
 
 - Fix: the eight v7.2.0 data-operation bindings were compiled into the WASM module but never forwarded by `wasm/src/index.mjs`'s ergonomic wrapper, so `dataInfo`/`dataCalc`/etc. were unreachable from `loadMeshioPlusPlus()`'s return value (`m.dataInfo is not a function`); also updates `wasm/index.d.ts`'s ambient TypeScript declarations, which had likewise never been extended. No other bindings affected.
