@@ -191,8 +191,12 @@ jobs:
         if: steps.kahip-cache.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch v3.25 https://github.com/KaHIP/KaHIP.git /tmp/kahip-src
+          # NOMPI=ON, not just PARHIP=OFF: KaHIP's CMakeLists.txt does an
+          # unconditional find_package(MPI REQUIRED) unless NOMPI is set,
+          # since kaffpaE (not just ParHIP) also depends on MPI -- CI has no
+          # MPI installed and we only ever link the serial kaffpa interface.
           cmake -S /tmp/kahip-src -B /tmp/kahip-build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DPARHIP=OFF -DNONATIVEOPTIMIZATIONS=ON \
+            -DCMAKE_BUILD_TYPE=Release -DPARHIP=OFF -DNOMPI=ON -DNONATIVEOPTIMIZATIONS=ON \
             -DCMAKE_INSTALL_PREFIX="$HOME/kahip-install"
           cmake --build /tmp/kahip-build -j
           cmake --install /tmp/kahip-build
