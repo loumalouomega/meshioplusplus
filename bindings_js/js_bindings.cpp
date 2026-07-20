@@ -77,6 +77,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -723,6 +724,21 @@ val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTa
 }
 
 /**
+ * @brief Convert the element representation of a mesh: `"linearize"`,
+ * `"simplexify"`, or `"elevate"`. Returns the converted mesh; the index maps
+ * are not carried across the JS boundary (use `recordParentIds` for the
+ * `convert:parent_cell` cell_data instead).
+ */
+val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConvertCellsOptions options;
+        options.mMode = meshioplusplus::convert_cells_mode_from_name(rMode);
+        options.mRecordParentIds = recordParentIds;
+        return mesh_to_val(meshioplusplus::convert_cells(val_to_mesh(rMeshObj), options).mMesh);
+    });
+}
+
+/**
  * @brief Geometric statistics of a mesh (read-only). Returns an object with
  * `numPoints`, `numCells`, `bboxMin`/`bboxMax`/`extent`/`centroid` (3-arrays),
  * `cellTypeCounts` (object), `totalArea`, `signedVolume`, `unsignedVolume`,
@@ -1030,6 +1046,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("split", &split_js);
+    emscripten::function("convertCells", &convert_cells_js);
     emscripten::function("stats", &stats_js);
     emscripten::function("dataDrop", &data_drop_js);
     emscripten::function("dataKeep", &data_keep_js);
