@@ -93,6 +93,7 @@
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/types.hpp"
@@ -368,22 +369,113 @@ auto with_js_errors(F&& f) -> decltype(f()) {
  * @throws meshioplusplus::ReadError on an unknown/unsupported format or a
  *   malformed file.
  */
+/// @return a JS array of `rItems`. Built with the no-arg `val::array()` plus
+/// per-index `set`, matching every other array construction in this file --
+/// embind's container-taking overloads vary across Emscripten versions and this
+/// form is unambiguously available.
+template <class T>
+val js_array_of(const std::vector<T>& rItems) {
+    val out = val::array();
+    for (std::size_t i = 0; i < rItems.size(); ++i)
+        out.set(i, rItems[i]);
+    return out;
+}
+
+/// Resolve a read format, falling back to a content sniff (read paths only).
+std::string js_resolve_read_format(const std::string& rPath, const std::string& rFormat) {
+    try {
+        return resolve_format(rPath, rFormat);
+    } catch (const meshioplusplus::ReadError&) {
+        std::string sniffed = meshioplusplus::sniff_format(rPath);
+        if (sniffed.empty())
+            throw;
+        return sniffed;
+    }
+}
+
 val read_mesh(const std::string& rPath, const std::string& rFormat) {
     return with_js_errors([&]() -> val {
-        std::string fmt;
-        try {
-            fmt = resolve_format(rPath, rFormat);
-        } catch (const meshioplusplus::ReadError&) {
-            fmt = meshioplusplus::sniff_format(rPath);
-            if (fmt.empty())
-                throw;
-        }
+        const std::string fmt = js_resolve_read_format(rPath, rFormat);
         auto it = registry_readers().find(fmt);
         if (it == registry_readers().end())
             throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported format '" +
                                             fmt + "'" + compiled_out_hint(fmt));
         return mesh_to_val(it->second(rPath));
     });
+}
+
+/**
+ * @brief Selective read: geometry only, or only the named data arrays.
+ * @param rPath virtual FS path to read.
+ * @param rFormat explicit format key, or "" to infer from the extension.
+ * @param points_only skip every data array.
+ * @param rArrays JS array of names to keep; `null`/`undefined` keeps every
+ *   array, an empty array keeps none. That distinction is deliberate.
+ *
+ * Formats without a native selective path are read whole and filtered, so the
+ * result is the same either way -- only the cost differs.
+ */
+val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bool points_only,
+                        const val& rArrays) {
+    return with_js_errors([&]() -> val {
+        const std::string fmt = js_resolve_read_format(rPath, rFormat);
+        meshioplusplus::ReadOptions opts;
+        opts.mPointsOnly = points_only;
+        if (!rArrays.isNull() && !rArrays.isUndefined())
+            opts.mDataArrays = emscripten::vecFromJSArray<std::string>(rArrays);
+        return mesh_to_val(meshioplusplus::registry_read(rPath, fmt, opts));
+    });
+}
+
+/**
+ * @brief Summarize a file without loading its heavy arrays.
+ * @return `{numPoints, pointDim, numCells, cellBlocks: [{type, numCells,
+ *   nodesPerCell, ragged}], pointDataNames, cellDataNames, fieldDataNames,
+ *   format, fellBackToFullRead, bboxMin?, bboxMax?}`.
+ *
+ * `bboxMin`/`bboxMax` are present only when a box was computed -- omitted
+ * rather than null, so "not computed" cannot read as a box at the origin.
+ * `fellBackToFullRead` says whether the summary was actually cheap.
+ */
+val read_metadata_js(const std::string& rPath, const std::string& rFormat) {
+    return with_js_errors([&]() -> val {
+        const std::string fmt = js_resolve_read_format(rPath, rFormat);
+        const meshioplusplus::MeshMetadata meta =
+            meshioplusplus::registry_read_metadata(rPath, fmt, meshioplusplus::ReadOptions{});
+
+        val blocks = val::array();
+        for (std::size_t i = 0; i < meta.mCellBlocks.size(); ++i) {
+            val entry = val::object();
+            entry.set("type", meta.mCellBlocks[i].mType);
+            entry.set("numCells", static_cast<double>(meta.mCellBlocks[i].mNumCells));
+            entry.set("nodesPerCell", static_cast<double>(meta.mCellBlocks[i].mNodesPerCell));
+            entry.set("ragged", meta.mCellBlocks[i].mRagged);
+            blocks.set(i, entry);
+        }
+
+        val out = val::object();
+        out.set("numPoints", static_cast<double>(meta.mNumPoints));
+        out.set("pointDim", static_cast<double>(meta.mPointDim));
+        out.set("numCells", static_cast<double>(meta.NumCells()));
+        out.set("cellBlocks", blocks);
+        out.set("pointDataNames", js_array_of(meta.mPointDataNames));
+        out.set("cellDataNames", js_array_of(meta.mCellDataNames));
+        out.set("fieldDataNames", js_array_of(meta.mFieldDataNames));
+        out.set("format", meta.mFormat);
+        out.set("fellBackToFullRead", meta.mFellBackToFullRead);
+        if (meta.mHasBBox) {
+            out.set("bboxMin", js_array_of(std::vector<double>{meta.mBBoxMin[0], meta.mBBoxMin[1],
+                                                               meta.mBBoxMin[2]}));
+            out.set("bboxMax", js_array_of(std::vector<double>{meta.mBBoxMax[0], meta.mBBoxMax[1],
+                                                               meta.mBBoxMax[2]}));
+        }
+        return out;
+    });
+}
+
+/// @return whether `rFormat` has a native selective-read path.
+bool reader_supports_options_js(const std::string& rFormat) {
+    return meshioplusplus::registry_reader_supports_options(rFormat);
 }
 
 /**
@@ -916,6 +1008,9 @@ val data_info_js(const val& rMeshObj) {
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("readMesh", &read_mesh);
+    emscripten::function("readMeshSelective", &read_mesh_selective);
+    emscripten::function("readMetadata", &read_metadata_js);
+    emscripten::function("readerSupportsOptions", &reader_supports_options_js);
     emscripten::function("writeMesh", &write_mesh);
     emscripten::function("convert", &convert);
     emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
