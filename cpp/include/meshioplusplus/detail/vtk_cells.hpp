@@ -47,6 +47,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 
@@ -156,6 +157,95 @@ inline NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
  *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
  *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
  */
+/**
+ * @brief The cell-block *shape* `reconstruct_cells` would produce, without
+ *        touching connectivity.
+ *
+ * Backs the VTU/VTP metadata path: `types` is one byte per cell and `offsets`
+ * is only consulted for the variable-node-count types, so a summary costs a
+ * fraction of a full reconstruction.
+ *
+ * The run-grouping here **duplicates** `reconstruct_cells`' -- consecutive
+ * same-type runs, further split by per-cell size for `is_special_cell` types.
+ * That duplication is deliberate (the two have very different inner loops and
+ * merging them would slow the hot one down) but it can drift, so it is pinned
+ * by a test asserting this function agrees with `metadata_from_mesh` applied to
+ * a real reconstruction, rather than by comment alone.
+ *
+ * @param rOffsets End offsets, one per cell; may be **empty** when no special
+ *                 cell type is present, since only those consult it.
+ * @param rTypes VTK cell type id for each cell.
+ * @return One entry per output block, in the same order as the blocks
+ *         `reconstruct_cells` would append.
+ * @throws ReadError on the same unsupported types `reconstruct_cells` rejects,
+ *         so a summary never claims a file is readable when it is not.
+ */
+inline std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
+                                                  const std::vector<std::int64_t>& rTypes) {
+    const auto& vmap = vtk_to_meshio_type();
+    const std::size_t ncells = rTypes.size();
+    std::vector<CellBlockInfo> blocks;
+
+    std::size_t start = 0;
+    while (start < ncells) {
+        std::size_t end = start + 1;
+        while (end < ncells && rTypes[end] == rTypes[start])
+            ++end;
+
+        const int vtk_type = static_cast<int>(rTypes[start]);
+        if (vtk_type == 42)
+            throw ReadError("polyhedron cells are not supported by the C++ reader");
+        auto it = vmap.find(vtk_type);
+        if (it == vmap.end())
+            throw ReadError("VTK cell type " + std::to_string(vtk_type) +
+                            " not supported by the C++ reader");
+        const std::string& meshio_type = it->second;
+
+        if (is_special_cell(meshio_type)) {
+            if (rOffsets.size() < end)
+                throw ReadError("VTU summary needs 'offsets' for variable-size cell type " +
+                                meshio_type);
+            // Split the run further wherever the per-cell node count changes.
+            std::size_t i = start;
+            while (i < end) {
+                const std::int64_t prev = (i == 0) ? 0 : rOffsets[i - 1];
+                const std::int64_t sz = rOffsets[i] - prev;
+                std::size_t j = i + 1;
+                while (j < end && rOffsets[j] - rOffsets[j - 1] == sz)
+                    ++j;
+                CellBlockInfo info;
+                info.mType = meshio_type;
+                info.mNumCells = j - i;
+                info.mNodesPerCell = static_cast<std::size_t>(sz);
+                blocks.push_back(std::move(info));
+                i = j;
+            }
+        } else {
+            auto nit = num_nodes_per_cell().find(meshio_type);
+            if (nit == num_nodes_per_cell().end())
+                throw ReadError("Unknown node count for cell type " + meshio_type);
+            CellBlockInfo info;
+            info.mType = meshio_type;
+            info.mNumCells = end - start;
+            info.mNodesPerCell = static_cast<std::size_t>(nit->second);
+            blocks.push_back(std::move(info));
+        }
+        start = end;
+    }
+    return blocks;
+}
+
+/** @brief Whether any type in @p rTypes needs `offsets` to be summarized. */
+inline bool cells_need_offsets(const std::vector<std::int64_t>& rTypes) {
+    const auto& vmap = vtk_to_meshio_type();
+    for (std::int64_t t : rTypes) {
+        auto it = vmap.find(static_cast<int>(t));
+        if (it != vmap.end() && is_special_cell(it->second))
+            return true;
+    }
+    return false;
+}
+
 inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
                               const std::vector<std::int64_t>& rTypes,
                               const std::unordered_map<std::string, NDArray>& rCellDataRaw,
