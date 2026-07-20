@@ -32,8 +32,11 @@
  */
 
 // System includes
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <type_traits>
 
 // Project includes
 #include "meshioplusplus/ndarray.hpp"
@@ -185,6 +188,60 @@ decltype(auto) dispatch_dtype(DType dt, F&& f) {
             return f.template operator()<std::uint64_t>();
     }
     return f.template operator()<double>();  // unreachable
+}
+
+/**
+ * @brief Writes `v` into element `i` of `rA`, regardless of `rA`'s dtype.
+ *
+ * The inverse of `read_double`, used by the data operations to store a value
+ * computed in `double` back into an array of the caller's chosen dtype. For an
+ * integer destination the value is rounded to nearest rather than truncated,
+ * and saturated into the destination's representable range, so a conditioning
+ * or averaging result never wraps around silently. A non-finite value stored
+ * into an integer destination becomes 0.
+ * @param rA Destination array.
+ * @param i Flat (linear) element index into `rA`'s buffer.
+ * @param v The value to store.
+ */
+inline void write_double(NDArray& rA, std::size_t i, double v) {
+    dispatch_dtype(rA.Dtype(), [&]<class T>() {
+        if constexpr (std::is_floating_point_v<T>) {
+            rA.As<T>()[i] = static_cast<T>(v);
+        } else {
+            if (!std::isfinite(v)) {
+                rA.As<T>()[i] = static_cast<T>(0);
+                return;
+            }
+            // Compare in long double so the bounds themselves survive the
+            // round-trip for the 64-bit destination types.
+            const long double r = std::round(static_cast<long double>(v));
+            const long double lo = static_cast<long double>(std::numeric_limits<T>::min());
+            const long double hi = static_cast<long double>(std::numeric_limits<T>::max());
+            rA.As<T>()[i] = static_cast<T>(r < lo ? lo : (r > hi ? hi : r));
+        }
+    });
+}
+
+/**
+ * @brief Writes the integer `v` into element `i` of `rA`, regardless of dtype.
+ *
+ * Saturates into the destination's range for an integer destination; a
+ * floating-point destination gets a plain cast.
+ * @param rA Destination array.
+ * @param i Flat (linear) element index into `rA`'s buffer.
+ * @param v The value to store.
+ */
+inline void write_int(NDArray& rA, std::size_t i, std::int64_t v) {
+    dispatch_dtype(rA.Dtype(), [&]<class T>() {
+        if constexpr (std::is_floating_point_v<T>) {
+            rA.As<T>()[i] = static_cast<T>(v);
+        } else {
+            const long double r = static_cast<long double>(v);
+            const long double lo = static_cast<long double>(std::numeric_limits<T>::min());
+            const long double hi = static_cast<long double>(std::numeric_limits<T>::max());
+            rA.As<T>()[i] = static_cast<T>(r < lo ? lo : (r > hi ? hi : r));
+        }
+    });
 }
 
 }  // namespace detail

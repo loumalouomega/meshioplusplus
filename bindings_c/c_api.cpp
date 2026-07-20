@@ -58,6 +58,12 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/crop.hpp"
+#include "meshioplusplus/operations/data_average.hpp"
+#include "meshioplusplus/operations/data_calc.hpp"
+#include "meshioplusplus/operations/data_common.hpp"
+#include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
@@ -87,6 +93,10 @@ struct mio_diff_result {
 struct mio_split_result {
     std::vector<mio_mesh> mMeshes;   // owns each piece; borrowed via mio_split_result_mesh
     std::vector<std::string> mKeys;  // per-piece key (type / component / tag value)
+};
+
+struct mio_data_info {
+    meshioplusplus::DataInfoReport mReport;
 };
 
 namespace {
@@ -624,6 +634,234 @@ mio_status mio_stats(const mio_mesh* mesh, mio_stats_report* out) {
         out->num_inverted = r.mNumInverted;
         return MIO_OK;
     });
+}
+
+/* --- data operations ---------------------------------------------------- */
+
+/* The C enums duplicate the C++ ones, so pin every value: drift becomes a
+ * compile error rather than a silently wrong argument (the same discipline the
+ * MIO_CELL_TYPES X-macro applies to the cell-type list). */
+static_assert(static_cast<int>(meshioplusplus::DataLocation::Point) == MIO_DATA_POINT, "");
+static_assert(static_cast<int>(meshioplusplus::DataLocation::Cell) == MIO_DATA_CELL, "");
+static_assert(static_cast<int>(meshioplusplus::DataLocation::Field) == MIO_DATA_FIELD, "");
+static_assert(static_cast<int>(meshioplusplus::CellPointWeight::Uniform) == MIO_WEIGHT_UNIFORM, "");
+static_assert(static_cast<int>(meshioplusplus::CellPointWeight::Measure) == MIO_WEIGHT_MEASURE, "");
+static_assert(static_cast<int>(meshioplusplus::ConditionMode::Clamp) == MIO_COND_CLAMP, "");
+static_assert(static_cast<int>(meshioplusplus::ConditionMode::Normalize) == MIO_COND_NORMALIZE, "");
+static_assert(static_cast<int>(meshioplusplus::ConditionMode::Standardize) == MIO_COND_STANDARDIZE,
+              "");
+static_assert(static_cast<int>(meshioplusplus::ConditionScope::Component) == MIO_SCOPE_COMPONENT,
+              "");
+static_assert(static_cast<int>(meshioplusplus::ConditionScope::Magnitude) == MIO_SCOPE_MAGNITUDE,
+              "");
+static_assert(static_cast<int>(meshioplusplus::NanPolicy::Ignore) == MIO_NAN_IGNORE, "");
+static_assert(static_cast<int>(meshioplusplus::NanPolicy::Replace) == MIO_NAN_REPLACE, "");
+static_assert(static_cast<int>(meshioplusplus::NanPolicy::Fail) == MIO_NAN_FAIL, "");
+
+namespace {
+
+/* Turn the (names, count) pair the ABI uses into a vector, rejecting a NULL
+ * entry rather than dereferencing it. */
+std::vector<std::string> data_name_list(const char* const* pNames, int64_t count) {
+    if (count < 0)
+        throw meshioplusplus::ReadError("meshio++: name count is negative");
+    if (count > 0 && !pNames)
+        throw meshioplusplus::ReadError("meshio++: names is NULL but count > 0");
+    std::vector<std::string> out;
+    out.reserve(static_cast<std::size_t>(count));
+    for (int64_t i = 0; i < count; ++i) {
+        if (!pNames[i])
+            throw meshioplusplus::ReadError("meshio++: names[" + std::to_string(i) + "] is NULL");
+        out.emplace_back(pNames[i]);
+    }
+    return out;
+}
+
+meshioplusplus::DataLocation data_location_of(mio_data_location loc) {
+    switch (loc) {
+        case MIO_DATA_POINT:
+            return meshioplusplus::DataLocation::Point;
+        case MIO_DATA_CELL:
+            return meshioplusplus::DataLocation::Cell;
+        case MIO_DATA_FIELD:
+            return meshioplusplus::DataLocation::Field;
+    }
+    throw meshioplusplus::ReadError("meshio++: invalid data location");
+}
+
+}  // namespace
+
+mio_mesh* mio_data_drop(const mio_mesh* mesh, mio_data_location location, const char* const* names,
+                        int64_t count, int ignore_missing) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        return new mio_mesh{meshioplusplus::data_drop(mesh->mMesh, data_location_of(location),
+                                                      data_name_list(names, count),
+                                                      ignore_missing != 0)};
+    });
+}
+
+mio_mesh* mio_data_keep(const mio_mesh* mesh, mio_data_location location, const char* const* names,
+                        int64_t count, int ignore_missing) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        return new mio_mesh{meshioplusplus::data_keep(mesh->mMesh, data_location_of(location),
+                                                      data_name_list(names, count),
+                                                      ignore_missing != 0)};
+    });
+}
+
+mio_mesh* mio_data_rename(const mio_mesh* mesh, mio_data_location location, const char* from_name,
+                          const char* to_name) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !from_name || !to_name)
+            throw meshioplusplus::ReadError("meshio++: mesh/from_name/to_name is NULL");
+        return new mio_mesh{meshioplusplus::data_rename(mesh->mMesh, data_location_of(location),
+                                                        from_name, to_name)};
+    });
+}
+
+mio_mesh* mio_data_point_to_cell(const mio_mesh* mesh, const char* const* names, int64_t count,
+                                 const char* suffix) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::DataAverageOptions opts;
+        opts.names = data_name_list(names, count);
+        opts.suffix = suffix ? suffix : "";
+        return new mio_mesh{meshioplusplus::point_data_to_cell_data(mesh->mMesh, opts)};
+    });
+}
+
+mio_mesh* mio_data_cell_to_point(const mio_mesh* mesh, const char* const* names, int64_t count,
+                                 mio_cell_point_weight weight, const char* suffix) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::DataAverageOptions opts;
+        opts.names = data_name_list(names, count);
+        opts.weight = weight == MIO_WEIGHT_MEASURE ? meshioplusplus::CellPointWeight::Measure
+                                                   : meshioplusplus::CellPointWeight::Uniform;
+        opts.suffix = suffix ? suffix : "";
+        return new mio_mesh{meshioplusplus::cell_data_to_point_data(mesh->mMesh, opts)};
+    });
+}
+
+mio_mesh* mio_data_calc(const mio_mesh* mesh, const char* expression, mio_data_location location,
+                        const char* output_name, int overwrite) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !expression || !output_name)
+            throw meshioplusplus::ReadError("meshio++: mesh/expression/output_name is NULL");
+        meshioplusplus::DataCalcOptions opts;
+        opts.location = data_location_of(location);
+        opts.output = output_name;
+        opts.overwrite = overwrite != 0;
+        return new mio_mesh{meshioplusplus::data_calc(mesh->mMesh, expression, opts)};
+    });
+}
+
+mio_mesh* mio_data_condition(const mio_mesh* mesh, mio_data_location location,
+                             const char* const* names, int64_t count, mio_condition_mode mode,
+                             double lo, double hi, mio_condition_scope scope,
+                             mio_nan_policy nan_policy, double nan_replacement,
+                             const char* suffix) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::DataConditionOptions opts;
+        opts.location = data_location_of(location);
+        opts.names = data_name_list(names, count);
+        opts.mode = static_cast<meshioplusplus::ConditionMode>(mode);
+        opts.scope = static_cast<meshioplusplus::ConditionScope>(scope);
+        opts.lo = lo;
+        opts.hi = hi;
+        opts.nan_policy = static_cast<meshioplusplus::NanPolicy>(nan_policy);
+        opts.nan_replacement = nan_replacement;
+        opts.suffix = suffix ? suffix : "";
+        return new mio_mesh{meshioplusplus::data_condition(mesh->mMesh, opts)};
+    });
+}
+
+mio_data_info* mio_data_info_create(const mio_mesh* mesh) {
+    return guarded_ptr(static_cast<mio_data_info*>(nullptr), [&]() -> mio_data_info* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        return new mio_data_info{meshioplusplus::data_info(mesh->mMesh)};
+    });
+}
+
+int64_t mio_data_info_count(const mio_data_info* info) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!info)
+            throw meshioplusplus::ReadError("meshio++: info is NULL");
+        return static_cast<int64_t>(info->mReport.mArrays.size());
+    });
+}
+
+int64_t mio_data_info_name(const mio_data_info* info, int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!info)
+            throw meshioplusplus::ReadError("meshio++: info is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= info->mReport.mArrays.size())
+            throw meshioplusplus::ReadError("meshio++: data array index out of range");
+        return copy_string(info->mReport.mArrays[static_cast<std::size_t>(index)].mName, buf,
+                           buflen);
+    });
+}
+
+mio_status mio_data_info_entry(const mio_data_info* info, int64_t index, mio_data_array_info* out) {
+    return guarded([&]() -> mio_status {
+        if (!info)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: info is NULL");
+        if (!out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= info->mReport.mArrays.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: data array index out of range");
+        const meshioplusplus::DataArrayInfo& a =
+            info->mReport.mArrays[static_cast<std::size_t>(index)];
+        out->location = static_cast<int>(a.mLocation);
+        out->dtype = static_cast<int>(a.mDtype);
+        out->num_blocks = a.mNumBlocks;
+        out->num_entries = a.mNumEntries;
+        out->num_components = a.mNumComponents;
+        out->num_values = a.mNumValues;
+        out->min = a.mMin;
+        out->max = a.mMax;
+        out->mean = a.mMean;
+        out->num_nan = a.mNumNan;
+        out->num_inf = a.mNumInf;
+        out->num_finite = a.mNumFinite;
+        out->inconsistent_blocks = a.mInconsistentBlocks ? 1 : 0;
+        return MIO_OK;
+    });
+}
+
+mio_status mio_data_info_component(const mio_data_info* info, int64_t index, int64_t comp,
+                                   double* min, double* max, double* mean) {
+    return guarded([&]() -> mio_status {
+        if (!info)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: info is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= info->mReport.mArrays.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: data array index out of range");
+        const meshioplusplus::DataArrayInfo& a =
+            info->mReport.mArrays[static_cast<std::size_t>(index)];
+        if (comp < 0 || static_cast<std::size_t>(comp) >= a.mMinPerComponent.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: component index out of range");
+        const std::size_t k = static_cast<std::size_t>(comp);
+        if (min)
+            *min = a.mMinPerComponent[k];
+        if (max)
+            *max = a.mMaxPerComponent[k];
+        if (mean)
+            *mean = a.mMeanPerComponent[k];
+        return MIO_OK;
+    });
+}
+
+void mio_data_info_free(mio_data_info* info) {
+    delete info;
 }
 
 mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells, int64_t* num_inverted,

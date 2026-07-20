@@ -197,6 +197,92 @@ program test_fortran_api
     call check(ierr /= 0, 'unknown explicit format sets stat')
     call check(len(msg) > 0, 'unknown explicit format sets errmsg')
 
+    ! ---- data operations -----------------------------------------------
+    ! These act on the data arrays only; the geometry must come through
+    ! untouched. `m` carries point_data temperature/velocity and cell_data
+    ! quality.
+    block
+        type(mio_mesh) :: d
+        type(mio_data_array_info), allocatable :: arrays(:)
+        character(len=STRBUF_LEN), allocatable :: dkeys(:)
+        integer :: k
+        logical :: saw
+
+        ! drop / keep / rename
+        d = m%data_drop(MIO_DATA_POINT, ['temperature'], stat=ierr)
+        call check(ierr == 0, 'data_drop succeeds')
+        call check(d%num_points() == 5_int64, 'data_drop leaves geometry intact')
+        call check(d%num_point_data() == 1_int64, 'data_drop removed one array')
+        call d%free()
+
+        d = m%data_keep(MIO_DATA_POINT, ['velocity   '], stat=ierr)
+        call check(ierr == 0, 'data_keep succeeds')
+        call check(d%num_point_data() == 1_int64, 'data_keep retained one array')
+        call d%free()
+
+        d = m%data_rename(MIO_DATA_POINT, 'temperature', 'T', stat=ierr)
+        call check(ierr == 0, 'data_rename succeeds')
+        call check(d%num_point_data() == 2_int64, 'data_rename preserves the count')
+        call d%free()
+
+        ! An unknown key fails through stat rather than aborting.
+        ierr = 0
+        d = m%data_drop(MIO_DATA_POINT, ['nope'], stat=ierr, errmsg=msg)
+        call check(ierr /= 0, 'data_drop on an unknown key sets stat')
+        call check(len(msg) > 0, 'data_drop on an unknown key sets errmsg')
+
+        ! averaging
+        d = m%data_point_to_cell(stat=ierr)
+        call check(ierr == 0, 'data_point_to_cell succeeds')
+        call check(d%num_points() == 5_int64, 'data_point_to_cell keeps geometry')
+        call d%free()
+
+        d = m%data_cell_to_point(['quality'], weight=MIO_WEIGHT_MEASURE, stat=ierr)
+        call check(ierr == 0, 'data_cell_to_point (measure-weighted) succeeds')
+        call check(d%num_point_data() == 3_int64, 'data_cell_to_point added an array')
+        call d%free()
+
+        ! calc
+        d = m%data_calc('norm(velocity)', 'speed', stat=ierr)
+        call check(ierr == 0, 'data_calc succeeds')
+        call check(d%num_point_data() == 3_int64, 'data_calc added an array')
+        call d%free()
+
+        ierr = 0
+        d = m%data_calc('log(temperature)', 'bad', stat=ierr, errmsg=msg)
+        call check(ierr /= 0, 'data_calc rejects an unknown function')
+        call check(len(msg) > 0, 'data_calc failure sets errmsg')
+
+        ! conditioning
+        d = m%data_condition(MIO_DATA_POINT, ['temperature'], mode=MIO_COND_NORMALIZE, &
+                             stat=ierr)
+        call check(ierr == 0, 'data_condition normalize succeeds')
+        call check(d%num_points() == 5_int64, 'data_condition keeps geometry')
+        call d%free()
+
+        ! read-only summary
+        arrays = m%data_info(keys=dkeys, stat=ierr)
+        call check(ierr == 0, 'data_info succeeds')
+        call check(size(arrays) == 3, 'data_info reports every array')
+        saw = .false.
+        do k = 1, size(arrays)
+            if (trim(dkeys(k)) == 'temperature') then
+                saw = .true.
+                call check(arrays(k)%location == MIO_DATA_POINT, 'temperature is point_data')
+                call check(arrays(k)%num_entries == 5_int64, 'temperature has 5 entries')
+                call check(arrays(k)%num_components == 1_int64, 'temperature is scalar')
+                call check(arrays(k)%num_finite == 5_int64, 'temperature is all finite')
+                call check(abs(arrays(k)%min - 1.0_real64) < 1.0e-12_real64, &
+                           'temperature min is 1')
+                call check(abs(arrays(k)%max - 5.0_real64) < 1.0e-12_real64, &
+                           'temperature max is 5')
+                call check(abs(arrays(k)%mean - 3.0_real64) < 1.0e-12_real64, &
+                           'temperature mean is 3')
+            end if
+        end do
+        call check(saw, 'data_info named the temperature array')
+    end block
+
     call m%free()
     call r%free()
     call c%free()

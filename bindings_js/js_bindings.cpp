@@ -78,6 +78,12 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/crop.hpp"
+#include "meshioplusplus/operations/data_average.hpp"
+#include "meshioplusplus/operations/data_calc.hpp"
+#include "meshioplusplus/operations/data_common.hpp"
+#include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
@@ -754,6 +760,158 @@ bool meshes_equal_js(const val& rMeshA, const val& rMeshB, double atol, double r
     });
 }
 
+// --- data operations -------------------------------------------------------
+// These act on a mesh's point/cell/field data arrays; the geometry is never
+// modified. Enumerations cross as strings (as `split`'s `by` already does),
+// parsed by the same helpers the CLIs use.
+
+/// A JS array of strings -> std::vector. This file deliberately avoids
+/// `register_vector`, so the decode is manual.
+std::vector<std::string> val_to_string_vector(const val& rArray) {
+    std::vector<std::string> out;
+    if (rArray.isUndefined() || rArray.isNull())
+        return out;
+    const unsigned n = rArray["length"].as<unsigned>();
+    out.reserve(n);
+    for (unsigned i = 0; i < n; ++i)
+        out.push_back(rArray[i].as<std::string>());
+    return out;
+}
+
+/** @brief Drop the named data arrays at `location` ("point"/"cell"/"field"). */
+val data_drop_js(const val& rMeshObj, const std::string& rLocation, const val& rNames,
+                 bool ignoreMissing) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::data_drop(
+            val_to_mesh(rMeshObj), meshioplusplus::data_location_from_name(rLocation),
+            val_to_string_vector(rNames), ignoreMissing));
+    });
+}
+
+/** @brief Keep only the named data arrays at `location`, dropping the rest
+ *  there. The other locations are untouched. */
+val data_keep_js(const val& rMeshObj, const std::string& rLocation, const val& rNames,
+                 bool ignoreMissing) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::data_keep(
+            val_to_mesh(rMeshObj), meshioplusplus::data_location_from_name(rLocation),
+            val_to_string_vector(rNames), ignoreMissing));
+    });
+}
+
+/** @brief Rename one data array, preserving values, dtype and shape. */
+val data_rename_js(const val& rMeshObj, const std::string& rLocation, const std::string& rFrom,
+                   const std::string& rTo) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::data_rename(
+            val_to_mesh(rMeshObj), meshioplusplus::data_location_from_name(rLocation), rFrom, rTo));
+    });
+}
+
+/** @brief Average point_data onto the cells (mean over each cell's nodes).
+ *  An empty `names` converts every point_data array. Output is Float64. */
+val data_point_to_cell_js(const val& rMeshObj, const val& rNames, const std::string& rSuffix) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DataAverageOptions opts;
+        opts.names = val_to_string_vector(rNames);
+        opts.suffix = rSuffix;
+        return mesh_to_val(meshioplusplus::point_data_to_cell_data(val_to_mesh(rMeshObj), opts));
+    });
+}
+
+/** @brief Average cell_data onto the points. `weight` is "uniform" or
+ *  "measure". Points touched by no cell get NaN. Output is Float64. */
+val data_cell_to_point_js(const val& rMeshObj, const val& rNames, const std::string& rWeight,
+                          const std::string& rSuffix) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DataAverageOptions opts;
+        opts.names = val_to_string_vector(rNames);
+        opts.weight = meshioplusplus::cell_point_weight_from_name(rWeight);
+        opts.suffix = rSuffix;
+        return mesh_to_val(meshioplusplus::cell_data_to_point_data(val_to_mesh(rMeshObj), opts));
+    });
+}
+
+/** @brief Evaluate an elementwise expression into a new array. The grammar
+ *  accepts + - * /, unary minus, parentheses, numbers, array names and the
+ *  functions abs/sqrt/min/max/norm -- nothing else is evaluated. */
+val data_calc_js(const val& rMeshObj, const std::string& rExpression, const std::string& rLocation,
+                 const std::string& rOutputName, bool overwrite) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DataCalcOptions opts;
+        opts.location = meshioplusplus::data_location_from_name(rLocation);
+        opts.output = rOutputName;
+        opts.overwrite = overwrite;
+        return mesh_to_val(meshioplusplus::data_calc(val_to_mesh(rMeshObj), rExpression, opts));
+    });
+}
+
+/** @brief Condition values: `mode` is "clamp"/"normalize"/"standardize",
+ *  `scope` is "component"/"magnitude", `nanPolicy` is
+ *  "ignore"/"replace"/"fail". */
+val data_condition_js(const val& rMeshObj, const std::string& rLocation, const val& rNames,
+                      const std::string& rMode, double lo, double hi, const std::string& rScope,
+                      const std::string& rNanPolicy, double nanReplacement,
+                      const std::string& rSuffix) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DataConditionOptions opts;
+        opts.location = meshioplusplus::data_location_from_name(rLocation);
+        opts.names = val_to_string_vector(rNames);
+        opts.mode = meshioplusplus::condition_mode_from_name(rMode);
+        opts.scope = meshioplusplus::condition_scope_from_name(rScope);
+        opts.lo = lo;
+        opts.hi = hi;
+        opts.nan_policy = meshioplusplus::nan_policy_from_name(rNanPolicy);
+        opts.nan_replacement = nanReplacement;
+        opts.suffix = rSuffix;
+        return mesh_to_val(meshioplusplus::data_condition(val_to_mesh(rMeshObj), opts));
+    });
+}
+
+/** @brief Read-only per-array data summary. Returns a JS array of objects with
+ *  `location`, `name`, `dtype`, `shape`, `numBlocks`, `numEntries`,
+ *  `numComponents`, `numValues`, `min`, `max`, `mean`, the three
+ *  `*PerComponent` arrays, `numNan`, `numInf`, `numFinite` and
+ *  `inconsistentBlocks`. */
+val data_info_js(const val& rMeshObj) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DataInfoReport r = meshioplusplus::data_info(val_to_mesh(rMeshObj));
+        auto to_array = [](const std::vector<double>& rValues) {
+            val a = val::array();
+            for (double v : rValues)
+                a.call<void>("push", v);
+            return a;
+        };
+        val out = val::array();
+        for (const meshioplusplus::DataArrayInfo& a : r.mArrays) {
+            val o = val::object();
+            o.set("location", std::string(meshioplusplus::data_location_name(a.mLocation)));
+            o.set("name", a.mName);
+            o.set("dtype", std::string(meshioplusplus::dtype_numpy_str(a.mDtype)));
+            val shape = val::array();
+            for (std::size_t d : a.mShape)
+                shape.call<void>("push", static_cast<double>(d));
+            o.set("shape", shape);
+            o.set("numBlocks", static_cast<double>(a.mNumBlocks));
+            o.set("numEntries", static_cast<double>(a.mNumEntries));
+            o.set("numComponents", static_cast<double>(a.mNumComponents));
+            o.set("numValues", static_cast<double>(a.mNumValues));
+            o.set("min", a.mMin);
+            o.set("max", a.mMax);
+            o.set("mean", a.mMean);
+            o.set("minPerComponent", to_array(a.mMinPerComponent));
+            o.set("maxPerComponent", to_array(a.mMaxPerComponent));
+            o.set("meanPerComponent", to_array(a.mMeanPerComponent));
+            o.set("numNan", static_cast<double>(a.mNumNan));
+            o.set("numInf", static_cast<double>(a.mNumInf));
+            o.set("numFinite", static_cast<double>(a.mNumFinite));
+            o.set("inconsistentBlocks", a.mInconsistentBlocks);
+            out.call<void>("push", o);
+        }
+        return out;
+    });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
@@ -778,4 +936,12 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("split", &split_js);
     emscripten::function("stats", &stats_js);
+    emscripten::function("dataDrop", &data_drop_js);
+    emscripten::function("dataKeep", &data_keep_js);
+    emscripten::function("dataRename", &data_rename_js);
+    emscripten::function("dataPointToCell", &data_point_to_cell_js);
+    emscripten::function("dataCellToPoint", &data_cell_to_point_js);
+    emscripten::function("dataCalc", &data_calc_js);
+    emscripten::function("dataCondition", &data_condition_js);
+    emscripten::function("dataInfo", &data_info_js);
 }

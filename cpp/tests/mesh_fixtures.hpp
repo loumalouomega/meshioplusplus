@@ -423,4 +423,115 @@ inline void roundtrip(const Writer& rWriter, const Reader& rReader, const Mesh& 
     std::filesystem::remove(path, ec);
 }
 
+// ---------------------------------------------------------------------------
+// Fixtures for the data operations
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief A `Float64` array of @p rValues laid out as `(rows, cols)`, or
+ * `(rows,)` when @p cols is 1 (the "scalar data stays 1-D" convention).
+ * @param rValues Row-major values.
+ * @param cols Component count.
+ * @return The array.
+ */
+inline NDArray data_array(const std::vector<double>& rValues, std::size_t cols = 1) {
+    const std::size_t rows = cols > 0 ? rValues.size() / cols : 0;
+    NDArray a(DType::Float64,
+              cols <= 1 ? std::vector<std::size_t>{rows} : std::vector<std::size_t>{rows, cols});
+    double* p = a.As<double>();
+    for (std::size_t i = 0; i < rValues.size(); ++i)
+        p[i] = rValues[i];
+    return a;
+}
+
+/**
+ * @brief An `Int32` scalar array — used to check that dtype *kind* survives an
+ * operation. Note that the NATIVE and KRATOS backends canonicalize integers to
+ * `Int64` on ingest, so tests must assert the kind (`detail::is_float_dtype`)
+ * rather than the exact width.
+ * @param rValues The values.
+ * @return The array.
+ */
+inline NDArray int_data_array(const std::vector<std::int32_t>& rValues) {
+    NDArray a(DType::Int32, {rValues.size()});
+    std::int32_t* p = a.As<std::int32_t>();
+    for (std::size_t i = 0; i < rValues.size(); ++i)
+        p[i] = rValues[i];
+    return a;
+}
+
+/**
+ * @brief Two unit squares side by side, split into a `triangle` block (2 cells)
+ * and a `quad` block (1 cell), carrying point, cell and field data.
+ *
+ * Point layout (all z = 0):
+ * @code
+ *   3---2---5
+ *   |  /|   |
+ *   | / |   |
+ *   0---1---4
+ * @endcode
+ * `triangle` = {0,1,2} and {0,2,3}; `quad` = {1,4,5,2}.
+ *
+ * Data carried: `point_data` `T` (scalar, = x + 10*y) and `v` (3-vector);
+ * `cell_data` `mat` (scalar, per block) and `tag` (`Int32` scalar);
+ * `field_data` `meta`.
+ * @return The fixture mesh.
+ */
+inline Mesh data_mesh() {
+    Mesh m;
+    m.AssignPoints(points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
+    m.AddCellBlock("triangle", conn_from({{0, 1, 2}, {0, 2, 3}}));
+    m.AddCellBlock("quad", conn_from({{1, 4, 5, 2}}));
+
+    // T = x + 10*y at each of the six points.
+    m.AddPointData("T", data_array({0.0, 1.0, 11.0, 10.0, 2.0, 12.0}));
+    m.AddPointData("v", data_array({1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 2, 0, 0, 0, 2, 0}, 3));
+
+    std::vector<NDArray> mat;
+    mat.push_back(data_array({1.0, 2.0}));  // triangle block: 2 cells
+    mat.push_back(data_array({3.0}));       // quad block: 1 cell
+    m.AddCellData("mat", std::move(mat));
+
+    std::vector<NDArray> tag;
+    tag.push_back(int_data_array({10, 20}));
+    tag.push_back(int_data_array({30}));
+    m.AddCellData("tag", std::move(tag));
+
+    m.AddFieldData("meta", data_array({1.0, 2.0, 3.0}));
+    return m;
+}
+
+/**
+ * @brief Asserts that two meshes have identical geometry — same points, same
+ * block count, and per block the same type, cell count and connectivity.
+ *
+ * Every data operation must leave geometry bit-identical, so this is the shared
+ * invariant check for all of them.
+ * @param rA First mesh.
+ * @param rB Second mesh.
+ */
+inline void expect_same_geometry(const Mesh& rA, const Mesh& rB) {
+    ASSERT_EQ(rA.NumPoints(), rB.NumPoints());
+    ASSERT_EQ(rA.PointDim(), rB.PointDim());
+    ASSERT_EQ(rA.Points().Size(), rB.Points().Size());
+    for (std::size_t i = 0; i < rA.Points().Size(); ++i)
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(rA.Points(), i),
+                         meshioplusplus::detail::read_double(rB.Points(), i));
+    ASSERT_EQ(rA.NumCellBlocks(), rB.NumCellBlocks());
+    for (std::size_t b = 0; b < rA.NumCellBlocks(); ++b) {
+        const auto ca = rA.Cells(b);
+        const auto cb = rB.Cells(b);
+        EXPECT_EQ(std::string(ca.Type()), std::string(cb.Type()));
+        ASSERT_EQ(ca.NumCells(), cb.NumCells());
+        ASSERT_EQ(ca.IsRagged(), cb.IsRagged());
+        if (ca.IsRagged() || ca.IsPolyhedron())
+            continue;
+        ASSERT_EQ(ca.Conn().Size(), cb.Conn().Size());
+        for (std::size_t i = 0; i < ca.Conn().Size(); ++i)
+            EXPECT_EQ(meshioplusplus::detail::read_int(ca.Conn(), i),
+                      meshioplusplus::detail::read_int(cb.Conn(), i));
+    }
+}
+
 }  // namespace mt

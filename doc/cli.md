@@ -345,6 +345,117 @@ meshioplusplus stats mesh.vtu --json
 
 ---
 
+## meshioplusplus data
+
+A nested group of nine verbs operating on a mesh's `point_data` / `cell_data` /
+`field_data` arrays (see [data operations](/data_operations)). **The geometry is
+never modified** by any of them — points, connectivity, block order and block
+types come through bit-identical.
+
+```
+meshioplusplus data <subcommand> [options]
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `info` | Summarize every data array (see [data summary](/data_info)) |
+| `rename` | Rename data arrays (see [array management](/data_manage)) |
+| `drop` | Drop data arrays by name |
+| `keep` | Keep only the named data arrays |
+| `to-cell` | Average `point_data` onto the cells (see [averaging](/data_average)) |
+| `to-point` | Average `cell_data` onto the points |
+| `calc` | Derive an array from an expression (see [expressions](/data_calc)) |
+| `clamp` | Clamp values into a range (see [conditioning](/data_condition)) |
+| `normalize` | Rescale values to a target range |
+
+Every verb takes `--input-format` (`-i`), and every verb but `info` takes an
+`OUTFILE` and `--output-format` (`-o`).
+
+::: warning Colons in names
+Data names routinely contain colons (`gmsh:physical`). `data rename` therefore
+splits its `OLD:NEW` value on the **last** colon — `--point gmsh:physical:tag`
+renames `gmsh:physical` to `tag`. `data calc` splits `NAME = EXPR` on the
+**first** `=`. `drop`/`keep` take a comma-separated name list with no prefix, so
+colons there are unambiguous. The Python CLI and the native binary implement
+identical rules.
+:::
+
+### data info
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit the summary as JSON |
+
+Prints location, name, dtype, component count, entry count, min/max/mean and
+NaN/inf counts for every array. Read-only.
+
+### data rename / drop / keep
+
+| Option | Description |
+|--------|-------------|
+| `--point`, `--cell`, `--field` | `OLD:NEW` for `rename` (repeatable); a comma-separated name list for `drop`/`keep` |
+| `--ignore-missing` | Skip names that do not exist instead of failing (`drop`/`keep`) |
+
+For `keep`, a location that is not named at all is left untouched; naming it
+with an empty list drops everything there.
+
+### data to-cell / to-point
+
+| Option | Description |
+|--------|-------------|
+| `--keys` | Comma-separated names to convert (default: all at the source location) |
+| `--target-suffix` | Append this to each output name (default: keep the same name) |
+| `--weighted` | `to-point` only: weight by cell measure (area/volume) instead of counting cells equally |
+
+The output is always `float64` — the mean of an integer field is not an integer.
+
+### data calc
+
+| Option | Description |
+|--------|-------------|
+| `--point`, `--cell`, `--field` | `NAME = EXPRESSION` (repeatable) |
+| `--overwrite` | Allow replacing an array that already exists |
+
+The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric
+literals, array names, and `abs`/`sqrt`/`min`/`max`/`norm` — nothing else is
+evaluated.
+
+### data clamp / normalize
+
+| Option | Description |
+|--------|-------------|
+| `--point`, `--cell`, `--field` | Comma-separated names (default: all at that location) |
+| `--min`, `--max` | `clamp` only: the bounds (both required) |
+| `--to LO,HI` | `normalize` only: target range (default `0,1`) |
+| `--zero-mean` | `normalize` only: standardize to zero mean / unit std instead |
+| `--magnitude` | Condition by row magnitude instead of per component |
+| `--nan` | `ignore` (default), `replace` or `fail` |
+| `--nan-value` | Replacement used with `--nan replace` |
+| `--suffix` | Store as `NAME+SUFFIX` instead of replacing in place |
+
+**Examples:**
+
+```sh
+meshioplusplus data info mesh.vtu
+meshioplusplus data info mesh.vtu --json
+
+meshioplusplus data rename in.vtu out.vtu --point T:temperature
+meshioplusplus data drop   in.vtu out.vtu --point a,b --cell c
+meshioplusplus data keep   in.vtu out.vtu --point T,p --cell mat
+
+meshioplusplus data to-cell  in.vtu out.vtu --keys T,p --target-suffix _c
+meshioplusplus data to-point in.vtu out.vtu --keys stress --weighted
+
+meshioplusplus data calc in.vtu out.vtu --point "speed = norm(velocity)"
+meshioplusplus data calc in.vtu out.vtu --cell  "dp = p_new - p_old"
+
+meshioplusplus data clamp     in.vtu out.vtu --point T --min 0 --max 100
+meshioplusplus data normalize in.vtu out.vtu --cell damage --to 0,1
+meshioplusplus data normalize in.vtu out.vtu --point T --zero-mean
+```
+
+---
+
 ## meshioplusplus compress
 
 Compress the data in a mesh file (formats that support compression, e.g. VTU).

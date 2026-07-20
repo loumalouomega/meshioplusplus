@@ -24,6 +24,8 @@
  */
 
 // System includes
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -506,5 +508,216 @@ TEST(CApi, HdfFormatConvert) {
     std::remove(med.c_str());
 }
 #endif
+
+/* --- data operations ---------------------------------------------------- */
+
+// A tet mesh carrying point, cell and field data, for the data operations.
+mio_mesh* build_data_mesh() {
+    mio_mesh* m = build_tet_mesh();  // 5 points, 2 tetra
+    static const std::array<double, 5> temperature = {0.0, 1.0, 2.0, 3.0, 4.0};
+    static const std::array<double, 15> velocity = {1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 2, 0, 0};
+    static const std::array<double, 2> mat = {10.0, 20.0};
+    static const std::array<double, 3> meta = {1.0, 2.0, 3.0};
+    std::int64_t s1[1] = {5};
+    std::int64_t s2[2] = {5, 3};
+    std::int64_t sc[1] = {2};
+    std::int64_t sf[1] = {3};
+    EXPECT_EQ(mio_mesh_add_point_data(m, "T", MIO_FLOAT64, 1, s1, temperature.data()), MIO_OK);
+    EXPECT_EQ(mio_mesh_add_point_data(m, "v", MIO_FLOAT64, 2, s2, velocity.data()), MIO_OK);
+    EXPECT_EQ(mio_mesh_append_cell_data(m, "mat", MIO_FLOAT64, 1, sc, mat.data()), MIO_OK);
+    EXPECT_EQ(mio_mesh_add_field_data(m, "meta", MIO_FLOAT64, 1, sf, meta.data()), MIO_OK);
+    return m;
+}
+
+TEST(CApi, DataDropAndKeep) {
+    mio_mesh* m = build_data_mesh();
+    const char* names[] = {"T"};
+    mio_mesh* dropped = mio_data_drop(m, MIO_DATA_POINT, names, 1, 0);
+    ASSERT_NE(dropped, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_point_data(dropped), 1);  // only "v" left
+    // Geometry is never modified.
+    EXPECT_EQ(mio_mesh_num_points(dropped), 5);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(dropped), 1);
+    mio_mesh_free(dropped);
+
+    mio_mesh* kept = mio_data_keep(m, MIO_DATA_POINT, names, 1, 0);
+    ASSERT_NE(kept, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_point_data(kept), 1);
+    mio_mesh_free(kept);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataDropUnknownKeyFails) {
+    mio_mesh* m = build_data_mesh();
+    const char* names[] = {"nope"};
+    EXPECT_EQ(mio_data_drop(m, MIO_DATA_POINT, names, 1, 0), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    // ignore_missing makes it a no-op instead.
+    mio_mesh* ok = mio_data_drop(m, MIO_DATA_POINT, names, 1, 1);
+    ASSERT_NE(ok, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_point_data(ok), 2);
+    mio_mesh_free(ok);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataRename) {
+    mio_mesh* m = build_data_mesh();
+    mio_mesh* out = mio_data_rename(m, MIO_DATA_POINT, "T", "temperature");
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    char buf[64] = {};
+    bool found = false;
+    for (std::int64_t i = 0; i < mio_mesh_num_point_data(out); ++i) {
+        mio_mesh_point_data_name(out, i, buf, sizeof(buf));
+        if (std::string(buf) == "temperature")
+            found = true;
+    }
+    EXPECT_TRUE(found);
+    mio_mesh_free(out);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataAveraging) {
+    mio_mesh* m = build_data_mesh();
+    mio_mesh* to_cell = mio_data_point_to_cell(m, nullptr, 0, nullptr);
+    ASSERT_NE(to_cell, nullptr) << mio_last_error();
+    EXPECT_GT(mio_mesh_num_cell_data(to_cell), 0);
+    mio_mesh_free(to_cell);
+
+    const char* names[] = {"mat"};
+    mio_mesh* to_point = mio_data_cell_to_point(m, names, 1, MIO_WEIGHT_UNIFORM, nullptr);
+    ASSERT_NE(to_point, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    mio_dtype dt;
+    std::int32_t ndim = 0;
+    std::int64_t shape[MIO_MAX_NDIM] = {};
+    ASSERT_EQ(mio_mesh_get_point_data(to_point, "mat", &data, &dt, &ndim, shape), MIO_OK);
+    EXPECT_EQ(shape[0], 5);
+    // A mean is not an integer: the output is always Float64.
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    mio_mesh_free(to_point);
+
+    mio_mesh* weighted = mio_data_cell_to_point(m, names, 1, MIO_WEIGHT_MEASURE, "_w");
+    ASSERT_NE(weighted, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_get_point_data(weighted, "mat_w", &data, &dt, &ndim, shape), MIO_OK);
+    mio_mesh_free(weighted);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataCalc) {
+    mio_mesh* m = build_data_mesh();
+    mio_mesh* out = mio_data_calc(m, "norm(v)", MIO_DATA_POINT, "speed", 0);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    mio_dtype dt;
+    std::int32_t ndim = 0;
+    std::int64_t shape[MIO_MAX_NDIM] = {};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "speed", &data, &dt, &ndim, shape), MIO_OK);
+    ASSERT_EQ(dt, MIO_FLOAT64);
+    const double* speed = static_cast<const double*>(data);
+    EXPECT_NEAR(speed[0], 1.0, 1e-12);
+    EXPECT_NEAR(speed[3], std::sqrt(2.0), 1e-12);
+    mio_mesh_free(out);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataCalcRejectsBadExpressions) {
+    mio_mesh* m = build_data_mesh();
+    EXPECT_EQ(mio_data_calc(m, "log(T)", MIO_DATA_POINT, "o", 0), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    EXPECT_EQ(mio_data_calc(m, "nope + 1", MIO_DATA_POINT, "o", 0), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    EXPECT_EQ(mio_data_calc(m, "T +", MIO_DATA_POINT, "o", 0), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataCondition) {
+    mio_mesh* m = build_data_mesh();
+    const char* names[] = {"T"};
+    mio_mesh* out = mio_data_condition(m, MIO_DATA_POINT, names, 1, MIO_COND_NORMALIZE, 0.0, 1.0,
+                                       MIO_SCOPE_COMPONENT, MIO_NAN_IGNORE, 0.0, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    mio_dtype dt;
+    std::int32_t ndim = 0;
+    std::int64_t shape[MIO_MAX_NDIM] = {};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "T", &data, &dt, &ndim, shape), MIO_OK);
+    const double* t = static_cast<const double*>(data);
+    // T = {0,1,2,3,4} -> min maps to 0, max to 1.
+    EXPECT_NEAR(t[0], 0.0, 1e-12);
+    EXPECT_NEAR(t[4], 1.0, 1e-12);
+    mio_mesh_free(out);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataInfoHandle) {
+    mio_mesh* m = build_data_mesh();
+    mio_data_info* info = mio_data_info_create(m);
+    ASSERT_NE(info, nullptr) << mio_last_error();
+    const std::int64_t n = mio_data_info_count(info);
+    EXPECT_EQ(n, 4);  // T, v, mat, meta
+
+    bool saw_t = false;
+    for (std::int64_t i = 0; i < n; ++i) {
+        char buf[64] = {};
+        const std::int64_t len = mio_data_info_name(info, i, buf, sizeof(buf));
+        EXPECT_GE(len, 0);
+        mio_data_array_info entry;
+        ASSERT_EQ(mio_data_info_entry(info, i, &entry), MIO_OK);
+        if (std::string(buf) == "T" && entry.location == MIO_DATA_POINT) {
+            saw_t = true;
+            EXPECT_EQ(entry.num_entries, 5);
+            EXPECT_EQ(entry.num_components, 1);
+            EXPECT_EQ(entry.num_finite, 5);
+            EXPECT_EQ(entry.num_nan, 0);
+            EXPECT_NEAR(entry.min, 0.0, 1e-12);
+            EXPECT_NEAR(entry.max, 4.0, 1e-12);
+            EXPECT_NEAR(entry.mean, 2.0, 1e-12);
+            double cmin = 0, cmax = 0, cmean = 0;
+            ASSERT_EQ(mio_data_info_component(info, i, 0, &cmin, &cmax, &cmean), MIO_OK);
+            EXPECT_NEAR(cmax, 4.0, 1e-12);
+            // Every out pointer is optional.
+            EXPECT_EQ(mio_data_info_component(info, i, 0, nullptr, nullptr, nullptr), MIO_OK);
+        }
+    }
+    EXPECT_TRUE(saw_t);
+
+    // Out-of-range indices are rejected, not dereferenced.
+    mio_data_array_info entry;
+    EXPECT_NE(mio_data_info_entry(info, n, &entry), MIO_OK);
+    EXPECT_EQ(mio_data_info_name(info, -1, nullptr, 0), -1);
+    EXPECT_NE(mio_data_info_component(info, 0, 999, nullptr, nullptr, nullptr), MIO_OK);
+
+    mio_data_info_free(info);
+    mio_data_info_free(nullptr);  // must tolerate NULL
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataInfoNameBufferTooSmall) {
+    mio_mesh* m = build_data_mesh();
+    mio_data_info* info = mio_data_info_create(m);
+    ASSERT_NE(info, nullptr);
+    // The required length is returned even when the buffer cannot hold it.
+    char tiny[2] = {};
+    const std::int64_t needed = mio_data_info_name(info, 0, tiny, sizeof(tiny));
+    EXPECT_GE(needed, 0);
+    EXPECT_EQ(tiny[1], '\0');  // always NUL-terminated
+    mio_data_info_free(info);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataNullArgumentsAreRejected) {
+    mio_mesh* m = build_data_mesh();
+    const char* names[] = {"T"};
+    EXPECT_EQ(mio_data_drop(nullptr, MIO_DATA_POINT, names, 1, 0), nullptr);
+    EXPECT_EQ(mio_data_rename(m, MIO_DATA_POINT, nullptr, "x"), nullptr);
+    EXPECT_EQ(mio_data_calc(m, nullptr, MIO_DATA_POINT, "o", 0), nullptr);
+    EXPECT_EQ(mio_data_info_create(nullptr), nullptr);
+    EXPECT_EQ(mio_data_info_count(nullptr), -1);
+    // A NULL names array with a positive count must be caught, not dereferenced.
+    EXPECT_EQ(mio_data_drop(m, MIO_DATA_POINT, nullptr, 3, 0), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    mio_mesh_free(m);
+}
 
 }  // namespace

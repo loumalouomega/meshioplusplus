@@ -9,6 +9,7 @@ from . import (
     _compress,
     _convert,
     _crop,
+    _data,
     _decompress,
     _diff,
     _extract_surface,
@@ -132,6 +133,16 @@ def main(argv=None):
     )
     _stats.add_args(parser)
     parser.set_defaults(func=_stats.stats_cmd)
+
+    # Nested group: `meshioplusplus data <verb>`. The inner parsers each call
+    # set_defaults(func=...), which overrides the outer default, so the
+    # `args.func(args)` dispatch below reaches the right handler unchanged.
+    parser = subparsers.add_parser(
+        "data",
+        help="Inspect / rename / average / compute on mesh data arrays",
+    )
+    _data.add_args(parser)
+    parser.set_defaults(func=_data.data_cmd)
 
     args = parent_parser.parse_args(argv)
 

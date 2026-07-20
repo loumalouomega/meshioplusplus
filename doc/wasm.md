@@ -79,6 +79,28 @@ array of `{ key, mesh }`; and `stats(mesh)` → an object of geometric measures
 [transform](./transform.md), [clean](./clean.md), [crop](./crop.md),
 [split](./split.md), and [stats](./stats.md).
 
+The [data operations](./data_operations.md) — which act on `point_data` /
+`cell_data` / `field_data` and never modify the geometry — are exposed as
+`dataDrop(mesh, location, names, ignoreMissing)`, `dataKeep(...)`,
+`dataRename(mesh, location, from, to)`,
+`dataPointToCell(mesh, names, suffix)`,
+`dataCellToPoint(mesh, names, weight, suffix)`,
+`dataCalc(mesh, expression, location, outputName, overwrite)`,
+`dataCondition(mesh, location, names, mode, lo, hi, scope, nanPolicy, nanReplacement, suffix)`
+— each returning a new mesh — and `dataInfo(mesh)`, which returns an array of
+per-array summary objects (`location`, `name`, `dtype`, `shape`, `numBlocks`,
+`numEntries`, `numComponents`, `numValues`, `min`, `max`, `mean`,
+`minPerComponent`/`maxPerComponent`/`meanPerComponent`, `numNan`, `numInf`,
+`numFinite`, `inconsistentBlocks`). Enumerations cross as strings: `location` is
+`"point"`/`"cell"`/`"field"`, `weight` is `"uniform"`/`"measure"`, `mode` is
+`"clamp"`/`"normalize"`/`"standardize"`, `scope` is
+`"component"`/`"magnitude"`, and `nanPolicy` is
+`"ignore"`/`"replace"`/`"fail"`. A malformed `dataCalc` expression throws a
+catchable `Error`. See [data operations](./data_operations.md),
+[array management](./data_manage.md), [averaging](./data_average.md),
+[expressions](./data_calc.md), [conditioning](./data_condition.md) and
+[data summary](./data_info.md).
+
 ## Format support
 
 The WASM build ships the 36 formats with no HDF5/netCDF dependency, plus XDMF's XML/Binary data path (not its HDF variant) — 35 readable formats in total, 36 writable (`openfoam` is read-only; `svg` and `tikz` are write-only):
