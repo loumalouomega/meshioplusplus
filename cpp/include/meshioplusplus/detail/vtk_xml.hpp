@@ -242,17 +242,17 @@ inline std::string vtu_strip(const char* pS) {
  * @brief Decode a base64 "binary" DataArray payload into a flat array.
  * @param rText The stripped base64 text.
  * @param dt Target dtype.
- * @param compression 0 = none, 1 = zlib.
+ * @param codec block-compression codec recorded in the file.
  * @param hsz Header integer size in bytes (4 for UInt32, 8 for UInt64).
  * @return A 1-D owning array over the decoded bytes.
  */
-inline NDArray vtu_parse_binary(const std::string& rText, DType dt, int compression,
+inline NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec,
                                 std::size_t hsz) {
     std::vector<unsigned char> bytes;
-    if (compression == 0)
+    if (codec == VtkCodec::None)
         bytes = vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
     else
-        bytes = vtu_decode_zlib(rText.c_str(), rText.size(), hsz);
+        bytes = vtu_decode_blocks(rText.c_str(), rText.size(), hsz, codec);
     std::size_t isz = dtype_size(dt);
     std::size_t n = isz ? bytes.size() / isz : 0;
     NDArray a(dt, {n});
