@@ -79,19 +79,23 @@ array of `{ key, mesh }`; and `stats(mesh)` → an object of geometric measures
 conversion is exposed as `convertCells(mesh, mode, recordParentIds)` with `mode`
 `"linearize"`, `"simplexify"`, or `"elevate"`, returning a new mesh; a
 polyhedron block under `"simplexify"` and the full-Lagrange targets
-(`quad9`/`hexahedron27`) under `"elevate"` throw a catchable `Error`. See
-[transform](./transform.md), [clean](./clean.md), [crop](./crop.md),
-[split](./split.md), [stats](./stats.md), and
-[cell conversion](./convert_cells.md).
+(`quad9`/`hexahedron27`) under `"elevate"` throw a catchable `Error`. Uniform
+refinement is exposed as `refine(mesh, levels, recordParentIds)`, subdividing
+every cell into same-type children (`triangle`/`quad` into 4,
+`tetra`/`wedge`/`hexahedron` into 8) with shared mid-entity nodes, so the result
+has no hanging nodes; a higher-order cell, a `pyramid`, or a ragged block throws
+a catchable `Error`. See [transform](./transform.md), [clean](./clean.md),
+[crop](./crop.md), [split](./split.md), [stats](./stats.md),
+[cell conversion](./convert_cells.md), and [refine](./refine.md).
 
 ::: tip Reachable from `loadMeshioPlusPlus()` since v7.4.0
 Before v7.4.0 the geometry operations above were bound in the WASM module but
 **not forwarded by the package wrapper**, so they were unreachable through
 `loadMeshioPlusPlus()` (only file I/O and the `data_*` operations were). They are
 all forwarded now. The index maps the C++ core returns for
-`cropBbox`/`cropPlane`/`split`/`convertCells` are still not carried across the JS
-boundary — use the `recordIds`/`recordParentIds` flags, which attach the same
-provenance as ordinary data arrays.
+`cropBbox`/`cropPlane`/`split`/`convertCells`/`refine` are still not carried
+across the JS boundary — use the `recordIds`/`recordParentIds` flags, which
+attach the same provenance as ordinary data arrays.
 :::
 
 The [data operations](./data_operations.md) — which act on `point_data` /

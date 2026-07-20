@@ -377,6 +377,41 @@ meshioplusplus convert-cells in.msh out.vtu --mode elevate
 
 ---
 
+## meshioplusplus refine
+
+Uniformly refine a mesh, subdividing every cell into same-type children (see
+[refine](/refine)).
+
+```
+meshioplusplus refine [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--levels N` | How many times to subdivide (default `1`) |
+| `--record-parent-ids` | Attach `refine:parent_cell` cell_data of the original cell indices |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+One level splits a `triangle`/`quad` into 4 and a `tetra`/`wedge`/`hexahedron`
+into 8, inserting nodes at edge, quad-face and body midpoints. Those nodes are
+shared between neighbouring cells, so the result has no hanging nodes, and
+`point_data` is interpolated onto them. Higher-order cells, `pyramid`, and ragged
+polygon/polyhedron blocks have no same-type subdivision and are errors —
+`convert-cells --mode linearize` (or `--mode simplexify`) first.
+
+Note the cell count grows as `4^levels` (2D) or `8^levels` (3D), so `--levels 3`
+is already a 512× increase on a volume mesh.
+
+**Examples:**
+
+```sh
+meshioplusplus refine in.msh out.vtu
+meshioplusplus refine in.msh out.vtu --levels 2
+meshioplusplus refine coarse.vtu fine.vtu --levels 2 --record-parent-ids
+```
+
+---
+
 ## meshioplusplus data
 
 A nested group of nine verbs operating on a mesh's `point_data` / `cell_data` /

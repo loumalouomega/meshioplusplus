@@ -94,6 +94,7 @@ meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
 meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # partition
 meshioplusplus stats      mesh.vtu                           # geometric statistics
 meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
+meshioplusplus refine     in.vtu out.vtu --levels 2          # uniform subdivision
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -271,7 +272,23 @@ quadratic = meshioplusplus.convert_cells(mesh, mode="elevate")
 
 Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-order mesh, and output is byte-identical across mesh backends and thread counts.
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, `meshioplusplus stats`, and `meshioplusplus convert-cells`.
+#### Refinement
+
+**`meshioplusplus.refine`** subdivides every cell into congruent children of the *same* cell type, increasing a mesh's resolution: `line` → 2, `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8, with `levels=n` applying the templates `n` times. See `doc/refine.md`.
+
+New nodes sit at the midpoints of the parent's edges, quad faces and (hexahedron only) body, and carry the mean of that entity's corner values for every `point_data` array — so a linear field is interpolated exactly. Mid-edge and quad-face-centre nodes are **shared** between every cell touching the entity, so the refined mesh has no hanging nodes; each parent's `cell_data` row is replicated to its children.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+fine = meshioplusplus.refine(mesh)                      # one level
+finer = meshioplusplus.refine(mesh, levels=2)           # 64x the cells in 3D
+tagged = meshioplusplus.refine(mesh, record_parent_ids=True)
+```
+
+Children inherit the parent's orientation (zero newly-inverted cells for a well-oriented input), and volume is conserved — exactly for `tetra` always, and for `wedge`/`hexahedron` when the parent is affine. Higher-order cells, `pyramid`, and ragged blocks have no same-type subdivision and raise by name.
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, and `meshioplusplus refine`.
 
 #### Data operations (rename / average / calc / condition / summarize)
 

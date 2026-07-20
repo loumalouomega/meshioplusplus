@@ -68,6 +68,7 @@ from ._helpers import (
 from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
 from ._quality import attach_quality, compute_quality
+from ._refine import refine
 from ._reorder import compute_bandwidth, reorder
 from ._skin import extract_skin
 from ._sniff import sniff_format
@@ -144,6 +145,7 @@ __all__ = [
     "crop",
     "split",
     "convert_cells",
+    "refine",
     "compute_stats",
     "data_manage",
     "data_drop",

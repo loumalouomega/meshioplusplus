@@ -88,6 +88,10 @@ typedef struct mio_split_result mio_split_result;
  *  index maps. Destroy with mio_convert_cells_result_free(). */
 typedef struct mio_convert_cells_result mio_convert_cells_result;
 
+/** Opaque result of mio_refine(): the refined mesh plus the point/cell index
+ *  maps. Destroy with mio_refine_result_free(). */
+typedef struct mio_refine_result mio_refine_result;
+
 typedef enum mio_status {
     MIO_OK = 0,           /**< success */
     MIO_ERR_READ = 1,     /**< file could not be parsed / read-side failure */
@@ -605,6 +609,70 @@ MIO_API mio_status mio_convert_cells_result_cell_map(const mio_convert_cells_res
 
 /** Free a convert-cells result (and the mesh it still owns). */
 MIO_API void mio_convert_cells_result_free(mio_convert_cells_result* result);
+
+/**
+ * Uniformly refine a mesh, subdividing every cell into same-type children
+ * (line -> 2, triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8,
+ * hexahedron -> 8). New nodes sit at edge / quad-face / body midpoints and are
+ * shared between neighbouring cells, so the refined mesh has no hanging nodes.
+ * point_sets/cell_sets are not carried across the C ABI.
+ * @param levels             how many times to apply the templates; 0 or less
+ *                           returns an unchanged clone.
+ * @param record_parent_ids  nonzero to attach a refine:parent_cell cell_data
+ *                           array naming each output cell's ORIGINAL ancestor
+ *                           within its own block.
+ * @return a result handle (free with mio_refine_result_free), or NULL on
+ *         failure — higher-order cells, pyramids and ragged polygon/polyhedron
+ *         blocks have no same-type subdivision and all fail.
+ */
+MIO_API mio_refine_result* mio_refine(const mio_mesh* mesh, int levels, int record_parent_ids);
+
+/**
+ * Borrow the refined mesh. Owned by the result: valid until
+ * mio_refine_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the refined mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_refine_result_mesh(const mio_refine_result* result);
+
+/**
+ * Transfer ownership of the refined mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_refine_result_take_mesh(mio_refine_result* result);
+
+/**
+ * Zero-copy borrow of the point map (int64, shape (num_points_in,), input point
+ * index -> output index). Refinement never prunes, so this is the identity; it
+ * is exposed in full so callers need not depend on that. The pointer is valid
+ * until the result is freed. Any out-param may be NULL.
+ * @param result a refine result.
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the input point count.
+ */
+MIO_API mio_status mio_refine_result_point_map(const mio_refine_result* result, const void** data,
+                                               mio_dtype* dtype, int64_t* n);
+
+/** Number of per-block cell maps in a refine result, or -1 on error. */
+MIO_API int64_t mio_refine_result_num_cell_maps(const mio_refine_result* result);
+
+/**
+ * Zero-copy borrow of cell block `block`'s cell map (int64, shape
+ * (num_cells_in_block,), input cell -> the index of its FIRST child in the
+ * corresponding output block). A cell's children are contiguous, so parent c
+ * owns [map[c], map[c+1]) (or the block's end for the last parent). Any
+ * out-param may be NULL.
+ * @param result a refine result.
+ * @param block  cell-block index in [0, mio_refine_result_num_cell_maps).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's input cell count.
+ */
+MIO_API mio_status mio_refine_result_cell_map(const mio_refine_result* result, int64_t block,
+                                              const void** data, mio_dtype* dtype, int64_t* n);
+
+/** Free a refine result (and the mesh it still owns). */
+MIO_API void mio_refine_result_free(mio_refine_result* result);
 
 /** Geometric statistics of a mesh (see mio_stats). Per-cell-type counts are not
  *  carried across the C ABI (use mio_num_cell_blocks / mio_cell_block_type). */

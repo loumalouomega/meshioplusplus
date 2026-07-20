@@ -172,6 +172,7 @@ module meshioplusplus
         procedure :: crop_plane => mesh_crop_plane
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
+        procedure :: refine => mesh_refine
         procedure :: stats => mesh_stats
         procedure :: compute_bandwidth => mesh_compute_bandwidth
         procedure :: equals => mesh_equals
@@ -525,6 +526,38 @@ module meshioplusplus
 
         subroutine c_mio_convert_cells_result_free(r) &
                 bind(c, name="mio_convert_cells_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_refine(h, levels, record_parent_ids) &
+                bind(c, name="mio_refine") result(r)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: h
+            integer(c_int), value :: levels
+            integer(c_int), value :: record_parent_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_refine_result_take_mesh(r) &
+                bind(c, name="mio_refine_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_refine_result_point_map(r, data, dtype, n) &
+                bind(c, name="mio_refine_result_point_map") result(s)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: r
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int64_t), intent(out) :: n
+            integer(c_int) :: s
+        end function
+
+        subroutine c_mio_refine_result_free(r) &
+                bind(c, name="mio_refine_result_free")
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
@@ -1598,6 +1631,62 @@ contains
         call c_mio_convert_cells_result_free(res)
         if (.not. c_associated(out%handle)) then
             call handle_failure('convert_cells', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Uniformly refine the mesh, subdividing every cell into same-type children
+    !> (line -> 2, triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8,
+    !> hexahedron -> 8). New nodes sit at edge / quad-face / body midpoints and
+    !> are shared between neighbouring cells, so the result has no hanging
+    !> nodes. `levels` (default 1) applies the templates repeatedly; 0 or less
+    !> returns an unchanged copy. `record_parent_ids` (default .false.) attaches
+    !> a refine:parent_cell cell_data array naming each output cell's ORIGINAL
+    !> ancestor. The optional `point_map` receives the input-point ->
+    !> output-point mapping, 1-based (the identity: refinement never prunes).
+    !> Higher-order cells, pyramids and ragged blocks have no same-type
+    !> subdivision and fail.
+    function mesh_refine(self, levels, record_parent_ids, point_map, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: levels
+        logical, intent(in), optional :: record_parent_ids
+        integer(int64), allocatable, intent(out), optional :: point_map(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res, cdata
+        integer(c_int) :: clevels, crec, s, dt
+        integer(c_int64_t) :: nlen
+        integer(c_int64_t), pointer :: fp(:)
+        clevels = 1_c_int
+        if (present(levels)) clevels = int(levels, c_int)
+        crec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) crec = 1
+        end if
+        res = c_mio_refine(self%handle, clevels, crec)
+        if (.not. c_associated(res)) then
+            call handle_failure('refine', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(point_map)) then
+            s = c_mio_refine_result_point_map(res, cdata, dt, nlen)
+            if (s /= 0_c_int) then
+                call c_mio_refine_result_free(res)
+                call handle_failure('refine', mio_error_message(), stat, errmsg)
+                return
+            end if
+            allocate (point_map(nlen))
+            if (nlen > 0) then
+                call c_f_pointer(cdata, fp, [nlen])
+                point_map = int(fp, int64) + 1_int64  ! 0-based -> 1-based
+            end if
+        end if
+        out%handle = c_mio_refine_result_take_mesh(res)
+        call c_mio_refine_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('refine', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

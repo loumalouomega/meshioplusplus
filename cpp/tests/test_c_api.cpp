@@ -959,3 +959,89 @@ TEST(CApi, ConvertCellsErrorsAreGuardedNotThrown) {
     mio_convert_cells_result_free(nullptr);  // NULL-safe
     mio_mesh_free(m);
 }
+
+TEST(CApi, RefineHexIntoEight) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_refine_result* r = mio_refine(m, /*levels=*/1, /*record_parent_ids=*/1);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_refine_result_mesh(r);
+    ASSERT_NE(out, nullptr);
+    // 8 corners + 12 edge mids + 6 face centres + 1 body.
+    EXPECT_EQ(mio_mesh_num_points(out), 27);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "hexahedron");
+    std::int64_t num_cells = 0, nodes_per_cell = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(out, 0, &num_cells, &nodes_per_cell, nullptr), MIO_OK);
+    EXPECT_EQ(num_cells, 8);
+    EXPECT_EQ(nodes_per_cell, 8);
+
+    // Zero-copy borrows of the index maps.
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_refine_result_point_map(r, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(n, 8);
+    EXPECT_EQ(static_cast<const std::int64_t*>(data)[0], 0);
+
+    ASSERT_EQ(mio_refine_result_num_cell_maps(r), 1);
+    ASSERT_EQ(mio_refine_result_cell_map(r, 0, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(static_cast<const std::int64_t*>(data)[0], 0);  // parent 0's first child
+
+    mio_mesh* owned = mio_refine_result_take_mesh(r);
+    ASSERT_NE(owned, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(owned), 27);
+    mio_mesh_free(owned);
+    mio_refine_result_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RefineChainsOnABorrowedMesh) {
+    mio_mesh* m = build_tet_mesh();  // 2 tetrahedra
+
+    mio_refine_result* one = mio_refine(m, 1, 0);
+    ASSERT_NE(one, nullptr);
+    const mio_mesh* once = mio_refine_result_mesh(one);
+    EXPECT_EQ(block_type(once, 0), "tetra");
+
+    // Feed the borrowed mesh straight back in: levels=1 twice == levels=2.
+    mio_refine_result* two = mio_refine(once, 1, 0);
+    ASSERT_NE(two, nullptr);
+    mio_refine_result* direct = mio_refine(m, 2, 0);
+    ASSERT_NE(direct, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(mio_refine_result_mesh(two)),
+              mio_mesh_num_points(mio_refine_result_mesh(direct)));
+
+    mio_refine_result_free(direct);
+    mio_refine_result_free(two);
+    mio_refine_result_free(one);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RefineErrorsAreGuardedNotThrown) {
+    // A pyramid has no same-type subdivision: the C++ exception must be turned
+    // into NULL + last_error, never allowed to escape the ABI.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0.5, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "pyramid", 1, 5, MIO_INT64, conn.data()), MIO_OK);
+
+    EXPECT_EQ(mio_refine(m, 1, 0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_refine(nullptr, 1, 0), nullptr);
+    EXPECT_EQ(mio_refine_result_mesh(nullptr), nullptr);
+    EXPECT_EQ(mio_refine_result_num_cell_maps(nullptr), -1);
+    EXPECT_EQ(mio_refine_result_point_map(nullptr, nullptr, nullptr, nullptr), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_refine_result_cell_map(nullptr, 0, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    mio_refine_result_free(nullptr);  // NULL-safe
+    mio_mesh_free(m);
+}

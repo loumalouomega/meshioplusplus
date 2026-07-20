@@ -88,6 +88,7 @@
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
@@ -739,6 +740,22 @@ val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordP
 }
 
 /**
+ * @brief Uniformly refine a mesh, subdividing every cell into same-type
+ * children (line -> 2, triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8,
+ * hexahedron -> 8). Returns the refined mesh; the index maps are not carried
+ * across the JS boundary (use `recordParentIds` for the `refine:parent_cell`
+ * cell_data instead).
+ */
+val refine_js(const val& rMeshObj, int levels, bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RefineOptions options;
+        options.mLevels = levels;
+        options.mRecordParentIds = recordParentIds;
+        return mesh_to_val(meshioplusplus::refine(val_to_mesh(rMeshObj), options).mMesh);
+    });
+}
+
+/**
  * @brief Geometric statistics of a mesh (read-only). Returns an object with
  * `numPoints`, `numCells`, `bboxMin`/`bboxMax`/`extent`/`centroid` (3-arrays),
  * `cellTypeCounts` (object), `totalArea`, `signedVolume`, `unsignedVolume`,
@@ -1047,6 +1064,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("split", &split_js);
     emscripten::function("convertCells", &convert_cells_js);
+    emscripten::function("refine", &refine_js);
     emscripten::function("stats", &stats_js);
     emscripten::function("dataDrop", &data_drop_js);
     emscripten::function("dataKeep", &data_keep_js);

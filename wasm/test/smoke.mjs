@@ -370,6 +370,27 @@ step('convertCells rejects a full-Lagrange elevate target', () => {
     assert.throws(() => m.convertCells(quad9, 'elevate'));
 });
 
+step('refine: one hexahedron -> 8 hexahedra with 27 nodes', () => {
+    const out = m.refine(cube);
+    assert.equal(out.cells.length, 1);
+    assert.equal(out.cells[0].type, 'hexahedron');
+    assert.equal(out.cells[0].data.length, 8 * 8);
+    // 8 corners + 12 edge mids + 6 face centres + 1 body centre.
+    assert.equal(out.points.length, 27 * 3);
+});
+
+step('refine levels=2 matches refining twice', () => {
+    const direct = m.refine(tet, 2);
+    const twice = m.refine(m.refine(tet));
+    assert.equal(direct.points.length, twice.points.length);
+    assert.deepEqual(Array.from(direct.cells[0].data), Array.from(twice.cells[0].data));
+});
+
+step('refine rejects a cell type with no same-type subdivision', () => {
+    const up = m.convertCells(tet, 'elevate');
+    assert.throws(() => m.refine(up));
+});
+
 step('geometry operations are reachable through the wrapper', () => {
     // Regression guard for the v7.2.1 class of bug: every geometry op must be
     // forwarded by src/index.mjs, not merely bound in js_bindings.cpp.
@@ -389,6 +410,7 @@ step('geometry operations are reachable through the wrapper', () => {
         'cropPlane',
         'split',
         'convertCells',
+        'refine',
         'stats',
         'meshBackend',
     ]) {

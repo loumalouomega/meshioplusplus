@@ -112,8 +112,13 @@ std::map<std::string, SkinTestRefElement> skin_test_reference_elements() {
                                    {0, 0, 1}, {1, 0, 1}, {0, 1, 1}};
     const std::vector<std::array<int, 2>> wedge_edges = {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5},
                                                          {5, 3}, {0, 3}, {1, 4}, {2, 5}};
+    // wedge18 additionally has a center node on each of the three quad faces
+    // (nodes 15-17); the two triangle faces gain none.
+    const std::vector<std::vector<int>> wedge_face_centers = {
+        {0, 1, 4, 3}, {1, 2, 5, 4}, {2, 0, 3, 5}};
     out["wedge"] = skin_test_ref(wedge, {});
     out["wedge15"] = skin_test_ref(wedge, wedge_edges);
+    out["wedge18"] = skin_test_ref(wedge, wedge_edges, wedge_face_centers);
 
     const std::vector<P3> pyr = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5, 0.5, 1}};
     const std::vector<std::array<int, 2>> pyr_edges = {{0, 1}, {1, 2}, {2, 3}, {3, 0},
@@ -206,6 +211,7 @@ TEST(SkinFaceTables, OutwardWindingAndNodeCounts) {
                 break;
             case CellType::Wedge:
             case CellType::Wedge15:
+            case CellType::Wedge18:
                 nc = 6;
                 break;
             default:
@@ -296,6 +302,20 @@ TEST(Skin, WedgeMesh) {
     const auto counts = skin_test_cell_counts(skin);
     EXPECT_EQ(counts.at("triangle"), 2u);
     EXPECT_EQ(counts.at("quad"), 3u);
+}
+
+// wedge18 became skinnable when its row was added to cell_faces.cpp (v7.5.0);
+// before that it warned and was skipped.
+TEST(Skin, Wedge18Mesh) {
+    const std::vector<std::vector<double>> pts = {
+        {0, 0, 0},   {1, 0, 0},     {0, 1, 0},   {0, 0, 1},     {1, 0, 1},       {0, 1, 1},
+        {0.5, 0, 0}, {0.5, 0.5, 0}, {0, 0.5, 0}, {0.5, 0, 1},   {0.5, 0.5, 1},   {0, 0.5, 1},
+        {0, 0, 0.5}, {1, 0, 0.5},   {0, 1, 0.5}, {0.5, 0, 0.5}, {0.5, 0.5, 0.5}, {0, 0.5, 0.5}};
+    const mt::Mesh skin = meshioplusplus::extract_skin(mt::make_mesh(
+        pts, "wedge18", {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}}));
+    const auto counts = skin_test_cell_counts(skin);
+    EXPECT_EQ(counts.at("triangle6"), 2u);
+    EXPECT_EQ(counts.at("quad9"), 3u);
 }
 
 TEST(Skin, PyramidMesh) {
