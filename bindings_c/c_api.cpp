@@ -68,6 +68,7 @@
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
@@ -99,6 +100,12 @@ struct mio_split_result {
 
 struct mio_convert_cells_result {
     mio_mesh mMesh;  // owns the converted mesh; borrowed via _result_mesh
+    meshioplusplus::NDArray mPointMap;
+    std::vector<meshioplusplus::NDArray> mCellMaps;
+};
+
+struct mio_refine_result {
+    mio_mesh mMesh;  // owns the refined mesh; borrowed via _result_mesh
     meshioplusplus::NDArray mPointMap;
     std::vector<meshioplusplus::NDArray> mCellMaps;
 };
@@ -918,6 +925,84 @@ mio_status mio_convert_cells_result_cell_map(const mio_convert_cells_result* res
 }
 
 void mio_convert_cells_result_free(mio_convert_cells_result* result) {
+    delete result;
+}
+
+mio_refine_result* mio_refine(const mio_mesh* mesh, int levels, int record_parent_ids) {
+    return guarded_ptr(static_cast<mio_refine_result*>(nullptr), [&]() -> mio_refine_result* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::RefineOptions options;
+        options.mLevels = levels;
+        options.mRecordParentIds = record_parent_ids != 0;
+        meshioplusplus::RefineResult r = meshioplusplus::refine(mesh->mMesh, options);
+        auto* out = new mio_refine_result{};
+        out->mMesh = mio_mesh{std::move(r.mMesh)};
+        out->mPointMap = std::move(r.mPointMap);
+        out->mCellMaps = std::move(r.mCellMaps);
+        return out;
+    });
+}
+
+const mio_mesh* mio_refine_result_mesh(const mio_refine_result* result) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        return &result->mMesh;
+    });
+}
+
+mio_mesh* mio_refine_result_take_mesh(mio_refine_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+mio_status mio_refine_result_point_map(const mio_refine_result* result, const void** data,
+                                       mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        const NDArray& a = result->mPointMap;
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_refine_result_num_cell_maps(const mio_refine_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mCellMaps.size());
+    });
+}
+
+mio_status mio_refine_result_cell_map(const mio_refine_result* result, int64_t block,
+                                      const void** data, mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
+        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+void mio_refine_result_free(mio_refine_result* result) {
     delete result;
 }
 
