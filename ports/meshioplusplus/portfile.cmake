@@ -26,6 +26,7 @@ vcpkg_check_features(
         zlib    MESHIOPLUSPLUS_WITH_ZLIB
         zstd    MESHIOPLUSPLUS_WITH_ZSTD
         lz4     MESHIOPLUSPLUS_WITH_LZ4
+        kahip   MESHIOPLUSPLUS_WITH_KAHIP
 )
 
 vcpkg_cmake_configure(

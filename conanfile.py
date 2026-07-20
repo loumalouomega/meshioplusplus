@@ -27,7 +27,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "7.5.0"
+    version = "7.6.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -44,6 +44,7 @@ class MeshioplusplusConan(ConanFile):
         "with_zlib": [True, False],
         "with_zstd": [True, False],
         "with_lz4": [True, False],
+        "with_kahip": [True, False],
         "with_eigen": [True, False],
         "fortran": [True, False],
     }
@@ -56,6 +57,10 @@ class MeshioplusplusConan(ConanFile):
         # so a package without these reads and writes exactly what it always did.
         "with_zstd": False,
         "with_lz4": False,
+        # KaHIP is not on ConanCenter: no requirement is added -- the consumer
+        # supplies an install and points KAHIP_ROOT at it (find_package prefix,
+        # same policy as the CMake build). Off by default.
+        "with_kahip": False,
         "with_eigen": False,  # submodule not in a source export -> fallback transpose
         "fortran": False,
     }
@@ -120,6 +125,7 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_ZLIB"] = bool(self.options.with_zlib)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_ZSTD"] = bool(self.options.with_zstd)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_LZ4"] = bool(self.options.with_lz4)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_KAHIP"] = bool(self.options.with_kahip)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_EIGEN"] = bool(self.options.with_eigen)
         tc.generate()
 

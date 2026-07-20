@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "7.5.0",
+  "version": "7.6.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
@@ -56,6 +56,9 @@
       "dependencies": [
         "lz4"
       ]
+    },
+    "kahip": {
+      "description": "KaHIP partition backend (no vcpkg port exists: supply an install and set KAHIP_ROOT)"
     }
   }
 }
