@@ -149,6 +149,88 @@ step('malformed file raises a catchable Error, not a WASM abort', () => {
     );
 });
 
+// --- data operations -------------------------------------------------------
+// These act on the mesh's data arrays; the geometry must come through
+// untouched. `tet` carries point_data.temperature and cell_data.material.
+
+const tetv = {
+    points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    dim: 3,
+    cells: [{ type: 'tetra', data: new Int32Array([0, 1, 2, 3]), nodesPerCell: 4 }],
+    point_data: {
+        temperature: new Float64Array([1, 2, 3, 4]),
+        velocity: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0]),
+    },
+    cell_data: { material: [new Float64Array([7])] },
+    field_data: {},
+};
+
+step('dataInfo summarizes every array', () => {
+    const arrays = m.dataInfo(tetv);
+    assert.equal(arrays.length, 3);
+    const t = arrays.find((a) => a.name === 'temperature');
+    assert.equal(t.location, 'point_data');
+    assert.equal(t.numEntries, 4);
+    assert.equal(t.numComponents, 1);
+    assert.equal(t.min, 1);
+    assert.equal(t.max, 4);
+    assert.equal(t.mean, 2.5);
+    assert.equal(t.numNan, 0);
+    const v = arrays.find((a) => a.name === 'velocity');
+    assert.equal(v.numComponents, 3);
+    assert.equal(v.maxPerComponent.length, 3);
+});
+
+step('dataCalc evaluates an expression', () => {
+    const out = m.dataCalc(tetv, 'norm(velocity)', 'point', 'speed', false);
+    const speed = out.point_data.speed;
+    assert.ok(Math.abs(speed[0] - 1) < 1e-12);
+    assert.ok(Math.abs(speed[3] - Math.SQRT2) < 1e-12);
+    // Geometry is never modified.
+    assert.equal(out.points.length, 12);
+    assert.equal(out.cells.length, 1);
+});
+
+step('dataCalc rejects an unknown function with a catchable Error', () => {
+    assert.throws(
+        () => m.dataCalc(tetv, 'log(temperature)', 'point', 'bad', false),
+        (err) => err instanceof Error && err.message.length > 0,
+    );
+});
+
+step('dataDrop / dataKeep / dataRename', () => {
+    const dropped = m.dataDrop(tetv, 'point', ['temperature'], false);
+    assert.ok(!('temperature' in dropped.point_data));
+    assert.ok('velocity' in dropped.point_data);
+
+    const kept = m.dataKeep(tetv, 'point', ['temperature'], false);
+    assert.deepEqual(Object.keys(kept.point_data), ['temperature']);
+
+    const renamed = m.dataRename(tetv, 'point', 'temperature', 'T');
+    assert.ok('T' in renamed.point_data);
+    assert.ok(!('temperature' in renamed.point_data));
+});
+
+step('dataPointToCell / dataCellToPoint', () => {
+    const toCell = m.dataPointToCell(tetv, ['temperature'], '_c');
+    // Single tetra: the mean of {1,2,3,4}.
+    assert.ok(Math.abs(toCell.cell_data.temperature_c[0][0] - 2.5) < 1e-12);
+
+    const toPoint = m.dataCellToPoint(tetv, ['material'], 'uniform', '');
+    assert.equal(toPoint.point_data.material.length, 4);
+    assert.ok(Math.abs(toPoint.point_data.material[0] - 7) < 1e-12);
+});
+
+step('dataCondition normalizes to [0, 1]', () => {
+    const out = m.dataCondition(
+        tetv, 'point', ['temperature'], 'normalize', 0, 1,
+        'component', 'ignore', 0, '',
+    );
+    const t = out.point_data.temperature;
+    assert.ok(Math.abs(t[0] - 0) < 1e-12);
+    assert.ok(Math.abs(t[3] - 1) < 1e-12);
+});
+
 if (failed) {
     console.error('\nSMOKE TEST FAILED');
     process.exit(1);
