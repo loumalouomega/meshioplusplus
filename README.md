@@ -328,6 +328,26 @@ The speedup is per-element: text/parallel formats climb out of the small-mesh re
 
 Full methodology and a reproducible notebook are on the [Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source: [`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/01_benchmark.ipynb)).
 
+### Reading only what you need
+
+```python
+import meshioplusplus
+
+mesh = meshioplusplus.read("big.vtu", points_only=True)   # geometry, no data arrays
+mesh = meshioplusplus.read("big.vtu", arrays=["u", "p"])  # only these arrays
+meta = meshioplusplus.read_metadata("big.vtu")            # counts/names, no heavy arrays
+```
+
+VTU, VTP, XDMF and Gmsh skip the unwanted array bodies outright; other formats are read in
+full and filtered, and `meta["fell_back_to_full_read"]` says which happened. Large files can
+also be memory-mapped (automatic above 16 MiB), which roughly halves peak memory during a
+read. See [selective reads](doc/selective_read.md) and [memory-mapped reading](doc/mmap.md).
+
+VTK XML output can additionally use **lz4** (ParaView-readable) or **zstd** (a meshio++
+extension) instead of zlib, when built with `-DMESHIOPLUSPLUS_WITH_LZ4=ON` /
+`-DMESHIOPLUSPLUS_WITH_ZSTD=ON`. zlib remains the default. See
+[compression codecs](doc/codecs.md).
+
 ### Installation
 
 meshio++ is [available from the Python Package Index](https://pypi.org/project/meshioplusplus/), so simply run
