@@ -8,6 +8,53 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.5.0 (2026-07-20)
+
+A new dependency-free mesh operation that *increases* resolution — the counterpart to
+`convert_cells`, which preserves it, and `crop`/`clean`, which reduce it.
+
+- **`refine` — uniform mesh refinement.** Subdivides every cell into congruent children of
+  the **same** cell type, one fixed template per type: `line` → 2, `triangle` → 4,
+  `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8. `levels=n` applies the templates
+  `n` times.
+  - New nodes sit at the midpoints of the parent's edges, quad faces and (hexahedron only)
+    body, and carry the mean of that entity's corner values for every `point_data` array, so
+    a linear field is interpolated exactly. Each parent's `cell_data` row is replicated to
+    its children, and block structure is preserved 1:1.
+  - **The refined mesh has no hanging nodes.** Mid-edge *and* quad-face-centre nodes are
+    shared between every cell touching the entity — only the hexahedron body node is
+    per-cell. (Per-cell face centres would leave two adjacent hexahedra referencing distinct
+    coincident nodes, splitting the mesh topologically along every interior face.)
+  - Children inherit the parent's orientation, so a well-oriented input refines to zero
+    newly-inverted cells. Volume is conserved exactly for `line`/`triangle`/`quad`/`tetra`
+    always, and for `wedge`/`hexahedron` when the parent is affine — for a general trilinear
+    hexahedron the children's volumes do not sum to the parent's, which is a property of the
+    geometry rather than of the implementation.
+  - The tetrahedron's interior diagonal is fixed at the opposite-edge pair `(0,1)`–`(2,3)`
+    for determinism only; being strictly interior, it does not affect conformity — unlike
+    `convert_cells`' hex-simplexify diagonal, whose endpoints lie on the boundary.
+  - Higher-order cells (linearize first), `pyramid` (whose uniform refinement is 6 pyramids
+    + 4 tetrahedra, breaking the same-type contract), and ragged polygon/polyhedron blocks
+    raise by name rather than being silently passed through, which would produce hanging
+    nodes next to refined neighbours.
+  - Output is byte-identical across the MESHIO/NATIVE/KRATOS backends and any thread count:
+    the templates are fixed and the new-node numbering comes from a serial dedup pass over a
+    parallel-filled buffer, never a concurrent hash insert.
+
+  Exposed as Python `meshioplusplus.refine(mesh, levels=1, record_parent_ids=False)`, C
+  `mio_refine` (+ the `mio_refine_result` handle), Fortran `m%refine(levels, ...)`, WASM
+  `refine(...)`, and a `refine` verb on both the Python and native CLIs.
+
+- **`wedge18` is now skinnable.** `cell_faces` gained the `wedge18` row (completing the
+  family alongside the existing `hexahedron27` and `pyramid14` entries), so
+  `extract_surface`, `extract_skin` and `compute_quality` now handle `wedge18` meshes
+  instead of warning and skipping them. Mirrored in the pure-Python `_skin.py` twin.
+
+- Internal: the per-type edge tables that `convert_cells`' `elevate` mode and `refine` both
+  need are now owned by one shared `detail/cell_subdivision.hpp` (which delegates the 2D
+  rows to `detail/cell_edges.hpp`) rather than being transcribed independently. No
+  behaviour change.
+
 ## v7.4.0 (2026-07-20)
 
 A new dependency-free mesh operation, plus a WebAssembly fix that makes every
