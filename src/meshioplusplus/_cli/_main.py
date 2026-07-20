@@ -17,6 +17,7 @@ from . import (
     _info,
     _merge,
     _quality,
+    _refine,
     _reorder,
     _split,
     _stats,
@@ -134,6 +135,13 @@ def main(argv=None):
     )
     _convert_cells.add_args(parser)
     parser.set_defaults(func=_convert_cells.convert_cells_cmd)
+
+    parser = subparsers.add_parser(
+        "refine",
+        help="Uniformly refine (subdivide every cell into same-type children)",
+    )
+    _refine.add_args(parser)
+    parser.set_defaults(func=_refine.refine_cmd)
 
     parser = subparsers.add_parser(
         "stats",
