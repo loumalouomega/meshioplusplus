@@ -33,6 +33,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/detail/space_filling.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -259,62 +260,10 @@ std::vector<std::int64_t> reorder_rcm(const ReorderCsr& rCsr, std::size_t n) {
 
 // --- space-filling curves ---------------------------------------------------
 
-constexpr int REORDER_SFC_BITS = 21;  // 3 * 21 = 63 bits fit in a uint64 key
-
-// Spread the low 21 bits of `x` so bit i lands at position 3*i (Morton).
-std::uint64_t reorder_part1by2(std::uint64_t x) {
-    x &= 0x1fffffULL;
-    x = (x | (x << 32)) & 0x1f00000000ffffULL;
-    x = (x | (x << 16)) & 0x1f0000ff0000ffULL;
-    x = (x | (x << 8)) & 0x100f00f00f00f00fULL;
-    x = (x | (x << 4)) & 0x10c30c30c30c30c3ULL;
-    x = (x | (x << 2)) & 0x1249249249249249ULL;
-    return x;
-}
-
-std::uint64_t reorder_morton_key(const std::uint32_t q[3]) {
-    return reorder_part1by2(q[0]) | (reorder_part1by2(q[1]) << 1) | (reorder_part1by2(q[2]) << 2);
-}
-
-// Hilbert distance of a 3D quantized point via Skilling's AxesToTranspose
-// transform (an in-place Gray-code + rotation), then interleaving the transpose
-// columns MSB-first into a scalar distance. Produces a locality-preserving
-// bijection; the absolute distance value need not match any external convention.
-std::uint64_t reorder_hilbert_key(const std::uint32_t q[3], int bits) {
-    std::uint32_t X[3] = {q[0], q[1], q[2]};
-    const int n = 3;
-    std::uint32_t M = 1u << (bits - 1);
-    std::uint32_t P, Q, t;
-    int i;
-    // Inverse undo excess work.
-    for (Q = M; Q > 1; Q >>= 1) {
-        P = Q - 1;
-        for (i = 0; i < n; i++) {
-            if (X[i] & Q) {
-                X[0] ^= P;  // invert
-            } else {
-                t = (X[0] ^ X[i]) & P;  // exchange
-                X[0] ^= t;
-                X[i] ^= t;
-            }
-        }
-    }
-    // Gray encode.
-    for (i = 1; i < n; i++)
-        X[i] ^= X[i - 1];
-    t = 0;
-    for (Q = M; Q > 1; Q >>= 1)
-        if (X[n - 1] & Q)
-            t ^= Q - 1;
-    for (i = 0; i < n; i++)
-        X[i] ^= t;
-    // Interleave transpose columns, most-significant bit first.
-    std::uint64_t d = 0;
-    for (int b = bits - 1; b >= 0; --b)
-        for (i = 0; i < n; ++i)
-            d = (d << 1) | static_cast<std::uint64_t>((X[i] >> b) & 1u);
-    return d;
-}
+// The key transforms (part1by2 / Morton / Hilbert) live in
+// detail/space_filling.hpp, shared with the partition operation. Only the
+// Mesh-coupled quantization below is reorder-specific.
+constexpr int REORDER_SFC_BITS = detail::sfc_bits;  // 3 * 21 = 63 bits fit in a uint64 key
 
 // Space-filling-curve keys over the node coordinates (bounding box quantized to
 // REORDER_SFC_BITS per axis). `hilbert` selects Hilbert vs Morton.
@@ -358,7 +307,7 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
                 qi = maxq;
             q[d] = static_cast<std::uint32_t>(qi);
         }
-        keys[i] = hilbert ? reorder_hilbert_key(q, bits) : reorder_morton_key(q);
+        keys[i] = hilbert ? detail::sfc_hilbert_key(q, bits) : detail::sfc_morton_key(q);
     });
     return keys;
 }
