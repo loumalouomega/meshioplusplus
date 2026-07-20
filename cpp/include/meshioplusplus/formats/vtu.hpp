@@ -55,6 +55,8 @@
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/detail/vtu_binary.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -82,6 +84,23 @@ namespace meshioplusplus {
 void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
 
 /**
+ * @brief Write a `.vtu` choosing the block-compression codec explicitly.
+ *
+ * `write_vtu(..., zlib)` is exactly this with `Zlib`/`None`, and zlib remains
+ * the default everywhere -- nothing changes for existing callers or files.
+ *
+ * `VtkCodec::LZ4` writes `vtkLZ4DataCompressor` in LZ4's raw block format,
+ * which VTK and ParaView read. `VtkCodec::ZSTD` writes
+ * `vtkZSTDDataCompressor`, which is a **meshio++ extension**: VTK ships no
+ * ZSTD compressor, so such a file is readable by meshio++ but not by ParaView.
+ *
+ * @throws WriteError naming the CMake option when the codec was not compiled
+ *         into this build.
+ */
+void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec);
+
+/**
  * @brief Read a `.vtu` file.
  *
  * Parses the single `<Piece>`'s `<Points>`/`<Cells>`/`<PointData>`/
@@ -90,6 +109,11 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
  * described above.
  *
  * @param rPath filesystem path to read
+ * @param rOpts optional narrowing of what is materialized; the default reads
+ *        everything, exactly as before. `mPointsOnly` and a `mDataArrays`
+ *        subset skip the unwanted `<DataArray>` bodies entirely -- their
+ *        `Name` attribute is readable before the payload is touched, so a
+ *        skipped array costs neither base64 decode, inflate, nor allocation.
  * @return the read Mesh
  * @throws ReadError if the file uses lzma compression, an `<AppendedData>`
  *         section, more than one `<Piece>`, polyhedron cells, or a
@@ -98,6 +122,25 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
  * @note `<FieldData>` -> `mesh.field_data`; `<PointData>`/`<CellData>` map
  *       generically to `point_data`/`cell_data`.
  */
-Mesh read_vtu(const std::string& rPath);
+Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a `.vtu` without decoding its heavy arrays.
+ *
+ * Point and cell counts come from `<Piece>` attributes (free); the only array
+ * decoded is `types` (one value per cell), plus `offsets` when a
+ * variable-node-count cell type is present. Data-array names come from `Name`
+ * attributes.
+ *
+ * The whole file is still read and XML-parsed -- pugixml always materializes
+ * PCDATA, so this is a large constant-factor saving, not an asymptotic one.
+ * `MeshMetadata::mHasBBox` is false here: a bounding box would mean decoding
+ * the point coordinates, defeating the purpose.
+ *
+ * @param rPath filesystem path to summarize
+ * @return the summary; accepts exactly the files `read_vtu` accepts
+ * @throws ReadError on the same unsupported constructs as `read_vtu`
+ */
+MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
