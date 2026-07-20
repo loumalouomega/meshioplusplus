@@ -22,6 +22,8 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <string_view>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -29,6 +31,7 @@
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -292,18 +295,16 @@ Mesh read_ugrid(const std::string& rPath) {
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
-    // ASCII slurps the file for tokenizing; binary streams each section
-    // directly into its destination array (no whole-file intermediate).
-    std::string buf;
+    // ASCII takes the whole file for tokenizing -- mapped where that pays (see
+    // detail/file_source.hpp) -- while binary streams each section directly
+    // into its destination array from `in`, with no whole-file intermediate at
+    // all, so there is nothing to map there.
+    std::optional<detail::FileSource> ascii_source;
+    std::string_view buf;
     std::size_t tok_pos = 0;  // ascii tokenizer cursor
     if (ft.mAscii) {
-        in.seekg(0, std::ios::end);
-        std::streamoff flen = in.tellg();
-        in.seekg(0, std::ios::beg);
-        if (flen > 0) {
-            buf.resize(static_cast<std::size_t>(flen));
-            in.read(buf.data(), flen);
-        }
+        ascii_source.emplace(rPath);
+        buf = ascii_source->View();
     }
 
     const bool swap = ft.mBigEndian;  // host little-endian
@@ -316,7 +317,7 @@ Mesh read_ugrid(const std::string& rPath) {
             ++tok_pos;
         if (s == tok_pos)
             throw ReadError("UGRID: unexpected end of file");
-        return buf.substr(s, tok_pos - s);
+        return std::string(buf.substr(s, tok_pos - s));
     };
     auto next_int = [&]() -> std::int64_t {
         if (ft.mAscii)
@@ -534,11 +535,10 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
             if (n == 0)
                 continue;
             int bi = block_of[t];
-            const NDArray* lab =
-                (!labels_name.empty() &&
-                 static_cast<std::size_t>(bi) < rMesh.CellDataNumBlocks(labels_name))
-                    ? &rMesh.CellData(labels_name, bi)
-                    : nullptr;
+            const NDArray* lab = (!labels_name.empty() && static_cast<std::size_t>(bi) <
+                                                              rMesh.CellDataNumBlocks(labels_name))
+                                     ? &rMesh.CellData(labels_name, bi)
+                                     : nullptr;
             for (std::int64_t i = 0; i < n; ++i)
                 os << (lab ? detail::read_int(*lab, i) : 1) << '\n';
         }

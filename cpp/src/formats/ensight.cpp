@@ -27,6 +27,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -35,6 +36,7 @@
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
@@ -121,8 +123,8 @@ std::string ensight_trim(const std::string& rLine) {
     return rLine.substr(b, e - b);
 }
 
-bool ensight_starts_with(const std::string& rStr, const char* pPrefix) {
-    return rStr.rfind(pPrefix, 0) == 0;
+bool ensight_starts_with(std::string_view str, const char* pPrefix) {
+    return str.rfind(pPrefix, 0) == 0;
 }
 
 std::string ensight_dirname(const std::string& rPath) {
@@ -146,17 +148,18 @@ std::pair<std::string, std::string> ensight_case_geo_paths(const std::string& rP
     return {"", ""};
 }
 
-std::string ensight_read_whole_file(const std::string& rPath, const char* pWhat) {
-    std::ifstream in(rPath, std::ios::binary);
-    if (!in)
+/**
+ * @brief Whole-file access, mapped where that pays (detail/file_source.hpp).
+ *
+ * Returns the source itself rather than a string so the caller controls its
+ * lifetime: the cursors below hold a view into it, so it must outlive them.
+ */
+detail::FileSource ensight_read_whole_file(const std::string& rPath, const char* pWhat) {
+    try {
+        return detail::FileSource(rPath);
+    } catch (const ReadError&) {
         throw ReadError(std::string("EnSight: could not open ") + pWhat + ": " + rPath);
-    in.seekg(0, std::ios::end);
-    const std::streamoff size = in.tellg();
-    in.seekg(0, std::ios::beg);
-    std::string data(static_cast<std::size_t>(size < 0 ? 0 : size), '\0');
-    if (!data.empty())
-        in.read(data.data(), static_cast<std::streamsize>(data.size()));
-    return data;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +192,7 @@ public:
 
 class EnsightAsciiCursor final : public EnsightCursor {
 public:
-    explicit EnsightAsciiCursor(std::string Text) : mText(std::move(Text)) {}
+    explicit EnsightAsciiCursor(std::string_view text) : mText(text) {}
 
     bool AtEnd() override {
         std::size_t p = mPos;
@@ -204,7 +207,7 @@ public:
             std::size_t eol = mText.find('\n', mPos);
             if (eol == std::string::npos)
                 eol = mText.size();
-            std::string line = ensight_trim(mText.substr(mPos, eol - mPos));
+            std::string line = ensight_trim(std::string(mText.substr(mPos, eol - mPos)));
             mPos = eol < mText.size() ? eol + 1 : eol;
             if (!line.empty())
                 return line;
@@ -222,12 +225,12 @@ public:
     }
 
     std::int64_t NextInt() override {
-        const char* start = mText.c_str() + mPos;
+        const char* start = mText.data() + mPos;
         char* end = nullptr;
         const std::int64_t v = std::strtoll(start, &end, 10);
         if (end == start)
             throw ReadError("EnSight: expected an integer in geometry file");
-        mPos = static_cast<std::size_t>(end - mText.c_str());
+        mPos = static_cast<std::size_t>(end - mText.data());
         return v;
     }
 
@@ -238,12 +241,12 @@ public:
 
     void ReadFloats(std::size_t n, double* pDst) override {
         for (std::size_t i = 0; i < n; ++i) {
-            const char* start = mText.c_str() + mPos;
+            const char* start = mText.data() + mPos;
             char* end = nullptr;
             pDst[i] = std::strtod(start, &end);
             if (end == start)
                 throw ReadError("EnSight: expected a number in geometry file");
-            mPos = static_cast<std::size_t>(end - mText.c_str());
+            mPos = static_cast<std::size_t>(end - mText.data());
         }
     }
 
@@ -253,7 +256,7 @@ public:
     }
 
 private:
-    std::string mText;
+    std::string_view mText;
     std::size_t mPos = 0;
 };
 
@@ -261,7 +264,7 @@ class EnsightBinaryCursor final : public EnsightCursor {
 public:
     // Text is the whole file; the cursor starts after the leading
     // "C Binary" 80-char record.
-    explicit EnsightBinaryCursor(std::string Data) : mData(std::move(Data)), mPos(80) {}
+    explicit EnsightBinaryCursor(std::string_view data) : mData(data), mPos(80) {}
 
     bool AtEnd() override { return mPos >= mData.size(); }
 
@@ -347,7 +350,7 @@ private:
             throw ReadError("EnSight: truncated binary geometry file");
     }
 
-    std::string mData;
+    std::string_view mData;
     std::size_t mPos;
     bool mSwap = false;
 };
@@ -358,7 +361,8 @@ private:
 
 // Parse the .case file and return the resolved geometry file path.
 std::string ensight_parse_case(const std::string& rCasePath) {
-    const std::string data = ensight_read_whole_file(rCasePath, "case file");
+    const detail::FileSource source = ensight_read_whole_file(rCasePath, "case file");
+    const std::string data(source.View());  // small text file; parsed via istringstream
 
     std::string section;
     std::string format_type;
@@ -672,14 +676,16 @@ Mesh read_ensight(const std::string& rPath) {
     if (ensight_has_suffix(rPath, ".case"))
         geo_path = ensight_parse_case(rPath);
 
-    std::string data = ensight_read_whole_file(geo_path, "geometry file");
+    // The source outlives both cursors below, which only hold views into it.
+    const detail::FileSource source = ensight_read_whole_file(geo_path, "geometry file");
+    const std::string_view data = source.View();
     if (ensight_starts_with(data, "Fortran Binary"))
         throw ReadError("EnSight: Fortran-binary geometry files are not supported");
     if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
-        EnsightBinaryCursor cur(std::move(data));
+        EnsightBinaryCursor cur(data);
         return ensight_parse_geo(cur);
     }
-    EnsightAsciiCursor cur(std::move(data));
+    EnsightAsciiCursor cur(data);
     return ensight_parse_geo(cur);
 }
 

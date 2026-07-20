@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "7.2.1",
+  "version": "7.3.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
@@ -43,6 +43,18 @@
       "description": "VTU zlib compression path",
       "dependencies": [
         "zlib"
+      ]
+    },
+    "zstd": {
+      "description": "VTK XML zstd block compression (meshio++ extension; ParaView cannot read it)",
+      "dependencies": [
+        "zstd"
+      ]
+    },
+    "lz4": {
+      "description": "VTK XML lz4 block compression (vtkLZ4DataCompressor; ParaView-readable)",
+      "dependencies": [
+        "lz4"
       ]
     }
   }

@@ -27,6 +27,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -34,6 +35,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -52,13 +54,21 @@ struct FoamFormat {
     int mScalarBytes = 8;
 };
 
-std::string read_whole(const std::string& rPath) {
-    std::ifstream f(rPath, std::ios::binary);
-    if (!f)
+/**
+ * @brief Whole-file access, mapped where that pays (detail/file_source.hpp).
+ *
+ * This replaces an `ostringstream` + `.str()` slurp, which paid for **two**
+ * extra full-file copies on top of the read -- by far the worst of the
+ * whole-file readers, and the reason this one benefits most from mapping.
+ * Returns the source itself so the caller controls its lifetime; everything
+ * below takes a view into it.
+ */
+detail::FileSource read_whole(const std::string& rPath) {
+    try {
+        return detail::FileSource(rPath);
+    } catch (const ReadError&) {
         throw ReadError("Could not open OpenFOAM file: " + rPath);
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
+    }
 }
 
 std::string openfoam_strip(const std::string& rS) {
@@ -111,7 +121,7 @@ FoamFormat detect_format(const std::string& rPath) {
 }
 
 // Strip C-style /* */ and // comments and drop the FoamFile { ... } block.
-std::string strip_comments_and_header(const std::string& rText) {
+std::string strip_comments_and_header(std::string_view rText) {
     std::string out;
     out.reserve(rText.size());
     // remove /* */ and //
@@ -313,7 +323,7 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
 // ---- binary parsers ----
 
 // Return (N, offset just after the outer '(').
-std::pair<std::int64_t, std::size_t> data_start(const std::string& rRaw) {
+std::pair<std::int64_t, std::size_t> data_start(std::string_view rRaw) {
     std::size_t end = rRaw.find('}');
     if (end == std::string::npos)
         throw ReadError("OpenFOAM: no FoamFile header");
@@ -347,7 +357,7 @@ T read_le(const char* pP) {
     return v;
 }
 
-std::vector<std::array<double, 3>> read_binary_points(const std::string& rRaw, int scalar_bytes) {
+std::vector<std::array<double, 3>> read_binary_points(std::string_view rRaw, int scalar_bytes) {
     auto [n, start] = data_start(rRaw);
     std::vector<std::array<double, 3>> pts(static_cast<std::size_t>(n));
     const char* base = rRaw.data() + start;
@@ -362,7 +372,7 @@ std::vector<std::array<double, 3>> read_binary_points(const std::string& rRaw, i
     return pts;
 }
 
-std::vector<std::int64_t> read_binary_labels(const std::string& rRaw, int label_bytes) {
+std::vector<std::int64_t> read_binary_labels(std::string_view rRaw, int label_bytes) {
     auto [n, start] = data_start(rRaw);
     std::vector<std::int64_t> out(static_cast<std::size_t>(n));
     const char* base = rRaw.data() + start;
@@ -374,7 +384,7 @@ std::vector<std::int64_t> read_binary_labels(const std::string& rRaw, int label_
     return out;
 }
 
-std::vector<Face> read_binary_faces(const std::string& rRaw, int label_bytes) {
+std::vector<Face> read_binary_faces(std::string_view rRaw, int label_bytes) {
     auto [nfaces, pos] = data_start(rRaw);
     std::vector<Face> faces(static_cast<std::size_t>(nfaces));
     std::size_t p = pos;
@@ -382,7 +392,7 @@ std::vector<Face> read_binary_faces(const std::string& rRaw, int label_bytes) {
         std::size_t lp = rRaw.find('(', p);
         if (lp == std::string::npos)
             throw ReadError("OpenFOAM: missing '(' in faces");
-        std::int64_t count = std::atoll(rRaw.substr(p, lp - p).c_str());
+        std::int64_t count = std::atoll(std::string(rRaw.substr(p, lp - p)).c_str());
         std::size_t blob = lp + 1;
         Face f(static_cast<std::size_t>(count));
         for (std::int64_t j = 0; j < count; ++j) {
@@ -402,7 +412,8 @@ std::vector<Face> read_binary_faces(const std::string& rRaw, int label_bytes) {
 
 std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
     FoamFormat fmt = detect_format(rPath.string());
-    std::string raw = read_whole(rPath.string());
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
     if (fmt.mBinary)
         return read_binary_points(raw, fmt.mScalarBytes);
     return parse_points_ascii(strip_comments_and_header(raw));
@@ -410,7 +421,8 @@ std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
 
 std::vector<Face> read_faces(const fs::path& rPath) {
     FoamFormat fmt = detect_format(rPath.string());
-    std::string raw = read_whole(rPath.string());
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
     if (fmt.mBinary)
         return read_binary_faces(raw, fmt.mLabelBytes);
     return parse_faces_ascii(strip_comments_and_header(raw));
@@ -418,7 +430,8 @@ std::vector<Face> read_faces(const fs::path& rPath) {
 
 std::vector<std::int64_t> read_int_list(const fs::path& rPath) {
     FoamFormat fmt = detect_format(rPath.string());
-    std::string raw = read_whole(rPath.string());
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
     if (fmt.mBinary)
         return read_binary_labels(raw, fmt.mLabelBytes);
     return parse_int_list_ascii(strip_comments_and_header(raw));
@@ -597,8 +610,8 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
         neighbour = read_int_list(poly / "neighbour");
     std::vector<Patch> boundary;
     if (fs::exists(poly / "boundary"))
-        boundary =
-            parse_boundary(strip_comments_and_header(read_whole((poly / "boundary").string())));
+        boundary = parse_boundary(
+            strip_comments_and_header(read_whole((poly / "boundary").string()).View()));
 
     std::int64_t owner_max = -1, neigh_max = -1;
     for (std::int64_t v : owner)

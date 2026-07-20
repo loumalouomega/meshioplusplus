@@ -46,14 +46,53 @@ def add_args(parser):
         action="store_true",
         help="if possible, convert integer data to sets (useful if the output type does not support integer data)",
     )
+    parser.add_argument(
+        "--points-only",
+        action="store_true",
+        help=(
+            "read geometry only, dropping every data array. Readers with a "
+            "native selective path skip the arrays outright rather than "
+            "reading and discarding them."
+        ),
+    )
+    parser.add_argument(
+        "--arrays",
+        type=str,
+        default=None,
+        help=(
+            "comma-separated data-array names to keep; everything else is "
+            "skipped. Pass an empty string to keep none. Names absent from the "
+            "file are ignored."
+        ),
+    )
 
 
 def convert(args):
+    if args.points_only and args.arrays is not None:
+        raise ValueError("--points-only and --arrays are mutually exclusive")
+
+    arrays = None
+    if args.arrays is not None:
+        arrays = [name for name in args.arrays.split(",") if name]
+
     # read mesh data
-    mesh = read(args.infile, file_format=args.input_format)
+    mesh = read(
+        args.infile,
+        file_format=args.input_format,
+        points_only=args.points_only,
+        arrays=arrays,
+    )
 
     # Some converters (like VTK) require `points` to be contiguous.
     mesh.points = np.ascontiguousarray(mesh.points)
+
+    if (args.points_only or arrays is not None) and (
+        args.sets_to_int_data or args.int_data_to_sets
+    ):
+        raise ValueError(
+            "--points-only/--arrays cannot be combined with -s/-d: the set "
+            "conversions operate on the very data arrays that were skipped"
+        )
 
     if args.sets_to_int_data:
         mesh.point_sets_to_data()

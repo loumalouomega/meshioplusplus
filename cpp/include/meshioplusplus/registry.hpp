@@ -47,14 +47,22 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <unordered_map>
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
 using ReadFn = std::function<Mesh(const std::string&)>;
 using WriteFn = std::function<void(const std::string&, const Mesh&)>;
+
+/** @brief A reader that can act on `ReadOptions` (selective/partial reads). */
+using ReadExFn = std::function<Mesh(const std::string&, const ReadOptions&)>;
+
+/** @brief A reader that can summarize a file without loading its heavy arrays. */
+using MetadataFn = std::function<MeshMetadata(const std::string&, const ReadOptions&)>;
 
 /** @brief `format name -> reader` for every format readable in this build. */
 const std::map<std::string, ReadFn>& registry_readers();
@@ -90,5 +98,59 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
  *         format".
  */
 const char* registry_compiled_out(const std::string& rFormat);
+
+/**
+ * @name Selective reads and metadata
+ *
+ * These tables are deliberately **sparse**: only formats with a native
+ * options-aware reader appear in them. `ReadFn`/`registry_readers()`/
+ * `registry_writers()` are untouched, so `mio_read`, the WASM `readMesh`, and
+ * every existing caller keep working unchanged -- a format's absence here costs
+ * a full read, never an error.
+ *
+ * Prefer the `registry_read`/`registry_read_metadata` free functions over the
+ * tables; they own the fallback so each binding surface does not reimplement it.
+ * @{
+ */
+
+/**
+ * @brief `format name -> options-aware reader`, for the formats that have one.
+ *
+ * Unordered: these are pure keyed lookups, never iterated for output, so they
+ * follow the repo default rather than the `std::map` of the older tables above
+ * (whose type is kept only because it is baked into the flat bindings).
+ */
+const std::unordered_map<std::string, ReadExFn>& registry_readers_ex();
+
+/** @brief `format name -> metadata reader`, for the formats that have one. */
+const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers();
+
+/**
+ * @brief Whether @p rFormat can act on `ReadOptions` rather than being read
+ *        whole and filtered afterwards.
+ */
+bool registry_reader_supports_options(const std::string& rFormat);
+
+/**
+ * @brief Read @p rPath honouring @p rOptions, falling back to a full read.
+ *
+ * Formats without a native options-aware reader are read whole; the result is
+ * correct either way, just not faster. Prefer this over indexing the tables.
+ * @throws ReadError if the format is unknown or compiled out.
+ */
+Mesh registry_read(const std::string& rPath, const std::string& rFormat,
+                   const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize @p rPath without loading its heavy arrays where possible.
+ *
+ * Formats without a native metadata path are read in full and summarized via
+ * `metadata_from_mesh`, with `MeshMetadata::mFellBackToFullRead` set so the
+ * caller can tell "fast" from merely "worked".
+ * @throws ReadError if the format is unknown or compiled out.
+ */
+MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
+                                    const ReadOptions& rOptions);
+/** @} */
 
 }  // namespace meshioplusplus

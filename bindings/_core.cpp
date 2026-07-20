@@ -83,11 +83,81 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/read_options.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/types.hpp"
 #include "np_conversions.hpp"
 
 namespace py = pybind11;
+
+namespace {
+
+/**
+ * @brief Build a `ReadOptions` from the reader bindings' keyword arguments.
+ *
+ * `arrays=None` means every array; an empty list means none. Passing them
+ * through as `std::optional` keeps that distinction intact -- collapsing it
+ * would make `arrays=[]` silently mean "everything".
+ */
+meshioplusplus::ReadOptions core_read_options(bool points_only, const py::object& rArrays) {
+    meshioplusplus::ReadOptions opts;
+    opts.mPointsOnly = points_only;
+    if (!rArrays.is_none())
+        opts.mDataArrays = rArrays.cast<std::vector<std::string>>();
+    return opts;
+}
+
+/** @brief `--codec` / `compression=` name -> VtkCodec. */
+meshioplusplus::detail::VtkCodec core_codec_from_name(const std::string& rName) {
+    using meshioplusplus::detail::VtkCodec;
+    if (rName.empty() || rName == "none")
+        return VtkCodec::None;
+    if (rName == "zlib")
+        return VtkCodec::Zlib;
+    if (rName == "lz4")
+        return VtkCodec::LZ4;
+    if (rName == "zstd")
+        return VtkCodec::ZSTD;
+    if (rName == "lzma")
+        return VtkCodec::LZMA;
+    throw meshioplusplus::WriteError("meshio++: unknown codec '" + rName +
+                                     "' (expected zlib, lz4, zstd or none)");
+}
+
+/** @brief `MeshMetadata` -> the dict shape the Python layer exposes. */
+py::dict core_metadata_to_py(const meshioplusplus::MeshMetadata& rMeta) {
+    py::list blocks;
+    for (const meshioplusplus::CellBlockInfo& block : rMeta.mCellBlocks) {
+        py::dict entry;
+        entry["type"] = block.mType;
+        entry["num_cells"] = block.mNumCells;
+        entry["nodes_per_cell"] = block.mNodesPerCell;
+        entry["ragged"] = block.mRagged;
+        blocks.append(std::move(entry));
+    }
+
+    py::dict out;
+    out["num_points"] = rMeta.mNumPoints;
+    out["point_dim"] = rMeta.mPointDim;
+    out["num_cells"] = rMeta.NumCells();
+    out["cell_blocks"] = std::move(blocks);
+    out["point_data_names"] = rMeta.mPointDataNames;
+    out["cell_data_names"] = rMeta.mCellDataNames;
+    out["field_data_names"] = rMeta.mFieldDataNames;
+    out["fell_back_to_full_read"] = rMeta.mFellBackToFullRead;
+    out["format"] = rMeta.mFormat;
+    // Absent rather than None-valued when not computed, so callers must ask
+    // for it explicitly instead of accidentally treating "not computed" as a
+    // real box at the origin.
+    if (rMeta.mHasBBox) {
+        out["bbox_min"] = py::make_tuple(rMeta.mBBoxMin[0], rMeta.mBBoxMin[1], rMeta.mBBoxMin[2]);
+        out["bbox_max"] = py::make_tuple(rMeta.mBBoxMax[0], rMeta.mBBoxMax[1], rMeta.mBBoxMax[2]);
+    }
+    return out;
+}
+
+}  // namespace
 
 PYBIND11_MODULE(_core, m) {
     m.doc() = "meshio++ C++ core (pybind11)";
@@ -104,6 +174,21 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_netcdf__") = true;
 #else
     m.attr("__has_netcdf__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    m.attr("__has_zlib__") = true;
+#else
+    m.attr("__has_zlib__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+    m.attr("__has_zstd__") = true;
+#else
+    m.attr("__has_zstd__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+    m.attr("__has_lz4__") = true;
+#else
+    m.attr("__has_lz4__") = false;
 #endif
     // Active compile-time parallel backend ("seq"/"stl"/"openmp"/"tbb"): lets
     // callers verify that parallel_for actually threads (STL without TBB is
@@ -148,6 +233,17 @@ PYBIND11_MODULE(_core, m) {
         py::arg("pymesh"), py::arg("allow_ragged") = false);
 
     // VTU writer (ascii / binary / zlib), zero-copy input from the Python mesh.
+    m.def(
+        "vtu_write_codec",
+        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/false);
+            meshioplusplus::write_vtu_codec(path, cpp, binary, core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
     m.def("vtu_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
@@ -156,6 +252,17 @@ PYBIND11_MODULE(_core, m) {
 
     // VTP (PolyData) writer / reader; allow_ragged so jagged polygon blocks
     // reach the C++ writer (they are legal PolyData Polys rows).
+    m.def(
+        "vtp_write_codec",
+        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/true);
+            meshioplusplus::write_vtp_codec(path, cpp, binary, core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
     m.def("vtp_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
@@ -163,14 +270,22 @@ PYBIND11_MODULE(_core, m) {
                                                                  /*allow_ragged=*/true);
         meshioplusplus::write_vtp(path, cpp, binary, zlib);
     });
-    m.def("vtp_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtp(path));
-    });
+    m.def(
+        "vtp_read",
+        [](const std::string& path, bool points_only, py::object arrays) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_vtp(path, core_read_options(points_only, arrays)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // VTU reader -> Python mesh (zero-copy capsule-backed arrays).
-    m.def("vtu_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtu(path));
-    });
+    m.def(
+        "vtu_read",
+        [](const std::string& path, bool points_only, py::object arrays) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_vtu(path, core_read_options(points_only, arrays)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // VTK writer (version 5.1 or 4.2; ascii or big-endian binary).
     m.def("vtk_write", [](const std::string& path, py::object pymesh, bool binary, bool v51) {
@@ -257,6 +372,37 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "sniff_format", [](const std::string& path) { return meshioplusplus::sniff_format(path); },
         py::arg("path"));
+
+    // Lightweight file summary: counts, cell-block shapes and data-array names
+    // without materializing the heavy arrays. Formats lacking a native metadata
+    // path are read in full and report fell_back_to_full_read=True -- the
+    // answer is always correct, and always honest about whether it was cheap.
+    m.def(
+        "read_metadata",
+        [](const std::string& path, const std::string& format) {
+            std::string fmt = format;
+            if (fmt.empty()) {
+                try {
+                    fmt = meshioplusplus::resolve_format(path, "");
+                } catch (const meshioplusplus::ReadError&) {
+                    fmt = meshioplusplus::sniff_format(path);  // read-only fallback
+                    if (fmt.empty())
+                        throw;
+                }
+            }
+            return core_metadata_to_py(
+                meshioplusplus::registry_read_metadata(path, fmt, meshioplusplus::ReadOptions{}));
+        },
+        py::arg("path"), py::arg("format") = "");
+
+    // Whether `format` has a native selective-read path (rather than being read
+    // whole and filtered afterwards).
+    m.def(
+        "reader_supports_options",
+        [](const std::string& format) {
+            return meshioplusplus::registry_reader_supports_options(format);
+        },
+        py::arg("format"));
 
     // Mesh renumbering (RCM / Morton / Hilbert). Returns a dict with the
     // permuted mesh and the applied node/cell permutations (old->new).
@@ -799,9 +945,13 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
         meshioplusplus::write_gmsh41(path, cpp, binary);
     });
-    m.def("gmsh_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_gmsh(path));
-    });
+    m.def(
+        "gmsh_read",
+        [](const std::string& path, bool points_only, py::object arrays) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_gmsh(path, core_read_options(points_only, arrays)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
     // PLY writer / reader (ascii or binary).
     m.def(
@@ -956,9 +1106,13 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::write_xdmf(path, cpp, data_format, gzip_level);
         },
         py::arg("path"), py::arg("mesh"), py::arg("data_format"), py::arg("gzip_level") = -1);
-    m.def("xdmf_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_xdmf(path));
-    });
+    m.def(
+        "xdmf_read",
+        [](const std::string& path, bool points_only, py::object arrays) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_xdmf(path, core_read_options(points_only, arrays)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     // CGNS writer / reader (.cgns).

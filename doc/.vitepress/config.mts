@@ -49,6 +49,9 @@ export default defineConfig({
         text: "Reference",
         items: [
           { text: "Supported formats", link: "/formats" },
+          { text: "Selective reads", link: "/selective_read" },
+          { text: "Memory-mapped reading", link: "/mmap" },
+          { text: "Compression codecs", link: "/codecs" },
           { text: "Mesh quality metrics", link: "/mesh_quality" },
           { text: "Surface extraction", link: "/extract_surface" },
           { text: "Skin extraction", link: "/extract_skin" },

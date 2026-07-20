@@ -32,6 +32,9 @@
  * 4 = mid(1,2), 5 = mid(2,0); for `quad8`/`quad9` mid node 4 = mid(0,1),
  * 5 = mid(1,2), 6 = mid(2,3), 7 = mid(3,0) (quad9 node 8 is the face center,
  * on no edge).
+ *
+ * `cell_edges` is looked up once per cell (not per node/scalar), so its table
+ * lookup lives in `cpp/src/detail/cell_edges.cpp` rather than inline here.
  */
 
 // System includes
@@ -67,45 +70,7 @@ struct CellEdgeDef {
  * @param SurfaceType The surface cell type to query.
  * @return Reference to the process-wide edge table (empty if unsupported).
  */
-inline const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType) {
-    using CT = CellType;
-    static const std::vector<CellEdgeDef> empty = {};
-    static const std::vector<CellEdgeDef> triangle = {
-        {CT::Line, 2, 2, {0, 1}},
-        {CT::Line, 2, 2, {1, 2}},
-        {CT::Line, 2, 2, {2, 0}},
-    };
-    static const std::vector<CellEdgeDef> triangle6 = {
-        {CT::Line3, 2, 3, {0, 1, 3}},
-        {CT::Line3, 2, 3, {1, 2, 4}},
-        {CT::Line3, 2, 3, {2, 0, 5}},
-    };
-    static const std::vector<CellEdgeDef> quad = {
-        {CT::Line, 2, 2, {0, 1}},
-        {CT::Line, 2, 2, {1, 2}},
-        {CT::Line, 2, 2, {2, 3}},
-        {CT::Line, 2, 2, {3, 0}},
-    };
-    static const std::vector<CellEdgeDef> quad8 = {
-        {CT::Line3, 2, 3, {0, 1, 4}},
-        {CT::Line3, 2, 3, {1, 2, 5}},
-        {CT::Line3, 2, 3, {2, 3, 6}},
-        {CT::Line3, 2, 3, {3, 0, 7}},
-    };
-    switch (SurfaceType) {
-        case CT::Triangle:
-            return triangle;
-        case CT::Triangle6:
-            return triangle6;
-        case CT::Quad:
-            return quad;
-        case CT::Quad8:
-        case CT::Quad9:  // same edges as quad8; node 8 (center) is on no edge
-            return quad8;
-        default:
-            return empty;
-    }
-}
+const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType);
 
 /**
  * @brief Whether the surface extractor supports a surface cell type's edges.

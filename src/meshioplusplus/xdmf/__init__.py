@@ -13,11 +13,17 @@ from .time_series import TimeSeriesReader, TimeSeriesWriter
 _HAS_HDF5 = getattr(_core, "__has_hdf5__", False)
 
 
-def read(filename):
+def read(filename, points_only=False, arrays=None):
     """Read an XDMF file (C++ core; HDF DataItems need an HDF5-enabled build)."""
+    # points_only/arrays reach the C++ reader, which skips the unwanted
+    # <DataArray>/section bodies outright. The Python fallback below has no
+    # selective support, so _helpers.read trims its result instead -- same
+    # answer, just without the saving.
     if not is_buffer(filename, "r"):
         try:
-            return _core.xdmf_read(str(filename))
+            return _core.xdmf_read(
+                str(filename), points_only=points_only, arrays=arrays
+            )
         except Exception:
             pass
     return _py_read(filename)

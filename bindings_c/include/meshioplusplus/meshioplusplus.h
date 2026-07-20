@@ -211,6 +211,106 @@ MIO_API void mio_mesh_free(mio_mesh* mesh);
  */
 MIO_API mio_mesh* mio_read(const char* path, const char* format);
 
+/**
+ * Options narrowing what a read materializes (selective / partial reads).
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI.
+ * New fields may only be appended, replacing `reserved` capacity; never
+ * reorder, resize or repurpose an existing field. Always zero-initialize
+ * through mio_read_opts_init() rather than by hand, so fields added later
+ * default sensibly in code compiled against an older header.
+ */
+typedef struct mio_read_opts {
+    int points_only;  /**< read geometry only, skipping every data array */
+    int metadata_only; /**< read the header/summary only (see mio_read_metadata) */
+    /** NULL = every array; otherwise `num_arrays` names to keep. An array
+     *  count of 0 with a non-NULL pointer means "no arrays" -- the distinction
+     *  from NULL is deliberate and load-bearing. Names absent from the file
+     *  are ignored. The pointed-to strings are copied during the call. */
+    const char* const* arrays;
+    int64_t num_arrays;
+    int mmap_mode;      /**< 0 = auto, 1 = on, 2 = off */
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_read_opts;
+
+/** Initialize `opts` to the defaults (read everything). Always use this. */
+MIO_API void mio_read_opts_init(mio_read_opts* opts);
+
+/**
+ * Read a mesh file honouring `opts`. `mio_read` is exactly
+ * `mio_read_ex(path, format, <defaults>)` and is unchanged.
+ *
+ * Formats without a native selective path are read in full; the options are
+ * still honoured, just without the saving.
+ * @return the mesh, or NULL on failure (see mio_last_error()).
+ */
+MIO_API mio_mesh* mio_read_ex(const char* path, const char* format, const mio_read_opts* opts);
+
+/** Opaque file summary. Destroy with mio_read_metadata_free(). */
+typedef struct mio_read_metadata mio_read_metadata;
+
+/**
+ * Summarize a mesh file without loading its heavy arrays.
+ * @return a result handle (free with mio_read_metadata_free), or NULL on failure.
+ */
+MIO_API mio_read_metadata* mio_read_metadata_create(const char* path, const char* format);
+
+/** @return number of points, or -1 on error. */
+MIO_API int64_t mio_read_metadata_num_points(const mio_read_metadata* meta);
+/** @return coordinate dimension, or -1 on error. */
+MIO_API int64_t mio_read_metadata_point_dim(const mio_read_metadata* meta);
+/** @return total cells over all blocks, or -1 on error. */
+MIO_API int64_t mio_read_metadata_num_cells(const mio_read_metadata* meta);
+/** @return number of cell blocks, or -1 on error. */
+MIO_API int64_t mio_read_metadata_num_cell_blocks(const mio_read_metadata* meta);
+
+/**
+ * The `index`-th cell block's shape. Any out pointer may be NULL.
+ * `num_nodes_per_cell` is 0 for a ragged block (`is_ragged` nonzero).
+ */
+MIO_API mio_status mio_read_metadata_cell_block(const mio_read_metadata* meta, int64_t index,
+                                                int64_t* num_cells, int64_t* num_nodes_per_cell,
+                                                int* is_ragged);
+
+/**
+ * Copy the `index`-th cell block's meshio type name into `buf`.
+ * @return the required length excluding the NUL, or -1 on error.
+ */
+MIO_API int64_t mio_read_metadata_cell_block_type(const mio_read_metadata* meta, int64_t index,
+                                                  char* buf, int64_t buflen);
+
+/** @return number of data-array names at `location` (a mio_data_location), or -1. */
+MIO_API int64_t mio_read_metadata_num_names(const mio_read_metadata* meta, int location);
+
+/**
+ * Copy the `index`-th data-array name at `location` into `buf`.
+ * @return the required length excluding the NUL, or -1 on error.
+ */
+MIO_API int64_t mio_read_metadata_name(const mio_read_metadata* meta, int location, int64_t index,
+                                       char* buf, int64_t buflen);
+
+/**
+ * The bounding box, when one was computed.
+ * @return MIO_OK and fills `min`/`max` (3 doubles each, either may be NULL), or
+ *         MIO_ERR_NOT_FOUND when no box is available -- which is the normal
+ *         case for a native summary, since computing it would mean decoding the
+ *         point coordinates and defeating the purpose.
+ */
+MIO_API mio_status mio_read_metadata_bbox(const mio_read_metadata* meta, double* min, double* max);
+
+/**
+ * Whether the whole file had to be read to produce this summary.
+ * @return 1 when the format has no header-only path (the summary is still
+ *         correct, just not cheap), 0 when a native path was used, -1 on error.
+ */
+MIO_API int mio_read_metadata_fell_back(const mio_read_metadata* meta);
+
+/** Destroy a summary handle. Safe to call with NULL. */
+MIO_API void mio_read_metadata_free(mio_read_metadata* meta);
+
+/** @return 1 if `format` has a native selective-read path, 0 if not, -1 on error. */
+MIO_API int mio_reader_supports_options(const char* format);
+
 /** Write a mesh. `format` as in mio_read(). */
 MIO_API mio_status mio_write(const char* path, const mio_mesh* mesh, const char* format);
 

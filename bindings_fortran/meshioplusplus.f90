@@ -55,6 +55,7 @@ module meshioplusplus
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_format_readable, mio_format_writable
     public :: mio_sniff_format
+    public :: mio_read_metadata, mio_metadata, mio_cell_block_info
     public :: mio_merge
     ! Length of the fixed-width string buffers the `keys` out-arguments of
     ! `split` and `data_info` use; consumers need it to declare those arrays.
@@ -114,6 +115,41 @@ module meshioplusplus
 
     integer, parameter :: MIO_MAX_NDIM = 8
     integer, parameter :: STRBUF_LEN = 4096
+
+    !> Interop mirror of C `mio_read_opts`. Field order and types are ABI and
+    !> must match bindings_c/include/meshioplusplus/meshioplusplus.h exactly;
+    !> `reserved` is padding for additive growth and must stay zero.
+    type, bind(c) :: mio_read_opts_t
+        integer(c_int) :: points_only = 0
+        integer(c_int) :: metadata_only = 0
+        type(c_ptr) :: arrays = c_null_ptr
+        integer(c_int64_t) :: num_arrays = 0
+        integer(c_int) :: mmap_mode = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> One cell block's shape, without its connectivity.
+    type :: mio_cell_block_info
+        character(len=STRBUF_LEN) :: cell_type = ''
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: nodes_per_cell = 0
+        logical :: ragged = .false.
+    end type
+
+    !> A file summary produced without loading the heavy arrays.
+    !> `has_bbox` is false for a native summary, which never decodes the point
+    !> coordinates; `fell_back_to_full_read` says whether the answer was cheap.
+    type :: mio_metadata
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: point_dim = 0
+        integer(c_int64_t) :: num_cells = 0
+        type(mio_cell_block_info), allocatable :: cell_blocks(:)
+        character(len=STRBUF_LEN), allocatable :: point_data_names(:)
+        character(len=STRBUF_LEN), allocatable :: cell_data_names(:)
+        character(len=STRBUF_LEN), allocatable :: field_data_names(:)
+        logical :: has_bbox = .false.
+        logical :: fell_back_to_full_read = .false.
+    end type
 
     type :: mio_mesh
         private
@@ -231,6 +267,102 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: path, format
             type(c_ptr) :: h
         end function
+
+        function c_mio_read_ex(path, format, opts) bind(c, name="mio_read_ex") result(h)
+            import :: c_ptr, c_char, mio_read_opts_t
+            character(kind=c_char), dimension(*), intent(in) :: path, format
+            type(mio_read_opts_t), intent(in) :: opts
+            type(c_ptr) :: h
+        end function
+
+        subroutine c_mio_read_opts_init(opts) bind(c, name="mio_read_opts_init")
+            import :: mio_read_opts_t
+            type(mio_read_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_read_metadata_create(path, format) &
+                bind(c, name="mio_read_metadata_create") result(h)
+            import :: c_ptr, c_char
+            character(kind=c_char), dimension(*), intent(in) :: path, format
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_read_metadata_num_points(h) &
+                bind(c, name="mio_read_metadata_num_points") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_point_dim(h) &
+                bind(c, name="mio_read_metadata_point_dim") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_num_cells(h) &
+                bind(c, name="mio_read_metadata_num_cells") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_num_cell_blocks(h) &
+                bind(c, name="mio_read_metadata_num_cell_blocks") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_cell_block(h, index, num_cells, npc, ragged) &
+                bind(c, name="mio_read_metadata_cell_block") result(s)
+            import :: c_ptr, c_int64_t, c_int
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: index
+            integer(c_int64_t), intent(out) :: num_cells, npc
+            integer(c_int), intent(out) :: ragged
+            integer(c_int) :: s
+        end function
+
+        function c_mio_read_metadata_cell_block_type(h, index, buf, buflen) &
+                bind(c, name="mio_read_metadata_cell_block_type") result(n)
+            import :: c_ptr, c_int64_t, c_char
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_num_names(h, location) &
+                bind(c, name="mio_read_metadata_num_names") result(n)
+            import :: c_ptr, c_int64_t, c_int
+            type(c_ptr), value :: h
+            integer(c_int), value :: location
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_name(h, location, index, buf, buflen) &
+                bind(c, name="mio_read_metadata_name") result(n)
+            import :: c_ptr, c_int64_t, c_int, c_char
+            type(c_ptr), value :: h
+            integer(c_int), value :: location
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_fell_back(h) &
+                bind(c, name="mio_read_metadata_fell_back") result(n)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: h
+            integer(c_int) :: n
+        end function
+
+        subroutine c_mio_read_metadata_free(h) bind(c, name="mio_read_metadata_free")
+            import :: c_ptr
+            type(c_ptr), value :: h
+        end subroutine
 
         function c_mio_write(path, h, format) bind(c, name="mio_write") result(s)
             import :: c_ptr, c_char, c_int
@@ -963,16 +1095,54 @@ contains
     end function
 
     !> Read a mesh file, replacing any previous content of this handle.
-    subroutine mesh_read(self, path, format, stat, errmsg)
+    !>
+    !> `points_only` skips every data array; `arrays` keeps only the named ones
+    !> (a zero-sized `arrays` keeps none, which is distinct from omitting the
+    !> argument entirely -- that reads everything). Formats without a native
+    !> selective path are read whole and filtered, so the result is the same
+    !> either way; only the cost differs.
+    subroutine mesh_read(self, path, format, points_only, arrays, stat, errmsg)
         class(mio_mesh), intent(inout) :: self
         character(*), intent(in) :: path
         character(*), intent(in), optional :: format
+        logical, intent(in), optional :: points_only
+        character(*), intent(in), optional :: arrays(:)
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
         character(:), allocatable :: fmt
         type(c_ptr) :: h
+        type(mio_read_opts_t) :: opts
+        ! NUL-terminated copies must outlive the call, so they are held here
+        ! rather than built inline; c_loc needs them contiguous and TARGET.
+        character(kind=c_char, len=STRBUF_LEN), allocatable, target :: bufs(:)
+        type(c_ptr), allocatable, target :: ptrs(:)
+        integer :: i, n
+
         fmt = ''; if (present(format)) fmt = format
-        h = c_mio_read(c_str(path), c_str(fmt))
+
+        if (.not. present(points_only) .and. .not. present(arrays)) then
+            h = c_mio_read(c_str(path), c_str(fmt))
+        else
+            call c_mio_read_opts_init(opts)
+            if (present(points_only)) then
+                if (points_only) opts%points_only = 1
+            end if
+            if (present(arrays)) then
+                n = size(arrays)
+                allocate (bufs(max(n, 1)))
+                allocate (ptrs(max(n, 1)))
+                do i = 1, n
+                    bufs(i) = trim(arrays(i))//c_null_char
+                    ptrs(i) = c_loc(bufs(i)(1:1))
+                end do
+                ! Non-null pointer with count 0 means "no arrays" -- the C side
+                ! distinguishes that from a null pointer ("every array").
+                opts%arrays = c_loc(ptrs(1))
+                opts%num_arrays = int(n, c_int64_t)
+            end if
+            h = c_mio_read_ex(c_str(path), c_str(fmt), opts)
+        end if
+
         if (.not. c_associated(h)) then
             call handle_failure('read', mio_error_message(), stat, errmsg)
             return
@@ -980,6 +1150,70 @@ contains
         call mesh_free(self)
         self%handle = h
         call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Summarize a mesh file without loading its heavy arrays.
+    function mio_read_metadata(path, format, stat, errmsg) result(meta)
+        character(*), intent(in) :: path
+        character(*), intent(in), optional :: format
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_metadata) :: meta
+        character(:), allocatable :: fmt
+        type(c_ptr) :: h
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        integer(c_int64_t) :: nblocks, i, n, ncells, npc
+        integer(c_int) :: ragged, s
+
+        fmt = ''; if (present(format)) fmt = format
+        h = c_mio_read_metadata_create(c_str(path), c_str(fmt))
+        if (.not. c_associated(h)) then
+            call handle_failure('read_metadata', mio_error_message(), stat, errmsg)
+            return
+        end if
+
+        meta%num_points = c_mio_read_metadata_num_points(h)
+        meta%point_dim = c_mio_read_metadata_point_dim(h)
+        meta%num_cells = c_mio_read_metadata_num_cells(h)
+        meta%fell_back_to_full_read = (c_mio_read_metadata_fell_back(h) == 1)
+
+        nblocks = c_mio_read_metadata_num_cell_blocks(h)
+        allocate (meta%cell_blocks(max(nblocks, 0_c_int64_t)))
+        do i = 1, nblocks
+            s = c_mio_read_metadata_cell_block(h, i - 1_c_int64_t, ncells, npc, ragged)
+            if (s /= 0) cycle
+            meta%cell_blocks(i)%num_cells = ncells
+            meta%cell_blocks(i)%nodes_per_cell = npc
+            meta%cell_blocks(i)%ragged = (ragged /= 0)
+            n = c_mio_read_metadata_cell_block_type(h, i - 1_c_int64_t, buf, &
+                                                    int(STRBUF_LEN, c_int64_t))
+            if (n > 0) meta%cell_blocks(i)%cell_type = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+        end do
+
+        call metadata_read_names(h, MIO_DATA_POINT, meta%point_data_names)
+        call metadata_read_names(h, MIO_DATA_CELL, meta%cell_data_names)
+        call metadata_read_names(h, MIO_DATA_FIELD, meta%field_data_names)
+
+        call c_mio_read_metadata_free(h)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Fill `names` with the data-array names at `location`.
+    subroutine metadata_read_names(h, location, names)
+        type(c_ptr), intent(in) :: h
+        integer(c_int), intent(in) :: location
+        character(len=STRBUF_LEN), allocatable, intent(out) :: names(:)
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        integer(c_int64_t) :: count, i, n
+        count = c_mio_read_metadata_num_names(h, location)
+        if (count < 0) count = 0
+        allocate (names(count))
+        do i = 1, count
+            names(i) = ''
+            n = c_mio_read_metadata_name(h, location, i - 1_c_int64_t, buf, &
+                                          int(STRBUF_LEN, c_int64_t))
+            if (n > 0) names(i) = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+        end do
     end subroutine
 
     !> Write the mesh to a file.

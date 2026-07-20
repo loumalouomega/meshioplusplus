@@ -64,6 +64,7 @@
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -110,6 +111,21 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
  *         then falls back to the Python/`h5py` reader.
  * @note `<Attribute>` elements map generically to `point_data`/`cell_data`.
  */
-Mesh read_xdmf(const std::string& rPath);
+Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a `.xdmf` without reading any heavy-data payload.
+ *
+ * The cheapest metadata path of any format here: every `<DataItem>` declares
+ * its shape in a `Dimensions` attribute, so point/cell counts are exact
+ * without touching the payload -- and on the HDF path without opening the
+ * sibling `.h5` at all. Attribute names come from `Name`/`Center`.
+ *
+ * @param rPath filesystem path to summarize
+ * @return the summary; `mHasBBox` is false (reading it would defeat the point)
+ * @throws ReadError on Mixed topology (which needs the full reader to resolve
+ *         per-block counts) and on everything `read_xdmf` rejects
+ */
+MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

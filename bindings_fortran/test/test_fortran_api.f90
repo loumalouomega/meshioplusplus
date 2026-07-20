@@ -283,6 +283,39 @@ program test_fortran_api
         call check(saw, 'data_info named the temperature array')
     end block
 
+    ! -- selective reads and read_metadata ---------------------------------
+    block
+        type(mio_mesh) :: sel
+        type(mio_metadata) :: meta
+        integer :: st
+
+        call m%write('fortran_selective.vtu', stat=st)
+        call check(st == 0, 'write for selective read')
+
+        ! points_only keeps geometry, drops every data array.
+        call sel%read('fortran_selective.vtu', points_only=.true., stat=st)
+        call check(st == 0, 'selective read succeeded')
+        call check(sel%num_points() > 0, 'points_only kept the points')
+        call sel%free()
+
+        ! A zero-sized `arrays` means "no arrays", not "every array".
+        block
+            character(len=16) :: wanted(0)
+            call sel%read('fortran_selective.vtu', arrays=wanted, stat=st)
+            call check(st == 0, 'empty-arrays read succeeded')
+            call sel%free()
+        end block
+
+        meta = mio_read_metadata('fortran_selective.vtu', stat=st)
+        call check(st == 0, 'read_metadata succeeded')
+        call check(meta%num_points > 0, 'metadata reports points')
+        call check(allocated(meta%cell_blocks), 'metadata reports cell blocks')
+        call check(size(meta%cell_blocks) > 0, 'metadata has >= 1 cell block')
+        call check(meta%num_cells > 0, 'metadata reports cells')
+        ! vtu has a native metadata path, so this was genuinely cheap.
+        call check(.not. meta%fell_back_to_full_read, 'vtu metadata is not a fallback')
+    end block
+
     call m%free()
     call r%free()
     call c%free()

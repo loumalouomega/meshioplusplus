@@ -46,6 +46,13 @@ using detail::vtu_type_str;
 }  // namespace
 
 void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    // The historical bool API, preserved exactly: zlib stays the only codec it
+    // can select, so existing callers are unaffected.
+    write_vtu_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
     for (const auto cb : rMesh.CellRange()) {
         if (cb.Type().rfind("polyhedron", 0) == 0)
             throw WriteError("C++ VTU writer does not support polyhedron cells");
@@ -73,14 +80,14 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, zlib) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
     };
 
     os << "<?xml version=\"1.0\"?>\n";
     os << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" "
           "byte_order=\"LittleEndian\"";
-    if (binary && zlib)
-        os << " compressor=\"vtkZLibDataCompressor\"";
+    if (binary && codec != detail::VtkCodec::None)
+        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
     os << "<!--This file was created by meshio++ (C++ core)-->\n";
     os << "<UnstructuredGrid>\n";

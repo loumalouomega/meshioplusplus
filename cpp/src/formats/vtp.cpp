@@ -85,6 +85,13 @@ void vtp_append_block(VtpSectionData& rSec, const Mesh::CellView& rCb) {
 }  // namespace
 
 void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    // The historical bool API, preserved exactly: zlib stays the only codec it
+    // can select, so existing callers are unaffected.
+    write_vtp_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
     // Classify blocks and build the VTK canonical order (Verts, Lines, Polys)
     // as a stable partition of the mesh's block order.
     const std::size_t nblocks = rMesh.NumCellBlocks();
@@ -127,7 +134,7 @@ void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, zlib) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
     };
     auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
         da_header("Int64", name, 0);
@@ -143,8 +150,8 @@ void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
     os << "<?xml version=\"1.0\"?>\n";
     os << "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\"";
-    if (binary && zlib)
-        os << " compressor=\"vtkZLibDataCompressor\"";
+    if (binary && codec != detail::VtkCodec::None)
+        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
     os << "<!--This file was created by meshio++ (C++ core)-->\n";
     os << "<PolyData>\n";

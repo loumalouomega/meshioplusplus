@@ -7,16 +7,22 @@ from .main import read as _py_read
 from .main import write as _py_write
 
 
-def read(filename):
+def read(filename, points_only=False, arrays=None):
     """Read a Gmsh .msh file.
 
     Uses the C++ core for format version 2.2 (ascii or binary), falling back to
     the reference Python reader for versions 4.0/4.1, periodic meshes, and
     anything else the C++ reader doesn't handle.
     """
+    # points_only/arrays reach the C++ reader, which skips the unwanted
+    # <DataArray>/section bodies outright. The Python fallback below has no
+    # selective support, so _helpers.read trims its result instead -- same
+    # answer, just without the saving.
     if not is_buffer(filename, "r"):
         try:
-            return _core.gmsh_read(str(filename))
+            return _core.gmsh_read(
+                str(filename), points_only=points_only, arrays=arrays
+            )
         except Exception:
             pass
     return _py_read(filename)

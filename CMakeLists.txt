@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 7.2.1
+  VERSION 7.3.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -50,6 +50,28 @@ endif()
 # once that flag reaches the *compiler* invocation (not just the linker), so
 # it's applied directly to meshioplusplus_core_obj below instead of via
 # find_package/ZLIB::ZLIB.
+
+# Additional VTK XML block-compression codecs. Both default OFF: zlib is the
+# only codec a portable build can assume, and it stays the write default, so a
+# pure build reads and writes exactly what it always did. Never probed under
+# Emscripten -- there is no -sUSE_ZSTD/-sUSE_LZ4 port, and a host library must
+# not be picked up for a wasm target.
+option(MESHIOPLUSPLUS_WITH_ZSTD "Build the VTK XML zstd compression path" OFF)
+option(MESHIOPLUSPLUS_WITH_LZ4 "Build the VTK XML lz4 compression path" OFF)
+if(MESHIOPLUSPLUS_WITH_ZSTD AND NOT EMSCRIPTEN)
+  find_package(zstd QUIET)
+  if(NOT zstd_FOUND)
+    find_path(ZSTD_INCLUDE_DIR zstd.h)
+    find_library(ZSTD_LIBRARY NAMES zstd libzstd)
+  endif()
+endif()
+if(MESHIOPLUSPLUS_WITH_LZ4 AND NOT EMSCRIPTEN)
+  find_package(lz4 QUIET)
+  if(NOT lz4_FOUND)
+    find_path(LZ4_INCLUDE_DIR lz4.h)
+    find_library(LZ4_LIBRARY NAMES lz4 liblz4)
+  endif()
+endif()
 
 # Optional heavy dependencies. When absent, the corresponding format sources
 # compile to empty translation units (#ifdef-guarded) and the Python
@@ -159,6 +181,32 @@ elseif(MESHIOPLUSPLUS_WITH_ZLIB AND ZLIB_FOUND)
   target_link_libraries(meshioplusplus_core_obj PUBLIC ZLIB::ZLIB)
 else()
   message(STATUS "meshio++: zlib not found/disabled - VTU zlib falls back to Python")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_ZSTD AND (zstd_FOUND OR ZSTD_LIBRARY))
+  message(STATUS "meshio++: VTK XML zstd compression enabled")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_ZSTD)
+  if(zstd_FOUND)
+    target_link_libraries(meshioplusplus_core_obj PUBLIC zstd::libzstd_shared)
+  else()
+    target_include_directories(meshioplusplus_core_obj PUBLIC ${ZSTD_INCLUDE_DIR})
+    target_link_libraries(meshioplusplus_core_obj PUBLIC ${ZSTD_LIBRARY})
+  endif()
+elseif(MESHIOPLUSPLUS_WITH_ZSTD)
+  message(STATUS "meshio++: zstd requested but not found - zstd files fall back to Python")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_LZ4 AND (lz4_FOUND OR LZ4_LIBRARY))
+  message(STATUS "meshio++: VTK XML lz4 compression enabled")
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_LZ4)
+  if(lz4_FOUND)
+    target_link_libraries(meshioplusplus_core_obj PUBLIC LZ4::lz4_shared)
+  else()
+    target_include_directories(meshioplusplus_core_obj PUBLIC ${LZ4_INCLUDE_DIR})
+    target_link_libraries(meshioplusplus_core_obj PUBLIC ${LZ4_LIBRARY})
+  endif()
+elseif(MESHIOPLUSPLUS_WITH_LZ4)
+  message(STATUS "meshio++: lz4 requested but not found - lz4 files fall back to Python")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_HDF5 AND HDF5_FOUND)

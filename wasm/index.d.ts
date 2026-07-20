@@ -110,6 +110,32 @@ export interface MeshioPlusPlusModule {
   readMesh(path: string, format?: string): Mesh;
 
   /**
+   * Read only part of a file: geometry alone, or a named subset of data arrays.
+   *
+   * `arrays` omitted/null reads every array; `arrays: []` reads none. Readers
+   * with a native selective path (vtu/vtp/xdmf/gmsh) skip the unwanted arrays
+   * outright; the rest are read whole and filtered, so the result is identical
+   * either way and only the cost differs.
+   */
+  readMeshSelective(
+    path: string,
+    options?: { format?: string; pointsOnly?: boolean; arrays?: string[] | null }
+  ): Mesh;
+
+  /**
+   * Summarize a mesh file without loading its heavy arrays.
+   *
+   * `bboxMin`/`bboxMax` are present only when a bounding box was computed --
+   * omitted rather than null, so "not computed" cannot read as a box at the
+   * origin. `fellBackToFullRead` is true when the format has no header-only
+   * path: the summary is still correct, just not cheap.
+   */
+  readMetadata(path: string, format?: string): MeshMetadata;
+
+  /** Whether `format` has a native selective-read path. */
+  readerSupportsOptions(format: string): boolean;
+
+  /**
    * Write a mesh to the virtual filesystem.
    * @throws {Error} on an unknown/write-unsupported format or malformed input
    *   (e.g. a points/connectivity array length not divisible by its

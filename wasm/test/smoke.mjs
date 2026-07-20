@@ -238,6 +238,84 @@ step('dataCondition normalizes to [0, 1]', () => {
     assert.ok(Math.abs(t[3] - 1) < 1e-12);
 });
 
+
+// ---------------------------------------------------------------------------
+// Selective reads, file summaries, and the codec build profile
+// ---------------------------------------------------------------------------
+
+const seltri = {
+    points: new Float64Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+    dim: 3,
+    cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2, 0, 2, 3]), nodesPerCell: 3 }],
+    point_data: {
+        u: new Float64Array([1, 2, 3, 4]),
+        v: new Float64Array([10, 20, 30, 40]),
+    },
+};
+m.writeMesh('/selective.vtu', seltri);
+
+step('readMeshSelective: no options reads every array', () => {
+    const mesh = m.readMeshSelective('/selective.vtu');
+    assert.deepEqual(Object.keys(mesh.point_data).sort(), ['u', 'v']);
+});
+
+step('readMeshSelective: pointsOnly keeps geometry, drops data', () => {
+    const mesh = m.readMeshSelective('/selective.vtu', { pointsOnly: true });
+    assert.equal(Object.keys(mesh.point_data).length, 0);
+    // pointsOnly narrows data, not topology.
+    assert.equal(mesh.points.length, 12);
+    assert.equal(mesh.cells[0].data.length, 6);
+});
+
+step('readMeshSelective: arrays subset, and [] vs null', () => {
+    assert.deepEqual(
+        Object.keys(m.readMeshSelective('/selective.vtu', { arrays: ['u'] }).point_data), ['u']);
+    // The distinction that motivates std::optional all the way down: an empty
+    // list means *no* arrays, null means *every* array.
+    assert.equal(
+        Object.keys(m.readMeshSelective('/selective.vtu', { arrays: [] }).point_data).length, 0);
+    assert.deepEqual(
+        Object.keys(m.readMeshSelective('/selective.vtu', { arrays: null }).point_data).sort(),
+        ['u', 'v']);
+});
+
+step('readMetadata summarizes without loading the arrays', () => {
+    const meta = m.readMetadata('/selective.vtu');
+    assert.equal(meta.numPoints, 4);
+    assert.equal(meta.numCells, 2);
+    assert.equal(meta.cellBlocks.length, 1);
+    assert.equal(meta.cellBlocks[0].type, 'triangle');
+    assert.equal(meta.cellBlocks[0].nodesPerCell, 3);
+    assert.deepEqual(meta.pointDataNames.sort(), ['u', 'v']);
+    assert.equal(meta.format, 'vtu');
+    // vtu has a native metadata path, so this really was cheap...
+    assert.equal(meta.fellBackToFullRead, false);
+    // ...and a native summary never decodes the coordinates, so it reports no
+    // bbox rather than a fabricated one at the origin.
+    assert.ok(!('bboxMin' in meta));
+});
+
+step('readMetadata flags a full-read fallback and can then afford a bbox', () => {
+    m.writeMesh('/selective.stl', seltri, 'stl');
+    const meta = m.readMetadata('/selective.stl');
+    assert.equal(meta.fellBackToFullRead, true);
+    assert.ok('bboxMin' in meta && 'bboxMax' in meta);
+});
+
+step('readerSupportsOptions reports the native paths', () => {
+    assert.equal(m.readerSupportsOptions('vtu'), true);
+    assert.equal(m.readerSupportsOptions('stl'), false);
+});
+
+step('zstd/lz4 are compiled out of the WASM build', () => {
+    // Consistent with the HDF5/netCDF-backed formats: no Emscripten port
+    // exists, so zlib remains the only block codec here.
+    m.writeMesh('/codec.vtu', seltri);
+    const text = new TextDecoder().decode(m.FS.readFile('/codec.vtu'));
+    assert.ok(!text.includes('vtkZSTDDataCompressor'));
+    assert.ok(!text.includes('vtkLZ4DataCompressor'));
+});
+
 if (failed) {
     console.error('\nSMOKE TEST FAILED');
     process.exit(1);

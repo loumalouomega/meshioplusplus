@@ -22,6 +22,9 @@
  *        HDF5/netCDF-conditional entries native (non-WASM) builds can serve.
  */
 
+// System includes
+#include <unordered_map>
+
 // Project includes
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -80,7 +83,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
         {"freefem", meshioplusplus::read_freefem},
-        {"gmsh", meshioplusplus::read_gmsh},
+        {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
         {"medit", meshioplusplus::read_medit_ascii},
         {"mff", meshioplusplus::read_mff},
@@ -100,10 +103,12 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ugrid", meshioplusplus::read_ugrid},
         {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
         {"vtk", meshioplusplus::read_vtk},
-        {"vtp", meshioplusplus::read_vtp},
-        {"vtu", meshioplusplus::read_vtu},
+        // vtp/vtu take a trailing defaulted ReadOptions, so the function
+        // pointers no longer convert to ReadFn -- wrapped like unv/med below.
+        {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
+        {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
         {"wkt", meshioplusplus::read_wkt},
-        {"xdmf", meshioplusplus::read_xdmf},
+        {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
         // Side-channel info (point_sets/cell_sets, cell-tag family names) is
         // not carried by the flat bindings -- v1 limitation, see doc/wasm.md
         // and doc/c_api.md.
@@ -319,6 +324,82 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
         throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
                                         "' -- pass an explicit format argument");
     return it->second;
+}
+
+const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
+    // Sparse by design -- populated per format as native selective-read support
+    // lands. An absent format falls back to a full read in registry_read().
+    static const std::unordered_map<std::string, ReadExFn> m = {
+        {"gmsh", meshioplusplus::read_gmsh},
+        {"vtp", meshioplusplus::read_vtp},
+        {"vtu", meshioplusplus::read_vtu},
+        {"xdmf", meshioplusplus::read_xdmf},
+    };
+    return m;
+}
+
+const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
+    static const std::unordered_map<std::string, MetadataFn> m = {
+        {"gmsh", meshioplusplus::read_gmsh_metadata},
+        {"vtp", meshioplusplus::read_vtp_metadata},
+        {"vtu", meshioplusplus::read_vtu_metadata},
+        {"xdmf", meshioplusplus::read_xdmf_metadata},
+    };
+    return m;
+}
+
+bool registry_reader_supports_options(const std::string& rFormat) {
+    return registry_readers_ex().count(rFormat) > 0;
+}
+
+namespace {
+
+/** @brief The reader for @p rFormat, or a ReadError naming why it is missing. */
+const ReadFn& registry_full_reader(const std::string& rFormat) {
+    auto it = registry_readers().find(rFormat);
+    if (it == registry_readers().end()) {
+        const char* dep = registry_compiled_out(rFormat);
+        throw meshioplusplus::ReadError(
+            "meshio++: unknown or unsupported format '" + rFormat + "'" +
+            (dep ? std::string(" (this build has no ") + dep + " support)" : std::string()));
+    }
+    return it->second;
+}
+
+}  // namespace
+
+Mesh registry_read(const std::string& rPath, const std::string& rFormat,
+                   const ReadOptions& rOptions) {
+    auto it = registry_readers_ex().find(rFormat);
+    if (it != registry_readers_ex().end())
+        return it->second(rPath, rOptions);
+    // No native selective path: a full read is still the correct answer.
+    return registry_full_reader(rFormat)(rPath);
+}
+
+MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
+                                    const ReadOptions& rOptions) {
+    auto it = registry_metadata_readers().find(rFormat);
+    if (it != registry_metadata_readers().end()) {
+        try {
+            MeshMetadata meta = it->second(rPath, rOptions);
+            meta.mFormat = rFormat;
+            return meta;
+        } catch (const meshioplusplus::ReadError&) {
+            // A native summary can legitimately decline a construct it cannot
+            // describe cheaply but the full reader handles fine (XDMF `Mixed`
+            // topology is the motivating case: per-block counts are only
+            // knowable after reading the topology array). Declining must cost a
+            // slower answer, not a failed one -- so fall through to the full
+            // read. A genuinely unreadable file still throws below.
+        }
+    }
+    // The one fallback for every format lacking a native metadata path -- read
+    // it whole, summarize, and say so rather than implying it was cheap.
+    MeshMetadata meta = metadata_from_mesh(registry_full_reader(rFormat)(rPath));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = rFormat;
+    return meta;
 }
 
 const char* registry_compiled_out(const std::string& rFormat) {

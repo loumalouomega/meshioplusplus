@@ -517,3 +517,37 @@ meshioplusplus binary [options] INFILE
 The `--input-format` and `--output-format` options accept any of the registered format names. The full list is shown by `meshioplusplus convert --help`. Common values:
 
 `abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `permas`, `ply`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtu`, `wkt`, `xdmf`
+
+## Selective reads and fast summaries
+
+`info --fast` summarizes a file from its header instead of loading it, and `convert` can
+narrow what it reads:
+
+```bash
+meshioplusplus info --fast big.vtu
+meshioplusplus convert --points-only in.vtu out.vtu     # geometry, no data arrays
+meshioplusplus convert --arrays u,p in.vtu out.vtu      # only these data arrays
+```
+
+`--points-only` keeps connectivity — it narrows data, not topology. `arrays` with an empty
+list keeps no arrays; omitting the flag keeps every array.
+
+Formats without a header-only path are read in full and `info --fast` says so explicitly
+(`no header-only path for this format; the file was read in full`) rather than implying a
+saving that did not happen. See [Selective reads](selective_read.md).
+
+`--points-only`/`--arrays` are rejected alongside `-s`/`-d`, which convert exactly the data
+arrays that were skipped.
+
+## Compression codecs
+
+```bash
+meshioplusplus compress --codec lz4 mesh.vtu
+```
+
+`--codec zlib|lz4|zstd` selects the VTK XML block codec for `.vtu`/`.vtp`. zlib is the
+default; `lz4` stays ParaView-readable, `zstd` is a meshio++ extension that ParaView cannot
+read. The flag is **rejected** for formats with no block codec rather than silently ignored.
+See [Compression codecs](codecs.md).
+
+Both CLIs — the Python one and the native `meshioplusplus` binary — accept these identically.

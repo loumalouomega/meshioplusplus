@@ -1,7 +1,7 @@
 import numpy as np
 
 from .._common import warn
-from .._helpers import read, reader_map
+from .._helpers import read, read_metadata, reader_map
 
 
 def add_args(parser):
@@ -14,9 +14,55 @@ def add_args(parser):
         help="input file format",
         default=None,
     )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help=(
+            "summarize from the file header instead of loading it. Skips "
+            "decoding the data arrays, so it is much cheaper on large files "
+            "(dramatically so for XDMF, whose DataItems declare their shape); "
+            "formats with no header-only path are still read in full and say "
+            "so. Omits the point/cell consistency checks, which need the "
+            "connectivity."
+        ),
+    )
+
+
+def _print_metadata(meta):
+    print("<meshio++ mesh summary>")
+    print(f"  Format: {meta['format'] or 'unknown'}")
+    print(f"  Number of points: {meta['num_points']}")
+    if meta["cell_blocks"]:
+        print("  Number of cells:")
+        for block in meta["cell_blocks"]:
+            print(f"    {block['type']}: {block['num_cells']}")
+    else:
+        print("  No cells.")
+
+    for label, key in (
+        ("Point data", "point_data_names"),
+        ("Cell data", "cell_data_names"),
+        ("Field data", "field_data_names"),
+    ):
+        if meta[key]:
+            print(f"  {label}: {', '.join(meta[key])}")
+
+    if "bbox_min" in meta:
+        lo = ", ".join(f"{v:g}" for v in meta["bbox_min"])
+        hi = ", ".join(f"{v:g}" for v in meta["bbox_max"])
+        print(f"  Bounding box: [{lo}] - [{hi}]")
+
+    # Say plainly when "fast" wasn't, rather than implying a saving that did
+    # not happen.
+    if meta["fell_back_to_full_read"]:
+        print("  (no header-only path for this format; the file was read in full)")
 
 
 def info(args):
+    if args.fast:
+        _print_metadata(read_metadata(args.infile, file_format=args.input_format))
+        return 0
+
     # read mesh data
     mesh = read(args.infile, file_format=args.input_format)
     print(mesh)

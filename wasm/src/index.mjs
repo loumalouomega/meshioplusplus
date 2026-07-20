@@ -43,6 +43,9 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
+ *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[]}) => Mesh,
+ *   readMetadata: (path: string, format?: string) => object,
+ *   readerSupportsOptions: (format: string) => boolean,
  *   writeMesh: (path: string, mesh: Mesh, format?: string) => void,
  *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   numNodesPerCell: () => Object<string, number>,
@@ -62,6 +65,16 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
     return {
         FS: Module.FS,
         readMesh: (path, format = '') => Module.readMesh(path, format),
+        // Selective reads (see doc/selective_read.md). `arrays: null` reads
+        // every data array, `arrays: []` reads none -- the distinction is
+        // deliberate. Formats without a native selective path are read whole
+        // and filtered, so the result is the same either way.
+        readMeshSelective: (path, { format = '', pointsOnly = false, arrays = null } = {}) =>
+            Module.readMeshSelective(path, format, pointsOnly, arrays),
+        // Summarize a file without loading its heavy arrays. The returned
+        // object's `fellBackToFullRead` says whether that was actually cheap.
+        readMetadata: (path, format = '') => Module.readMetadata(path, format),
+        readerSupportsOptions: (format) => Module.readerSupportsOptions(format),
         writeMesh: (path, mesh, format = '') => Module.writeMesh(path, mesh, format),
         convert: (inPath, outPath, { inFormat = '', outFormat = '' } = {}) =>
             Module.convert(inPath, inFormat, outPath, outFormat),
