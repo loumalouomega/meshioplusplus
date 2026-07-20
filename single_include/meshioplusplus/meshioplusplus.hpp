@@ -4459,6 +4459,558 @@ inline double cell_measure(const NDArray& rPoints, std::size_t PointDim,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/data_ops.hpp =====
+// ===== begin cpp/include/meshioplusplus/exceptions.hpp =====
+/**
+ * @file exceptions.hpp
+ * @brief meshio I/O exception types thrown by the C++ core's readers/writers.
+ *
+ * These are the only exception types the C++ format readers/writers throw on
+ * I/O failure (malformed input, unsupported constructs, filesystem errors,
+ * etc.). The pybind11 binding layer catches them and re-raises the
+ * equivalent Python `meshioplusplus.ReadError` / `meshioplusplus.WriteError`
+ * classes, so callers on the Python side see identical behaviour whether a
+ * format is handled by the C++ core or by the pure-Python fallback. Because
+ * the shim pattern (`__init__.py`) catches *any* exception from the C++ path
+ * to decide whether to fall back to Python, throwing these (rather than
+ * e.g. asserting or returning error codes) is what makes that fallback work.
+ */
+
+// System includes
+#include <stdexcept>
+#include <string>
+
+namespace meshioplusplus {
+
+/**
+ * @brief Thrown by C++ readers when the input file/stream cannot be parsed.
+ *
+ * Covers malformed content, missing required sections, and unsupported
+ * constructs that a given format's C++ reader deliberately does not handle
+ * (in which case the format's Python shim catches this and falls back to the
+ * pure-Python reference reader). Maps 1:1 to Python's `meshioplusplus.ReadError`.
+ */
+struct ReadError : std::runtime_error {
+    ReadError() : std::runtime_error("") {}
+    explicit ReadError(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
+/**
+ * @brief Thrown by C++ writers when a mesh cannot be serialized to a format.
+ *
+ * Covers unsupported cell types, ragged/ill-formed mesh data the writer does
+ * not accept, and any other output-side constraint violation (in which case
+ * the format's Python shim catches this and falls back to the pure-Python
+ * reference writer). Maps 1:1 to Python's `meshioplusplus.WriteError`.
+ */
+struct WriteError : std::runtime_error {
+    WriteError() : std::runtime_error("") {}
+    explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/exceptions.hpp =====
+// ===== begin cpp/include/meshioplusplus/read_options.hpp =====
+/**
+ * @file read_options.hpp
+ * @brief Per-call reader options (selective/partial reads, memory mapping) and
+ *        the lightweight mesh summary returned by `read_metadata`.
+ *
+ * Readers are all-or-nothing by default: every `<DataArray>`, every section,
+ * fully decoded. `ReadOptions` lets a caller ask for less -- geometry only, a
+ * named subset of data arrays, or just the header summary -- without
+ * materializing the rest. **Every field defaults to "read everything"**, so a
+ * default-constructed `ReadOptions` reproduces the historical behaviour exactly;
+ * that is what lets the option be threaded through a reader without touching any
+ * existing caller or test.
+ *
+ * Only some readers can act on the options (currently VTU, VTP, XDMF and Gmsh).
+ * The rest fall back to a full read, which is correct but not faster -- and
+ * always *says so*, via `MeshMetadata::mFellBackToFullRead`. A partial read that
+ * silently wasn't partial would be worse than no feature at all.
+ *
+ * What `mMetadataOnly` actually buys is format-dependent and worth stating
+ * plainly: for Gmsh it is close to free (the `$Nodes`/`$Elements` headers carry
+ * the counts, so the bodies are skipped outright), while for VTU/VTP the whole
+ * file is still read and parsed as XML -- what is skipped is base64 decoding,
+ * decompression, allocation and byte-swapping. That is a solid multiple, not an
+ * asymptotic change. Genuinely O(1) VTU metadata would need the *appended* data
+ * format with `offset=` attributes, which this reader does not accept.
+ */
+
+// System includes
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Whether a reader should memory-map its input.
+ *
+ * `Auto` maps only regular files at or above `mmap_auto_threshold_bytes`, where
+ * avoiding the whole-file copy is worth the mapping setup; smaller files are
+ * read normally. Mapping is advisory throughout -- an unmappable input (a pipe,
+ * a zero-length file, a platform without support, WASM) silently falls back to
+ * buffered reading rather than failing, so `On` is a preference, not a demand.
+ */
+enum class MmapMode { Auto, On, Off };
+
+/** @brief File size at or above which `MmapMode::Auto` maps instead of copying. */
+inline constexpr std::size_t mmap_auto_threshold_bytes = 16u * 1024u * 1024u;
+
+/**
+ * @brief Per-call options narrowing what a reader materializes.
+ *
+ * Defaults reproduce a full read exactly. The three narrowing options are
+ * ordered by how much they skip: `mDataArrays` (a named subset) is the least
+ * aggressive, `mPointsOnly` drops all data, `mMetadataOnly` drops the heavy
+ * arrays entirely.
+ */
+struct ReadOptions {
+    /** @brief Read geometry (points + connectivity) but no data arrays at all. */
+    bool mPointsOnly = false;
+
+    /**
+     * @brief Read only the header/summary, skipping the heavy arrays.
+     *
+     * Used by `read_metadata`; a reader honouring this may return a `Mesh` whose
+     * arrays are absent or empty, so it is not meaningful on the `read` path.
+     */
+    bool mMetadataOnly = false;
+
+    /**
+     * @brief Restrict point/cell/field data to these names.
+     *
+     * `std::nullopt` means every array (the default); an **empty vector** means
+     * none. The distinction is load-bearing -- a bare `std::vector` could not
+     * express both, and the ambiguity would be unfixable once it reached the C
+     * ABI. Names not present in the file are ignored, not an error: a caller
+     * asking for `{"u", "v"}` across a directory of meshes should not have to
+     * know which files happen to carry which.
+     */
+    std::optional<std::vector<std::string>> mDataArrays;
+
+    /** @brief Memory-mapping preference; honoured where the reader supports it. */
+    MmapMode mMmap = MmapMode::Auto;
+
+    /** @brief Whether @p rName survives the `mDataArrays` filter. */
+    bool WantsArray(const std::string& rName) const {
+        if (!mDataArrays.has_value())
+            return true;
+        for (const std::string& candidate : *mDataArrays)
+            if (candidate == rName)
+                return true;
+        return false;
+    }
+
+    /** @brief Whether any data array at all should be read. */
+    bool WantsAnyData() const {
+        if (mPointsOnly || mMetadataOnly)
+            return false;
+        return !mDataArrays.has_value() || !mDataArrays->empty();
+    }
+};
+
+/** @brief One cell block's shape, without its connectivity. */
+struct CellBlockInfo {
+    std::string mType;              ///< meshio++ cell type name, e.g. `"tetra10"`.
+    std::size_t mNumCells = 0;      ///< Number of cells in the block.
+    std::size_t mNodesPerCell = 0;  ///< Nodes per cell; 0 when ragged.
+    bool mRagged = false;           ///< Whether the block is a polygon/polyhedron block.
+};
+
+/**
+ * @brief A mesh summary: what a file contains, without its contents.
+ *
+ * The topological complement to `compute_stats` (geometry) and `data_info`
+ * (data values) -- this one is about *shape and names*, and is cheap enough to
+ * run on a file you have no intention of loading.
+ */
+struct MeshMetadata {
+    std::size_t mNumPoints = 0;  ///< Number of points.
+    std::size_t mPointDim = 0;   ///< Coordinate dimension (2 or 3).
+
+    std::vector<CellBlockInfo> mCellBlocks;  ///< Per-block shape, in file order.
+
+    /** @name Available array names, sorted (matching the uniform API's guarantee). */
+    ///@{
+    std::vector<std::string> mPointDataNames;
+    std::vector<std::string> mCellDataNames;
+    std::vector<std::string> mFieldDataNames;
+    ///@}
+
+    /**
+     * @brief Whether the bounding box below was computed.
+     *
+     * False on a native metadata path: the bounding box requires decoding the
+     * point coordinates, usually the single largest array in the file, which
+     * would defeat the purpose. It is only filled in when a full read happened
+     * anyway (see `mFellBackToFullRead`).
+     */
+    bool mHasBBox = false;
+    double mBBoxMin[3] = {0.0, 0.0, 0.0};
+    double mBBoxMax[3] = {0.0, 0.0, 0.0};
+
+    /**
+     * @brief Whether the whole file had to be read to produce this summary.
+     *
+     * True for every format without a native metadata path. The summary is still
+     * correct -- it just wasn't cheap. Exposed everywhere (Python, C, Fortran,
+     * JS, both CLIs) so a caller can tell "fast" from "worked".
+     */
+    bool mFellBackToFullRead = false;
+
+    /** @brief The resolved format name the summary was read as. */
+    std::string mFormat;
+
+    /** @brief Total cells across every block. */
+    std::size_t NumCells() const {
+        std::size_t total = 0;
+        for (const CellBlockInfo& block : mCellBlocks)
+            total += block.mNumCells;
+        return total;
+    }
+};
+
+/**
+ * @brief Summarize an already-loaded mesh.
+ *
+ * The single fallback implementation behind `read_metadata` for every format
+ * lacking a native metadata path -- one function rather than one per format.
+ * Takes the mesh by const reference and returns a plain aggregate: it must never
+ * copy the mesh, because the KRATOS backend's `Mesh` is not copy-constructible.
+ *
+ * Does **not** set `mFellBackToFullRead`; that is the caller's business, since
+ * this is also useful on a mesh that was going to be read regardless.
+ */
+MeshMetadata metadata_from_mesh(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/read_options.hpp =====
+// ===== begin cpp/include/meshioplusplus/detail/file_source.hpp =====
+/**
+ * @file file_source.hpp
+ * @brief Whole-file read access, memory-mapped where that helps and buffered
+ *        otherwise.
+ *
+ * Several readers (gmsh, vtk, ensight, ugrid's ASCII branch, openfoam) slurp
+ * the entire file into a heap buffer and then parse from it. `FileSource`
+ * replaces that idiom with one that can map the file instead, which removes a
+ * full-file copy and -- more importantly -- the peak-RSS doubling that copy
+ * causes on multi-GB meshes.
+ *
+ * **Be clear about what this does and does not buy.** Against one bulk `read()`
+ * into a pre-sized buffer, mapping saves a `memcpy` and the second copy of the
+ * file in RAM. It does *not* make the page faults go away, so this is a
+ * memory-footprint feature far more than a throughput one. The clear exception
+ * is a reader that was building an `ostringstream` and calling `.str()` --
+ * that pays for two extra copies, and mapping removes both.
+ *
+ * **Mapping is advisory, never required.** A pipe, a zero-length file, a
+ * platform without support, WASM, or any failure in the mapping call itself
+ * silently falls back to a buffered read. Constructing a `FileSource` on a file
+ * that exists always succeeds; only a genuinely unreadable file throws.
+ *
+ * **Lifetime is deliberately trivial.** Every reader copies what it parses into
+ * owning `NDArray`/`std::string` storage via the uniform mesh API, so nothing
+ * in a returned `Mesh` ever points into this buffer. `FileSource` is therefore
+ * a function-local RAII object destroyed when the reader returns -- there is no
+ * keep-alive to plumb through, no capsule, and no ownership shared with the
+ * mesh. The one rule to police: **nothing derived from `View()` may be stored
+ * in the returned mesh**. A gtest reads a file, then deletes and overwrites it,
+ * and re-validates the mesh, so a violation fails loudly rather than becoming a
+ * use-after-free in someone else's process.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+#include <string_view>
+#include <utility>
+
+// Project includes
+
+#if defined(__EMSCRIPTEN__)
+// No mapping under Emscripten: the virtual FS has nothing to map.
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+// This header reaches user translation units through the amalgamation, so
+// <windows.h> must not be allowed to define min/max macros there.
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief Read-only whole-file access: mapped when worthwhile, copied otherwise.
+ *
+ * Move-only; the mapping (or buffer) is released in the destructor.
+ */
+class FileSource {
+public:
+    /** @brief Mapping preference. `Auto` maps only when it is likely to pay. */
+    enum class Mode { Auto, Mmap, Buffered };
+
+    /**
+     * @brief Open @p rPath for whole-file reading.
+     * @param rPath file to read.
+     * @param mode mapping preference; `Auto` maps regular files at or above
+     *        `mmap_auto_threshold_bytes`.
+     * @throws ReadError only if the file cannot be read at all.
+     */
+    explicit FileSource(const std::string& rPath, Mode mode = Mode::Auto) {
+        if (mode != Mode::Buffered && TryMap(rPath, mode == Mode::Mmap))
+            return;
+        LoadBuffered(rPath);
+    }
+
+    /** @brief Open honouring a `ReadOptions`' mmap preference. */
+    FileSource(const std::string& rPath, MmapMode mmap_mode)
+        : FileSource(rPath, FromMmapMode(mmap_mode)) {}
+
+    ~FileSource() { Release(); }
+
+    FileSource(const FileSource&) = delete;
+    FileSource& operator=(const FileSource&) = delete;
+
+    FileSource(FileSource&& rOther) noexcept { MoveFrom(std::move(rOther)); }
+
+    FileSource& operator=(FileSource&& rOther) noexcept {
+        if (this != &rOther) {
+            Release();
+            MoveFrom(std::move(rOther));
+        }
+        return *this;
+    }
+
+    /** @brief First byte of the file contents; never null (may be empty). */
+    const char* Data() const { return mpData ? mpData : mBuffer.data(); }
+
+    /** @brief File size in bytes. */
+    std::size_t Size() const { return mSize; }
+
+    /** @brief The whole file as a view. Valid until this object is destroyed. */
+    std::string_view View() const { return std::string_view(Data(), mSize); }
+
+    /** @brief Whether the contents are mapped rather than copied. */
+    bool IsMapped() const { return mMapped; }
+
+private:
+    static Mode FromMmapMode(MmapMode mmap_mode) {
+        switch (mmap_mode) {
+            case MmapMode::On:
+                return Mode::Mmap;
+            case MmapMode::Off:
+                return Mode::Buffered;
+            default:
+                return Mode::Auto;
+        }
+    }
+
+    /** @brief Read the whole file into `mBuffer` with one bulk read. */
+    void LoadBuffered(const std::string& rPath) {
+        std::ifstream in(rPath, std::ios::binary);
+        if (!in)
+            throw ReadError("Could not open file: " + rPath);
+        in.seekg(0, std::ios::end);
+        const std::streamoff len = in.tellg();
+        in.seekg(0, std::ios::beg);
+        if (len > 0) {
+            mBuffer.resize(static_cast<std::size_t>(len));
+            in.read(mBuffer.data(), len);
+        }
+        mSize = mBuffer.size();
+        mpData = nullptr;
+        mMapped = false;
+    }
+
+    /**
+     * @brief Attempt to map @p rPath.
+     * @param force map regardless of size (still only for regular files).
+     * @return false when mapping is unavailable or not worth it -- never throws,
+     *         so the caller simply falls back.
+     */
+    bool TryMap(const std::string& rPath, bool force) {
+#if defined(__EMSCRIPTEN__)
+        (void)rPath;
+        (void)force;
+        return false;  // nothing to map on the virtual filesystem
+#elif defined(_WIN32)
+        HANDLE file = CreateFileA(rPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+            return false;
+        LARGE_INTEGER size;
+        if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 ||
+            !WorthMapping(size.QuadPart, force)) {
+            CloseHandle(file);
+            return false;
+        }
+        HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (!mapping) {
+            CloseHandle(file);
+            return false;
+        }
+        void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+        if (!view) {
+            CloseHandle(mapping);
+            CloseHandle(file);
+            return false;
+        }
+        mpData = static_cast<const char*>(view);
+        mSize = static_cast<std::size_t>(size.QuadPart);
+        mWinFile = file;
+        mWinMapping = mapping;
+        mMapped = true;
+        return true;
+#else
+        const int fd = ::open(rPath.c_str(), O_RDONLY);
+        if (fd < 0)
+            return false;
+        struct stat st{};
+        // Only regular files: a pipe or character device has no meaningful size
+        // and cannot be mapped.
+        if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+            !WorthMapping(static_cast<long long>(st.st_size), force)) {
+            ::close(fd);
+            return false;
+        }
+        void* addr =
+            ::mmap(nullptr, static_cast<std::size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
+        ::close(fd);  // the mapping keeps its own reference to the file
+        if (addr == MAP_FAILED)
+            return false;
+#if defined(POSIX_MADV_SEQUENTIAL)
+        // Parsers walk the buffer front to back.
+        ::posix_madvise(addr, static_cast<std::size_t>(st.st_size), POSIX_MADV_SEQUENTIAL);
+#endif
+        mpData = static_cast<const char*>(addr);
+        mSize = static_cast<std::size_t>(st.st_size);
+        mMapped = true;
+        return true;
+#endif
+    }
+
+    /**
+     * @brief Whether a mapping of @p size bytes would have a readable zero byte
+     *        just past the data.
+     *
+     * The kernel zero-fills the remainder of the final page, so a mapped buffer
+     * normally behaves as if NUL-terminated -- which the C string functions some
+     * parsers use (`strtod`) quietly rely on. That slack does **not** exist when
+     * the file size is an exact multiple of the page size, and a file ending in
+     * digits with no trailing delimiter would then read past the mapping and
+     * fault. Refusing to map those (a ~1-in-4096 case) buys the guarantee back
+     * for the cost of a buffered read.
+     */
+    static bool HasTerminatorSlack(long long size) {
+#if defined(__EMSCRIPTEN__)
+        (void)size;
+        return false;
+#elif defined(_WIN32)
+        SYSTEM_INFO info;
+        GetSystemInfo(&info);
+        const long long page = static_cast<long long>(info.dwPageSize);
+        return page > 0 && (size % page) != 0;
+#else
+        const long long page = static_cast<long long>(::sysconf(_SC_PAGESIZE));
+        return page > 0 && (size % page) != 0;
+#endif
+    }
+
+    /**
+     * @brief Whether a file of @p size bytes is worth mapping under `Auto`.
+     *
+     * Below the threshold the copy is cheap and the mapping's setup plus page
+     * faults are not obviously better, so small files keep the simple path.
+     * `MESHIOPLUSPLUS_MMAP_THRESHOLD` overrides it (bytes) for benchmarking; 0
+     * means always map.
+     */
+    static bool WorthMapping(long long size, bool force) {
+        // Applies even to an explicit request: `Mmap` is a preference, and
+        // silently trading a guarantee for it would be the wrong bargain.
+        if (!HasTerminatorSlack(size))
+            return false;
+        if (force)
+            return true;
+        static const std::size_t threshold = [] {
+            if (const char* env = std::getenv("MESHIOPLUSPLUS_MMAP_THRESHOLD")) {
+                char* end = nullptr;
+                const unsigned long long v = std::strtoull(env, &end, 10);
+                if (end && end != env)
+                    return static_cast<std::size_t>(v);
+            }
+            return mmap_auto_threshold_bytes;
+        }();
+        return static_cast<std::size_t>(size) >= threshold;
+    }
+
+    void Release() {
+#if defined(__EMSCRIPTEN__)
+#elif defined(_WIN32)
+        if (mMapped && mpData)
+            UnmapViewOfFile(mpData);
+        if (mWinMapping)
+            CloseHandle(mWinMapping);
+        if (mWinFile && mWinFile != INVALID_HANDLE_VALUE)
+            CloseHandle(mWinFile);
+        mWinMapping = nullptr;
+        mWinFile = nullptr;
+#else
+        if (mMapped && mpData && mSize)
+            ::munmap(const_cast<char*>(mpData), mSize);
+#endif
+        mpData = nullptr;
+        mSize = 0;
+        mMapped = false;
+    }
+
+    void MoveFrom(FileSource&& rOther) noexcept {
+        mBuffer = std::move(rOther.mBuffer);
+        mpData = rOther.mpData;
+        mSize = rOther.mSize;
+        mMapped = rOther.mMapped;
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+        mWinFile = rOther.mWinFile;
+        mWinMapping = rOther.mWinMapping;
+        rOther.mWinFile = nullptr;
+        rOther.mWinMapping = nullptr;
+#endif
+        rOther.mpData = nullptr;
+        rOther.mSize = 0;
+        rOther.mMapped = false;
+    }
+
+    std::string mBuffer;           ///< Backing store when not mapped.
+    const char* mpData = nullptr;  ///< Mapped address, or null when buffered.
+    std::size_t mSize = 0;
+    bool mMapped = false;
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    HANDLE mWinFile = nullptr;
+    HANDLE mWinMapping = nullptr;
+#endif
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end cpp/include/meshioplusplus/detail/file_source.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/format_compat.hpp =====
 /**
  * @file format_compat.hpp
@@ -4528,56 +5080,6 @@ std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&...
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/detail/format_compat.hpp =====
-// ===== begin cpp/include/meshioplusplus/exceptions.hpp =====
-/**
- * @file exceptions.hpp
- * @brief meshio I/O exception types thrown by the C++ core's readers/writers.
- *
- * These are the only exception types the C++ format readers/writers throw on
- * I/O failure (malformed input, unsupported constructs, filesystem errors,
- * etc.). The pybind11 binding layer catches them and re-raises the
- * equivalent Python `meshioplusplus.ReadError` / `meshioplusplus.WriteError`
- * classes, so callers on the Python side see identical behaviour whether a
- * format is handled by the C++ core or by the pure-Python fallback. Because
- * the shim pattern (`__init__.py`) catches *any* exception from the C++ path
- * to decide whether to fall back to Python, throwing these (rather than
- * e.g. asserting or returning error codes) is what makes that fallback work.
- */
-
-// System includes
-#include <stdexcept>
-#include <string>
-
-namespace meshioplusplus {
-
-/**
- * @brief Thrown by C++ readers when the input file/stream cannot be parsed.
- *
- * Covers malformed content, missing required sections, and unsupported
- * constructs that a given format's C++ reader deliberately does not handle
- * (in which case the format's Python shim catches this and falls back to the
- * pure-Python reference reader). Maps 1:1 to Python's `meshioplusplus.ReadError`.
- */
-struct ReadError : std::runtime_error {
-    ReadError() : std::runtime_error("") {}
-    explicit ReadError(const std::string& rMsg) : std::runtime_error(rMsg) {}
-};
-
-/**
- * @brief Thrown by C++ writers when a mesh cannot be serialized to a format.
- *
- * Covers unsupported cell types, ragged/ill-formed mesh data the writer does
- * not accept, and any other output-side constraint violation (in which case
- * the format's Python shim catches this and falls back to the pure-Python
- * reference writer). Maps 1:1 to Python's `meshioplusplus.WriteError`.
- */
-struct WriteError : std::runtime_error {
-    WriteError() : std::runtime_error("") {}
-    explicit WriteError(const std::string& rMsg) : std::runtime_error(rMsg) {}
-};
-
-}  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/exceptions.hpp =====
 // ===== begin cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
 /**
  * @file hdf5_util.hpp
@@ -5964,6 +6466,95 @@ inline NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
  *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
  *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
  */
+/**
+ * @brief The cell-block *shape* `reconstruct_cells` would produce, without
+ *        touching connectivity.
+ *
+ * Backs the VTU/VTP metadata path: `types` is one byte per cell and `offsets`
+ * is only consulted for the variable-node-count types, so a summary costs a
+ * fraction of a full reconstruction.
+ *
+ * The run-grouping here **duplicates** `reconstruct_cells`' -- consecutive
+ * same-type runs, further split by per-cell size for `is_special_cell` types.
+ * That duplication is deliberate (the two have very different inner loops and
+ * merging them would slow the hot one down) but it can drift, so it is pinned
+ * by a test asserting this function agrees with `metadata_from_mesh` applied to
+ * a real reconstruction, rather than by comment alone.
+ *
+ * @param rOffsets End offsets, one per cell; may be **empty** when no special
+ *                 cell type is present, since only those consult it.
+ * @param rTypes VTK cell type id for each cell.
+ * @return One entry per output block, in the same order as the blocks
+ *         `reconstruct_cells` would append.
+ * @throws ReadError on the same unsupported types `reconstruct_cells` rejects,
+ *         so a summary never claims a file is readable when it is not.
+ */
+inline std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
+                                                  const std::vector<std::int64_t>& rTypes) {
+    const auto& vmap = vtk_to_meshio_type();
+    const std::size_t ncells = rTypes.size();
+    std::vector<CellBlockInfo> blocks;
+
+    std::size_t start = 0;
+    while (start < ncells) {
+        std::size_t end = start + 1;
+        while (end < ncells && rTypes[end] == rTypes[start])
+            ++end;
+
+        const int vtk_type = static_cast<int>(rTypes[start]);
+        if (vtk_type == 42)
+            throw ReadError("polyhedron cells are not supported by the C++ reader");
+        auto it = vmap.find(vtk_type);
+        if (it == vmap.end())
+            throw ReadError("VTK cell type " + std::to_string(vtk_type) +
+                            " not supported by the C++ reader");
+        const std::string& meshio_type = it->second;
+
+        if (is_special_cell(meshio_type)) {
+            if (rOffsets.size() < end)
+                throw ReadError("VTU summary needs 'offsets' for variable-size cell type " +
+                                meshio_type);
+            // Split the run further wherever the per-cell node count changes.
+            std::size_t i = start;
+            while (i < end) {
+                const std::int64_t prev = (i == 0) ? 0 : rOffsets[i - 1];
+                const std::int64_t sz = rOffsets[i] - prev;
+                std::size_t j = i + 1;
+                while (j < end && rOffsets[j] - rOffsets[j - 1] == sz)
+                    ++j;
+                CellBlockInfo info;
+                info.mType = meshio_type;
+                info.mNumCells = j - i;
+                info.mNodesPerCell = static_cast<std::size_t>(sz);
+                blocks.push_back(std::move(info));
+                i = j;
+            }
+        } else {
+            auto nit = num_nodes_per_cell().find(meshio_type);
+            if (nit == num_nodes_per_cell().end())
+                throw ReadError("Unknown node count for cell type " + meshio_type);
+            CellBlockInfo info;
+            info.mType = meshio_type;
+            info.mNumCells = end - start;
+            info.mNodesPerCell = static_cast<std::size_t>(nit->second);
+            blocks.push_back(std::move(info));
+        }
+        start = end;
+    }
+    return blocks;
+}
+
+/** @brief Whether any type in @p rTypes needs `offsets` to be summarized. */
+inline bool cells_need_offsets(const std::vector<std::int64_t>& rTypes) {
+    const auto& vmap = vtk_to_meshio_type();
+    for (std::int64_t t : rTypes) {
+        auto it = vmap.find(static_cast<int>(t));
+        if (it != vmap.end() && is_special_cell(it->second))
+            return true;
+    }
+    return false;
+}
+
 inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
                               const std::vector<std::int64_t>& rTypes,
                               const std::unordered_map<std::string, NDArray>& rCellDataRaw,
@@ -6112,6 +6703,12 @@ inline void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
 #include <zlib.h>
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+#include <zstd.h>
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+#include <lz4.h>
+#endif
 
 // Project includes
 
@@ -6210,6 +6807,54 @@ inline std::vector<unsigned char> b64decode(const char* pS, std::size_t len) {
     return out;
 }
 
+/**
+ * @brief Block-compression codec of a VTK XML "binary" DataArray.
+ *
+ * All codecs share VTU's block framing verbatim (num_blocks / max_block /
+ * last_block / per-block compressed sizes, fixed 32 KiB blocks); only the
+ * per-block compressor differs, which is what lets one framing implementation
+ * serve them all.
+ */
+enum class VtkCodec {
+    None,  ///< raw bytes behind a byte-count header
+    Zlib,  ///< vtkZLibDataCompressor -- the default, and the only one always available
+    LZ4,   ///< vtkLZ4DataCompressor -- a real VTK compressor
+    ZSTD,  ///< vtkZSTDDataCompressor -- a meshio++ extension; VTK has no ZSTD compressor
+    LZMA   ///< vtkLZMADataCompressor -- recognized but not implemented (Python fallback)
+};
+
+/** @brief The `compressor=` attribute a codec is recorded under, or "" for None. */
+inline const char* vtk_codec_compressor(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "vtkZLibDataCompressor";
+        case VtkCodec::LZ4:
+            return "vtkLZ4DataCompressor";
+        case VtkCodec::ZSTD:
+            return "vtkZSTDDataCompressor";
+        case VtkCodec::LZMA:
+            return "vtkLZMADataCompressor";
+        default:
+            return "";
+    }
+}
+
+/** @brief Short user-facing codec name (`--codec` values). */
+inline const char* vtk_codec_name(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "zlib";
+        case VtkCodec::LZ4:
+            return "lz4";
+        case VtkCodec::ZSTD:
+            return "zstd";
+        case VtkCodec::LZMA:
+            return "lzma";
+        default:
+            return "none";
+    }
+}
+
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
 /**
  * @brief Compresses one block with zlib's default `compress()` (a single
@@ -6250,6 +6895,214 @@ inline std::vector<unsigned char> zlib_decompress(const unsigned char* pSrc, std
     return out;
 }
 #endif  // MESHIOPLUSPLUS_HAS_ZLIB
+
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+/**
+ * @brief Compresses one block as a single raw zstd frame.
+ *
+ * One frame per block, matching the zlib path: VTU's own header already records
+ * each block's compressed and decompressed size, so no zstd framing metadata is
+ * needed on top.
+ * @throws WriteError if zstd reports an error.
+ */
+inline std::vector<unsigned char> zstd_compress_block(const unsigned char* pSrc, std::size_t n) {
+    const std::size_t bound = ZSTD_compressBound(n);
+    std::vector<unsigned char> out(bound);
+    const std::size_t written = ZSTD_compress(out.data(), bound, pSrc, n, ZSTD_CLEVEL_DEFAULT);
+    if (ZSTD_isError(written))
+        throw WriteError(std::string("zstd compression failed: ") + ZSTD_getErrorName(written));
+    out.resize(written);
+    return out;
+}
+
+/**
+ * @brief Decompresses one zstd block whose decompressed size is already known.
+ * @param expected Exact size from the VTU block header -- so the frame's own
+ *        content-size field is never consulted.
+ * @throws ReadError if zstd reports an error or the size disagrees.
+ */
+inline std::vector<unsigned char> zstd_decompress(const unsigned char* pSrc, std::size_t n,
+                                                  std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    const std::size_t written = ZSTD_decompress(out.data(), expected, pSrc, n);
+    if (ZSTD_isError(written))
+        throw ReadError(std::string("zstd decompression failed: ") + ZSTD_getErrorName(written));
+    out.resize(written);
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_ZSTD
+
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+/**
+ * @brief Compresses one block in LZ4's **raw block** format.
+ *
+ * Raw block, not the LZ4 *frame* format -- this is what `vtkLZ4DataCompressor`
+ * emits (its `SetAccelerationLevel` knob is the tell that it calls
+ * `LZ4_compress_fast`), so files written here stay readable by VTK/ParaView.
+ * Acceleration 1 is LZ4's default.
+ * @throws WriteError if lz4 reports an error.
+ */
+inline std::vector<unsigned char> lz4_compress_block(const unsigned char* pSrc, std::size_t n) {
+    const int src_size = static_cast<int>(n);
+    const int bound = LZ4_compressBound(src_size);
+    if (bound <= 0)
+        throw WriteError("lz4 compression failed: block too large");
+    std::vector<unsigned char> out(static_cast<std::size_t>(bound));
+    const int written =
+        LZ4_compress_fast(reinterpret_cast<const char*>(pSrc), reinterpret_cast<char*>(out.data()),
+                          src_size, bound, /*acceleration=*/1);
+    if (written <= 0)
+        throw WriteError("lz4 compression failed");
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+
+/**
+ * @brief Decompresses one raw-block-format LZ4 block.
+ * @param expected Exact decompressed size from the VTU block header. Passing it
+ *        as the output capacity is what makes `LZ4_decompress_safe` bounded --
+ *        a corrupt block cannot overrun the buffer.
+ * @throws ReadError if lz4 reports an error.
+ */
+inline std::vector<unsigned char> lz4_decompress(const unsigned char* pSrc, std::size_t n,
+                                                 std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    const int written = LZ4_decompress_safe(reinterpret_cast<const char*>(pSrc),
+                                            reinterpret_cast<char*>(out.data()),
+                                            static_cast<int>(n), static_cast<int>(expected));
+    if (written < 0)
+        throw ReadError("lz4 decompression failed");
+    out.resize(static_cast<std::size_t>(written));
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_LZ4
+
+/**
+ * @name Per-codec block dispatch
+ *
+ * These always exist and throw at runtime when the codec was not compiled in --
+ * deliberately, and for the same reason the zlib helpers above are shaped that
+ * way (see the file header): a *link* error would make the absence a build
+ * failure, whereas a ReadError/WriteError routes the caller to the Python
+ * fallback, which is the documented contract. The message names the CMake
+ * option to turn on, in the spirit of `registry_compiled_out()`.
+ * @{
+ */
+
+/** @brief Whether @p codec can be decoded by this build. */
+inline bool vtk_codec_available(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::None:
+            return true;
+        case VtkCodec::Zlib:
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+            return true;
+#else
+            return false;
+#endif
+        case VtkCodec::LZ4:
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+            return true;
+#else
+            return false;
+#endif
+        case VtkCodec::ZSTD:
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+            return true;
+#else
+            return false;
+#endif
+        default:
+            return false;  // LZMA is recognized but never implemented here
+    }
+}
+
+/** @brief The CMake option that would enable @p codec. */
+inline std::string vtk_codec_build_option(VtkCodec codec) {
+    switch (codec) {
+        case VtkCodec::Zlib:
+            return "MESHIOPLUSPLUS_WITH_ZLIB=ON";
+        case VtkCodec::LZ4:
+            return "MESHIOPLUSPLUS_WITH_LZ4=ON";
+        case VtkCodec::ZSTD:
+            return "MESHIOPLUSPLUS_WITH_ZSTD=ON";
+        default:
+            return "";
+    }
+}
+
+/** @brief Actionable "this build cannot do that" message. */
+inline std::string vtk_codec_missing_message(VtkCodec codec, bool for_write) {
+    const std::string what = for_write ? "compression" : "decompression";
+    if (codec == VtkCodec::LZMA)
+        return "VTK XML lzma " + what + " is not implemented by the C++ core";
+    return "VTK XML " + std::string(vtk_codec_name(codec)) + " " + what +
+           " requires a build with -D" + vtk_codec_build_option(codec);
+}
+
+/** @throws ReadError when @p codec cannot be decoded by this build. */
+inline void vtk_codec_require_read(VtkCodec codec) {
+    if (!vtk_codec_available(codec))
+        throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
+}
+
+/** @throws WriteError when @p codec cannot be encoded by this build. */
+inline void vtk_codec_require_write(VtkCodec codec) {
+    if (!vtk_codec_available(codec))
+        throw WriteError(vtk_codec_missing_message(codec, /*for_write=*/true));
+}
+
+/** @brief Compress one block with @p codec. Callers must have required it. */
+inline std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec,
+                                                           const unsigned char* pSrc,
+                                                           std::size_t n) {
+    switch (codec) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        case VtkCodec::Zlib:
+            return zlib_compress_block(pSrc, n);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+        case VtkCodec::ZSTD:
+            return zstd_compress_block(pSrc, n);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+        case VtkCodec::LZ4:
+            return lz4_compress_block(pSrc, n);
+#endif
+        default:
+            break;
+    }
+    (void)pSrc;
+    (void)n;
+    throw WriteError(vtk_codec_missing_message(codec, /*for_write=*/true));
+}
+
+/** @brief Decompress one block with @p codec into @p expected bytes. */
+inline std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec,
+                                                             const unsigned char* pSrc,
+                                                             std::size_t n, std::size_t expected) {
+    switch (codec) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        case VtkCodec::Zlib:
+            return zlib_decompress(pSrc, n, expected);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ZSTD
+        case VtkCodec::ZSTD:
+            return zstd_decompress(pSrc, n, expected);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZ4
+        case VtkCodec::LZ4:
+            return lz4_decompress(pSrc, n, expected);
+#endif
+        default:
+            break;
+    }
+    (void)pSrc;
+    (void)n;
+    (void)expected;
+    throw ReadError(vtk_codec_missing_message(codec, /*for_write=*/false));
+}
+/** @} */
 
 /**
  * @brief Reads a little-endian unsigned integer of `isz` bytes from `p`.
@@ -6312,24 +7165,23 @@ inline std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std
  * @throws ReadError if built without `MESHIOPLUSPLUS_HAS_ZLIB`, or if the
  *         header/data is truncated, or if any block fails to decompress.
  */
-inline std::vector<unsigned char> vtu_decode_zlib(const char* pText, std::size_t len,
-                                                  std::size_t hsz) {
-#ifndef MESHIOPLUSPLUS_HAS_ZLIB
-    (void)pText;
-    (void)len;
-    (void)hsz;
-    throw ReadError("VTU zlib decompression requires a zlib-enabled build");
-#else
+inline std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
+                                                    std::size_t hsz, VtkCodec codec) {
+    // Every codec is checked here rather than at the per-block call so an
+    // absent one is reported before any work is done -- and as a ReadError,
+    // never a link error, which is what keeps the Python fallback reachable.
+    vtk_codec_require_read(codec);
+
     std::size_t first_chars = ((hsz + 2) / 3) * 4;
     if (len < first_chars)
-        throw ReadError("VTU zlib header too short");
+        throw ReadError("VTU compressed-block header too short");
     std::vector<unsigned char> hb = b64decode(pText, first_chars);
     std::uint64_t num_blocks = read_uint_le(hb.data(), hsz);
 
     std::size_t num_header_bytes = hsz * (3 + static_cast<std::size_t>(num_blocks));
     std::size_t num_header_chars = ((num_header_bytes + 2) / 3) * 4;
     if (len < num_header_chars)
-        throw ReadError("VTU zlib header truncated");
+        throw ReadError("VTU compressed-block header truncated");
     std::vector<unsigned char> header = b64decode(pText, num_header_chars);
 
     std::uint64_t max_block = read_uint_le(header.data() + hsz, hsz);
@@ -6359,14 +7211,14 @@ inline std::vector<unsigned char> vtu_decode_zlib(const char* pText, std::size_t
         [&](std::size_t k) {
             std::size_t expected = (k + 1 == num_blocks) ? static_cast<std::size_t>(last_block)
                                                          : static_cast<std::size_t>(max_block);
-            auto dec = zlib_decompress(blockdata.data() + in_off[k],
-                                       static_cast<std::size_t>(comp_sizes[k]), expected);
+            auto dec =
+                vtk_codec_decompress_block(codec, blockdata.data() + in_off[k],
+                                           static_cast<std::size_t>(comp_sizes[k]), expected);
             std::memcpy(out.data() + k * static_cast<std::size_t>(max_block), dec.data(),
                         std::min(dec.size(), expected));
         },
         /*grain=*/1);  // each block is 32 KB of inflate work
     return out;
-#endif  // MESHIOPLUSPLUS_HAS_ZLIB
 }
 
 /**
@@ -6392,8 +7244,8 @@ inline std::vector<unsigned char> vtu_decode_zlib(const char* pText, std::size_t
  *         `MESHIOPLUSPLUS_HAS_ZLIB`.
  */
 inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes,
-                                     bool zlib_compress) {
-    if (!zlib_compress) {
+                                     VtkCodec codec) {
+    if (codec == VtkCodec::None) {
         std::vector<unsigned char> buf(4 + nbytes);
         std::uint32_t header = static_cast<std::uint32_t>(nbytes);
         std::memcpy(buf.data(), &header, 4);
@@ -6402,9 +7254,7 @@ inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nby
         return b64encode(buf.data(), buf.size());
     }
 
-#ifndef MESHIOPLUSPLUS_HAS_ZLIB
-    throw WriteError("VTU zlib compression requires a zlib-enabled build");
-#else
+    vtk_codec_require_write(codec);
     const std::uint32_t max_block = 32768;
     std::uint32_t num_blocks = static_cast<std::uint32_t>((nbytes + max_block - 1) / max_block);
     std::uint32_t last_block_size =
@@ -6418,7 +7268,7 @@ inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nby
         [&](std::size_t b) {
             std::size_t off = b * max_block;
             std::size_t len = std::min<std::size_t>(max_block, nbytes - off);
-            blocks[b] = zlib_compress_block(pData + off, len);
+            blocks[b] = vtk_codec_compress_block(codec, pData + off, len);
         },
         /*grain=*/1);  // each block is 32 KB of deflate work
 
@@ -6437,7 +7287,6 @@ inline std::string vtu_encode_binary(const unsigned char* pData, std::size_t nby
         concat.insert(concat.end(), b.begin(), b.end());
     out += b64encode(concat.data(), concat.size());
     return out;
-#endif  // MESHIOPLUSPLUS_HAS_ZLIB
 }
 
 }  // namespace detail
@@ -6666,17 +7515,17 @@ inline std::string vtu_strip(const char* pS) {
  * @brief Decode a base64 "binary" DataArray payload into a flat array.
  * @param rText The stripped base64 text.
  * @param dt Target dtype.
- * @param compression 0 = none, 1 = zlib.
+ * @param codec block-compression codec recorded in the file.
  * @param hsz Header integer size in bytes (4 for UInt32, 8 for UInt64).
  * @return A 1-D owning array over the decoded bytes.
  */
-inline NDArray vtu_parse_binary(const std::string& rText, DType dt, int compression,
+inline NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec,
                                 std::size_t hsz) {
     std::vector<unsigned char> bytes;
-    if (compression == 0)
+    if (codec == VtkCodec::None)
         bytes = vtu_decode_uncompressed(rText.c_str(), rText.size(), hsz);
     else
-        bytes = vtu_decode_zlib(rText.c_str(), rText.size(), hsz);
+        bytes = vtu_decode_blocks(rText.c_str(), rText.size(), hsz, codec);
     std::size_t isz = dtype_size(dt);
     std::size_t n = isz ? bytes.size() / isz : 0;
     NDArray a(dt, {n});
@@ -7867,7 +8716,24 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
  * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
  *       Python fallback does, for files containing `$Periodic`
  */
-Mesh read_gmsh(const std::string& rPath);
+Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a `.msh` without reading its node coordinates or connectivity.
+ *
+ * **Format 4.1 only.** 4.1 groups elements into typed blocks whose headers carry
+ * the type and count, so the summary walks block headers and skips each
+ * payload -- by exact byte arithmetic for binary, line counts for ascii.
+ * Format 2.2 stores a type per element, so there is no cheap path to have;
+ * `read_gmsh_metadata` throws for it and `registry_read_metadata` falls back to
+ * a full read (reporting `mFellBackToFullRead`).
+ *
+ * @param rPath filesystem path to summarize
+ * @return the summary; `mHasBBox` is false (reading it would defeat the point)
+ * @throws ReadError for format 2.2, `$Entities`/`$Periodic`, or an unsupported
+ *         element type -- exactly what `read_gmsh` rejects
+ */
+MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/gmsh.hpp =====
@@ -9872,6 +10738,23 @@ namespace meshioplusplus {
 void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
 
 /**
+ * @brief Write a `.vtp` choosing the block-compression codec explicitly.
+ *
+ * `write_vtp(..., zlib)` is exactly this with `Zlib`/`None`, and zlib remains
+ * the default everywhere -- nothing changes for existing callers or files.
+ *
+ * `VtkCodec::LZ4` writes `vtkLZ4DataCompressor` in LZ4's raw block format,
+ * which VTK and ParaView read. `VtkCodec::ZSTD` writes
+ * `vtkZSTDDataCompressor`, which is a **meshio++ extension**: VTK ships no
+ * ZSTD compressor, so such a file is readable by meshio++ but not by ParaView.
+ *
+ * @throws WriteError naming the CMake option when the codec was not compiled
+ *         into this build.
+ */
+void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec);
+
+/**
  * @brief Read a VTK XML PolyData (.vtp) file.
  *
  * Verts rows become `vertex` cells, Lines rows `line` cells, and Polys rows
@@ -9879,12 +10762,28 @@ void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
  * split per block in VTK's canonical Verts/Lines/Polys order.
  *
  * @param rPath filesystem path of the `.vtp` file
+ * @param rOpts optional narrowing of what is materialized; the default reads
+ *        everything. Unwanted `<PointData>`/`<CellData>` arrays are skipped
+ *        before their payload is decoded.
  * @return the read Mesh
  * @throws ReadError on malformed XML, a non-PolyData file, triangle strips,
  *         poly-vertex/poly-line rows, multiple pieces, appended data, or
  *         lzma compression (all deferred to the Python reader)
  */
-Mesh read_vtp(const std::string& rPath);
+Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a `.vtp` without decoding its heavy arrays.
+ *
+ * PolyData has no `types` array -- cell types follow from each section's
+ * per-cell size -- so only the sections' `offsets` (one value per cell) are
+ * decoded and the connectivity is skipped entirely.
+ *
+ * @param rPath filesystem path to summarize
+ * @return the summary; `mHasBBox` is false (see `read_vtu_metadata`)
+ * @throws ReadError on the same unsupported constructs as `read_vtp`
+ */
+MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/vtp.hpp =====
@@ -9954,6 +10853,23 @@ namespace meshioplusplus {
 void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
 
 /**
+ * @brief Write a `.vtu` choosing the block-compression codec explicitly.
+ *
+ * `write_vtu(..., zlib)` is exactly this with `Zlib`/`None`, and zlib remains
+ * the default everywhere -- nothing changes for existing callers or files.
+ *
+ * `VtkCodec::LZ4` writes `vtkLZ4DataCompressor` in LZ4's raw block format,
+ * which VTK and ParaView read. `VtkCodec::ZSTD` writes
+ * `vtkZSTDDataCompressor`, which is a **meshio++ extension**: VTK ships no
+ * ZSTD compressor, so such a file is readable by meshio++ but not by ParaView.
+ *
+ * @throws WriteError naming the CMake option when the codec was not compiled
+ *         into this build.
+ */
+void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec);
+
+/**
  * @brief Read a `.vtu` file.
  *
  * Parses the single `<Piece>`'s `<Points>`/`<Cells>`/`<PointData>`/
@@ -9962,6 +10878,11 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
  * described above.
  *
  * @param rPath filesystem path to read
+ * @param rOpts optional narrowing of what is materialized; the default reads
+ *        everything, exactly as before. `mPointsOnly` and a `mDataArrays`
+ *        subset skip the unwanted `<DataArray>` bodies entirely -- their
+ *        `Name` attribute is readable before the payload is touched, so a
+ *        skipped array costs neither base64 decode, inflate, nor allocation.
  * @return the read Mesh
  * @throws ReadError if the file uses lzma compression, an `<AppendedData>`
  *         section, more than one `<Piece>`, polyhedron cells, or a
@@ -9970,7 +10891,26 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
  * @note `<FieldData>` -> `mesh.field_data`; `<PointData>`/`<CellData>` map
  *       generically to `point_data`/`cell_data`.
  */
-Mesh read_vtu(const std::string& rPath);
+Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a `.vtu` without decoding its heavy arrays.
+ *
+ * Point and cell counts come from `<Piece>` attributes (free); the only array
+ * decoded is `types` (one value per cell), plus `offsets` when a
+ * variable-node-count cell type is present. Data-array names come from `Name`
+ * attributes.
+ *
+ * The whole file is still read and XML-parsed -- pugixml always materializes
+ * PCDATA, so this is a large constant-factor saving, not an asymptotic one.
+ * `MeshMetadata::mHasBBox` is false here: a bounding box would mean decoding
+ * the point coordinates, defeating the purpose.
+ *
+ * @param rPath filesystem path to summarize
+ * @return the summary; accepts exactly the files `read_vtu` accepts
+ * @throws ReadError on the same unsupported constructs as `read_vtu`
+ */
+MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/vtu.hpp =====
@@ -10126,7 +11066,22 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
  *         then falls back to the Python/`h5py` reader.
  * @note `<Attribute>` elements map generically to `point_data`/`cell_data`.
  */
-Mesh read_xdmf(const std::string& rPath);
+Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a `.xdmf` without reading any heavy-data payload.
+ *
+ * The cheapest metadata path of any format here: every `<DataItem>` declares
+ * its shape in a `Dimensions` attribute, so point/cell counts are exact
+ * without touching the payload -- and on the HDF path without opening the
+ * sibling `.h5` at all. Attribute names come from `Name`/`Center`.
+ *
+ * @param rPath filesystem path to summarize
+ * @return the summary; `mHasBBox` is false (reading it would defeat the point)
+ * @throws ReadError on Mixed topology (which needs the full reader to resolve
+ *         per-block counts) and on everything `read_xdmf` rejects
+ */
+MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/formats/xdmf.hpp =====
@@ -11973,6 +12928,7 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 #include <functional>
 #include <map>
 #include <string>
+#include <unordered_map>
 
 // Project includes
 
@@ -11980,6 +12936,12 @@ namespace meshioplusplus {
 
 using ReadFn = std::function<Mesh(const std::string&)>;
 using WriteFn = std::function<void(const std::string&, const Mesh&)>;
+
+/** @brief A reader that can act on `ReadOptions` (selective/partial reads). */
+using ReadExFn = std::function<Mesh(const std::string&, const ReadOptions&)>;
+
+/** @brief A reader that can summarize a file without loading its heavy arrays. */
+using MetadataFn = std::function<MeshMetadata(const std::string&, const ReadOptions&)>;
 
 /** @brief `format name -> reader` for every format readable in this build. */
 const std::map<std::string, ReadFn>& registry_readers();
@@ -12015,6 +12977,60 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
  *         format".
  */
 const char* registry_compiled_out(const std::string& rFormat);
+
+/**
+ * @name Selective reads and metadata
+ *
+ * These tables are deliberately **sparse**: only formats with a native
+ * options-aware reader appear in them. `ReadFn`/`registry_readers()`/
+ * `registry_writers()` are untouched, so `mio_read`, the WASM `readMesh`, and
+ * every existing caller keep working unchanged -- a format's absence here costs
+ * a full read, never an error.
+ *
+ * Prefer the `registry_read`/`registry_read_metadata` free functions over the
+ * tables; they own the fallback so each binding surface does not reimplement it.
+ * @{
+ */
+
+/**
+ * @brief `format name -> options-aware reader`, for the formats that have one.
+ *
+ * Unordered: these are pure keyed lookups, never iterated for output, so they
+ * follow the repo default rather than the `std::map` of the older tables above
+ * (whose type is kept only because it is baked into the flat bindings).
+ */
+const std::unordered_map<std::string, ReadExFn>& registry_readers_ex();
+
+/** @brief `format name -> metadata reader`, for the formats that have one. */
+const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers();
+
+/**
+ * @brief Whether @p rFormat can act on `ReadOptions` rather than being read
+ *        whole and filtered afterwards.
+ */
+bool registry_reader_supports_options(const std::string& rFormat);
+
+/**
+ * @brief Read @p rPath honouring @p rOptions, falling back to a full read.
+ *
+ * Formats without a native options-aware reader are read whole; the result is
+ * correct either way, just not faster. Prefer this over indexing the tables.
+ * @throws ReadError if the format is unknown or compiled out.
+ */
+Mesh registry_read(const std::string& rPath, const std::string& rFormat,
+                   const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize @p rPath without loading its heavy arrays where possible.
+ *
+ * Formats without a native metadata path are read in full and summarized via
+ * `metadata_from_mesh`, with `MeshMetadata::mFellBackToFullRead` set so the
+ * caller can tell "fast" from merely "worked".
+ * @throws ReadError if the format is unknown or compiled out.
+ */
+MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
+                                    const ReadOptions& rOptions);
+/** @} */
 
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/registry.hpp =====
@@ -29060,6 +30076,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -29150,8 +30167,8 @@ std::string ensight_trim(const std::string& rLine) {
     return rLine.substr(b, e - b);
 }
 
-bool ensight_starts_with(const std::string& rStr, const char* pPrefix) {
-    return rStr.rfind(pPrefix, 0) == 0;
+bool ensight_starts_with(std::string_view str, const char* pPrefix) {
+    return str.rfind(pPrefix, 0) == 0;
 }
 
 std::string ensight_dirname(const std::string& rPath) {
@@ -29175,17 +30192,18 @@ std::pair<std::string, std::string> ensight_case_geo_paths(const std::string& rP
     return {"", ""};
 }
 
-std::string ensight_read_whole_file(const std::string& rPath, const char* pWhat) {
-    std::ifstream in(rPath, std::ios::binary);
-    if (!in)
+/**
+ * @brief Whole-file access, mapped where that pays (detail/file_source.hpp).
+ *
+ * Returns the source itself rather than a string so the caller controls its
+ * lifetime: the cursors below hold a view into it, so it must outlive them.
+ */
+detail::FileSource ensight_read_whole_file(const std::string& rPath, const char* pWhat) {
+    try {
+        return detail::FileSource(rPath);
+    } catch (const ReadError&) {
         throw ReadError(std::string("EnSight: could not open ") + pWhat + ": " + rPath);
-    in.seekg(0, std::ios::end);
-    const std::streamoff size = in.tellg();
-    in.seekg(0, std::ios::beg);
-    std::string data(static_cast<std::size_t>(size < 0 ? 0 : size), '\0');
-    if (!data.empty())
-        in.read(data.data(), static_cast<std::streamsize>(data.size()));
-    return data;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -29218,7 +30236,7 @@ public:
 
 class EnsightAsciiCursor final : public EnsightCursor {
 public:
-    explicit EnsightAsciiCursor(std::string Text) : mText(std::move(Text)) {}
+    explicit EnsightAsciiCursor(std::string_view text) : mText(text) {}
 
     bool AtEnd() override {
         std::size_t p = mPos;
@@ -29233,7 +30251,7 @@ public:
             std::size_t eol = mText.find('\n', mPos);
             if (eol == std::string::npos)
                 eol = mText.size();
-            std::string line = ensight_trim(mText.substr(mPos, eol - mPos));
+            std::string line = ensight_trim(std::string(mText.substr(mPos, eol - mPos)));
             mPos = eol < mText.size() ? eol + 1 : eol;
             if (!line.empty())
                 return line;
@@ -29251,12 +30269,12 @@ public:
     }
 
     std::int64_t NextInt() override {
-        const char* start = mText.c_str() + mPos;
+        const char* start = mText.data() + mPos;
         char* end = nullptr;
         const std::int64_t v = std::strtoll(start, &end, 10);
         if (end == start)
             throw ReadError("EnSight: expected an integer in geometry file");
-        mPos = static_cast<std::size_t>(end - mText.c_str());
+        mPos = static_cast<std::size_t>(end - mText.data());
         return v;
     }
 
@@ -29267,12 +30285,12 @@ public:
 
     void ReadFloats(std::size_t n, double* pDst) override {
         for (std::size_t i = 0; i < n; ++i) {
-            const char* start = mText.c_str() + mPos;
+            const char* start = mText.data() + mPos;
             char* end = nullptr;
             pDst[i] = std::strtod(start, &end);
             if (end == start)
                 throw ReadError("EnSight: expected a number in geometry file");
-            mPos = static_cast<std::size_t>(end - mText.c_str());
+            mPos = static_cast<std::size_t>(end - mText.data());
         }
     }
 
@@ -29282,7 +30300,7 @@ public:
     }
 
 private:
-    std::string mText;
+    std::string_view mText;
     std::size_t mPos = 0;
 };
 
@@ -29290,7 +30308,7 @@ class EnsightBinaryCursor final : public EnsightCursor {
 public:
     // Text is the whole file; the cursor starts after the leading
     // "C Binary" 80-char record.
-    explicit EnsightBinaryCursor(std::string Data) : mData(std::move(Data)), mPos(80) {}
+    explicit EnsightBinaryCursor(std::string_view data) : mData(data), mPos(80) {}
 
     bool AtEnd() override { return mPos >= mData.size(); }
 
@@ -29376,7 +30394,7 @@ private:
             throw ReadError("EnSight: truncated binary geometry file");
     }
 
-    std::string mData;
+    std::string_view mData;
     std::size_t mPos;
     bool mSwap = false;
 };
@@ -29387,7 +30405,8 @@ private:
 
 // Parse the .case file and return the resolved geometry file path.
 std::string ensight_parse_case(const std::string& rCasePath) {
-    const std::string data = ensight_read_whole_file(rCasePath, "case file");
+    const detail::FileSource source = ensight_read_whole_file(rCasePath, "case file");
+    const std::string data(source.View());  // small text file; parsed via istringstream
 
     std::string section;
     std::string format_type;
@@ -29701,14 +30720,16 @@ Mesh read_ensight(const std::string& rPath) {
     if (ensight_has_suffix(rPath, ".case"))
         geo_path = ensight_parse_case(rPath);
 
-    std::string data = ensight_read_whole_file(geo_path, "geometry file");
+    // The source outlives both cursors below, which only hold views into it.
+    const detail::FileSource source = ensight_read_whole_file(geo_path, "geometry file");
+    const std::string_view data = source.View();
     if (ensight_starts_with(data, "Fortran Binary"))
         throw ReadError("EnSight: Fortran-binary geometry files are not supported");
     if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
-        EnsightBinaryCursor cur(std::move(data));
+        EnsightBinaryCursor cur(data);
         return ensight_parse_geo(cur);
     }
-    EnsightAsciiCursor cur(std::move(data));
+    EnsightAsciiCursor cur(data);
     return ensight_parse_geo(cur);
 }
 
@@ -31375,6 +32396,7 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -31452,16 +32474,18 @@ std::string gmsh_trim(const std::string& rS) {
 }
 
 struct GmshCursor {
-    const std::string& mBuf;
+    // A view, not a reference to a std::string: the buffer may be a memory
+    // mapping rather than an owned string (see detail/file_source.hpp).
+    std::string_view mBuf;
     std::size_t mPos = 0;
-    explicit GmshCursor(const std::string& rB) : mBuf(rB) {}
+    explicit GmshCursor(std::string_view b) : mBuf(b) {}
     bool eof() const { return mPos >= mBuf.size(); }
 
     std::string read_line() {
         std::size_t start = mPos;
         while (mPos < mBuf.size() && mBuf[mPos] != '\n')
             ++mPos;
-        std::string line = mBuf.substr(start, mPos - start);
+        std::string line(mBuf.substr(start, mPos - start));
         if (mPos < mBuf.size())
             ++mPos;
         if (!line.empty() && line.back() == '\r')
@@ -31484,7 +32508,11 @@ struct GmshCursor {
         }
     }
     double next_double() {
-        const char* base = mBuf.c_str();
+        // strtod scans for a terminator. A buffered source is a std::string
+        // (NUL-terminated); a mapped one relies on the kernel zero-filling the
+        // final partial page -- which is exactly why FileSource declines to map
+        // files whose size is an exact page multiple.
+        const char* base = mBuf.data();
         char* endp = nullptr;
         double v = std::strtod(base + mPos, &endp);
         if (endp == base + mPos)
@@ -31633,8 +32661,14 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
 }
 
 // NodeData / ElementData
+/**
+ * @param rOpts when the section's name is not wanted, the value block is
+ *        skipped wholesale via `skip_to_end` -- no allocation and no parsing of
+ *        the `nitems * ncomp` values. The name sits at the top of the section,
+ *        before the values, so this costs nothing to decide.
+ */
 void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
-               std::unordered_map<std::string, NDArray>& rOut) {
+               std::unordered_map<std::string, NDArray>& rOut, const ReadOptions& rOpts) {
     std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
     std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
@@ -31654,6 +32688,11 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
         itags[i] = std::stoll(gmsh_trim(rCur.read_line()));
     std::size_t ncomp = static_cast<std::size_t>(itags[1]);
     std::size_t nitems = static_cast<std::size_t>(itags[2]);
+
+    if (!rOpts.WantsAnyData() || !rOpts.WantsArray(name)) {
+        rCur.skip_to_end(rTag);  // never touch the nitems * ncomp values
+        return;
+    }
 
     NDArray data(DType::Float64, {nitems, ncomp});
     double* dp = data.As<double>();
@@ -31812,7 +32851,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
     rCur.skip_to_end("Elements");
 }
 
-Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size) {
+Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const ReadOptions& rOpts) {
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<std::array<std::int64_t, 2>> dim_tags;
@@ -31837,9 +32876,9 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size) {
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
-            read_data(rCur, "NodeData", is_ascii, point_data);
+            read_data(rCur, "NodeData", is_ascii, point_data, rOpts);
         else if (env == "ElementData")
-            read_data(rCur, "ElementData", is_ascii, cell_data_raw);
+            read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts);
         else
             rCur.skip_to_end(env);
     }
@@ -31872,13 +32911,20 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size) {
     for (auto& kv : field_data)
         mesh.AddFieldData(kv.first, std::move(kv.second));
 
-    // Node entity (dim, tag) -> gmsh:dim_tags point data.
-    NDArray dt(DType::Int64, {dim_tags.size(), 2});
-    parallel_for_bw(dim_tags.size(), [&](std::size_t i) {
-        dt.As<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
-        dt.As<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
-    });
-    mesh.AddPointData("gmsh:dim_tags", std::move(dt));
+    // Node entity (dim, tag) -> gmsh:dim_tags point data. Structural rather
+    // than user data, but it lands in mesh.point_data all the same, so it obeys
+    // the same filter: "points_only" must mean no point_data, with no
+    // exceptions the caller has to know about. (A points_only mesh is an
+    // explicitly lossy request; preserving this for round-tripping would make
+    // the contract inconsistent instead of useful.)
+    if (rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:dim_tags")) {
+        NDArray dt(DType::Int64, {dim_tags.size(), 2});
+        parallel_for_bw(dim_tags.size(), [&](std::size_t i) {
+            dt.As<std::int64_t>()[i * 2 + 0] = dim_tags[i][0];
+            dt.As<std::int64_t>()[i * 2 + 1] = dim_tags[i][1];
+        });
+        mesh.AddPointData("gmsh:dim_tags", std::move(dt));
+    }
 
     std::vector<NDArray> geom_blocks;
     for (auto& b : eblocks) {
@@ -31925,27 +32971,148 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size) {
         }
         mesh.AddCellData(kv.first, std::move(per_block));
     }
-    if (!geom_blocks.empty())
+    if (!geom_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
         mesh.AddCellData("gmsh:geometrical", std::move(geom_blocks));
 
     return mesh;
 }
 
+/**
+ * @brief Walk a 4.1 `$Nodes`/`$Elements` section far enough to describe it,
+ *        skipping the bulk payload.
+ *
+ * Scoped to format 4.1 deliberately. 4.1 groups elements into typed blocks
+ * whose headers carry the type and count, so a summary is nearly free. Format
+ * 2.2's `$Elements` is a flat list where **every element carries its own type**,
+ * so summarizing it would cost essentially a full parse -- there is no cheap
+ * path to have, and pretending otherwise would just move the work around.
+ * 2.2 therefore keeps the honest full-read fallback.
+ */
+struct GmshMeta41 {
+    std::size_t mNumPoints = 0;
+    std::vector<CellBlockInfo> mBlocks;
+    std::vector<std::string> mPointDataNames;
+    std::vector<std::string> mCellDataNames;
+    bool mHasDimTags = false;
+};
+
+/// Consume the remainder of the current line.
+void gmsh_finish_line(GmshCursor& rCur) {
+    while (!rCur.eof() && rCur.mBuf[rCur.mPos] != '\n')
+        ++rCur.mPos;
+    if (!rCur.eof())
+        ++rCur.mPos;
+}
+
+void gmsh_scan_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshMeta41& rMeta) {
+    auto rd_size = [&]() -> std::int64_t {
+        return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
+    };
+    const std::int64_t num_blocks = rd_size();
+    const std::int64_t num_nodes = rd_size();
+    rd_size();  // min tag
+    rd_size();  // max tag
+    rMeta.mNumPoints = static_cast<std::size_t>(num_nodes < 0 ? 0 : num_nodes);
+    // Every 4.1 file yields gmsh:dim_tags, built from the per-node entity.
+    rMeta.mHasDimTags = num_nodes > 0;
+
+    if (is_ascii) {
+        // Coordinates are the bulk here and are never needed for a summary, so
+        // skip to the terminator rather than tokenizing them.
+        gmsh_finish_line(rCur);
+        rCur.skip_to_end("Nodes");
+        return;
+    }
+    // Binary: advance by the exact payload size instead of scanning, since raw
+    // bytes could otherwise contain anything that looks like a terminator.
+    for (std::int64_t b = 0; b < num_blocks; ++b) {
+        rCur.read_i32();  // dim
+        rCur.read_i32();  // entity tag
+        rCur.read_i32();  // parametric
+        const std::int64_t in_block = static_cast<std::int64_t>(rCur.read_uint(data_size));
+        rCur.mPos += static_cast<std::size_t>(in_block) * static_cast<std::size_t>(data_size);
+        rCur.mPos += static_cast<std::size_t>(in_block) * 3u * 8u;
+    }
+    rCur.skip_to_end("Nodes");
+}
+
+void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshMeta41& rMeta) {
+    auto rd_size = [&]() -> std::int64_t {
+        return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
+    };
+    const std::int64_t num_blocks = rd_size();
+    rd_size();  // num elements
+    rd_size();  // min tag
+    rd_size();  // max tag
+    const auto& g2m = gmsh_to_meshio_type();
+    const auto& nnpc = num_nodes_per_cell();
+    if (is_ascii)
+        gmsh_finish_line(rCur);
+
+    for (std::int64_t b = 0; b < num_blocks; ++b) {
+        int etype = 0;
+        std::int64_t num_ele = 0;
+        if (is_ascii) {
+            rCur.next_int();  // entity dim
+            rCur.next_int();  // entity tag
+            etype = static_cast<int>(rCur.next_int());
+            num_ele = rCur.next_int();
+            gmsh_finish_line(rCur);
+        } else {
+            rCur.read_i32();  // entity dim
+            rCur.read_i32();  // entity tag
+            etype = rCur.read_i32();
+            num_ele = static_cast<std::int64_t>(rCur.read_uint(data_size));
+        }
+
+        auto it = g2m.find(etype);
+        if (it == g2m.end())
+            throw ReadError("Gmsh element type " + std::to_string(etype) +
+                            " not supported by the C++ reader");
+        const std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
+
+        CellBlockInfo info;
+        info.mType = it->second;
+        info.mNumCells = static_cast<std::size_t>(num_ele < 0 ? 0 : num_ele);
+        info.mNodesPerCell = n;
+        rMeta.mBlocks.push_back(std::move(info));
+
+        // Skip the block's connectivity: one line per element (ascii) or
+        // num_ele * (tag + n nodes) fixed-width integers (binary).
+        if (is_ascii) {
+            for (std::int64_t e = 0; e < num_ele; ++e)
+                gmsh_finish_line(rCur);
+        } else {
+            rCur.mPos +=
+                static_cast<std::size_t>(num_ele) * (n + 1u) * static_cast<std::size_t>(data_size);
+        }
+    }
+    rCur.skip_to_end("Elements");
+}
+
+/// Read a `$NodeData`/`$ElementData` section's name, then skip its values.
+std::string gmsh_scan_data_name(GmshCursor& rCur, const std::string& rTag) {
+    const std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
+    std::string name;
+    for (std::int64_t i = 0; i < num_str; ++i) {
+        const std::string line = gmsh_trim(rCur.read_line());
+        if (i == 0) {
+            const std::size_t q1 = line.find('"'), q2 = line.rfind('"');
+            name = (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1) : line;
+        }
+    }
+    rCur.skip_to_end(rTag);
+    return name;
+}
 }  // namespace
 
-Mesh read_gmsh(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    // Bulk slurp (seek+read) rather than char-by-char istreambuf_iterator.
-    in.seekg(0, std::ios::end);
-    std::streamoff flen = in.tellg();
-    in.seekg(0, std::ios::beg);
-    std::string buf;
-    if (flen > 0) {
-        buf.resize(static_cast<std::size_t>(flen));
-        in.read(buf.data(), flen);
-    }
+Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
+    // Memory-mapped where that pays (see detail/file_source.hpp), copied
+    // otherwise. The source is function-local: every parsed value is copied
+    // into owning mesh storage below, so nothing in the returned Mesh points
+    // back into this buffer.
+    const detail::FileSource source(rPath, rOpts.mMmap);
+    const std::string_view buf = source.View();
     GmshCursor cur(buf);
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
@@ -31965,7 +33132,7 @@ Mesh read_gmsh(const std::string& rPath) {
     cur.skip_to_end("MeshFormat");
 
     if (version == "4.1" || version == "4")
-        return read_gmsh41_body(cur, is_ascii, data_size);
+        return read_gmsh41_body(cur, is_ascii, data_size, rOpts);
     if (version.rfind("2", 0) != 0)
         throw ReadError("C++ Gmsh reader handles versions 2.2 and 4.1 only");
 
@@ -31990,9 +33157,9 @@ Mesh read_gmsh(const std::string& rPath) {
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
-            read_data(cur, "NodeData", is_ascii, point_data);
+            read_data(cur, "NodeData", is_ascii, point_data, rOpts);
         else if (env == "ElementData")
-            read_data(cur, "ElementData", is_ascii, cell_data_raw);
+            read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts);
         else
             cur.skip_to_end(env);
     }
@@ -32062,9 +33229,9 @@ Mesh read_gmsh(const std::string& rPath) {
         }
         mesh.AddCellData(kv.first, std::move(per_block));
     }
-    if (!physical_blocks.empty())
+    if (!physical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:physical"))
         mesh.AddCellData("gmsh:physical", std::move(physical_blocks));
-    if (!geometrical_blocks.empty())
+    if (!geometrical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
         mesh.AddCellData("gmsh:geometrical", std::move(geometrical_blocks));
 
     return mesh;
@@ -32475,6 +33642,71 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
             continue;
         write_data(os, "ElementData", name, rMesh, binary);
     }
+}
+
+MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    const detail::FileSource source(rPath, rOpts.mMmap);
+    GmshCursor cur(source.View());
+
+    if (gmsh_trim(cur.read_line()) != "$MeshFormat")
+        throw ReadError("Expected $MeshFormat");
+    std::istringstream fss(cur.read_line());
+    std::string version;
+    int file_type = 0, data_size = 8;
+    fss >> version >> file_type >> data_size;
+    const bool is_ascii = (file_type == 0);
+    if (!is_ascii) {
+        cur.read_i32();  // endianness marker
+        if (cur.mPos < source.Size() && source.View()[cur.mPos] == '\n')
+            ++cur.mPos;
+    }
+    cur.skip_to_end("MeshFormat");
+
+    // Only 4.1 has typed element blocks whose headers make a summary cheap;
+    // 2.2 stores a per-element type, so declining here costs a full read but
+    // never a wrong answer (registry_read_metadata falls back).
+    if (version != "4.1" && version != "4")
+        throw ReadError("Gmsh: only format 4.1 has a header-only metadata path");
+
+    GmshMeta41 meta;
+    while (!cur.eof()) {
+        const std::string line = cur.next_nonblank();
+        if (line.empty())
+            break;
+        if (line[0] != '$')
+            throw ReadError("Gmsh: unexpected line " + line);
+        const std::string env = gmsh_trim(line.substr(1));
+        if (env == "Nodes")
+            gmsh_scan_nodes_41(cur, is_ascii, data_size, meta);
+        else if (env == "Elements")
+            gmsh_scan_elements_41(cur, is_ascii, data_size, meta);
+        else if (env == "NodeData")
+            meta.mPointDataNames.push_back(gmsh_scan_data_name(cur, "NodeData"));
+        else if (env == "ElementData")
+            meta.mCellDataNames.push_back(gmsh_scan_data_name(cur, "ElementData"));
+        else if (env == "Entities" || env == "Periodic")
+            throw ReadError("Gmsh $" + env + " not supported by the C++ reader");
+        else
+            cur.skip_to_end(env);
+    }
+
+    MeshMetadata out;
+    out.mNumPoints = meta.mNumPoints;
+    out.mPointDim = 3;  // gmsh coordinates are always 3-D
+    out.mCellBlocks = std::move(meta.mBlocks);
+    out.mPointDataNames = std::move(meta.mPointDataNames);
+    out.mCellDataNames = std::move(meta.mCellDataNames);
+    // The reader synthesizes these from the entity structure, so a summary must
+    // list them too or it would disagree with a real read.
+    if (meta.mHasDimTags)
+        out.mPointDataNames.push_back("gmsh:dim_tags");
+    if (!out.mCellBlocks.empty())
+        out.mCellDataNames.push_back("gmsh:geometrical");
+    std::sort(out.mPointDataNames.begin(), out.mPointDataNames.end());
+    std::sort(out.mCellDataNames.begin(), out.mCellDataNames.end());
+
+    out.mHasBBox = false;  // would require decoding the coordinates
+    return out;
 }
 
 }  // namespace meshioplusplus
@@ -35424,6 +36656,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -35445,13 +36678,21 @@ struct FoamFormat {
     int mScalarBytes = 8;
 };
 
-std::string read_whole(const std::string& rPath) {
-    std::ifstream f(rPath, std::ios::binary);
-    if (!f)
+/**
+ * @brief Whole-file access, mapped where that pays (detail/file_source.hpp).
+ *
+ * This replaces an `ostringstream` + `.str()` slurp, which paid for **two**
+ * extra full-file copies on top of the read -- by far the worst of the
+ * whole-file readers, and the reason this one benefits most from mapping.
+ * Returns the source itself so the caller controls its lifetime; everything
+ * below takes a view into it.
+ */
+detail::FileSource read_whole(const std::string& rPath) {
+    try {
+        return detail::FileSource(rPath);
+    } catch (const ReadError&) {
         throw ReadError("Could not open OpenFOAM file: " + rPath);
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
+    }
 }
 
 std::string openfoam_strip(const std::string& rS) {
@@ -35504,7 +36745,7 @@ FoamFormat detect_format(const std::string& rPath) {
 }
 
 // Strip C-style /* */ and // comments and drop the FoamFile { ... } block.
-std::string strip_comments_and_header(const std::string& rText) {
+std::string strip_comments_and_header(std::string_view rText) {
     std::string out;
     out.reserve(rText.size());
     // remove /* */ and //
@@ -35706,7 +36947,7 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
 // ---- binary parsers ----
 
 // Return (N, offset just after the outer '(').
-std::pair<std::int64_t, std::size_t> data_start(const std::string& rRaw) {
+std::pair<std::int64_t, std::size_t> data_start(std::string_view rRaw) {
     std::size_t end = rRaw.find('}');
     if (end == std::string::npos)
         throw ReadError("OpenFOAM: no FoamFile header");
@@ -35740,7 +36981,7 @@ T read_le(const char* pP) {
     return v;
 }
 
-std::vector<std::array<double, 3>> read_binary_points(const std::string& rRaw, int scalar_bytes) {
+std::vector<std::array<double, 3>> read_binary_points(std::string_view rRaw, int scalar_bytes) {
     auto [n, start] = data_start(rRaw);
     std::vector<std::array<double, 3>> pts(static_cast<std::size_t>(n));
     const char* base = rRaw.data() + start;
@@ -35755,7 +36996,7 @@ std::vector<std::array<double, 3>> read_binary_points(const std::string& rRaw, i
     return pts;
 }
 
-std::vector<std::int64_t> read_binary_labels(const std::string& rRaw, int label_bytes) {
+std::vector<std::int64_t> read_binary_labels(std::string_view rRaw, int label_bytes) {
     auto [n, start] = data_start(rRaw);
     std::vector<std::int64_t> out(static_cast<std::size_t>(n));
     const char* base = rRaw.data() + start;
@@ -35767,7 +37008,7 @@ std::vector<std::int64_t> read_binary_labels(const std::string& rRaw, int label_
     return out;
 }
 
-std::vector<Face> read_binary_faces(const std::string& rRaw, int label_bytes) {
+std::vector<Face> read_binary_faces(std::string_view rRaw, int label_bytes) {
     auto [nfaces, pos] = data_start(rRaw);
     std::vector<Face> faces(static_cast<std::size_t>(nfaces));
     std::size_t p = pos;
@@ -35775,7 +37016,7 @@ std::vector<Face> read_binary_faces(const std::string& rRaw, int label_bytes) {
         std::size_t lp = rRaw.find('(', p);
         if (lp == std::string::npos)
             throw ReadError("OpenFOAM: missing '(' in faces");
-        std::int64_t count = std::atoll(rRaw.substr(p, lp - p).c_str());
+        std::int64_t count = std::atoll(std::string(rRaw.substr(p, lp - p)).c_str());
         std::size_t blob = lp + 1;
         Face f(static_cast<std::size_t>(count));
         for (std::int64_t j = 0; j < count; ++j) {
@@ -35795,7 +37036,8 @@ std::vector<Face> read_binary_faces(const std::string& rRaw, int label_bytes) {
 
 std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
     FoamFormat fmt = detect_format(rPath.string());
-    std::string raw = read_whole(rPath.string());
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
     if (fmt.mBinary)
         return read_binary_points(raw, fmt.mScalarBytes);
     return parse_points_ascii(strip_comments_and_header(raw));
@@ -35803,7 +37045,8 @@ std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
 
 std::vector<Face> read_faces(const fs::path& rPath) {
     FoamFormat fmt = detect_format(rPath.string());
-    std::string raw = read_whole(rPath.string());
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
     if (fmt.mBinary)
         return read_binary_faces(raw, fmt.mLabelBytes);
     return parse_faces_ascii(strip_comments_and_header(raw));
@@ -35811,7 +37054,8 @@ std::vector<Face> read_faces(const fs::path& rPath) {
 
 std::vector<std::int64_t> read_int_list(const fs::path& rPath) {
     FoamFormat fmt = detect_format(rPath.string());
-    std::string raw = read_whole(rPath.string());
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
     if (fmt.mBinary)
         return read_binary_labels(raw, fmt.mLabelBytes);
     return parse_int_list_ascii(strip_comments_and_header(raw));
@@ -35990,8 +37234,8 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
         neighbour = read_int_list(poly / "neighbour");
     std::vector<Patch> boundary;
     if (fs::exists(poly / "boundary"))
-        boundary =
-            parse_boundary(strip_comments_and_header(read_whole((poly / "boundary").string())));
+        boundary = parse_boundary(
+            strip_comments_and_header(read_whole((poly / "boundary").string()).View()));
 
     std::int64_t owner_max = -1, neigh_max = -1;
     for (std::int64_t v : owner)
@@ -39274,6 +40518,8 @@ void write_triangle(const std::string& rPath, const Mesh& rMesh) {
 #include <fstream>
 #include <map>
 #include <string>
+#include <string_view>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -39539,18 +40785,16 @@ Mesh read_ugrid(const std::string& rPath) {
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
-    // ASCII slurps the file for tokenizing; binary streams each section
-    // directly into its destination array (no whole-file intermediate).
-    std::string buf;
+    // ASCII takes the whole file for tokenizing -- mapped where that pays (see
+    // detail/file_source.hpp) -- while binary streams each section directly
+    // into its destination array from `in`, with no whole-file intermediate at
+    // all, so there is nothing to map there.
+    std::optional<detail::FileSource> ascii_source;
+    std::string_view buf;
     std::size_t tok_pos = 0;  // ascii tokenizer cursor
     if (ft.mAscii) {
-        in.seekg(0, std::ios::end);
-        std::streamoff flen = in.tellg();
-        in.seekg(0, std::ios::beg);
-        if (flen > 0) {
-            buf.resize(static_cast<std::size_t>(flen));
-            in.read(buf.data(), flen);
-        }
+        ascii_source.emplace(rPath);
+        buf = ascii_source->View();
     }
 
     const bool swap = ft.mBigEndian;  // host little-endian
@@ -39563,7 +40807,7 @@ Mesh read_ugrid(const std::string& rPath) {
             ++tok_pos;
         if (s == tok_pos)
             throw ReadError("UGRID: unexpected end of file");
-        return buf.substr(s, tok_pos - s);
+        return std::string(buf.substr(s, tok_pos - s));
     };
     auto next_int = [&]() -> std::int64_t {
         if (ft.mAscii)
@@ -39781,11 +41025,10 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
             if (n == 0)
                 continue;
             int bi = block_of[t];
-            const NDArray* lab =
-                (!labels_name.empty() &&
-                 static_cast<std::size_t>(bi) < rMesh.CellDataNumBlocks(labels_name))
-                    ? &rMesh.CellData(labels_name, bi)
-                    : nullptr;
+            const NDArray* lab = (!labels_name.empty() && static_cast<std::size_t>(bi) <
+                                                              rMesh.CellDataNumBlocks(labels_name))
+                                     ? &rMesh.CellData(labels_name, bi)
+                                     : nullptr;
             for (std::int64_t i = 0; i < n; ++i)
                 os << (lab ? detail::read_int(*lab, i) : 1) << '\n';
         }
@@ -40937,6 +42180,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -41008,10 +42252,12 @@ void store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
 }
 
 struct VtkCursor {
-    const std::string& mBuf;
+    // A view, not a reference to a std::string: the buffer may be a memory
+    // mapping rather than an owned string (see detail/file_source.hpp).
+    std::string_view mBuf;
     std::size_t mPos = 0;
 
-    explicit VtkCursor(const std::string& rB) : mBuf(rB) {}
+    explicit VtkCursor(std::string_view b) : mBuf(b) {}
 
     bool Eof() const { return mPos >= mBuf.size(); }
 
@@ -41019,7 +42265,7 @@ struct VtkCursor {
         std::size_t start = mPos;
         while (mPos < mBuf.size() && mBuf[mPos] != '\n')
             ++mPos;
-        std::string line = mBuf.substr(start, mPos - start);
+        std::string line(mBuf.substr(start, mPos - start));
         if (mPos < mBuf.size())
             ++mPos;  // skip '\n'
         if (!line.empty() && line.back() == '\r')
@@ -41041,7 +42287,11 @@ struct VtkCursor {
         const std::size_t isz = dtype_size(dt);
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
-            const char* base = mBuf.c_str();
+            // strtod/strtoll scan for a terminator: a buffered source is a
+            // std::string, and a mapping relies on the kernel's zero-filled
+            // final page -- which is why FileSource declines page-multiple
+            // sized files.
+            const char* base = mBuf.data();
             for (std::size_t i = 0; i < count; ++i) {
                 char* endp = nullptr;
                 if (flt) {
@@ -41103,19 +42353,11 @@ std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {
 }  // namespace
 
 Mesh read_vtk(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    // Bulk slurp (seek+read) rather than char-by-char istreambuf_iterator.
-    in.seekg(0, std::ios::end);
-    std::streamoff len = in.tellg();
-    in.seekg(0, std::ios::beg);
-    std::string buf;
-    if (len > 0) {
-        buf.resize(static_cast<std::size_t>(len));
-        in.read(buf.data(), len);
-    }
-    VtkCursor cur(buf);
+    // Mapped where that pays, copied otherwise. Function-local: every parsed
+    // value is copied into owning mesh storage, so nothing in the returned Mesh
+    // points back into this buffer.
+    const detail::FileSource source(rPath);
+    VtkCursor cur(source.View());
 
     std::string header = cur.ReadLine();
     const bool is_v5 = header.find("Version 5") != std::string::npos;
@@ -41359,6 +42601,13 @@ void vtp_append_block(VtpSectionData& rSec, const Mesh::CellView& rCb) {
 }  // namespace
 
 void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    // The historical bool API, preserved exactly: zlib stays the only codec it
+    // can select, so existing callers are unaffected.
+    write_vtp_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
     // Classify blocks and build the VTK canonical order (Verts, Lines, Polys)
     // as a stable partition of the mesh's block order.
     const std::size_t nblocks = rMesh.NumCellBlocks();
@@ -41401,7 +42650,7 @@ void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, zlib) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
     };
     auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
         da_header("Int64", name, 0);
@@ -41417,8 +42666,8 @@ void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
     os << "<?xml version=\"1.0\"?>\n";
     os << "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\"";
-    if (binary && zlib)
-        os << " compressor=\"vtkZLibDataCompressor\"";
+    if (binary && codec != detail::VtkCodec::None)
+        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
     os << "<!--This file was created by meshio++ (C++ core)-->\n";
     os << "<PolyData>\n";
@@ -41525,8 +42774,8 @@ namespace {
 
 using detail::vtu_to_int64;
 
-// compression: 0 = none, 1 = zlib. lzma/appended raise (handled by caller).
-NDArray vtp_read_data_array(const pugi::xml_node& rDa, int compression, std::size_t hsz,
+// The codec is resolved once from the root's compressor= attribute.
+NDArray vtp_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
                             int& rNumComponents) {
     std::string fmt = rDa.attribute("format").as_string("ascii");
     DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
@@ -41535,7 +42784,7 @@ NDArray vtp_read_data_array(const pugi::xml_node& rDa, int compression, std::siz
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, compression, hsz);
+        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
     throw ReadError("VTP '" + fmt + "' data is not supported by the C++ reader");
 }
 
@@ -41546,15 +42795,24 @@ struct VtpPiece {
     bool mPresent = false;
 };
 
-VtpPiece vtp_read_section(const pugi::xml_node& rSection, int compression, std::size_t hsz) {
+/**
+ * @param offsets_only Skip the `connectivity` array. PolyData has no `types`
+ *        array -- cell types are synthesized from each section's per-cell size
+ *        -- so `offsets` alone (one value per cell) is enough to summarize a
+ *        section, while `connectivity` is the bulk of the section's bytes.
+ */
+VtpPiece vtp_read_section(const pugi::xml_node& rSection, detail::VtkCodec codec, std::size_t hsz,
+                          bool offsets_only = false) {
     VtpPiece out;
     if (!rSection)
         return out;
     out.mPresent = true;
     for (pugi::xml_node da : rSection.children("DataArray")) {
         std::string name = da.attribute("Name").as_string();
+        if (offsets_only && name != "offsets")
+            continue;
         int nc = 0;
-        NDArray arr = vtp_read_data_array(da, compression, hsz, nc);
+        NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
         if (name == "connectivity")
             out.mConn = vtu_to_int64(arr);
         else if (name == "offsets")
@@ -41563,31 +42821,41 @@ VtpPiece vtp_read_section(const pugi::xml_node& rSection, int compression, std::
     return out;
 }
 
-}  // namespace
+/** @brief `<Piece>` plus the framing attributes; mirrors `vtu_parse_header`. */
+struct vtp_header {
+    pugi::xml_node mPiece;
+    detail::VtkCodec mCodec = detail::VtkCodec::None;
+    std::size_t mHeaderSize = 4;
+    std::size_t mNumPoints = 0;
+};
 
-Mesh read_vtp(const std::string& rPath) {
-    pugi::xml_document doc;
-    pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTP XML parse failed: ") + res.description());
-
-    pugi::xml_node root = doc.child("VTKFile");
+vtp_header vtp_parse_header(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("VTKFile");
     if (!root)
         throw ReadError("Expected tag 'VTKFile'");
     if (std::string(root.attribute("type").as_string()) != "PolyData")
         throw ReadError("Expected type PolyData");
 
-    int compression = 0;  // 0 none, 1 zlib
-    std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor == "vtkZLibDataCompressor")
-        compression = 1;
-    else if (compressor == "vtkLZMADataCompressor")
+    vtp_header h;
+    const std::string compressor = root.attribute("compressor").as_string("");
+    if (compressor.empty())
+        h.mCodec = detail::VtkCodec::None;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
+        h.mCodec = detail::VtkCodec::Zlib;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
+        h.mCodec = detail::VtkCodec::LZ4;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
+        h.mCodec = detail::VtkCodec::ZSTD;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
         throw ReadError("lzma-compressed VTP not supported by the C++ reader");
-    else if (!compressor.empty())
+    else
         throw ReadError("Unknown VTP compressor '" + compressor + "'");
+    // Fail early and actionably when the file needs a codec this build lacks,
+    // rather than at the first array body.
+    detail::vtk_codec_require_read(h.mCodec);
 
     std::string header_type = root.attribute("header_type").as_string("UInt32");
-    std::size_t hsz = (header_type == "UInt64") ? 8 : 4;
+    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
 
     pugi::xml_node grid = root.child("PolyData");
     if (!grid)
@@ -41597,15 +42865,71 @@ Mesh read_vtp(const std::string& rPath) {
     if (grid.parent().child("AppendedData") || root.child("AppendedData"))
         throw ReadError("appended VTP data not supported by the C++ reader");
 
-    pugi::xml_node piece = grid.child("Piece");
-    if (!piece)
+    h.mPiece = grid.child("Piece");
+    if (!h.mPiece)
         throw ReadError("No Piece found");
     // A single piece is supported; multiple pieces -> Python reader.
-    if (piece.next_sibling("Piece"))
+    if (h.mPiece.next_sibling("Piece"))
         throw ReadError("multi-piece VTP not supported by the C++ reader");
 
-    std::size_t num_points =
-        static_cast<std::size_t>(piece.attribute("NumberOfPoints").as_ullong());
+    h.mNumPoints = static_cast<std::size_t>(h.mPiece.attribute("NumberOfPoints").as_ullong());
+    return h;
+}
+
+/** @brief `<DataArray>` `Name` attributes under @p pSection, sorted. */
+std::vector<std::string> vtp_array_names(const pugi::xml_node& rPiece, const char* pSection) {
+    std::vector<std::string> names;
+    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
+        names.emplace_back(da.attribute("Name").as_string());
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+/**
+ * @brief Synthesize `types`/`offsets` for the three PolyData sections.
+ *
+ * Factored out of `read_vtp` so the mesh and metadata paths derive cell types
+ * from section sizes in exactly one place, and therefore cannot disagree.
+ */
+void vtp_build_types(const VtpPiece& rSec, int kind, std::vector<std::int64_t>& rConn,
+                     std::vector<std::int64_t>& rOffsets, std::vector<std::int64_t>& rTypes) {
+    const std::int64_t conn_base = static_cast<std::int64_t>(rConn.size());
+    std::int64_t prev = 0;
+    for (std::int64_t end : rSec.mOffsets) {
+        const std::int64_t sz = end - prev;
+        prev = end;
+        std::int64_t vtk_type = 0;
+        if (kind == 0) {
+            if (sz != 1)
+                throw ReadError("poly-vertex VTP cells not supported by the C++ reader");
+            vtk_type = 1;  // VTK_VERTEX
+        } else if (kind == 1) {
+            if (sz != 2)
+                throw ReadError("poly-line VTP cells not supported by the C++ reader");
+            vtk_type = 3;  // VTK_LINE
+        } else {
+            vtk_type = sz == 3 ? 5 : sz == 4 ? 9 : 7;  // triangle / quad / polygon
+        }
+        rTypes.push_back(vtk_type);
+        rOffsets.push_back(conn_base + end);
+    }
+    rConn.insert(rConn.end(), rSec.mConn.begin(), rSec.mConn.end());
+}
+
+}  // namespace
+
+Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result res = doc.load_file(rPath.c_str());
+    if (!res)
+        throw ReadError(std::string("VTP XML parse failed: ") + res.description());
+
+    const vtp_header h = vtp_parse_header(doc);
+    const pugi::xml_node piece = h.mPiece;
+    const detail::VtkCodec codec = h.mCodec;
+    const std::size_t hsz = h.mHeaderSize;
+    const std::size_t num_points = h.mNumPoints;
+    const bool want_data = rOpts.WantsAnyData();
 
     Mesh mesh;
     std::unordered_map<std::string, NDArray> cell_data_raw;
@@ -41615,25 +42939,34 @@ Mesh read_vtp(const std::string& rPath) {
         if (tag == "Points") {
             pugi::xml_node da = child.child("DataArray");
             int nc = 0;
-            NDArray pts = vtp_read_data_array(da, compression, hsz, nc);
+            NDArray pts = vtp_read_data_array(da, codec, hsz, nc);
             if (nc <= 0)
                 nc = 3;
             pts.Reshape({num_points, static_cast<std::size_t>(nc)});
             mesh.AssignPoints(std::move(pts));
         } else if (tag == "PointData") {
+            if (!want_data)
+                continue;
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
                 std::string name = da.attribute("Name").as_string();
-                NDArray arr = vtp_read_data_array(da, compression, hsz, nc);
+                // Name is readable before the payload -- skipping is free.
+                if (!rOpts.WantsArray(name))
+                    continue;
+                NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
                 mesh.AddPointData(name, std::move(arr));
             }
         } else if (tag == "CellData") {
+            if (!want_data)
+                continue;
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
                 std::string name = da.attribute("Name").as_string();
-                NDArray arr = vtp_read_data_array(da, compression, hsz, nc);
+                if (!rOpts.WantsArray(name))
+                    continue;
+                NDArray arr = vtp_read_data_array(da, codec, hsz, nc);
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
                 cell_data_raw.emplace(name, std::move(arr));
@@ -41641,10 +42974,10 @@ Mesh read_vtp(const std::string& rPath) {
         }
     }
 
-    VtpPiece verts = vtp_read_section(piece.child("Verts"), compression, hsz);
-    VtpPiece lines = vtp_read_section(piece.child("Lines"), compression, hsz);
-    VtpPiece polys = vtp_read_section(piece.child("Polys"), compression, hsz);
-    VtpPiece strips = vtp_read_section(piece.child("Strips"), compression, hsz);
+    VtpPiece verts = vtp_read_section(piece.child("Verts"), codec, hsz);
+    VtpPiece lines = vtp_read_section(piece.child("Lines"), codec, hsz);
+    VtpPiece polys = vtp_read_section(piece.child("Polys"), codec, hsz);
+    VtpPiece strips = vtp_read_section(piece.child("Strips"), codec, hsz);
     if (!strips.mOffsets.empty())
         throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
 
@@ -41653,35 +42986,58 @@ Mesh read_vtp(const std::string& rPath) {
     // reconstruction (detail/vtk_cells.hpp) can build the blocks and split
     // cell_data.
     std::vector<std::int64_t> conn, offsets, types;
-    auto append_section = [&](const VtpPiece& rSec, int kind) {
-        const std::int64_t conn_base = static_cast<std::int64_t>(conn.size());
-        std::int64_t prev = 0;
-        for (std::int64_t end : rSec.mOffsets) {
-            const std::int64_t sz = end - prev;
-            prev = end;
-            std::int64_t vtk_type = 0;
-            if (kind == 0) {
-                if (sz != 1)
-                    throw ReadError("poly-vertex VTP cells not supported by the C++ reader");
-                vtk_type = 1;  // VTK_VERTEX
-            } else if (kind == 1) {
-                if (sz != 2)
-                    throw ReadError("poly-line VTP cells not supported by the C++ reader");
-                vtk_type = 3;  // VTK_LINE
-            } else {
-                vtk_type = sz == 3 ? 5 : sz == 4 ? 9 : 7;  // triangle / quad / polygon
-            }
-            types.push_back(vtk_type);
-            offsets.push_back(conn_base + end);
-        }
-        conn.insert(conn.end(), rSec.mConn.begin(), rSec.mConn.end());
-    };
-    append_section(verts, 0);
-    append_section(lines, 1);
-    append_section(polys, 2);
+    vtp_build_types(verts, 0, conn, offsets, types);
+    vtp_build_types(lines, 1, conn, offsets, types);
+    vtp_build_types(polys, 2, conn, offsets, types);
 
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
     return mesh;
+}
+
+MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
+    pugi::xml_document doc;
+    // See read_vtu_metadata: parse_minimal trims text conversions, but the
+    // saving that matters is skipping the array bodies below.
+    pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
+    if (!res)
+        throw ReadError(std::string("VTP XML parse failed: ") + res.description());
+
+    const vtp_header h = vtp_parse_header(doc);
+
+    MeshMetadata meta;
+    meta.mNumPoints = h.mNumPoints;  // an attribute -- free
+
+    pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
+    const int point_nc = points_da ? points_da.attribute("NumberOfComponents").as_int(0) : 0;
+    meta.mPointDim = point_nc > 0 ? static_cast<std::size_t>(point_nc) : 3;
+
+    // PolyData carries no `types` array; cell types follow from each section's
+    // per-cell size, so reading `offsets` alone suffices and the connectivity --
+    // the bulk of the bytes -- is never decoded.
+    const VtpPiece verts = vtp_read_section(h.mPiece.child("Verts"), h.mCodec, h.mHeaderSize,
+                                            /*offsets_only=*/true);
+    const VtpPiece lines = vtp_read_section(h.mPiece.child("Lines"), h.mCodec, h.mHeaderSize,
+                                            /*offsets_only=*/true);
+    const VtpPiece polys = vtp_read_section(h.mPiece.child("Polys"), h.mCodec, h.mHeaderSize,
+                                            /*offsets_only=*/true);
+    if (h.mPiece.child("Strips") &&
+        !vtp_read_section(h.mPiece.child("Strips"), h.mCodec, h.mHeaderSize,
+                          /*offsets_only=*/true)
+             .mOffsets.empty())
+        throw ReadError("triangle-strip VTP cells not supported by the C++ reader");
+
+    std::vector<std::int64_t> conn, offsets, types;
+    vtp_build_types(verts, 0, conn, offsets, types);
+    vtp_build_types(lines, 1, conn, offsets, types);
+    vtp_build_types(polys, 2, conn, offsets, types);
+    meta.mCellBlocks = detail::summarize_cells(offsets, types);
+
+    meta.mPointDataNames = vtp_array_names(h.mPiece, "PointData");
+    meta.mCellDataNames = vtp_array_names(h.mPiece, "CellData");
+
+    // No bbox: it would mean decoding the point coordinates. See read_options.hpp.
+    meta.mHasBBox = false;
+    return meta;
 }
 
 }  // namespace meshioplusplus
@@ -41710,6 +43066,13 @@ using detail::vtu_type_str;
 }  // namespace
 
 void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    // The historical bool API, preserved exactly: zlib stays the only codec it
+    // can select, so existing callers are unaffected.
+    write_vtu_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
     for (const auto cb : rMesh.CellRange()) {
         if (cb.Type().rfind("polyhedron", 0) == 0)
             throw WriteError("C++ VTU writer does not support polyhedron cells");
@@ -41737,14 +43100,14 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, zlib) << "\n";
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
     };
 
     os << "<?xml version=\"1.0\"?>\n";
     os << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" "
           "byte_order=\"LittleEndian\"";
-    if (binary && zlib)
-        os << " compressor=\"vtkZLibDataCompressor\"";
+    if (binary && codec != detail::VtkCodec::None)
+        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
     os << "<!--This file was created by meshio++ (C++ core)-->\n";
     os << "<UnstructuredGrid>\n";
@@ -41889,8 +43252,8 @@ namespace {
 
 using detail::vtu_to_int64;
 
-// compression: 0 = none, 1 = zlib. lzma/appended raise (handled by caller).
-NDArray vtu_read_data_array(const pugi::xml_node& rDa, int compression, std::size_t hsz,
+// The codec is resolved once from the root's compressor= attribute.
+NDArray vtu_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
                             int& rNumComponents) {
     std::string fmt = rDa.attribute("format").as_string("ascii");
     DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
@@ -41899,35 +43262,51 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, int compression, std::siz
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
     if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, compression, hsz);
+        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
     throw ReadError("VTU '" + fmt + "' data is not supported by the C++ reader");
 }
 
-}  // namespace
+/**
+ * @brief The `<Piece>` node plus the framing attributes every path needs.
+ *
+ * Shared by the mesh and metadata readers so the two cannot disagree about
+ * which files they accept -- a metadata summary must never succeed on a file
+ * `read_vtu` would reject.
+ */
+struct vtu_header {
+    pugi::xml_node mPiece;
+    detail::VtkCodec mCodec = detail::VtkCodec::None;
+    std::size_t mHeaderSize = 4;
+    std::size_t mNumPoints = 0;
+};
 
-Mesh read_vtu(const std::string& rPath) {
-    pugi::xml_document doc;
-    pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTU XML parse failed: ") + res.description());
-
-    pugi::xml_node root = doc.child("VTKFile");
+vtu_header vtu_parse_header(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("VTKFile");
     if (!root)
         throw ReadError("Expected tag 'VTKFile'");
     if (std::string(root.attribute("type").as_string()) != "UnstructuredGrid")
         throw ReadError("Expected type UnstructuredGrid");
 
-    int compression = 0;  // 0 none, 1 zlib
-    std::string compressor = root.attribute("compressor").as_string("");
-    if (compressor == "vtkZLibDataCompressor")
-        compression = 1;
-    else if (compressor == "vtkLZMADataCompressor")
+    vtu_header h;
+    const std::string compressor = root.attribute("compressor").as_string("");
+    if (compressor.empty())
+        h.mCodec = detail::VtkCodec::None;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
+        h.mCodec = detail::VtkCodec::Zlib;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
+        h.mCodec = detail::VtkCodec::LZ4;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
+        h.mCodec = detail::VtkCodec::ZSTD;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
         throw ReadError("lzma-compressed VTU not supported by the C++ reader");
-    else if (!compressor.empty())
+    else
         throw ReadError("Unknown VTU compressor '" + compressor + "'");
+    // Fail early and actionably when the file needs a codec this build lacks,
+    // rather than at the first array body.
+    detail::vtk_codec_require_read(h.mCodec);
 
     std::string header_type = root.attribute("header_type").as_string("UInt32");
-    std::size_t hsz = (header_type == "UInt64") ? 8 : 4;
+    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
 
     pugi::xml_node grid = root.child("UnstructuredGrid");
     if (!grid)
@@ -41937,15 +43316,42 @@ Mesh read_vtu(const std::string& rPath) {
     if (grid.parent().child("AppendedData") || root.child("AppendedData"))
         throw ReadError("appended VTU data not supported by the C++ reader");
 
-    pugi::xml_node piece = grid.child("Piece");
-    if (!piece)
+    h.mPiece = grid.child("Piece");
+    if (!h.mPiece)
         throw ReadError("No Piece found");
     // A single piece is supported; multiple pieces -> Python reader.
-    if (piece.next_sibling("Piece"))
+    if (h.mPiece.next_sibling("Piece"))
         throw ReadError("multi-piece VTU not supported by the C++ reader");
 
-    std::size_t num_points =
-        static_cast<std::size_t>(piece.attribute("NumberOfPoints").as_ullong());
+    h.mNumPoints = static_cast<std::size_t>(h.mPiece.attribute("NumberOfPoints").as_ullong());
+    return h;
+}
+
+/** @brief `<DataArray>` `Name` attributes under @p rSection, in document order. */
+std::vector<std::string> vtu_array_names(const pugi::xml_node& rPiece, const char* pSection) {
+    std::vector<std::string> names;
+    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
+        names.emplace_back(da.attribute("Name").as_string());
+    // The uniform mesh API hands back sorted names; match it so a summary and a
+    // real read report data arrays in the same order.
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+}  // namespace
+
+Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result res = doc.load_file(rPath.c_str());
+    if (!res)
+        throw ReadError(std::string("VTU XML parse failed: ") + res.description());
+
+    const vtu_header h = vtu_parse_header(doc);
+    const pugi::xml_node piece = h.mPiece;
+    const detail::VtkCodec codec = h.mCodec;
+    const std::size_t hsz = h.mHeaderSize;
+    const std::size_t num_points = h.mNumPoints;
+    const bool want_data = rOpts.WantsAnyData();
 
     Mesh mesh;
     std::vector<std::int64_t> conn, offsets, types;
@@ -41956,7 +43362,7 @@ Mesh read_vtu(const std::string& rPath) {
         if (tag == "Points") {
             pugi::xml_node da = child.child("DataArray");
             int nc = 0;
-            NDArray pts = vtu_read_data_array(da, compression, hsz, nc);
+            NDArray pts = vtu_read_data_array(da, codec, hsz, nc);
             if (nc <= 0)
                 nc = 3;
             pts.Reshape({num_points, static_cast<std::size_t>(nc)});
@@ -41965,7 +43371,7 @@ Mesh read_vtu(const std::string& rPath) {
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
                 std::string name = da.attribute("Name").as_string();
-                NDArray arr = vtu_read_data_array(da, compression, hsz, nc);
+                NDArray arr = vtu_read_data_array(da, codec, hsz, nc);
                 if (name == "connectivity")
                     conn = vtu_to_int64(arr);
                 else if (name == "offsets")
@@ -41976,19 +43382,30 @@ Mesh read_vtu(const std::string& rPath) {
                     throw ReadError("polyhedron VTU not supported by the C++ reader");
             }
         } else if (tag == "PointData") {
+            if (!want_data)
+                continue;
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
                 std::string name = da.attribute("Name").as_string();
-                NDArray arr = vtu_read_data_array(da, compression, hsz, nc);
+                // The Name attribute is available before the body is touched,
+                // so an unwanted array costs nothing but the attribute read --
+                // no base64 decode, no inflate, no allocation.
+                if (!rOpts.WantsArray(name))
+                    continue;
+                NDArray arr = vtu_read_data_array(da, codec, hsz, nc);
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
                 mesh.AddPointData(name, std::move(arr));
             }
         } else if (tag == "CellData") {
+            if (!want_data)
+                continue;
             for (pugi::xml_node da : child.children("DataArray")) {
                 int nc = 0;
                 std::string name = da.attribute("Name").as_string();
-                NDArray arr = vtu_read_data_array(da, compression, hsz, nc);
+                if (!rOpts.WantsArray(name))
+                    continue;
+                NDArray arr = vtu_read_data_array(da, codec, hsz, nc);
                 if (nc > 1)
                     arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
                 cell_data_raw.emplace(name, std::move(arr));
@@ -41998,6 +43415,65 @@ Mesh read_vtu(const std::string& rPath) {
 
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
     return mesh;
+}
+
+MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions&) {
+    pugi::xml_document doc;
+    // parse_minimal skips escape expansion and EOL normalization over the
+    // base64 bodies. It does NOT avoid reading the file: pugixml always
+    // materializes PCDATA. The real saving below is skipping base64 decode,
+    // decompression, allocation and byte-swapping for every array we don't
+    // touch -- a solid multiple, not an asymptotic change. See read_options.hpp.
+    pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
+    if (!res)
+        throw ReadError(std::string("VTU XML parse failed: ") + res.description());
+
+    const vtu_header h = vtu_parse_header(doc);
+
+    MeshMetadata meta;
+    meta.mNumPoints = h.mNumPoints;  // an attribute -- free
+
+    // Point dimension comes from the Points DataArray's NumberOfComponents
+    // attribute, so the coordinates themselves are never decoded.
+    pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
+    const int point_nc = points_da ? points_da.attribute("NumberOfComponents").as_int(0) : 0;
+    meta.mPointDim = point_nc > 0 ? static_cast<std::size_t>(point_nc) : 3;
+
+    // 'types' is one value per cell and is the only array a summary must decode;
+    // 'offsets' is additionally needed only when a variable-node-count type
+    // (polygon, VTK_LAGRANGE_*) is present.
+    std::vector<std::int64_t> types, offsets;
+    pugi::xml_node cells = h.mPiece.child("Cells");
+    for (pugi::xml_node da : cells.children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (name != "types")
+            continue;
+        int nc = 0;
+        types = vtu_to_int64(vtu_read_data_array(da, h.mCodec, h.mHeaderSize, nc));
+        break;
+    }
+    if (detail::cells_need_offsets(types)) {
+        for (pugi::xml_node da : cells.children("DataArray")) {
+            const std::string name = da.attribute("Name").as_string();
+            if (name != "offsets")
+                continue;
+            int nc = 0;
+            offsets = vtu_to_int64(vtu_read_data_array(da, h.mCodec, h.mHeaderSize, nc));
+            break;
+        }
+    }
+    meta.mCellBlocks = detail::summarize_cells(offsets, types);
+
+    meta.mPointDataNames = vtu_array_names(h.mPiece, "PointData");
+    meta.mCellDataNames = vtu_array_names(h.mPiece, "CellData");
+    // VTU has no field-data section the C++ reader consumes, so the list stays
+    // empty rather than claiming an unknown.
+
+    // No bounding box: it would require decoding the point coordinates, which
+    // are usually the largest array in the file -- exactly what this path exists
+    // to avoid. metadata_from_mesh fills it in on the full-read fallback.
+    meta.mHasBBox = false;
+    return meta;
 }
 
 }  // namespace meshioplusplus
@@ -42464,23 +43940,34 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
     }
 }
 
-}  // namespace
-
-Mesh read_xdmf(const std::string& rPath) {
-    pugi::xml_document doc;
-    if (!doc.load_file(rPath.c_str()))
-        throw ReadError("XDMF: could not parse " + rPath);
-    pugi::xml_node root = doc.child("Xdmf");
+/**
+ * @brief Validate the document and return its `<Grid>`.
+ *
+ * Shared by the mesh and metadata readers so a summary can never accept a file
+ * `read_xdmf` would reject.
+ */
+pugi::xml_node xdmf_find_grid(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("Xdmf");
     if (!root)
         throw ReadError("XDMF: missing <Xdmf> root");
     std::string version = root.attribute("Version").value();
     if (!version.empty() && version[0] != '3')
         throw ReadError("XDMF: only version 3 handled by the C++ core");
 
-    pugi::xml_node domain = root.child("Domain");
-    pugi::xml_node grid = domain.child("Grid");
+    pugi::xml_node grid = root.child("Domain").child("Grid");
     if (!grid)
         throw ReadError("XDMF: missing <Grid>");
+    return grid;
+}
+
+}  // namespace
+
+Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    if (!doc.load_file(rPath.c_str()))
+        throw ReadError("XDMF: could not parse " + rPath);
+    pugi::xml_node grid = xdmf_find_grid(doc);
+    const bool want_data = rOpts.WantsAnyData();
 
     fs::path base_dir =
         fs::path(rPath).has_parent_path() ? fs::path(rPath).parent_path() : fs::path(".");
@@ -42507,6 +43994,11 @@ Mesh read_xdmf(const std::string& rPath) {
         } else if (tag == "Attribute") {
             std::string name = c.attribute("Name").value();
             std::string center = c.attribute("Center").value();
+            // Name/Center are attributes, so an unwanted attribute is skipped
+            // before its DataItem is touched -- for the HDF path that means the
+            // dataset is never opened at all.
+            if (!want_data || !rOpts.WantsArray(name))
+                continue;
             pugi::xml_node di = c.child("DataItem");
             NDArray data = read_data_item(di, base_dir);
             if (center == "Node")
@@ -42534,6 +44026,58 @@ Mesh read_xdmf(const std::string& rPath) {
         mesh.AddCellData(kv.first, split_raw_cell_data(kv.second, sizes));
 
     return mesh;
+}
+
+MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
+    pugi::xml_document doc;
+    if (!doc.load_file(rPath.c_str(), pugi::parse_minimal))
+        throw ReadError("XDMF: could not parse " + rPath);
+    pugi::xml_node grid = xdmf_find_grid(doc);
+
+    MeshMetadata meta;
+    // XDMF is the best case for a summary: every <DataItem> declares its shape
+    // in a `Dimensions` attribute, so counts are exact without reading any
+    // payload -- and for the HDF path, without opening the .h5 file at all.
+    for (pugi::xml_node c : grid.children()) {
+        const std::string tag = c.name();
+        if (tag == "Topology") {
+            const std::string ctype = c.attribute("Type") ? c.attribute("Type").value()
+                                                          : c.attribute("TopologyType").value();
+            if (ctype == "Mixed")
+                throw ReadError("XDMF: Mixed topology needs the full reader to be summarized");
+            const std::vector<std::size_t> dims =
+                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            CellBlockInfo info;
+            info.mType = xdmf_to_meshio(ctype);
+            info.mNumCells = dims.empty() ? 0 : dims[0];
+            info.mNodesPerCell = dims.size() >= 2 ? dims[1] : 0;
+            meta.mCellBlocks.push_back(std::move(info));
+        } else if (tag == "Geometry") {
+            const std::vector<std::size_t> dims =
+                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            meta.mNumPoints = dims.empty() ? 0 : dims[0];
+            meta.mPointDim = dims.size() >= 2 ? dims[1] : 3;
+        } else if (tag == "Attribute") {
+            const std::string name = c.attribute("Name").value();
+            const std::string center = c.attribute("Center").value();
+            if (center == "Node")
+                meta.mPointDataNames.push_back(name);
+            else if (center == "Cell")
+                meta.mCellDataNames.push_back(name);
+            else
+                throw ReadError("XDMF: unknown attribute center " + center);
+        } else if (tag == "Information") {
+            throw ReadError("XDMF: Information section handled by Python fallback");
+        } else {
+            throw ReadError("XDMF: unknown section " + tag);
+        }
+    }
+    // Match the uniform API's sorted-name guarantee.
+    std::sort(meta.mPointDataNames.begin(), meta.mPointDataNames.end());
+    std::sort(meta.mCellDataNames.begin(), meta.mCellDataNames.end());
+
+    meta.mHasBBox = false;  // would require reading the Geometry payload
+    return meta;
 }
 
 namespace {
@@ -48531,6 +50075,68 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 
 }  // namespace meshioplusplus
 // ===== end cpp/src/operations/transform.cpp =====
+// ===== begin cpp/src/read_options.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <limits>
+
+// Project includes
+
+namespace meshioplusplus {
+
+MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
+    MeshMetadata meta;
+    meta.mNumPoints = rMesh.NumPoints();
+    meta.mPointDim = rMesh.PointDim();
+
+    meta.mCellBlocks.reserve(rMesh.NumCellBlocks());
+    for (const auto block : rMesh.CellRange()) {
+        CellBlockInfo info;
+        info.mType = block.Type();
+        info.mNumCells = block.NumCells();
+        info.mRagged = block.IsRagged();
+        info.mNodesPerCell = info.mRagged ? 0 : block.NodesPerCell();
+        meta.mCellBlocks.push_back(std::move(info));
+    }
+
+    // The uniform API already guarantees sorted names, so no re-sort here --
+    // re-sorting would be harmless but would imply the guarantee is in doubt.
+    meta.mPointDataNames = rMesh.PointDataNames();
+    meta.mCellDataNames = rMesh.CellDataNames();
+    meta.mFieldDataNames = rMesh.FieldDataNames();
+
+    // The mesh is already in memory, so the bounding box is nearly free here --
+    // unlike on a native metadata path, where it would force decoding the point
+    // coordinates and defeat the whole point.
+    const std::size_t dim = std::min<std::size_t>(meta.mPointDim, 3);
+    if (meta.mNumPoints > 0 && dim > 0) {
+        const NDArray& points = rMesh.Points();
+        double lo[3] = {std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::infinity()};
+        double hi[3] = {-std::numeric_limits<double>::infinity(),
+                        -std::numeric_limits<double>::infinity(),
+                        -std::numeric_limits<double>::infinity()};
+        const std::size_t stride = detail::cols(points);
+        for (std::size_t i = 0; i < meta.mNumPoints; ++i) {
+            for (std::size_t d = 0; d < dim; ++d) {
+                const double v = detail::read_double(points, i * stride + d);
+                lo[d] = std::min(lo[d], v);
+                hi[d] = std::max(hi[d], v);
+            }
+        }
+        for (std::size_t d = 0; d < dim; ++d) {
+            meta.mBBoxMin[d] = lo[d];
+            meta.mBBoxMax[d] = hi[d];
+        }
+        meta.mHasBBox = true;
+    }
+
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end cpp/src/read_options.cpp =====
 // ===== begin cpp/src/registry.cpp =====
 /**
  * @file registry.cpp
@@ -48538,6 +50144,9 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
  *        verbatim from `bindings_js/js_bindings.cpp`, extended with the
  *        HDF5/netCDF-conditional entries native (non-WASM) builds can serve.
  */
+
+// System includes
+#include <unordered_map>
 
 // Project includes
 
@@ -48554,7 +50163,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
         {"freefem", meshioplusplus::read_freefem},
-        {"gmsh", meshioplusplus::read_gmsh},
+        {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
         {"medit", meshioplusplus::read_medit_ascii},
         {"mff", meshioplusplus::read_mff},
@@ -48574,10 +50183,12 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ugrid", meshioplusplus::read_ugrid},
         {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
         {"vtk", meshioplusplus::read_vtk},
-        {"vtp", meshioplusplus::read_vtp},
-        {"vtu", meshioplusplus::read_vtu},
+        // vtp/vtu take a trailing defaulted ReadOptions, so the function
+        // pointers no longer convert to ReadFn -- wrapped like unv/med below.
+        {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
+        {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
         {"wkt", meshioplusplus::read_wkt},
-        {"xdmf", meshioplusplus::read_xdmf},
+        {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
         // Side-channel info (point_sets/cell_sets, cell-tag family names) is
         // not carried by the flat bindings -- v1 limitation, see doc/wasm.md
         // and doc/c_api.md.
@@ -48793,6 +50404,82 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
         throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
                                         "' -- pass an explicit format argument");
     return it->second;
+}
+
+const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
+    // Sparse by design -- populated per format as native selective-read support
+    // lands. An absent format falls back to a full read in registry_read().
+    static const std::unordered_map<std::string, ReadExFn> m = {
+        {"gmsh", meshioplusplus::read_gmsh},
+        {"vtp", meshioplusplus::read_vtp},
+        {"vtu", meshioplusplus::read_vtu},
+        {"xdmf", meshioplusplus::read_xdmf},
+    };
+    return m;
+}
+
+const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
+    static const std::unordered_map<std::string, MetadataFn> m = {
+        {"gmsh", meshioplusplus::read_gmsh_metadata},
+        {"vtp", meshioplusplus::read_vtp_metadata},
+        {"vtu", meshioplusplus::read_vtu_metadata},
+        {"xdmf", meshioplusplus::read_xdmf_metadata},
+    };
+    return m;
+}
+
+bool registry_reader_supports_options(const std::string& rFormat) {
+    return registry_readers_ex().count(rFormat) > 0;
+}
+
+namespace {
+
+/** @brief The reader for @p rFormat, or a ReadError naming why it is missing. */
+const ReadFn& registry_full_reader(const std::string& rFormat) {
+    auto it = registry_readers().find(rFormat);
+    if (it == registry_readers().end()) {
+        const char* dep = registry_compiled_out(rFormat);
+        throw meshioplusplus::ReadError(
+            "meshio++: unknown or unsupported format '" + rFormat + "'" +
+            (dep ? std::string(" (this build has no ") + dep + " support)" : std::string()));
+    }
+    return it->second;
+}
+
+}  // namespace
+
+Mesh registry_read(const std::string& rPath, const std::string& rFormat,
+                   const ReadOptions& rOptions) {
+    auto it = registry_readers_ex().find(rFormat);
+    if (it != registry_readers_ex().end())
+        return it->second(rPath, rOptions);
+    // No native selective path: a full read is still the correct answer.
+    return registry_full_reader(rFormat)(rPath);
+}
+
+MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
+                                    const ReadOptions& rOptions) {
+    auto it = registry_metadata_readers().find(rFormat);
+    if (it != registry_metadata_readers().end()) {
+        try {
+            MeshMetadata meta = it->second(rPath, rOptions);
+            meta.mFormat = rFormat;
+            return meta;
+        } catch (const meshioplusplus::ReadError&) {
+            // A native summary can legitimately decline a construct it cannot
+            // describe cheaply but the full reader handles fine (XDMF `Mixed`
+            // topology is the motivating case: per-block counts are only
+            // knowable after reading the topology array). Declining must cost a
+            // slower answer, not a failed one -- so fall through to the full
+            // read. A genuinely unreadable file still throws below.
+        }
+    }
+    // The one fallback for every format lacking a native metadata path -- read
+    // it whole, summarize, and say so rather than implying it was cheap.
+    MeshMetadata meta = metadata_from_mesh(registry_full_reader(rFormat)(rPath));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = rFormat;
+    return meta;
 }
 
 const char* registry_compiled_out(const std::string& rFormat) {
