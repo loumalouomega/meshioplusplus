@@ -880,3 +880,82 @@ TEST(CApi, ReaderSupportsOptions) {
     EXPECT_EQ(mio_reader_supports_options("vtu"), 1);
     EXPECT_EQ(mio_reader_supports_options("stl"), 0);
 }
+
+TEST(CApi, ConvertCellsSimplexifyThroughTheAbi) {
+    // One unit-cube hexahedron -> 6 tetra.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_convert_cells_result* r = mio_convert_cells(m, "simplexify", /*record_parent_ids=*/1);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_convert_cells_result_mesh(r);
+    ASSERT_NE(out, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(out), 8);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "tetra");
+    std::int64_t num_cells = 0, nodes_per_cell = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(out, 0, &num_cells, &nodes_per_cell, nullptr), MIO_OK);
+    EXPECT_EQ(num_cells, 6);
+    EXPECT_EQ(nodes_per_cell, 4);
+
+    // Zero-copy borrows of the index maps.
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_convert_cells_result_point_map(r, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(n, 8);
+    EXPECT_EQ(static_cast<const std::int64_t*>(data)[0], 0);
+
+    ASSERT_EQ(mio_convert_cells_result_num_cell_maps(r), 1);
+    ASSERT_EQ(mio_convert_cells_result_cell_map(r, 0, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(static_cast<const std::int64_t*>(data)[0], 0);  // parent 0's first child
+
+    mio_mesh* owned = mio_convert_cells_result_take_mesh(r);
+    ASSERT_NE(owned, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(owned), 8);
+    mio_mesh_free(owned);
+    mio_convert_cells_result_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, ConvertCellsLinearizeAndElevateRoundTrip) {
+    mio_mesh* m = build_tet_mesh();
+
+    mio_convert_cells_result* up = mio_convert_cells(m, "elevate", 0);
+    ASSERT_NE(up, nullptr);
+    const mio_mesh* quad = mio_convert_cells_result_mesh(up);
+    EXPECT_EQ(block_type(quad, 0), "tetra10");
+    EXPECT_GT(mio_mesh_num_points(quad), 5);
+
+    mio_convert_cells_result* down = mio_convert_cells(quad, "linearize", 0);
+    ASSERT_NE(down, nullptr);
+    const mio_mesh* back = mio_convert_cells_result_mesh(down);
+    EXPECT_EQ(block_type(back, 0), "tetra");
+    EXPECT_EQ(mio_mesh_num_points(back), 5);
+
+    mio_convert_cells_result_free(down);
+    mio_convert_cells_result_free(up);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, ConvertCellsErrorsAreGuardedNotThrown) {
+    mio_mesh* m = build_tet_mesh();
+    // An unknown mode fails through the status/last-error contract, not by
+    // letting the C++ exception escape the ABI.
+    EXPECT_EQ(mio_convert_cells(m, "nope", 0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_convert_cells(nullptr, "linearize", 0), nullptr);
+    EXPECT_EQ(mio_convert_cells(m, nullptr, 0), nullptr);
+    EXPECT_EQ(mio_convert_cells_result_mesh(nullptr), nullptr);
+    EXPECT_EQ(mio_convert_cells_result_num_cell_maps(nullptr), -1);
+    EXPECT_EQ(mio_convert_cells_result_point_map(nullptr, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    mio_convert_cells_result_free(nullptr);  // NULL-safe
+    mio_mesh_free(m);
+}
