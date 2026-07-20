@@ -47,6 +47,14 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   numNodesPerCell: () => Object<string, number>,
  *   topologicalDimension: () => Object<string, number>,
+ *   dataDrop: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
+ *   dataKeep: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
+ *   dataRename: (mesh: Mesh, location: string, from: string, to: string) => Mesh,
+ *   dataPointToCell: (mesh: Mesh, names?: string[], suffix?: string) => Mesh,
+ *   dataCellToPoint: (mesh: Mesh, names?: string[], weight?: string, suffix?: string) => Mesh,
+ *   dataCalc: (mesh: Mesh, expression: string, location: string, outputName: string, overwrite?: boolean) => Mesh,
+ *   dataCondition: (mesh: Mesh, location: string, names?: string[], mode?: string, lo?: number, hi?: number, scope?: string, nanPolicy?: string, nanReplacement?: number, suffix?: string) => Mesh,
+ *   dataInfo: (mesh: Mesh) => object[],
  * }>}
  */
 export async function loadMeshioPlusPlus(moduleOverrides = {}) {
@@ -59,6 +67,35 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
             Module.convert(inPath, inFormat, outPath, outFormat),
         numNodesPerCell: () => Module.numNodesPerCell(),
         topologicalDimension: () => Module.topologicalDimension(),
+        // Data operations (see doc/data_operations.md): act on point_data /
+        // cell_data / field_data only -- the geometry is never modified.
+        dataDrop: (mesh, location, names = [], ignoreMissing = false) =>
+            Module.dataDrop(mesh, location, names, ignoreMissing),
+        dataKeep: (mesh, location, names = [], ignoreMissing = false) =>
+            Module.dataKeep(mesh, location, names, ignoreMissing),
+        dataRename: (mesh, location, from, to) => Module.dataRename(mesh, location, from, to),
+        dataPointToCell: (mesh, names = [], suffix = '') =>
+            Module.dataPointToCell(mesh, names, suffix),
+        dataCellToPoint: (mesh, names = [], weight = 'uniform', suffix = '') =>
+            Module.dataCellToPoint(mesh, names, weight, suffix),
+        dataCalc: (mesh, expression, location, outputName, overwrite = false) =>
+            Module.dataCalc(mesh, expression, location, outputName, overwrite),
+        dataCondition: (
+            mesh,
+            location,
+            names = [],
+            mode = 'clamp',
+            lo = 0,
+            hi = 1,
+            scope = 'component',
+            nanPolicy = 'ignore',
+            nanReplacement = 0,
+            suffix = '',
+        ) =>
+            Module.dataCondition(
+                mesh, location, names, mode, lo, hi, scope, nanPolicy, nanReplacement, suffix,
+            ),
+        dataInfo: (mesh) => Module.dataInfo(mesh),
     };
 }
 

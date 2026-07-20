@@ -42,6 +42,48 @@ export interface ConvertOptions {
   outFormat?: string;
 }
 
+/** One data array's location: `point_data`, `cell_data`, or `field_data`. */
+export type DataLocation = 'point' | 'cell' | 'field';
+
+/** `data_condition`'s transform. See doc/data_condition.md. */
+export type ConditionMode = 'clamp' | 'normalize' | 'standardize';
+
+/** `data_condition`'s scope: independent components, or by row magnitude. */
+export type ConditionScope = 'component' | 'magnitude';
+
+/** Weighting for `dataCellToPoint`. See doc/data_average.md. */
+export type CellPointWeight = 'uniform' | 'measure';
+
+/** What reaches the output for non-finite (NaN/inf) values. They are always
+ *  excluded from reductions regardless of this setting. */
+export type NanPolicy = 'ignore' | 'replace' | 'fail';
+
+/** Read-only per-array summary returned by `dataInfo`. See doc/data_info.md. */
+export interface DataArrayInfo {
+  location: 'point_data' | 'cell_data' | 'field_data';
+  name: string;
+  /** numpy-style dtype string, e.g. "f8", "i4". */
+  dtype: string;
+  shape: number[];
+  /** cell_data: number of cell blocks; 1 otherwise. */
+  numBlocks: number;
+  numEntries: number;
+  numComponents: number;
+  numValues: number;
+  /** Over finite values only; NaN when there are none. */
+  min: number;
+  max: number;
+  mean: number;
+  minPerComponent: number[];
+  maxPerComponent: number[];
+  meanPerComponent: number[];
+  numNan: number;
+  numInf: number;
+  numFinite: number;
+  /** cell_data whose blocks disagree in component count. */
+  inconsistentBlocks: boolean;
+}
+
 /**
  * The instantiated module returned by `loadMeshioPlusPlus()`. `FS` is
  * Emscripten's virtual filesystem (MEMFS by default) -- write the bytes of a
@@ -86,6 +128,60 @@ export interface MeshioPlusPlusModule {
 
   /** The shared cell-type -> topological-dimension table (0-3). */
   topologicalDimension(): Record<string, number>;
+
+  /**
+   * Data operations: act on `point_data`/`cell_data`/`field_data` only -- the
+   * geometry is never modified. See doc/data_operations.md. Note the mesh
+   * object's flat, shapeless array shape means these only support scalar
+   * (1-component) arrays; a vector/tensor field cannot be round-tripped
+   * through the WASM boundary at all.
+   */
+
+  /** Drop the named arrays at `location`. Empty `names` is a no-op. */
+  dataDrop(mesh: Mesh, location: DataLocation, names?: string[], ignoreMissing?: boolean): Mesh;
+
+  /** Keep only the named arrays at `location`; other locations are untouched. */
+  dataKeep(mesh: Mesh, location: DataLocation, names?: string[], ignoreMissing?: boolean): Mesh;
+
+  /** Rename one array, preserving its values and dtype. */
+  dataRename(mesh: Mesh, location: DataLocation, from: string, to: string): Mesh;
+
+  /** Average point_data onto the cells (mean over each cell's own nodes). */
+  dataPointToCell(mesh: Mesh, names?: string[], suffix?: string): Mesh;
+
+  /** Average cell_data onto the points, optionally measure-weighted. */
+  dataCellToPoint(mesh: Mesh, names?: string[], weight?: CellPointWeight, suffix?: string): Mesh;
+
+  /**
+   * Evaluate an elementwise expression (`+ - * /`, parens, numbers, array
+   * names, `abs`/`sqrt`/`min`/`max`/`norm`) and store the result as a new
+   * array at `location`.
+   * @throws {Error} on any lexical, syntactic, or name-resolution error.
+   */
+  dataCalc(
+    mesh: Mesh,
+    expression: string,
+    location: DataLocation,
+    outputName: string,
+    overwrite?: boolean,
+  ): Mesh;
+
+  /** Clamp / normalize / standardize the selected arrays' values. */
+  dataCondition(
+    mesh: Mesh,
+    location: DataLocation,
+    names?: string[],
+    mode?: ConditionMode,
+    lo?: number,
+    hi?: number,
+    scope?: ConditionScope,
+    nanPolicy?: NanPolicy,
+    nanReplacement?: number,
+    suffix?: string,
+  ): Mesh;
+
+  /** Read-only per-array summary of every data array the mesh carries. */
+  dataInfo(mesh: Mesh): DataArrayInfo[];
 }
 
 /**

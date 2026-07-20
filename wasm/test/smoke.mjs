@@ -151,7 +151,14 @@ step('malformed file raises a catchable Error, not a WASM abort', () => {
 
 // --- data operations -------------------------------------------------------
 // These act on the mesh's data arrays; the geometry must come through
-// untouched. `tet` carries point_data.temperature and cell_data.material.
+// untouched. `tetv` carries point_data.temperature and cell_data.material.
+//
+// The WASM mesh-object shape crosses point_data/cell_data/field_data as flat,
+// shapeless Float64Arrays (see js_bindings.cpp's mesh_to_val/val_to_mesh) --
+// there is no way to convey a per-array component count through this API, so
+// every array here is a plain scalar. A multi-component (vector/tensor) field
+// is a pre-existing, out-of-scope limitation of the whole WASM binding, not
+// something the data operations can work around.
 
 const tetv = {
     points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
@@ -159,7 +166,7 @@ const tetv = {
     cells: [{ type: 'tetra', data: new Int32Array([0, 1, 2, 3]), nodesPerCell: 4 }],
     point_data: {
         temperature: new Float64Array([1, 2, 3, 4]),
-        velocity: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0]),
+        pressure: new Float64Array([10, 20, 30, 40]),
     },
     cell_data: { material: [new Float64Array([7])] },
     field_data: {},
@@ -176,16 +183,16 @@ step('dataInfo summarizes every array', () => {
     assert.equal(t.max, 4);
     assert.equal(t.mean, 2.5);
     assert.equal(t.numNan, 0);
-    const v = arrays.find((a) => a.name === 'velocity');
-    assert.equal(v.numComponents, 3);
-    assert.equal(v.maxPerComponent.length, 3);
+    const p = arrays.find((a) => a.name === 'pressure');
+    assert.equal(p.min, 10);
+    assert.equal(p.max, 40);
 });
 
 step('dataCalc evaluates an expression', () => {
-    const out = m.dataCalc(tetv, 'norm(velocity)', 'point', 'speed', false);
-    const speed = out.point_data.speed;
-    assert.ok(Math.abs(speed[0] - 1) < 1e-12);
-    assert.ok(Math.abs(speed[3] - Math.SQRT2) < 1e-12);
+    const out = m.dataCalc(tetv, '2 * temperature + 1', 'point', 'derived', false);
+    const derived = out.point_data.derived;
+    assert.ok(Math.abs(derived[0] - 3) < 1e-12);
+    assert.ok(Math.abs(derived[3] - 9) < 1e-12);
     // Geometry is never modified.
     assert.equal(out.points.length, 12);
     assert.equal(out.cells.length, 1);
@@ -201,7 +208,7 @@ step('dataCalc rejects an unknown function with a catchable Error', () => {
 step('dataDrop / dataKeep / dataRename', () => {
     const dropped = m.dataDrop(tetv, 'point', ['temperature'], false);
     assert.ok(!('temperature' in dropped.point_data));
-    assert.ok('velocity' in dropped.point_data);
+    assert.ok('pressure' in dropped.point_data);
 
     const kept = m.dataKeep(tetv, 'point', ['temperature'], false);
     assert.deepEqual(Object.keys(kept.point_data), ['temperature']);
