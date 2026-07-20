@@ -8,6 +8,46 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.6.0 (2026-07-20)
+
+A new mesh operation for domain decomposition, plus the repo's first optional
+partitioning dependency.
+
+- **`partition` — decompose a mesh into N balanced parts.** The count-driven
+  complement to the criterion-driven `split`. Two methods:
+  - **SFC** (always available, the default fallback): cells are ordered along a
+    Hilbert space-filling curve of their centroids (the same key transforms
+    `reorder` uses, now shared via `detail/space_filling.hpp`) and cut into
+    `nparts` contiguous ranges — equal-weight part sizes differ by at most one
+    cell, and with `weights=<cell_data>` the cut follows the weight prefix sum.
+    Deterministic and byte-identical across mesh backends, thread counts, and
+    the C++-core/numpy-fallback boundary (pinned by a test).
+  - **KaHIP** (optional, the quality path): the shared-face dual graph is handed
+    to KaHIP's serial `kaffpa()` with configurable `imbalance` (default 0.03),
+    `mode` (`fast`/`eco`/`strong`, default `eco` — eco/strong carry the edge-cut
+    wins) and `seed`. Ported from the Kratos KaHIPApplication
+    (KratosMultiphysics/Kratos#14453).
+  - `partition_labels` returns just the block-aligned Int64 assignment
+    (`partition:part`); `record_ids` attaches `partition:original_point_id`/
+    `partition:original_cell_id` to each piece. Pieces keep the input block
+    structure 1:1 (unlike `split`), so they recombine into the input.
+    `ghost_layers` is reserved (raises) in v1.
+  - On every surface: Python `partition`/`partition_labels`, C API
+    `mio_partition`/`mio_partition_labels` (opaque result handle with zero-copy
+    map getters), Fortran `m%partition`/`m%partition_labels`, WASM
+    `partition`/`partitionLabels`, and a `partition` verb in both CLIs
+    (`OUT_{part}.vtu` expansion, `--labels-only`).
+- **New optional dependency `MESHIOPLUSPLUS_WITH_KAHIP`** (OFF by default; MIT
+  like meshio++, so no licensing implication). Located via the new
+  `cmake/FindKaHIP.cmake` (`KAHIP_ROOT` prefix / pkg-config) — never vendored or
+  auto-downloaded, and only the serial `kaffpa` interface is linked (no
+  ParHIP/MPI). The installed library's 32/64-bit index width is detected at
+  runtime via `kahip_sizeof_idx()`. Conan `with_kahip`, vcpkg feature `kahip`,
+  pip extra `meshioplusplus[kahip]` (the MIT `kahip` wheel, which also gives
+  pip-only installs the quality path). Requesting `method="kahip"` without any
+  KaHIP backend fails with an error naming the option — never a silent
+  downgrade to SFC.
+
 ## v7.5.0 (2026-07-20)
 
 A new dependency-free mesh operation that *increases* resolution — the counterpart to
