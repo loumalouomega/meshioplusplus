@@ -71,6 +71,16 @@ const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
         {CT::Quad8, 4, 8, {1, 2, 5, 4, 7, 14, 10, 13}},
         {CT::Quad8, 4, 8, {2, 0, 3, 5, 8, 12, 11, 14}},
     };
+    // wedge18 = wedge15 plus a center node on each of the three quad faces:
+    // 15=(0,1,4,3), 16=(1,2,5,4), 17=(2,0,3,5) — the quad faces in the order
+    // they already appear here. The two triangle faces gain no node.
+    static const std::vector<CellFaceDef> wedge18 = {
+        {CT::Triangle6, 3, 6, {0, 2, 1, 8, 7, 6}},
+        {CT::Triangle6, 3, 6, {3, 4, 5, 9, 10, 11}},
+        {CT::Quad9, 4, 9, {0, 1, 4, 3, 6, 13, 9, 12, 15}},
+        {CT::Quad9, 4, 9, {1, 2, 5, 4, 7, 14, 10, 13, 16}},
+        {CT::Quad9, 4, 9, {2, 0, 3, 5, 8, 12, 11, 14, 17}},
+    };
     static const std::vector<CellFaceDef> pyramid = {
         {CT::Quad, 4, 4, {0, 3, 2, 1}},  {CT::Triangle, 3, 3, {0, 1, 4}},
         {CT::Triangle, 3, 3, {1, 2, 4}}, {CT::Triangle, 3, 3, {2, 3, 4}},
@@ -104,6 +114,8 @@ const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
             return wedge;
         case CT::Wedge15:
             return wedge15;
+        case CT::Wedge18:
+            return wedge18;
         case CT::Pyramid:
             return pyramid;
         case CT::Pyramid13:
