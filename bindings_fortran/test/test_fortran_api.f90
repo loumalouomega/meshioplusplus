@@ -316,6 +316,30 @@ program test_fortran_api
         call check(.not. meta%fell_back_to_full_read, 'vtu metadata is not a fallback')
     end block
 
+    ! -- convert_cells: elevate then linearize returns the original topology --
+    block
+        type(mio_mesh) :: up, down
+        integer(int64), allocatable :: pmap(:)
+        integer :: st
+
+        up = m%convert_cells('elevate', stat=st)
+        call check(st == 0, 'convert_cells elevate succeeded')
+        call check(up%num_points() > m%num_points(), 'elevate added mid-edge nodes')
+
+        down = up%convert_cells('linearize', point_map=pmap, stat=st)
+        call check(st == 0, 'convert_cells linearize succeeded')
+        call check(down%num_points() == m%num_points(), 'linearize pruned the mid nodes')
+        call check(allocated(pmap), 'convert_cells returned a point map')
+        call check(size(pmap) == up%num_points(), 'point map covers the input points')
+
+        call up%free()
+        call down%free()
+
+        ! An unknown mode fails through stat, never by aborting.
+        up = m%convert_cells('nope', stat=st)
+        call check(st /= 0, 'convert_cells rejects an unknown mode')
+    end block
+
     call m%free()
     call r%free()
     call c%free()
