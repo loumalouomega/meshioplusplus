@@ -36,6 +36,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/parallel.hpp"
 
