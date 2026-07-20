@@ -51,10 +51,20 @@ module meshioplusplus
 
     public :: mio_mesh
     public :: mio_stats_report
+    public :: mio_data_array_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_format_readable, mio_format_writable
     public :: mio_sniff_format
     public :: mio_merge
+    ! Length of the fixed-width string buffers the `keys` out-arguments of
+    ! `split` and `data_info` use; consumers need it to declare those arrays.
+    public :: STRBUF_LEN
+    ! Data-operation enumerations (must match the C enums in meshioplusplus.h).
+    public :: MIO_DATA_POINT, MIO_DATA_CELL, MIO_DATA_FIELD
+    public :: MIO_WEIGHT_UNIFORM, MIO_WEIGHT_MEASURE
+    public :: MIO_COND_CLAMP, MIO_COND_NORMALIZE, MIO_COND_STANDARDIZE
+    public :: MIO_SCOPE_COMPONENT, MIO_SCOPE_MAGNITUDE
+    public :: MIO_NAN_IGNORE, MIO_NAN_REPLACE, MIO_NAN_FAIL
 
     ! Geometric statistics (bind(c); layout must match mio_stats_report in
     ! meshioplusplus.h). Per-cell-type counts are not carried across the C ABI.
@@ -71,9 +81,36 @@ module meshioplusplus
         integer(c_int64_t) :: num_inverted
     end type
 
+    ! Summary of one data array (bind(c); layout must match
+    ! mio_data_array_info in meshioplusplus.h). Per-component statistics are
+    ! retrieved separately via the `data_info` procedure's optional arguments.
+    type, bind(c) :: mio_data_array_info
+        integer(c_int) :: location            !< a MIO_DATA_* value
+        integer(c_int) :: dtype               !< a MIO_* dtype, as stored
+        integer(c_int64_t) :: num_blocks      !< cell_data: cell blocks; else 1
+        integer(c_int64_t) :: num_entries     !< rows (points / cells / length)
+        integer(c_int64_t) :: num_components  !< product of trailing dimensions
+        integer(c_int64_t) :: num_values      !< num_entries * num_components
+        real(c_double) :: min                 !< over finite values, else NaN
+        real(c_double) :: max                 !< over finite values, else NaN
+        real(c_double) :: mean                !< over finite values, else NaN
+        integer(c_int64_t) :: num_nan
+        integer(c_int64_t) :: num_inf
+        integer(c_int64_t) :: num_finite
+        integer(c_int) :: inconsistent_blocks !< nonzero if blocks disagree
+    end type
+
     ! mio_dtype values (must match the C enum in meshioplusplus.h).
     integer(c_int), parameter :: MIO_FLOAT32 = 0, MIO_FLOAT64 = 1
     integer(c_int), parameter :: MIO_INT32 = 4, MIO_INT64 = 5
+
+    ! Data-operation enumerations (must match the C enums in meshioplusplus.h).
+    integer(c_int), parameter :: MIO_DATA_POINT = 0, MIO_DATA_CELL = 1, MIO_DATA_FIELD = 2
+    integer(c_int), parameter :: MIO_WEIGHT_UNIFORM = 0, MIO_WEIGHT_MEASURE = 1
+    integer(c_int), parameter :: MIO_COND_CLAMP = 0, MIO_COND_NORMALIZE = 1
+    integer(c_int), parameter :: MIO_COND_STANDARDIZE = 2
+    integer(c_int), parameter :: MIO_SCOPE_COMPONENT = 0, MIO_SCOPE_MAGNITUDE = 1
+    integer(c_int), parameter :: MIO_NAN_IGNORE = 0, MIO_NAN_REPLACE = 1, MIO_NAN_FAIL = 2
 
     integer, parameter :: MIO_MAX_NDIM = 8
     integer, parameter :: STRBUF_LEN = 4096
@@ -102,6 +139,15 @@ module meshioplusplus
         procedure :: compute_bandwidth => mesh_compute_bandwidth
         procedure :: equals => mesh_equals
         procedure :: diff => mesh_diff
+        ! -- data operations (act on data arrays; geometry is never modified) --
+        procedure :: data_drop => mesh_data_drop
+        procedure :: data_keep => mesh_data_keep
+        procedure :: data_rename => mesh_data_rename
+        procedure :: data_point_to_cell => mesh_data_point_to_cell
+        procedure :: data_cell_to_point => mesh_data_cell_to_point
+        procedure :: data_calc => mesh_data_calc
+        procedure :: data_condition => mesh_data_condition
+        procedure :: data_info => mesh_data_info
         ! -- building --
         procedure :: set_points => mesh_set_points
         procedure, private :: mesh_add_cell_block_i32
@@ -324,6 +370,112 @@ module meshioplusplus
             type(mio_stats_report), intent(out) :: out
             integer(c_int) :: s
         end function
+
+        ! -- data operations --
+        ! Name lists cross as a C array of char* plus an explicit count; the
+        ! `names` argument is a c_ptr to that array (built by c_str_array).
+
+        function c_mio_data_drop(h, location, names, count, ignore_missing) &
+                bind(c, name="mio_data_drop") result(m)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: h, names
+            integer(c_int), value :: location, ignore_missing
+            integer(c_int64_t), value :: count
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_keep(h, location, names, count, ignore_missing) &
+                bind(c, name="mio_data_keep") result(m)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: h, names
+            integer(c_int), value :: location, ignore_missing
+            integer(c_int64_t), value :: count
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_rename(h, location, from_name, to_name) &
+                bind(c, name="mio_data_rename") result(m)
+            import :: c_ptr, c_int, c_char
+            type(c_ptr), value :: h
+            integer(c_int), value :: location
+            character(kind=c_char), dimension(*), intent(in) :: from_name, to_name
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_point_to_cell(h, names, count, suffix) &
+                bind(c, name="mio_data_point_to_cell") result(m)
+            import :: c_ptr, c_int64_t, c_char
+            type(c_ptr), value :: h, names
+            integer(c_int64_t), value :: count
+            character(kind=c_char), dimension(*), intent(in) :: suffix
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_cell_to_point(h, names, count, weight, suffix) &
+                bind(c, name="mio_data_cell_to_point") result(m)
+            import :: c_ptr, c_int, c_int64_t, c_char
+            type(c_ptr), value :: h, names
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: weight
+            character(kind=c_char), dimension(*), intent(in) :: suffix
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_calc(h, expression, location, output_name, overwrite) &
+                bind(c, name="mio_data_calc") result(m)
+            import :: c_ptr, c_int, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: expression, output_name
+            integer(c_int), value :: location, overwrite
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_condition(h, location, names, count, mode, lo, hi, scope, &
+                                      nan_policy, nan_replacement, suffix) &
+                bind(c, name="mio_data_condition") result(m)
+            import :: c_ptr, c_int, c_int64_t, c_double, c_char
+            type(c_ptr), value :: h, names
+            integer(c_int), value :: location, mode, scope, nan_policy
+            integer(c_int64_t), value :: count
+            real(c_double), value :: lo, hi, nan_replacement
+            character(kind=c_char), dimension(*), intent(in) :: suffix
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_data_info_create(h) bind(c, name="mio_data_info_create") result(r)
+            import :: c_ptr
+            type(c_ptr), value :: h
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_data_info_count(r) bind(c, name="mio_data_info_count") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_data_info_name(r, index, buf, buflen) &
+                bind(c, name="mio_data_info_name") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_data_info_entry(r, index, out) &
+                bind(c, name="mio_data_info_entry") result(s)
+            import :: c_ptr, c_int, c_int64_t, mio_data_array_info
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            type(mio_data_array_info), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        subroutine c_mio_data_info_free(r) bind(c, name="mio_data_info_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
 
         function c_mio_reorder_result_take_mesh(r) &
                 bind(c, name="mio_reorder_result_take_mesh") result(m)
@@ -629,6 +781,42 @@ contains
             s(i:i) = chars(i)
         end do
     end function
+
+    !> Build the `char**` a C name-list parameter expects.
+    !>
+    !> `storage` holds NUL-terminated copies of every name (one column each) and
+    !> `cptrs` holds a c_ptr to each column. BOTH must stay in scope for the
+    !> duration of the C call -- they are the actual backing memory, so the
+    !> caller keeps them as local variables until the call returns.
+    !> `names` may be zero-sized, in which case the returned pointer is NULL and
+    !> the count is 0 ("every array at that location").
+    subroutine c_str_array(names, storage, cptrs, arr, count)
+        character(*), intent(in) :: names(:)
+        character(kind=c_char), allocatable, target, intent(out) :: storage(:, :)
+        type(c_ptr), allocatable, target, intent(out) :: cptrs(:)
+        type(c_ptr), intent(out) :: arr
+        integer(c_int64_t), intent(out) :: count
+        integer :: i, j, n, width
+        n = size(names)
+        count = int(n, c_int64_t)
+        if (n == 0) then
+            allocate (storage(1, 1))
+            allocate (cptrs(1))
+            arr = c_null_ptr
+            return
+        end if
+        width = len(names) + 1
+        allocate (storage(width, n))
+        allocate (cptrs(n))
+        do i = 1, n
+            do j = 1, len_trim(names(i))
+                storage(j, i) = names(i) (j:j)
+            end do
+            storage(len_trim(names(i)) + 1, i) = c_null_char
+            cptrs(i) = c_loc(storage(1, i))
+        end do
+        arr = c_loc(cptrs(1))
+    end subroutine
 
     !> Fortran string from the first `n` chars of a C char buffer.
     function from_c_buf(buf, n) result(s)
@@ -1150,6 +1338,268 @@ contains
             call handle_failure('stats', mio_error_message(), stat, errmsg)
             return
         end if
+        call clear_status(stat, errmsg)
+    end function
+
+    ! ------------------------------------------------------------------
+    ! Data operations
+    !
+    ! These act on the mesh's point/cell/field data arrays; the geometry is
+    ! never modified. Each returns a NEW mesh which the caller must free.
+    ! `location` is one of MIO_DATA_POINT / _CELL / _FIELD.
+    ! ------------------------------------------------------------------
+
+    !> Drop the named data arrays at `location`.
+    function mesh_data_drop(self, location, names, ignore_missing, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in) :: names(:)
+        logical, intent(in), optional :: ignore_missing
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        integer(c_int) :: cignore
+        cignore = 0
+        if (present(ignore_missing)) then
+            if (ignore_missing) cignore = 1
+        end if
+        call c_str_array(names, storage, cptrs, arr, count)
+        out%handle = c_mio_data_drop(self%handle, location, arr, count, cignore)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_drop', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Keep only the named data arrays at `location`, dropping the rest there.
+    !> The other two locations are untouched; a zero-sized `names` drops all.
+    function mesh_data_keep(self, location, names, ignore_missing, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in) :: names(:)
+        logical, intent(in), optional :: ignore_missing
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        integer(c_int) :: cignore
+        cignore = 0
+        if (present(ignore_missing)) then
+            if (ignore_missing) cignore = 1
+        end if
+        call c_str_array(names, storage, cptrs, arr, count)
+        out%handle = c_mio_data_keep(self%handle, location, arr, count, cignore)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_keep', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Rename one data array, preserving its values, dtype and shape.
+    function mesh_data_rename(self, location, from_name, to_name, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in) :: from_name, to_name
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out%handle = c_mio_data_rename(self%handle, location, c_str(from_name), c_str(to_name))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_rename', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Average point_data onto the cells (mean over each cell's own nodes).
+    !> The output is always double precision. Omit `names` to convert all.
+    function mesh_data_point_to_cell(self, names, suffix, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: names(:)
+        character(*), intent(in), optional :: suffix
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        character(:), allocatable :: sfx
+        character(len=1) :: empty(0)
+        sfx = ''
+        if (present(suffix)) sfx = suffix
+        if (present(names)) then
+            call c_str_array(names, storage, cptrs, arr, count)
+        else
+            call c_str_array(empty, storage, cptrs, arr, count)
+        end if
+        out%handle = c_mio_data_point_to_cell(self%handle, arr, count, c_str(sfx))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_point_to_cell', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Average cell_data onto the points. `weight` is MIO_WEIGHT_UNIFORM
+    !> (default) or MIO_WEIGHT_MEASURE. Points touched by no cell get NaN.
+    function mesh_data_cell_to_point(self, names, weight, suffix, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: names(:)
+        integer(c_int), intent(in), optional :: weight
+        character(*), intent(in), optional :: suffix
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        integer(c_int) :: cweight
+        character(:), allocatable :: sfx
+        character(len=1) :: empty(0)
+        cweight = MIO_WEIGHT_UNIFORM
+        if (present(weight)) cweight = weight
+        sfx = ''
+        if (present(suffix)) sfx = suffix
+        if (present(names)) then
+            call c_str_array(names, storage, cptrs, arr, count)
+        else
+            call c_str_array(empty, storage, cptrs, arr, count)
+        end if
+        out%handle = c_mio_data_cell_to_point(self%handle, arr, count, cweight, c_str(sfx))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_cell_to_point', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Evaluate an elementwise expression over the arrays at `location` and
+    !> store the result there as `output_name`. The grammar accepts + - * /,
+    !> unary minus, parentheses, numbers, array names, and the functions abs,
+    !> sqrt, min, max and norm -- nothing else is evaluated.
+    function mesh_data_calc(self, expression, output_name, location, overwrite, &
+                            stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: expression, output_name
+        integer(c_int), intent(in), optional :: location
+        logical, intent(in), optional :: overwrite
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cloc, cover
+        cloc = MIO_DATA_POINT
+        if (present(location)) cloc = location
+        cover = 0
+        if (present(overwrite)) then
+            if (overwrite) cover = 1
+        end if
+        out%handle = c_mio_data_calc(self%handle, c_str(expression), cloc, &
+                                     c_str(output_name), cover)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_calc', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Condition the values of the selected arrays. `mode` is MIO_COND_CLAMP
+    !> (default), _NORMALIZE or _STANDARDIZE; `scope` is MIO_SCOPE_COMPONENT
+    !> (default) or _MAGNITUDE. For cell_data the statistics are computed
+    !> jointly across all cell blocks.
+    function mesh_data_condition(self, location, names, mode, lo, hi, scope, &
+                                 nan_policy, nan_replacement, suffix, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in), optional :: names(:)
+        integer(c_int), intent(in), optional :: mode, scope, nan_policy
+        real(real64), intent(in), optional :: lo, hi, nan_replacement
+        character(*), intent(in), optional :: suffix
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        integer(c_int) :: cmode, cscope, cnan
+        real(c_double) :: clo, chi, crep
+        character(:), allocatable :: sfx
+        character(len=1) :: empty(0)
+        cmode = MIO_COND_CLAMP
+        if (present(mode)) cmode = mode
+        cscope = MIO_SCOPE_COMPONENT
+        if (present(scope)) cscope = scope
+        cnan = MIO_NAN_IGNORE
+        if (present(nan_policy)) cnan = nan_policy
+        clo = 0.0_c_double
+        if (present(lo)) clo = real(lo, c_double)
+        chi = 1.0_c_double
+        if (present(hi)) chi = real(hi, c_double)
+        crep = 0.0_c_double
+        if (present(nan_replacement)) crep = real(nan_replacement, c_double)
+        sfx = ''
+        if (present(suffix)) sfx = suffix
+        if (present(names)) then
+            call c_str_array(names, storage, cptrs, arr, count)
+        else
+            call c_str_array(empty, storage, cptrs, arr, count)
+        end if
+        out%handle = c_mio_data_condition(self%handle, location, arr, count, cmode, clo, chi, &
+                                          cscope, cnan, crep, c_str(sfx))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('data_condition', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Summarize every data array the mesh carries (read-only). Returns one
+    !> mio_data_array_info per array; pass `keys` to also receive their names.
+    function mesh_data_info(self, keys, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(len=STRBUF_LEN), allocatable, intent(out), optional :: keys(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_data_array_info), allocatable :: out(:)
+        type(c_ptr) :: res
+        integer(c_int64_t) :: count, i, n
+        integer(c_int) :: s
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        res = c_mio_data_info_create(self%handle)
+        if (.not. c_associated(res)) then
+            call handle_failure('data_info', mio_error_message(), stat, errmsg)
+            allocate (out(0))
+            return
+        end if
+        count = c_mio_data_info_count(res)
+        if (count < 0) count = 0
+        allocate (out(count))
+        if (present(keys)) allocate (keys(count))
+        do i = 1, count
+            s = c_mio_data_info_entry(res, i - 1_c_int64_t, out(i))
+            if (s /= 0_c_int) then
+                call c_mio_data_info_free(res)
+                call handle_failure('data_info', mio_error_message(), stat, errmsg)
+                return
+            end if
+            if (present(keys)) then
+                n = c_mio_data_info_name(res, i - 1_c_int64_t, buf, int(STRBUF_LEN, c_int64_t))
+                keys(i) = ''
+                if (n > 0) keys(i) = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+            end if
+        end do
+        call c_mio_data_info_free(res)
         call clear_status(stat, errmsg)
     end function
 
