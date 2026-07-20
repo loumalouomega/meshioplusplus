@@ -24,6 +24,8 @@ vcpkg_check_features(
         hdf5    MESHIOPLUSPLUS_WITH_HDF5
         netcdf  MESHIOPLUSPLUS_WITH_NETCDF
         zlib    MESHIOPLUSPLUS_WITH_ZLIB
+        zstd    MESHIOPLUSPLUS_WITH_ZSTD
+        lz4     MESHIOPLUSPLUS_WITH_LZ4
 )
 
 vcpkg_cmake_configure(
