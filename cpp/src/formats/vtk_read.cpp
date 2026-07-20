@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/vtk_common.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
