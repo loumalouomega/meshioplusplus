@@ -67,6 +67,12 @@
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/crop.hpp"
+#include "meshioplusplus/operations/data_average.hpp"
+#include "meshioplusplus/operations/data_calc.hpp"
+#include "meshioplusplus/operations/data_common.hpp"
+#include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/quality.hpp"
@@ -478,6 +484,180 @@ PYBIND11_MODULE(_core, m) {
             out["unsigned_volume"] = r.mUnsignedVolume;
             out["num_inverted"] = r.mNumInverted;
             return out;
+        },
+        py::arg("mesh"));
+
+    // --- data operations ---------------------------------------------------
+    // Operations on the point_data / cell_data / field_data arrays rather than
+    // on the geometry. Enums cross as strings (the same names the CLIs and the
+    // WASM binding use). See operations/data_*.hpp.
+
+    // Array management: keep / drop / rename, applied in that order. Returns a
+    // dict {mesh, dropped, renamed}. See operations/data_manage.hpp.
+    m.def(
+        "data_manage",
+        [](py::object pymesh, const std::vector<std::pair<std::string, std::string>>& keep,
+           const std::vector<std::pair<std::string, std::string>>& drop,
+           const std::vector<std::tuple<std::string, std::string, std::string>>& rename,
+           bool ignore_missing) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DataManageOptions opts;
+            opts.ignore_missing = ignore_missing;
+            for (const auto& kv : keep)
+                opts.keep.push_back(meshioplusplus::DataKey{
+                    meshioplusplus::data_location_from_name(kv.first), kv.second});
+            for (const auto& kv : drop)
+                opts.drop.push_back(meshioplusplus::DataKey{
+                    meshioplusplus::data_location_from_name(kv.first), kv.second});
+            for (const auto& t : rename)
+                opts.rename.push_back(meshioplusplus::DataRename{
+                    meshioplusplus::data_location_from_name(std::get<0>(t)), std::get<1>(t),
+                    std::get<2>(t)});
+            meshioplusplus::DataManageResult r = meshioplusplus::data_manage(cpp, opts);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["dropped"] = py::cast(r.mDropped);
+            py::list renamed;
+            for (const auto& kv : r.mRenamed)
+                renamed.append(py::make_tuple(kv.first, kv.second));
+            out["renamed"] = renamed;
+            return out;
+        },
+        py::arg("mesh"), py::arg("keep") = std::vector<std::pair<std::string, std::string>>{},
+        py::arg("drop") = std::vector<std::pair<std::string, std::string>>{},
+        py::arg("rename") = std::vector<std::tuple<std::string, std::string, std::string>>{},
+        py::arg("ignore_missing") = false);
+
+    // point_data -> cell_data averaging. See operations/data_average.hpp.
+    m.def(
+        "point_data_to_cell_data",
+        [](py::object pymesh, const std::vector<std::string>& names, const std::string& prefix,
+           const std::string& suffix, bool overwrite, const std::string& nan_policy,
+           double nan_replacement) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DataAverageOptions opts;
+            opts.names = names;
+            opts.prefix = prefix;
+            opts.suffix = suffix;
+            opts.overwrite = overwrite;
+            opts.nan_policy = meshioplusplus::nan_policy_from_name(nan_policy);
+            opts.nan_replacement = nan_replacement;
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::point_data_to_cell_data(cpp, opts));
+        },
+        py::arg("mesh"), py::arg("names") = std::vector<std::string>{}, py::arg("prefix") = "",
+        py::arg("suffix") = "", py::arg("overwrite") = true, py::arg("nan_policy") = "ignore",
+        py::arg("nan_replacement") = 0.0);
+
+    // cell_data -> point_data averaging. See operations/data_average.hpp.
+    m.def(
+        "cell_data_to_point_data",
+        [](py::object pymesh, const std::vector<std::string>& names, const std::string& weight,
+           const std::string& prefix, const std::string& suffix, bool overwrite,
+           const std::string& nan_policy, double nan_replacement) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DataAverageOptions opts;
+            opts.names = names;
+            opts.weight = meshioplusplus::cell_point_weight_from_name(weight);
+            opts.prefix = prefix;
+            opts.suffix = suffix;
+            opts.overwrite = overwrite;
+            opts.nan_policy = meshioplusplus::nan_policy_from_name(nan_policy);
+            opts.nan_replacement = nan_replacement;
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::cell_data_to_point_data(cpp, opts));
+        },
+        py::arg("mesh"), py::arg("names") = std::vector<std::string>{},
+        py::arg("weight") = "uniform", py::arg("prefix") = "", py::arg("suffix") = "",
+        py::arg("overwrite") = true, py::arg("nan_policy") = "ignore",
+        py::arg("nan_replacement") = 0.0);
+
+    // Elementwise expression evaluator. See operations/data_calc.hpp.
+    m.def(
+        "data_calc",
+        [](py::object pymesh, const std::string& expression, const std::string& location,
+           const std::string& output, bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DataCalcOptions opts;
+            opts.location = meshioplusplus::data_location_from_name(location);
+            opts.output = output;
+            opts.overwrite = overwrite;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::data_calc(cpp, expression, opts));
+        },
+        py::arg("mesh"), py::arg("expression"), py::arg("location") = "point",
+        py::arg("output") = "", py::arg("overwrite") = false);
+
+    // Value conditioning (clamp / normalize / standardize).
+    // See operations/data_condition.hpp.
+    m.def(
+        "data_condition",
+        [](py::object pymesh, const std::string& location, const std::vector<std::string>& names,
+           const std::string& mode, const std::string& scope, double lo, double hi,
+           const std::string& nan_policy, double nan_replacement, const std::string& suffix,
+           bool preserve_dtype) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DataConditionOptions opts;
+            opts.location = meshioplusplus::data_location_from_name(location);
+            opts.names = names;
+            opts.mode = meshioplusplus::condition_mode_from_name(mode);
+            opts.scope = meshioplusplus::condition_scope_from_name(scope);
+            opts.lo = lo;
+            opts.hi = hi;
+            opts.nan_policy = meshioplusplus::nan_policy_from_name(nan_policy);
+            opts.nan_replacement = nan_replacement;
+            opts.suffix = suffix;
+            opts.preserve_dtype = preserve_dtype;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::data_condition(cpp, opts));
+        },
+        py::arg("mesh"), py::arg("location") = "point",
+        py::arg("names") = std::vector<std::string>{}, py::arg("mode") = "clamp",
+        py::arg("scope") = "component", py::arg("lo") = 0.0, py::arg("hi") = 1.0,
+        py::arg("nan_policy") = "ignore", py::arg("nan_replacement") = 0.0, py::arg("suffix") = "",
+        py::arg("preserve_dtype") = true);
+
+    // Read-only per-array data summary. Returns a list of dicts, one per array.
+    // See operations/data_info.hpp.
+    m.def(
+        "data_info",
+        [](py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DataInfoReport r = meshioplusplus::data_info(cpp);
+            py::list arrays;
+            for (const meshioplusplus::DataArrayInfo& a : r.mArrays) {
+                py::dict d;
+                d["location"] = meshioplusplus::data_location_name(a.mLocation);
+                d["name"] = a.mName;
+                d["dtype"] = meshioplusplus::dtype_numpy_str(a.mDtype);
+                d["shape"] = py::cast(a.mShape);
+                d["num_blocks"] = a.mNumBlocks;
+                d["num_entries"] = a.mNumEntries;
+                d["num_components"] = a.mNumComponents;
+                d["num_values"] = a.mNumValues;
+                d["min"] = a.mMin;
+                d["max"] = a.mMax;
+                d["mean"] = a.mMean;
+                d["min_per_component"] = py::cast(a.mMinPerComponent);
+                d["max_per_component"] = py::cast(a.mMaxPerComponent);
+                d["mean_per_component"] = py::cast(a.mMeanPerComponent);
+                d["num_nan"] = a.mNumNan;
+                d["num_inf"] = a.mNumInf;
+                d["num_finite"] = a.mNumFinite;
+                d["inconsistent_blocks"] = a.mInconsistentBlocks;
+                arrays.append(d);
+            }
+            return arrays;
         },
         py::arg("mesh"));
 
