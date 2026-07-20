@@ -156,6 +156,78 @@ jobs:
             -I/tmp/CoSimIO/external_libraries /tmp/bridge_check.cpp
           echo "bridge compile-check OK"
 
+  # The KaHIP partition backend. Its own dedicated job (not a matrix column)
+  # so the provisioning stays out of the shared legs: no libkahip-dev package
+  # exists in Ubuntu, so KaHIP v3.25 is source-built (pinned tag, PARHIP off --
+  # serial kaffpa only, no MPI) and cached; meshio++'s CMake itself never
+  # downloads anything (find_package via KAHIP_ROOT, the Kratos
+  # KaHIPApplication lesson). The default legs above stay KaHIP-off and
+  # exercise the SFC path + the named "not built" error.
+  kahip:
+    name: KaHIP partition backend
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev zlib1g-dev libtbb-dev pkg-config
+      - name: Install build tools
+        run: python -m pip install --upgrade pip pybind11 cmake ninja pytest
+      - name: Cache the KaHIP install
+        id: kahip-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/kahip-install
+          key: kahip-v3.25-${{ runner.os }}
+      - name: Build KaHIP v3.25 from source
+        if: steps.kahip-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v3.25 https://github.com/KaHIP/KaHIP.git /tmp/kahip-src
+          cmake -S /tmp/kahip-src -B /tmp/kahip-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DPARHIP=OFF -DNONATIVEOPTIMIZATIONS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/kahip-install"
+          cmake --build /tmp/kahip-build -j
+          cmake --install /tmp/kahip-build
+      # netCDF stays off here (the standalone-executable link quirk); the
+      # cpp-tests matrix covers the netCDF formats.
+      - name: Configure C++ tests with KaHIP
+        run: >-
+          cmake -S . -B build-kahip -G Ninja
+          -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_BUILD_C_API=ON
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          -DMESHIOPLUSPLUS_WITH_KAHIP=ON
+          -DKAHIP_ROOT=$HOME/kahip-install
+      - name: Build
+        run: cmake --build build-kahip
+      - name: Run the partition suite (KaHIP cases live)
+        run: ctest --test-dir build-kahip -R "Partition|CApi" --output-on-failure
+      - name: Install meshioplusplus with KaHIP
+        run: >-
+          CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_KAHIP=ON -DKAHIP_ROOT=$HOME/kahip-install"
+          pip install . -v
+      - name: Run the Python partition suite (C++ KaHIP backend)
+        run: python -m pytest tests/test_partition.py -v
+      # The other route to the quality path: a KaHIP-less _core plus the MIT
+      # `kahip` PyPI wheel -- the shim must serve method="kahip" through the
+      # pure-Python dual graph + kahip.kaffpa, never the named error.
+      - name: Run it again through the kahip PyPI package (pure-Python path)
+        run: |
+          pip uninstall -y meshioplusplus
+          pip install .
+          pip install kahip
+          python -c "from meshioplusplus import _core; assert not _core.__has_kahip__"
+          python -m pytest tests/test_partition.py -v
+
   # Include hygiene: fail the PR on any UNUSED #include (clang-tidy's
   # misc-include-cleaner, driven by tools/include-cleanup.sh). Missing-include
   # suggestions are advisory only -- see the script + .clang-tidy. HDF5/netCDF
