@@ -64,6 +64,7 @@ export default defineConfig({
           { text: "Split / partition", link: "/split" },
           { text: "Geometric statistics", link: "/stats" },
           { text: "Cell conversion", link: "/convert_cells" },
+          { text: "Uniform refinement", link: "/refine" },
           { text: "Data operations", link: "/data_operations" },
           { text: "· Array management", link: "/data_manage" },
           { text: "· Location averaging", link: "/data_average" },
