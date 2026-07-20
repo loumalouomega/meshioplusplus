@@ -234,7 +234,9 @@ def _simplexify_py(mesh, record_parent_ids):
         )
         new_cells.append((child_type, conn.astype(np.int64)))
         first_child.append(np.arange(len(data), dtype=np.int64) * per_cell)
-        parents_per_block.append(np.repeat(np.arange(len(data), dtype=np.int64), per_cell))
+        parents_per_block.append(
+            np.repeat(np.arange(len(data), dtype=np.int64), per_cell)
+        )
 
     point_data = {k: np.asarray(v).copy() for k, v in prepared.point_data.items()}
 
@@ -302,7 +304,8 @@ def _elevate_py(mesh, record_parent_ids):
     pts = np.asarray(mesh.points)
     if len(endpoints):
         mid_pts = 0.5 * (
-            pts[endpoints[:, 0]].astype(np.float64) + pts[endpoints[:, 1]].astype(np.float64)
+            pts[endpoints[:, 0]].astype(np.float64)
+            + pts[endpoints[:, 1]].astype(np.float64)
         )
         out_points = np.concatenate([pts, mid_pts.astype(pts.dtype)], axis=0)
     else:
