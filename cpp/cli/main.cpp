@@ -34,6 +34,7 @@
 // System includes
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -50,6 +51,12 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/data_average.hpp"
+#include "meshioplusplus/operations/data_calc.hpp"
+#include "meshioplusplus/operations/data_common.hpp"
+#include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -101,8 +108,13 @@ struct cli_opt_spec {
 /// Parsed result of a verb's argument list.
 struct cli_parsed {
     std::vector<std::string> positionals;
-    std::unordered_map<std::string, std::string> values;  ///< canonical -> value
+    std::unordered_map<std::string, std::string> values;  ///< canonical -> value (last wins)
     std::unordered_set<std::string> flags;                ///< canonical present
+    /// Every occurrence of each value-option, in order. Always populated
+    /// alongside `values`, which keeps its last-wins semantics so no existing
+    /// verb changes behaviour; the `data` verbs read this instead because they
+    /// accept repeated `--point`/`--cell`/`--field`.
+    std::unordered_map<std::string, std::vector<std::string>> multi;
 };
 
 /// Parse `args` against `specs`. Throws std::runtime_error on an unknown option
@@ -158,6 +170,7 @@ cli_parsed cli_parse(const std::vector<std::string>& rArgs,
                 throw std::runtime_error("option '" + name + "' requires a value");
             }
             out.values[match->canonical] = value;
+            out.multi[match->canonical].push_back(value);
         } else {
             out.flags.insert(match->canonical);
         }
@@ -172,6 +185,16 @@ std::string opt_value(const cli_parsed& rP, const std::string& rName,
 }
 bool has_flag(const cli_parsed& rP, const std::string& rName) {
     return rP.flags.count(rName) != 0;
+}
+/// Every occurrence of a repeatable value-option, in order (empty if absent).
+const std::vector<std::string>& opt_values(const cli_parsed& rP, const std::string& rName) {
+    static const std::vector<std::string> empty;
+    auto it = rP.multi.find(rName);
+    return it == rP.multi.end() ? empty : it->second;
+}
+/// Whether a value-option was supplied at all (distinct from "supplied empty").
+bool has_opt(const cli_parsed& rP, const std::string& rName) {
+    return rP.values.count(rName) != 0;
 }
 
 // --------------------------------------------------------------------------
@@ -339,7 +362,8 @@ void print_usage(std::ostream& os) {
           "  clean                   Weld / prune / de-dup a mesh\n"
           "  crop                    Subset by bounding box or half-space\n"
           "  split                   Partition into multiple files (type/region/component)\n"
-          "  stats                   Print geometric statistics (bbox/area/volume)\n\n"
+          "  stats                   Print geometric statistics (bbox/area/volume)\n"
+          "  data <verb>             Inspect / rename / average / compute on data arrays\n\n"
           "  -v, --version           Display version information\n"
           "  -h, --help              Show this message\n\n"
           "notes: point/cell sets and 'convert -s/-d' are unavailable in the native\n"
@@ -864,6 +888,441 @@ int cmd_stats(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// --------------------------------------------------------------------------
+// `data` — the nested verb group over the data operations
+//
+// These act on the mesh's point/cell/field data arrays; the geometry is never
+// modified. Mirrors the Python CLI's nine verbs one-for-one, including the
+// colon-splitting rules, so the two surfaces stay interchangeable.
+// --------------------------------------------------------------------------
+
+/// The three location flags every data verb accepts, in report order.
+const char* const DATA_LOCATION_FLAGS[3] = {"point", "cell", "field"};
+
+meshioplusplus::DataLocation data_location_of_flag(int i) {
+    switch (i) {
+        case 0:
+            return meshioplusplus::DataLocation::Point;
+        case 1:
+            return meshioplusplus::DataLocation::Cell;
+        default:
+            return meshioplusplus::DataLocation::Field;
+    }
+}
+
+/// "a,b" -> {"a", "b"}, skipping empty entries.
+std::vector<std::string> data_split_names(const std::string& rValue) {
+    std::vector<std::string> out;
+    std::size_t start = 0;
+    while (start <= rValue.size()) {
+        const std::size_t comma = rValue.find(',', start);
+        const std::size_t end = comma == std::string::npos ? rValue.size() : comma;
+        std::string part = rValue.substr(start, end - start);
+        // trim
+        const std::size_t b = part.find_first_not_of(" \t");
+        const std::size_t e = part.find_last_not_of(" \t");
+        if (b != std::string::npos)
+            out.push_back(part.substr(b, e - b + 1));
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    return out;
+}
+
+/// "OLD:NEW" split on the LAST colon, because data names routinely contain
+/// colons (`gmsh:physical`). Identical rule to the Python CLI and doc/cli.md.
+std::pair<std::string, std::string> data_split_rename(const std::string& rValue) {
+    const std::size_t pos = rValue.rfind(':');
+    if (pos == std::string::npos || pos == 0 || pos + 1 >= rValue.size())
+        throw std::runtime_error("data rename: expected OLD:NEW, got '" + rValue + "'");
+    return {rValue.substr(0, pos), rValue.substr(pos + 1)};
+}
+
+/// "NAME = EXPR" split on the FIRST '='.
+std::pair<std::string, std::string> data_split_assignment(const std::string& rValue) {
+    const std::size_t pos = rValue.find('=');
+    if (pos == std::string::npos)
+        throw std::runtime_error("data calc: expected 'NAME = EXPRESSION', got '" + rValue + "'");
+    auto trim = [](std::string s) {
+        const std::size_t b = s.find_first_not_of(" \t");
+        const std::size_t e = s.find_last_not_of(" \t");
+        return b == std::string::npos ? std::string() : s.substr(b, e - b + 1);
+    };
+    const std::string name = trim(rValue.substr(0, pos));
+    const std::string expr = trim(rValue.substr(pos + 1));
+    if (name.empty() || expr.empty())
+        throw std::runtime_error("data calc: expected 'NAME = EXPRESSION', got '" + rValue + "'");
+    return {name, expr};
+}
+
+/// The IO options every data verb shares.
+std::vector<cli_opt_spec> data_io_specs(bool with_output) {
+    std::vector<cli_opt_spec> specs = {{"input-format", {"-i"}, true}};
+    if (with_output)
+        specs.push_back({"output-format", {"-o"}, true});
+    return specs;
+}
+
+std::string data_g6(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", v);
+    return buf;
+}
+
+int cmd_data_info(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(false);
+    specs.push_back({"json", {}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("data info requires exactly INFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::DataInfoReport r = meshioplusplus::data_info(mesh);
+
+    if (has_flag(p, "json")) {
+        std::cout << "[\n";
+        for (std::size_t i = 0; i < r.mArrays.size(); ++i) {
+            const auto& a = r.mArrays[i];
+            std::cout << "  {\n";
+            std::cout << "    \"location\": \"" << meshioplusplus::data_location_name(a.mLocation)
+                      << "\",\n";
+            std::cout << "    \"name\": \"" << a.mName << "\",\n";
+            std::cout << "    \"dtype\": \"" << meshioplusplus::dtype_numpy_str(a.mDtype)
+                      << "\",\n";
+            std::cout << "    \"num_blocks\": " << a.mNumBlocks << ",\n";
+            std::cout << "    \"num_entries\": " << a.mNumEntries << ",\n";
+            std::cout << "    \"num_components\": " << a.mNumComponents << ",\n";
+            std::cout << "    \"num_values\": " << a.mNumValues << ",\n";
+            std::cout << "    \"min\": " << data_g6(a.mMin) << ",\n";
+            std::cout << "    \"max\": " << data_g6(a.mMax) << ",\n";
+            std::cout << "    \"mean\": " << data_g6(a.mMean) << ",\n";
+            std::cout << "    \"num_nan\": " << a.mNumNan << ",\n";
+            std::cout << "    \"num_inf\": " << a.mNumInf << ",\n";
+            std::cout << "    \"num_finite\": " << a.mNumFinite << "\n";
+            std::cout << "  }" << (i + 1 < r.mArrays.size() ? "," : "") << "\n";
+        }
+        std::cout << "]\n";
+        return 0;
+    }
+
+    std::cout << "<meshio++ data summary>\n";
+    if (r.mArrays.empty()) {
+        std::cout << "  (the mesh carries no data arrays)\n";
+        return 0;
+    }
+    std::cout << "  location    name                 dtype  comp  entries          min"
+                 "          max         mean   nan   inf\n";
+    std::cout << "  " << std::string(104, '-') << "\n";
+    for (const auto& a : r.mArrays) {
+        char line[512];
+        std::snprintf(
+            line, sizeof(line), "  %-11s %-20s %-6s %4lld %8lld %12s %12s %12s %5lld %5lld",
+            meshioplusplus::data_location_name(a.mLocation), a.mName.c_str(),
+            meshioplusplus::dtype_numpy_str(a.mDtype), static_cast<long long>(a.mNumComponents),
+            static_cast<long long>(a.mNumEntries), data_g6(a.mMin).c_str(), data_g6(a.mMax).c_str(),
+            data_g6(a.mMean).c_str(), static_cast<long long>(a.mNumNan),
+            static_cast<long long>(a.mNumInf));
+        std::cout << line << "\n";
+        if (a.mInconsistentBlocks)
+            std::cout << "              (warning: cell blocks disagree in components)\n";
+    }
+    return 0;
+}
+
+int cmd_data_rename(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    for (const char* loc : DATA_LOCATION_FLAGS)
+        specs.push_back({loc, {}, true});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data rename requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    int total = 0;
+    for (int i = 0; i < 3; ++i) {
+        for (const std::string& spec : opt_values(p, DATA_LOCATION_FLAGS[i])) {
+            auto [old_name, new_name] = data_split_rename(spec);
+            mesh = meshioplusplus::data_rename(mesh, data_location_of_flag(i), old_name, new_name);
+            std::cout << "renamed " << meshioplusplus::data_location_name(data_location_of_flag(i))
+                      << " '" << old_name << "' -> '" << new_name << "'\n";
+            ++total;
+        }
+    }
+    if (total == 0)
+        std::cout << "data rename: nothing to do (pass --point/--cell/--field OLD:NEW)\n";
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_data_drop(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    for (const char* loc : DATA_LOCATION_FLAGS)
+        specs.push_back({loc, {}, true});
+    specs.push_back({"ignore-missing", {}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data drop requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const bool ignore = has_flag(p, "ignore-missing");
+
+    for (int i = 0; i < 3; ++i) {
+        if (!has_opt(p, DATA_LOCATION_FLAGS[i]))
+            continue;
+        const std::vector<std::string> names =
+            data_split_names(opt_value(p, DATA_LOCATION_FLAGS[i]));
+        if (names.empty())
+            continue;
+        mesh = meshioplusplus::data_drop(mesh, data_location_of_flag(i), names, ignore);
+        std::cout << "dropped " << meshioplusplus::data_location_name(data_location_of_flag(i))
+                  << ": ";
+        for (std::size_t k = 0; k < names.size(); ++k)
+            std::cout << (k ? ", " : "") << names[k];
+        std::cout << "\n";
+    }
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_data_keep(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    for (const char* loc : DATA_LOCATION_FLAGS)
+        specs.push_back({loc, {}, true});
+    specs.push_back({"ignore-missing", {}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data keep requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const bool ignore = has_flag(p, "ignore-missing");
+
+    for (int i = 0; i < 3; ++i) {
+        // A location the user did not name is left alone; naming it with an
+        // empty list means "keep nothing there".
+        if (!has_opt(p, DATA_LOCATION_FLAGS[i]))
+            continue;
+        const std::vector<std::string> names =
+            data_split_names(opt_value(p, DATA_LOCATION_FLAGS[i]));
+        mesh = meshioplusplus::data_keep(mesh, data_location_of_flag(i), names, ignore);
+        std::cout << "kept " << meshioplusplus::data_location_name(data_location_of_flag(i))
+                  << ": ";
+        if (names.empty()) {
+            std::cout << "(nothing)";
+        } else {
+            for (std::size_t k = 0; k < names.size(); ++k)
+                std::cout << (k ? ", " : "") << names[k];
+        }
+        std::cout << "\n";
+    }
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_data_to_cell(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    specs.push_back({"keys", {}, true});
+    specs.push_back({"target-suffix", {}, true});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data to-cell requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::DataAverageOptions opts;
+    opts.names = data_split_names(opt_value(p, "keys"));
+    opts.suffix = opt_value(p, "target-suffix");
+    const std::size_t n = opts.names.empty() ? mesh.NumPointData() : opts.names.size();
+    Mesh out = meshioplusplus::point_data_to_cell_data(mesh, opts);
+    std::cout << "averaged " << n << " point_data array(s) onto the cells\n";
+    write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_data_to_point(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    specs.push_back({"keys", {}, true});
+    specs.push_back({"weighted", {}, false});
+    specs.push_back({"target-suffix", {}, true});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data to-point requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::DataAverageOptions opts;
+    opts.names = data_split_names(opt_value(p, "keys"));
+    opts.weight = has_flag(p, "weighted") ? meshioplusplus::CellPointWeight::Measure
+                                          : meshioplusplus::CellPointWeight::Uniform;
+    opts.suffix = opt_value(p, "target-suffix");
+    const std::size_t n = opts.names.empty() ? mesh.NumCellData() : opts.names.size();
+    Mesh out = meshioplusplus::cell_data_to_point_data(mesh, opts);
+    std::cout << "averaged " << n << " cell_data array(s) onto the points ("
+              << (has_flag(p, "weighted") ? "measure-weighted" : "unweighted") << ")\n";
+    write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_data_calc(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    for (const char* loc : DATA_LOCATION_FLAGS)
+        specs.push_back({loc, {}, true});
+    specs.push_back({"overwrite", {}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data calc requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    int total = 0;
+    for (int i = 0; i < 3; ++i) {
+        for (const std::string& spec : opt_values(p, DATA_LOCATION_FLAGS[i])) {
+            auto [name, expr] = data_split_assignment(spec);
+            meshioplusplus::DataCalcOptions opts;
+            opts.location = data_location_of_flag(i);
+            opts.output = name;
+            opts.overwrite = has_flag(p, "overwrite");
+            mesh = meshioplusplus::data_calc(mesh, expr, opts);
+            std::cout << "computed " << meshioplusplus::data_location_name(opts.location) << " '"
+                      << name << "' = " << expr << "\n";
+            ++total;
+        }
+    }
+    if (total == 0)
+        std::cout << "data calc: nothing to do (pass --point/--cell/--field 'NAME = EXPR')\n";
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+/// Shared body of `data clamp` and `data normalize`.
+int cmd_data_condition_impl(const std::vector<std::string>& rArgs, bool clamp) {
+    auto specs = data_io_specs(true);
+    for (const char* loc : DATA_LOCATION_FLAGS)
+        specs.push_back({loc, {}, true});
+    specs.push_back({"magnitude", {}, false});
+    specs.push_back({"nan", {}, true});
+    specs.push_back({"nan-value", {}, true});
+    specs.push_back({"suffix", {}, true});
+    if (clamp) {
+        specs.push_back({"min", {}, true});
+        specs.push_back({"max", {}, true});
+    } else {
+        specs.push_back({"to", {}, true});
+        specs.push_back({"zero-mean", {}, false});
+    }
+    auto p = cli_parse(rArgs, specs);
+    const char* verb = clamp ? "data clamp" : "data normalize";
+    if (p.positionals.size() != 2)
+        throw std::runtime_error(std::string(verb) + " requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    const bool zero_mean = !clamp && has_flag(p, "zero-mean");
+    double lo = 0.0;
+    double hi = 1.0;
+    if (clamp) {
+        if (!has_opt(p, "min") || !has_opt(p, "max"))
+            throw std::runtime_error("data clamp requires --min and --max");
+        lo = std::stod(opt_value(p, "min"));
+        hi = std::stod(opt_value(p, "max"));
+    } else if (!zero_mean) {
+        const std::vector<std::string> parts = data_split_names(opt_value(p, "to", "0,1"));
+        if (parts.size() != 2)
+            throw std::runtime_error("data normalize: --to expects LO,HI");
+        lo = std::stod(parts[0]);
+        hi = std::stod(parts[1]);
+    }
+
+    int touched = 0;
+    for (int i = 0; i < 3; ++i) {
+        if (!has_opt(p, DATA_LOCATION_FLAGS[i]))
+            continue;
+        meshioplusplus::DataConditionOptions opts;
+        opts.location = data_location_of_flag(i);
+        opts.names = data_split_names(opt_value(p, DATA_LOCATION_FLAGS[i]));
+        opts.mode = clamp ? meshioplusplus::ConditionMode::Clamp
+                          : (zero_mean ? meshioplusplus::ConditionMode::Standardize
+                                       : meshioplusplus::ConditionMode::Normalize);
+        opts.scope = has_flag(p, "magnitude") ? meshioplusplus::ConditionScope::Magnitude
+                                              : meshioplusplus::ConditionScope::Component;
+        opts.lo = lo;
+        opts.hi = hi;
+        opts.nan_policy = meshioplusplus::nan_policy_from_name(opt_value(p, "nan", "ignore"));
+        opts.nan_replacement = std::stod(opt_value(p, "nan-value", "0"));
+        opts.suffix = opt_value(p, "suffix");
+        mesh = meshioplusplus::data_condition(mesh, opts);
+        std::cout << (clamp ? "clamped " : "normalized ")
+                  << meshioplusplus::data_location_name(opts.location) << " ";
+        if (opts.names.empty()) {
+            std::cout << "(all)";
+        } else {
+            for (std::size_t k = 0; k < opts.names.size(); ++k)
+                std::cout << (k ? ", " : "") << opts.names[k];
+        }
+        if (clamp)
+            std::cout << " to [" << data_g6(lo) << ", " << data_g6(hi) << "]\n";
+        else if (zero_mean)
+            std::cout << " to zero mean / unit std\n";
+        else
+            std::cout << " to [" << data_g6(lo) << ", " << data_g6(hi) << "]\n";
+        ++touched;
+    }
+    if (touched == 0)
+        std::cout << verb << ": nothing to do (pass --point/--cell/--field NAME)\n";
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_data_clamp(const std::vector<std::string>& rArgs) {
+    return cmd_data_condition_impl(rArgs, /*clamp=*/true);
+}
+
+int cmd_data_normalize(const std::vector<std::string>& rArgs) {
+    return cmd_data_condition_impl(rArgs, /*clamp=*/false);
+}
+
+void print_data_usage(std::ostream& rOut) {
+    rOut << "usage: meshioplusplus data <subcommand> [options]\n\n"
+            "Operations on a mesh's data arrays (the geometry is never modified).\n\n"
+            "subcommands:\n"
+            "  info        Summarize every data array (dtype/shape/min/max/mean/NaN)\n"
+            "  rename      Rename data arrays (--point OLD:NEW, split on the last ':')\n"
+            "  drop        Drop data arrays by name (--point A,B)\n"
+            "  keep        Keep only the named data arrays (--point T,p)\n"
+            "  to-cell     Average point_data onto the cells\n"
+            "  to-point    Average cell_data onto the points (--weighted)\n"
+            "  calc        Derive an array from an expression (--point 'n = norm(v)')\n"
+            "  clamp       Clamp values into [--min, --max]\n"
+            "  normalize   Rescale to --to LO,HI (or --zero-mean)\n\n";
+}
+
+int cmd_data(const std::vector<std::string>& rArgs) {
+    if (rArgs.empty()) {
+        print_data_usage(std::cerr);
+        return 2;
+    }
+    const std::string sub = rArgs[0];
+    const std::vector<std::string> rest(rArgs.begin() + 1, rArgs.end());
+    if (sub == "-h" || sub == "--help") {
+        print_data_usage(std::cout);
+        return 0;
+    }
+    if (sub == "info")
+        return cmd_data_info(rest);
+    if (sub == "rename")
+        return cmd_data_rename(rest);
+    if (sub == "drop")
+        return cmd_data_drop(rest);
+    if (sub == "keep")
+        return cmd_data_keep(rest);
+    if (sub == "to-cell")
+        return cmd_data_to_cell(rest);
+    if (sub == "to-point")
+        return cmd_data_to_point(rest);
+    if (sub == "calc")
+        return cmd_data_calc(rest);
+    if (sub == "clamp")
+        return cmd_data_clamp(rest);
+    if (sub == "normalize")
+        return cmd_data_normalize(rest);
+    std::cerr << "error: unknown data subcommand '" << sub << "'\n\n";
+    print_data_usage(std::cerr);
+    return 2;
+}
+
 int cmd_reorder(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -1106,6 +1565,8 @@ int main(int argc, char** argv) {
             return cmd_crop(rest);
         if (cmd == "split")
             return cmd_split(rest);
+        if (cmd == "data")
+            return cmd_data(rest);
         if (cmd == "stats")
             return cmd_stats(rest);
     } catch (const std::exception& e) {
