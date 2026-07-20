@@ -297,23 +297,34 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
     }
 }
 
-}  // namespace
-
-Mesh read_xdmf(const std::string& rPath) {
-    pugi::xml_document doc;
-    if (!doc.load_file(rPath.c_str()))
-        throw ReadError("XDMF: could not parse " + rPath);
-    pugi::xml_node root = doc.child("Xdmf");
+/**
+ * @brief Validate the document and return its `<Grid>`.
+ *
+ * Shared by the mesh and metadata readers so a summary can never accept a file
+ * `read_xdmf` would reject.
+ */
+pugi::xml_node xdmf_find_grid(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("Xdmf");
     if (!root)
         throw ReadError("XDMF: missing <Xdmf> root");
     std::string version = root.attribute("Version").value();
     if (!version.empty() && version[0] != '3')
         throw ReadError("XDMF: only version 3 handled by the C++ core");
 
-    pugi::xml_node domain = root.child("Domain");
-    pugi::xml_node grid = domain.child("Grid");
+    pugi::xml_node grid = root.child("Domain").child("Grid");
     if (!grid)
         throw ReadError("XDMF: missing <Grid>");
+    return grid;
+}
+
+}  // namespace
+
+Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    if (!doc.load_file(rPath.c_str()))
+        throw ReadError("XDMF: could not parse " + rPath);
+    pugi::xml_node grid = xdmf_find_grid(doc);
+    const bool want_data = rOpts.WantsAnyData();
 
     fs::path base_dir =
         fs::path(rPath).has_parent_path() ? fs::path(rPath).parent_path() : fs::path(".");
@@ -340,6 +351,11 @@ Mesh read_xdmf(const std::string& rPath) {
         } else if (tag == "Attribute") {
             std::string name = c.attribute("Name").value();
             std::string center = c.attribute("Center").value();
+            // Name/Center are attributes, so an unwanted attribute is skipped
+            // before its DataItem is touched -- for the HDF path that means the
+            // dataset is never opened at all.
+            if (!want_data || !rOpts.WantsArray(name))
+                continue;
             pugi::xml_node di = c.child("DataItem");
             NDArray data = read_data_item(di, base_dir);
             if (center == "Node")
@@ -367,6 +383,58 @@ Mesh read_xdmf(const std::string& rPath) {
         mesh.AddCellData(kv.first, split_raw_cell_data(kv.second, sizes));
 
     return mesh;
+}
+
+MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
+    pugi::xml_document doc;
+    if (!doc.load_file(rPath.c_str(), pugi::parse_minimal))
+        throw ReadError("XDMF: could not parse " + rPath);
+    pugi::xml_node grid = xdmf_find_grid(doc);
+
+    MeshMetadata meta;
+    // XDMF is the best case for a summary: every <DataItem> declares its shape
+    // in a `Dimensions` attribute, so counts are exact without reading any
+    // payload -- and for the HDF path, without opening the .h5 file at all.
+    for (pugi::xml_node c : grid.children()) {
+        const std::string tag = c.name();
+        if (tag == "Topology") {
+            const std::string ctype = c.attribute("Type") ? c.attribute("Type").value()
+                                                          : c.attribute("TopologyType").value();
+            if (ctype == "Mixed")
+                throw ReadError("XDMF: Mixed topology needs the full reader to be summarized");
+            const std::vector<std::size_t> dims =
+                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            CellBlockInfo info;
+            info.mType = xdmf_to_meshio(ctype);
+            info.mNumCells = dims.empty() ? 0 : dims[0];
+            info.mNodesPerCell = dims.size() >= 2 ? dims[1] : 0;
+            meta.mCellBlocks.push_back(std::move(info));
+        } else if (tag == "Geometry") {
+            const std::vector<std::size_t> dims =
+                parse_dims(c.child("DataItem").attribute("Dimensions").value());
+            meta.mNumPoints = dims.empty() ? 0 : dims[0];
+            meta.mPointDim = dims.size() >= 2 ? dims[1] : 3;
+        } else if (tag == "Attribute") {
+            const std::string name = c.attribute("Name").value();
+            const std::string center = c.attribute("Center").value();
+            if (center == "Node")
+                meta.mPointDataNames.push_back(name);
+            else if (center == "Cell")
+                meta.mCellDataNames.push_back(name);
+            else
+                throw ReadError("XDMF: unknown attribute center " + center);
+        } else if (tag == "Information") {
+            throw ReadError("XDMF: Information section handled by Python fallback");
+        } else {
+            throw ReadError("XDMF: unknown section " + tag);
+        }
+    }
+    // Match the uniform API's sorted-name guarantee.
+    std::sort(meta.mPointDataNames.begin(), meta.mPointDataNames.end());
+    std::sort(meta.mCellDataNames.begin(), meta.mCellDataNames.end());
+
+    meta.mHasBBox = false;  // would require reading the Geometry payload
+    return meta;
 }
 
 namespace {
