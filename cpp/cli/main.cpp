@@ -48,6 +48,9 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/registry.hpp"
+
+#include "polyscope_view.hpp"
+#include "view_payload.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
@@ -378,11 +381,15 @@ void print_usage(std::ostream& os) {
           "                            file with the partition:part cell_data instead\n"
           "  smooth                  Relax node positions (Laplacian / Taubin)\n"
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
+          "  view                    Open a mesh in an interactive viewer\n"
+          "  screenshot              Render a mesh to a PNG without a window\n"
           "  data <verb>             Inspect / rename / average / compute on data arrays\n\n"
           "  -v, --version           Display version information\n"
           "  -h, --help              Show this message\n\n"
           "notes: point/cell sets and 'convert -s/-d' are unavailable in the native\n"
-          "       CLI (they live only in the Python Mesh); use the Python CLI for those.\n";
+          "       CLI (they live only in the Python Mesh); use the Python CLI for those.\n"
+          "       view/screenshot need a build with -DMESHIOPLUSPLUS_WITH_POLYSCOPE=ON;\n"
+          "       they are listed in every build but otherwise report that.\n";
 }
 
 /// "a,b" -> {"a", "b"}, skipping empty entries.
@@ -1118,6 +1125,60 @@ std::string stats_g6(double v) {
     return buf;
 }
 
+/// Shared options for `view` and `screenshot`, which differ only in output.
+std::vector<cli_opt_spec> view_common_specs() {
+    return {
+        {"input-format", {"-i"}, true},
+        {"kind", {}, true},
+        {"color-by", {}, true},
+        {"name", {}, true},
+    };
+}
+
+int cmd_view(const std::vector<std::string>& rArgs) {
+    auto specs = view_common_specs();
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("view requires exactly INFILE");
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::cli::view_mesh(mesh,
+                                   meshioplusplus::cli::view_kind_from_name(
+                                       opt_value(p, "kind", "auto")),
+                                   opt_value(p, "color-by"), opt_value(p, "name", "mesh"));
+    return 0;
+}
+
+int cmd_screenshot(const std::vector<std::string>& rArgs) {
+    auto specs = view_common_specs();
+    specs.push_back({"size", {}, true});
+    specs.push_back({"transparent", {}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("screenshot requires exactly INFILE and OUTFILE");
+
+    // WxH rather than two positionals, so the parser needs no multi-value
+    // option and OUTFILE stays unambiguous.
+    int width = 1280;
+    int height = 960;
+    const std::string size = opt_value(p, "size");
+    if (!size.empty()) {
+        const auto x = size.find('x');
+        if (x == std::string::npos)
+            throw std::runtime_error("--size expects WIDTHxHEIGHT, e.g. --size 1600x1200");
+        width = std::stoi(size.substr(0, x));
+        height = std::stoi(size.substr(x + 1));
+    }
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::cli::screenshot_mesh(
+        mesh,
+        meshioplusplus::cli::view_kind_from_name(opt_value(p, "kind", "auto")),
+        opt_value(p, "color-by"), opt_value(p, "name", "mesh"), p.positionals[1], width,
+        height, has_flag(p, "transparent"));
+    return 0;
+}
+
 int cmd_stats(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -1839,6 +1900,10 @@ int main(int argc, char** argv) {
             return cmd_data(rest);
         if (cmd == "stats")
             return cmd_stats(rest);
+        if (cmd == "view")
+            return cmd_view(rest);
+        if (cmd == "screenshot")
+            return cmd_screenshot(rest);
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;
