@@ -7,6 +7,8 @@ algorithm (a facet whose sorted corner-node key occurs **exactly once** is on
 the boundary), but it picks the dimension automatically and also handles 2D
 surface meshes.
 
+![The mesh's boundary, extracted as a new surface mesh](/images/extract_surface.png)
+
 ```python
 import meshioplusplus
 

@@ -62,6 +62,7 @@
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -375,6 +376,7 @@ void print_usage(std::ostream& os) {
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
+          "  smooth                  Relax node positions (Laplacian / Taubin)\n"
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
           "  data <verb>             Inspect / rename / average / compute on data arrays\n\n"
           "  -v, --version           Display version information\n"
@@ -991,6 +993,47 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
 
     auto result = meshioplusplus::refine(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_smooth(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"method", {}, true},
+                                  {"iterations", {}, true},
+                                  {"lambda", {}, true},
+                                  {"mu", {}, true},
+                                  {"feature-angle", {}, true},
+                                  {"no-fix-boundary", {}, false},
+                                  {"no-preserve-features", {}, false},
+                                  {"no-guard-inversion", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("smooth requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::SmoothOptions options;
+    options.mMethod = meshioplusplus::smooth_method_from_name(opt_value(p, "method", "taubin"));
+    options.mIterations = std::stoi(opt_value(p, "iterations", "10"));
+    // Negative lambda is the sentinel for "this method's own default"
+    // (0.5 Laplacian / 0.33 Taubin), so it is what we pass when unset.
+    options.mLambda = std::stod(opt_value(p, "lambda", "-1"));
+    options.mMu = std::stod(opt_value(p, "mu", "-0.34"));
+    options.mFeatureAngleDeg = std::stod(opt_value(p, "feature-angle", "30"));
+    options.mFixBoundary = !has_flag(p, "no-fix-boundary");
+    options.mPreserveFeatures = !has_flag(p, "no-preserve-features");
+    options.mGuardInversion = !has_flag(p, "no-guard-inversion");
+
+    auto r = meshioplusplus::smooth(mesh, options);
+    if (!has_flag(p, "quiet")) {
+        std::cout << "smoothed mesh\n";
+        std::cout << "  nodes moved:              " << r.mNumNodesMoved << "\n";
+        std::cout << "  max displacement:         " << r.mMaxDisplacement << "\n";
+        std::cout << "  skipped (inversion):      " << r.mNumSkippedInversion << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -1788,6 +1831,8 @@ int main(int argc, char** argv) {
             return cmd_convert_cells(rest);
         if (cmd == "refine")
             return cmd_refine(rest);
+        if (cmd == "smooth")
+            return cmd_smooth(rest);
         if (cmd == "partition")
             return cmd_partition(rest);
         if (cmd == "data")

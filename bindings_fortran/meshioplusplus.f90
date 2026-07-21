@@ -168,6 +168,7 @@ module meshioplusplus
         procedure :: reorder => mesh_reorder
         procedure :: transform => mesh_transform
         procedure :: clean => mesh_clean
+        procedure :: smooth => mesh_smooth
         procedure :: crop_bbox => mesh_crop_bbox
         procedure :: crop_plane => mesh_crop_plane
         procedure :: split => mesh_split
@@ -444,6 +445,18 @@ module meshioplusplus
             integer(c_int), value :: weld, rmorph, ddeg, ddup
             real(c_double), value :: atol
             integer(c_int64_t), intent(out) :: nweld, norph, ndeg, ndup
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_smooth(h, method, iters, lambda, mu, fixb, feat, fangle, guard, &
+                              nmoved, maxdisp, nskip) bind(c, name="mio_smooth") result(r)
+            import :: c_ptr, c_char, c_int, c_int64_t, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: method
+            integer(c_int), value :: iters, fixb, feat, guard
+            real(c_double), value :: lambda, mu, fangle
+            integer(c_int64_t), intent(out) :: nmoved, nskip
+            real(c_double), intent(out) :: maxdisp
             type(c_ptr) :: r
         end function
 
@@ -1580,6 +1593,60 @@ contains
         if (present(points_removed_orphan)) points_removed_orphan = int(norph, int64)
         if (present(cells_dropped_degenerate)) cells_dropped_degenerate = int(ndeg, int64)
         if (present(cells_dropped_duplicate)) cells_dropped_duplicate = int(ndup, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Smooth the mesh's point coordinates, leaving topology and data intact.
+    !> `method` is "laplacian" or "taubin"; `iterations` is the pass count (for
+    !> taubin one iteration is two passes). A negative `lambda` — the default —
+    !> means "this method's own default" (0.5 laplacian, 0.33 taubin). The
+    !> optional out-args receive the run summary. The caller pin mask (mFrozen)
+    !> is not exposed across the C ABI.
+    function mesh_smooth(self, method, iterations, lambda, mu, fix_boundary, preserve_features, &
+                         feature_angle, guard_inversion, nodes_moved, max_displacement, &
+                         skipped_inversion, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: method
+        integer, intent(in) :: iterations
+        real(real64), intent(in), optional :: lambda, mu, feature_angle
+        logical, intent(in), optional :: fix_boundary, preserve_features, guard_inversion
+        integer(int64), intent(out), optional :: nodes_moved, skipped_inversion
+        real(real64), intent(out), optional :: max_displacement
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cfixb, cfeat, cguard
+        real(c_double) :: clambda, cmu, cangle
+        integer(c_int64_t) :: nmoved, nskip
+        real(c_double) :: maxdisp
+        clambda = -1.0_c_double  ! negative = this method's own default
+        if (present(lambda)) clambda = real(lambda, c_double)
+        cmu = -0.34_c_double
+        if (present(mu)) cmu = real(mu, c_double)
+        cangle = 30.0_c_double
+        if (present(feature_angle)) cangle = real(feature_angle, c_double)
+        cfixb = 1
+        if (present(fix_boundary)) then
+            if (.not. fix_boundary) cfixb = 0
+        end if
+        cfeat = 1
+        if (present(preserve_features)) then
+            if (.not. preserve_features) cfeat = 0
+        end if
+        cguard = 1
+        if (present(guard_inversion)) then
+            if (.not. guard_inversion) cguard = 0
+        end if
+        out%handle = c_mio_smooth(self%handle, c_str(method), int(iterations, c_int), &
+                                  clambda, cmu, cfixb, cfeat, cangle, cguard, &
+                                  nmoved, maxdisp, nskip)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('smooth', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(nodes_moved)) nodes_moved = int(nmoved, int64)
+        if (present(max_displacement)) max_displacement = real(maxdisp, real64)
+        if (present(skipped_inversion)) skipped_inversion = int(nskip, int64)
         call clear_status(stat, errmsg)
     end function
 

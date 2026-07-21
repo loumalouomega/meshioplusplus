@@ -5,6 +5,8 @@ you want it. Two options narrow that, and a third call skips the arrays entirely
 
 Both are **additive**. Default `read()` behaviour is unchanged.
 
+![Identical geometry either way; the data array is loaded only on the left](/images/selective_read.png)
+
 ## Reading part of a file
 
 ```python

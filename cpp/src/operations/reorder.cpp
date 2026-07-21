@@ -33,6 +33,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/detail/node_adjacency.hpp"
 #include "meshioplusplus/detail/space_filling.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -51,87 +52,16 @@ NDArray reorder_owned_copy(const NDArray& rArr) {
     return c;
 }
 
-// Collect the (validated) node ids referenced by cell `c` of block `rCb`.
-void reorder_cell_nodes(const Mesh::CellView& rCb, std::size_t c, std::size_t n,
-                        std::vector<std::int64_t>& rOut) {
-    rOut.clear();
-    if (rCb.IsPolyhedron()) {
-        for (std::size_t f = 0; f < rCb.NumFaces(c); ++f) {
-            std::pair<const std::int64_t*, std::size_t> face = rCb.Face(c, f);
-            rOut.insert(rOut.end(), face.first, face.first + face.second);
-        }
-    } else if (rCb.IsRagged()) {
-        const std::int64_t* row = rCb.Row(c);
-        rOut.assign(row, row + rCb.RowSize(c));
-    } else {
-        const NDArray& conn = rCb.Conn();
-        const std::size_t npc = rCb.NodesPerCell();
-        rOut.reserve(npc);
-        for (std::size_t k = 0; k < npc; ++k)
-            rOut.push_back(detail::read_int(conn, c * npc + k));
-    }
-    // Keep only in-range ids so out-of-bounds connectivity can never index a
-    // permutation/adjacency array out of bounds.
-    rOut.erase(
-        std::remove_if(rOut.begin(), rOut.end(),
-                       [n](std::int64_t v) { return v < 0 || static_cast<std::size_t>(v) >= n; }),
-        rOut.end());
-}
-
 // --- CSR node adjacency -----------------------------------------------------
 
-// Compressed-sparse-row node graph: nodes co-occurring in a cell are neighbours.
-struct ReorderCsr {
-    std::vector<std::int64_t> mXadj;  // size n + 1
-    std::vector<std::int64_t> mAdj;   // size mXadj[n]
-};
-
-// Add every ordered pair of a cell's nodes as a directed edge (an element
-// clique). Duplicates and self-loops are removed later during the dedup pass.
-void reorder_add_clique(std::vector<std::vector<std::int64_t>>& rAdj,
-                        const std::vector<std::int64_t>& rNodes) {
-    const std::size_t k = rNodes.size();
-    for (std::size_t a = 0; a < k; ++a) {
-        std::vector<std::int64_t>& row = rAdj[static_cast<std::size_t>(rNodes[a])];
-        for (std::size_t b = 0; b < k; ++b)
-            if (a != b)
-                row.push_back(rNodes[b]);
-    }
-}
-
-ReorderCsr reorder_build_adjacency(const Mesh& rMesh, std::size_t n) {
-    // Phase 1 (serial, deterministic): accumulate raw adjacency lists.
-    std::vector<std::vector<std::int64_t>> adj(n);
-    std::vector<std::int64_t> nodes;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t nc = cb.NumCells();
-        for (std::size_t c = 0; c < nc; ++c) {
-            reorder_cell_nodes(cb, c, n, nodes);
-            reorder_add_clique(adj, nodes);
-        }
-    }
-
-    // Phase 2 (parallel): sort + unique each node's list, dropping self-loops.
-    parallel_for(n, [&](std::size_t i) {
-        std::vector<std::int64_t>& v = adj[i];
-        std::sort(v.begin(), v.end());
-        v.erase(std::unique(v.begin(), v.end()), v.end());
-        v.erase(std::remove(v.begin(), v.end(), static_cast<std::int64_t>(i)), v.end());
-    });
-
-    // Phase 3: pack into CSR.
-    ReorderCsr csr;
-    csr.mXadj.resize(n + 1);
-    csr.mXadj[0] = 0;
-    for (std::size_t i = 0; i < n; ++i)
-        csr.mXadj[i + 1] = csr.mXadj[i] + static_cast<std::int64_t>(adj[i].size());
-    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[n]));
-    parallel_for_bw(n, [&](std::size_t i) {
-        std::copy(adj[i].begin(), adj[i].end(),
-                  csr.mAdj.begin() + static_cast<std::ptrdiff_t>(csr.mXadj[i]));
-    });
-    return csr;
-}
+// The node graph and its builder live in detail/node_adjacency.hpp, shared with
+// operations/smooth.cpp. Reorder wants the *clique* graph — every pair of nodes
+// co-occurring in a cell — because that is the sparsity pattern of the FEM
+// matrix whose bandwidth this operation exists to reduce. (Smooth wants the
+// edge graph instead; see that header.) The Clique path is the code that used
+// to live here, unchanged, so RCM's tie-breaking on adjacency row order — and
+// therefore every permutation this operation has ever produced — is unaffected.
+using ReorderCsr = detail::NodeAdjacency;
 
 // --- Reverse Cuthill-McKee --------------------------------------------------
 
@@ -380,7 +310,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
         // Per-cell sort key = min new node index; stable argsort -> cell order.
         std::vector<std::int64_t> key(nc);
         for (std::size_t c = 0; c < nc; ++c) {
-            reorder_cell_nodes(cb, c, n, nodes);
+            detail::cell_node_ids(cb, c, n, nodes);
             key[c] = reorder_cell_key(nodes, node_perm);
         }
         std::vector<std::int64_t> cellorder(nc);
@@ -530,7 +460,8 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
     const std::size_t n = rMesh.NumPoints();
     std::vector<std::int64_t> perm;
     if (method == ReorderMethod::RCM) {
-        ReorderCsr csr = reorder_build_adjacency(rMesh, n);
+        ReorderCsr csr =
+            detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Clique);
         perm = reorder_rcm(csr, n);
     } else {
         std::vector<std::uint64_t> keys =

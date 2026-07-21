@@ -8,6 +8,8 @@ convenient boolean wrapper for test suites. It is a mesh **operation** (like
 [quality metrics](/mesh_quality)), not a file format, and uses only standard
 C++/numpy, so it runs under every mesh backend.
 
+![Per-point coordinate error from `diff`, visualised on the mesh](/images/diff_error.png)
+
 ```python
 import meshioplusplus
 

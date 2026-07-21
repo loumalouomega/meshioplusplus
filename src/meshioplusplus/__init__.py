@@ -72,6 +72,7 @@ from ._quality import attach_quality, compute_quality
 from ._refine import refine
 from ._reorder import compute_bandwidth, reorder
 from ._skin import extract_skin
+from ._smooth import smooth
 from ._sniff import sniff_format
 from ._split import split
 from ._stats import compute_stats
@@ -147,6 +148,7 @@ __all__ = [
     "split",
     "convert_cells",
     "refine",
+    "smooth",
     "partition",
     "partition_labels",
     "compute_stats",

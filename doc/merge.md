@@ -6,6 +6,8 @@ two or more meshes into a **single** mesh. It is a mesh **operation** (like
 and [quality metrics](/mesh_quality)), not a file format, and uses only standard
 C++/numpy — no third-party dependencies — so it runs under every mesh backend.
 
+![Two meshes combined, coloured by which input each cell came from](/images/merge_sources.png)
+
 ```python
 import meshioplusplus
 

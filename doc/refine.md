@@ -6,6 +6,8 @@ the object it describes intact. It is a mesh **operation** (like
 [cell conversion](/convert_cells) and [crop](/crop)), not a file format, and uses
 only standard C++/numpy, so it runs under every mesh backend.
 
+![Each hexahedron refined into 8, volume and orientation preserved](/images/refine_hex.png)
+
 ```python
 import meshioplusplus
 

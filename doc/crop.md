@@ -6,6 +6,8 @@ pruning the now-unused points and remapping connectivity and all data. It is a
 mesh **operation** (like [split](/split) and [merge](/merge)), not a file
 format, and uses only standard C++/numpy, so it runs under every mesh backend.
 
+![Half of a surface mesh cropped out by a bounding box](/images/crop_bbox.png)
+
 ```python
 import meshioplusplus
 

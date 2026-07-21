@@ -7,6 +7,8 @@ connectivity and data throughout. It is a mesh **operation** (like
 [merge](/merge) and [reordering](/reorder)), not a file format, and uses only
 standard C++/numpy, so it runs under every mesh backend.
 
+![Coincident duplicate points welded back down to the original point count](/images/clean_weld.png)
+
 ```python
 import meshioplusplus
 

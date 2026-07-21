@@ -61,7 +61,8 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   meshesEqual: (a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean) => boolean,
  *   merge: (meshes: Mesh[], weld?: boolean, atol?: number, sourceTag?: boolean, dataPolicy?: string, dropDuplicateCells?: boolean) => Mesh,
  *   transform: (mesh: Mesh, matrix: number[], rotateVectorData?: boolean) => Mesh,
- *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean) => Mesh,
+ *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean) => {mesh: Mesh, pointsWelded: number, pointsRemovedOrphan: number, cellsDroppedDegenerate: number, cellsDroppedDuplicate: number},
+ *   smooth: (mesh: Mesh, method?: string, iterations?: number, lambda?: number, mu?: number, fixBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, guardInversion?: boolean) => {mesh: Mesh, numNodesMoved: number, maxDisplacement: number, numSkippedInversion: number},
  *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
@@ -126,11 +127,36 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
         clean: (
             mesh,
             weld = false,
-            atol = 1e-12,
+            atol = 1e-8,
             removeOrphans = true,
             dropDegenerate = true,
             dropDuplicateCells = true,
         ) => Module.clean(mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells),
+        // A negative `lambda` means "this method's own default" (0.5 Laplacian,
+        // 0.33 Taubin) and is forwarded unchanged; the frozen-node mask is not
+        // exposed here, as on the other flat bindings.
+        smooth: (
+            mesh,
+            method = 'taubin',
+            iterations = 10,
+            lambda = -1,
+            mu = -0.34,
+            fixBoundary = true,
+            preserveFeatures = true,
+            featureAngle = 30,
+            guardInversion = true,
+        ) =>
+            Module.smooth(
+                mesh,
+                method,
+                iterations,
+                lambda,
+                mu,
+                fixBoundary,
+                preserveFeatures,
+                featureAngle,
+                guardInversion,
+            ),
         cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false) =>
             Module.cropBbox(mesh, lo, hi, mode, recordIds),
         cropPlane: (mesh, point, normal, mode = 'all', recordIds = false) =>

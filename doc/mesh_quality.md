@@ -8,6 +8,8 @@ evaluated on each cell's **corner nodes** (quadratic variants reduce to their
 linear parent), using only standard C++/numpy math, so they run under every
 mesh backend.
 
+![Scaled-Jacobian distribution across every cell in a mesh](/images/quality_histogram.png)
+
 ```python
 import meshioplusplus
 
@@ -60,6 +62,8 @@ arrays and are excluded from the summaries and counts.
 - `cell_arrays` — `metric name → list of arrays` (one `(n, 1)` array per cell
   block, `NaN` where the metric does not apply) — the arrays `attach_quality`
   writes into `cell_data`.
+
+![A mesh's boundary coloured by attach_quality's scaled Jacobian](/images/quality_boundary.png)
 
 ## Cross-language
 

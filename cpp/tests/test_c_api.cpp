@@ -960,6 +960,85 @@ TEST(CApi, ConvertCellsErrorsAreGuardedNotThrown) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, SmoothMovesInteriorAndPinsBoundary) {
+    // A 3x3 grid of quads: only the centre node is interior, so it is the only
+    // one free to move -- which makes both halves of the assertion sharp.
+    std::vector<double> pts;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            pts.insert(pts.end(), {static_cast<double>(i), static_cast<double>(j), 0.0});
+    pts[4 * 3 + 0] += 0.4;  // push the centre node off-centre
+    pts[4 * 3 + 1] -= 0.3;
+    const std::vector<std::int64_t> conn = {0, 3, 4, 1, 1, 4, 5, 2, 3, 6, 7, 4, 4, 7, 8, 5};
+
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 9, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 4, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    std::int64_t moved = -1, skipped = -1;
+    double max_disp = -1.0;
+    mio_mesh* out = mio_smooth(m, "laplacian", /*iterations=*/10, /*lambda=*/-1.0, /*mu=*/-0.34,
+                               /*fix_boundary=*/1, /*preserve_features=*/1,
+                               /*feature_angle=*/30.0, /*guard_inversion=*/1, &moved, &max_disp,
+                               &skipped);
+    ASSERT_NE(out, nullptr);
+
+    // Geometry only: same counts, same connectivity.
+    EXPECT_EQ(mio_mesh_num_points(out), 9);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "quad");
+
+    EXPECT_EQ(moved, 1);  // exactly the one interior node
+    EXPECT_GT(max_disp, 0.0);
+    EXPECT_EQ(skipped, 0);
+
+    // The centre node was pulled back toward (1, 1); the corners never moved.
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_INT64;
+    ASSERT_EQ(mio_mesh_get_points(out, &data, &dtype), MIO_OK);
+    const double* p = static_cast<const double*>(data);
+    // Laplacian converges geometrically: after 10 passes at lambda = 0.5 the
+    // residual is the initial 0.4 offset times 0.5^10, i.e. ~3.9e-4.
+    EXPECT_NEAR(p[4 * 3 + 0], 1.0, 1e-3);
+    EXPECT_NEAR(p[4 * 3 + 1], 1.0, 1e-3);
+    EXPECT_EQ(p[0], 0.0);
+    EXPECT_EQ(p[8 * 3 + 0], 2.0);
+
+    // A NULL method defaults to taubin rather than failing, and the counter
+    // out-params are all individually optional.
+    mio_mesh* dflt = mio_smooth(m, nullptr, 3, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr,
+                                nullptr);
+    EXPECT_NE(dflt, nullptr);
+    mio_mesh_free(dflt);
+
+    mio_mesh_free(out);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, SmoothRejectsBadArguments) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 1, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    // Unknown method, lambda out of (0, 1), and a taubin mu that would amplify.
+    EXPECT_EQ(mio_smooth(m, "bogus", 1, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr, nullptr),
+              nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_smooth(m, "taubin", 1, 1.5, -0.34, 1, 1, 30.0, 1, nullptr, nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_smooth(m, "taubin", 1, 0.4, -0.2, 1, 1, 30.0, 1, nullptr, nullptr, nullptr),
+              nullptr);
+    // No exception may cross the ABI for a NULL mesh either.
+    EXPECT_EQ(mio_smooth(nullptr, "taubin", 1, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr,
+                         nullptr),
+              nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RefineHexIntoEight) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
                                      0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};

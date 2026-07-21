@@ -1,0 +1,830 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░
+//
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+// Laplacian / Taubin mesh smoothing. A pure coordinate move — connectivity,
+// cell_data, field_data and point_data values are carried through unchanged —
+// built entirely through the uniform mesh API so it compiles under every mesh
+// backend. See operations/smooth.hpp for the contract.
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+// Project includes
+#include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/cell_edges.hpp"
+#include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
+#include "meshioplusplus/detail/node_adjacency.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+// --- small helpers ----------------------------------------------------------
+
+// A deep copy of an NDArray that always owns its buffer (the source may be a
+// view over foreign memory, e.g. numpy memory on the write path).
+NDArray smooth_owned_copy(const NDArray& rArr) {
+    NDArray c = rArr;
+    c.MakeOwned();
+    return c;
+}
+
+// --- resolved iteration parameters ------------------------------------------
+
+struct SmoothParams {
+    double mLambda = 0.0;
+    double mMu = 0.0;
+    int mNumPasses = 0;
+    bool mTaubin = false;
+};
+
+// Validate the options and expand the method-dependent lambda sentinel.
+SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
+    SmoothParams p;
+    p.mTaubin = rOptions.mMethod == SmoothMethod::Taubin;
+    p.mLambda = rOptions.mLambda;
+    if (p.mLambda < 0.0)
+        p.mLambda = p.mTaubin ? 0.33 : 0.5;  // the sentinel: each method's own default
+    if (!(p.mLambda > 0.0 && p.mLambda < 1.0))
+        throw std::invalid_argument(
+            "meshio++: smooth: lambda must lie in (0, 1); got " + std::to_string(p.mLambda));
+
+    if (p.mTaubin) {
+        p.mMu = rOptions.mMu;
+        // mu < -lambda < 0 is what makes the pass pair a low-pass filter rather
+        // than an amplifier; without it Taubin diverges instead of preserving.
+        if (!(p.mMu < -p.mLambda))
+            throw std::invalid_argument(
+                "meshio++: smooth: taubin requires mu < -lambda < 0; got mu=" +
+                std::to_string(p.mMu) + ", lambda=" + std::to_string(p.mLambda));
+    }
+
+    const int iterations = rOptions.mIterations > 0 ? rOptions.mIterations : 0;
+    p.mNumPasses = p.mTaubin ? iterations * 2 : iterations;
+    return p;
+}
+
+// --- flat coordinate buffer -------------------------------------------------
+
+// Points as a flat (n, 3) double buffer, z-padded for a 2D mesh. Everything
+// downstream reads coordinates from here rather than from the NDArray, so no
+// hot loop pays a dtype dispatch or touches a backend accessor.
+std::vector<double> smooth_read_coords(const Mesh& rMesh, std::size_t n, std::size_t dim) {
+    std::vector<double> xyz(n * 3, 0.0);
+    if (n == 0 || dim == 0)
+        return xyz;
+    const NDArray& points = rMesh.Points();
+    parallel_for_bw(n, [&](std::size_t i) {
+        for (std::size_t d = 0; d < dim && d < 3; ++d)
+            xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+    });
+    return xyz;
+}
+
+// Write the leading `dim` columns back out, preserving the source dtype.
+// Mirrors transform.cpp's transform_apply_points.
+NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& rXyz,
+                            std::size_t n, std::size_t dim) {
+    NDArray out = NDArray::Uninit(rPoints.Dtype(), {n, dim});
+    if (n == 0 || dim == 0)
+        return out;
+    detail::dispatch_dtype(rPoints.Dtype(), [&]<class T>() {
+        T* dst = out.As<T>();
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t d = 0; d < dim && d < 3; ++d)
+                dst[i * dim + d] = static_cast<T>(rXyz[i * 3 + d]);
+        });
+    });
+    return out;
+}
+
+// --- measurable-cell table (for the inversion guard) ------------------------
+
+// How a cell's orientation can be checked. Cells with no signed measure at all
+// never enter the table, so `None` is not represented here.
+enum class SmoothMeasure : std::uint8_t {
+    FaceFan,     ///< 3D volume cell: signed volume by the outward face fan.
+    Shoelace2D,  ///< 2D cell in a 2D mesh: signed area.
+    NormalFlip,  ///< 2D cell in a 3D mesh: did the facet normal fold over?
+};
+
+// Only cells whose orientation can actually be checked are recorded; the guard
+// has nothing to say about the rest, so leaving them out shrinks both this
+// table and the incidence CSR built from it.
+struct SmoothCellTable {
+    std::vector<std::int64_t> mCornerOffset;  // size numMeasurable + 1
+    std::vector<std::int64_t> mCornerNodes;   // flat corner ids
+    std::vector<SmoothMeasure> mMeasure;      // size numMeasurable
+    std::vector<std::int32_t> mFaceTable;     // index into mFaceTables, or -1
+    std::vector<const std::vector<detail::CellFaceDef>*> mFaceTables;
+
+    std::size_t NumCells() const { return mMeasure.size(); }
+};
+
+SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool is2d) {
+    SmoothCellTable t;
+    t.mCornerOffset.push_back(0);
+    std::unordered_map<int, std::int32_t> face_table_ids;
+
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsRagged() || cb.IsPolyhedron())
+            continue;  // no signed measure -- skipped, not pinned (see the header)
+        const CellType ct = cell_type_from_name(cb.Type());
+        const int corners = detail::cell_corner_count(ct);
+        if (corners <= 0)
+            continue;
+        const int dim = cell_type_dimension(ct);
+
+        SmoothMeasure measure;
+        std::int32_t face_id = -1;
+        if (dim == 3 && detail::skin_supported(ct)) {
+            measure = SmoothMeasure::FaceFan;
+            auto it = face_table_ids.find(static_cast<int>(ct));
+            if (it == face_table_ids.end()) {
+                face_id = static_cast<std::int32_t>(t.mFaceTables.size());
+                t.mFaceTables.push_back(&detail::cell_faces(ct));
+                face_table_ids.emplace(static_cast<int>(ct), face_id);
+            } else {
+                face_id = it->second;
+            }
+        } else if (dim == 2) {
+            measure = is2d ? SmoothMeasure::Shoelace2D : SmoothMeasure::NormalFlip;
+        } else {
+            continue;  // line/vertex blocks: nothing to flip
+        }
+
+        const NDArray& conn = cb.Conn();
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t nc = cb.NumCells();
+        for (std::size_t c = 0; c < nc; ++c) {
+            bool ok = true;
+            const std::size_t first = t.mCornerNodes.size();
+            for (int k = 0; k < corners; ++k) {
+                const std::int64_t id = detail::read_int(conn, c * npc + static_cast<std::size_t>(k));
+                if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                    ok = false;
+                    break;
+                }
+                t.mCornerNodes.push_back(id);
+            }
+            if (!ok) {
+                t.mCornerNodes.resize(first);  // drop the partially-written row
+                continue;
+            }
+            t.mMeasure.push_back(measure);
+            t.mFaceTable.push_back(face_id);
+            t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));
+        }
+    }
+    return t;
+}
+
+// --- signed measures --------------------------------------------------------
+
+// Corner coordinate lookup with one node optionally substituted, so the guard
+// can evaluate "the cell as it would be if node `SubNode` moved to `*pSub`"
+// without materialising a modified coordinate buffer in the hot loop.
+struct SmoothCornerReader {
+    const std::vector<double>* mpXyz;
+    const std::int64_t* mpCorners;
+    std::int64_t mSubNode;
+    const Vec3* mpSub;
+
+    Vec3 operator()(std::size_t Local) const {
+        const std::int64_t id = mpCorners[Local];
+        if (mpSub != nullptr && id == mSubNode)
+            return *mpSub;
+        const std::size_t b = static_cast<std::size_t>(id) * 3;
+        return {(*mpXyz)[b], (*mpXyz)[b + 1], (*mpXyz)[b + 2]};
+    }
+};
+
+// Signed volume via a cell-centroid / face-centroid fan over outward-wound
+// faces (robust to non-planar faces). Positive for a well-oriented cell.
+//
+// Term-for-term the same computation as quality.cpp's quality_facefan_volume,
+// deliberately kept as a separate flat-buffer variant: the guard evaluates this
+// twice per incident cell per free node per pass, and routing it through
+// quality's `const std::vector<Vec3>&` signature would put a heap allocation and
+// a gather in the hottest loop in this file.
+double smooth_facefan_volume(const SmoothCornerReader& rAt, std::size_t NumCorners,
+                             const std::vector<detail::CellFaceDef>& rFaces) {
+    Vec3 cc = {0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < NumCorners; ++k)
+        cc = detail::vec3_add(cc, rAt(k));
+    cc = detail::vec3_scale(cc, 1.0 / static_cast<double>(NumCorners));
+    double vol = 0.0;
+    for (const detail::CellFaceDef& f : rFaces) {
+        Vec3 fc = {0.0, 0.0, 0.0};
+        for (std::uint8_t k = 0; k < f.mNumCorners; ++k)
+            fc = detail::vec3_add(fc, rAt(f.mNodes[k]));
+        fc = detail::vec3_scale(fc, 1.0 / static_cast<double>(f.mNumCorners));
+        for (std::uint8_t k = 0; k < f.mNumCorners; ++k) {
+            const Vec3 a = rAt(f.mNodes[k]);
+            const Vec3 b = rAt(f.mNodes[(k + 1) % f.mNumCorners]);
+            vol += detail::triple_product(detail::vec3_sub(a, cc), detail::vec3_sub(b, cc),
+                                          detail::vec3_sub(fc, cc)) /
+                   6.0;
+        }
+    }
+    return vol;
+}
+
+// Signed area of a 2D cell. The triangle and quad expressions are copied
+// verbatim from quality.cpp's quality_tri / quality_quad (rather than re-derived
+// into an algebraically equal form) so that this guard and `compute_quality`
+// cannot disagree about the sign of a cell sitting at area ~ 0 -- which would
+// let smooth commit a move that compute_quality then reports as inverted.
+double smooth_shoelace_area(const SmoothCornerReader& rAt, std::size_t NumCorners) {
+    if (NumCorners == 3) {
+        const Vec3 p0 = rAt(0);
+        const Vec3 p1 = rAt(1);
+        const Vec3 p2 = rAt(2);
+        return 0.5 * ((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]));
+    }
+    if (NumCorners == 4) {
+        const Vec3 p0 = rAt(0);
+        const Vec3 p1 = rAt(1);
+        const Vec3 p2 = rAt(2);
+        const Vec3 p3 = rAt(3);
+        return 0.5 * ((p0[0] * p1[1] - p1[0] * p0[1]) + (p1[0] * p2[1] - p2[0] * p1[1]) +
+                      (p2[0] * p3[1] - p3[0] * p2[1]) + (p3[0] * p0[1] - p0[0] * p3[1]));
+    }
+    double a = 0.0;
+    for (std::size_t k = 0; k < NumCorners; ++k) {
+        const Vec3 p = rAt(k);
+        const Vec3 q = rAt((k + 1) % NumCorners);
+        a += p[0] * q[1] - q[0] * p[1];
+    }
+    return 0.5 * a;
+}
+
+// Newell normal of a corner ring (unnormalized).
+Vec3 smooth_newell_normal(const SmoothCornerReader& rAt, std::size_t NumCorners) {
+    Vec3 nrm = {0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < NumCorners; ++k)
+        nrm = detail::vec3_add(nrm, detail::vec3_cross(rAt(k), rAt((k + 1) % NumCorners)));
+    return nrm;
+}
+
+// Would moving `Node` to `rCand` turn cell `Cell` from valid into inverted?
+//
+// The rule is strictly "do no harm", not "preserve the sign":
+//
+//  - A cell that is currently **valid** may not be made invalid -- that is the
+//    guard's whole purpose.
+//  - A cell that is **already inverted** imposes no constraint at all. Blocking
+//    its sign change would pin the guard's own semantics backwards: smoothing
+//    is one of the few things that can *repair* a tangled region, and an
+//    early version of this function locked in every pre-existing inversion
+//    (measured: 5 inverted cells in, 4 still inverted out with the guard on
+//    versus 0 with it off) because un-inverting also changes sign.
+//  - A cell that is exactly degenerate (measure 0) likewise imposes nothing;
+//    treating it as always-flipping would permanently pin every node of a
+//    sliver, the opposite of what a smoother is for.
+//
+// For the volume and 2D-area modes "valid" means positive, which is the same
+// convention `compute_quality` uses for its `inverted` metric. The normal-flip
+// mode has no absolute convention available -- a facet in 3D has no intrinsic
+// orientation -- so there it stays purely relative: did this facet just fold
+// back over itself?
+bool smooth_cell_flips(std::size_t Cell, const SmoothCellTable& rTable,
+                       const std::vector<double>& rXyz, std::int64_t Node, const Vec3& rCand) {
+    const std::int64_t off = rTable.mCornerOffset[Cell];
+    const std::size_t ncorner = static_cast<std::size_t>(rTable.mCornerOffset[Cell + 1] - off);
+    const std::int64_t* corners = rTable.mCornerNodes.data() + off;
+
+    SmoothCornerReader before{&rXyz, corners, Node, nullptr};
+    SmoothCornerReader after{&rXyz, corners, Node, &rCand};
+
+    switch (rTable.mMeasure[Cell]) {
+        case SmoothMeasure::FaceFan: {
+            const std::vector<detail::CellFaceDef>& faces =
+                *rTable.mFaceTables[static_cast<std::size_t>(rTable.mFaceTable[Cell])];
+            const double v0 = smooth_facefan_volume(before, ncorner, faces);
+            if (v0 <= 0.0)
+                return false;  // already inverted/degenerate: no constraint
+            return smooth_facefan_volume(after, ncorner, faces) <= 0.0;
+        }
+        case SmoothMeasure::Shoelace2D: {
+            const double a0 = smooth_shoelace_area(before, ncorner);
+            if (a0 <= 0.0)
+                return false;  // already inverted/degenerate: no constraint
+            return smooth_shoelace_area(after, ncorner) <= 0.0;
+        }
+        case SmoothMeasure::NormalFlip: {
+            const Vec3 n0 = smooth_newell_normal(before, ncorner);
+            const Vec3 n1 = smooth_newell_normal(after, ncorner);
+            if (detail::vec3_norm_sq(n0) == 0.0)
+                return false;
+            return detail::vec3_dot(n0, n1) <= 0.0;
+        }
+    }
+    return false;
+}
+
+// --- CSR built by counting (node -> measurable cell) ------------------------
+
+struct SmoothCsr {
+    std::vector<std::int64_t> mXadj;
+    std::vector<std::int64_t> mAdj;
+};
+
+// Each (node, cell) incidence is emitted exactly once, so no dedup pass is
+// needed; a malformed cell repeating a node merely makes the guard re-check that
+// cell, which is harmless.
+SmoothCsr smooth_build_incidence(const SmoothCellTable& rTable, std::size_t n) {
+    SmoothCsr csr;
+    csr.mXadj.assign(n + 1, 0);
+    const std::size_t nc = rTable.NumCells();
+    for (std::size_t c = 0; c < nc; ++c)
+        for (std::int64_t k = rTable.mCornerOffset[c]; k < rTable.mCornerOffset[c + 1]; ++k)
+            ++csr.mXadj[static_cast<std::size_t>(rTable.mCornerNodes[static_cast<std::size_t>(k)]) +
+                        1];
+    for (std::size_t i = 0; i < n; ++i)
+        csr.mXadj[i + 1] += csr.mXadj[i];
+    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[n]));
+    std::vector<std::int64_t> cursor(csr.mXadj.begin(), csr.mXadj.end() - 1);
+    for (std::size_t c = 0; c < nc; ++c) {
+        for (std::int64_t k = rTable.mCornerOffset[c]; k < rTable.mCornerOffset[c + 1]; ++k) {
+            const std::size_t node =
+                static_cast<std::size_t>(rTable.mCornerNodes[static_cast<std::size_t>(k)]);
+            csr.mAdj[static_cast<std::size_t>(cursor[node]++)] = static_cast<std::int64_t>(c);
+        }
+    }
+    return csr;
+}
+
+// --- boundary + feature detection -------------------------------------------
+
+// Sorted corner ids of one facet, padded with -1 up to 4 entries. Node ids are
+// non-negative, so a triangle key {-1,a,b,c} can never collide with a quad key.
+using SmoothFacetKey = std::array<std::int64_t, 4>;
+
+struct SmoothFacetKeyHash {
+    std::size_t operator()(const SmoothFacetKey& rKey) const {
+        std::size_t h = 0;
+        for (std::int64_t v : rKey)
+            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+// One facet of a cell, corners only: unifies CellFaceDef (3D) and CellEdgeDef
+// (2D) so the two-phase extractor is dimension-agnostic.
+struct SmoothFacetDef {
+    std::uint8_t mNumCorners = 0;
+    std::array<std::uint8_t, 4> mNodes = {};
+};
+
+struct SmoothFacetBlock {
+    const NDArray* mpConn = nullptr;
+    std::size_t mNpc = 0;
+    std::size_t mNumCells = 0;
+    std::vector<SmoothFacetDef> mFacets;
+    std::size_t mFirstFacet = 0;
+};
+
+struct SmoothFacetRecord {
+    SmoothFacetKey mKey = {-1, -1, -1, -1};
+    std::uint32_t mBlock = 0;
+    std::uint32_t mCell = 0;
+    std::uint32_t mSlot = 0;
+};
+
+// A boundary facet, kept only when feature detection needs its normal.
+struct SmoothBoundaryFacet {
+    std::array<std::int64_t, 4> mNodes = {-1, -1, -1, -1};
+    std::uint8_t mNumCorners = 0;
+    Vec3 mNormal = {0.0, 0.0, 0.0};
+};
+
+std::vector<SmoothFacetDef> smooth_facets_for(CellType Type, bool FaceMode) {
+    std::vector<SmoothFacetDef> out;
+    if (FaceMode) {
+        for (const detail::CellFaceDef& fd : detail::cell_faces(Type)) {
+            SmoothFacetDef d;
+            d.mNumCorners = fd.mNumCorners;
+            for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k)
+                d.mNodes[k] = fd.mNodes[k];
+            out.push_back(d);
+        }
+    } else {
+        for (const detail::CellEdgeDef& ed : detail::cell_edges(Type)) {
+            SmoothFacetDef d;
+            d.mNumCorners = 2;
+            d.mNodes[0] = ed.mNodes[0];
+            d.mNodes[1] = ed.mNodes[1];
+            out.push_back(d);
+        }
+    }
+    return out;
+}
+
+// Marks boundary nodes, and (when rpFacets is non-null) collects the boundary
+// facets with their normals for the feature pass.
+//
+// This is surface.cpp's phase-split idiom re-implemented locally with smooth_
+// prefixes, following the v7.6.0 partition precedent: surface.cpp's
+// anon-namespace machinery stays untouched. The two serial passes are the
+// determinism pin and must never become concurrent hash inserts.
+void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
+                          const std::vector<double>& rXyz, std::vector<std::uint8_t>& rBoundary,
+                          std::vector<SmoothBoundaryFacet>* pFacets) {
+    std::vector<SmoothFacetBlock> blocks;
+    std::size_t total_facets = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsRagged() || cb.IsPolyhedron())
+            continue;
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (cell_type_dimension(ct) != (FaceMode ? 3 : 2))
+            continue;
+        SmoothFacetBlock b;
+        b.mFacets = smooth_facets_for(ct, FaceMode);
+        if (b.mFacets.empty())
+            continue;
+        b.mpConn = &cb.Conn();
+        b.mNpc = cb.NodesPerCell();
+        b.mNumCells = cb.NumCells();
+        b.mFirstFacet = total_facets;
+        total_facets += b.mNumCells * b.mFacets.size();
+        blocks.push_back(std::move(b));
+    }
+    if (total_facets == 0)
+        return;
+
+    // --- phase 1: build facet keys into disjoint slots (parallel-safe) ---
+    std::vector<SmoothFacetRecord> recs(total_facets);
+    for (std::uint32_t bi = 0; bi < blocks.size(); ++bi) {
+        const SmoothFacetBlock& b = blocks[bi];
+        const NDArray& conn = *b.mpConn;
+        const std::size_t npc = b.mNpc;
+        const std::size_t fpc = b.mFacets.size();
+        parallel_for(b.mNumCells * fpc, [&, bi](std::size_t j) {
+            const std::size_t cell = j / fpc;
+            const std::size_t slot = j % fpc;
+            const SmoothFacetDef& fd = b.mFacets[slot];
+            SmoothFacetRecord& r = recs[b.mFirstFacet + j];
+            r.mKey = {-1, -1, -1, -1};
+            for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k)
+                r.mKey[k] = detail::read_int(conn, cell * npc + fd.mNodes[k]);
+            std::sort(r.mKey.begin(), r.mKey.end());
+            r.mBlock = bi;
+            r.mCell = static_cast<std::uint32_t>(cell);
+            r.mSlot = static_cast<std::uint32_t>(slot);
+        });
+    }
+
+    // --- phase 2, pass A: count key occurrences (serial -> deterministic) ---
+    std::unordered_map<SmoothFacetKey, std::uint32_t, SmoothFacetKeyHash> counts;
+    counts.reserve(total_facets * 2);
+    for (const SmoothFacetRecord& r : recs)
+        ++counts[r.mKey];
+
+    // --- phase 2, pass B: mark once-used facets (serial, stored order) ---
+    for (const SmoothFacetRecord& r : recs) {
+        if (counts[r.mKey] != 1)
+            continue;
+        const SmoothFacetBlock& b = blocks[r.mBlock];
+        const SmoothFacetDef& fd = b.mFacets[r.mSlot];
+        const std::size_t row = static_cast<std::size_t>(r.mCell) * b.mNpc;
+
+        SmoothBoundaryFacet bf;
+        bf.mNumCorners = fd.mNumCorners;
+        bool ok = true;
+        for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k) {
+            const std::int64_t id = detail::read_int(*b.mpConn, row + fd.mNodes[k]);
+            if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                ok = false;
+                break;
+            }
+            bf.mNodes[k] = id;
+            rBoundary[static_cast<std::size_t>(id)] = 1;
+        }
+        if (!ok || pFacets == nullptr)
+            continue;
+
+        // Facet normal: Newell for a face, the in-plane perpendicular for a 2D
+        // boundary edge (so a polyline's corners read as features too).
+        const SmoothCornerReader at{&rXyz, bf.mNodes.data(), -1, nullptr};
+        if (fd.mNumCorners >= 3) {
+            bf.mNormal = detail::vec3_normalize(smooth_newell_normal(at, fd.mNumCorners));
+        } else {
+            const Vec3 p0 = at(0);
+            const Vec3 p1 = at(1);
+            bf.mNormal = detail::vec3_normalize(Vec3{p1[1] - p0[1], p0[0] - p1[0], 0.0});
+        }
+        pFacets->push_back(bf);
+    }
+}
+
+// Pin boundary nodes whose incident boundary facets disagree in orientation by
+// more than the feature angle. O(d^2) in the boundary valence d, which is 4-8 in
+// practice; each iteration writes only its own slot, so it parallelizes cleanly.
+void smooth_mark_features(const std::vector<SmoothBoundaryFacet>& rFacets, std::size_t n,
+                          double CosThreshold, std::vector<std::uint8_t>& rFrozen) {
+    if (rFacets.empty())
+        return;
+    SmoothCsr inc;
+    inc.mXadj.assign(n + 1, 0);
+    for (const SmoothBoundaryFacet& f : rFacets)
+        for (std::uint8_t k = 0; k < f.mNumCorners && k < 4; ++k)
+            ++inc.mXadj[static_cast<std::size_t>(f.mNodes[k]) + 1];
+    for (std::size_t i = 0; i < n; ++i)
+        inc.mXadj[i + 1] += inc.mXadj[i];
+    inc.mAdj.resize(static_cast<std::size_t>(inc.mXadj[n]));
+    std::vector<std::int64_t> cursor(inc.mXadj.begin(), inc.mXadj.end() - 1);
+    for (std::size_t fi = 0; fi < rFacets.size(); ++fi) {
+        const SmoothBoundaryFacet& f = rFacets[fi];
+        for (std::uint8_t k = 0; k < f.mNumCorners && k < 4; ++k) {
+            const std::size_t node = static_cast<std::size_t>(f.mNodes[k]);
+            inc.mAdj[static_cast<std::size_t>(cursor[node]++)] = static_cast<std::int64_t>(fi);
+        }
+    }
+
+    parallel_for(n, [&](std::size_t i) {
+        const std::int64_t b = inc.mXadj[i];
+        const std::int64_t e = inc.mXadj[i + 1];
+        for (std::int64_t p = b; p < e; ++p) {
+            const Vec3& na = rFacets[static_cast<std::size_t>(inc.mAdj[static_cast<std::size_t>(p)])]
+                                 .mNormal;
+            for (std::int64_t q = p + 1; q < e; ++q) {
+                const Vec3& nb =
+                    rFacets[static_cast<std::size_t>(inc.mAdj[static_cast<std::size_t>(q)])]
+                        .mNormal;
+                if (detail::vec3_dot(na, nb) < CosThreshold) {
+                    rFrozen[i] = 1;
+                    return;
+                }
+            }
+        }
+    });
+}
+
+// Does the mesh contain any 3D block? Selects face mode vs edge mode, mirroring
+// extract_surface's automatic dimension pick.
+bool smooth_has_volume_cells(const Mesh& rMesh) {
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            return true;
+        if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(cb.Type())) == 3)
+            return true;
+    }
+    return false;
+}
+
+// Pin every node referenced by a block whose edge topology is unknown (the
+// higher-order family, VTK-Lagrange, custom). One warn per distinct type.
+void smooth_pin_unknown_topology(const Mesh& rMesh, std::size_t n,
+                                 std::vector<std::uint8_t>& rFrozen) {
+    std::unordered_set<std::string> warned;
+    std::vector<std::int64_t> nodes;
+    for (const auto cb : rMesh.CellRange()) {
+        if (detail::node_edge_topology_known(cb))
+            continue;
+        const std::string type(cb.Type());
+        if (warned.insert(type).second)
+            log::warn(
+                "smooth: cell type '{}' has no known edge topology; its nodes are pinned "
+                "(an unknown neighbourhood gives no defined smoothing target)",
+                type);
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            detail::cell_node_ids(cb, c, n, nodes);
+            for (std::int64_t id : nodes)
+                rFrozen[static_cast<std::size_t>(id)] = 1;
+        }
+    }
+}
+
+}  // namespace
+
+SmoothMethod smooth_method_from_name(const std::string& rName) {
+    if (rName == "laplacian")
+        return SmoothMethod::Laplacian;
+    if (rName == "taubin")
+        return SmoothMethod::Taubin;
+    throw std::invalid_argument("meshio++: smooth: unknown method '" + rName +
+                                "' (expected 'laplacian' or 'taubin')");
+}
+
+SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
+    const SmoothParams params = smooth_resolve_params(rOptions);
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
+        throw std::invalid_argument(
+            "meshio++: smooth: frozen mask has " + std::to_string(rOptions.mFrozen.size()) +
+            " entries but the mesh has " + std::to_string(n) + " points");
+
+    // --- phase 0: coordinates as a flat double buffer ---
+    const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
+    std::vector<double> prev = original;
+    std::vector<double> cur(prev.size(), 0.0);
+
+    // --- phase 1: edge adjacency ---
+    const detail::NodeAdjacency csr =
+        detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
+
+    // --- phase 2: the pin mask (boundary | feature | unknown | caller) ---
+    std::vector<std::uint8_t> frozen(n, 0);
+    if (!rOptions.mFrozen.empty())
+        for (std::size_t i = 0; i < n; ++i)
+            frozen[i] = rOptions.mFrozen[i] ? 1 : 0;
+    smooth_pin_unknown_topology(rMesh, n, frozen);
+
+    if (rOptions.mFixBoundary) {
+        const bool face_mode = smooth_has_volume_cells(rMesh);
+        std::vector<std::uint8_t> boundary(n, 0);
+        std::vector<SmoothBoundaryFacet> facets;
+        smooth_mark_boundary(rMesh, n, face_mode, prev, boundary,
+                             rOptions.mPreserveFeatures ? &facets : nullptr);
+        for (std::size_t i = 0; i < n; ++i)
+            if (boundary[i])
+                frozen[i] = 1;
+        if (rOptions.mPreserveFeatures) {
+            const double cos_thr = std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 /
+                                            180.0);
+            smooth_mark_features(facets, n, cos_thr, frozen);
+        }
+    } else if (rOptions.mPreserveFeatures) {
+        // Features are a subset of the boundary, so asking to preserve them
+        // while explicitly freeing the boundary is contradictory rather than
+        // merely redundant -- say so instead of silently doing nothing.
+        log::warn(
+            "smooth: preserve_features has no effect when fix_boundary is off (feature nodes "
+            "are boundary nodes)");
+    }
+
+    // --- phase 3: the inversion guard's tables ---
+    SmoothCellTable cells;
+    SmoothCsr incidence;
+    const bool guard = rOptions.mGuardInversion;
+    if (guard) {
+        cells = smooth_build_cell_table(rMesh, n, dim == 2);
+        incidence = smooth_build_incidence(cells, n);
+    }
+
+    // --- phase 4: the Jacobi iteration ---
+    std::vector<std::uint8_t> skipped(n, 0);
+    std::int64_t num_skipped = 0;
+    for (int pass = 0; pass < params.mNumPasses; ++pass) {
+        // Taubin alternates the shrinking (+lambda) and un-shrinking (mu) pass.
+        const double factor =
+            (!params.mTaubin || (pass % 2 == 0)) ? params.mLambda : params.mMu;
+
+        std::fill(skipped.begin(), skipped.end(), 0);
+        parallel_for(n, [&](std::size_t i) {
+            const std::size_t o = i * 3;
+            const std::int64_t b = csr.mXadj[i];
+            const std::int64_t e = csr.mXadj[i + 1];
+            if (frozen[i] || b == e) {
+                cur[o] = prev[o];
+                cur[o + 1] = prev[o + 1];
+                cur[o + 2] = prev[o + 2];
+                return;
+            }
+            // Summed in ascending neighbour id (the adjacency rows are sorted),
+            // which is what pins the FP accumulation order across backends and
+            // thread counts.
+            Vec3 sum = {0.0, 0.0, 0.0};
+            for (std::int64_t k = b; k < e; ++k) {
+                const std::size_t p = static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
+                sum[0] += prev[p];
+                sum[1] += prev[p + 1];
+                sum[2] += prev[p + 2];
+            }
+            const double inv = 1.0 / static_cast<double>(e - b);
+            // For a 2D mesh every z is exactly +0.0, so this reduces to
+            // 0.0 + factor * (0.0 - 0.0) and the z column stays bit-exactly
+            // +0.0 through arbitrarily many passes -- no masking needed.
+            const Vec3 cand = {
+                prev[o] + factor * (sum[0] * inv - prev[o]),
+                prev[o + 1] + factor * (sum[1] * inv - prev[o + 1]),
+                prev[o + 2] + factor * (sum[2] * inv - prev[o + 2]),
+            };
+
+            if (guard) {
+                const std::int64_t ib = incidence.mXadj[i];
+                const std::int64_t ie = incidence.mXadj[i + 1];
+                for (std::int64_t k = ib; k < ie; ++k) {
+                    const std::size_t c =
+                        static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)]);
+                    if (smooth_cell_flips(c, cells, prev, static_cast<std::int64_t>(i), cand)) {
+                        skipped[i] = 1;
+                        cur[o] = prev[o];
+                        cur[o + 1] = prev[o + 1];
+                        cur[o + 2] = prev[o + 2];
+                        return;
+                    }
+                }
+            }
+            cur[o] = cand[0];
+            cur[o + 1] = cand[1];
+            cur[o + 2] = cand[2];
+        });
+
+        // Serial fold out of disjoint per-node slots -- never a reduction inside
+        // the parallel region (surface.cpp's phase-split philosophy).
+        for (std::size_t i = 0; i < n; ++i)
+            num_skipped += skipped[i];
+        prev.swap(cur);
+    }
+    if (guard && num_skipped > 0)
+        log::warn(
+            "smooth: the inversion guard rejected {} node moves; those nodes held still to "
+            "keep every incident cell correctly oriented",
+            num_skipped);
+
+    // --- phase 5: summary, measured against the input ---
+    SmoothResult result;
+    result.mNumSkippedInversion = num_skipped;
+    if (n > 0) {
+        Vec3 lo = {original[0], original[1], original[2]};
+        Vec3 hi = lo;
+        for (std::size_t i = 1; i < n; ++i)
+            for (std::size_t d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], original[i * 3 + d]);
+                hi[d] = std::max(hi[d], original[i * 3 + d]);
+            }
+        const double diag = detail::vec3_norm(detail::vec3_sub(hi, lo));
+        const double tol = rOptions.mMoveTolerance * (diag > 0.0 ? diag : 1.0);
+        for (std::size_t i = 0; i < n; ++i) {
+            const Vec3 d = {prev[i * 3] - original[i * 3], prev[i * 3 + 1] - original[i * 3 + 1],
+                            prev[i * 3 + 2] - original[i * 3 + 2]};
+            const double len = detail::vec3_norm(d);
+            if (len > tol)
+                ++result.mNumNodesMoved;
+            result.mMaxDisplacement = std::max(result.mMaxDisplacement, len);
+        }
+    }
+
+    // --- phase 6: write-back (only the coordinates change) ---
+    Mesh& out = result.mMesh;
+    out.AssignPoints(smooth_write_coords(rMesh.Points(), prev, n, dim));
+
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron()) {
+            std::vector<std::vector<std::vector<std::int64_t>>> blocks(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                blocks[c].resize(cb.NumFaces(c));
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    auto face = cb.Face(c, f);
+                    blocks[c][f].assign(face.first, face.first + face.second);
+                }
+            }
+            out.AddPolyhedronBlock(std::string(cb.Type()), std::move(blocks));
+        } else if (cb.IsRagged()) {
+            std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+        } else {
+            out.AddCellBlock(std::string(cb.Type()), smooth_owned_copy(cb.Conn()));
+        }
+    }
+
+    for (const std::string& name : rMesh.PointDataNames())
+        out.AddPointData(name, smooth_owned_copy(rMesh.PointData(name)));
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+            blocks.push_back(smooth_owned_copy(rMesh.CellData(name, b)));
+        out.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, smooth_owned_copy(rMesh.FieldData(name)));
+
+    return result;
+}
+
+}  // namespace meshioplusplus
