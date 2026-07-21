@@ -192,7 +192,7 @@ def write(
     else:
         out = body
 
-    with open_file(filename, "w") as f:
+    with open_file(filename, "w", newline="\n") as f:
         f.write("\n".join(out) + "\n")
 
 
@@ -280,5 +280,5 @@ def _write_projected(
     else:
         out = body
 
-    with open_file(filename, "w") as f:
+    with open_file(filename, "w", newline="\n") as f:
         f.write("\n".join(out) + "\n")
