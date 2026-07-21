@@ -73,6 +73,9 @@ export type MergeDataPolicy = 'intersection' | 'fill';
 /** Element-representation conversion performed by `convertCells`. */
 export type ConvertCellsMode = 'linearize' | 'simplexify' | 'elevate';
 
+/** Smoothing operator applied by `smooth`. `'taubin'` is shrink-free. */
+export type SmoothMethod = 'laplacian' | 'taubin';
+
 /** Partitioning backend: SFC is always available; KaHIP is never compiled
  *  into the WASM build, so `'kahip'` always throws and `'auto'` = `'sfc'`. */
 export type PartitionMethod = 'sfc' | 'kahip' | 'auto';
@@ -232,7 +235,36 @@ export interface MeshioPlusPlusModule {
     removeOrphans?: boolean,
     dropDegenerate?: boolean,
     dropDuplicateCells?: boolean,
-  ): Mesh;
+  ): {
+    mesh: Mesh;
+    pointsWelded: number;
+    pointsRemovedOrphan: number;
+    cellsDroppedDegenerate: number;
+    cellsDroppedDuplicate: number;
+  };
+
+  /**
+   * Relax point coordinates toward their edge-neighbour centroids, leaving
+   * connectivity and every data array untouched. `"taubin"` (the default)
+   * alternates a `+lambda` and a `-mu` pass per iteration and is shrink-free;
+   * `"laplacian"` is stronger per pass but contracts the mesh. A **negative**
+   * `lambda` means "this method's own default" (0.5 Laplacian, 0.33 Taubin).
+   * Boundary and feature nodes are pinned by default, and `guardInversion`
+   * rejects any move that would flip an incident cell.
+   * @throws {Error} on an unknown `method`, a non-negative `lambda` outside
+   *   `(0, 1)`, or a `"taubin"` `mu` that does not satisfy `mu < -lambda < 0`.
+   */
+  smooth(
+    mesh: Mesh,
+    method?: SmoothMethod,
+    iterations?: number,
+    lambda?: number,
+    mu?: number,
+    fixBoundary?: boolean,
+    preserveFeatures?: boolean,
+    featureAngle?: number,
+    guardInversion?: boolean,
+  ): { mesh: Mesh; numNodesMoved: number; maxDisplacement: number; numSkippedInversion: number };
 
   /** Subset a mesh to an axis-aligned bounding box. */
   cropBbox(mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean): Mesh;

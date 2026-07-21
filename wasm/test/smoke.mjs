@@ -391,6 +391,64 @@ step('refine rejects a cell type with no same-type subdivision', () => {
     assert.throws(() => m.refine(up));
 });
 
+step('smooth: relaxes an interior node while pinning the boundary', () => {
+    // A refined cube is a 3x3x3 node lattice: exactly one node (the body
+    // centre) is interior, so it is the only one smoothing may move.
+    const grid = m.refine(cube);
+    const points = Float64Array.from(grid.points);
+    const inside = (v) => v > 1e-9 && v < 1 - 1e-9;
+    let interior = -1;
+    for (let i = 0; i < points.length / 3; ++i) {
+        if (inside(points[3 * i]) && inside(points[3 * i + 1]) && inside(points[3 * i + 2])) {
+            interior = i;
+            break;
+        }
+    }
+    assert.notEqual(interior, -1, 'the refined cube should have an interior node');
+
+    // Pull it off its own centroid so there is something to relax.
+    points[3 * interior] += 0.2;
+    const perturbed = { ...grid, points };
+
+    const out = m.smooth(perturbed, 'laplacian', 5);
+    // Geometry only: same point count, same connectivity, moved coordinates.
+    assert.equal(out.mesh.points.length, perturbed.points.length);
+    assert.equal(out.mesh.cells.length, perturbed.cells.length);
+    assert.deepEqual(
+        Array.from(out.mesh.cells[0].data),
+        Array.from(perturbed.cells[0].data),
+    );
+    assert.notEqual(out.mesh.points[3 * interior], perturbed.points[3 * interior]);
+    // The interior node is pulled back toward the centre it was moved from.
+    assert.ok(
+        Math.abs(out.mesh.points[3 * interior] - 0.5) <
+            Math.abs(perturbed.points[3 * interior] - 0.5),
+    );
+    // Every boundary node is pinned, so only that one node moved.
+    for (let i = 0; i < points.length / 3; ++i) {
+        if (i === interior) continue;
+        for (let c = 0; c < 3; ++c)
+            assert.equal(out.mesh.points[3 * i + c], perturbed.points[3 * i + c]);
+    }
+
+    assert.equal(out.numNodesMoved, 1);
+    assert.ok(out.maxDisplacement > 0);
+    assert.equal(typeof out.numSkippedInversion, 'number');
+});
+
+step('smooth: taubin defaults leave a structured hex block alone', () => {
+    // The negative default lambda means "the method's own default" and must
+    // reach the core unchanged; an already-relaxed lattice is a fixed point.
+    const grid = m.refine(cube);
+    const out = m.smooth(grid);
+    assert.equal(out.numNodesMoved, 0);
+    assert.deepEqual(Array.from(out.mesh.points), Array.from(grid.points));
+});
+
+step('smooth rejects an unknown method', () => {
+    assert.throws(() => m.smooth(cube, 'not-a-method'));
+});
+
 step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
     const grid = m.refine(cube);  // 8 hexahedra
     const pieces = m.partition(grid, 2);
@@ -432,6 +490,7 @@ step('geometry operations are reachable through the wrapper', () => {
         'merge',
         'transform',
         'clean',
+        'smooth',
         'cropBbox',
         'cropPlane',
         'split',
