@@ -63,6 +63,7 @@
 // System includes
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -527,6 +528,248 @@ void convert(const std::string& rInPath, const std::string& rInFormat, const std
     });
 }
 
+/**
+ * @brief Read `rInPath` and write a *renderable surface* of it to `rOutPath`,
+ * without round-tripping through a JS object.
+ *
+ * The one operation a browser viewer cannot express with the existing
+ * bindings. `readMesh` -> `extractSkin` -> `writeMesh` would do the same
+ * thing, but the JS mesh representation is flat and drops multi-component
+ * (vector/tensor) data, so every such array would be lost on the way to the
+ * renderer. Staying inside C++ keeps them.
+ *
+ * A mesh with skinnable 3D cells becomes its boundary; anything else (a
+ * surface, a curve, a point cloud) passes through. Either way the result is
+ * linearized, because the target is a triangle/polygon renderer with no
+ * concept of a mid-side node -- drawing `triangle6` connectivity verbatim
+ * produces visible garbage rather than a curved triangle.
+ */
+void convert_surface(const std::string& rInPath, const std::string& rInFormat,
+                     const std::string& rOutPath, const std::string& rOutFormat) {
+    with_js_errors([&]() {
+        std::string rfmt = resolve_format(rInPath, rInFormat);
+        std::string wfmt = resolve_format(rOutPath, rOutFormat);
+        auto rit = registry_readers().find(rfmt);
+        auto wit = registry_writers().find(wfmt);
+        if (rit == registry_readers().end())
+            throw meshioplusplus::ReadError(
+                "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
+                compiled_out_hint(rfmt));
+        if (wit == registry_writers().end())
+            throw meshioplusplus::WriteError(
+                "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'" +
+                compiled_out_hint(wfmt));
+
+        Mesh mesh = rit->second(rInPath);
+        meshioplusplus::ConvertCellsOptions linearize;
+        linearize.mMode = meshioplusplus::ConvertCellsMode::Linearize;
+
+        if (meshioplusplus::has_skinnable_cells(mesh)) {
+            // record_parent_ids, then gather: extract_surface drops cell data,
+            // and colouring a solid by its per-cell tag is the common case.
+            Mesh surface = meshioplusplus::extract_surface(mesh, /*recordParentIds=*/true);
+            gather_cell_data_onto_surface(mesh, surface);
+            // Linearize after gathering; convert_cells carries cell data 1:1.
+            surface = meshioplusplus::convert_cells(surface, linearize).mMesh;
+            // The parent ids are plumbing, not something to colour by.
+            surface = meshioplusplus::data_drop(surface, meshioplusplus::DataLocation::Cell,
+                                                {"surface:parent_cell"},
+                                                /*ignore_missing=*/true);
+            wit->second(rOutPath, surface);
+            return;
+        }
+        wit->second(rOutPath, meshioplusplus::convert_cells(mesh, linearize).mMesh);
+    });
+}
+
+namespace {
+
+/// Read a 3-vector out of a JS array.
+void read_vec3(const val& rArray, double* pOut) {
+    for (unsigned i = 0; i < 3; ++i)
+        pOut[i] = rArray[i].as<double>();
+}
+
+/// Cells across every block. The uniform mesh API counts per block only.
+std::size_t total_cells(const Mesh& rMesh) {
+    std::size_t n = 0;
+    for (const auto& block : rMesh.CellRange())
+        n += block.NumCells();
+    return n;
+}
+
+/**
+ * @brief Apply one operation, appending its counters to `rSteps`.
+ *
+ * Every operation runs on the **full-dimensional** mesh, before any boundary
+ * extraction -- smoothing a solid's skin and smoothing a solid are different
+ * things, and the second is what the user asked for.
+ */
+Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
+    const std::string op = rSpec["op"].as<std::string>();
+    val step = val::object();
+    step.set("op", op);
+
+    auto number = [&rSpec](const char* key, double fallback) {
+        val v = rSpec[key];
+        return v.isUndefined() || v.isNull() ? fallback : v.as<double>();
+    };
+    auto flag = [&rSpec](const char* key, bool fallback) {
+        val v = rSpec[key];
+        return v.isUndefined() || v.isNull() ? fallback : v.as<bool>();
+    };
+    auto text = [&rSpec](const char* key, const char* fallback) {
+        val v = rSpec[key];
+        return v.isUndefined() || v.isNull() ? std::string(fallback) : v.as<std::string>();
+    };
+
+    if (op == "quality") {
+        Mesh out = meshioplusplus::attach_quality(mesh);
+        rSteps.call<void>("push", step);
+        return out;
+    }
+    if (op == "clean") {
+        meshioplusplus::CleanOptions opts;
+        opts.weld = flag("weld", false);
+        opts.atol = number("atol", 1e-8);
+        opts.remove_orphans = flag("removeOrphans", true);
+        opts.drop_degenerate = flag("dropDegenerate", true);
+        opts.drop_duplicate_cells = flag("dropDuplicateCells", true);
+        auto result = meshioplusplus::clean(mesh, opts);
+        step.set("pointsWelded", static_cast<double>(result.mPointsWelded));
+        step.set("pointsRemovedOrphan", static_cast<double>(result.mPointsRemovedOrphan));
+        step.set("cellsDroppedDegenerate", static_cast<double>(result.mCellsDroppedDegenerate));
+        step.set("cellsDroppedDuplicate", static_cast<double>(result.mCellsDroppedDuplicate));
+        rSteps.call<void>("push", step);
+        return std::move(result.mMesh);
+    }
+    if (op == "smooth") {
+        meshioplusplus::SmoothOptions opts;
+        opts.mMethod = meshioplusplus::smooth_method_from_name(text("method", "taubin"));
+        opts.mIterations = static_cast<int>(number("iterations", 10));
+        opts.mLambda = number("lambda", -1.0);
+        opts.mMu = number("mu", -0.34);
+        opts.mFixBoundary = flag("fixBoundary", true);
+        auto result = meshioplusplus::smooth(mesh, opts);
+        step.set("numNodesMoved", static_cast<double>(result.mNumNodesMoved));
+        step.set("maxDisplacement", result.mMaxDisplacement);
+        step.set("numSkippedInversion", static_cast<double>(result.mNumSkippedInversion));
+        rSteps.call<void>("push", step);
+        return std::move(result.mMesh);
+    }
+    if (op == "refine") {
+        meshioplusplus::RefineOptions opts;
+        opts.mLevels = static_cast<int>(number("levels", 1));
+        auto result = meshioplusplus::refine(mesh, opts);
+        rSteps.call<void>("push", step);
+        return std::move(result.mMesh);
+    }
+    if (op == "partition") {
+        meshioplusplus::PartitionOptions opts;
+        opts.mNParts = static_cast<int>(number("nparts", 2));
+        opts.mMethod = meshioplusplus::partition_method_from_name(text("method", "auto"));
+        // Attach the assignment as cell data rather than splitting into
+        // pieces: the viewer wants one mesh it can colour by part.
+        auto labels = meshioplusplus::partition_labels(mesh, opts);
+        mesh.AddCellData("partition:part", std::move(labels));
+        step.set("nparts", number("nparts", 2));
+        rSteps.call<void>("push", step);
+        return mesh;
+    }
+    if (op == "section") {
+        double point[3], normal[3];
+        read_vec3(rSpec["point"], point);
+        read_vec3(rSpec["normal"], normal);
+        const meshioplusplus::CropMode mode = text("mode", "all") == "any"
+                                                  ? meshioplusplus::CropMode::Any
+                                                  : meshioplusplus::CropMode::All;
+        const std::size_t before = total_cells(mesh);
+        auto result = meshioplusplus::crop_halfspace(mesh, point, normal, mode,
+                                                     /*recordIds=*/false);
+        step.set("cellsRemoved", static_cast<double>(before - total_cells(result.mMesh)));
+        rSteps.call<void>("push", step);
+        if (total_cells(result.mMesh) == 0)
+            rWarnings.call<void>("push",
+                                 std::string("the section removed every cell; "
+                                             "try flipping it or moving the plane"));
+        return std::move(result.mMesh);
+    }
+    throw meshioplusplus::ReadError("meshio++ (wasm): unknown operation '" + op + "'");
+}
+
+}  // namespace
+
+/**
+ * @brief Read `rInPath`, apply an operation pipeline, and write a renderable
+ * surface to `rOutPath` -- all inside C++.
+ *
+ * This exists because every mesh operation in the JS API takes and returns a
+ * JS `Mesh`, whose flat representation cannot carry multi-component
+ * (vector/tensor) arrays. Chaining operations through that API would silently
+ * destroy exactly the data `convertSurface` goes out of its way to preserve.
+ * Here no mesh ever crosses the boundary, so nothing is lost.
+ *
+ * An **empty** pipeline is exactly `convertSurface`, which is deliberate: a
+ * viewer can call this for both the plain display and the post-operation
+ * display, so the two cannot drift apart. It is also what makes undo exact --
+ * replaying a shortened pipeline from the original file needs no inverse
+ * operations and no snapshots.
+ *
+ * @param rOps JS array of `{op, ...params}`; see the `OpSpec` union in
+ *   `wasm/index.d.ts`.
+ * @param keepProvenance keep `surface:parent_cell` in the output (the picker
+ *   needs it; the colour-by menu must filter it out).
+ * @return `{steps: [{op, ...counters}], warnings: [string]}`.
+ */
+val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat,
+                        const std::string& rOutPath, const std::string& rOutFormat,
+                        const val& rOps, bool keepProvenance) {
+    return with_js_errors([&]() -> val {
+        std::string rfmt = resolve_format(rInPath, rInFormat);
+        std::string wfmt = resolve_format(rOutPath, rOutFormat);
+        auto rit = registry_readers().find(rfmt);
+        auto wit = registry_writers().find(wfmt);
+        if (rit == registry_readers().end())
+            throw meshioplusplus::ReadError(
+                "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
+                compiled_out_hint(rfmt));
+        if (wit == registry_writers().end())
+            throw meshioplusplus::WriteError(
+                "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'" +
+                compiled_out_hint(wfmt));
+
+        val steps = val::array();
+        val warnings = val::array();
+
+        Mesh mesh = rit->second(rInPath);
+        const unsigned n = rOps["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+            mesh = apply_one_op(std::move(mesh), rOps[i], steps, warnings);
+
+        // From here on this is `convert_surface`'s tail, unchanged.
+        meshioplusplus::ConvertCellsOptions linearize;
+        linearize.mMode = meshioplusplus::ConvertCellsMode::Linearize;
+
+        if (meshioplusplus::has_skinnable_cells(mesh)) {
+            Mesh surface = meshioplusplus::extract_surface(mesh, /*recordParentIds=*/true);
+            gather_cell_data_onto_surface(mesh, surface);
+            surface = meshioplusplus::convert_cells(surface, linearize).mMesh;
+            if (!keepProvenance)
+                surface = meshioplusplus::data_drop(surface, meshioplusplus::DataLocation::Cell,
+                                                    {"surface:parent_cell"},
+                                                    /*ignore_missing=*/true);
+            wit->second(rOutPath, surface);
+        } else {
+            wit->second(rOutPath, meshioplusplus::convert_cells(mesh, linearize).mMesh);
+        }
+
+        val out = val::object();
+        out.set("steps", steps);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 /** @brief The shared `num_nodes_per_cell` metadata table, as a plain JS object. */
 val num_nodes_per_cell_js() {
     val out = val::object();
@@ -546,6 +789,30 @@ val topological_dimension_js() {
 /** @brief The compile-time mesh backend ("native" for the shipped wasm build). */
 std::string mesh_backend_js() {
     return meshioplusplus::mesh_backend_name();
+}
+
+/**
+ * @brief The format names this build can actually read and write.
+ *
+ * `{readers: [...], writers: [...]}`, both sorted (the registry tables are
+ * `std::map`). This is what a caller needs to build a file-picker filter or a
+ * "convert to" menu without hardcoding a table that silently drifts from the
+ * build -- the HDF5/netCDF-backed formats are absent from the wasm build, and
+ * a few formats are read-only or write-only.
+ */
+val available_formats_js() {
+    val readers = val::array();
+    val writers = val::array();
+    unsigned i = 0;
+    for (const auto& kv : registry_readers())
+        readers.set(i++, kv.first);
+    i = 0;
+    for (const auto& kv : registry_writers())
+        writers.set(i++, kv.first);
+    val out = val::object();
+    out.set("readers", readers);
+    out.set("writers", writers);
+    return out;
 }
 
 // ---------------------------------------------------------------------
@@ -1146,9 +1413,12 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("readerSupportsOptions", &reader_supports_options_js);
     emscripten::function("writeMesh", &write_mesh);
     emscripten::function("convert", &convert);
+    emscripten::function("convertSurface", &convert_surface);
+    emscripten::function("convertSurfaceOps", &convert_surface_ops);
     emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
     emscripten::function("topologicalDimension", &topological_dimension_js);
     emscripten::function("meshBackend", &mesh_backend_js);
+    emscripten::function("availableFormats", &available_formats_js);
     emscripten::function("extractSurface", &extract_surface_js);
     emscripten::function("extractSkin", &extract_skin_js);
     emscripten::function("attachQuality", &attach_quality_js);
