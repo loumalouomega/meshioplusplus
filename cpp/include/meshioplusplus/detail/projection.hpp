@@ -77,6 +77,16 @@ struct ProjectedFace {
     std::uint8_t mNumNodes;  // 2 (line), 3 (triangle), or 4 (quad)
     bool mIsLine;
     double mDepth;  // view-space depth of the face centroid
+
+    // Index of the cell this face came from, counted block-major over every
+    // cell of every block of the projected mesh -- including blocks this
+    // projection skips, matching "surface:parent_cell"'s convention.
+    //
+    // It rides on the face rather than in a parallel array because the faces
+    // are stable_sorted below: a side array would have to be permuted in
+    // lockstep, whereas carrying the id inside the sorted element makes the
+    // correspondence impossible to break.
+    std::int64_t mSourceCell;
 };
 
 /** @brief A surface mesh projected to screen space, faces sorted

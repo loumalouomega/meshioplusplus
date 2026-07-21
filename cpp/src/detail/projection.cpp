@@ -97,7 +97,13 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
         depth[i] = px * cam.mW[0] + py * cam.mW[1] + pz * cam.mW[2];
     }
 
+    // Counts over EVERY block, including the ones skipped below, so mSourceCell
+    // indexes the projected mesh's cells globally -- the same convention
+    // "surface:parent_cell" uses, which is what lets the two indices compose.
+    std::int64_t global_cell_base = 0;
     for (const auto cb : rMesh.CellRange()) {
+        const std::int64_t block_base = global_cell_base;
+        global_cell_base += static_cast<std::int64_t>(cb.NumCells());
         const std::string& type = cb.Type();
         std::uint8_t n_corner = 0;
         bool is_line = false;
@@ -119,6 +125,7 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
             face.mNodes = {-1, -1, -1, -1};
             face.mNumNodes = n_corner;
             face.mIsLine = is_line;
+            face.mSourceCell = block_base + static_cast<std::int64_t>(r);
             double d = 0.0;
             for (std::uint8_t k = 0; k < n_corner; ++k) {
                 const std::int64_t p = read_int(conn, r * ncols + k);
