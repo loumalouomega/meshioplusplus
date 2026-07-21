@@ -20,6 +20,14 @@ jobs:
         with:
           python-version: "3.12"
       - uses: pre-commit/action@v3.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Needs neither a TeX install nor a build: it regenerates the icon module
+      # in memory from the committed SVGs and diffs, and checks that the .tex,
+      # .svg and .ts sets are in step. See icons/README.md.
+      - name: Icons are current and well-formed
+        run: node icons/check-icons.mjs
 
   cpp-tests:
     name: C++ tests (${{ matrix.mesh }} mesh / ${{ matrix.parallel }})
@@ -219,8 +227,18 @@ jobs:
         run: >-
           CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_KAHIP=ON -DKAHIP_ROOT=$HOME/kahip-install"
           pip install . -v
+      # KaHIP is a shared, bring-your-own library, and scikit-build-core strips
+      # the RPATH from the installed `_core.so` so the wheel stays relocatable
+      # ("Set non-toolchain portion of runtime path ... to ''" in the build
+      # log). The ctest step above passes regardless -- it runs against the
+      # build tree, whose RPATH is intact -- so the loader only fails once the
+      # extension is imported from site-packages. Point it at the prefix, the
+      # same way the C-API consumer smoke tests above do.
       - name: Run the Python partition suite (C++ KaHIP backend)
-        run: python -m pytest tests/test_partition.py -v
+        run: |
+          export LD_LIBRARY_PATH="$HOME/kahip-install/lib:$HOME/kahip-install/lib64:$LD_LIBRARY_PATH"
+          python -c "from meshioplusplus import _core; assert _core.__has_kahip__"
+          python -m pytest tests/test_partition.py -v
       # The other route to the quality path: a KaHIP-less _core plus the MIT
       # `kahip` PyPI wheel -- the shim must serve method="kahip" through the
       # pure-Python dual graph + kahip.kaffpa, never the named error.
@@ -485,3 +503,294 @@ jobs:
           files: ./cpp-coverage.info
           flags: cpp
           fail_ci_if_error: true
+
+  # --------------------------------------------------------------------------
+  # The desktop viewer backend (polyscope). Kept out of the per-backend C++
+  # matrix on purpose: polyscope is a Python-only optional dependency and has
+  # nothing to do with the mesh or parallel backends.
+  #
+  # The default `test` matrix already runs the pure mapping tests with no
+  # polyscope installed, which is what covers the "not installed" error path.
+  # This job adds the ones that actually render.
+  # --------------------------------------------------------------------------
+  viewer-python:
+    name: Viewer (polyscope, headless)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # EGL is the real headless path and is what polyscope's own
+      # `openGL3_egl` backend needs; xvfb + llvmpipe is the fallback for
+      # runners or wheels where EGL is unavailable. `_init_polyscope` tries the
+      # headless backends by name and reports which ones it tried, so whichever
+      # of the two is present here, the failure mode stays legible.
+      - name: Install a GL runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libgl1 libglx-mesa0 libegl1 libgl1-mesa-dri \
+            libxrandr2 libxinerama1 libxcursor1 libxi6 libxxf86vm1
+
+      - name: Install meshio++ with the viewer extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[viewer]" pytest
+
+      - name: Render tests
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: xvfb-run -a -s "-screen 0 1280x960x24" python -m pytest tests/test_viewer.py tests/test_cli.py -m viewer -v
+
+  # --------------------------------------------------------------------------
+  # The browser viewer. Lives here rather than in wasm.yml because that
+  # workflow only triggers on v* tags, and this needs to run on every PR that
+  # could break the app.
+  #
+  # The Emscripten build is not optional: wasm/dist/ is gitignored, so the
+  # package the viewer consumes does not exist until it is built. And npm
+  # *copies* a `file:` dependency, so `npm ci` has to come after that build --
+  # vite.config.mjs fails loudly if this order is ever broken.
+  # --------------------------------------------------------------------------
+  viewer-web:
+    name: Viewer (browser, Playwright)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "6.0.3"
+
+      - name: Build the meshio++ WASM package
+        run: ./build/configure-wasm.sh --build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+
+      - name: WASM smoke test
+        run: node wasm/test/smoke.mjs
+
+      - name: Type-check the viewer
+        working-directory: viewer
+        run: npm run typecheck
+
+      # The one lint rule worth a job of its own. Every vtk.js typing gap is
+      # meant to go through vtk-augmentations.d.ts or vtk-shims.ts, where it
+      # stays checked; `as any` would quietly opt out of the whole migration.
+      - name: No `as any` in viewer sources
+        run: |
+          if grep -rn ' as any' viewer/src --include='*.ts'; then
+            echo "use vtk-augmentations.d.ts or vtk-shims.ts instead" >&2
+            exit 1
+          fi
+
+      - name: Unit tests (colour maps)
+        working-directory: viewer
+        run: npm run test:unit
+
+      - name: Install and build the viewer
+        working-directory: viewer
+        run: |
+          npm ci
+          npm run build:web
+          npm run build:embed
+
+      - name: The embedded build is a single self-contained file
+        run: |
+          test "$(ls viewer/dist-embed | wc -l)" -eq 1
+          # All three payload slots Python fills. Matched as exact strings on
+          # the Python side, so singlefile mangling one must fail here rather
+          # than at view() time.
+          grep -q 'id="vtp-payload"' viewer/dist-embed/index.html
+          grep -q 'id="stats-payload"' viewer/dist-embed/index.html
+          grep -q 'id="view-config"' viewer/dist-embed/index.html
+          # It must never carry WebAssembly: Python writes the payload, so the
+          # page only renders. Dead-code elimination alone did not achieve this
+          # (Vite's worker plugin emits chunks at transform time), so assert it.
+          ! grep -q '\.wasm' viewer/dist-embed/index.html
+
+      # Size drift alone cannot catch the failure that matters most -- the
+      # WASM binary returning under a differently-named chunk, or a heavy
+      # dependency being re-imported -- so cap the absolute size too.
+      - name: The viewer stays within its size budget
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+          caps = {
+              "viewer/dist-embed/index.html": 2_000_000,
+              "viewer/dist-web/assets": 4_000_000,
+          }
+          embed = pathlib.Path("viewer/dist-embed/index.html").stat().st_size
+          if embed > caps["viewer/dist-embed/index.html"]:
+              sys.exit(f"dist-embed/index.html is {embed} bytes, over the 2 MB budget")
+          print(f"ok: dist-embed/index.html {embed} bytes")
+          PY
+
+      # Structural, not a byte comparison: Rollup output is not reproducible
+      # across npm patch releases, so a `git diff --exit-code` here would be a
+      # recurring red build unrelated to any change of ours. A 10% size drift
+      # still catches "added a feature and forgot to re-copy".
+      - name: The committed wheel asset is current
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+          fresh = pathlib.Path("viewer/dist-embed/index.html").stat().st_size
+          committed = pathlib.Path(
+              "src/meshioplusplus/_viewer_assets/viewer.html"
+          ).stat().st_size
+          drift = abs(fresh - committed) / max(fresh, committed)
+          if drift > 0.10:
+              sys.exit(
+                  f"the committed viewer asset looks stale: {committed} bytes vs "
+                  f"{fresh} freshly built ({drift:.0%} drift). Regenerate it:\n"
+                  "  cd viewer && npm run build:embed\n"
+                  "  cp dist-embed/index.html ../src/meshioplusplus/_viewer_assets/viewer.html"
+              )
+          PY
+
+      - name: Install Playwright
+        working-directory: viewer
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end smoke test
+        working-directory: viewer
+        run: npm run test:e2e
+
+      # The offline page Python generates must actually render. Nothing else
+      # checks that the committed asset works rather than merely existing.
+      - name: The wheel-bundled offline page renders
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          python -c "
+          import pathlib, meshioplusplus as m
+          from meshioplusplus._viewer_browser import build_page
+          mesh = m.read('viewer/public/samples/block.vtu')
+          pathlib.Path('/tmp/offline.html').write_text(build_page(mesh, title='offline'))
+          # The quality path bakes ~10 arrays in; it must still render.
+          pathlib.Path('/tmp/offline-quality.html').write_text(
+              build_page(mesh, title='offline', quality=True))
+          "
+          cd viewer
+          npx playwright test tests/offline.spec.mjs
+          VIEWER_OFFLINE_PAGE=/tmp/offline-quality.html npx playwright test tests/offline.spec.mjs
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: viewer/playwright-report
+
+  # --------------------------------------------------------------------------
+  # The viewer asset ships as package data. scikit-build-core's
+  # `wheel.packages` copies it with no extra configuration -- which is exactly
+  # why a regression here would be silent.
+  # --------------------------------------------------------------------------
+  viewer-packaging:
+    name: Viewer asset ships in the wheel
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build a wheel and check its contents
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheel = sorted(glob.glob("dist/*.whl"))[-1]
+          names = zipfile.ZipFile(wheel).namelist()
+          asset = "meshioplusplus/_viewer_assets/viewer.html"
+          if asset not in names:
+              sys.exit(f"{asset} is missing from {wheel}")
+          print(f"ok: {asset} ships in {wheel}")
+          PY
+
+  # --------------------------------------------------------------------------
+  # The CLI's optional native viewer. Lives here rather than in cli.yml because
+  # that workflow builds the *release* binaries, which must stay dependency-free
+  # -- Polyscope pulls in OpenGL, GLFW and X11. Its `ldd` assertion is what
+  # proves the flag stayed off there; this job is what proves it works when on.
+  #
+  # Note `submodules: recursive`: Polyscope vendors its own (glfw, imgui, glm,
+  # ...), and with a plain --init the CMake EXISTS guard silently leaves the
+  # viewer out, which would make this job pass while testing nothing.
+  # --------------------------------------------------------------------------
+  cli-polyscope:
+    name: CLI native viewer (Polyscope)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the GL/X11 stack Polyscope needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xorg-dev libglu1-mesa-dev libgl1-mesa-dev libegl1 libgl1-mesa-dri xvfb
+      - name: Install build tools
+        run: python -m pip install --upgrade pip cmake ninja
+
+      # netCDF stays off (the standalone-executable link quirk); the cpp-tests
+      # matrix covers those formats.
+      - name: Configure with the viewer
+        run: >-
+          cmake -S . -B build-view -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_BUILD_CLI=ON
+          -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          -DMESHIOPLUSPLUS_WITH_POLYSCOPE=ON
+      - name: Build
+        run: cmake --build build-view
+
+      # The payload invariants need no GL and also run in the default build --
+      # running them here too catches a Polyscope-only compilation divergence.
+      - name: Payload invariants
+        run: ctest --test-dir build-view -R ViewPayload --output-on-failure
+
+      - name: The viewer is really compiled in
+        run: |
+          ./build-view/meshioplusplus --help | grep -q '^  view '
+          # Without the flag this reports the flag instead of rendering, so a
+          # silent EXISTS-guard miss would be caught right here.
+          ! ./build-view/meshioplusplus view viewer/public/samples/block.vtu 2>&1 \
+            | grep -q 'MESHIOPLUSPLUS_WITH_POLYSCOPE'
+
+      - name: Headless screenshot
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          xvfb-run -a -s "-screen 0 1280x960x24" \
+            ./build-view/meshioplusplus screenshot viewer/public/samples/block.vtu \
+            /tmp/cli.png --size 320x240
+          python - <<'PY'
+          import pathlib, struct, sys
+          data = pathlib.Path("/tmp/cli.png").read_bytes()
+          if data[:8] != b"\x89PNG\r\n\x1a\n":
+              sys.exit("not a PNG")
+          width, height = struct.unpack(">II", data[16:24])
+          if (width, height) != (320, 240):
+              sys.exit(f"expected 320x240, got {width}x{height}")
+          print(f"ok: {len(data)} byte PNG at {width}x{height}")
+          PY
