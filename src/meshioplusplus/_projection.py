@@ -80,9 +80,16 @@ def project_surface(mesh, azimuth, elevation, roll):
 
     Returns ``(x, y, faces)`` where ``x``/``y`` are the projected screen
     coordinates per point and ``faces`` is a list of
-    ``(node_ids, is_line)`` tuples sorted back-to-front by face-centroid
-    depth (painter's algorithm; ties keep enumeration order, matching the
-    C++ core's stable sort).
+    ``(node_ids, is_line, source_cell)`` tuples sorted back-to-front by
+    face-centroid depth (painter's algorithm; ties keep enumeration order,
+    matching the C++ core's stable sort).
+
+    ``source_cell`` is the index of the cell the face came from, counted
+    block-major over every cell of every block -- including blocks skipped
+    here -- which is the same convention ``"surface:parent_cell"`` uses, so
+    the two indices compose. It rides on each face rather than in a parallel
+    array so the sort below cannot desync it (twin of
+    ``detail::ProjectedFace::mSourceCell``).
     """
     u, v, w = camera_basis(azimuth, elevation, roll)
     points = np.asarray(mesh.points)
@@ -101,7 +108,13 @@ def project_surface(mesh, azimuth, elevation, roll):
     conns = []
     is_lines = []
     depths = []
+    srcs = []
+    # Advances over EVERY block, including the skipped ones (mirrors the C++
+    # core hoisting global_cell_base above its `continue`).
+    base = 0
     for block in mesh.cells:
+        block_base = base
+        base += len(block.data)
         drawable = _DRAWABLE.get(block.type)
         if drawable is None:
             continue
@@ -116,12 +129,14 @@ def project_surface(mesh, azimuth, elevation, roll):
         conns.append(conn)
         is_lines.append(np.full(len(conn), is_line))
         depths.append(d)
+        srcs.append(block_base + np.arange(len(conn), dtype=np.int64))
 
     faces = []
     if conns:
         all_depth = np.concatenate(depths)
         all_line = np.concatenate(is_lines)
+        all_src = np.concatenate(srcs)
         flat = [row for conn in conns for row in conn]
         order = np.argsort(all_depth, kind="stable")
-        faces = [(flat[i], bool(all_line[i])) for i in order]
+        faces = [(flat[i], bool(all_line[i]), int(all_src[i])) for i in order]
     return x, y, faces
