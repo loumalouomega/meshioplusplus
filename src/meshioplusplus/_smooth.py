@@ -36,9 +36,18 @@ _REFINE_EDGES = {
     "quad": [(0, 1), (1, 2), (2, 3), (3, 0)],
     "tetra": [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)],
     "hexahedron": [
-        (0, 1), (1, 2), (2, 3), (3, 0),
-        (4, 5), (5, 6), (6, 7), (7, 4),
-        (0, 4), (1, 5), (2, 6), (3, 7),
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
     ],
     "wedge": [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)],
     "pyramid": [(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)],
@@ -72,7 +81,11 @@ def _edge_graph(mesh, n):
 
     for block in mesh.cells:
         data = block.data
-        if block.type in _REFINE_EDGES and isinstance(data, np.ndarray) and data.ndim == 2:
+        if (
+            block.type in _REFINE_EDGES
+            and isinstance(data, np.ndarray)
+            and data.ndim == 2
+        ):
             for a, b in _REFINE_EDGES[block.type]:
                 add(data[:, a], data[:, b])
                 add(data[:, b], data[:, a])
@@ -128,8 +141,14 @@ def _boundary_and_features(mesh, xyz, n, face_mode, preserve_features, feature_a
         return boundary, np.zeros(n, dtype=bool)
 
     allkeys = np.vstack(keys)
-    allfacets = np.vstack([f for f in facets]) if len({f.shape[1] for f in facets}) == 1 else None
-    _uniq, inverse, counts = np.unique(allkeys, axis=0, return_inverse=True, return_counts=True)
+    allfacets = (
+        np.vstack([f for f in facets])
+        if len({f.shape[1] for f in facets}) == 1
+        else None
+    )
+    _uniq, inverse, counts = np.unique(
+        allkeys, axis=0, return_inverse=True, return_counts=True
+    )
     once = counts[inverse] == 1
 
     # Mark boundary nodes.
@@ -171,8 +190,12 @@ def _boundary_and_features(mesh, xyz, n, face_mode, preserve_features, feature_a
     allnorm = np.vstack(normals)
     node_ids = np.concatenate([s.ravel() for s in nodes_per])
     facet_ids = np.concatenate(
-        [np.repeat(np.arange(s.shape[0]) + off, s.shape[1]) for off, s in
-         zip(np.cumsum([0] + [s.shape[0] for s in nodes_per[:-1]]), nodes_per)]
+        [
+            np.repeat(np.arange(s.shape[0]) + off, s.shape[1])
+            for off, s in zip(
+                np.cumsum([0] + [s.shape[0] for s in nodes_per[:-1]]), nodes_per
+            )
+        ]
     )
     cos_thr = np.cos(np.deg2rad(feature_angle))
     order = np.argsort(node_ids, kind="stable")
@@ -282,7 +305,9 @@ def _smooth_py(
     extent = original.max(axis=0) - original.min(axis=0) if n else np.zeros(3)
     diag = float(np.linalg.norm(extent)) or 1.0
     out = Mesh(
-        np.ascontiguousarray(cur[:, :dim]).astype(np.asarray(mesh.points).dtype, copy=False),
+        np.ascontiguousarray(cur[:, :dim]).astype(
+            np.asarray(mesh.points).dtype, copy=False
+        ),
         [(b.type, b.data) for b in mesh.cells],
     )
     out.point_data = {k: v for k, v in mesh.point_data.items()}
@@ -388,6 +413,8 @@ def smooth(
     if getattr(mesh, "point_sets", None):
         out.point_sets = {k: np.asarray(v).copy() for k, v in mesh.point_sets.items()}
     if getattr(mesh, "cell_sets", None):
-        out.cell_sets = {k: [np.asarray(a).copy() for a in v] for k, v in mesh.cell_sets.items()}
+        out.cell_sets = {
+            k: [np.asarray(a).copy() for a in v] for k, v in mesh.cell_sets.items()
+        }
 
     return (out, report) if return_report else out
