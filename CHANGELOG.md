@@ -8,6 +8,126 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.10.0 (2026-07-21)
+
+The native CLI gets `view` and `screenshot`, restoring verb parity with the
+Python one — which v7.9.0 had broken without saying so. The browser viewer
+gains click-to-inspect.
+
+- **`view` and `screenshot` in the C++ binary**, backed by
+  [Polyscope](https://polyscope.run) (MIT), vendored as a git submodule.
+  Volume rendering and slice planes: the things a surface renderer, and so the
+  browser viewer, structurally cannot do.
+  - **Optional and off by default** (`-DMESHIOPLUSPLUS_WITH_POLYSCOPE=ON`,
+    `build/configure.sh --with-polyscope`). The prebuilt release binaries do
+    **not** include it and are unchanged — their whole point is being
+    dependency-free single files, and Polyscope needs OpenGL, GLFW and X11.
+  - It attaches to the **CLI target only, never to the core**. Unlike KaHIP —
+    which lives in the core because partitioning is a core operation — viewing
+    is not, so `_core`, the C API, the Fortran module and the WebAssembly build
+    cannot acquire an OpenGL dependency through it.
+  - The verbs exist in **every** build and report the flag when it is off,
+    rather than silently not existing.
+  - Polyscope vendors its own submodules, so enabling it needs
+    `git submodule update --init --recursive`.
+- **Click-to-inspect in the browser viewer.** An **Inspect** toggle reports a
+  clicked cell's id and type, every cell and point array's value there (all
+  components), the nearest vertex, and the originating volume cell for a solid
+  — with the picked cell outlined. On click only, never on hover, and disabled
+  above two million cells rather than made slow.
+- **Fixed:** `CLAUDE.md`'s "documented gaps vs the Python CLI" list omitted the
+  two verbs v7.9.0 added, and its verb list was a release out of date.
+
+Internal: `gather_cell_data_onto_surface` moves from the WebAssembly binding
+into `operations/surface.cpp`, since the CLI now needs it too. The mesh →
+Polyscope mapping is deliberately free of Polyscope headers, so it compiles and
+is tested in the default build with no GL.
+
+## v7.9.0 (2026-07-21)
+
+The browser viewer stops being a generic vtk.js app and starts running meshio++
+itself. It previously used 6 of the 40 functions the WASM package exposes.
+
+- **Mesh operations in the browser.** Quality, clean, smooth, refine, partition
+  and a sectioning cut, applied to the mesh you opened and re-rendered in
+  place, with no server and no upload. They compose, each shows as a chip you
+  can remove, and **undo is exact**: the worker keeps the original file bytes
+  and replays the remaining pipeline, so nothing needs an inverse and nothing
+  accumulates rounding.
+- **WASM: `convertSurfaceOps`.** One binding applies an operation pipeline and
+  writes the renderable surface, all inside C++. Chaining the individual
+  operation bindings would route the mesh through the flat JS representation on
+  every step and destroy every multi-component array — the thing
+  `convertSurface` exists to prevent. An empty pipeline is byte-identical to
+  `convertSurface`, so the plain and post-operation display paths cannot drift.
+- **Viewer polish**: a DOM colour legend with an editable range replacing
+  `vtkScalarBarActor`, an orientation cube whose faces snap the camera,
+  surface/wireframe/points, an opacity slider, and Fit/PNG buttons.
+- **`viewer/` is now TypeScript**, with `tsc --noEmit` in CI. The shared worker
+  protocol means a mismatch between what the client sends and what the worker
+  handles is a compile error rather than a runtime surprise.
+- **A TikZ icon set** under `icons/`, built with the same `pdflatex` +
+  `dvisvgm` pair `logo/build.sh` uses, generated into a typed module so every
+  icon reference is checked.
+- **The offline page carries results.** `view(backend="browser")` gained
+  `quality=True` to bake in per-cell metrics, always embeds the volume mesh's
+  geometric statistics (the page renders only the boundary, so it cannot derive
+  them), and `color_by` now works instead of warning that it does not.
+
+Fixed:
+
+- Point-data colouring used only half the colormap. `interpolateScalarsBefore
+  Mapping` renders a range spanning zero entirely in the warm half in vtk.js
+  32.9.0 — measured at 0 blue pixels against 275k red ones on a symmetric
+  field — so it is now off, with the evidence recorded beside the setting.
+- Surface edges z-fought into faint dashes: the polygon offset was on the body
+  mapper, but a negative offset moves *toward* the viewer, so the surface was
+  drawn in front of its own wireframe.
+- The `kahip` CI job failed at its Python step with `ImportError: libkahip.so`.
+  scikit-build-core strips the RPATH from the installed extension so the wheel
+  stays relocatable, so the loader needs the prefix on its path;
+  [`doc/partition.md`](doc/partition.md) now warns about this for users too.
+
+## v7.8.0 (2026-07-21)
+
+meshio++ can now *show* you a mesh. One entry point, `view()`, with two
+backends — a native desktop window and a browser — plus a hosted demo that
+doubles as a client-side format converter.
+
+- **`view(mesh, backend=...)` — interactive visualization.** `"polyscope"`
+  opens a native window; `"browser"` renders with vtk.js, inline in a notebook
+  or in your default browser; `"auto"` picks polyscope when it is installed and
+  a display is available. Also `screenshot(mesh, path)`, which renders
+  headlessly and so works from CI and a docs build, and `has_viewer()`. New CLI
+  verbs `meshioplusplus view` and `meshioplusplus screenshot`.
+  - **Polyscope is a Python-only optional dependency**, behind a new
+    `[viewer]` extra (`pip install meshioplusplus[viewer]`). It never reaches
+    the C++/WASM/C/Fortran core, and the browser backend needs nothing from it.
+    A missing install raises naming the command that fixes it.
+  - The mesh → renderer mapping is pure and separately tested: no renderer
+    import, no display, no mutation of the input. Volume meshes route through
+    `convert_cells(simplexify)` only where they must — polyscope holds
+    tetrahedra and hexahedra directly, so a hexahedral mesh keeps its
+    hexahedra. Every lossy step is reported rather than done quietly.
+- **A browser viewer at `viewer/`**, deployed to GitHub Pages alongside the
+  docs, that consumes the published `@meshioplusplus/wasm` package exactly as
+  an external user would. Drag in any of the ~36 formats the WASM build
+  supports, colour by point or cell data with a scalar bar, and convert and
+  download to any writable format. Everything runs client-side: no server, no
+  upload. The same bundle, built without the WASM, ships in the wheel as the
+  offline render path for `view(backend="browser")`.
+  - It renders **VTP**, not VTU, and shows a volume mesh by its boundary:
+    vtk.js has no unstructured-grid model at all.
+- **WASM: `availableFormats()`** returns the reader and writer names this build
+  actually supports, so a consumer no longer has to hardcode a table that
+  drifts from the build. **`convertSurface()`** reads, extracts the boundary,
+  linearizes and writes in one call without materializing a JS mesh — which is
+  what keeps multi-component (vector/tensor) arrays, since the flat JS mesh
+  representation cannot carry them. Boundary facets also now inherit their
+  owning cell's data.
+  - Fixed: `index.d.ts` referenced a `MeshMetadata` type it never defined,
+    a TS2304 for any consumer without `skipLibCheck`.
+
 ## v7.7.0 (2026-07-21)
 
 A new dependency-free mesh operation that improves element *shape* in place — the
