@@ -701,3 +701,31 @@ read. The flag is **rejected** for formats with no block codec rather than silen
 See [Compression codecs](codecs.md).
 
 Both CLIs — the Python one and the native `meshioplusplus` binary — accept these identically.
+
+## `view` / `screenshot` — the native viewer
+
+```sh
+meshioplusplus view part.msh
+meshioplusplus view part.msh --kind surface --color-by material
+meshioplusplus screenshot part.msh out.png --size 1600x1200
+```
+
+Options: `--input-format/-i`, `--kind {auto,surface,volume,curve,points}`,
+`--color-by NAME`, `--name NAME`; `screenshot` adds `--size WIDTHxHEIGHT` and
+`--transparent`.
+
+These mirror the Python CLI's verbs, but in the **native binary** they are only
+functional in a build configured with
+[Polyscope](https://polyscope.run):
+
+```sh
+git submodule update --init --recursive     # Polyscope vendors its own submodules
+build/configure.sh --cli --with-polyscope --build
+```
+
+They are listed in `--help` in every build; without the flag they report it
+rather than silently not existing. The **prebuilt release binaries do not
+include the viewer** — they are deliberately dependency-free single files, and
+Polyscope needs OpenGL, GLFW and X11. Use the Python CLI (`pip install
+meshioplusplus[viewer]`) or the [browser viewer](/viewer) if you would rather
+not build from source.

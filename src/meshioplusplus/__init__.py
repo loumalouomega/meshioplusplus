@@ -78,6 +78,7 @@ from ._split import split
 from ._stats import compute_stats
 from ._surface import extract_surface
 from ._transform import transform
+from ._viewer import has_viewer, screenshot, view
 
 __all__ = [
     "abaqus",
@@ -161,6 +162,9 @@ __all__ = [
     "data_calc",
     "data_condition",
     "data_info",
+    "view",
+    "screenshot",
+    "has_viewer",
     "Mesh",
     "CellBlock",
     "ReadError",

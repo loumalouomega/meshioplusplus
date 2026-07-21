@@ -1,3 +1,14 @@
 [submodule "cpp/third_party/eigen"]
 	path = cpp/third_party/eigen
 	url = https://gitlab.com/libeigen/eigen.git
+[submodule "cpp/third_party/polyscope"]
+	path = cpp/third_party/polyscope
+	url = https://github.com/nmwsharp/polyscope.git
+	# Polyscope has its own nested submodules (glfw, imgui, glm, implot,
+	# ImGuizmo, happly), so it needs `--recursive`. `ignore = dirty` keeps
+	# `git status` quiet about content *inside* it: a partial recursion depth,
+	# an in-tree build, or a nested submodule left at a different commit would
+	# otherwise show up as "modified content" on a tree nobody edited. A real
+	# change -- moving polyscope itself to another commit -- still shows,
+	# because that changes the recorded gitlink rather than its contents.
+	ignore = dirty

@@ -1,0 +1,13 @@
+% Toolbar icon: cut plane — a box bisected by a wide, shaded clip plane; two
+% vertical lines mark where the plane's edges cross through the box.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-9,-9) rectangle (9,9);
+  \draw[thick, fill=iconfg60] (-13,-3) rectangle (13,3);
+  \draw[thick] (-9,-3) -- (-9,3);
+  \draw[thick] (9,-3) -- (9,3);
+\end{tikzpicture}
+\end{document}

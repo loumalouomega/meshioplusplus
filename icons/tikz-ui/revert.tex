@@ -1,0 +1,12 @@
+% Toolbar icon: revert all — a circular arrow enclosing a cross, distinct from
+% `undo` (which steps back one operation rather than clearing the pipeline).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick,->] (55:9) arc (55:340:9);
+  \draw[thick] (-3.5,-3.5) -- (3.5,3.5);
+  \draw[thick] (-3.5,3.5) -- (3.5,-3.5);
+\end{tikzpicture}
+\end{document}

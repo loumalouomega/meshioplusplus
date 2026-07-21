@@ -1,0 +1,10 @@
+% Toolbar icon: close / remove — an X (two diagonal strokes).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[very thick, line cap=round] (-7,-7) -- (7,7);
+  \draw[very thick, line cap=round] (-7,7) -- (7,-7);
+\end{tikzpicture}
+\end{document}

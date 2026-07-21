@@ -1,0 +1,10 @@
+% Toolbar icon: reset camera — a circular refresh arrow (near-full circle with
+% a Stealth arrowhead at the open end).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, -{Stealth[length=3.5mm,width=3.5mm]}] (95:9) arc (95:-200:9);
+\end{tikzpicture}
+\end{document}

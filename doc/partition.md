@@ -111,6 +111,27 @@ same policy the Kratos reviewers required of the original integration).
   links the serial `kaffpa` interface, so this build has no MPI dependency at
   all despite what KaHIP's own default configure implies.
 
+  ::: warning KaHIP must be findable at *runtime* too
+  KaHIP is a shared library, and the wheel build strips the RPATH from
+  `_core` so the wheel stays relocatable. If the prefix is not on the default
+  loader path, importing meshio++ then fails with
+
+  ```
+  ImportError: libkahip.so: cannot open shared object file: No such file or directory
+  ```
+
+  even though the build succeeded. Put the prefix on the loader path:
+
+  ```bash
+  export LD_LIBRARY_PATH="$HOME/kahip-install/lib:$LD_LIBRARY_PATH"   # Linux
+  export DYLD_LIBRARY_PATH="$HOME/kahip-install/lib:$DYLD_LIBRARY_PATH"  # macOS
+  ```
+
+  or install KaHIP to a system prefix. This is the ordinary cost of a
+  bring-your-own shared dependency; if you would rather not manage it, the
+  Python-only route below needs no such setup.
+  :::
+
   The in-repo `cmake/FindKaHIP.cmake` honours `KAHIP_ROOT`/`KAHIP_DIR`
   (environment or cache), standard prefixes, and pkg-config; an in-source
   KaHIP build (`interface/` + `build/`) works as a prefix too. On macOS,

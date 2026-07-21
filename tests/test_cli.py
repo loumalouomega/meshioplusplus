@@ -450,3 +450,50 @@ def test_data_geometry_is_never_modified(data_infile, tmp_path):
     for a, b in zip(before.cells, after.cells):
         assert a.type == b.type
         assert np.array_equal(np.asarray(a.data), np.asarray(b.data))
+
+
+def test_view_browser_writes_a_page(tmp_path, monkeypatch):
+    """The browser backend needs neither polyscope nor a display."""
+    import webbrowser
+
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+
+    infile = tmp_path / "in.vtu"
+    meshioplusplus.write(infile, helpers.tri_mesh)
+    assert meshioplusplus._cli.main(["view", str(infile), "--backend", "browser"]) == 0
+    assert len(opened) == 1
+
+
+def test_view_rejects_an_unknown_backend_at_parse_time(tmp_path):
+    infile = tmp_path / "in.vtu"
+    meshioplusplus.write(infile, helpers.tri_mesh)
+    with pytest.raises(SystemExit) as exc:
+        meshioplusplus._cli.main(["view", str(infile), "--backend", "opengl"])
+    assert exc.value.code == 2
+
+
+def test_screenshot_without_polyscope_says_how_to_install_it(tmp_path, monkeypatch):
+    from meshioplusplus._cli import _view
+
+    monkeypatch.setattr(_view, "has_viewer", lambda: False)
+    infile = tmp_path / "in.vtu"
+    meshioplusplus.write(infile, helpers.tri_mesh)
+    with pytest.raises(SystemExit, match=r"pip install meshioplusplus\[viewer\]"):
+        meshioplusplus._cli.main(["screenshot", str(infile), str(tmp_path / "o.png")])
+
+
+@pytest.mark.viewer
+def test_screenshot_verb_writes_a_png(tmp_path):
+    pytest.importorskip("polyscope")
+    infile = tmp_path / "in.vtu"
+    out = tmp_path / "out.png"
+    meshioplusplus.write(infile, helpers.tet_mesh)
+    try:
+        rc = meshioplusplus._cli.main(
+            ["screenshot", str(infile), str(out), "--size", "160", "120"]
+        )
+    except RuntimeError as e:  # pragma: no cover - depends on the GL runtime
+        pytest.skip(str(e))
+    assert rc == 0
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

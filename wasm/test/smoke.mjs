@@ -475,10 +475,31 @@ step('partition: kahip is compiled out of the WASM build and says so', () => {
     assert.throws(() => m.partition(cube, 2, 'kahip'), /MESHIOPLUSPLUS_WITH_KAHIP/);
 });
 
-step('geometry operations are reachable through the wrapper', () => {
-    // Regression guard for the v7.2.1 class of bug: every geometry op must be
+step('every binding is reachable through the wrapper', () => {
+    // Regression guard for the v7.2.1 class of bug: every binding must be
     // forwarded by src/index.mjs, not merely bound in js_bindings.cpp.
+    // This list is exhaustive on purpose -- it used to cover only the geometry
+    // ops, which left the I/O and data surfaces unguarded.
     for (const name of [
+        'readMesh',
+        'readMeshSelective',
+        'readMetadata',
+        'readerSupportsOptions',
+        'writeMesh',
+        'convert',
+        'convertSurface',
+        'convertSurfaceOps',
+        'numNodesPerCell',
+        'topologicalDimension',
+        'availableFormats',
+        'dataDrop',
+        'dataKeep',
+        'dataRename',
+        'dataPointToCell',
+        'dataCellToPoint',
+        'dataCalc',
+        'dataCondition',
+        'dataInfo',
         'extractSurface',
         'extractSkin',
         'attachQuality',
@@ -520,6 +541,197 @@ step('a forwarded geometry operation actually runs', () => {
 
     assert.equal(m.meshesEqual(cube, cube), true);
     assert.equal(typeof m.meshBackend(), 'string');
+});
+
+step('availableFormats reports what this build can read and write', () => {
+    const { readers, writers } = m.availableFormats();
+    assert.ok(Array.isArray(readers) && Array.isArray(writers));
+    assert.ok(readers.includes('vtu') && writers.includes('vtu'));
+    // The two lists genuinely differ: openfoam is read-only, svg/tikz are
+    // write-only. A viewer that assumes one list would offer broken menu items.
+    assert.ok(readers.includes('openfoam') && !writers.includes('openfoam'));
+    assert.ok(writers.includes('svg') && !readers.includes('svg'));
+    // No HDF5/netCDF-backed format is in a wasm build.
+    assert.ok(!readers.includes('med') && !writers.includes('med'));
+    // Sorted, so a UI can render them without sorting again.
+    assert.deepEqual(readers, [...readers].sort());
+    assert.deepEqual(writers, [...writers].sort());
+});
+
+step('convertSurface turns a volume mesh into its renderable boundary', () => {
+    m.writeMesh('/cube.vtu', cube);
+    m.convertSurface('/cube.vtu', '/cube-surf.vtp');
+    const surf = m.readMesh('/cube-surf.vtp');
+    // One hexahedron -> 6 boundary quads, and no 3D cells left.
+    assert.equal(surf.cells.length, 1);
+    assert.equal(surf.cells[0].data.length, 6 * 4);
+    assert.equal(surf.points.length, 8 * 3);
+});
+
+step('convertSurface carries cell data onto the boundary facets', () => {
+    // extract_surface drops cell data (a facet is not a cell), but for a
+    // viewer the useful answer is the owning cell's value -- colouring a solid
+    // by its material tag is the common case, and without the parent-id gather
+    // the array would simply vanish on the way to the renderer.
+    const tagged = { ...cube, cell_data: { material: [new Float64Array([7])] } };
+    m.writeMesh('/tagged.vtu', tagged);
+    m.convertSurface('/tagged.vtu', '/tagged-surf.vtp');
+    const surf = m.readMesh('/tagged-surf.vtp');
+    assert.deepEqual(Array.from(surf.cell_data.material[0]), [7, 7, 7, 7, 7, 7]);
+    // The provenance array is plumbing; it must not clutter a colour-by menu.
+    assert.equal(surf.cell_data['surface:parent_cell'], undefined);
+});
+
+step('convertSurface passes a surface mesh through, linearized', () => {
+    const tri6 = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0.5, 0]),
+        dim: 3,
+        cells: [{ type: 'triangle6', data: new Int32Array([0, 1, 2, 3, 4, 5]), nodesPerCell: 6 }],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    m.writeMesh('/tri6.vtu', tri6);
+    m.convertSurface('/tri6.vtu', '/tri6-surf.vtp');
+    const out = m.readMesh('/tri6-surf.vtp');
+    // Linearized to a 3-node triangle: a renderer has no mid-side nodes, and
+    // drawing the 6-node connectivity verbatim would be visible garbage.
+    assert.equal(out.cells[0].data.length, 3);
+});
+
+step('convertSurface keeps data the flat JS mesh would have dropped', () => {
+    // The reason this binding exists rather than readMesh -> extractSkin ->
+    // writeMesh: a 3-component array cannot survive the JS mesh boundary.
+    const vtu = `<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">
+ <UnstructuredGrid><Piece NumberOfPoints="4" NumberOfCells="1">
+  <Points><DataArray type="Float64" NumberOfComponents="3" format="ascii">
+   0 0 0  1 0 0  0 1 0  0 0 1</DataArray></Points>
+  <PointData>
+   <DataArray type="Float64" Name="disp" NumberOfComponents="3" format="ascii">
+    1 2 3  4 5 6  7 8 9  10 11 12</DataArray>
+  </PointData>
+  <Cells>
+   <DataArray type="Int64" Name="connectivity" format="ascii">0 1 2 3</DataArray>
+   <DataArray type="Int64" Name="offsets" format="ascii">4</DataArray>
+   <DataArray type="UInt8" Name="types" format="ascii">10</DataArray>
+  </Cells>
+ </Piece></UnstructuredGrid>
+</VTKFile>`;
+    m.FS.writeFile('/vec.vtu', vtu);
+    m.convertSurface('/vec.vtu', '/vec-surf.vtp');
+    const text = new TextDecoder().decode(m.FS.readFile('/vec-surf.vtp'));
+    assert.match(text, /Name="disp"/);
+    assert.match(text, /NumberOfComponents="3"/);
+});
+
+step('convertSurfaceOps with an empty pipeline is exactly convertSurface', () => {
+    // The viewer calls this for both the plain and the post-operation display,
+    // so if the two ever diverged, applying and then undoing an operation
+    // would silently change the picture.
+    m.writeMesh('/eq.vtu', cube);
+    m.convertSurface('/eq.vtu', '/eq-a.vtp');
+    const report = m.convertSurfaceOps('/eq.vtu', '/eq-b.vtp', []);
+    assert.deepEqual(
+        Array.from(m.FS.readFile('/eq-a.vtp')),
+        Array.from(m.FS.readFile('/eq-b.vtp'))
+    );
+    assert.deepEqual(report.steps, []);
+    assert.deepEqual(report.warnings, []);
+});
+
+step('convertSurfaceOps runs each operation and reports its counters', () => {
+    m.writeMesh('/ops.vtu', cube);
+
+    const q = m.convertSurfaceOps('/ops.vtu', '/ops-q.vtp', [{ op: 'quality' }]);
+    assert.equal(q.steps[0].op, 'quality');
+    assert.ok('quality:scaled_jacobian' in m.readMesh('/ops-q.vtp').cell_data);
+
+    const c = m.convertSurfaceOps('/ops.vtu', '/ops-c.vtp', [{ op: 'clean', weld: true }]);
+    assert.equal(typeof c.steps[0].pointsWelded, 'number');
+
+    const s = m.convertSurfaceOps('/ops.vtu', '/ops-s.vtp', [
+        { op: 'smooth', method: 'laplacian', iterations: 3, fixBoundary: false },
+    ]);
+    assert.equal(typeof s.steps[0].numNodesMoved, 'number');
+
+    const r = m.convertSurfaceOps('/ops.vtu', '/ops-r.vtp', [{ op: 'refine', levels: 1 }]);
+    assert.equal(r.steps[0].op, 'refine');
+    // One hexahedron refines to 8, whose boundary is 6*4 = 24 quads.
+    assert.equal(m.readMesh('/ops-r.vtp').cells[0].data.length, 24 * 4);
+
+    const p = m.convertSurfaceOps('/ops.vtu', '/ops-p.vtp', [{ op: 'partition', nparts: 2 }]);
+    assert.ok('partition:part' in m.readMesh('/ops-p.vtp').cell_data);
+
+    // Operations compose, in order.
+    const both = m.convertSurfaceOps('/ops.vtu', '/ops-both.vtp', [
+        { op: 'refine', levels: 1 },
+        { op: 'quality' },
+    ]);
+    assert.deepEqual(both.steps.map((x) => x.op), ['refine', 'quality']);
+});
+
+step('convertSurfaceOps sections a solid and keeps it solid', () => {
+    m.writeMesh('/sec.vtu', cube);
+    const r = m.convertSurfaceOps('/sec.vtu', '/sec.vtp', [
+        { op: 'section', point: [0.5, 0.5, 0.5], normal: [0, 0, 1] },
+    ]);
+    // The single hexahedron does not lie entirely on the keep side, so mode
+    // 'all' removes it -- and that must be reported, not rendered as blank.
+    assert.equal(r.steps[0].op, 'section');
+    assert.ok(r.warnings.length > 0, 'an empty section must warn');
+});
+
+step('convertSurfaceOps keeps multi-component data through an operation', () => {
+    // The whole reason this binding exists: the same pipeline expressed as
+    // readMesh -> smooth -> writeMesh would flatten `disp` on the way through.
+    const vtu = `<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">
+ <UnstructuredGrid><Piece NumberOfPoints="4" NumberOfCells="1">
+  <Points><DataArray type="Float64" NumberOfComponents="3" format="ascii">
+   0 0 0  1 0 0  0 1 0  0 0 1</DataArray></Points>
+  <PointData>
+   <DataArray type="Float64" Name="disp" NumberOfComponents="3" format="ascii">
+    1 2 3  4 5 6  7 8 9  10 11 12</DataArray>
+  </PointData>
+  <Cells>
+   <DataArray type="Int64" Name="connectivity" format="ascii">0 1 2 3</DataArray>
+   <DataArray type="Int64" Name="offsets" format="ascii">4</DataArray>
+   <DataArray type="UInt8" Name="types" format="ascii">10</DataArray>
+  </Cells>
+ </Piece></UnstructuredGrid>
+</VTKFile>`;
+    m.FS.writeFile('/vec-ops.vtu', vtu);
+    m.convertSurfaceOps('/vec-ops.vtu', '/vec-ops.vtp', [{ op: 'quality' }]);
+    const text = new TextDecoder().decode(m.FS.readFile('/vec-ops.vtp'));
+    assert.match(text, /Name="disp"/);
+    assert.match(text, /NumberOfComponents="3"/);
+});
+
+step('convertSurfaceOps can keep the provenance array for a picker', () => {
+    m.writeMesh('/prov.vtu', cube);
+    m.convertSurfaceOps('/prov.vtu', '/prov.vtp', [], { keepProvenance: true });
+    assert.ok('surface:parent_cell' in m.readMesh('/prov.vtp').cell_data);
+    m.convertSurfaceOps('/prov.vtu', '/prov2.vtp', []);
+    assert.equal(m.readMesh('/prov2.vtp').cell_data['surface:parent_cell'], undefined);
+});
+
+step('convertSurfaceOps rejects an unknown operation by name', () => {
+    m.writeMesh('/bad.vtu', cube);
+    assert.throws(
+        () => m.convertSurfaceOps('/bad.vtu', '/bad.vtp', [{ op: 'teleport' }]),
+        /unknown operation 'teleport'/
+    );
+});
+
+step('sniffFormat identifies a file by its leading bytes', () => {
+    // Deliberately misleading extension: sniffing must go by content.
+    m.writeMesh('/sniffme.vtu', tet);
+    m.FS.writeFile('/sniffme.dat', m.FS.readFile('/sniffme.vtu'));
+    assert.equal(m.sniffFormat('/sniffme.dat'), 'vtu');
+    // Only a confident signature match is claimed; anything else returns "".
+    m.FS.writeFile('/ambiguous.dat', 'nothing recognizable here\n');
+    assert.equal(m.sniffFormat('/ambiguous.dat'), '');
 });
 
 if (failed) {

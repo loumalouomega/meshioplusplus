@@ -1,11 +1,11 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 authors:
+- family-names: "Mataix Ferrándiz"
+  given-names: "Vicente"
 - family-names: "Schlömer"
   given-names: "Nico"
   orcid: "https://orcid.org/0000-0001-5228-0946"
-- family-names: "Mataix Ferrándiz"
-  given-names: "Vicente"
 - family-names: "Kesba"
   given-names: "Mariam"
 - family-names: "Noussi"

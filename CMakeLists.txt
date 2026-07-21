@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 7.7.0
+  VERSION 7.10.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -116,6 +116,21 @@ if(MESHIOPLUSPLUS_WITH_NETCDF)
     find_path(NETCDF_INCLUDE_DIR netcdf.h PATHS $ENV{HOME}/.local/include)
   endif()
 endif()
+
+# Polyscope (MIT), the native viewer behind the CLI's `view`/`screenshot`
+# verbs. OFF by default and, unlike every other optional dependency here,
+# attached to the **CLI target only** -- never to meshioplusplus_core_obj. The
+# core, the C API, the Fortran module and the wasm build therefore cannot see
+# it at all, which is what keeps "the core is dependency-free" literally true
+# rather than true-by-default: Polyscope pulls in OpenGL, GLFW and X11.
+#
+# Vendored as a git submodule at cpp/third_party/polyscope (it is in no package
+# manager and its own docs offer only add_subdirectory/FetchContent). It has
+# nested submodules, so `git submodule update --init --recursive` is required;
+# with a plain --init the EXISTS guard below simply leaves the viewer out.
+option(MESHIOPLUSPLUS_WITH_POLYSCOPE
+       "Build the CLI's native viewer (needs OpenGL/GLFW; see cpp/third_party/polyscope)"
+       OFF)
 
 # --------------------------------------------------------------------------
 # meshioplusplus_core_obj: the pybind11-free C++ core (format readers/writers + pugixml).
@@ -589,6 +604,9 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
   endif()
   add_executable(meshioplusplus_tests ${MESHIOPLUSPLUS_TEST_SOURCES})
   target_include_directories(meshioplusplus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests)
+  # The Polyscope payload builder is CLI-side but deliberately Polyscope-free,
+  # so its invariants are tested here in the default build -- no OpenGL needed.
+  target_sources(meshioplusplus_tests PRIVATE cpp/cli/view_payload.cpp)
   target_link_libraries(meshioplusplus_tests PRIVATE meshioplusplus_core_obj GTest::gtest_main)
   if(MESHIOPLUSPLUS_BUILD_C_API)
     # Link the C API's objects directly (not the shared lib): the gtest binary
@@ -631,9 +649,27 @@ endif()
 option(MESHIOPLUSPLUS_BUILD_CLI "Build the native command-line binary" OFF)
 if(MESHIOPLUSPLUS_BUILD_CLI)
   add_executable(meshioplusplus_cli cpp/cli/main.cpp)
+  target_sources(meshioplusplus_cli PRIVATE cpp/cli/view_payload.cpp)
   target_link_libraries(meshioplusplus_cli PRIVATE meshioplusplus_core_obj)
   target_compile_definitions(meshioplusplus_cli
     PRIVATE MESHIOPLUSPLUS_CLI_VERSION="${PROJECT_VERSION}")
+
+  # The viewer half. PRIVATE on purpose -- nothing else in the project may
+  # acquire an OpenGL dependency through it. EXCLUDE_FROM_ALL keeps Polyscope's
+  # own examples and tests out of the build.
+  if(MESHIOPLUSPLUS_WITH_POLYSCOPE AND NOT EMSCRIPTEN)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/polyscope/CMakeLists.txt")
+      message(STATUS "meshio++: Polyscope viewer enabled (CLI only)")
+      add_subdirectory(cpp/third_party/polyscope EXCLUDE_FROM_ALL)
+      target_sources(meshioplusplus_cli PRIVATE cpp/cli/polyscope_view.cpp)
+      target_link_libraries(meshioplusplus_cli PRIVATE polyscope)
+      target_compile_definitions(meshioplusplus_cli PRIVATE MESHIOPLUSPLUS_HAS_POLYSCOPE)
+    else()
+      message(STATUS
+        "meshio++: Polyscope requested but cpp/third_party/polyscope is empty - "
+        "run `git submodule update --init --recursive`; view/screenshot will raise")
+    endif()
+  endif()
   set_target_properties(meshioplusplus_cli PROPERTIES OUTPUT_NAME meshioplusplus)
   if(MESHIOPLUSPLUS_STATIC_RUNTIME)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

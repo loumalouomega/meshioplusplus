@@ -1,0 +1,15 @@
+% Toolbar icon: partitioning — one shape divided into three shaded regions,
+% standing for a decomposition into balanced parts.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \fill[iconfg30] (-9,-8) rectangle (-3,8);
+  \fill[iconfg60] (-3,-8) rectangle (3,8);
+  \fill[iconfg] (3,-8) rectangle (9,8);
+  \draw[thick] (-9,-8) rectangle (9,8);
+  \draw[thick] (-3,-8) -- (-3,8);
+  \draw[thick] (3,-8) -- (3,8);
+\end{tikzpicture}
+\end{document}

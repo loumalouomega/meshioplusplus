@@ -1,0 +1,11 @@
+% Toolbar icon: mesh quality — a triangle element with an angle arc marked at
+% one vertex (measuring element geometry).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-8,-7) -- (9,-6) -- (-2,9) -- cycle;
+  \draw[thick] (-8,-7) ++(3:5) arc (3:69:5);
+\end{tikzpicture}
+\end{document}
