@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "7.7.0"
+version = "7.10.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -50,9 +50,14 @@ codecs = ["lz4", "zstandard"]
 # The KaHIP Python wheel (MIT): gives the pure-Python fallback the quality
 # partition path when the C++ core was built without MESHIOPLUSPLUS_WITH_KAHIP.
 kahip = ["kahip"]
+# Polyscope (MIT): the desktop backend of `view()` and all of `screenshot()`.
+# Python-only and strictly optional -- it never reaches the C++/WASM/C/Fortran
+# core, and the browser backend of `view()` needs nothing from this extra.
+viewer = ["polyscope>=2.4"]
 all = [
     "netCDF4",
-    "h5py"  # CGNS, H5M, MED, XDMF formats
+    "h5py",  # CGNS, H5M, MED, XDMF formats
+    "polyscope>=2.4"  # the desktop viewer backend
 ]
 
 [project.urls]
