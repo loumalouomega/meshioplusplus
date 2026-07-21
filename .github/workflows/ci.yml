@@ -580,6 +580,13 @@ jobs:
       - name: WASM smoke test
         run: node wasm/test/smoke.mjs
 
+      # Must come before typecheck/lint/unit-tests below -- they all need
+      # node_modules (including the @meshioplusplus/wasm file: dependency
+      # this npm ci copies in from the just-built wasm/dist/).
+      - name: Install viewer dependencies
+        working-directory: viewer
+        run: npm ci
+
       - name: Type-check the viewer
         working-directory: viewer
         run: npm run typecheck
@@ -598,10 +605,9 @@ jobs:
         working-directory: viewer
         run: npm run test:unit
 
-      - name: Install and build the viewer
+      - name: Build the viewer
         working-directory: viewer
         run: |
-          npm ci
           npm run build:web
           npm run build:embed
 

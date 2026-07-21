@@ -11306,6 +11306,26 @@ Mesh extract_surface(const Mesh& rMesh, bool recordParentIds = false);
  */
 bool has_surface_extractable_cells(const Mesh& rMesh);
 
+/**
+ * @brief Copy a mesh's cell data onto the boundary facets extracted from it.
+ *
+ * `extract_surface` drops cell data -- a facet is not a cell, so there is no
+ * general answer to what its value should be. With `recordParentIds` it does
+ * record which input cell owned each facet, and for a *viewer* the useful
+ * answer is exactly that owner's value: colouring a solid by its per-cell
+ * material or tag is the common case, and without this the array simply
+ * vanishes between the mesh and the renderer.
+ *
+ * `rSurface` must have been produced by `extract_surface(rSource, true)`; the
+ * `"surface:parent_cell"` array is what this reads. If it is absent this is a
+ * no-op. Arrays whose block layout does not match `rSource` are skipped rather
+ * than guessed at.
+ *
+ * @param rSource the mesh the boundary was extracted from
+ * @param rSurface the extracted boundary, modified in place
+ */
+void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface);
+
 }  // namespace meshioplusplus
 // ===== end cpp/include/meshioplusplus/operations/surface.hpp =====
 // ===== begin cpp/include/meshioplusplus/operations/transform.hpp =====
@@ -53942,6 +53962,73 @@ bool has_skinnable_cells(const Mesh& rMesh) {
             return true;
     }
     return false;
+}
+
+// Declared in operations/surface.hpp; see there for the rationale. Arrays
+// whose block layout does not match the mesh are skipped rather than guessed
+// at, matching `_viewer._flatten_cell_data` on the Python side.
+void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface) {
+    constexpr const char* kParent = "surface:parent_cell";
+    if (!rSurface.HasCellData(kParent))
+        return;
+
+    const std::size_t n_src_blocks = rSource.NumCellBlocks();
+    const std::size_t n_out_blocks = rSurface.NumCellBlocks();
+
+    // Offset of each source block in the global cell numbering, which is what
+    // `surface:parent_cell` indexes.
+    std::vector<std::size_t> base(n_src_blocks + 1, 0);
+    for (std::size_t b = 0; b < n_src_blocks; ++b)
+        base[b + 1] = base[b] + rSource.Cells(b).NumCells();
+    const std::size_t n_src_cells = base[n_src_blocks];
+
+    for (const auto& name : rSource.CellDataNames()) {
+        if (rSource.CellDataNumBlocks(name) != n_src_blocks)
+            continue;
+
+        // Flatten the per-block arrays into one buffer indexed by global cell
+        // id, requiring a consistent dtype and component count.
+        const NDArray& first = rSource.CellData(name, 0);
+        const DType dt = first.Dtype();
+        const std::size_t item = dtype_size(dt);
+        const std::size_t comps = first.Size() / std::max<std::size_t>(1, first.Shape()[0]);
+        const std::size_t row = comps * item;
+
+        std::vector<std::byte> flat(n_src_cells * row);
+        bool usable = true;
+        for (std::size_t b = 0; b < n_src_blocks && usable; ++b) {
+            const NDArray& a = rSource.CellData(name, b);
+            const std::size_t n = rSource.Cells(b).NumCells();
+            usable = a.Dtype() == dt && !a.Shape().empty() && a.Shape()[0] == n &&
+                     a.Size() == n * comps;
+            if (usable && n)
+                std::memcpy(flat.data() + base[b] * row, a.Data(), n * row);
+        }
+        if (!usable)
+            continue;
+
+        // Gather one output array per boundary block, by owning cell.
+        std::vector<NDArray> blocks;
+        blocks.reserve(n_out_blocks);
+        for (std::size_t b = 0; b < n_out_blocks; ++b) {
+            const NDArray& parents = rSurface.CellData(kParent, b);
+            const std::size_t n = parents.Size();
+            std::vector<std::size_t> shape{n};
+            if (comps > 1)
+                shape.push_back(comps);
+            NDArray out = NDArray::Uninit(dt, shape);
+            const auto* pIds = reinterpret_cast<const std::int64_t*>(parents.Data());
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto id = static_cast<std::size_t>(pIds[i]);
+                if (id < n_src_cells)
+                    std::memcpy(out.Data() + i * row, flat.data() + id * row, row);
+                else
+                    std::memset(out.Data() + i * row, 0, row);
+            }
+            blocks.push_back(std::move(out));
+        }
+        rSurface.AddCellData(name, std::move(blocks));
+    }
 }
 
 }  // namespace meshioplusplus
