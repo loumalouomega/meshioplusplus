@@ -74,4 +74,24 @@ Mesh extract_surface(const Mesh& rMesh, bool recordParentIds = false);
  */
 bool has_surface_extractable_cells(const Mesh& rMesh);
 
+/**
+ * @brief Copy a mesh's cell data onto the boundary facets extracted from it.
+ *
+ * `extract_surface` drops cell data -- a facet is not a cell, so there is no
+ * general answer to what its value should be. With `recordParentIds` it does
+ * record which input cell owned each facet, and for a *viewer* the useful
+ * answer is exactly that owner's value: colouring a solid by its per-cell
+ * material or tag is the common case, and without this the array simply
+ * vanishes between the mesh and the renderer.
+ *
+ * `rSurface` must have been produced by `extract_surface(rSource, true)`; the
+ * `"surface:parent_cell"` array is what this reads. If it is absent this is a
+ * no-op. Arrays whose block layout does not match `rSource` are skipped rather
+ * than guessed at.
+ *
+ * @param rSource the mesh the boundary was extracted from
+ * @param rSurface the extracted boundary, modified in place
+ */
+void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface);
+
 }  // namespace meshioplusplus
