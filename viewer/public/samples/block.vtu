@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian" compressor="vtkZLibDataCompressor">
+<!--This file was created by meshio++ (C++ core)-->
+<UnstructuredGrid>
+<Piece NumberOfPoints="125" NumberOfCells="64">
+<Points>
+<DataArray type="Float64" Name="Points" NumberOfComponents="3" format="binary">
+AQAAAACAAAC4CwAAEgEAAA==eJyVlrERAyEMBL8z95+5BEJCSnCkZO2dxSTM39ssSCfxz/PPeL9+60v0LfqBbuuOzvfzTO7o5I5Oru17CXcJdwl3CdfisoW7hbuFu4XLZ+rkHuEe4R5wK698tnhbPGy/5ZuayaWvqJNrvrR16Svq5NJX5XvbN31Fnf+jr6yuLC7UyaWvqJsfZ1Tc+TurJ/N79YXykeXZ8kBuncM4NpNLX1VfM1/auvQVdXKtX1u9WbzoK+rWz2ZUXXF/1o+tX1bfrz5k+bA6tniQWz61fFueya042TmMYzO5dh9bP7V6sPPQV3XvzqjvlNo31617/fYeq7jc9unq+7d9yPpEfZfc1kHl9TbPlgeLk53jm/MBIJFSvA==
+</DataArray>
+</Points>
+<Cells>
+<DataArray type="Int64" Name="connectivity" format="binary">
+AQAAAACAAAAAEAAAPQIAAA==eJyN1EVDFVAURWFMbDHBQB4KKKCURfMIBSxKAQWUtrsA/fEOXGvyRvtO1mCPvsG5ZWX/3zl6ie6ju+h5WkP3h/tueoEWaHm476EXaS09EO57aTW9TA9Snbqv0EMlDl119HC46yjQenok3HXoaqBHw12n7qv0GNWp+xo9XuLQ1Ugrwl2HriZ6Itx16GqmJ8Ndp+7r9BTVqfsGPV3i0NVCz4S7Dl2t9Gy469DVRivDXafudlpFvfsOepd6D971TdpJa8Ldu75Fu2gh3L3r27Sb1oa7d3+H9lDvQafuXuo96NDVR+vCXYeuflof7jp0DdCGcNepu0i9B526B6n3oEPXEG0Mdx26hmlTuOvQNUKbw11nkd6j3oNO3fep/4AOXaO0Jdx16BqjreGuQ9c4bQt3nbofUP8B7/4hnaTeg3f9iE7RznD3rh/TadoV7t71EzpDu8Pdu5+gT6n3oFP3M+o96NA1S/vCXYeuOdof7jp0zdOBcNep+zktUp26X1DvQYeuBToU7jp0LdLhcNeha4mOhHuR6n5JvQedul9R/wEdupbpaLjr0LVCx8Jdh65VOh7uOnWvUf8B736dvqXeg3e9Qd/RqXD3rjfpezod7t71a/qBzoS7d/+GfqTeg07dn6j3oEPXZzob7jp0faFz4a5D11c6H+46dX+j3oNO3d+p96BD1w+6EO46dP2ki+GuQ9cvuhTuOnX/pt6DTt1b1H9Ah65tuhzuOnTt0JVw16HrD10Nd526/1L/gX/SxnwB
+</DataArray>
+<DataArray type="Int64" Name="offsets" format="binary">
+AQAAAACAAAAAAgAAegAAAA==eJwtxREAgwAAALB+CsPwGIbhMQzDY3gMwzAMj2EYhmEYhmEYHtpkYXCLHPvlxKkzv527cOmPK39du3Hrzr1/Hjx68uzFqzfvPnz6cvC4Cx059suJU2d+O3fh0h9X/rp249ade/88ePTk2YtXb959+PTl4Hn3BzUDHyM=
+</DataArray>
+<DataArray type="Int64" Name="types" format="binary">
+AQAAAACAAAAAAgAAEAAAAA==eJzjYYAAnlF6RNIADi0DAQ==
+</DataArray>
+</Cells>
+<CellData>
+<DataArray type="Int64" Name="layer" format="binary">
+AQAAAACAAAAAAgAAGQAAAA==eJxjYIAARijNBKWZGVDBqPzwlAcAYQAAYQ==
+</DataArray>
+</CellData>
+</Piece>
+</UnstructuredGrid>
+</VTKFile>
