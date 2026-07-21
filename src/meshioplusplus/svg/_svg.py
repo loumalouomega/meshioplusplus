@@ -5,8 +5,85 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 
+from .._colormap import colormap_lookup
+from .._facecolor import (
+    ColorSpec,
+    faces_flat,
+    faces_from_projection,
+    resolve_face_colors,
+)
 from .._projection import ISO_AZIMUTH, ISO_ELEVATION, project_surface
 from .._skin import _extract_skin_py, _has_skinnable_cells
+
+# The extra viewBox width a colorbar occupies, as a multiple of the drawing's
+# width. Only the viewBox grows: the scaling factor, the stroke width and every
+# mesh coordinate come from the unmodified width. Twins of the kSvgColorbar*
+# constants in cpp/src/formats/svg.cpp.
+_COLORBAR_GAP = 0.08
+_COLORBAR_WIDTH = 0.06
+_COLORBAR_LABELS = 0.30
+_COLORBAR_SEGMENTS = 32
+
+
+def _color_hex(rgb) -> str:
+    """SVG's colour vocabulary. Lowercase hex, as C's "%02x" also produces."""
+    r, g, b = rgb
+    return "#%02x%02x%02x" % (r, g, b)
+
+
+def _view_width(width: float, colorbar: bool) -> float:
+    if not colorbar:
+        return width
+    return width * (1.0 + _COLORBAR_GAP + _COLORBAR_WIDTH + _COLORBAR_LABELS)
+
+
+def _append_colorbar(svg, colors, min_x, min_y, width, height, float_fmt):
+    """A vertical gradient to the right of the drawing plus min/max labels.
+
+    ``<rect>``, not ``<path>``, because the document-level ``path {...}`` rule
+    would otherwise stroke every swatch. Attribute insertion order is fixed and
+    matches the C++ emission order (ElementTree writes attributes in insertion
+    order). Twin of ``svg_append_colorbar``.
+    """
+    num = f"{{:{float_fmt}}}"
+    x0 = min_x + width + width * _COLORBAR_GAP
+    bar_w = width * _COLORBAR_WIDTH
+    seg_h = height / float(_COLORBAR_SEGMENTS)
+    for i in range(_COLORBAR_SEGMENTS):
+        y0 = min_y + height * (float(i) / float(_COLORBAR_SEGMENTS))
+        # y grows downward in SVG, so the FIRST segment is the top one and must
+        # carry the HIGH end of the range.
+        c = colormap_lookup(
+            colors.table,
+            float(_COLORBAR_SEGMENTS - 1 - i) / float(_COLORBAR_SEGMENTS - 1),
+        )
+        ET.SubElement(
+            svg,
+            "rect",
+            x=num.format(x0),
+            y=num.format(y0),
+            width=num.format(bar_w),
+            height=num.format(seg_h),
+            fill=_color_hex(c),
+        )
+    label_x = x0 + bar_w + width * 0.02
+    font_size = width * 0.04
+    hi = ET.SubElement(
+        svg,
+        "text",
+        x=num.format(label_x),
+        y=num.format(min_y + font_size),
+        **{"font-size": num.format(font_size)},
+    )
+    hi.text = num.format(colors.vmax)
+    lo = ET.SubElement(
+        svg,
+        "text",
+        x=num.format(label_x),
+        y=num.format(min_y + height),
+        **{"font-size": num.format(font_size)},
+    )
+    lo.text = num.format(colors.vmin)
 
 
 def write(
@@ -26,7 +103,18 @@ def write(
     azimuth: float = ISO_AZIMUTH,
     elevation: float = ISO_ELEVATION,
     roll: float = 0.0,
+    # Data-driven colouring. `color_by` unset keeps the flat `fill` and leaves
+    # the output byte-identical to previous releases.
+    color_by: Union[str, None] = None,
+    component: Union[int, None] = None,
+    cmap: str = "viridis",
+    vmin: Union[float, None] = None,
+    vmax: Union[float, None] = None,
+    nan_color: str = "#808080",
+    colorbar: bool = False,
 ):
+    spec = ColorSpec(color_by, component, cmap, vmin, vmax, colorbar)
+
     if mesh.points.shape[1] == 3 and not np.allclose(
         mesh.points[:, 2], 0.0, rtol=0.0, atol=1.0e-14
     ):
@@ -42,6 +130,8 @@ def write(
             azimuth,
             elevation,
             roll,
+            spec,
+            nan_color,
         )
 
     pts = mesh.points[:, :2].copy()
@@ -64,14 +154,21 @@ def write(
         pts *= scaling_factor
 
     if stroke_width is None:
-        stroke_width = str(width / 100)
+        # "%g", not str(): the C++ writer formats this with snprintf("%g", ...)
+        # and the two must agree byte for byte (tests/test_svg.py pins it).
+        stroke_width = "%g" % (width / 100)
+
+    # On the flat path the drawn mesh IS the source mesh, so a face's cell
+    # index needs no provenance indirection.
+    colors = resolve_face_colors(spec, mesh, mesh, faces_flat(mesh))
+    show_bar = colors.active and colorbar
 
     fmt = " ".join(4 * [f"{{:{float_fmt}}}"])
     svg = ET.Element(
         "svg",
         xmlns="http://www.w3.org/2000/svg",
         version="1.1",
-        viewBox=fmt.format(min_x, min_y, width, height),
+        viewBox=fmt.format(min_x, min_y, _view_width(width, show_bar), height),
     )
 
     style = ET.SubElement(svg, "style")
@@ -85,6 +182,7 @@ def write(
     # the style alongside. No problem if it's paths all the way.
     style.text = "path {" + "; ".join(opts) + "}"
 
+    face_index = 0
     for cell_block in mesh.cells:
         if cell_block.type not in ["line", "triangle", "quad"]:
             continue
@@ -110,11 +208,27 @@ def write(
                 + "Z"
             )
         for cell in cell_block.data:
-            ET.SubElement(
-                svg,
-                "path",
-                d=fmt.format(*pts[cell].flatten()),
-            )
+            f = face_index
+            face_index += 1
+            # A per-path fill attribute overrides the document-level rule;
+            # without colouring no attribute is emitted and output is unchanged.
+            if colors.active and cell_block.type != "line":
+                c = colors.color(f)
+                ET.SubElement(
+                    svg,
+                    "path",
+                    d=fmt.format(*pts[cell].flatten()),
+                    fill=_color_hex(c) if c is not None else nan_color,
+                )
+            else:
+                ET.SubElement(
+                    svg,
+                    "path",
+                    d=fmt.format(*pts[cell].flatten()),
+                )
+
+    if show_bar:
+        _append_colorbar(svg, colors, min_x, min_y, width, height, float_fmt)
 
     tree = ET.ElementTree(svg)
     tree.write(filename)
@@ -131,14 +245,25 @@ def _write_projected(
     azimuth,
     elevation,
     roll,
+    spec,
+    nan_color,
 ):
     # 3D rendering path: extract the skin of any volume cells, project with
     # the orthographic camera, and paint the faces back-to-front. Mirrors the
     # C++ core's svg_proj_write (bbox -> y-flip -> scaling -> emission).
-    draw_mesh = (
-        _extract_skin_py(mesh, linearize=True) if _has_skinnable_cells(mesh) else mesh
-    )
+    if _has_skinnable_cells(mesh):
+        # Colouring by cell data needs to know which input cell each skin facet
+        # came from; only ask for it when it will actually be read.
+        need_parents = spec.active and spec.color_by in mesh.cell_data
+        draw_mesh = _extract_skin_py(
+            mesh, linearize=True, record_parent_ids=need_parents
+        )
+    else:
+        draw_mesh = mesh
     x, y, faces = project_surface(draw_mesh, azimuth, elevation, roll)
+
+    colors = resolve_face_colors(spec, mesh, draw_mesh, faces_from_projection(faces))
+    show_bar = colors.active and spec.colorbar
 
     min_x = np.min(x) if len(x) > 0 else 0.0
     max_x = np.max(x) if len(x) > 0 else 0.0
@@ -161,14 +286,16 @@ def _write_projected(
         y = y * scaling_factor
 
     if stroke_width is None:
-        stroke_width = str(width / 100)
+        # "%g", not str(): the C++ writer formats this with snprintf("%g", ...)
+        # and the two must agree byte for byte (tests/test_svg.py pins it).
+        stroke_width = "%g" % (width / 100)
 
     fmt = " ".join(4 * [f"{{:{float_fmt}}}"])
     svg = ET.Element(
         "svg",
         xmlns="http://www.w3.org/2000/svg",
         version="1.1",
-        viewBox=fmt.format(min_x, min_y, width, height),
+        viewBox=fmt.format(min_x, min_y, _view_width(width, show_bar), height),
     )
 
     style = ET.SubElement(svg, "style")
@@ -181,14 +308,25 @@ def _write_projected(
     style.text = "path {" + "; ".join(opts) + "}"
 
     point_fmt = f"{{:{float_fmt}}} {{:{float_fmt}}}"
-    for nodes, is_line in faces:
+    for f, (nodes, is_line, _) in enumerate(faces):
         parts = []
         for k, p in enumerate(nodes):
             parts.append(("M " if k == 0 else "L ") + point_fmt.format(x[p], y[p]))
         d = "".join(parts)
         if not is_line:
             d += "Z"
-        ET.SubElement(svg, "path", d=d)
+        # A per-path fill attribute overrides the document-level rule; without
+        # colouring no attribute is emitted and the output is unchanged.
+        if colors.active and not is_line:
+            c = colors.color(f)
+            ET.SubElement(
+                svg, "path", d=d, fill=_color_hex(c) if c is not None else nan_color
+            )
+        else:
+            ET.SubElement(svg, "path", d=d)
+
+    if show_bar:
+        _append_colorbar(svg, colors, min_x, min_y, width, height, float_fmt)
 
     tree = ET.ElementTree(svg)
     tree.write(filename)

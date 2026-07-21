@@ -61,12 +61,40 @@ namespace meshioplusplus {
  *                     default pair (45, atan(1/sqrt(2))) is the classic CAD
  *                     isometric view
  * @param roll         in-screen camera roll in degrees (3D input only)
+ * @param rColorBy     name of a `point_data` or `cell_data` array to colour the
+ *                     faces by; empty (the default) keeps the flat `rFill` and
+ *                     leaves the output byte-identical to previous releases.
+ *                     Point data colours a face by the mean of its corner
+ *                     values, cell data by its owning cell's value -- found
+ *                     through `"surface:parent_cell"` for a projected volume
+ *                     mesh, whose skin is extracted with provenance in that
+ *                     case. When set, each `<path>` carries its own `fill`
+ *                     attribute, overriding the document-level rule
+ * @param rComponent   component of a multi-component array; `std::nullopt` uses
+ *                     the row magnitude
+ * @param rCmap        built-in colormap name (see `detail/colormap.hpp`)
+ * @param rVMin        low end of the mapped range; `std::nullopt` uses the
+ *                     smallest finite value among the *drawn* faces
+ * @param rVMax        high end of the mapped range; `std::nullopt` likewise
+ * @param rNanColor    fill for faces whose value is NaN or infinite
+ * @param Colorbar     when true, append a gradient bar with min/max labels to
+ *                     the right of the figure. This widens the `viewBox` (and
+ *                     only the viewBox): the scaling factor, the stroke width
+ *                     and every mesh coordinate are unaffected
  * @throws WriteError on an unopenable output path
+ * @throws std::invalid_argument for an unknown array name or colormap, an
+ *         out-of-range component, or `vmin > vmax`
  */
 void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".3f",
                const std::optional<std::string>& rStrokeWidth = std::nullopt,
                const std::optional<double>& rImageWidth = 100.0,
                const std::string& rFill = "#c8c5bd", const std::string& rStroke = "#000080",
-               double azimuth = 45.0, double elevation = 35.264389682754654, double roll = 0.0);
+               double azimuth = 45.0, double elevation = 35.264389682754654, double roll = 0.0,
+               const std::string& rColorBy = "",
+               const std::optional<int>& rComponent = std::nullopt,
+               const std::string& rCmap = "viridis",
+               const std::optional<double>& rVMin = std::nullopt,
+               const std::optional<double>& rVMax = std::nullopt,
+               const std::string& rNanColor = "#808080", bool Colorbar = false);
 
 }  // namespace meshioplusplus

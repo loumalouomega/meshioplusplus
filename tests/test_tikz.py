@@ -1,8 +1,9 @@
 import pytest
 
 import meshioplusplus
+from meshioplusplus import _colormap
 
-from . import helpers
+from . import helpers, helpers_coloring
 
 test_set = [
     helpers.empty_mesh,
@@ -118,3 +119,133 @@ def test_camera_angles_change_projection(tmp_path):
     )
     assert p1.read_text() != p2.read_text()
     assert p1.read_text().count("\\draw") == p2.read_text().count("\\draw") == 6
+
+
+# --- data-driven colouring ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "make_mesh, kwargs", helpers_coloring.CASE_ARGS, ids=helpers_coloring.CASE_IDS
+)
+def test_colored_cpp_matches_python(make_mesh, kwargs, tmp_path):
+    # The byte-identity guarantee extends to the coloured path: array lookup,
+    # scalarisation, the per-face mean, the auto range, the colormap index and
+    # the colorbar geometry must all agree with the pure-Python reference.
+    cpp = tmp_path / "cpp.tikz"
+    py = tmp_path / "py.tikz"
+    meshioplusplus._core.tikz_write(str(cpp), make_mesh(), **kwargs)
+    meshioplusplus.tikz._tikz.write(str(py), make_mesh(), **kwargs)
+    assert cpp.read_bytes() == py.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "make_mesh, kwargs", helpers_coloring.CASE_ARGS, ids=helpers_coloring.CASE_IDS
+)
+def test_colored_shim_matches_python(make_mesh, kwargs, tmp_path):
+    # The shim passes everything POSITIONALLY into _core, so a mis-ordered
+    # argument would silently colour by the wrong thing rather than fail.
+    shim = tmp_path / "shim.tikz"
+    py = tmp_path / "py.tikz"
+    meshioplusplus.tikz.write(shim, make_mesh(), **kwargs)
+    meshioplusplus.tikz._tikz.write(str(py), make_mesh(), **kwargs)
+    assert shim.read_bytes() == py.read_bytes()
+
+
+def test_color_by_unset_is_unchanged(tmp_path):
+    # The regression guard: passing the colouring parameters explicitly at
+    # their defaults must reproduce the legacy output exactly.
+    mesh = helpers_coloring.volume_mesh()
+    plain = tmp_path / "plain.tikz"
+    explicit = tmp_path / "explicit.tikz"
+    meshioplusplus._core.tikz_write(str(plain), mesh)
+    meshioplusplus._core.tikz_write(
+        str(explicit),
+        mesh,
+        color_by="",
+        component=None,
+        cmap="viridis",
+        vmin=None,
+        vmax=None,
+        nan_color="gray",
+        colorbar=True,  # ignored: no colouring means no bar
+    )
+    assert plain.read_bytes() == explicit.read_bytes()
+
+
+def _rgb(t):
+    r, g, b = _colormap.colormap_lookup(_colormap.colormap_table("viridis"), t)
+    return f"{{rgb,255:red,{r};green,{g};blue,{b}}}"
+
+
+def test_golden_fill_vocabulary(tmp_path):
+    # Pins the exact TikZ colour spelling: the braces matter, since without
+    # them the inner commas would split the surrounding option list.
+    import numpy as np
+
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+        [("triangle", [[0, 1, 2], [1, 3, 2]])],
+        cell_data={"tag": [np.array([0.0, 1.0])]},
+    )
+    out = tmp_path / "golden.tikz"
+    meshioplusplus.tikz.write(out, mesh, color_by="tag")
+    text = out.read_text()
+    assert f"\\draw[fill={_rgb(0.0)}, draw=black]" in text
+    assert f"\\draw[fill={_rgb(1.0)}, draw=black]" in text
+    assert "fill={rgb,255:red,68;green,1;blue,84}" in text  # viridis low = #440154
+
+
+def test_nan_color_and_clamping(tmp_path):
+    import numpy as np
+
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [2.0, 0.0], [2.0, 1.0]],
+        [("triangle", [[0, 1, 2], [1, 3, 2], [1, 4, 3]])],
+        cell_data={"tag": [np.array([-100.0, np.nan, 100.0])]},
+    )
+    out = tmp_path / "nan.tikz"
+    meshioplusplus.tikz.write(
+        out, mesh, color_by="tag", vmin=0.0, vmax=1.0, nan_color="red!50"
+    )
+    text = out.read_text()
+    assert "fill=red!50, draw=black" in text
+    assert f"fill={_rgb(0.0)}, draw=black" in text  # clamped from -100
+    assert f"fill={_rgb(1.0)}, draw=black" in text  # clamped from +100
+
+
+def test_colorbar_appends_only(tmp_path):
+    mesh = helpers_coloring.flat_mesh()
+    without = tmp_path / "without.tikz"
+    with_bar = tmp_path / "with.tikz"
+    meshioplusplus.tikz.write(without, mesh, color_by="tag")
+    meshioplusplus.tikz.write(with_bar, mesh, color_by="tag", colorbar=True)
+
+    a = without.read_text().splitlines()
+    b = with_bar.read_text().splitlines()
+    # TikZ has no viewBox, so the mesh lines are untouched and the bar is a
+    # pure insertion before \end{tikzpicture}.
+    draws_a = [line for line in a if "\\draw[" in line]
+    draws_b = [line for line in b if "\\draw[" in line]
+    assert draws_a == draws_b
+    assert len([line for line in b if "\\fill[" in line]) == 32
+    assert len([line for line in b if "\\node[" in line]) == 2
+    assert [line for line in a if "\\fill[" in line] == []
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"color_by": "nope"}, "no point_data or cell_data array"),
+        ({"color_by": "tag", "cmap": "nope"}, "unknown colormap"),
+        ({"color_by": "T", "component": 9}, "out of range"),
+        ({"color_by": "tag", "vmin": 5.0, "vmax": 1.0}, "vmin must not exceed vmax"),
+    ],
+)
+def test_invalid_options_raise(kwargs, match, tmp_path):
+    # The shim falls back to Python on a C++ exception, and the twin raises the
+    # same error -- so a genuine user error still surfaces, from either side.
+    mesh = helpers_coloring.flat_mesh()
+    with pytest.raises(ValueError, match=match):
+        meshioplusplus.tikz.write(tmp_path / "bad.tikz", mesh, **kwargs)
+    with pytest.raises(Exception, match=match):
+        meshioplusplus._core.tikz_write(str(tmp_path / "bad.tikz"), mesh, **kwargs)

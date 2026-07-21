@@ -4,7 +4,9 @@
 </p>
 
 
-[![C++][c++-image]][c++standard] [![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
+[![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
+
+[![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](viewer/)
 
 [![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus) [![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
 
@@ -174,6 +176,36 @@ skin = meshioplusplus.extract_skin(vol)   # triangle/quad/... surface mesh
 ```
 
 The **STL and PLY writers do this automatically** for volume meshes (pass `skin=False` for the legacy drop-volume-cells behavior), and the **SVG/TikZ writers render 3D meshes** by projecting the skin through an orthographic camera (`azimuth`/`elevation`/`roll` in degrees, default the classic CAD isometric view) with painter's-algorithm depth ordering — that is exactly how the Stanford-bunny logo above is drawn.
+
+#### Publication-quality vector figures
+
+The SVG and TikZ writers can colour each face by a data array, turning them into figures you can drop straight into a paper — resolution-independent, and with **no extra dependency**: the colormaps are built into the core.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+annotated = meshioplusplus.attach_quality(mesh)
+meshioplusplus.write(
+    "quality.svg", annotated,
+    color_by="quality:scaled_jacobian",   # or any point_data / cell_data name
+    cmap="viridis",                       # viridis / coolwarm / turbo
+    colorbar=True,
+)
+```
+
+<img alt="a bracket coloured by scaled Jacobian" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/public/images/color_by_quality.svg" width="85%">
+
+*The bundled bracket coloured by element quality — the same figure `tools/gen_doc_images.py` regenerates.*
+
+**Point data** colours a face by the mean of its corner values, **cell data** by its owning cell's value — for a volume mesh, tracked through the extracted skin's parent-cell provenance, so a per-cell material or metric lands on the right facet. Multi-component arrays reduce to a `component` or to their magnitude; `vmin`/`vmax` set the range (default: the drawn faces' finite range), and non-finite values take `nan_color`. From the command line:
+
+<!--pytest-codeblocks:skip-->
+
+```sh
+meshioplusplus convert mesh.vtu figure.svg --color-by temperature --colorbar
+```
+
+Colouring is available from Python, from C++ directly, and from both CLIs; the flat C/Fortran/WebAssembly bindings reach these writers through the shared registry and always emit the default styling.
 
 #### Surface extraction
 

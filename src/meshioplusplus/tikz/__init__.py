@@ -19,6 +19,13 @@ def write(
     azimuth: float = ISO_AZIMUTH,
     elevation: float = ISO_ELEVATION,
     roll: float = 0.0,
+    color_by: Union[str, None] = None,
+    component: Union[int, None] = None,
+    cmap: str = "viridis",
+    vmin: Union[float, None] = None,
+    vmax: Union[float, None] = None,
+    nan_color: str = "gray",
+    colorbar: bool = False,
 ):
     """Write a TikZ figure (C++ core for real file paths, Python fallback).
 
@@ -27,9 +34,20 @@ def write(
     through an orthographic camera given by ``azimuth``/``elevation``/
     ``roll`` in degrees — default the classic CAD isometric view — drawn
     back-to-front.
+
+    ``color_by`` names a ``point_data`` or ``cell_data`` array to colour the
+    faces by: point data uses the mean of a face's corner values, cell data
+    its owning cell's value (found through ``"surface:parent_cell"`` for a
+    projected volume mesh). Multi-component arrays reduce to ``component`` or
+    to their magnitude. The range is ``vmin``..``vmax``, defaulting to the
+    finite range of the *drawn* faces; non-finite values draw in
+    ``nan_color``. With ``color_by`` unset the output is byte-identical to
+    previous releases.
     """
     if not is_buffer(filename, "w"):
         try:
+            # Positional, and the order is load-bearing: it must match the
+            # py::arg list in bindings/_core.cpp exactly.
             _core.tikz_write(
                 str(filename),
                 mesh,
@@ -42,6 +60,13 @@ def write(
                 azimuth,
                 elevation,
                 roll,
+                color_by or "",
+                component,
+                cmap,
+                vmin,
+                vmax,
+                nan_color,
+                colorbar,
             )
             return
         except Exception:
@@ -58,6 +83,13 @@ def write(
         azimuth=azimuth,
         elevation=elevation,
         roll=roll,
+        color_by=color_by,
+        component=component,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        nan_color=nan_color,
+        colorbar=colorbar,
     )
 
 

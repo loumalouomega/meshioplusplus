@@ -135,14 +135,34 @@ def _has_skinnable_cells(mesh) -> bool:
     return any(block.type in _CELL_FACES for block in mesh.cells)
 
 
-def _extract_skin_py(mesh, linearize: bool = False) -> Mesh:
-    """Pure-numpy reference implementation of :func:`extract_skin`."""
+def _extract_skin_py(
+    mesh, linearize: bool = False, record_parent_ids: bool = False
+) -> Mesh:
+    """Pure-numpy reference implementation of :func:`extract_skin`.
+
+    With ``record_parent_ids`` the result carries an ``Int64``
+    ``"surface:parent_cell"`` cell-data array giving, per output facet, the
+    global input-cell index of the cell that owns it -- the same contract as
+    :func:`meshioplusplus.extract_surface`, and the twin of the C++
+    ``detail::surface_extract(..., recordParentIds=True)`` the SVG/TikZ writers
+    use to colour a projected volume mesh by cell data.
+    """
+    # `base` counts over EVERY block, including the ones skipped below, because
+    # "surface:parent_cell" indexes the input mesh's cells globally. This
+    # mirrors the C++ extractor advancing global_cell_base before its `continue`.
     supported = []
+    base = 0
     for block in mesh.cells:
+        block_base = base
+        base += (
+            np.asarray(block.data).shape[0]
+            if block.type in _CELL_FACES
+            else len(block.data)
+        )
         if not _is_volume_type(block.type):
             continue
         if block.type in _CELL_FACES:
-            supported.append(block)
+            supported.append((block, block_base))
         else:
             warn(
                 f"extract_skin: volume cell block '{block.type}' is not supported; "
@@ -159,7 +179,8 @@ def _extract_skin_py(mesh, linearize: bool = False) -> Mesh:
     keys_parts = []
     conn_parts = []
     type_parts = []
-    for block in supported:
+    parent_parts = []
+    for block, block_base in supported:
         conn = np.asarray(block.data, dtype=np.int64)
         nc = conn.shape[0]
         faces = _CELL_FACES[block.type]
@@ -175,9 +196,11 @@ def _extract_skin_py(mesh, linearize: bool = False) -> Mesh:
         keys_parts.append(keys.reshape(nc * nf, 4))
         conn_parts.append(fconn.reshape(nc * nf, 9))
         type_parts.append(np.tile(tidx, nc))
+        parent_parts.append(np.repeat(block_base + np.arange(nc, dtype=np.int64), nf))
     keys = np.concatenate(keys_parts)
     fconn = np.concatenate(conn_parts)
     type_idx = np.concatenate(type_parts)
+    parents = np.concatenate(parent_parts)
 
     # Boundary faces = sorted-corner keys occurring exactly once.
     _, inverse, counts = np.unique(
@@ -188,6 +211,7 @@ def _extract_skin_py(mesh, linearize: bool = False) -> Mesh:
     # Partition into output blocks in the fixed canonical order, keeping
     # enumeration order within each type.
     out_blocks = []
+    out_parents = []
     for name in _OUT_TYPES:
         sel = boundary & (type_idx == _OUT_TYPE_INDEX[name])
         if not np.any(sel):
@@ -196,6 +220,7 @@ def _extract_skin_py(mesh, linearize: bool = False) -> Mesh:
             (3 if name == "triangle" else 4) if linearize else _OUT_TYPE_NODES[name]
         )
         out_blocks.append((name, fconn[sel][:, :n_nodes]))
+        out_parents.append(parents[sel])
 
     # Compaction: keep only referenced points, in ascending original-id order
     # (np.unique is sorted — the C++ extractor relies on the same order).
@@ -209,7 +234,12 @@ def _extract_skin_py(mesh, linearize: bool = False) -> Mesh:
         for key, value in mesh.point_data.items()
         if np.asarray(value).shape[:1] == (len(mesh.points),)
     }
-    return Mesh(points, cells, point_data=point_data)
+    cell_data = {}
+    if record_parent_ids:
+        cell_data["surface:parent_cell"] = [
+            p.reshape(-1, 1).astype(np.int64) for p in out_parents
+        ]
+    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
 
 
 def extract_skin(mesh, linearize: bool = False) -> Mesh:

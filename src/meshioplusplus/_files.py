@@ -8,9 +8,9 @@ def is_buffer(obj, mode):
 
 
 @contextmanager
-def open_file(path_or_buf, mode="r"):
+def open_file(path_or_buf, mode="r", **kwargs):
     if is_buffer(path_or_buf, mode):
         yield path_or_buf
     else:
-        with open(path_or_buf, mode) as f:
+        with open(path_or_buf, mode, **kwargs) as f:
             yield f

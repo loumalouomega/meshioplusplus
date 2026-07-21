@@ -27,6 +27,13 @@ meshioplusplus.tikz.write(
     azimuth=45.0,
     elevation=35.264389682754654,
     roll=0.0,
+    color_by=None,
+    component=None,
+    cmap="viridis",
+    vmin=None,
+    vmax=None,
+    nan_color="gray",
+    colorbar=False,
 )
 ```
 
@@ -37,6 +44,26 @@ meshioplusplus.tikz.write(
 - **`draw`** — xcolor spec for the edge stroke.
 - **`scale`** — optional `\begin{tikzpicture}[scale=…]` factor; if `None` (default), coordinates are emitted verbatim and no `scale` key is added.
 - **`azimuth`** / **`elevation`** / **`roll`** — orthographic camera angles in degrees, used only for genuinely 3D input; same semantics and defaults (the classic CAD isometric view) as the [SVG writer](./svg.md).
+- **`color_by`** … **`colorbar`** — data-driven colouring, see below. With `color_by` unset (the default) the output is byte-identical to previous releases.
+
+### Data-driven colouring
+
+`color_by` names a `point_data` or `cell_data` array; each filled face then carries its own `fill=` colour instead of the flat `fill` spec. The rules are **exactly** the [SVG writer's](./svg.md#data-driven-colouring) — the two share one resolution layer — so only the differences are repeated here.
+
+```python
+meshioplusplus.tikz.write(
+    "quality.tikz",
+    meshioplusplus.attach_quality(mesh),
+    color_by="quality:scaled_jacobian",
+    cmap="viridis",
+    colorbar=True,
+)
+```
+
+- Colours are emitted in xcolor's inline RGB form, `fill={rgb,255:red,68;green,1;blue,84}`. **The braces are required** and always present: without them the commas inside would split the surrounding `\draw[…]` option list.
+- **`nan_color`** takes an xcolor spec (default `"gray"`), not a hex string — e.g. `"red!50"`. It is emitted verbatim.
+- **`colorbar`** appends 32 `\fill[…] (x0,y0) rectangle (x1,y1);` swatches plus two `\node[anchor=west, font=\tiny]` labels to the right of the drawing's bounding box. TikZ has no viewBox, so unlike SVG **nothing at all about the mesh changes** — the bar is a pure insertion before `\end{tikzpicture}`.
+- `line` cells are never filled, so they are never coloured.
 
 ### 3D input
 
@@ -62,7 +89,7 @@ Unlike the SVG writer, the y-coordinate is **not** flipped — TikZ/PGF already 
 
 ## Data mapping
 
-None consumed — `point_data`/`cell_data`/`field_data` are ignored entirely; only geometry and cell connectivity affect the output.
+No data array is written to the file. One array can be *read* to drive the face colours via `color_by` (see above); everything else — and all of `field_data` — is ignored, so only geometry and connectivity affect an uncoloured figure.
 
 ## Quirks & limitations
 
@@ -70,8 +97,11 @@ None consumed — `point_data`/`cell_data`/`field_data` are ignored entirely; on
 - Unsupported cells vanish from the output silently.
 - The painter's algorithm sorts whole faces by centroid depth — mutually intersecting faces (which a closed skin never has) can stack in the wrong order; there is no per-pixel depth test.
 - Write-only; there is no way to read a TikZ figure back into a `Mesh`.
+- Colouring is a **Python + C++-direct + CLI** feature. The C API, Fortran and WebAssembly surfaces reach this writer through the shared registry, whose `(path, mesh)` writer entries structurally cannot carry parameters, so they always emit the fixed default styling — a documented gap of the same kind as the point/cell-set gaps in `diff`/`merge`/`split`.
+- Only *one* array can drive the colours; there is no multi-field or per-block colouring.
+- The colorbar's labels are the range endpoints only — there are no intermediate ticks.
 
 ## Notes
 
-- Backed by the **C++ core** (`write_tikz`) with a pure-Python fallback: `meshioplusplus.tikz.write` uses the C++ writer for real file paths and falls back to Python for file-object/buffer targets or on any error. The C++ writer is byte-for-byte identical to the Python reference — **including the 3D projected path** (the camera arithmetic in `detail/projection.hpp` and `_projection.py` is kept expression-for-expression identical for this reason). Registered in the shared dispatch registry, so it is also reachable from the WASM, C API, and Fortran flat bindings (write-only, fixed default styling and the default isometric camera; the flat surface always emits the standalone document).
-- `tests/test_tikz.py` checks the document/`tikzpicture` wrappers and `\draw` count, cross-checks the C++ and Python writers are byte-identical (2D **and** 3D), and covers the `standalone=False` snippet, volume-skin rendering, and camera angles. `cpp/tests/test_svg_tikz.cpp` covers the C++ writer directly (standalone vs snippet, filled faces vs open lines, `\draw` count, style/scale options, the projected 3D paths).
+- Backed by the **C++ core** (`write_tikz`) with a pure-Python fallback: `meshioplusplus.tikz.write` uses the C++ writer for real file paths and falls back to Python for file-object/buffer targets or on any error. The C++ writer is byte-for-byte identical to the Python reference — **including the 3D projected path** (the camera arithmetic in `detail/projection.hpp` and `_projection.py` is kept expression-for-expression identical for this reason). Registered in the shared dispatch registry, so it is also reachable from the WASM, C API, and Fortran flat bindings (write-only, fixed default styling, the default isometric camera and **no colouring**; the flat surface always emits the standalone document).
+- `tests/test_tikz.py` checks the document/`tikzpicture` wrappers and `\draw` count, cross-checks the C++ and Python writers are byte-identical (2D, 3D **and coloured**, across a matrix of colouring options), and covers the `standalone=False` snippet, volume-skin rendering, camera angles, the golden colour spelling, `nan_color`, clamping and the append-only colorbar. `cpp/tests/test_svg_tikz.cpp` covers the C++ writer directly (standalone vs snippet, filled faces vs open lines, `\draw` count, style/scale options, the projected 3D paths).

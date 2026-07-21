@@ -497,3 +497,84 @@ def test_screenshot_verb_writes_a_png(tmp_path):
         pytest.skip(str(e))
     assert rc == 0
     assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+# --- convert --color-by ------------------------------------------------------
+
+
+def _colored_mesh():
+    return meshioplusplus.Mesh(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        [("tetra", [[0, 1, 2, 3]])],
+        cell_data={"tag": [np.array([1.0])]},
+        point_data={"T": np.array([0.0, 1.0, 2.0, 3.0])},
+    )
+
+
+@pytest.mark.parametrize("ext, cmap", [("svg", "viridis"), ("tikz", "turbo")])
+def test_convert_color_by(tmp_path, ext, cmap):
+    infile = tmp_path / "in.vtu"
+    outfile = tmp_path / f"out.{ext}"
+    meshioplusplus.write(infile, _colored_mesh())
+    meshioplusplus._cli.main(
+        [
+            "convert",
+            str(infile),
+            str(outfile),
+            "--color-by",
+            "T",
+            "--cmap",
+            cmap,
+            "--colorbar",
+        ]
+    )
+    text = outfile.read_text()
+    assert text
+    # The default flat fill is gone from the drawn faces: every one carries a
+    # mapped colour instead.
+    if ext == "svg":
+        assert 'fill="#' in text
+        assert "<rect " in text  # the colorbar
+    else:
+        assert "fill={rgb,255:red," in text
+        assert "\\fill[" in text
+
+
+def test_convert_color_by_requires_svg_or_tikz(tmp_path):
+    infile = tmp_path / "in.vtu"
+    outfile = tmp_path / "out.vtk"
+    meshioplusplus.write(infile, _colored_mesh())
+    with pytest.raises(ValueError, match="only supported for svg/tikz"):
+        meshioplusplus._cli.main(
+            ["convert", str(infile), str(outfile), "--color-by", "tag"]
+        )
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--cmap", "turbo"],
+        ["--vmin", "0"],
+        ["--vmax", "1"],
+        ["--component", "0"],
+        ["--nan-color", "red"],
+        ["--colorbar"],
+    ],
+)
+def test_convert_color_modifiers_require_color_by(tmp_path, flags):
+    # A modifier without --color-by is a mistake, not a silent no-op.
+    infile = tmp_path / "in.vtu"
+    outfile = tmp_path / "out.svg"
+    meshioplusplus.write(infile, _colored_mesh())
+    with pytest.raises(ValueError, match="require"):
+        meshioplusplus._cli.main(["convert", str(infile), str(outfile), *flags])
+
+
+def test_convert_color_by_unknown_array(tmp_path):
+    infile = tmp_path / "in.vtu"
+    outfile = tmp_path / "out.svg"
+    meshioplusplus.write(infile, _colored_mesh())
+    with pytest.raises(ValueError, match="no point_data or cell_data array"):
+        meshioplusplus._cli.main(
+            ["convert", str(infile), str(outfile), "--color-by", "nope"]
+        )

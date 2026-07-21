@@ -1,6 +1,14 @@
+import pathlib
+
 import numpy as np
 
+from .._colormap import NAMES as CMAP_NAMES
 from .._helpers import _writer_map, read, reader_map, write
+
+# Colouring reaches the writer as keyword arguments, and only the SVG and TikZ
+# writers accept them -- every other writer would raise on the unexpected kwarg,
+# so the flags are validated against the resolved output format up front.
+_COLOR_FORMATS = ("svg", "tikz")
 
 
 def add_args(parser):
@@ -65,11 +73,113 @@ def add_args(parser):
             "file are ignored."
         ),
     )
+    color = parser.add_argument_group(
+        "data-driven colouring (svg/tikz output only)",
+        "Colour the drawn faces by a data array instead of a flat fill.",
+    )
+    color.add_argument(
+        "--color-by",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            "point_data or cell_data array to colour by. Point data uses the "
+            "mean of a face's corner values; cell data its owning cell's value."
+        ),
+    )
+    color.add_argument(
+        "--component",
+        type=int,
+        default=None,
+        metavar="I",
+        help="component of a multi-component array (default: its magnitude)",
+    )
+    color.add_argument(
+        "--cmap",
+        type=str,
+        default="viridis",
+        choices=CMAP_NAMES,
+        help="colormap to map the value through (default: viridis)",
+    )
+    color.add_argument(
+        "--vmin",
+        type=float,
+        default=None,
+        metavar="V",
+        help="low end of the colour range (default: the drawn faces' minimum)",
+    )
+    color.add_argument(
+        "--vmax",
+        type=float,
+        default=None,
+        metavar="V",
+        help="high end of the colour range (default: the drawn faces' maximum)",
+    )
+    color.add_argument(
+        "--nan-color",
+        type=str,
+        default=None,
+        metavar="C",
+        help="colour for faces whose value is NaN or infinite",
+    )
+    color.add_argument(
+        "--colorbar",
+        action="store_true",
+        help="append a gradient bar with min/max labels",
+    )
+
+
+def _color_kwargs(args):
+    """Validate the colouring flags and turn them into writer kwargs.
+
+    Returns an empty dict when no colouring was requested. The modifier flags
+    are meaningless without ``--color-by``, and the whole group is meaningless
+    for any writer but SVG/TikZ, so both are errors rather than silent no-ops.
+    """
+    modifiers = {
+        "--component": args.component is not None,
+        "--cmap": args.cmap != "viridis",
+        "--vmin": args.vmin is not None,
+        "--vmax": args.vmax is not None,
+        "--nan-color": args.nan_color is not None,
+        "--colorbar": args.colorbar,
+    }
+    if args.color_by is None:
+        used = [flag for flag, given in modifiers.items() if given]
+        if used:
+            raise ValueError(f"{', '.join(used)} require(s) --color-by")
+        return {}
+
+    fmt = args.output_format or pathlib.Path(args.outfile).suffix.lstrip(".").lower()
+    if fmt not in _COLOR_FORMATS:
+        raise ValueError(
+            f"--color-by is only supported for {'/'.join(_COLOR_FORMATS)} output, "
+            f"not '{fmt}'"
+        )
+    if args.ascii:
+        raise ValueError(f"--ascii has no meaning for {fmt} output")
+
+    kwargs = {
+        "color_by": args.color_by,
+        "component": args.component,
+        "cmap": args.cmap,
+        "vmin": args.vmin,
+        "vmax": args.vmax,
+        "colorbar": args.colorbar,
+    }
+    # Leave nan_color unset so each writer keeps its own format-native default.
+    if args.nan_color is not None:
+        kwargs["nan_color"] = args.nan_color
+    return kwargs
 
 
 def convert(args):
     if args.points_only and args.arrays is not None:
         raise ValueError("--points-only and --arrays are mutually exclusive")
+
+    # Validate before reading: a bad flag combination should fail immediately,
+    # not after loading a large mesh.
+    color_kwargs = _color_kwargs(args)
 
     arrays = None
     if args.arrays is not None:
@@ -112,5 +222,6 @@ def convert(args):
         kwargs["float_fmt"] = args.float_format
     if args.ascii:
         kwargs["binary"] = False
+    kwargs.update(color_kwargs)
 
     write(args.outfile, mesh, **kwargs)

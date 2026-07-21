@@ -178,12 +178,16 @@ struct SurfaceFacetRecord {
     std::int64_t mParent;
 };
 
+}  // namespace
+
+namespace detail {
+
 // The shared core: extract boundary facets of the chosen mode.
-//  - mForceFaceMode true  => volume-only (extract_skin), honoring `linearize`.
-//  - mForceFaceMode false => auto (extract_surface): faces if any volume cell
+//  - forceFaceMode true  => volume-only (extract_skin), honoring `linearize`.
+//  - forceFaceMode false => auto (extract_surface): faces if any volume cell
 //    exists, else edges.
-Mesh surface_extract_impl(const Mesh& rMesh, bool forceFaceMode, bool linearize,
-                          bool recordParentIds, const char* pOpName) {
+Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool recordParentIds,
+                     const char* pOpName) {
     // --- select the mode ---
     SurfaceMode mode = SurfaceMode::Face;
     if (!forceFaceMode) {
@@ -372,13 +376,13 @@ Mesh surface_extract_impl(const Mesh& rMesh, bool forceFaceMode, bool linearize,
     return surface;
 }
 
-}  // namespace
+}  // namespace detail
 
 // --- public API -------------------------------------------------------------
 
 Mesh extract_surface(const Mesh& rMesh, bool recordParentIds) {
-    return surface_extract_impl(rMesh, /*forceFaceMode=*/false, /*linearize=*/false,
-                                recordParentIds, "extract_surface");
+    return detail::surface_extract(rMesh, /*forceFaceMode=*/false, /*linearize=*/false,
+                                   recordParentIds, "extract_surface");
 }
 
 bool has_surface_extractable_cells(const Mesh& rMesh) {
@@ -398,8 +402,8 @@ bool has_surface_extractable_cells(const Mesh& rMesh) {
 }
 
 Mesh extract_skin(const Mesh& rMesh, bool linearize) {
-    return surface_extract_impl(rMesh, /*forceFaceMode=*/true, linearize,
-                                /*recordParentIds=*/false, "extract_skin");
+    return detail::surface_extract(rMesh, /*forceFaceMode=*/true, linearize,
+                                   /*recordParentIds=*/false, "extract_skin");
 }
 
 bool has_skinnable_cells(const Mesh& rMesh) {
@@ -445,8 +449,8 @@ void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface) {
         for (std::size_t b = 0; b < n_src_blocks && usable; ++b) {
             const NDArray& a = rSource.CellData(name, b);
             const std::size_t n = rSource.Cells(b).NumCells();
-            usable = a.Dtype() == dt && !a.Shape().empty() && a.Shape()[0] == n &&
-                     a.Size() == n * comps;
+            usable =
+                a.Dtype() == dt && !a.Shape().empty() && a.Shape()[0] == n && a.Size() == n * comps;
             if (usable && n)
                 std::memcpy(flat.data() + base[b] * row, a.Data(), n * row);
         }

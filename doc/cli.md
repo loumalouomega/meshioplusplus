@@ -29,6 +29,24 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--sets-to-int-data` | `-s` | Convert point/cell sets to integer data arrays |
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
 
+**Data-driven colouring** (SVG/TikZ output only):
+
+| Option | Description |
+|--------|-------------|
+| `--color-by NAME` | `point_data` or `cell_data` array to colour the faces by |
+| `--component I` | Component of a multi-component array (default: its magnitude) |
+| `--cmap NAME` | `viridis` (default), `coolwarm` or `turbo` |
+| `--vmin V` / `--vmax V` | Colour range (default: the drawn faces' finite range) |
+| `--nan-color C` | Colour for NaN/infinite values (default: `#808080` / `gray`) |
+| `--colorbar` | Append a gradient bar with min/max labels |
+
+Point data colours a face by the mean of its corner values, cell data by its
+owning cell's value — for a volume mesh, found through the skin's
+`surface:parent_cell` provenance. `--color-by` with any other output format is
+an error, as is any of the modifier flags without `--color-by`. See the
+[SVG](./formats/svg.md#data-driven-colouring) and [TikZ](./formats/tikz.md)
+format pages for the full semantics.
+
 **Examples:**
 
 ```sh
@@ -37,6 +55,11 @@ meshioplusplus convert -i gmsh -o vtk mesh.msh mesh.vtk
 meshioplusplus convert --ascii mesh.msh mesh.vtu
 meshioplusplus convert --sets-to-int-data mesh.inp mesh.xdmf
 meshioplusplus convert mesh.msh skin.stl   # volume mesh -> boundary-skin STL
+
+# colour a vector figure by a field
+meshioplusplus convert mesh.vtu figure.svg --color-by temperature --colorbar
+meshioplusplus convert mesh.vtu figure.tikz --color-by damage --cmap coolwarm \
+    --vmin 0 --vmax 1
 ```
 
 Converting a 3D volume mesh to STL or PLY writes its extracted boundary

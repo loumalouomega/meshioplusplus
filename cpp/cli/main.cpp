@@ -80,6 +80,8 @@
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/svg.hpp"
+#include "meshioplusplus/formats/tikz.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -271,6 +273,37 @@ bool write_binary_variant(const std::string& rPath, const Mesh& rMesh, const std
     return true;
 }
 
+/// The formats `--color-by` applies to. Everything else errors rather than
+/// silently ignoring the flags.
+bool cli_is_colorable_format(const std::string& rFormat) {
+    return rFormat == "svg" || rFormat == "tikz";
+}
+
+/// Write `rMesh` as a data-coloured SVG/TikZ figure, bypassing the registry
+/// (whose `(path, mesh)` writer lambdas cannot carry parameters) exactly as
+/// `write_binary_variant` above does for the ASCII/binary variants. Every
+/// pre-camera and camera argument keeps the writer's own default.
+/// Returns false when the format has no coloured variant.
+bool write_colored_variant(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat,
+                           const std::string& rColorBy, const std::optional<int>& rComponent,
+                           const std::string& rCmap, const std::optional<double>& rVMin,
+                           const std::optional<double>& rVMax, const std::string& rNanColor,
+                           bool colorbar) {
+    if (rFormat == "svg") {
+        meshioplusplus::write_svg(rPath, rMesh, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+                                  45.0, 35.264389682754654, 0.0, rColorBy, rComponent, rCmap, rVMin,
+                                  rVMax, rNanColor.empty() ? "#808080" : rNanColor, colorbar);
+    } else if (rFormat == "tikz") {
+        meshioplusplus::write_tikz(rPath, rMesh, ".6f", true, std::nullopt, "gray!30", "black",
+                                   std::nullopt, 45.0, 35.264389682754654, 0.0, rColorBy,
+                                   rComponent, rCmap, rVMin, rVMax,
+                                   rNanColor.empty() ? "gray" : rNanColor, colorbar);
+    } else {
+        return false;
+    }
+    return true;
+}
+
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
@@ -359,6 +392,9 @@ void print_usage(std::ostream& os) {
           "commands:\n"
           "  convert (c)             Convert between mesh formats\n"
           "                            --points-only / --arrays a,b narrow what is read\n"
+          "                            --color-by NAME colours svg/tikz output by a data\n"
+          "                            array (--component --cmap --vmin --vmax\n"
+          "                            --nan-color --colorbar)\n"
           "  info (i)                Print mesh info (--fast summarizes from the header)\n"
           "  ascii (a)               Rewrite a file in its ASCII variant (in place)\n"
           "  binary (b)              Rewrite a file in its binary variant (in place)\n"
@@ -422,6 +458,13 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"int-data-to-sets", {"-d"}, false},
                                   {"points-only", {}, false},
                                   {"arrays", {}, true},
+                                  {"color-by", {}, true},
+                                  {"component", {}, true},
+                                  {"cmap", {}, true},
+                                  {"vmin", {}, true},
+                                  {"vmax", {}, true},
+                                  {"nan-color", {}, true},
+                                  {"colorbar", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("convert requires exactly INFILE and OUTFILE");
@@ -449,9 +492,41 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
         opts.mDataArrays = data_split_names(opt_value(p, "arrays"));
     }
 
+    // Data-driven colouring (svg/tikz only). Validated before the read so a bad
+    // flag combination fails immediately rather than after loading a big mesh.
+    const bool color = has_opt(p, "color-by");
+    if (!color) {
+        for (const char* flag : {"component", "cmap", "vmin", "vmax", "nan-color"})
+            if (has_opt(p, flag))
+                throw std::runtime_error(std::string("--") + flag + " requires --color-by");
+        if (has_flag(p, "colorbar"))
+            throw std::runtime_error("--colorbar requires --color-by");
+    } else {
+        const std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
+        if (!cli_is_colorable_format(fmt))
+            throw std::runtime_error("--color-by is only supported for svg/tikz output, not '" +
+                                     fmt + "'");
+        if (ascii)
+            throw std::runtime_error("--ascii has no meaning for " + fmt + " output");
+    }
+
     Mesh mesh = read_mesh_cli(infile, in_fmt, opts);
 
-    if (ascii) {
+    if (color) {
+        const std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
+        std::optional<int> component;
+        if (has_opt(p, "component"))
+            component = std::stoi(opt_value(p, "component"));
+        std::optional<double> vmin;
+        if (has_opt(p, "vmin"))
+            vmin = std::stod(opt_value(p, "vmin"));
+        std::optional<double> vmax;
+        if (has_opt(p, "vmax"))
+            vmax = std::stod(opt_value(p, "vmax"));
+        const std::string cmap = has_opt(p, "cmap") ? opt_value(p, "cmap") : "viridis";
+        write_colored_variant(outfile, mesh, fmt, opt_value(p, "color-by"), component, cmap, vmin,
+                              vmax, opt_value(p, "nan-color"), has_flag(p, "colorbar"));
+    } else if (ascii) {
         std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
         if (!write_binary_variant(outfile, mesh, fmt, /*binary=*/false, float_fmt))
             throw std::runtime_error("format '" + fmt + "' has no ASCII variant");
@@ -1142,10 +1217,9 @@ int cmd_view(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("view requires exactly INFILE");
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
-    meshioplusplus::cli::view_mesh(mesh,
-                                   meshioplusplus::cli::view_kind_from_name(
-                                       opt_value(p, "kind", "auto")),
-                                   opt_value(p, "color-by"), opt_value(p, "name", "mesh"));
+    meshioplusplus::cli::view_mesh(
+        mesh, meshioplusplus::cli::view_kind_from_name(opt_value(p, "kind", "auto")),
+        opt_value(p, "color-by"), opt_value(p, "name", "mesh"));
     return 0;
 }
 
@@ -1172,10 +1246,9 @@ int cmd_screenshot(const std::vector<std::string>& rArgs) {
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::cli::screenshot_mesh(
-        mesh,
-        meshioplusplus::cli::view_kind_from_name(opt_value(p, "kind", "auto")),
-        opt_value(p, "color-by"), opt_value(p, "name", "mesh"), p.positionals[1], width,
-        height, has_flag(p, "transparent"));
+        mesh, meshioplusplus::cli::view_kind_from_name(opt_value(p, "kind", "auto")),
+        opt_value(p, "color-by"), opt_value(p, "name", "mesh"), p.positionals[1], width, height,
+        has_flag(p, "transparent"));
     return 0;
 }
 
