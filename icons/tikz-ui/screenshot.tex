@@ -1,0 +1,12 @@
+% Toolbar icon: screenshot — a camera (body + viewfinder bump + lens + flash).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-10,-7) rectangle (10,7);
+  \draw[thick] (-4,7) -- (-2,10) -- (2,10) -- (4,7);
+  \draw[thick] (0,0) circle (4.5);
+  \filldraw (6.5,4) circle (0.9);
+\end{tikzpicture}
+\end{document}

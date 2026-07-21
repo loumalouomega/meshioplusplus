@@ -1,0 +1,11 @@
+% Toolbar icon: info — a lowercase "i" (dot + stem) inside a circle.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.8pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw (0,0) circle (8);
+  \fill (0,3.6) circle (1.4);
+  \draw[line width=2.2pt] (0,0.6) -- (0,-4.6);
+\end{tikzpicture}
+\end{document}

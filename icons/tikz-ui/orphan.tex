@@ -1,0 +1,15 @@
+% Toolbar icon: remove orphan nodes — a connected mesh edge (two filled nodes)
+% and an isolated node marked with an X (the orphan being removed).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=2.2pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[line width=2.2pt] (-8,-7) -- (-1,-3);
+  \fill (-8,-7) circle (2.1);
+  \fill (-1,-3) circle (2.1);
+  \draw[line width=2.2pt] (5,5) circle (3.2);
+  \draw[line width=2.2pt] (2.8,2.8) -- (7.2,7.2);
+  \draw[line width=2.2pt] (2.8,7.2) -- (7.2,2.8);
+\end{tikzpicture}
+\end{document}

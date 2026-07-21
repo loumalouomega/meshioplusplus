@@ -1,0 +1,11 @@
+% Toolbar icon: refinement — a triangle subdivided into four, the 1-to-4
+% split every supported 2D type uses.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-10,-7) -- (10,-7) -- (0,10) -- cycle;
+  \draw[thick] (0,-7) -- (-5,1.5) -- (5,1.5) -- cycle;
+\end{tikzpicture}
+\end{document}

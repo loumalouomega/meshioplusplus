@@ -1,0 +1,16 @@
+% Toolbar icon: colour map — a gradient bar with tick marks below it,
+% standing for "choose how data values become colours".
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \fill[iconfg30] (-10,1) rectangle (-3.3,8);
+  \fill[iconfg60] (-3.3,1) rectangle (3.3,8);
+  \fill[iconfg] (3.3,1) rectangle (10,8);
+  \draw[thick] (-10,1) rectangle (10,8);
+  \draw[thick] (-10,-2) -- (-10,-5);
+  \draw[thick] (0,-2) -- (0,-5);
+  \draw[thick] (10,-2) -- (10,-5);
+\end{tikzpicture}
+\end{document}

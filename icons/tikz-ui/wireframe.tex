@@ -1,0 +1,16 @@
+% Toolbar icon: wireframe — isometric cube, edges only (no fill); the one
+% hidden back-bottom-left vertex's 3 edges are dashed. Same vertex layout as
+% icons/tikz/addBox.tex, but unfilled and with hidden edges added.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-6,-8) -- (2,-8) -- (2,0) -- (-6,0) -- cycle;
+  \draw[thick] (-6,0) -- (-2,4) -- (6,4) -- (2,0);
+  \draw[thick] (2,-8) -- (6,-4) -- (6,4);
+  \draw[thick, dashed] (-2,-4) -- (-6,-8);
+  \draw[thick, dashed] (-2,-4) -- (-2,4);
+  \draw[thick, dashed] (-2,-4) -- (6,-4);
+\end{tikzpicture}
+\end{document}

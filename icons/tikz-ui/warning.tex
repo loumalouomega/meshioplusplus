@@ -1,0 +1,11 @@
+% Toolbar icon: warning — triangle outline + exclamation mark.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\input{../preamble.tex}
+\begin{document}
+\begin{tikzpicture}[color=iconfg, draw=iconfg, line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (0,10) -- (-9,-8) -- (9,-8) -- cycle;
+  \draw[very thick, line cap=round] (0,3) -- (0,-2);
+  \filldraw (0,-5) circle (1.1);
+\end{tikzpicture}
+\end{document}
