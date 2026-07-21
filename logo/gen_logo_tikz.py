@@ -95,12 +95,12 @@ def main() -> None:
     ]
 
     # Screen-space height of each face centroid drives the colour ramp.
-    heights = np.array([py[nodes].mean() for nodes, _ in faces])
+    heights = np.array([py[nodes].mean() for nodes, _, _ in faces])
     lo, hi = float(heights.min()), float(heights.max())
 
     # One fill+stroke per face, in back-to-front order (nearer faces cover
     # the hidden edges of farther ones).
-    for (nodes, _), h in zip(faces, heights):
+    for (nodes, _, _), h in zip(faces, heights):
         hn = (h - lo) / (hi - lo) if hi > lo else 0.5
         r, g, b = tri_colour(float(hn))
         coords = " -- ".join(f"({px[i]:.4f},{py[i]:.4f})" for i in nodes)
