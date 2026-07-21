@@ -80,6 +80,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -658,6 +659,51 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("levels") = 1, py::arg("record_parent_ids") = false);
+
+    // Laplacian / Taubin smoothing. Returns a dict with the smoothed mesh and
+    // the run summary. A coordinates-only change. See operations/smooth.hpp.
+    m.def(
+        "smooth",
+        [](py::object pymesh, const std::string& method, int iterations, double lambda, double mu,
+           bool fix_boundary, bool preserve_features, double feature_angle, bool guard_inversion,
+           py::object frozen) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SmoothOptions options;
+            options.mMethod = meshioplusplus::smooth_method_from_name(method);
+            options.mIterations = iterations;
+            options.mLambda = lambda;
+            options.mMu = mu;
+            options.mFixBoundary = fix_boundary;
+            options.mPreserveFeatures = preserve_features;
+            options.mFeatureAngleDeg = feature_angle;
+            options.mGuardInversion = guard_inversion;
+            if (!frozen.is_none()) {
+                py::array_t<std::int64_t> ids =
+                    py::cast<py::array_t<std::int64_t>>(py::array::ensure(frozen));
+                options.mFrozen.assign(cpp.NumPoints(), 0);
+                auto v = ids.unchecked<1>();
+                for (py::ssize_t k = 0; k < v.shape(0); ++k) {
+                    const std::int64_t id = v(k);
+                    if (id < 0 || static_cast<std::size_t>(id) >= cpp.NumPoints())
+                        throw std::invalid_argument("meshio++: smooth: frozen node id " +
+                                                    std::to_string(id) + " is out of range");
+                    options.mFrozen[static_cast<std::size_t>(id)] = 1;
+                }
+            }
+            meshioplusplus::SmoothResult r = meshioplusplus::smooth(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_nodes_moved"] = r.mNumNodesMoved;
+            out["max_displacement"] = r.mMaxDisplacement;
+            out["num_skipped_inversion"] = r.mNumSkippedInversion;
+            return out;
+        },
+        py::arg("mesh"), py::arg("method") = "taubin", py::arg("iterations") = 10,
+        py::arg("lambda_") = -1.0, py::arg("mu") = -0.34, py::arg("fix_boundary") = true,
+        py::arg("preserve_features") = true, py::arg("feature_angle") = 30.0,
+        py::arg("guard_inversion") = true, py::arg("frozen") = py::none());
 
     // Partition into nparts balanced pieces (SFC or KaHIP). Returns a list of
     // dicts {part_id, mesh, point_map, cell_maps}. See operations/partition.hpp.
