@@ -43,10 +43,31 @@ def read_buffer(f):
     verts = np.fromfile(f, dtype=float, count=3 * num_verts, sep=" ").reshape(
         num_verts, 3
     )
-    data = np.fromfile(f, dtype=int, count=4 * num_faces, sep=" ").reshape(num_faces, 4)
-    if not np.all(data[:, 0] == 3):
-        raise ReadError("Can only read triangular faces")
-    cells = [CellBlock("triangle", data[:, 1:])]
+
+    # Faces are grouped by vertex count into triangle (3), quad (4), or
+    # polygon (else) blocks; a run of same-count faces stays in one block
+    # until the count changes.
+    cells = []
+    run_n = None
+    run_rows = []
+
+    def flush():
+        if not run_rows:
+            return
+        name = {3: "triangle", 4: "quad"}.get(run_n, "polygon")
+        cells.append(CellBlock(name, np.array(run_rows, dtype=int)))
+
+    for _ in range(num_faces):
+        n = int(np.fromfile(f, dtype=int, count=1, sep=" ")[0])
+        if n < 3:
+            raise ReadError("OFF: faces must have at least 3 vertices")
+        row = np.fromfile(f, dtype=int, count=n, sep=" ")
+        if n != run_n:
+            flush()
+            run_n = n
+            run_rows = []
+        run_rows.append(row)
+    flush()
 
     return verts, cells
 
@@ -61,19 +82,20 @@ def write(filename, mesh):
     else:
         points = mesh.points
 
-    skip = [c for c in mesh.cells if c.type != "triangle"]
+    face_blocks = [c for c in mesh.cells if c.type in ("triangle", "quad", "polygon")]
+    skip = [c for c in mesh.cells if c.type not in ("triangle", "quad", "polygon")]
     if skip:
         string = ", ".join(item.type for item in skip)
-        warn(f"OFF only supports triangle cells. Skipping {string}.")
+        warn(f"OFF only supports triangle/quad/polygon cells. Skipping {string}.")
 
-    tri = mesh.get_cells_type("triangle")
+    num_faces = sum(len(c.data) for c in face_blocks)
 
     with open(filename, "wb") as fh:
         fh.write(b"OFF\n")
         fh.write(b"# Created by meshio++\n\n")
 
         # counts
-        c = f"{mesh.points.shape[0]} {tri.shape[0]} {0}\n\n"
+        c = f"{mesh.points.shape[0]} {num_faces} {0}\n\n"
         fh.write(c.encode())
 
         # vertices
@@ -82,13 +104,14 @@ def write(filename, mesh):
         out = "\n".join([fmt.format(*row) for row in points]) + "\n"
         fh.write(out.encode())
 
-        # triangles
-        out = np.column_stack([np.full(tri.shape[0], 3, dtype=tri.dtype), tri])
-        # savetxt is slower
-        # np.savetxt(fh, out, "%d  %d %d %d")
-        fmt = " ".join(["{}"] * out.shape[1])
-        out = "\n".join([fmt.format(*row) for row in out]) + "\n"
-        fh.write(out.encode())
+        # faces (each block may be a uniform ndarray or, for a ragged
+        # "polygon" block, a Python list of per-face node arrays)
+        lines = []
+        for block in face_blocks:
+            for row in block.data:
+                lines.append(f"{len(row)} " + " ".join(str(i) for i in row))
+        if lines:
+            fh.write(("\n".join(lines) + "\n").encode())
 
 
 # NOTE: format registration now lives in meshioplusplus/off/__init__.py, which wraps the
