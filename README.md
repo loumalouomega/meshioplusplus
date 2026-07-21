@@ -96,6 +96,7 @@ meshioplusplus stats      mesh.vtu                           # geometric statist
 meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
 meshioplusplus refine     in.vtu out.vtu --levels 2          # uniform subdivision
 meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
+meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positions
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -306,7 +307,24 @@ quality = meshioplusplus.partition(mesh, 16, method="kahip", mode="strong")
 
 Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece (`ghost_layers` is reserved for halo growth and raises for now).
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, and `meshioplusplus partition`.
+#### Smoothing
+
+**`meshioplusplus.smooth`** relaxes point coordinates toward their edge-neighbour centroids to improve element shape, leaving topology and every data value alone: **only the points move**. See `doc/smooth.md`.
+
+Both operators are driven by the same centroid displacement. **Laplacian** (`x <- x + lambda*L(x)`) smooths strongly per pass but shrinks — over 40 iterations on a jittered 8×8 quad grid it contracts the bounding box by 57%. **Taubin** (the default) follows each `+lambda` pass with a larger-magnitude `-mu` pass that deliberately un-shrinks, leaving the same grid 3.6% smaller. Neighbours are the nodes joined by an actual cell *edge*, not the element clique, so a structured hex block is a fixed point rather than being bevelled toward a sphere. Boundary nodes, feature nodes (incident boundary facet normals differing by more than `feature_angle`), an optional `frozen` mask, and the nodes of blocks whose edge topology is unknown are all pinned by default, and the inversion guard rejects any move that would turn a valid cell inverted.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+relaxed = meshioplusplus.smooth(mesh)                          # 10 Taubin iterations
+harder = meshioplusplus.smooth(mesh, iterations=40)            # shrink-free even so
+lap = meshioplusplus.smooth(mesh, method="laplacian", lambda_=0.4)  # note the underscore
+out, report = meshioplusplus.smooth(mesh, return_report=True)  # nodes moved, max displacement
+```
+
+`lambda_` carries a trailing underscore because `lambda` is a Python keyword, and a negative value means "this method's own default" (0.5 Laplacian, 0.33 Taubin). Point and cell counts, connectivity, `cell_data`, `field_data`, `point_data` values and the points array's dtype all come through unchanged, and output is byte-identical across mesh backends and thread counts.
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, and `meshioplusplus smooth`.
 
 #### Data operations (rename / average / calc / condition / summarize)
 
