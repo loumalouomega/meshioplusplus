@@ -29,6 +29,30 @@ jobs:
       - name: Build Doxygen API reference
         run: doxygen Doxyfile
         working-directory: doc
+
+      # The browser viewer is deployed as a second static island alongside the
+      # Doxygen one, into this same Pages artifact. A repository gets one Pages
+      # deployment, so a separate workflow would fight this one over the
+      # `pages` concurrency group and overwrite the docs.
+      #
+      # The Emscripten build is required, not incidental: wasm/dist/ is
+      # gitignored, so the package the viewer consumes does not exist until it
+      # is built. `npm ci` must follow it, because npm *copies* a `file:`
+      # dependency rather than symlinking it.
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "6.0.3"
+      - name: Build the meshio++ WASM package
+        run: ./build/configure-wasm.sh --build
+      - name: Build the viewer
+        working-directory: viewer
+        env:
+          VITE_BASE: /meshioplusplus/viewer/
+        run: |
+          npm ci
+          npm run build:web
+
       - name: Install and build (VitePress)
         run: |
           cd doc
@@ -36,6 +60,8 @@ jobs:
           npm run docs:build
       - name: Merge Doxygen output into the VitePress site
         run: cp -r doc/doxygen-build/html doc/.vitepress/dist/api
+      - name: Merge the viewer into the VitePress site
+        run: cp -r viewer/dist-web doc/.vitepress/dist/viewer
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
