@@ -65,12 +65,36 @@ namespace meshioplusplus {
  *                    pair (45, atan(1/sqrt(2))) is the classic CAD isometric
  *                    view
  * @param roll        in-screen camera roll in degrees (3D input only)
+ * @param rColorBy    name of a `point_data` or `cell_data` array to colour the
+ *                    faces by; empty (the default) keeps the flat `rFill` and
+ *                    leaves the output byte-identical to previous releases.
+ *                    Point data colours a face by the mean of its corner
+ *                    values, cell data by its owning cell's value -- found
+ *                    through `"surface:parent_cell"` for a projected volume
+ *                    mesh, whose skin is extracted with provenance in that case
+ * @param rComponent  component of a multi-component array; `std::nullopt` uses
+ *                    the row magnitude
+ * @param rCmap       built-in colormap name (see `detail/colormap.hpp`)
+ * @param rVMin       low end of the mapped range; `std::nullopt` uses the
+ *                    smallest finite value among the *drawn* faces
+ * @param rVMax       high end of the mapped range; `std::nullopt` likewise
+ * @param rNanColor   xcolor spec for faces whose value is NaN or infinite
+ * @param Colorbar    when true, append a gradient bar with min/max labels to
+ *                    the right of the figure
  * @throws WriteError on an unopenable output path
+ * @throws std::invalid_argument for an unknown array name or colormap, an
+ *         out-of-range component, or `vmin > vmax`
  */
 void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".6f",
                 bool Standalone = true, const std::optional<std::string>& rLineWidth = std::nullopt,
                 const std::string& rFill = "gray!30", const std::string& rDraw = "black",
                 const std::optional<double>& rScale = std::nullopt, double azimuth = 45.0,
-                double elevation = 35.264389682754654, double roll = 0.0);
+                double elevation = 35.264389682754654, double roll = 0.0,
+                const std::string& rColorBy = "",
+                const std::optional<int>& rComponent = std::nullopt,
+                const std::string& rCmap = "viridis",
+                const std::optional<double>& rVMin = std::nullopt,
+                const std::optional<double>& rVMax = std::nullopt,
+                const std::string& rNanColor = "gray", bool Colorbar = false);
 
 }  // namespace meshioplusplus
