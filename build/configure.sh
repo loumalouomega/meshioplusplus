@@ -22,6 +22,7 @@ BUILD_TYPE="Release"
 WITH_HDF5="ON"
 WITH_NETCDF="ON"
 WITH_ZLIB="ON"
+WITH_POLYSCOPE="OFF"
 TESTS="OFF"
 C_API="OFF"
 FORTRAN="OFF"
@@ -42,6 +43,9 @@ Usage: $0 [options]
   --with-hdf5 / --without-hdf5    HDF5-backed formats (default: on, auto-detected)
   --with-netcdf / --without-netcdf
   --with-zlib / --without-zlib
+  --with-polyscope                native viewer for the CLI's view/screenshot
+                                  (default: off; needs OpenGL/GLFW and
+                                  git submodule update --init --recursive)
   --tests                         also build the GoogleTest suite (CTest)
   --c-api                         build the installable libmeshioplusplus C API
   --fortran                       build the Fortran module (implies --c-api)
@@ -63,6 +67,8 @@ while [ $# -gt 0 ]; do
         --with-netcdf) WITH_NETCDF="ON"; shift ;;
         --without-netcdf) WITH_NETCDF="OFF"; shift ;;
         --with-zlib) WITH_ZLIB="ON"; shift ;;
+        --with-polyscope) WITH_POLYSCOPE="ON"; shift ;;
+        --without-polyscope) WITH_POLYSCOPE="OFF"; shift ;;
         --without-zlib) WITH_ZLIB="OFF"; shift ;;
         --tests) TESTS="ON"; shift ;;
         --c-api) C_API="ON"; shift ;;
@@ -109,6 +115,7 @@ set -- \
     -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
     -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
     -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB" \
+        -DMESHIOPLUSPLUS_WITH_POLYSCOPE="$WITH_POLYSCOPE" \
     -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
     -DMESHIOPLUSPLUS_BUILD_C_API="$C_API" \
     -DMESHIOPLUSPLUS_BUILD_CLI="$CLI" \
@@ -131,6 +138,7 @@ echo "  type:      $BUILD_TYPE"
 echo "  backend:   $BACKEND"
 echo "  mesh:      $MESH_BACKEND (Python extension: $BUILD_PYTHON)"
 echo "  HDF5:      $WITH_HDF5   netCDF: $WITH_NETCDF   zlib: $WITH_ZLIB"
+echo "  Polyscope: $WITH_POLYSCOPE  (CLI viewer)"
 echo "  tests:     $TESTS"
 echo "  C API:     $C_API   Fortran: $FORTRAN"
 echo "  CLI:       $CLI"
