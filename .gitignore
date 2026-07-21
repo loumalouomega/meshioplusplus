@@ -54,3 +54,14 @@ foo.vtk
 !.vscode/tasks.json
 # Jupyter
 .ipynb_checkpoints/
+
+# viewer/ build output (see viewer/README.md); the wheel-bundled asset is
+# committed separately at src/meshioplusplus/_viewer_assets/viewer.html
+viewer/dist-web/
+viewer/dist-embed/
+viewer/node_modules/
+viewer/test-results/
+viewer/playwright-report/
+
+# icons/ LaTeX build artifacts (svg-ui/ is committed; see icons/README.md)
+icons/build-ui/
