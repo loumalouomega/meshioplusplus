@@ -20,6 +20,7 @@ from . import (
     _quality,
     _refine,
     _reorder,
+    _smooth,
     _split,
     _stats,
     _transform,
@@ -150,6 +151,13 @@ def main(argv=None):
     )
     _partition.add_args(parser)
     parser.set_defaults(func=_partition.partition_cmd)
+
+    parser = subparsers.add_parser(
+        "smooth",
+        help="Relax node positions to improve element shape (Laplacian / Taubin)",
+    )
+    _smooth.add_args(parser)
+    parser.set_defaults(func=_smooth.smooth_cmd)
 
     parser = subparsers.add_parser(
         "stats",
