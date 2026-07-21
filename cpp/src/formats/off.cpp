@@ -19,6 +19,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -28,6 +29,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
+#include "meshioplusplus/log.hpp"
 
 namespace meshioplusplus {
 
@@ -40,6 +42,17 @@ std::string off_strip(const std::string& rS) {
     while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
         --e;
     return rS.substr(b, e - b);
+}
+
+std::string off_cell_type_from_count(std::size_t n) {
+    switch (n) {
+        case 3:
+            return "triangle";
+        case 4:
+            return "quad";
+        default:
+            return "polygon";
+    }
 }
 
 }  // namespace
@@ -75,17 +88,46 @@ Mesh read_off(const std::string& rPath) {
     }
     mesh.AssignPoints(std::move(pts));
 
-    NDArray cells(DType::Int64, {static_cast<std::size_t>(num_faces), 3});
-    std::int64_t* cp = cells.As<std::int64_t>();
+    if (num_faces == 0) {
+        mesh.AddCellBlock("triangle", NDArray(DType::Int64, {0, 3}));
+        return mesh;
+    }
+
+    // Faces are grouped into blocks by vertex count (a run of same-count faces
+    // stays in one block, matching the OBJ reader's approach in this same header):
+    // 3 -> triangle, 4 -> quad, anything else -> polygon.
+    std::size_t cur_n = 0;
+    std::vector<std::int64_t> cur_conn;
+    std::size_t cur_count = 0;
+    auto flush = [&]() {
+        if (cur_count == 0)
+            return;
+        NDArray data(DType::Int64, {cur_count, cur_n});
+        std::memcpy(data.Data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
+        mesh.AddCellBlock(off_cell_type_from_count(cur_n), std::move(data));
+        cur_conn.clear();
+        cur_count = 0;
+    };
     for (long long f = 0; f < num_faces; ++f) {
         long long n;
         if (!(in >> n))
             throw ReadError("OFF: not enough faces");
-        if (n != 3)
-            throw ReadError("OFF: can only read triangular faces");
-        in >> cp[f * 3 + 0] >> cp[f * 3 + 1] >> cp[f * 3 + 2];
+        if (n < 3)
+            throw ReadError("OFF: faces must have at least 3 vertices");
+        const std::size_t un = static_cast<std::size_t>(n);
+        if (un != cur_n) {
+            flush();
+            cur_n = un;
+        }
+        for (std::size_t k = 0; k < un; ++k) {
+            std::int64_t idx;
+            if (!(in >> idx))
+                throw ReadError("OFF: not enough face vertex indices");
+            cur_conn.push_back(idx);
+        }
+        ++cur_count;
     }
-    mesh.AddCellBlock("triangle", std::move(cells));
+    flush();
     return mesh;
 }
 
@@ -98,22 +140,23 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    // Gather triangles (OFF supports triangles only).
-    std::vector<std::int64_t> tri;
-    std::size_t ntri = 0;
+    // OFF represents polygonal faces (triangle/quad/polygon); anything else is
+    // skipped with a warning, matching the Python reference writer.
+    std::size_t num_faces = 0;
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.Type() != "triangle")
+        const std::string& t = cb.Type();
+        if (t != "triangle" && t != "quad" && t != "polygon") {
+            log::warn(
+                "OFF: '{}' cells are not representable (only triangle/quad/polygon "
+                "faces); skipping.",
+                t);
             continue;
-        const NDArray& conn = cb.Conn();
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            for (int k = 0; k < 3; ++k)
-                tri.push_back(detail::read_int(conn, r * 3 + k));
-            ++ntri;
         }
+        num_faces += cb.NumCells();
     }
 
     os << "OFF\n# Created by meshio++ (C++ core)\n\n";
-    os << num_points << ' ' << ntri << " 0\n\n";
+    os << num_points << ' ' << num_faces << " 0\n\n";
 
     char buf[96];
     for (std::size_t r = 0; r < num_points; ++r) {
@@ -123,8 +166,19 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
         std::snprintf(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
-    for (std::size_t t = 0; t < ntri; ++t)
-        os << "3 " << tri[t * 3] << ' ' << tri[t * 3 + 1] << ' ' << tri[t * 3 + 2] << '\n';
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& t = cb.Type();
+        if (t != "triangle" && t != "quad" && t != "polygon")
+            continue;
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            os << k;
+            for (std::size_t j = 0; j < k; ++j)
+                os << ' ' << detail::read_int(conn, r * k + j);
+            os << '\n';
+        }
+    }
 }
 
 }  // namespace meshioplusplus

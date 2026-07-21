@@ -34,10 +34,12 @@
  *
  * **OFF**: a minimal format — a literal `"OFF"` first line, a
  * `<nverts> <nfaces> <nedges>` header (edge count parsed but discarded),
- * `nverts` coordinate rows, then `nfaces` rows each `3 i j k` (a leading
- * vertex count that **must** be 3 — any other value is a hard `ReadError`,
- * since only triangular faces are supported). OFF carries no point_data,
- * cell_data, or field_data at all.
+ * `nverts` coordinate rows, then `nfaces` rows each `n i0 i1 ... i(n-1)`.
+ * As with OBJ, faces are grouped by vertex count into `triangle` (3),
+ * `quad` (4), or `polygon` (else) cell blocks, with a run of same-count
+ * faces staying in one block until the count changes; a leading count
+ * below 3 is a hard `ReadError`. OFF carries no point_data, cell_data, or
+ * field_data at all.
  */
 
 // System includes
@@ -52,12 +54,13 @@ namespace meshioplusplus {
  * @brief Write a Mesh to a Geomview OFF (.off) file.
  *
  * Emits the `"OFF"` header line, `<nverts> <nfaces> 0` (edge count always
- * 0), vertex coordinate rows, then one `3 i j k` row per triangle. Only
- * `triangle` cells are representable.
+ * 0), vertex coordinate rows, then one `n i0 ... i(n-1)` row per face,
+ * for every `triangle`/`quad`/`polygon` cell block in mesh order (a
+ * `polygon` block must be rectangular — same vertex count for every cell
+ * in the block). Any other cell type is skipped with a warning.
  *
  * @param rPath filesystem path to the .off file to create/overwrite
- * @param rMesh the mesh to write (triangle cells only)
- * @throws WriteError on any non-triangle cell type
+ * @param rMesh the mesh to write
  */
 void write_off(const std::string& rPath, const Mesh& rMesh);
 
@@ -65,14 +68,15 @@ void write_off(const std::string& rPath, const Mesh& rMesh);
  * @brief Read a Geomview OFF (.off) file into a Mesh.
  *
  * Validates the `"OFF"` first line, reads the vertex/face/edge counts
- * (edge count discarded), then `nverts` coordinate rows and `nfaces`
- * triangle rows (each row's leading count must be exactly 3).
+ * (edge count discarded), then `nverts` coordinate rows and `nfaces` face
+ * rows. Faces are grouped by vertex count into `triangle`/`quad`/`polygon`
+ * cell blocks, exactly like the OBJ reader above.
  *
  * @param rPath filesystem path to the .off file to read
- * @return the read Mesh (points + a single `triangle` cell block only —
+ * @return the read Mesh (points + triangle/quad/polygon cell blocks only —
  *         no point_data/cell_data/field_data)
  * @throws ReadError if the first line isn't `"OFF"`, or any face row's
- *         leading vertex count isn't 3 ("Can only read triangular faces")
+ *         leading vertex count is below 3
  */
 Mesh read_off(const std::string& rPath);
 
