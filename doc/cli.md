@@ -412,6 +412,49 @@ meshioplusplus refine coarse.vtu fine.vtu --levels 2 --record-parent-ids
 
 ---
 
+## meshioplusplus smooth
+
+Relax point coordinates toward their edge-neighbour centroids to improve element
+shape (see [smoothing](/smooth)).
+
+```
+meshioplusplus smooth [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--method taubin\|laplacian` | Smoothing operator (default `taubin`, which does not shrink; `laplacian` is stronger per pass but shrinks) |
+| `--iterations N` | How many iterations to run; for `taubin` one iteration is two passes (default `10`) |
+| `--lambda L` | Relaxation factor of the smoothing pass, in (0, 1); the default depends on `--method` (`0.5` laplacian, `0.33` taubin) |
+| `--mu=M` | `taubin` only: un-shrinking factor, must satisfy `mu < -lambda < 0` (default `-0.34`; the negative value needs the `--mu=` form) |
+| `--no-fix-boundary` | Let boundary nodes move too (they are pinned by default) |
+| `--no-preserve-features` | Do not pin feature nodes (sharp corners/creases are kept by default) |
+| `--feature-angle A` | Angle in degrees between boundary facet normals above which their shared nodes are pinned as features (default `30`) |
+| `--no-guard-inversion` | Do not reject moves that would invert an incident cell |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Only the point coordinates move: connectivity, `cell_data`, `field_data` and
+`point_data` values come through unchanged, the point and cell counts are
+unchanged, and the points array keeps its input dtype. Neighbours are the nodes
+joined by an actual cell *edge*, so a structured hex block is a fixed point.
+Nodes of blocks whose edge topology is unknown — the higher-order family, the
+VTK-Lagrange types, `custom` — are pinned rather than guessed at. Unless
+suppressed, the summary reports the number of nodes moved, the largest net
+displacement, and how many moves the inversion guard rejected.
+
+**Examples:**
+
+```sh
+meshioplusplus smooth noisy.vtu smooth.vtu
+meshioplusplus smooth noisy.vtu smooth.vtu --iterations 40
+meshioplusplus smooth in.msh out.vtu --method laplacian --lambda 0.4
+meshioplusplus smooth in.msh out.vtu --mu=-0.4 --feature-angle 45
+meshioplusplus smooth in.msh out.vtu --no-fix-boundary --no-guard-inversion -q
+```
+
+---
+
 ## meshioplusplus partition
 
 Decompose a mesh into N balanced parts for domain decomposition (see

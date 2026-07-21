@@ -66,6 +66,7 @@ export default defineConfig({
           { text: "Geometric statistics", link: "/stats" },
           { text: "Cell conversion", link: "/convert_cells" },
           { text: "Uniform refinement", link: "/refine" },
+          { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },
           { text: "Data operations", link: "/data_operations" },
           { text: "· Array management", link: "/data_manage" },
           { text: "· Location averaging", link: "/data_average" },

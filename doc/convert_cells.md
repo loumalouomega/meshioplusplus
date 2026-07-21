@@ -6,6 +6,8 @@ it describes intact. It is a mesh **operation** (like [crop](/crop) and
 [split](/split)), not a file format, and uses only standard C++/numpy, so it runs
 under every mesh backend.
 
+![Each hexahedron split into 6 tetrahedra, coloured by child index](/images/convert_cells_simplexify.png)
+
 ```python
 import meshioplusplus
 

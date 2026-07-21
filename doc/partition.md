@@ -5,6 +5,8 @@
 complement to the criterion-driven [`split`](/split). It is a mesh
 **operation**, not a file format, and runs under every mesh backend.
 
+![A mesh decomposed into 6 balanced parts (SFC / Hilbert curve)](/images/partition_pieces.png)
+
 ```python
 import meshioplusplus
 

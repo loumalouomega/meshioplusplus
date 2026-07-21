@@ -91,11 +91,19 @@ unlike `split`) and `partitionLabels(mesh, nparts, method, imbalance, mode,
 seed, weightsKey)` → one label array per cell block. **Only the SFC method
 exists in the WASM build** — KaHIP is never compiled in (no Emscripten port,
 and it would bloat the bundle), so `method: "kahip"` throws a catchable `Error`
-naming `MESHIOPLUSPLUS_WITH_KAHIP` and `"auto"` always resolves to SFC. See
+naming `MESHIOPLUSPLUS_WITH_KAHIP` and `"auto"` always resolves to SFC.
+Smoothing is exposed as `smooth(mesh, method, iterations, lambda, mu,
+fixBoundary, preserveFeatures, featureAngle, guardInversion)` with `method`
+`"taubin"` (the default, shrink-free) or `"laplacian"` (stronger per pass, but
+shrinking), returning `{ mesh, numNodesMoved, maxDisplacement,
+numSkippedInversion }`; only the point coordinates move, so connectivity and
+every data value come through unchanged. Boundary nodes, feature nodes and the
+nodes of blocks with unknown edge topology are pinned by default; the caller
+`frozen` mask of the C++ API is not exposed here. See
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
-[cell conversion](./convert_cells.md), [refine](./refine.md), and
-[partitioning](./partition.md).
+[cell conversion](./convert_cells.md), [refine](./refine.md),
+[partitioning](./partition.md), and [smoothing](./smooth.md).
 
 ::: tip Reachable from `loadMeshioPlusPlus()` since v7.4.0
 Before v7.4.0 the geometry operations above were bound in the WASM module but
@@ -105,7 +113,8 @@ all forwarded now. The index maps the C++ core returns for
 `cropBbox`/`cropPlane`/`split`/`convertCells`/`refine`/`partition` are still not
 carried across the JS boundary — use the `recordIds`/`recordParentIds` flags,
 which attach the same provenance as ordinary data arrays (or `partitionLabels`
-for the raw assignment).
+for the raw assignment). `smooth` needs none of that — it never adds, removes or
+renumbers a node or a cell.
 :::
 
 The [data operations](./data_operations.md) — which act on `point_data` /

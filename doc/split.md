@@ -7,6 +7,8 @@ with connectivity and data remapped. It is a mesh **operation** (like
 [crop](/crop) and [merge](/merge)), not a file format, and uses only standard
 C++/numpy, so it runs under every mesh backend.
 
+![A mesh split into regions, coloured by piece](/images/split_regions.png)
+
 ```python
 import meshioplusplus
 

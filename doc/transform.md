@@ -8,6 +8,8 @@ are carried through. It is a mesh **operation** (like
 [reordering](/reorder) and [quality metrics](/mesh_quality)), not a file format,
 and uses only standard C++/numpy, so it runs under every mesh backend.
 
+![A surface mesh rotated 45° about x, coloured by its original height](/images/transform_rotate.png)
+
 ```python
 import meshioplusplus
 

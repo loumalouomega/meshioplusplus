@@ -5,6 +5,8 @@ the existing arrays at the same location. It is a
 [data operation](/data_operations), not a file format; the geometry is never
 modified.
 
+![A derived speed field, `norm(velocity)`, coloured on the mesh](/images/data_calc_speed.png)
+
 ```python
 import meshioplusplus as mp
 

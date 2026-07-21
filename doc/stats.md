@@ -9,6 +9,8 @@ cells — without modifying the mesh. It is a mesh **operation** (like
 [quality metrics](/mesh_quality)), not a file format, and uses only standard
 C++/numpy, so it runs under every mesh backend.
 
+![Cell-type counts reported by `compute_stats`](/images/stats_celltypes.png)
+
 ```python
 import meshioplusplus
 

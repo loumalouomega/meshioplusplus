@@ -9,6 +9,8 @@ remap external per-node / per-cell arrays. It is a mesh **operation** (like
 not a file format, and uses only standard C++/numpy, so it runs under every mesh
 backend.
 
+![Node-pair sparsity before and after RCM reordering — the diagonal band is the point](/images/reorder_bandwidth.png)
+
 ```python
 import meshioplusplus
 

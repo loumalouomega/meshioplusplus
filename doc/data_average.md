@@ -8,6 +8,8 @@ locations without changing the geometry. They are
 - **cell → point**: each point's value is the mean over the cells incident to
   it, optionally weighted by each cell's |measure|.
 
+![Point -> cell -> point averaging round-trip, same colour scale both sides](/images/data_average_roundtrip.png)
+
 ```python
 import meshioplusplus as mp
 

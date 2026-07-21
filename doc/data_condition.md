@@ -9,6 +9,8 @@ geometry. It is a [data operation](/data_operations), not a file format.
 | `"normalize"` | affine map from the array's own `[min, max]` onto `[lo, hi]` (default `[0, 1]`) |
 | `"standardize"` | `(x − mean) / stddev` — zero mean, unit standard deviation |
 
+![A field normalized to `[0, 1]`](/images/data_condition_normalize.png)
+
 ```python
 import meshioplusplus as mp
 
