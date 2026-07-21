@@ -8,6 +8,27 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.12.0 (2026-07-21)
+
+The OFF reader/writer (C++ core and Python reference) gain **quad and polygon
+face support** — [issue #35](https://github.com/loumalouomega/meshioplusplus/issues/35)
+reported that a valid OFF file using quad faces was rejected outright with
+"Can only read triangular faces". OFF's own spec allows faces of any vertex
+count; only this implementation (and, as it turns out, upstream meshio too)
+had hard-coded the triangle-only assumption.
+
+- `read_off` now groups faces by vertex count into `triangle` (3), `quad` (4),
+  or `polygon` (else) cell blocks, exactly like the sibling OBJ reader in the
+  same file: a run of same-count faces stays in one block until the count
+  changes. A leading count below 3 remains a hard `ReadError`.
+- `write_off` now writes every `triangle`/`quad`/`polygon` cell block (in mesh
+  order); any other cell type is skipped with a warning instead of silently
+  dropped. A `polygon` block written by the C++ path must be rectangular; the
+  Python reference writer also accepts a ragged `polygon` block.
+- New fixtures `tests/meshes/off/cube_example.off` (6 quad faces) and
+  `cube_example_as_triangs.off` (the same cube pre-triangulated) back the
+  regression tests.
+
 ## v7.11.0 (2026-07-21)
 
 The SVG and TikZ writers gain **data-driven colouring**: a `color_by` scalar
