@@ -488,6 +488,40 @@ MIO_API mio_mesh* mio_clean(const mio_mesh* mesh, int weld, double atol, int rem
                             int64_t* cells_dropped_duplicate);
 
 /**
+ * Smooth a mesh's point coordinates, leaving topology and data untouched. Only
+ * the points move: connectivity, cell_data, field_data and point_data values are
+ * carried through unchanged. The run summary is returned through the (optional)
+ * out-params. The SmoothOptions `mFrozen` caller pin mask is not exposed across
+ * the C ABI (documented flat-ABI gap).
+ * @param mesh              input mesh.
+ * @param method            "laplacian" or "taubin"; NULL means "taubin".
+ * @param iterations        number of iterations (for Taubin one iteration is two
+ *                          passes); zero or less returns an unchanged copy.
+ * @param lambda            relaxation factor in (0, 1). **Negative means "this
+ *                          method's own default"**: 0.5 for laplacian, 0.33 for
+ *                          taubin.
+ * @param mu                taubin only: the un-shrinking factor, which must
+ *                          satisfy mu < -lambda < 0. Ignored by laplacian.
+ * @param fix_boundary      nonzero to pin every node on a boundary facet.
+ * @param preserve_features nonzero to additionally pin boundary nodes whose
+ *                          incident boundary facets meet above feature_angle.
+ * @param feature_angle     feature angle between boundary facet normals, in
+ *                          degrees (0 = coplanar, 90 = the edge of a box).
+ * @param guard_inversion   nonzero to reject any move that would flip the signed
+ *                          measure of an incident cell, and count the rejection.
+ * @param nodes_moved       receives the number of points whose net displacement
+ *                          exceeded the relative move tolerance.
+ * @param max_displacement  receives the largest net displacement, in mesh units.
+ * @param skipped_inversion receives the number of (node, pass) events in which
+ *                          the inversion guard rejected a move.
+ * @return the smoothed mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations,
+                             double lambda, double mu, int fix_boundary, int preserve_features,
+                             double feature_angle, int guard_inversion, int64_t* nodes_moved,
+                             double* max_displacement, int64_t* skipped_inversion);
+
+/**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).
  * @param mesh       input mesh.
  * @param lo         box lower corner (3 doubles).
