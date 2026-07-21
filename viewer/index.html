@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>meshio++ viewer</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <!--
+      Payload slots. `meshioplusplus.view(backend="browser")` fills these before
+      writing the page out. Dedicated elements with stable ids, rather than
+      tokens inside a JS string literal: minification rewrites the latter's
+      surroundings, so string surgery on the built bundle would be fragile.
+    -->
+    <script type="application/octet-stream;base64" id="vtp-payload"></script>
+    <script type="application/json" id="stats-payload"></script>
+    <script type="application/json" id="view-config"></script>
+
+    <div id="app">
+      <aside id="panel">
+        <header>
+          <h1>meshio++ <span>viewer</span></h1>
+          <p class="sub">
+            Everything runs in your browser. No file is uploaded anywhere.
+          </p>
+        </header>
+
+        <section id="load-section">
+          <label class="button" for="file">Open a mesh…</label>
+          <input id="file" type="file" hidden />
+          <p class="hint">…or drop one anywhere on this page.</p>
+          <div id="samples"></div>
+        </section>
+
+        <section id="info-section" hidden>
+          <h2 id="h-mesh">Mesh</h2>
+          <dl id="info"></dl>
+        </section>
+
+        <section id="color-section" hidden>
+          <h2 id="h-color">Colour by</h2>
+          <select id="color-by"></select>
+          <label class="row">
+            <span>Colour map</span>
+            <select id="colormap"></select>
+          </label>
+          <label class="row">
+            <span>Draw as</span>
+            <select id="representation">
+              <option value="2" selected>Surface</option>
+              <option value="1">Wireframe</option>
+              <option value="0">Points</option>
+            </select>
+          </label>
+          <label class="row">
+            <span>Opacity</span>
+            <input type="range" id="opacity" min="10" max="100" value="100" />
+          </label>
+          <label class="row">
+            <input type="checkbox" id="edges" /> <span>Show edges</span>
+          </label>
+        </section>
+
+        <section id="ops-section" hidden>
+          <h2>Operations</h2>
+          <div class="ops-header">
+            <button type="button" id="ops-undo" title="Undo the last operation">
+              Undo
+            </button>
+            <button type="button" id="ops-revert" title="Remove all operations">
+              Revert
+            </button>
+          </div>
+          <div id="ops-chips" class="op-chips"></div>
+          <ul id="ops-warnings" class="ops-warnings"></ul>
+
+          <details class="op">
+            <summary>Quality</summary>
+            <p class="hint">Per-cell shape metrics, added as cell data.</p>
+            <button type="button" id="op-quality-apply">Apply</button>
+          </details>
+
+          <details class="op">
+            <summary>Clean</summary>
+            <label class="check"
+              ><input type="checkbox" id="op-clean-weld" /> weld coincident
+              points</label
+            >
+            <label class="row"
+              ><span>tolerance</span>
+              <input type="number" id="op-clean-atol" value="1e-8" step="any"
+            /></label>
+            <label class="check"
+              ><input type="checkbox" id="op-clean-orphans" checked /> remove
+              orphan points</label
+            >
+            <label class="check"
+              ><input type="checkbox" id="op-clean-degenerate" checked /> drop
+              degenerate cells</label
+            >
+            <label class="check"
+              ><input type="checkbox" id="op-clean-duplicates" checked /> drop
+              duplicate cells</label
+            >
+            <button type="button" id="op-clean-apply">Apply</button>
+          </details>
+
+          <details class="op">
+            <summary>Smooth</summary>
+            <label class="row"
+              ><span>method</span>
+              <select id="op-smooth-method">
+                <option value="taubin" selected>Taubin</option>
+                <option value="laplacian">Laplacian</option>
+              </select></label
+            >
+            <label class="row"
+              ><span>iterations</span>
+              <input type="number" id="op-smooth-iterations" value="20" min="1" max="500"
+            /></label>
+            <label class="check"
+              ><input type="checkbox" id="op-smooth-boundary" checked /> pin the
+              boundary</label
+            >
+            <p class="hint">
+              Taubin alternates passes so the mesh does not shrink; Laplacian is
+              stronger but contracts.
+            </p>
+            <button type="button" id="op-smooth-apply">Apply</button>
+          </details>
+
+          <details class="op">
+            <summary>Refine</summary>
+            <label class="row"
+              ><span>levels</span>
+              <input type="number" id="op-refine-levels" value="1" min="1" max="3"
+            /></label>
+            <p class="hint" id="op-refine-note"></p>
+            <button type="button" id="op-refine-apply">Apply</button>
+          </details>
+
+          <details class="op">
+            <summary>Partition</summary>
+            <label class="row"
+              ><span>parts</span>
+              <input type="number" id="op-partition-nparts" value="4" min="2" max="64"
+            /></label>
+            <label class="row"
+              ><span>method</span>
+              <select id="op-partition-method">
+                <option value="auto" selected>auto</option>
+                <option value="sfc">space-filling curve</option>
+                <option value="kahip">KaHIP</option>
+              </select></label
+            >
+            <p class="hint">Adds <code>partition:part</code> to colour by.</p>
+            <button type="button" id="op-partition-apply">Apply</button>
+          </details>
+
+          <details class="op">
+            <summary>Section</summary>
+            <div class="row axis-row">
+              <label
+                ><input type="radio" name="op-section-axis" value="0" /> X</label
+              >
+              <label
+                ><input type="radio" name="op-section-axis" value="1" /> Y</label
+              >
+              <label
+                ><input type="radio" name="op-section-axis" value="2" checked />
+                Z</label
+              >
+            </div>
+            <input type="range" id="op-section-position" min="0" max="100" value="50" />
+            <label class="check"
+              ><input type="checkbox" id="op-section-flip" /> flip</label
+            >
+            <p class="hint" id="op-section-note">
+              Cuts whole cells away, so the cut follows element faces.
+            </p>
+            <button type="button" id="op-section-apply">Apply</button>
+          </details>
+        </section>
+
+        <section id="convert-section" hidden>
+          <h2>Convert</h2>
+          <p class="hint">
+            Writes the full mesh — not just the surface shown here.
+          </p>
+          <div class="row">
+            <select id="convert-format"></select>
+            <button id="convert-download" type="button">Download</button>
+          </div>
+        </section>
+
+        <footer>
+          <a href="https://github.com/loumalouomega/meshioplusplus">meshio++</a>
+          · rendered with <a href="https://kitware.github.io/vtk-js/">vtk.js</a>
+        </footer>
+      </aside>
+
+      <main id="stage">
+        <div id="render"></div>
+        <div id="legend"></div>
+        <div id="viewport-tools">
+          <button type="button" id="tool-reset" title="Reset the camera">Fit</button>
+          <button type="button" id="tool-screenshot" title="Save a PNG">PNG</button>
+          <button
+            type="button"
+            id="tool-inspect"
+            aria-pressed="false"
+            title="Click a cell to inspect its values"
+          >
+            Inspect
+          </button>
+        </div>
+        <div id="status" role="status"></div>
+        <div id="pick-popover" hidden>
+          <button type="button" id="pick-close" title="Close">×</button>
+          <dl id="pick-body"></dl>
+        </div>
+        <div id="drop-overlay" hidden><span>Drop to open</span></div>
+      </main>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

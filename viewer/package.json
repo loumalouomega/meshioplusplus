@@ -1,0 +1,27 @@
+{
+  "name": "meshioplusplus-viewer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser mesh viewer built on the meshio++ WASM package and vtk.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build:web": "vite build --outDir dist-web",
+    "build:embed": "VITE_VIEWER_EMBEDDED=1 VITE_BASE=./ vite build --outDir dist-embed",
+    "preview": "vite preview --outDir dist-web --port 4173 --strictPort",
+    "test:e2e": "playwright test",
+    "test:unit": "node tests/unit/build-and-run.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kitware/vtk.js": "32.9.0",
+    "@meshioplusplus/wasm": "file:../wasm"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1",
+    "typescript": "^5.7.2",
+    "vite": "5.4.11",
+    "vite-plugin-singlefile": "2.0.3"
+  }
+}
