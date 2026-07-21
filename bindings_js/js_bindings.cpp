@@ -91,6 +91,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -667,6 +668,37 @@ val clean_js(const val& rMeshObj, bool weld, double atol, bool removeOrphans, bo
 }
 
 /**
+ * @brief Smooth a mesh's point coordinates (`"laplacian"` / `"taubin"`),
+ * leaving connectivity and every data array untouched. A negative `lambda`
+ * means "this method's own default" (0.5 Laplacian, 0.33 Taubin) and is passed
+ * through unchanged. Returns an object `{mesh, numNodesMoved, maxDisplacement,
+ * numSkippedInversion}`. The caller-supplied frozen-node mask is not exposed
+ * here, as on the other flat bindings.
+ */
+val smooth_js(const val& rMeshObj, const std::string& rMethod, int iterations, double lambda,
+              double mu, bool fixBoundary, bool preserveFeatures, double featureAngle,
+              bool guardInversion) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SmoothOptions options;
+        options.mMethod = meshioplusplus::smooth_method_from_name(rMethod);
+        options.mIterations = iterations;
+        options.mLambda = lambda;
+        options.mMu = mu;
+        options.mFixBoundary = fixBoundary;
+        options.mPreserveFeatures = preserveFeatures;
+        options.mFeatureAngleDeg = featureAngle;
+        options.mGuardInversion = guardInversion;
+        meshioplusplus::SmoothResult r = meshioplusplus::smooth(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numNodesMoved", static_cast<double>(r.mNumNodesMoved));
+        out.set("maxDisplacement", r.mMaxDisplacement);
+        out.set("numSkippedInversion", static_cast<double>(r.mNumSkippedInversion));
+        return out;
+    });
+}
+
+/**
  * @brief Crop a mesh to a bounding box (`lo`/`hi` are 3-element JS arrays).
  * `mode` is "all" (default) or "any". Returns the pruned mesh object.
  */
@@ -1128,6 +1160,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("merge", &merge_js);
     emscripten::function("transform", &transform_js);
     emscripten::function("clean", &clean_js);
+    emscripten::function("smooth", &smooth_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("split", &split_js);
