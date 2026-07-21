@@ -19,6 +19,7 @@
 #include <pybind11/stl.h>
 
 // Project includes
+#include "meshioplusplus/detail/colormap.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
@@ -1450,6 +1451,19 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_wkt(path));
     });
 
+    // Built-in colormap tables, exported so tests/test_colormap.py can pin the
+    // C++ table against its `_colormap.py` twin byte for byte (the two copies
+    // are both emitted by tools/gen_colormaps.py).
+    m.def(
+        "colormap_table",
+        [](const std::string& name) {
+            const std::uint8_t* table = meshioplusplus::detail::colormap_table(name);
+            return py::bytes(reinterpret_cast<const char*>(table),
+                             meshioplusplus::detail::kColormapSize * 3);
+        },
+        py::arg("name"));
+    m.def("colormap_names", []() { return meshioplusplus::detail::colormap_names(); });
+
     // SVG writer (write-only visualization; 3D input renders the projected
     // skin — camera args appended AFTER the existing ones, the Python shim
     // passes everything positionally).
@@ -1458,16 +1472,22 @@ PYBIND11_MODULE(_core, m) {
         [](const std::string& path, py::object pymesh, const std::string& float_fmt,
            const std::optional<std::string>& stroke_width, const std::optional<double>& image_width,
            const std::string& fill, const std::string& stroke, double azimuth, double elevation,
-           double roll) {
+           double roll, const std::string& color_by, const std::optional<int>& component,
+           const std::string& cmap, const std::optional<double>& vmin,
+           const std::optional<double>& vmax, const std::string& nan_color, bool colorbar) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
             meshioplusplus::write_svg(path, cpp, float_fmt, stroke_width, image_width, fill, stroke,
-                                      azimuth, elevation, roll);
+                                      azimuth, elevation, roll, color_by, component, cmap, vmin,
+                                      vmax, nan_color, colorbar);
         },
         py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = ".3f",
         py::arg("stroke_width") = std::nullopt, py::arg("image_width") = 100.0,
         py::arg("fill") = "#c8c5bd", py::arg("stroke") = "#000080", py::arg("azimuth") = 45.0,
-        py::arg("elevation") = 35.264389682754654, py::arg("roll") = 0.0);
+        py::arg("elevation") = 35.264389682754654, py::arg("roll") = 0.0, py::arg("color_by") = "",
+        py::arg("component") = std::nullopt, py::arg("cmap") = "viridis",
+        py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
+        py::arg("nan_color") = "#808080", py::arg("colorbar") = false);
 
     // TikZ writer (write-only LaTeX visualization; 3D input renders the
     // projected skin — camera args appended AFTER the existing ones).
@@ -1476,17 +1496,23 @@ PYBIND11_MODULE(_core, m) {
         [](const std::string& path, py::object pymesh, const std::string& float_fmt,
            bool standalone, const std::optional<std::string>& line_width, const std::string& fill,
            const std::string& draw, const std::optional<double>& scale, double azimuth,
-           double elevation, double roll) {
+           double elevation, double roll, const std::string& color_by,
+           const std::optional<int>& component, const std::string& cmap,
+           const std::optional<double>& vmin, const std::optional<double>& vmax,
+           const std::string& nan_color, bool colorbar) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
             meshioplusplus::write_tikz(path, cpp, float_fmt, standalone, line_width, fill, draw,
-                                       scale, azimuth, elevation, roll);
+                                       scale, azimuth, elevation, roll, color_by, component, cmap,
+                                       vmin, vmax, nan_color, colorbar);
         },
         py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = ".6f",
         py::arg("standalone") = true, py::arg("line_width") = std::nullopt,
         py::arg("fill") = "gray!30", py::arg("draw") = "black", py::arg("scale") = std::nullopt,
-        py::arg("azimuth") = 45.0, py::arg("elevation") = 35.264389682754654,
-        py::arg("roll") = 0.0);
+        py::arg("azimuth") = 45.0, py::arg("elevation") = 35.264389682754654, py::arg("roll") = 0.0,
+        py::arg("color_by") = "", py::arg("component") = std::nullopt, py::arg("cmap") = "viridis",
+        py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
+        py::arg("nan_color") = "gray", py::arg("colorbar") = false);
 
     // PERMAS writer / reader (.post/.dato).
     m.def("permas_write", [](const std::string& path, py::object pymesh) {
