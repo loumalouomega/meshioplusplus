@@ -24,6 +24,7 @@ from . import (
     _split,
     _stats,
     _transform,
+    _view,
 )
 
 
@@ -165,6 +166,20 @@ def main(argv=None):
     )
     _stats.add_args(parser)
     parser.set_defaults(func=_stats.stats_cmd)
+
+    parser = subparsers.add_parser(
+        "view",
+        help="Open a mesh in an interactive viewer (desktop or browser)",
+    )
+    _view.add_args(parser)
+    parser.set_defaults(func=_view.view_cmd)
+
+    parser = subparsers.add_parser(
+        "screenshot",
+        help="Render a mesh to a PNG without opening a window",
+    )
+    _view.add_screenshot_args(parser)
+    parser.set_defaults(func=_view.screenshot_cmd)
 
     # Nested group: `meshioplusplus data <verb>`. The inner parsers each call
     # set_defaults(func=...), which overrides the outer default, so the
