@@ -27,7 +27,55 @@ console.log(mesh.cells[0].data);   // Int32Array connectivity, flat (numCells * 
 // Convert directly (no intermediate JS object), or round-trip through one.
 meshio.convert("/example.vtu", "/example.stl");
 meshio.writeMesh("/example.msh", mesh, "gmsh");
+
+// What this build can actually read and write, both sorted.
+const { readers, writers } = meshio.availableFormats();
 ```
+
+### Rendering a mesh
+
+`convertSurface` produces something a surface renderer can draw: a mesh with 3D
+cells becomes its boundary, anything else passes through, and the result is
+linearized (a triangle renderer has no mid-side nodes, so `triangle6`
+connectivity drawn verbatim is visible garbage). Boundary facets inherit their
+owning cell's data, so a per-cell material or tag still colours correctly.
+
+```js
+meshio.convertSurface("/solid.msh", "/solid.vtp");
+const vtp = meshio.FS.readFile("/solid.vtp");   // hand this to vtk.js
+```
+
+Prefer it over `readMesh` → `extractSkin` → `writeMesh` for anything headed to
+a renderer: it never materializes a JS mesh, so **multi-component (vector and
+tensor) arrays survive** — the flat JS representation cannot carry them (see
+"Known v1 limitations" below).
+
+### Applying operations first
+
+`convertSurfaceOps` takes a pipeline and applies it before extracting the
+surface — all inside C++:
+
+```js
+const report = meshio.convertSurfaceOps('/part.msh', '/part.vtp', [
+  { op: 'clean', weld: true },
+  { op: 'smooth', method: 'taubin', iterations: 20 },
+  { op: 'quality' },
+]);
+console.log(report.steps, report.warnings);
+```
+
+Prefer it over chaining the individual operation bindings (`clean`, `smooth`,
+…): each of those takes and returns a JS `Mesh`, so a pipeline built from them
+destroys every multi-component array on the first step. An **empty** pipeline
+is byte-identical to `convertSurface`, which is what lets a viewer use one code
+path for the plain and the post-operation display — and makes undo a replay of
+a shortened pipeline rather than a set of inverse operations.
+
+This is exactly what the [browser viewer](./viewer.md) does. It is built on
+this package and is worth reading as a worked example of the whole pipeline —
+worker, transferable buffers, and vtk.js — as well as being a live client-side
+format converter you can try at
+**<https://loumalouomega.github.io/meshioplusplus/viewer/>**.
 
 ## The mesh object shape
 
@@ -162,7 +210,7 @@ Some extensions are shared by more than one format. `readMesh`/`writeMesh`/ `con
 - **No zero-copy.** Every array is copied once crossing the JS/WASM boundary (see above) — for very large meshes this has a real memory/time cost that the Python bindings' numpy views avoid.
 - **No per-format write options.** Parameterized writers (binary vs ASCII, float format strings, gzip levels, VTK 4.2 vs 5.1) use a fixed default matching that format's own Python reference default (e.g. `vtu` writes binary+zlib, `stl` writes ASCII, `gmsh` writes the 4.1 binary format; `stl`/`ply` extract and write the boundary **skin** of a 3D volume mesh — the Python default, see [Skin extraction](./extract_skin.md) — and `svg`/`tikz` render 3D meshes with the default isometric camera). Per-call overrides may be added in a future release. The standalone `extractSkin` utility is not exposed to JS yet (documented follow-up).
 - **Side-channel data isn't exposed.** `ansysInp`'s `point_sets`/`cell_sets` and `openfoam`'s cell-tag family names (both carried through a C++ side-channel struct alongside the `Mesh`, mirroring the Python bindings' `AnsysInfo`/`OpenFoamInfo`) are not yet surfaced to JS — reading/writing the mesh geometry and data itself works, but these format-specific extras are dropped for now.
-- **No multi-component data arrays.** `point_data`/`cell_data`/`field_data` cross the boundary as flat, shapeless `Float64Array`s (see "The mesh object shape" above) — there is no field carrying a per-array component count, so a 3-component vector or a 3×3 tensor is indistinguishable from N unrelated scalars on the way in. Every array, including through the [data operations](./data_operations.md), is therefore effectively scalar-only in the JS API; `norm(v)`-style expressions and vector/tensor-aware conditioning need the Python, C API, or Fortran bindings, all of which carry the shape.
+- **No multi-component data arrays.** `point_data`/`cell_data`/`field_data` cross the boundary as flat, shapeless `Float64Array`s (see "The mesh object shape" above) — there is no field carrying a per-array component count, so a 3-component vector or a 3×3 tensor is indistinguishable from N unrelated scalars on the way in. Every array, including through the [data operations](./data_operations.md), is therefore effectively scalar-only in the JS API; `norm(v)`-style expressions and vector/tensor-aware conditioning need the Python, C API, or Fortran bindings, all of which carry the shape. **This is why the path-based calls exist**: `convert` and `convertSurface` never build a JS mesh, so a file passing through them keeps its vector and tensor arrays intact.
 
 ## Building from source
 

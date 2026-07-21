@@ -25,6 +25,7 @@ export default defineConfig({
       { text: "Formats", link: "/formats" },
       { text: "Benchmarks", link: "/benchmarks" },
       { text: "CLI", link: "/cli" },
+      { text: "Viewer", link: "/viewer/", target: "_self" },
       { text: "API (Doxygen)", link: "/api/", target: "_self" },
     ],
 
@@ -64,6 +65,7 @@ export default defineConfig({
           { text: "Split (by criterion)", link: "/split" },
           { text: "Partitioning (N parts)", link: "/partition" },
           { text: "Geometric statistics", link: "/stats" },
+          { text: "Interactive viewer", link: "/viewer" },
           { text: "Cell conversion", link: "/convert_cells" },
           { text: "Uniform refinement", link: "/refine" },
           { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },
