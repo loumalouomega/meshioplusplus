@@ -177,6 +177,36 @@ skin = meshioplusplus.extract_skin(vol)   # triangle/quad/... surface mesh
 
 The **STL and PLY writers do this automatically** for volume meshes (pass `skin=False` for the legacy drop-volume-cells behavior), and the **SVG/TikZ writers render 3D meshes** by projecting the skin through an orthographic camera (`azimuth`/`elevation`/`roll` in degrees, default the classic CAD isometric view) with painter's-algorithm depth ordering — that is exactly how the Stanford-bunny logo above is drawn.
 
+#### Publication-quality vector figures
+
+The SVG and TikZ writers can colour each face by a data array, turning them into figures you can drop straight into a paper — resolution-independent, and with **no extra dependency**: the colormaps are built into the core.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+annotated = meshioplusplus.attach_quality(mesh)
+meshioplusplus.write(
+    "quality.svg", annotated,
+    color_by="quality:scaled_jacobian",   # or any point_data / cell_data name
+    cmap="viridis",                       # viridis / coolwarm / turbo
+    colorbar=True,
+)
+```
+
+<img alt="a bracket coloured by scaled Jacobian" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/public/images/color_by_quality.svg" width="85%">
+
+*The bundled bracket coloured by element quality — the same figure `tools/gen_doc_images.py` regenerates.*
+
+**Point data** colours a face by the mean of its corner values, **cell data** by its owning cell's value — for a volume mesh, tracked through the extracted skin's parent-cell provenance, so a per-cell material or metric lands on the right facet. Multi-component arrays reduce to a `component` or to their magnitude; `vmin`/`vmax` set the range (default: the drawn faces' finite range), and non-finite values take `nan_color`. From the command line:
+
+<!--pytest-codeblocks:skip-->
+
+```sh
+meshioplusplus convert mesh.vtu figure.svg --color-by temperature --colorbar
+```
+
+Colouring is available from Python, from C++ directly, and from both CLIs; the flat C/Fortran/WebAssembly bindings reach these writers through the shared registry and always emit the default styling.
+
 #### Surface extraction
 
 `meshioplusplus.extract_surface` is the general form of skin extraction: it picks the dimension automatically (a volume mesh → boundary faces, a 2D surface mesh → boundary edges) and can record each facet's parent cell id (`record_parent_ids=True`). See the [surface extraction docs](https://meshioplusplus.readthedocs.io) (`doc/extract_surface.md`).
