@@ -71,6 +71,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -773,6 +774,35 @@ mio_mesh* mio_clean(const mio_mesh* mesh, int weld, double atol, int remove_orph
             *cells_dropped_degenerate = r.mCellsDroppedDegenerate;
         if (cells_dropped_duplicate)
             *cells_dropped_duplicate = r.mCellsDroppedDuplicate;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, double lambda,
+                     double mu, int fix_boundary, int preserve_features, double feature_angle,
+                     int guard_inversion, int64_t* nodes_moved, double* max_displacement,
+                     int64_t* skipped_inversion) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::SmoothOptions opts;
+        // A negative lambda is the "this method's own default" sentinel and is
+        // passed through unchanged; mFrozen is deliberately not exposed here.
+        opts.mMethod = meshioplusplus::smooth_method_from_name(method ? method : "taubin");
+        opts.mIterations = iterations;
+        opts.mLambda = lambda;
+        opts.mMu = mu;
+        opts.mFixBoundary = fix_boundary != 0;
+        opts.mPreserveFeatures = preserve_features != 0;
+        opts.mFeatureAngleDeg = feature_angle;
+        opts.mGuardInversion = guard_inversion != 0;
+        meshioplusplus::SmoothResult r = meshioplusplus::smooth(mesh->mMesh, opts);
+        if (nodes_moved)
+            *nodes_moved = r.mNumNodesMoved;
+        if (max_displacement)
+            *max_displacement = r.mMaxDisplacement;
+        if (skipped_inversion)
+            *skipped_inversion = r.mNumSkippedInversion;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }
