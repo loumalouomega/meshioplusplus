@@ -48,9 +48,12 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   readerSupportsOptions: (format: string) => boolean,
  *   writeMesh: (path: string, mesh: Mesh, format?: string) => void,
  *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
+ *   convertSurface: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
+ *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean}) => {steps: object[], warnings: string[]},
  *   numNodesPerCell: () => Object<string, number>,
  *   topologicalDimension: () => Object<string, number>,
  *   meshBackend: () => string,
+ *   availableFormats: () => {readers: string[], writers: string[]},
  *   extractSurface: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
  *   extractSkin: (mesh: Mesh, linearize?: boolean) => Mesh,
  *   attachQuality: (mesh: Mesh) => Mesh,
@@ -97,9 +100,32 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
         writeMesh: (path, mesh, format = '') => Module.writeMesh(path, mesh, format),
         convert: (inPath, outPath, { inFormat = '', outFormat = '' } = {}) =>
             Module.convert(inPath, inFormat, outPath, outFormat),
+        // Like `convert`, but writes a renderable *surface*: a volume mesh
+        // becomes its boundary, everything else passes through, and the result
+        // is linearized. Prefer this over readMesh -> extractSkin -> writeMesh
+        // for anything headed to a renderer: it stays inside C++, so
+        // multi-component data survives, which the flat JS mesh cannot carry.
+        convertSurface: (inPath, outPath, { inFormat = '', outFormat = '' } = {}) =>
+            Module.convertSurface(inPath, inFormat, outPath, outFormat),
+        // Like `convertSurface`, but applies a pipeline of mesh operations
+        // first -- entirely inside C++, so multi-component data survives them.
+        // An empty pipeline is exactly `convertSurface`, which is what lets a
+        // caller use one code path for both the plain and the post-operation
+        // display, and what makes undo a replay rather than an inverse.
+        convertSurfaceOps: (
+            inPath,
+            outPath,
+            ops = [],
+            { inFormat = '', outFormat = '', keepProvenance = false } = {}
+        ) =>
+            Module.convertSurfaceOps(inPath, inFormat, outPath, outFormat, ops, keepProvenance),
         numNodesPerCell: () => Module.numNodesPerCell(),
         topologicalDimension: () => Module.topologicalDimension(),
         meshBackend: () => Module.meshBackend(),
+        // What this build can actually read/write, both sorted. Prefer this
+        // over a hardcoded table: the wasm build has no HDF5/netCDF formats,
+        // and a few formats are read-only (openfoam) or write-only (svg/tikz).
+        availableFormats: () => Module.availableFormats(),
         // Mesh operations (see doc/*.md per operation): computations ON a mesh,
         // not file formats. Index maps (crop/split/convertCells) are not carried
         // across the JS boundary -- use the record*Ids flags instead.

@@ -42,6 +42,94 @@ export interface ConvertOptions {
   outFormat?: string;
 }
 
+/** One cell block's shape, as reported by {@link MeshioPlusPlusModule.readMetadata}. */
+export interface MeshMetadataCellBlock {
+  /** meshio++ cell type name, e.g. `"triangle"`, `"tetra10"`. */
+  type: string;
+  numCells: number;
+  /** 0 for a ragged block, whose rows have no single node count. */
+  nodesPerCell: number;
+  ragged: boolean;
+}
+
+/**
+ * A file's shape without its heavy arrays -- the result of `readMetadata`.
+ *
+ * `bboxMin`/`bboxMax` are **omitted** rather than null when no bounding box was
+ * computed, so "not computed" cannot be misread as a box at the origin.
+ */
+export interface MeshMetadata {
+  numPoints: number;
+  pointDim: number;
+  /** Total across every block. */
+  numCells: number;
+  cellBlocks: MeshMetadataCellBlock[];
+  pointDataNames: string[];
+  cellDataNames: string[];
+  fieldDataNames: string[];
+  /** The format that was actually used, whether given or inferred/sniffed. */
+  format: string;
+  /**
+   * True when the format has no header-only path and the file had to be read
+   * whole. The summary is still correct, just not cheap.
+   */
+  fellBackToFullRead: boolean;
+  bboxMin?: number[];
+  bboxMax?: number[];
+}
+
+/**
+ * One operation in a {@link MeshioPlusPlusModule.convertSurfaceOps} pipeline.
+ *
+ * Parameters are optional and fall back to the same defaults the Python API
+ * uses; only `op` is required.
+ */
+export type OpSpec =
+  | { op: 'quality' }
+  | {
+      op: 'clean';
+      weld?: boolean;
+      atol?: number;
+      removeOrphans?: boolean;
+      dropDegenerate?: boolean;
+      dropDuplicateCells?: boolean;
+    }
+  | {
+      op: 'smooth';
+      method?: SmoothMethod;
+      iterations?: number;
+      /** Negative means "this method's own default" (0.5 Laplacian, 0.33 Taubin). */
+      lambda?: number;
+      mu?: number;
+      fixBoundary?: boolean;
+    }
+  | { op: 'refine'; levels?: number }
+  | {
+      /** Attaches the assignment as `partition:part` cell data. */
+      op: 'partition';
+      nparts?: number;
+      method?: PartitionMethod;
+    }
+  | {
+      /**
+       * Cut cells away on one side of a plane, in **world** coordinates.
+       *
+       * `mode: "all"` keeps only cells lying entirely on the keep side, so the
+       * cut follows element faces rather than being flat — re-skinning then
+       * exposes a genuine, solid, correctly-coloured section.
+       */
+      op: 'section';
+      point: number[];
+      normal: number[];
+      mode?: CropMode;
+    };
+
+/** Per-operation counters and caveats from a pipeline run. */
+export interface OpReport {
+  steps: ({ op: OpSpec['op'] } & Record<string, number | string>)[];
+  warnings: string[];
+}
+
 /** One data array's location: `point_data`, `cell_data`, or `field_data`. */
 export type DataLocation = 'point' | 'cell' | 'field';
 
@@ -174,6 +262,50 @@ export interface MeshioPlusPlusModule {
    */
   convert(inPath: string, outPath: string, options?: ConvertOptions): void;
 
+  /**
+   * Like {@link convert}, but writes a *renderable surface*: a mesh with
+   * skinnable 3D cells becomes its boundary, anything else passes through, and
+   * the result is linearized (a triangle renderer has no concept of a mid-side
+   * node, so `triangle6` connectivity drawn verbatim is visible garbage).
+   *
+   * Prefer this over `readMesh` -> `extractSkin` -> `writeMesh` for anything
+   * headed to a renderer. It never materializes a JS {@link Mesh}, so
+   * multi-component (vector/tensor) arrays survive -- the flat JS
+   * representation cannot carry them.
+   */
+  convertSurface(inPath: string, outPath: string, options?: ConvertOptions): void;
+
+  /**
+   * Like {@link convertSurface}, but applies a pipeline of mesh operations
+   * first — all inside C++.
+   *
+   * Chaining the individual operation bindings (`smooth`, `clean`, …) would
+   * route the mesh through the flat JS {@link Mesh} on every step and so
+   * destroy every multi-component array; nothing crosses the boundary here.
+   *
+   * An **empty** pipeline is exactly {@link convertSurface}. That is
+   * deliberate: one call serves both the plain and the post-operation display,
+   * so they cannot drift, and undo becomes a replay of a shortened pipeline
+   * rather than a set of inverse operations.
+   *
+   * Operations run on the **full-dimensional** mesh, before the boundary is
+   * extracted — smoothing a solid is not the same as smoothing its skin.
+   *
+   * @throws {Error} on an unknown operation name or an unreadable file.
+   */
+  convertSurfaceOps(
+    inPath: string,
+    outPath: string,
+    ops?: OpSpec[],
+    options?: ConvertOptions & {
+      /**
+       * Keep the `surface:parent_cell` provenance array in the output. A
+       * picker needs it; a colour-by menu must filter it out.
+       */
+      keepProvenance?: boolean;
+    }
+  ): OpReport;
+
   /** The shared cell-type -> node-count table (e.g. `{triangle: 3, tetra: 4, ...}`). */
   numNodesPerCell(): Record<string, number>;
 
@@ -182,6 +314,16 @@ export interface MeshioPlusPlusModule {
 
   /** The mesh backend this build was compiled with ("meshio"/"native"/"kratos"). */
   meshBackend(): string;
+
+  /**
+   * The format names this build can actually read and write, both sorted.
+   *
+   * Prefer this over a hardcoded table when building a file-picker filter or a
+   * "convert to" menu: the wasm build carries no HDF5/netCDF-backed formats,
+   * and the two lists genuinely differ -- `openfoam` is read-only, `svg` and
+   * `tikz` are write-only.
+   */
+  availableFormats(): { readers: string[]; writers: string[] };
 
   /**
    * Mesh operations: computations ON a mesh (not file formats). The index maps
