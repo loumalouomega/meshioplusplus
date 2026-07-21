@@ -11,15 +11,20 @@ from . import helpers
 
 def _quad_grid(n=9):
     """An n x n regular grid of unit quads in 2D."""
-    xs, ys = np.meshgrid(np.arange(n, dtype=float), np.arange(n, dtype=float), indexing="ij")
+    xs, ys = np.meshgrid(
+        np.arange(n, dtype=float), np.arange(n, dtype=float), indexing="ij"
+    )
     points = np.column_stack([xs.ravel(), ys.ravel()])
 
     def pid(i, j):
         return i * n + j
 
     cells = np.array(
-        [[pid(i, j), pid(i + 1, j), pid(i + 1, j + 1), pid(i, j + 1)]
-         for i in range(n - 1) for j in range(n - 1)]
+        [
+            [pid(i, j), pid(i + 1, j), pid(i + 1, j + 1), pid(i, j + 1)]
+            for i in range(n - 1)
+            for j in range(n - 1)
+        ]
     )
     return mp.Mesh(points, [("quad", cells)])
 
@@ -33,9 +38,21 @@ def _hex_block(n=4):
         return (i * (n + 1) + j) * (n + 1) + k
 
     cells = np.array(
-        [[pid(i, j, k), pid(i + 1, j, k), pid(i + 1, j + 1, k), pid(i, j + 1, k),
-          pid(i, j, k + 1), pid(i + 1, j, k + 1), pid(i + 1, j + 1, k + 1), pid(i, j + 1, k + 1)]
-         for i in range(n) for j in range(n) for k in range(n)]
+        [
+            [
+                pid(i, j, k),
+                pid(i + 1, j, k),
+                pid(i + 1, j + 1, k),
+                pid(i, j + 1, k),
+                pid(i, j, k + 1),
+                pid(i + 1, j, k + 1),
+                pid(i + 1, j + 1, k + 1),
+                pid(i, j + 1, k + 1),
+            ]
+            for i in range(n)
+            for j in range(n)
+            for k in range(n)
+        ]
     )
     return mp.Mesh(points, [("hexahedron", cells)])
 
@@ -74,10 +91,22 @@ def test_taubin_does_not_shrink_where_laplacian_does():
     mesh.points[interior] += rng.normal(0, 0.18, (len(interior), 2))
     extent = np.ptp(mesh.points, axis=0)
 
-    lap = mp.smooth(mesh, method="laplacian", iterations=40, fix_boundary=False,
-                    preserve_features=False, guard_inversion=False)
-    tau = mp.smooth(mesh, method="taubin", iterations=40, fix_boundary=False,
-                    preserve_features=False, guard_inversion=False)
+    lap = mp.smooth(
+        mesh,
+        method="laplacian",
+        iterations=40,
+        fix_boundary=False,
+        preserve_features=False,
+        guard_inversion=False,
+    )
+    tau = mp.smooth(
+        mesh,
+        method="taubin",
+        iterations=40,
+        fix_boundary=False,
+        preserve_features=False,
+        guard_inversion=False,
+    )
 
     lap_keep = (np.ptp(lap.points, axis=0) / extent).mean()
     tau_keep = (np.ptp(tau.points, axis=0) / extent).mean()
@@ -134,7 +163,9 @@ def test_guard_prevents_new_inversions():
     rng = np.random.default_rng(3)
     mesh = _hex_block()
     n = 4
-    interior = [i for i in range(len(mesh.points)) if all(0 < c < n for c in mesh.points[i])]
+    interior = [
+        i for i in range(len(mesh.points)) if all(0 < c < n for c in mesh.points[i])
+    ]
     mesh.points[interior] += rng.normal(0, 0.75, (len(interior), 3))
 
     out, report = mp.smooth(mesh, iterations=15, return_report=True)
@@ -153,7 +184,9 @@ def test_guard_does_not_lock_in_pre_existing_inversions():
     rng = np.random.default_rng(3)
     mesh = _hex_block()
     n = 4
-    interior = [i for i in range(len(mesh.points)) if all(0 < c < n for c in mesh.points[i])]
+    interior = [
+        i for i in range(len(mesh.points)) if all(0 < c < n for c in mesh.points[i])
+    ]
     mesh.points[interior] += rng.normal(0, 0.75, (len(interior), 3))
     assert mp.compute_stats(mesh)["num_inverted"] > 0, "fixture must start tangled"
 
@@ -165,14 +198,19 @@ def test_quality_improves():
     rng = np.random.default_rng(3)
     mesh = _hex_block()
     n = 4
-    interior = [i for i in range(len(mesh.points)) if all(0 < c < n for c in mesh.points[i])]
+    interior = [
+        i for i in range(len(mesh.points)) if all(0 < c < n for c in mesh.points[i])
+    ]
     mesh.points[interior] += rng.normal(0, 0.35, (len(interior), 3))
 
     out = mp.smooth(mesh, iterations=20)
 
     before = mp.compute_quality(mesh)["metrics"]
     after = mp.compute_quality(out)["metrics"]
-    assert after["quality:scaled_jacobian"]["min"] > before["quality:scaled_jacobian"]["min"]
+    assert (
+        after["quality:scaled_jacobian"]["min"]
+        > before["quality:scaled_jacobian"]["min"]
+    )
     assert after["quality:skewness"]["mean"] < before["quality:skewness"]["mean"]
 
 
@@ -186,7 +224,9 @@ def test_smoothing_never_increases_the_inverted_count():
     for sigma in (0.1, 0.3, 0.5):
         mesh = _hex_block()
         n = 4
-        interior = [i for i in range(len(mesh.points)) if all(0 < c < n for c in mesh.points[i])]
+        interior = [
+            i for i in range(len(mesh.points)) if all(0 < c < n for c in mesh.points[i])
+        ]
         mesh.points[interior] += rng.normal(0, sigma, (len(interior), 3))
         before = mp.compute_stats(mesh)["num_inverted"]
         after = mp.compute_stats(mp.smooth(mesh, iterations=10))["num_inverted"]
@@ -224,7 +264,9 @@ def test_unknown_point_set_name_raises():
 
 def test_higher_order_cells_are_pinned_not_distorted():
     """A block with no known edge topology holds still rather than being guessed."""
-    points = np.array([[0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    points = np.array(
+        [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+    )
     mesh = mp.Mesh(points, [("triangle6", np.array([[0, 1, 2, 3, 4, 5]]))])
     out = mp.smooth(mesh, iterations=10, guard_inversion=False)
     assert np.array_equal(out.points, mesh.points)
@@ -275,8 +317,9 @@ def test_cpp_matches_python(method, lam):
     got = _core.smooth(mesh, method, 6, lam, -0.34, True, True, 30.0, False)["mesh"]
     ref, _ = _smooth_py(mesh, method, 6, lam, -0.34, True, True, 30.0, False)
 
-    np.testing.assert_allclose(np.asarray(got.points), np.asarray(ref.points),
-                               rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(
+        np.asarray(got.points), np.asarray(ref.points), rtol=1e-9, atol=1e-12
+    )
 
 
 def test_repeated_runs_are_byte_identical():
