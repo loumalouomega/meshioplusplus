@@ -94,4 +94,35 @@ bool has_surface_extractable_cells(const Mesh& rMesh);
  */
 void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface);
 
+namespace detail {
+
+/**
+ * @brief The shared core of `extract_surface` and `extract_skin`, with the
+ *        `linearize` and `recordParentIds` flags exposed orthogonally.
+ *
+ * The two public entry points each pin one of the flags -- `extract_surface`
+ * always keeps the input order (`linearize=false`) and `extract_skin` never
+ * records provenance -- so neither can produce a *linearized* boundary that
+ * still says which cell each facet came from. The SVG/TikZ writers need
+ * exactly that combination to colour a projected volume mesh by cell data.
+ *
+ * This is deliberately not part of the stable API: `extract_surface` and
+ * `extract_skin` are bound flat into the C, Fortran and WASM surfaces, and no
+ * binding consumer needs the combination, so widening those signatures would
+ * cost four ABIs to serve one internal caller.
+ *
+ * @param rMesh the mesh to extract the boundary of
+ * @param forceFaceMode true selects volume-only face mode (`extract_skin`);
+ *        false auto-selects faces or edges by the mesh's max dimension
+ * @param linearize when true, emit linear facets for higher-order input
+ * @param recordParentIds when true, attach `"surface:parent_cell"` (see
+ *        `extract_surface`)
+ * @param pOpName the caller's name, used in error and warning messages
+ * @return a new mesh holding the boundary facets
+ */
+Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool recordParentIds,
+                     const char* pOpName);
+
+}  // namespace detail
+
 }  // namespace meshioplusplus
