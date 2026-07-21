@@ -8,6 +8,41 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.7.0 (2026-07-21)
+
+A new dependency-free mesh operation that improves element *shape* in place — the
+counterpart to `quality`, which only measures it, and the complement to `refine`, which
+changes resolution without changing shape.
+
+- **`smooth` — relax point coordinates toward their edge-neighbour centroids.** A pure
+  coordinate move: connectivity, `cell_data`, `field_data` and `point_data` values all pass
+  through unchanged, and the points array keeps its input dtype.
+  - Two operators. **Laplacian** (`x <- x + lambda*L(x)`) smooths strongly but shrinks;
+    **Taubin** alternates a `+lambda` pass with a larger `-mu` pass and does not, which is
+    why it is the default. On a jittered 8x8 quad grid over 40 iterations, Laplacian
+    contracts the bounding box by 57% where Taubin contracts it by 3.6%.
+  - The neighbour graph is **edge** adjacency, not the element clique, so a structured
+    hexahedron block is a fixed point rather than being bevelled toward a sphere.
+  - Boundary nodes are pinned by default (`fix_boundary`), as are geometric corners and
+    creases (`preserve_features`, `feature_angle_deg`, default 30°), nodes named in an
+    optional `frozen` mask, and nodes of blocks whose edge topology is unknown — the
+    higher-order family, the VTK-Lagrange types and `custom` — since an unknown
+    neighbourhood gives no defined smoothing target.
+  - An **inversion guard** (on by default) rejects any move that would turn a valid cell
+    inverted, counting the rejections. It is "do no harm", not "preserve the sign": a cell
+    that arrives already inverted imposes no constraint, so smoothing can still repair a
+    tangled region rather than locking the tangle in.
+  - Deterministic by construction: Jacobi updates from the previous pass's positions,
+    neighbour sums in ascending node id, no hashing or sorting in the update loop, and the
+    boundary set built with `surface.cpp`'s serial-dedup phase split. Output is
+    byte-identical across the MESHIO/NATIVE/KRATOS backends and across thread counts.
+  - On every surface: Python `smooth`, C API `mio_smooth` (plain mesh plus nullable counter
+    out-params, like `mio_clean`), Fortran `m%smooth`, WASM `smooth`, and a `smooth` verb in
+    both CLIs.
+- **Internal:** the node-adjacency CSR moves to `detail/node_adjacency.hpp` with a
+  `Clique | Edge` kind and is now shared with `reorder`, which keeps `Clique` and whose
+  output is unchanged.
+
 ## v7.6.0 (2026-07-20)
 
 A new mesh operation for domain decomposition, plus the repo's first optional
