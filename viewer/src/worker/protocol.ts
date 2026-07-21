@@ -1,0 +1,194 @@
+/**
+ * The worker contract, imported by **both** halves.
+ *
+ * Before the TypeScript migration this was a convention held together by
+ * comments in two files; now a mismatch between what the client sends and what
+ * the worker handles is a compile error.
+ *
+ * ## Why operations are a *pipeline*, not a sequence of mutations
+ *
+ * Every mesh operation in the WASM API takes and returns a JS `Mesh`, whose
+ * flat representation cannot carry multi-component (vector/tensor) arrays. So
+ * applying an operation through that API would silently destroy exactly the
+ * data the display path goes out of its way to preserve.
+ *
+ * Instead the worker keeps the **original file bytes** staged for the life of
+ * the session and replays the whole pipeline in C++ on every change, through
+ * one `convertSurfaceOps` call. Three consequences, all good:
+ *
+ * - nothing is ever lost, because no mesh crosses the JS boundary;
+ * - **undo is exact** — pop the last op and replay from pristine bytes, with
+ *   no inverse operations and no snapshots;
+ * - the display path and the post-operation display path are literally the
+ *   same call, so they cannot drift.
+ */
+
+import type { Vector3 } from '../types';
+
+/** One operation in the pipeline. */
+export type OpSpec =
+    | {
+          op: 'quality';
+      }
+    | {
+          op: 'clean';
+          weld: boolean;
+          atol: number;
+          removeOrphans: boolean;
+          dropDegenerate: boolean;
+          dropDuplicateCells: boolean;
+      }
+    | {
+          op: 'smooth';
+          method: 'laplacian' | 'taubin';
+          iterations: number;
+          lambda: number;
+          mu: number;
+          fixBoundary: boolean;
+      }
+    | {
+          op: 'refine';
+          levels: number;
+      }
+    | {
+          op: 'partition';
+          nparts: number;
+          method: 'auto' | 'sfc' | 'kahip';
+      }
+    | {
+          /**
+           * Cut cells away on one side of a plane.
+           *
+           * Stored in **world** coordinates rather than as a normalized slider
+           * position, so the section stays where the user put it even if an
+           * earlier operation changes the mesh's extent.
+           */
+          op: 'section';
+          point: Vector3;
+          normal: Vector3;
+          mode: 'all' | 'any';
+      };
+
+export type OpName = OpSpec['op'];
+
+/** Per-operation counters the C++ side reports back. */
+export interface OpStepReport {
+    op: OpName;
+    [counter: string]: number | string;
+}
+
+export interface OpReport {
+    steps: OpStepReport[];
+    /** Caveats authored in C++ — never guessed at in the UI. */
+    warnings: string[];
+}
+
+/** A cheap summary of the file, from `readMetadata`. */
+export interface MeshMeta {
+    numPoints: number;
+    numCells: number;
+    format: string;
+    cellBlocks: { type: string; numCells: number }[];
+    pointDataNames: string[];
+    cellDataNames: string[];
+    bboxMin?: number[];
+    bboxMax?: number[];
+}
+
+/**
+ * `Omit` collapses a union to its common keys, which would erase every
+ * request's own payload. Distributing over the union keeps them.
+ */
+export type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+    ? Omit<T, K>
+    : never;
+
+export type Request =
+    | { id: number; type: 'init' }
+    | { id: number; type: 'open'; name: string; bytes: ArrayBuffer }
+    | { id: number; type: 'apply'; ops: OpSpec[] }
+    | { id: number; type: 'convert'; outFormat: string; ops: OpSpec[] }
+    | { id: number; type: 'close' };
+
+export interface InitResult {
+    formats: { readers: string[]; writers: string[] };
+    backend: string;
+}
+
+export interface RenderResult {
+    vtp: ArrayBuffer;
+    meta: MeshMeta;
+    format: string;
+    report: OpReport;
+    /** World-space bounds of the *original* mesh, for the section slider. */
+    bounds: { min: Vector3; max: Vector3 } | null;
+}
+
+export interface ConvertResult {
+    bytes: ArrayBuffer;
+    outFormat: string;
+}
+
+export type Response =
+    | { id: number; type: 'progress'; stage: string }
+    | ({ id: number; type: 'result' } & (
+          | ({ kind: 'init' } & InitResult)
+          | ({ kind: 'render' } & RenderResult)
+          | ({ kind: 'convert' } & ConvertResult)
+          | { kind: 'closed' }
+      ))
+    | { id: number; type: 'error'; message: string };
+
+/** Sensible starting parameters for each operation, used by the panel. */
+export const OP_DEFAULTS: { [K in OpName]: Extract<OpSpec, { op: K }> } = {
+    quality: { op: 'quality' },
+    clean: {
+        op: 'clean',
+        weld: false,
+        atol: 1e-8,
+        removeOrphans: true,
+        dropDegenerate: true,
+        dropDuplicateCells: true,
+    },
+    smooth: {
+        op: 'smooth',
+        method: 'taubin',
+        iterations: 20,
+        // Negative means "this method's own default" on the C++ side, which is
+        // 0.33 for Taubin and 0.5 for Laplacian — genuinely different values,
+        // so the sentinel is better than picking one here.
+        lambda: -1,
+        mu: -0.34,
+        fixBoundary: true,
+    },
+    refine: { op: 'refine', levels: 1 },
+    partition: { op: 'partition', nparts: 4, method: 'auto' },
+    section: {
+        op: 'section',
+        point: [0, 0, 0],
+        normal: [0, 0, 1],
+        mode: 'all',
+    },
+};
+
+/** Human label for a pipeline chip. */
+export function describeOp(spec: OpSpec): string {
+    switch (spec.op) {
+        case 'quality':
+            return 'quality';
+        case 'clean':
+            return spec.weld ? `clean · weld ${spec.atol}` : 'clean';
+        case 'smooth':
+            return `smooth · ${spec.method} · ${spec.iterations}`;
+        case 'refine':
+            return `refine · ${spec.levels}×`;
+        case 'partition':
+            return `partition · ${spec.nparts} · ${spec.method}`;
+        case 'section': {
+            const axis = spec.normal.findIndex((v) => Math.abs(v) > 0.5);
+            const name = ['X', 'Y', 'Z'][axis] ?? '?';
+            const sign = (spec.normal[axis] ?? 1) < 0 ? '−' : '+';
+            return `section · ${sign}${name}`;
+        }
+    }
+}
