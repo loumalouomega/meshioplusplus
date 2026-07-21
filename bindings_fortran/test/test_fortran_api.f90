@@ -340,6 +340,37 @@ program test_fortran_api
         call check(st /= 0, 'convert_cells rejects an unknown mode')
     end block
 
+    ! -- smooth: relax coordinates, leaving topology and data intact --
+    block
+        type(mio_mesh) :: relaxed, bad
+        integer(int64) :: moved, skipped, n0, nc0
+        real(real64) :: max_disp
+        integer :: st
+
+        n0 = m%num_points()
+        nc0 = m%cell_block_num_cells(1)
+
+        relaxed = m%smooth('taubin', 5, nodes_moved=moved, max_displacement=max_disp, &
+                           skipped_inversion=skipped, stat=st)
+        call check(st == 0, 'smooth succeeded')
+        call check(relaxed%num_points() == n0, 'smooth preserves the point count')
+        call check(relaxed%cell_block_num_cells(1) == nc0, 'smooth preserves the cell count')
+        call check(moved >= 0_int64, 'smooth reported a node-moved count')
+        call check(max_disp >= 0.0_real64, 'smooth reported a max displacement')
+        call check(skipped >= 0_int64, 'smooth reported a skipped-inversion count')
+
+        ! The optional arguments really are optional.
+        call relaxed%free()
+        relaxed = m%smooth('laplacian', 3, stat=st)
+        call check(st == 0, 'smooth works without the optional out-args')
+
+        ! An unknown method name fails through stat rather than aborting.
+        bad = m%smooth('bogus', 1, stat=st)
+        call check(st /= 0, 'smooth rejects an unknown method')
+
+        call relaxed%free()
+    end block
+
     ! -- refine: uniform subdivision into same-type children --
     block
         type(mio_mesh) :: one, two, quadratic, bad
