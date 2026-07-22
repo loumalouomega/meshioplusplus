@@ -21,6 +21,7 @@ from . import (
     _quality,
     _refine,
     _reorder,
+    _slice,
     _smooth,
     _split,
     _stats,
@@ -125,6 +126,13 @@ def main(argv=None):
     )
     _crop.add_args(parser)
     parser.set_defaults(func=_crop.crop_cmd)
+
+    parser = subparsers.add_parser(
+        "slice",
+        help="Planar cross-section of a mesh (volume -> surface, surface -> lines)",
+    )
+    _slice.add_args(parser)
+    parser.set_defaults(func=_slice.slice_cmd)
 
     parser = subparsers.add_parser(
         "split",
