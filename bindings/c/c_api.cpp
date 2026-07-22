@@ -65,6 +65,7 @@
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -113,6 +114,16 @@ struct mio_refine_result {
     mio_mesh mMesh;  // owns the refined mesh; borrowed via _result_mesh
     meshioplusplus::NDArray mPointMap;
     std::vector<meshioplusplus::NDArray> mCellMaps;
+};
+
+struct mio_decimate_result {
+    mio_mesh mMesh;  // owns the decimated mesh; borrowed via _result_mesh
+    meshioplusplus::NDArray mPointMap;
+    std::vector<meshioplusplus::NDArray> mCellMaps;
+    int64_t mFacesRemoved = 0;
+    int64_t mPointsRemoved = 0;
+    int64_t mCollapsesRejected = 0;
+    double mMaxErrorApplied = 0.0;
 };
 
 struct mio_partition_result {
@@ -1106,6 +1117,128 @@ mio_status mio_refine_result_cell_map(const mio_refine_result* result, int64_t b
 }
 
 void mio_refine_result_free(mio_refine_result* result) {
+    delete result;
+}
+
+mio_decimate_result* mio_decimate(const mio_mesh* mesh, double target_ratio, int64_t target_faces,
+                                  double max_error, const char* placement, int preserve_boundary,
+                                  int preserve_features, double feature_angle) {
+    return guarded_ptr(static_cast<mio_decimate_result*>(nullptr), [&]() -> mio_decimate_result* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::DecimateOptions options;
+        options.mTargetRatio = target_ratio;
+        options.mTargetFaces = target_faces;
+        options.mMaxError = max_error;
+        options.mPlacement =
+            meshioplusplus::decimate_placement_from_name(placement ? placement : "optimal");
+        options.mPreserveBoundary = preserve_boundary != 0;
+        options.mPreserveFeatures = preserve_features != 0;
+        options.mFeatureAngleDeg = feature_angle;
+        meshioplusplus::DecimateResult r = meshioplusplus::decimate(mesh->mMesh, options);
+        auto* out = new mio_decimate_result{};
+        out->mMesh = mio_mesh{std::move(r.mMesh)};
+        out->mPointMap = std::move(r.mPointMap);
+        out->mCellMaps = std::move(r.mCellMaps);
+        out->mFacesRemoved = r.mFacesRemoved;
+        out->mPointsRemoved = r.mPointsRemoved;
+        out->mCollapsesRejected = r.mCollapsesRejected;
+        out->mMaxErrorApplied = r.mMaxErrorApplied;
+        return out;
+    });
+}
+
+const mio_mesh* mio_decimate_result_mesh(const mio_decimate_result* result) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        return &result->mMesh;
+    });
+}
+
+mio_mesh* mio_decimate_result_take_mesh(mio_decimate_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+mio_status mio_decimate_result_point_map(const mio_decimate_result* result, const void** data,
+                                         mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        const NDArray& a = result->mPointMap;
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_decimate_result_num_cell_maps(const mio_decimate_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mCellMaps.size());
+    });
+}
+
+mio_status mio_decimate_result_cell_map(const mio_decimate_result* result, int64_t block,
+                                        const void** data, mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
+        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_decimate_result_faces_removed(const mio_decimate_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return result->mFacesRemoved;
+    });
+}
+
+int64_t mio_decimate_result_points_removed(const mio_decimate_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return result->mPointsRemoved;
+    });
+}
+
+int64_t mio_decimate_result_collapses_rejected(const mio_decimate_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return result->mCollapsesRejected;
+    });
+}
+
+double mio_decimate_result_max_error_applied(const mio_decimate_result* result) {
+    return guarded_ptr(-1.0, [&]() -> double {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return result->mMaxErrorApplied;
+    });
+}
+
+void mio_decimate_result_free(mio_decimate_result* result) {
     delete result;
 }
 
