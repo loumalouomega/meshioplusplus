@@ -1255,3 +1255,73 @@ TEST(CApi, RefineErrorsAreGuardedNotThrown) {
     mio_refine_result_free(nullptr);  // NULL-safe
     mio_mesh_free(m);
 }
+
+TEST(CApi, IsosurfaceContoursAScalarPointField) {
+    // The unit cube with f = x on its corners: the 0.5 level set is the unit
+    // square at x = 0.5, on which f reads back as exactly the isovalue.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    const std::vector<double> fx = {0, 1, 1, 0, 0, 1, 1, 0};
+    const std::int64_t shape[1] = {8};
+
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "fx", MIO_FLOAT64, 1, shape, fx.data()), MIO_OK);
+
+    const double isovalues[2] = {0.25, 0.75};
+    mio_mesh* out = mio_isosurface(m, "fx", isovalues, 1, /*component=*/-1,
+                                   /*record_parent_ids=*/1);
+    ASSERT_NE(out, nullptr);
+    ASSERT_GT(mio_mesh_num_points(out), 0);
+    ASSERT_GT(mio_mesh_num_cell_blocks(out), 0);
+
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int32_t ndim = 0;
+    std::int64_t got_shape[MIO_MAX_NDIM] = {0};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "fx", &data, &dt, &ndim, got_shape), MIO_OK);
+    ASSERT_EQ(dt, MIO_FLOAT64);
+    const double* v = static_cast<const double*>(data);
+    for (std::int64_t i = 0; i < got_shape[0]; ++i)
+        EXPECT_EQ(v[i], 0.25) << "the contoured field must be exact";
+
+    // Every contour cell is tagged with its value and its ordinal.
+    EXPECT_GT(mio_mesh_cell_data_num_blocks(out, "iso:value"), 0);
+    EXPECT_GT(mio_mesh_cell_data_num_blocks(out, "iso:index"), 0);
+    EXPECT_GT(mio_mesh_cell_data_num_blocks(out, "iso:parent_cell"), 0);
+    mio_mesh_free(out);
+
+    // Two isovalues land in one mesh.
+    mio_mesh* both = mio_isosurface(m, "fx", isovalues, 2, -1, 0);
+    ASSERT_NE(both, nullptr);
+    ASSERT_EQ(mio_mesh_get_cell_data(both, "iso:index", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_INT64);
+    mio_mesh_free(both);
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, IsosurfaceErrorsAreGuardedNotThrown) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3};
+    const std::vector<double> h = {0, 1, 1, 0};
+    const std::int64_t shape[1] = {4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 1, 4, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "h", MIO_FLOAT64, 1, shape, h.data()), MIO_OK);
+
+    const double iso[1] = {0.5};
+    // Unknown array, no isovalues, and NULL arguments: NULL + last_error, never
+    // an exception across the ABI.
+    EXPECT_EQ(mio_isosurface(m, "nope", iso, 1, -1, 0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_isosurface(m, "h", iso, 0, -1, 0), nullptr);
+    EXPECT_EQ(mio_isosurface(m, "h", iso, 1, 7, 0), nullptr);
+    EXPECT_EQ(mio_isosurface(nullptr, "h", iso, 1, -1, 0), nullptr);
+    EXPECT_EQ(mio_isosurface(m, nullptr, iso, 1, -1, 0), nullptr);
+    EXPECT_EQ(mio_isosurface(m, "h", nullptr, 1, -1, 0), nullptr);
+    mio_mesh_free(m);
+}
