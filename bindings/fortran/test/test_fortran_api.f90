@@ -434,6 +434,56 @@ program test_fortran_api
         call quadratic%free()
     end block
 
+    ! -- decimate: QEM edge collapse of a surface mesh --
+    block
+        type(mio_mesh) :: fan, coarse, bad
+        integer(int64), allocatable :: pmap(:)
+        integer(int64) :: nfaces, npts, nrej
+        real(real64) :: err_applied
+        integer :: st
+        real(real64) :: fan_points(3, 5)
+        integer(int64) :: fan_conn(3, 4)
+
+        ! A 4-triangle fan around a centre vertex: the centre collapses into
+        ! the pinned boundary, leaving 2 triangles.
+        fan_points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                              1.0_real64, 0.0_real64, 0.0_real64, &
+                              1.0_real64, 1.0_real64, 0.0_real64, &
+                              0.0_real64, 1.0_real64, 0.0_real64, &
+                              0.5_real64, 0.5_real64, 0.0_real64], [3, 5])
+        fan_conn = reshape([1_int64, 2_int64, 5_int64, &
+                            2_int64, 3_int64, 5_int64, &
+                            3_int64, 4_int64, 5_int64, &
+                            4_int64, 1_int64, 5_int64], [3, 4])
+        call fan%create()
+        call fan%set_points(fan_points)
+        call fan%add_cell_block('triangle', fan_conn)
+
+        coarse = fan%decimate(target_faces=1_int64, faces_removed=nfaces, &
+                              points_removed=npts, collapses_rejected=nrej, &
+                              max_error_applied=err_applied, point_map=pmap, stat=st)
+        call check(st == 0, 'decimate succeeded')
+        call check(coarse%cell_block_num_cells(1) == 2_int64, &
+                   'decimate collapsed the fan to 2 triangles')
+        call check(nfaces == 2_int64, 'decimate reported 2 faces removed')
+        call check(npts == 1_int64, 'decimate reported 1 point removed')
+        call check(nrej >= 0_int64, 'decimate reported a rejection count')
+        call check(err_applied >= 0.0_real64, 'decimate reported a max error')
+        call check(allocated(pmap) .and. size(pmap) == 5, &
+                   'decimate returned a full point map')
+        call check(all(pmap >= 1_int64), 'every point maps to a live survivor')
+
+        ! Exactly one stopping criterion is required.
+        bad = fan%decimate(stat=st)
+        call check(st /= 0, 'decimate rejects a missing criterion')
+        ! A volume mesh is out of scope by name.
+        bad = m%decimate(ratio=0.5_real64, stat=st)
+        call check(st /= 0, 'decimate rejects a volume mesh')
+
+        call coarse%free()
+        call fan%free()
+    end block
+
     ! -- partition: N balanced pieces + flat labels --
     block
         type(mio_mesh), allocatable :: pieces(:)
