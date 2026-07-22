@@ -8,6 +8,34 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.13.0 (2026-07-21)
+
+New **`interpolate`** operation — cross-mesh field transfer, the first two-mesh
+operation that moves data (diff compares, merge concatenates; neither
+resamples): sample a source mesh's data arrays onto a target mesh, returning a
+copy of the target with its geometry, connectivity, own data and sets preserved
+exactly.
+
+- `interpolate(source, target, method=, arrays=, extrapolate=, default_value=,
+  on_conflict=)`: source `point_data` sampled at the target's points,
+  `cell_data` by nearest source-cell centroid (always, whatever the method).
+  `method="nearest"` (default) copies the nearest source point's value
+  bit-for-bit (dtype-preserving); `method="barycentric"` simplexifies the
+  source first and interpolates linearly — exact on a linear field, Float64
+  output, with `default_value`/`extrapolate` covering target points outside the
+  source domain. `on_conflict` is `error`/`overwrite`/`suffix` (`name +
+  "_interp"`). Output is byte-identical across the three mesh backends, thread
+  counts, and the C++-core/numpy-fallback boundary.
+- Exposed on every surface: pybind `_core` + the numpy fallback, C API
+  `mio_interpolate` (arrays as `char**` + count, `NULL`/`<= 0` = all
+  point_data), Fortran module-level `mio_interpolate`, WASM `interpolate`, and
+  the `interpolate SOURCE TARGET OUT` verb in both CLIs.
+- New shared `detail/spatial_hash.hpp`: merge's weld bucket grid hoisted
+  verbatim (merge's output stays byte-identical) and extended with the
+  expanding-shell / box-insert queries interpolate needs.
+- Docs: new `doc/interpolate.md`, CLI reference entry, README "Field transfer"
+  section, and a notebook demo (`example/03_mesh_operations.ipynb`).
+
 ## v7.12.0 (2026-07-21)
 
 The OFF reader/writer (C++ core and Python reference) gain **quad and polygon
