@@ -173,6 +173,7 @@ module meshioplusplus
         procedure :: crop_bbox => mesh_crop_bbox
         procedure :: crop_plane => mesh_crop_plane
         procedure :: slice => mesh_slice
+        procedure :: isosurface => mesh_isosurface
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: refine => mesh_refine
@@ -500,6 +501,17 @@ module meshioplusplus
             type(c_ptr), value :: h
             real(c_double), intent(in) :: origin(*), normal(*)
             integer(c_int), value :: record_parent_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_isosurface(h, array_name, isovalues, n_isovalues, component, &
+                                  record_parent_ids) &
+                bind(c, name="mio_isosurface") result(r)
+            import :: c_ptr, c_int, c_double, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: array_name
+            real(c_double), intent(in) :: isovalues(*)
+            integer(c_int), value :: n_isovalues, component, record_parent_ids
             type(c_ptr) :: r
         end function
 
@@ -1803,6 +1815,45 @@ contains
                                  real(normal, c_double), crec)
         if (.not. c_associated(out%handle)) then
             call handle_failure('slice', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Isosurfaces / contours: the level set of the scalar point_data array
+    !> `array` at each of `isovalues`, one topological dimension below the cut
+    !> cells (a volume mesh -> a triangle/quad surface, a 2D surface -> a line
+    !> mesh). The data-driven sibling of `slice`, sharing its marching-tetrahedra
+    !> cutter, so contours are watertight; faces are wound toward increasing
+    !> field. `array` must be point_data -- cell_data is piecewise constant and
+    !> has no level set (convert it with data_cell_to_point first). All contours
+    !> land in the one result, tagged per cell with a Float64 iso:value and an
+    !> Int64 iso:index (the ordinal, which is the integer tag `split` needs).
+    !> `component` (default -1) picks a component of a multi-component array,
+    !> negative meaning the row magnitude. `record_parent_ids` (default .false.)
+    !> attaches an iso:parent_cell cell_data array.
+    function mesh_isosurface(self, array, isovalues, component, record_parent_ids, &
+                             stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        real(real64), intent(in) :: isovalues(:)
+        integer, intent(in), optional :: component
+        logical, intent(in), optional :: record_parent_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: ccomp, crec
+        ccomp = -1_c_int
+        if (present(component)) ccomp = int(component, c_int)
+        crec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) crec = 1
+        end if
+        out%handle = c_mio_isosurface(self%handle, c_str(array), &
+                                      real(isovalues, c_double), &
+                                      int(size(isovalues), c_int), ccomp, crec)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('isosurface', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

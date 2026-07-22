@@ -574,6 +574,37 @@ MIO_API mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const do
                             int record_parent_ids);
 
 /**
+ * Isosurfaces / contours: the level set of a scalar point_data field, one
+ * topological dimension below the cut cells (a volume mesh yields a
+ * triangle/quad surface, a 2D surface mesh a line mesh). The data-driven
+ * sibling of mio_slice, sharing its marching-tetrahedra cutter: crossing points
+ * on shared edges are deduped so contours are watertight, faces are wound toward
+ * increasing field, and a node exactly at the isovalue counts as being on the
+ * positive side (so a plateau emits its boundary once, not twice).
+ *
+ * The field must be point_data: cell_data is piecewise constant and has no level
+ * set, so naming one fails -- convert it with mio_data_cell_to_point first.
+ * All contours land in the one returned mesh, tagged per cell with a Float64
+ * "iso:value" and an Int64 "iso:index" (the ordinal in the ascending isovalue
+ * list, which is the integer tag mio_split's "tag" criterion needs).
+ * @param array_name        the point_data array to contour.
+ * @param isovalues         the level values (n_isovalues doubles); sorted
+ *                          ascending and de-duplicated before cutting.
+ * @param n_isovalues       how many, at least one.
+ * @param component         component of a multi-component array to contour;
+ *                          negative for the row magnitude (in which case the
+ *                          contoured value is approximate, not exact).
+ * @param record_parent_ids nonzero to attach an Int64 "iso:parent_cell"
+ *                          cell_data array (per contour cell, the global input
+ *                          cell it was cut from).
+ * @return the contour mesh (free with mio_mesh_free), empty when no isovalue
+ *         crosses the field, or NULL on failure.
+ */
+MIO_API mio_mesh* mio_isosurface(const mio_mesh* mesh, const char* array_name,
+                                 const double* isovalues, int n_isovalues, int component,
+                                 int record_parent_ids);
+
+/**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).
  * @param mesh       input mesh.
  * @param lo         box lower corner (3 doubles).

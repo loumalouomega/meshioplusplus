@@ -71,6 +71,7 @@ export default defineConfig({
           { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },
           { text: "Interpolation (field transfer)", link: "/interpolate" },
           { text: "Slicing / cross-sections", link: "/slice" },
+          { text: "Isosurfaces / contours", link: "/isosurface" },
           { text: "Data operations", link: "/data_operations" },
           { text: "· Array management", link: "/data_manage" },
           { text: "· Location averaging", link: "/data_average" },

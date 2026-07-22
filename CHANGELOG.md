@@ -8,6 +8,64 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.15.0 (2026-07-22)
+
+New **`isosurface`** operation — the level set of a scalar field: the locus where
+a `point_data` array equals a given isovalue, as a mesh one topological dimension
+below the cut cells (a 3D volume mesh yields a `triangle`/`quad` surface, a 2D
+surface mesh a `line` contour). This is the **data-driven sibling of `slice`**:
+slice cuts where `dot(x - origin, normal) = 0`, isosurface where
+`f(x) - isovalue = 0`.
+
+- `isosurface(mesh, array, isovalues, component=, record_parent_ids=)`: the field
+  must be `point_data` — `cell_data` is piecewise constant, so there is no
+  crossing to locate and no level set to draw; naming one raises, pointing at
+  `cell_data_to_point_data` (`meshioplusplus data to-point`) as the fix. A
+  multi-component array reduces to `component`, or to the row magnitude when that
+  is unset.
+- **Several isovalues land in one mesh**, cut in ascending order (sorted, exact
+  duplicates dropped) and concatenated with the section blocks merged by cell
+  type, so a single-isovalue call has exactly slice's block structure. Each
+  contour cell carries a Float64 `iso:value` (the level) and an Int64
+  `iso:index` (its ordinal) — the latter because `split`'s tag criterion needs an
+  integer array, which makes `split --by region --tag iso:index` the
+  one-mesh-per-contour recipe.
+- **The contoured field reads back as exactly the isovalue** on the cut points;
+  every other `point_data` array is interpolated at the crossing (Float64, exact
+  for a linear field). The exception is a magnitude-reduced multi-component
+  array, where `|lerp(v)| != lerp(|v|)` mathematically and the value stays
+  approximate.
+- Degeneracy rule, uniform with slice: a node whose value is exactly the isovalue
+  counts as being on the **positive** side, so a plateau lying at the isovalue
+  emits its boundary once, not twice. Contours are watertight (crossings on
+  shared edges dedupe to one node) and wound toward increasing field. An isovalue
+  outside the field's range is an empty contour, not an error.
+- `record_parent_ids` attaches an Int64 `iso:parent_cell`; each contour cell
+  inherits its parent's `cell_data`. Contour points are all new, so
+  `point_sets`/`cell_sets` are not carried.
+- Output is byte-identical across the three mesh backends, thread counts and the
+  C++/numpy boundary. Exposed on every binding surface (pybind `_core`, C API
+  `mio_isosurface`, Fortran `m%isosurface`, WASM `isosurface`), as the CLI verb
+  `isosurface IN OUT --array NAME --values v1,v2 [--component I]
+  [--record-parent-ids]` in both CLIs, and as an operation chip in the browser
+  viewer. Docs: [`doc/isosurface.md`](doc/isosurface.md).
+
+Fixed: `src/viewer/package-lock.json` recorded `@meshioplusplus/wasm@7.10.0`
+while the package itself was at 7.14.0, which makes `npm ci` hard-fail
+(`does not satisfy`) and so broke the viewer jobs in `ci.yml` and `docs.yml`.
+The lock's `"../wasm"` version is now part of the version bump — see the
+"Version bumps" section of `CLAUDE.md`.
+
+Internal, **no behaviour change**: slice's marching-tetrahedra cutter — the
+simplexify, the sign-mask case table, the watertight edge dedup, the winding, the
+degeneracy rule and the `point_data`/`cell_data` carry — was hoisted verbatim out
+of `operations/slice.cpp` into the shared `detail/marching.hpp` (and out of
+`_slice.py` into `_marching.py`), the way `spatial_hash.hpp` was hoisted from
+merge in v7.13.0 and `space_filling.hpp` from reorder in v7.6.0. Slice's output is
+byte-identical across the hoist and its test suites are unchanged; the only
+parameterized rule is the winding, which slice resolves against its fixed plane
+normal and isosurface against the local field gradient.
+
 ## v7.14.0 (2026-07-22)
 
 New **`slice`** operation — the planar cross-section of a mesh: the actual

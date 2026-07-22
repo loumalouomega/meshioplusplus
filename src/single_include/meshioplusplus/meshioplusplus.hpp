@@ -4905,6 +4905,271 @@ struct SilenceErrors {
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/convert_cells.hpp =====
+/**
+ * @file operations/convert_cells.hpp
+ * @brief Dependency-free conversion of a mesh's *element representation*: drop
+ * higher-order nodes, decompose cells into simplices, or promote linear cells
+ * to serendipity quadratic ones.
+ *
+ *  - **Linearize**: every higher-order cell becomes its linear base
+ *    (`tetra10` -> `tetra`, `hexahedron27` -> `hexahedron`, ...). Corner
+ *    connectivity is kept verbatim; nodes that no cell references any more are
+ *    pruned and the connectivity / `point_data` remapped. Cell count is
+ *    unchanged, so `cell_data` passes straight through.
+ *  - **Simplexify**: every cell is decomposed into simplices of the *same*
+ *    topological dimension (quad -> 2 triangles, polygon(n) -> (n-2)-triangle
+ *    fan, hexahedron -> 6 tetra, wedge -> 3 tetra, pyramid -> 2 tetra). Points
+ *    are untouched -- the children reuse the parent's own corner nodes -- and
+ *    each parent's `cell_data` row is replicated to its children. Higher-order
+ *    input is linearized first.
+ *  - **Elevate**: linear cells are promoted to their serendipity (edge-only)
+ *    quadratic counterpart (`triangle` -> `triangle6`, `hexahedron` ->
+ *    `hexahedron20`, ...), creating one new node per unique edge at the edge
+ *    midpoint with `point_data` set to the mean of the edge's endpoints. Cell
+ *    count is unchanged; point count grows.
+ *
+ * All three modes are **idempotent on cells they do not apply to**: a linear
+ * block passes through Linearize unchanged, an already-simplex block passes
+ * through Simplexify unchanged, and an already-quadratic block passes through
+ * Elevate unchanged. That is what makes the operation safe on a mixed-order
+ * mesh. Only genuinely unsupported constructs throw: a polyhedron block cannot
+ * be simplexified, and the full-Lagrange targets that need face/body centres
+ * (`quad9`, `hexahedron27`) are an explicit non-goal of this version.
+ *
+ * **Block structure is preserved 1:1 in every mode** -- the output has exactly
+ * as many cell blocks as the input, in the same order -- which is what keeps
+ * the `cell_data` correspondence (one array per block) trivially correct under
+ * every backend.
+ *
+ * Output is deterministic: the decomposition templates are fixed, and the
+ * Elevate mid-edge numbering is assigned by a serial pass over a
+ * parallel-filled record buffer (`src/cpp/src/operations/surface.cpp`'s phase-split
+ * idiom), so results are byte-identical across mesh backends and thread counts.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format -- it is
+ * not in the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which element-representation conversion `convert_cells` performs.
+enum class ConvertCellsMode {
+    Linearize,   ///< Higher-order cells -> their linear base (drops mid nodes).
+    Simplexify,  ///< Cells -> simplices of the same topological dimension.
+    Elevate,     ///< Linear cells -> serendipity quadratic (adds mid-edge nodes).
+};
+
+/**
+ * @brief Parse a mode name into a `ConvertCellsMode`.
+ * @param rName one of `"linearize"`, `"simplexify"`, `"elevate"`.
+ * @return the matching mode.
+ * @throws std::invalid_argument on an unknown name.
+ */
+ConvertCellsMode convert_cells_mode_from_name(const std::string& rName);
+
+/// Options for `convert_cells`.
+struct ConvertCellsOptions {
+    /// The conversion to perform.
+    ConvertCellsMode mMode = ConvertCellsMode::Linearize;
+    /// Attach an Int64 `convert:parent_cell` `cell_data` array recording, per
+    /// output cell, the index of the input cell it came from *within its own
+    /// block* (blocks correspond 1:1). Mainly useful under `Simplexify`, where
+    /// several children share a parent.
+    bool mRecordParentIds = false;
+};
+
+/// The result of `convert_cells`: the converted mesh plus the index maps.
+struct ConvertCellsResult {
+    /// The converted mesh.
+    Mesh mMesh;
+    /// Int64 shape `(num_points_in,)`, input point index -> output point index
+    /// (-1 when the point was pruned, which only happens under `Linearize`).
+    NDArray mPointMap;
+    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> the
+    /// index of its **first** child in the corresponding output block. Under
+    /// `Linearize`/`Elevate` there is exactly one child per parent, so this is
+    /// the identity; under `Simplexify` a parent's children occupy the
+    /// contiguous range starting here.
+    std::vector<NDArray> mCellMaps;
+};
+
+/**
+ * @brief Convert the element representation of a mesh.
+ * @param rMesh the mesh to convert.
+ * @param rOptions the mode and flags (defaults to `Linearize`, no parent ids).
+ * @return the converted mesh plus the point/cell index maps.
+ * @throws std::invalid_argument when a block cannot be converted in the
+ *         requested mode (a polyhedron block under `Simplexify`, or a
+ *         full-Lagrange target such as `quad9`/`hexahedron27` under `Elevate`).
+ */
+ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/convert_cells.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/marching.hpp =====
+/**
+ * @file marching.hpp
+ * @brief The marching-tetrahedra cutter shared by `operations/slice.cpp` (the
+ * planar cross-section) and `operations/isosurface.cpp` (the level set of a
+ * scalar field) — hoisted verbatim from slice in v7.15.0, the way
+ * `spatial_hash.hpp` was hoisted from merge in v7.13.0 and `space_filling.hpp`
+ * from reorder in v7.6.0. Slice's output is byte-identical across the hoist.
+ *
+ * Nothing about marching tetrahedra is specific to a *plane*: the algorithm
+ * cuts wherever a **per-node signed scalar** changes sign. The two consumers
+ * differ only in how they compute that scalar — slice uses
+ * `d_i = dot(x_i - origin, normal)`, isosurface `d_i = f_i - isovalue` — and in
+ * the name of the provenance array they ask for.
+ *
+ * The cutter is deliberately **two-phase**:
+ *
+ *  - `marching_prepare(mesh)` does everything independent of the cut scalar:
+ *    `convert_cells(Simplexify)` (so every 3D cell is a tetrahedron and every
+ *    2D cell a triangle — each cell's section is then a convex, unambiguously
+ *    ordered primitive), the per-block input cell bases, and the mesh's maximum
+ *    topological dimension. The caller resolves its scalar against the
+ *    **simplexified** mesh (`Simp()`), which is what lets isosurface contour a
+ *    `point_data` array that rode through the linearization.
+ *  - `marching_cut(input, values, options)` performs one cut and returns the
+ *    section mesh. Isosurface calls it once per isovalue against the *same*
+ *    prepared input, so several contours cost one simplexification.
+ *
+ * Contracts carried over from slice verbatim, and relied upon by both:
+ *
+ *  - **Crossing** — an edge `(i,j)` is cut iff its endpoint values straddle
+ *    zero; the crossing is `x_lo + t*(x_hi - x_lo)` with
+ *    `t = d_lo/(d_lo - d_hi)` computed from the **sorted** endpoint pair, so
+ *    two simplices sharing the edge agree bit for bit.
+ *  - **Watertight** — crossings are keyed by that sorted simplexified-node pair
+ *    and deduped, so a shared edge yields exactly one output node.
+ *  - **Degeneracy** — a node whose value is exactly zero counts as *positive*
+ *    (`d >= 0`), which makes the 4-bit (tetra) / 3-bit (triangle) sign mask
+ *    total: a cut grazing a shared face is emitted by exactly one incident
+ *    simplex, never two. Primitives whose crossings collapse (area/length below
+ *    a bbox-relative tolerance) are dropped.
+ *  - **Determinism** — the cut and the node numbering are a single **serial**
+ *    first-seen sweep in a fixed (block, cell, ring-edge) order over a fixed
+ *    case table; only the coordinate/`point_data` passes are parallel. Output
+ *    is byte-identical across the three mesh backends, thread counts and the
+ *    C++/numpy boundary (`_marching.py` is the expression-for-expression twin).
+ *
+ * The one genuinely parameterized rule is the **winding** (see
+ * `MarchingOrientation`): slice orients every section face toward a fixed user
+ * direction, while an isosurface has no global direction and orients toward
+ * increasing field instead.
+ *
+ * `detail/` header: exempt from the operations layer's anon-namespace prefix
+ * rule.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief Everything the cutter needs that does not depend on the cut scalar.
+ *
+ * Owns the simplexified mesh; move it, never copy it (the KRATOS `Mesh` is not
+ * copy-constructible).
+ */
+struct MarchingInput {
+    /// The simplexified mesh plus its index maps (`convert:parent_cell` is
+    /// recorded on `mMesh`'s `cell_data`).
+    ConvertCellsResult mConvert;
+
+    /// Per simplexified block (which maps 1:1 to an input block), the global
+    /// block-major index of that input block's first cell.
+    std::vector<std::int64_t> mOrigBlockBase;
+
+    /// The maximum topological dimension present: 3 cuts tetrahedra into
+    /// triangles/quads, 2 cuts triangles into line segments, anything else
+    /// yields nothing.
+    int mMaxDim = 0;
+
+    /// The simplexified mesh the caller must resolve its scalar against.
+    const Mesh& Simp() const { return mConvert.mMesh; }
+};
+
+/// How a section primitive's winding is resolved.
+enum class MarchingOrientation {
+    /// Flip each face so its Newell normal points along `MarchingOptions`'
+    /// fixed `mDirection` — slice's rule, against the user's plane normal.
+    FixedDirection,
+
+    /// Flip each face so its Newell normal points toward **increasing field**:
+    /// the per-simplex reference direction is the centroid of the corners with
+    /// `d >= 0` minus the centroid of those with `d < 0` (both are non-empty
+    /// whenever the simplex is cut at all). No matrix solve, and exactly
+    /// reproducible in numpy — isosurface's rule.
+    FieldGradient
+};
+
+/// Options for one cut.
+struct MarchingOptions {
+    /// Name of the Int64 `cell_data` array recording, per section cell, the
+    /// global (block-major) index of the **input** cell it was cut from. Only
+    /// written when `mRecordParentIds` is set.
+    std::string mProvenanceName;
+
+    /// Whether to attach `mProvenanceName`.
+    bool mRecordParentIds = false;
+
+    /// How to wind the section faces.
+    MarchingOrientation mOrientation = MarchingOrientation::FixedDirection;
+
+    /// The reference direction for `MarchingOrientation::FixedDirection`
+    /// (ignored otherwise; need not be unit length).
+    std::array<double, 3> mDirection{{0.0, 0.0, 1.0}};
+};
+
+/**
+ * @brief Simplexifies @p rMesh and collects everything independent of the cut.
+ * @param rMesh the mesh to cut (never modified).
+ * @return the prepared input; `Simp()` is what a caller resolves its per-node
+ *         scalar against, and `Simp().NumPoints()` is the length
+ *         `marching_cut` expects of that scalar.
+ * @throws std::invalid_argument when a block cannot be simplexified (a
+ *         polyhedron block).
+ */
+MarchingInput marching_prepare(const Mesh& rMesh);
+
+/**
+ * @brief Cuts the prepared mesh where @p rNodeValues changes sign.
+ * @param rInput the prepared (simplexified) input.
+ * @param rNodeValues one signed value per point of `rInput.Simp()`; the cut is
+ *        its zero level set, with zero itself counting as positive.
+ * @param rOptions the winding rule and the provenance array name.
+ * @return a new mesh one topological dimension below the cut cells:
+ *         `triangle`/`quad` blocks (in that fixed order) for a volume mesh, a
+ *         `line` block for a 2D surface mesh, or an empty mesh when nothing is
+ *         cut. Every `point_data` array of `rInput.Simp()` is interpolated at
+ *         the crossings (promoted to Float64) and every per-cell `cell_data`
+ *         array is replicated from the parent cell; `convert:parent_cell` is
+ *         consumed rather than forwarded.
+ */
+Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeValues,
+                  const MarchingOptions& rOptions);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/marching.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
 /**
  * @file node_adjacency.hpp
@@ -9956,116 +10221,6 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/clean.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/operations/convert_cells.hpp =====
-/**
- * @file operations/convert_cells.hpp
- * @brief Dependency-free conversion of a mesh's *element representation*: drop
- * higher-order nodes, decompose cells into simplices, or promote linear cells
- * to serendipity quadratic ones.
- *
- *  - **Linearize**: every higher-order cell becomes its linear base
- *    (`tetra10` -> `tetra`, `hexahedron27` -> `hexahedron`, ...). Corner
- *    connectivity is kept verbatim; nodes that no cell references any more are
- *    pruned and the connectivity / `point_data` remapped. Cell count is
- *    unchanged, so `cell_data` passes straight through.
- *  - **Simplexify**: every cell is decomposed into simplices of the *same*
- *    topological dimension (quad -> 2 triangles, polygon(n) -> (n-2)-triangle
- *    fan, hexahedron -> 6 tetra, wedge -> 3 tetra, pyramid -> 2 tetra). Points
- *    are untouched -- the children reuse the parent's own corner nodes -- and
- *    each parent's `cell_data` row is replicated to its children. Higher-order
- *    input is linearized first.
- *  - **Elevate**: linear cells are promoted to their serendipity (edge-only)
- *    quadratic counterpart (`triangle` -> `triangle6`, `hexahedron` ->
- *    `hexahedron20`, ...), creating one new node per unique edge at the edge
- *    midpoint with `point_data` set to the mean of the edge's endpoints. Cell
- *    count is unchanged; point count grows.
- *
- * All three modes are **idempotent on cells they do not apply to**: a linear
- * block passes through Linearize unchanged, an already-simplex block passes
- * through Simplexify unchanged, and an already-quadratic block passes through
- * Elevate unchanged. That is what makes the operation safe on a mixed-order
- * mesh. Only genuinely unsupported constructs throw: a polyhedron block cannot
- * be simplexified, and the full-Lagrange targets that need face/body centres
- * (`quad9`, `hexahedron27`) are an explicit non-goal of this version.
- *
- * **Block structure is preserved 1:1 in every mode** -- the output has exactly
- * as many cell blocks as the input, in the same order -- which is what keeps
- * the `cell_data` correspondence (one array per block) trivially correct under
- * every backend.
- *
- * Output is deterministic: the decomposition templates are fixed, and the
- * Elevate mid-edge numbering is assigned by a serial pass over a
- * parallel-filled record buffer (`src/cpp/src/operations/surface.cpp`'s phase-split
- * idiom), so results are byte-identical across mesh backends and thread counts.
- *
- * Everything is standard C++ and the uniform mesh API only, so it compiles
- * under every mesh backend. This is an operation, not a file format -- it is
- * not in the format registry.
- */
-
-// System includes
-#include <cstdint>
-#include <string>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-
-/// Which element-representation conversion `convert_cells` performs.
-enum class ConvertCellsMode {
-    Linearize,   ///< Higher-order cells -> their linear base (drops mid nodes).
-    Simplexify,  ///< Cells -> simplices of the same topological dimension.
-    Elevate,     ///< Linear cells -> serendipity quadratic (adds mid-edge nodes).
-};
-
-/**
- * @brief Parse a mode name into a `ConvertCellsMode`.
- * @param rName one of `"linearize"`, `"simplexify"`, `"elevate"`.
- * @return the matching mode.
- * @throws std::invalid_argument on an unknown name.
- */
-ConvertCellsMode convert_cells_mode_from_name(const std::string& rName);
-
-/// Options for `convert_cells`.
-struct ConvertCellsOptions {
-    /// The conversion to perform.
-    ConvertCellsMode mMode = ConvertCellsMode::Linearize;
-    /// Attach an Int64 `convert:parent_cell` `cell_data` array recording, per
-    /// output cell, the index of the input cell it came from *within its own
-    /// block* (blocks correspond 1:1). Mainly useful under `Simplexify`, where
-    /// several children share a parent.
-    bool mRecordParentIds = false;
-};
-
-/// The result of `convert_cells`: the converted mesh plus the index maps.
-struct ConvertCellsResult {
-    /// The converted mesh.
-    Mesh mMesh;
-    /// Int64 shape `(num_points_in,)`, input point index -> output point index
-    /// (-1 when the point was pruned, which only happens under `Linearize`).
-    NDArray mPointMap;
-    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> the
-    /// index of its **first** child in the corresponding output block. Under
-    /// `Linearize`/`Elevate` there is exactly one child per parent, so this is
-    /// the identity; under `Simplexify` a parent's children occupy the
-    /// contiguous range starting here.
-    std::vector<NDArray> mCellMaps;
-};
-
-/**
- * @brief Convert the element representation of a mesh.
- * @param rMesh the mesh to convert.
- * @param rOptions the mode and flags (defaults to `Linearize`, no parent ids).
- * @return the converted mesh plus the point/cell index maps.
- * @throws std::invalid_argument when a block cannot be converted in the
- *         requested mode (a polyhedron block under `Simplexify`, or a
- *         full-Lagrange target such as `quad9`/`hexahedron27` under `Elevate`).
- */
-ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions = {});
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/operations/convert_cells.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/crop.hpp =====
 /**
  * @file operations/crop.hpp
@@ -10979,6 +11134,118 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/interpolate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/isosurface.hpp =====
+/**
+ * @file isosurface.hpp
+ * @brief Isosurfaces / contours: the level set of a scalar field, one
+ * topological dimension below the cut cells. This is an operation, not a file
+ * format — deliberately not in the registry — built entirely through the
+ * uniform mesh API so it compiles under every mesh backend.
+ *
+ * `isosurface(mesh, options)` returns a **new mesh** that is the locus where a
+ * `point_data` array equals each requested isovalue:
+ *
+ * - a **3D volume** mesh yields a **surface** mesh (`triangle`/`quad` faces);
+ * - a **2D surface** mesh yields a **line** mesh (contour segments).
+ *
+ * This is the **data-driven sibling of `slice`**: slice cuts where
+ * `dot(x - origin, normal) = 0`, isosurface where `f(x) - isovalue = 0`. They
+ * share one cutter — `detail/marching.hpp` — so the watertightness, winding,
+ * degeneracy and determinism guarantees below are literally the same code.
+ *
+ * **The field must be `point_data`.** `cell_data` is piecewise constant, so
+ * there is no crossing to locate inside a cell and no level set to draw;
+ * naming a `cell_data` array throws, pointing at `cell_data_to_point_data`
+ * (CLI: `meshioplusplus data to-point`) as the fix. A multi-component array
+ * reduces to `mComponent`, or to the row magnitude when that is unset.
+ *
+ * **Several isovalues land in one mesh.** They are cut in **ascending** order
+ * (sorted, exact duplicates dropped) and concatenated, with the section blocks
+ * merged by cell type in the canonical `triangle`, `quad`, `line` order, so a
+ * single-isovalue call has exactly slice's block structure. Two `cell_data`
+ * tags identify each contour: Float64 **`iso:value`** (the isovalue) and Int64
+ * **`iso:index`** (its ordinal in the ascending list). Splitting into one mesh
+ * per contour is the caller's job via `split(SplitBy::Tag, "iso:index")` (CLI
+ * `split --by region --tag iso:index`) — the tag criterion needs an integer
+ * array, which is what `iso:index` is for.
+ *
+ * **The contoured field is exactly the isovalue on the cut points.** Every
+ * other `point_data` array is interpolated at the crossing parameter
+ * `t = d_lo/(d_lo - d_hi)` (promoted to Float64, exact for a linear field); the
+ * contoured array's own value would only reach the isovalue to within round-off,
+ * so it is written exactly instead. The one exception is a multi-component array
+ * reduced by **magnitude**: `|lerp(v)| != lerp(|v|)` mathematically, not merely
+ * in floating point, so that case stays approximate and is left interpolated.
+ *
+ * Degeneracy rule (inherited, uniform with slice): a node whose value is exactly
+ * the isovalue counts as being on the **positive** side (`d >= 0`), which makes
+ * the sign mask total — a plateau lying exactly at the isovalue therefore emits
+ * its boundary **once**, not twice from both incident cells. Primitives whose
+ * crossings collapse (area/length below a bbox-relative tolerance) are dropped.
+ * Section faces are wound so their Newell normal points toward **increasing
+ * field**.
+ *
+ * An isovalue outside the field's range yields an empty contour for that value
+ * rather than an error; all values outside yields an empty mesh.
+ *
+ * Each section cell inherits its parent cell's `cell_data` row (replicated, like
+ * simplexify); with `mRecordParentIds` an Int64 `iso:parent_cell` `cell_data`
+ * array records the originating **input** cell (global, block-major over the
+ * input mesh). Section points are all new, so `point_sets`/`cell_sets`,
+ * `mesh.info` and `gmsh_periodic` are **not** carried.
+ *
+ * Output is byte-identical across the three mesh backends, thread counts and the
+ * C++/numpy boundary (`tests/test_isosurface.py::test_cpp_matches_python`).
+ */
+
+// System includes
+#include <optional>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `isosurface`.
+struct IsosurfaceOptions {
+    /// Name of the `point_data` array to contour (required).
+    std::string mArrayName;
+
+    /// The level values. At least one; sorted ascending and de-duplicated
+    /// before cutting, so contours are emitted in ascending order.
+    std::vector<double> mIsovalues;
+
+    /// Component of a multi-component array to contour; the row magnitude when
+    /// unset (in which case the exactly-the-isovalue guarantee does not apply).
+    std::optional<int> mComponent;
+
+    /// Attach an Int64 `iso:parent_cell` `cell_data` array recording, per
+    /// section cell, the global (block-major) index of the input cell it was
+    /// cut from.
+    bool mRecordParentIds = false;
+};
+
+/**
+ * @brief Computes the isosurfaces (level sets) of a scalar `point_data` field.
+ * @param rMesh the mesh to contour (never modified).
+ * @param rOptions the array name, the isovalues, the component and the
+ *        provenance flag.
+ * @return a new mesh one topological dimension below the cut cells: a
+ *         `triangle`/`quad` surface for a volume mesh, a `line` mesh for a 2D
+ *         surface mesh, or an empty mesh when no isovalue crosses the field.
+ *         Every contour cell carries a Float64 `iso:value` and an Int64
+ *         `iso:index` `cell_data` entry.
+ * @throws std::invalid_argument when the array name is empty, names a
+ *         `cell_data` array (contour a point field instead — see
+ *         `cell_data_to_point_data`) or no array at all, when `mIsovalues` is
+ *         empty or holds a non-finite value, when `mComponent` is out of range,
+ *         or when a cell block cannot be simplexified (a polyhedron block).
+ */
+Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/isosurface.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/merge.hpp =====
 /**
  * @file operations/merge.hpp
@@ -28883,6 +29150,453 @@ std::vector<std::string> group_links_crt(hid_t loc) {
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/detail/hdf5_util.cpp =====
+// ===== begin src/cpp/src/detail/marching.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// A canonical (low, high) simplexified-node pair identifying one cut edge; two
+// simplices sharing an edge produce the same key, so the crossing point is
+// deduped to one output node (the section is watertight).
+using MarchingEdgeKey = std::pair<std::int64_t, std::int64_t>;
+
+struct MarchingEdgeKeyHash {
+    std::size_t operator()(const MarchingEdgeKey& rKey) const {
+        std::size_t h = std::hash<std::int64_t>{}(rKey.first);
+        h ^= std::hash<std::int64_t>{}(rKey.second) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+// Local edges of a tetrahedron: e0=(0,1) e1=(0,2) e2=(0,3) e3=(1,2) e4=(1,3) e5=(2,3).
+constexpr std::uint8_t kTetEdge[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+
+// Local edges of a triangle: e0=(0,1) e1=(1,2) e2=(0,2).
+constexpr std::uint8_t kTriEdge[3][2] = {{0, 1}, {1, 2}, {0, 2}};
+
+// The crossing-edge ring of a cut simplex, keyed by its below-zero sign mask
+// (bit i set iff d_i < 0). The ring lists local edge indices in cyclic order;
+// its winding is fixed only up to a global flip, which marching_cut() resolves
+// at runtime so every section face's Newell normal points the requested way.
+struct MarchingRing {
+    std::uint8_t mCount;
+    std::array<std::uint8_t, 4> mEdges;
+};
+
+// Marching-tetrahedra table (16 masks). 0/full masks emit nothing; a single
+// isolated vertex crosses 3 edges (triangle); a 2-2 split crosses 4 (quad). The
+// quad rings are the cyclic orders derived from the classic two-triangle cases.
+constexpr MarchingRing kTetRing[16] = {
+    /*0x0*/ {0, {{0, 0, 0, 0}}}, /*0x1*/ {3, {{0, 1, 2, 0}}},
+    /*0x2*/ {3, {{0, 3, 4, 0}}}, /*0x3*/ {4, {{2, 1, 3, 4}}},
+    /*0x4*/ {3, {{1, 3, 5, 0}}}, /*0x5*/ {4, {{0, 2, 5, 3}}},
+    /*0x6*/ {4, {{0, 4, 5, 1}}}, /*0x7*/ {3, {{2, 4, 5, 0}}},
+    /*0x8*/ {3, {{2, 4, 5, 0}}}, /*0x9*/ {4, {{0, 4, 5, 1}}},
+    /*0xA*/ {4, {{0, 2, 5, 3}}}, /*0xB*/ {3, {{1, 3, 5, 0}}},
+    /*0xC*/ {4, {{2, 1, 3, 4}}}, /*0xD*/ {3, {{0, 3, 4, 0}}},
+    /*0xE*/ {3, {{0, 1, 2, 0}}}, /*0xF*/ {0, {{0, 0, 0, 0}}},
+};
+
+// Marching-triangle table (8 masks): a single isolated vertex crosses 2 edges
+// (a segment); 0/full masks emit nothing.
+constexpr MarchingRing kTriRing[8] = {
+    /*0x0*/ {0, {{0, 0, 0, 0}}}, /*0x1*/ {2, {{0, 2, 0, 0}}},
+    /*0x2*/ {2, {{0, 1, 0, 0}}}, /*0x3*/ {2, {{1, 2, 0, 0}}},
+    /*0x4*/ {2, {{1, 2, 0, 0}}}, /*0x5*/ {2, {{0, 1, 0, 0}}},
+    /*0x6*/ {2, {{0, 2, 0, 0}}}, /*0x7*/ {0, {{0, 0, 0, 0}}},
+};
+
+// One cut simplex's section primitive: the ordered output node ids plus the
+// provenance needed to replicate cell_data and record the input cell.
+//
+// The orientation reference is a **field on the primitive**, not a parallel
+// array (the ProjectedFace::mSourceCell precedent): under FieldGradient it is
+// per-simplex, and a side array would have to be kept in lockstep by hand.
+struct MarchingFace {
+    std::uint8_t mNumVerts;              // 2 (line), 3 (triangle) or 4 (quad)
+    std::array<std::int64_t, 4> mNodes;  // section node ids (0-based)
+    std::size_t mParentBlock;            // simplexified block index
+    std::size_t mParentLocal;            // cell index within that block
+    std::int64_t mParentGlobalCell;      // global (block-major) input cell index
+    Vec3 mOrientRef;                     // FieldGradient reference direction
+};
+
+// Newell normal of a polygon corner ring (twin of test_skin.cpp's helper).
+Vec3 marching_newell(const std::vector<Vec3>& rRing) {
+    Vec3 n = {0.0, 0.0, 0.0};
+    const std::size_t k = rRing.size();
+    for (std::size_t i = 0; i < k; ++i) {
+        const Vec3& a = rRing[i];
+        const Vec3& b = rRing[(i + 1) % k];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    return n;
+}
+
+// A staged output cell block: its type, connectivity, and per-cell provenance.
+struct MarchingOutBlock {
+    std::string mType;
+    std::size_t mNodesPerCell;
+    std::vector<std::int64_t> mConn;
+    std::vector<std::size_t> mParentBlock;
+    std::vector<std::size_t> mParentLocal;
+    std::vector<std::int64_t> mParentGlobalCell;
+};
+
+}  // namespace
+
+MarchingInput marching_prepare(const Mesh& rMesh) {
+    MarchingInput input;
+
+    // Simplexify: every 3D cell becomes a tetra, every 2D cell a triangle, with
+    // convert:parent_cell recording the input cell (within its block).
+    input.mConvert = convert_cells(rMesh, {ConvertCellsMode::Simplexify, /*RecordParentIds=*/true});
+    const Mesh& simp = input.mConvert.mMesh;
+    const std::size_t nblocks = simp.NumCellBlocks();
+
+    // Original (input) global cell base per block: blocks map 1:1 through
+    // simplexify, so simp block bi corresponds to input block bi.
+    input.mOrigBlockBase.assign(nblocks, 0);
+    {
+        std::size_t bi = 0;
+        std::int64_t base = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            if (bi < nblocks)
+                input.mOrigBlockBase[bi] = base;
+            base += static_cast<std::int64_t>(cb.NumCells());
+            ++bi;
+        }
+    }
+
+    // The maximum topological dimension decides the cut: a volume mesh (any
+    // tetra) sections into surface faces, a 2D surface mesh into line segments.
+    int maxdim = 0;
+    for (const auto cb : simp.CellRange())
+        maxdim = std::max(maxdim, cell_type_dimension(cell_type_from_name(std::string(cb.Type()))));
+    input.mMaxDim = maxdim;
+
+    return input;
+}
+
+Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeValues,
+                  const MarchingOptions& rOptions) {
+    const Mesh& simp = rInput.Simp();
+    const std::size_t nblocks = simp.NumCellBlocks();
+    const std::size_t dim = simp.PointDim();
+    const int maxdim = rInput.mMaxDim;
+    const Vec3 direction = {rOptions.mDirection[0], rOptions.mDirection[1], rOptions.mDirection[2]};
+    const bool field_gradient = rOptions.mOrientation == MarchingOrientation::FieldGradient;
+
+    const std::size_t nnodes_in = simp.NumPoints();
+    if (rNodeValues.size() != nnodes_in)
+        throw std::invalid_argument(
+            "meshio++: marching_cut: one value per simplexified point "
+            "is required");
+    const double* dist = rNodeValues.data();
+
+    const bool has_parent = simp.HasCellData("convert:parent_cell") &&
+                            simp.CellDataNumBlocks("convert:parent_cell") == nblocks;
+
+    // --- serial cut + edge-key dedup (the determinism pin) -------------------
+    // Iterated in a fixed (block, cell, ring-edge) order; node ids are handed
+    // out by a single sweep, so output is identical across backends and threads.
+    std::unordered_map<MarchingEdgeKey, std::int64_t, MarchingEdgeKeyHash> node_id;
+    std::vector<MarchingEdgeKey> node_edges;
+    std::vector<MarchingFace> faces;
+
+    if (maxdim == 2 || maxdim == 3) {
+        const CellType want = maxdim == 3 ? CellType::Tetra : CellType::Triangle;
+        std::size_t bi = 0;
+        for (const auto cb : simp.CellRange()) {
+            const std::size_t block = bi++;
+            const CellType type = cell_type_from_name(std::string(cb.Type()));
+            if (type != want || cb.IsRagged())
+                continue;
+            const NDArray& conn = cb.Conn();
+            const std::size_t npc = cb.NodesPerCell();
+            const std::size_t ncorners = maxdim == 3 ? 4u : 3u;
+            const auto* edge_tbl = maxdim == 3 ? &kTetEdge[0] : &kTriEdge[0];
+            const MarchingRing* ring_tbl = maxdim == 3 ? kTetRing : kTriRing;
+            const NDArray* parent =
+                has_parent ? &simp.CellData("convert:parent_cell", block) : nullptr;
+            const NDArray& points = simp.Points();
+            const std::size_t nc = cb.NumCells();
+            for (std::size_t c = 0; c < nc; ++c) {
+                const std::size_t row = c * npc;
+                std::array<std::int64_t, 4> nid{};
+                unsigned mask = 0;
+                for (std::size_t k = 0; k < ncorners; ++k) {
+                    nid[k] = detail::read_int(conn, row + k);
+                    if (dist[static_cast<std::size_t>(nid[k])] < 0.0)
+                        mask |= (1u << k);
+                }
+                const MarchingRing& ring = ring_tbl[mask];
+                if (ring.mCount == 0)
+                    continue;
+                MarchingFace f;
+                f.mNumVerts = ring.mCount;
+                f.mParentBlock = block;
+                f.mParentLocal = c;
+                const std::int64_t within =
+                    parent ? detail::read_int(*parent, c) : static_cast<std::int64_t>(c);
+                f.mParentGlobalCell = rInput.mOrigBlockBase[block] + within;
+                f.mOrientRef = {0.0, 0.0, 0.0};
+                if (field_gradient) {
+                    // Reference direction = centroid(corners with d >= 0) minus
+                    // centroid(corners with d < 0), i.e. "toward increasing
+                    // field". Summed in ascending corner index and divided once,
+                    // so the numpy twin reproduces it bit for bit.
+                    Vec3 pos = {0.0, 0.0, 0.0};
+                    Vec3 neg = {0.0, 0.0, 0.0};
+                    std::size_t npos = 0;
+                    std::size_t nneg = 0;
+                    for (std::size_t k = 0; k < ncorners; ++k) {
+                        const Vec3 x = detail::read_point(points, dim, nid[k]);
+                        if ((mask & (1u << k)) != 0u) {
+                            neg = detail::vec3_add(neg, x);
+                            ++nneg;
+                        } else {
+                            pos = detail::vec3_add(pos, x);
+                            ++npos;
+                        }
+                    }
+                    // Both are non-empty whenever the ring is non-empty.
+                    f.mOrientRef =
+                        detail::vec3_sub(detail::vec3_scale(pos, 1.0 / static_cast<double>(npos)),
+                                         detail::vec3_scale(neg, 1.0 / static_cast<double>(nneg)));
+                }
+                for (std::size_t e = 0; e < ring.mCount; ++e) {
+                    const std::uint8_t ei = ring.mEdges[e];
+                    const std::int64_t ga = nid[edge_tbl[ei][0]];
+                    const std::int64_t gb = nid[edge_tbl[ei][1]];
+                    const MarchingEdgeKey key =
+                        ga < gb ? MarchingEdgeKey{ga, gb} : MarchingEdgeKey{gb, ga};
+                    auto it = node_id.find(key);
+                    std::int64_t id;
+                    if (it == node_id.end()) {
+                        id = static_cast<std::int64_t>(node_edges.size());
+                        node_id.emplace(key, id);
+                        node_edges.push_back(key);
+                    } else {
+                        id = it->second;
+                    }
+                    f.mNodes[e] = id;
+                }
+                faces.push_back(f);
+            }
+        }
+    }
+
+    const std::size_t nnodes = node_edges.size();
+
+    Mesh out;
+
+    // --- crossing-point coordinates (parallel) -------------------------------
+    NDArray out_points = NDArray::Uninit(DType::Float64, {nnodes, dim});
+    {
+        const NDArray& points = simp.Points();
+        double* dst = out_points.As<double>();
+        parallel_for_bw(nnodes, [&](std::size_t i) {
+            const std::int64_t lo = node_edges[i].first;
+            const std::int64_t hi = node_edges[i].second;
+            const double dl = dist[static_cast<std::size_t>(lo)];
+            const double dh = dist[static_cast<std::size_t>(hi)];
+            const double t = dl / (dl - dh);
+            for (std::size_t k = 0; k < dim; ++k) {
+                const double pl =
+                    detail::read_double(points, static_cast<std::size_t>(lo) * dim + k);
+                const double ph =
+                    detail::read_double(points, static_cast<std::size_t>(hi) * dim + k);
+                dst[i * dim + k] = pl + t * (ph - pl);
+            }
+        });
+    }
+    out.AssignPoints(std::move(out_points));
+
+    // --- point_data: interpolate every source array at the same t (Float64) --
+    for (const std::string& name : simp.PointDataNames()) {
+        const NDArray& a = simp.PointData(name);
+        const std::size_t src_rows = detail::rows(a);
+        if (src_rows == 0)
+            continue;
+        const std::size_t comp = a.Size() / src_rows;
+        std::vector<std::size_t> shape = a.Shape();
+        if (shape.empty())
+            shape = {nnodes};
+        else
+            shape[0] = nnodes;
+        NDArray dst_arr = NDArray::Uninit(DType::Float64, std::move(shape));
+        double* dst = dst_arr.As<double>();
+        parallel_for_bw(nnodes, [&](std::size_t i) {
+            const std::int64_t lo = node_edges[i].first;
+            const std::int64_t hi = node_edges[i].second;
+            const double dl = dist[static_cast<std::size_t>(lo)];
+            const double dh = dist[static_cast<std::size_t>(hi)];
+            const double t = dl / (dl - dh);
+            for (std::size_t k = 0; k < comp; ++k) {
+                const double vl = detail::read_double(a, static_cast<std::size_t>(lo) * comp + k);
+                const double vh = detail::read_double(a, static_cast<std::size_t>(hi) * comp + k);
+                dst[i * comp + k] = vl + t * (vh - vl);
+            }
+        });
+        out.AddPointData(name, std::move(dst_arr));
+    }
+
+    if (faces.empty())
+        return out;
+
+    // --- bbox-relative degeneracy tolerance ----------------------------------
+    double bbdiag = 0.0;
+    {
+        const double* p = out.Points().As<double>();
+        std::vector<double> lo(dim, 0.0), hi(dim, 0.0);
+        for (std::size_t k = 0; k < dim; ++k) {
+            lo[k] = p[k];
+            hi[k] = p[k];
+        }
+        for (std::size_t i = 0; i < nnodes; ++i)
+            for (std::size_t k = 0; k < dim; ++k) {
+                lo[k] = std::min(lo[k], p[i * dim + k]);
+                hi[k] = std::max(hi[k], p[i * dim + k]);
+            }
+        double s = 0.0;
+        for (std::size_t k = 0; k < dim; ++k)
+            s += (hi[k] - lo[k]) * (hi[k] - lo[k]);
+        bbdiag = std::sqrt(s);
+    }
+    const double rel = 1e-10;
+    const double area_tol = rel * bbdiag * bbdiag;  // |Newell| ~ 2 * area
+    const double len_tol = rel * bbdiag;
+
+    // --- stage output blocks: orient by Newell flip, drop collapses ----------
+    // Fixed output order: triangle, quad (volume) / line (surface).
+    MarchingOutBlock tri_blk{cell_type_name(CellType::Triangle), 3, {}, {}, {}, {}};
+    MarchingOutBlock quad_blk{cell_type_name(CellType::Quad), 4, {}, {}, {}, {}};
+    MarchingOutBlock line_blk{cell_type_name(CellType::Line), 2, {}, {}, {}, {}};
+    const double* pts = out.Points().As<double>();
+    for (const MarchingFace& f : faces) {
+        if (f.mNumVerts >= 3) {
+            std::vector<Vec3> ring(f.mNumVerts);
+            for (std::size_t v = 0; v < f.mNumVerts; ++v) {
+                const std::size_t nd = static_cast<std::size_t>(f.mNodes[v]);
+                ring[v] = detail::read_point(out.Points(), dim, static_cast<std::int64_t>(nd));
+            }
+            const Vec3 nrm = marching_newell(ring);
+            if (detail::vec3_norm(nrm) < area_tol)
+                continue;
+            const bool flip =
+                detail::vec3_dot(nrm, field_gradient ? f.mOrientRef : direction) < 0.0;
+            MarchingOutBlock& blk = f.mNumVerts == 3 ? tri_blk : quad_blk;
+            for (std::size_t v = 0; v < f.mNumVerts; ++v) {
+                const std::size_t src = flip ? (f.mNumVerts - 1 - v) : v;
+                blk.mConn.push_back(f.mNodes[src]);
+            }
+            blk.mParentBlock.push_back(f.mParentBlock);
+            blk.mParentLocal.push_back(f.mParentLocal);
+            blk.mParentGlobalCell.push_back(f.mParentGlobalCell);
+        } else {  // line segment
+            const std::size_t a = static_cast<std::size_t>(f.mNodes[0]);
+            const std::size_t b = static_cast<std::size_t>(f.mNodes[1]);
+            double s = 0.0;
+            for (std::size_t k = 0; k < dim; ++k) {
+                const double dd = pts[a * dim + k] - pts[b * dim + k];
+                s += dd * dd;
+            }
+            if (std::sqrt(s) < len_tol)
+                continue;
+            line_blk.mConn.push_back(f.mNodes[0]);
+            line_blk.mConn.push_back(f.mNodes[1]);
+            line_blk.mParentBlock.push_back(f.mParentBlock);
+            line_blk.mParentLocal.push_back(f.mParentLocal);
+            line_blk.mParentGlobalCell.push_back(f.mParentGlobalCell);
+        }
+    }
+
+    std::vector<MarchingOutBlock*> out_blocks;
+    if (!tri_blk.mConn.empty())
+        out_blocks.push_back(&tri_blk);
+    if (!quad_blk.mConn.empty())
+        out_blocks.push_back(&quad_blk);
+    if (!line_blk.mConn.empty())
+        out_blocks.push_back(&line_blk);
+
+    for (MarchingOutBlock* blk : out_blocks) {
+        const std::size_t ncells = blk->mConn.size() / blk->mNodesPerCell;
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, blk->mNodesPerCell});
+        std::memcpy(conn.Data(), blk->mConn.data(), blk->mConn.size() * sizeof(std::int64_t));
+        out.AddCellBlock(blk->mType, std::move(conn));
+    }
+
+    // --- cell_data: replicate each parent's row to its section cells ----------
+    for (const std::string& name : simp.CellDataNames()) {
+        if (name == "convert:parent_cell")
+            continue;
+        if (simp.CellDataNumBlocks(name) != nblocks)
+            continue;  // not per-cell data; dropped (new topology)
+        const NDArray& a0 = simp.CellData(name, 0);
+        const DType dt = a0.Dtype();
+        std::size_t comp = 1;
+        for (std::size_t d = 1; d < a0.Shape().size(); ++d)
+            comp *= a0.Shape()[d];
+        const std::size_t row_bytes = comp * dtype_size(dt);
+        std::vector<NDArray> blocks;
+        blocks.reserve(out_blocks.size());
+        for (MarchingOutBlock* blk : out_blocks) {
+            const std::size_t ncells = blk->mParentGlobalCell.size();
+            std::vector<std::size_t> shape = a0.Shape();
+            if (shape.empty())
+                shape = {ncells};
+            else
+                shape[0] = ncells;
+            NDArray dst_arr = NDArray::Uninit(dt, std::move(shape));
+            std::byte* dst = dst_arr.Data();
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const NDArray& src = simp.CellData(name, blk->mParentBlock[c]);
+                std::memcpy(dst + c * row_bytes, src.Data() + blk->mParentLocal[c] * row_bytes,
+                            row_bytes);
+            }
+            blocks.push_back(std::move(dst_arr));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+
+    // --- provenance (slice:parent_cell / iso:parent_cell) ---------------------
+    if (rOptions.mRecordParentIds) {
+        std::vector<NDArray> blocks;
+        blocks.reserve(out_blocks.size());
+        for (MarchingOutBlock* blk : out_blocks) {
+            NDArray a = NDArray::Uninit(DType::Int64, {blk->mParentGlobalCell.size()});
+            if (!blk->mParentGlobalCell.empty())
+                std::memcpy(a.Data(), blk->mParentGlobalCell.data(),
+                            blk->mParentGlobalCell.size() * sizeof(std::int64_t));
+            blocks.push_back(std::move(a));
+        }
+        out.AddCellData(rOptions.mProvenanceName, std::move(blocks));
+    }
+
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/marching.cpp =====
 // ===== begin src/cpp/src/detail/node_adjacency.cpp =====
 #include <algorithm>
 #include <utility>
@@ -51461,6 +52175,348 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/interpolate.cpp =====
+// ===== begin src/cpp/src/operations/isosurface.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Reduce one row to a scalar: the requested component, or the magnitude.
+//
+// Deliberately the same arithmetic as face_color.cpp's fc_scalarize (which is
+// file-private there) -- the magnitude sums left to right and takes one sqrt at
+// the end, so the numpy twin rounds alike rather than using np.linalg.norm.
+double iso_scalarize(const NDArray& rArray, std::size_t Row, std::size_t NumComponents,
+                     const std::optional<int>& rComponent) {
+    const std::size_t base = Row * NumComponents;
+    if (rComponent.has_value()) {
+        const int c = *rComponent;
+        if (c < 0 || static_cast<std::size_t>(c) >= NumComponents)
+            throw std::invalid_argument("meshio++: isosurface: component " + std::to_string(c) +
+                                        " is out of range for an array with " +
+                                        std::to_string(NumComponents) + " component(s)");
+        return detail::read_double(rArray, base + static_cast<std::size_t>(c));
+    }
+    if (NumComponents == 1)
+        return detail::read_double(rArray, base);
+    double sum = 0.0;
+    for (std::size_t k = 0; k < NumComponents; ++k) {
+        const double v = detail::read_double(rArray, base + k);
+        sum += v * v;
+    }
+    return std::sqrt(sum);
+}
+
+// The index of the block of type `rType` in `rMesh`, if it has one. The cutter
+// emits at most one block per type, in the fixed triangle/quad/line order.
+std::optional<std::size_t> iso_type_block(const Mesh& rMesh, const std::string& rType) {
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (std::string(cb.Type()) == rType)
+            return bi;
+        ++bi;
+    }
+    return std::nullopt;
+}
+
+// One kept contour: the section mesh plus the isovalue that produced it.
+struct IsoContour {
+    Mesh mMesh;
+    double mValue;
+    std::int64_t mIndex;
+};
+
+// Concatenate the contours into one mesh: points and point_data stacked in
+// ascending-isovalue order, cell blocks merged by type in the canonical order,
+// per-cell cell_data carried alongside, and the two contour tags attached.
+//
+// `rExactName`/`rExactComponent` name the contoured array whose value must read
+// back as exactly the isovalue (empty = leave everything interpolated, which is
+// the magnitude case).
+Mesh iso_concat_contours(std::vector<IsoContour>& rContours, std::size_t Dim,
+                         const std::string& rExactName, const std::optional<int>& rExactComponent) {
+    Mesh out;
+
+    // --- points --------------------------------------------------------------
+    std::vector<std::size_t> point_base(rContours.size(), 0);
+    std::size_t total_points = 0;
+    for (std::size_t k = 0; k < rContours.size(); ++k) {
+        point_base[k] = total_points;
+        total_points += rContours[k].mMesh.NumPoints();
+    }
+    {
+        NDArray points = NDArray::Uninit(DType::Float64, {total_points, Dim});
+        double* dst = points.As<double>();
+        for (std::size_t k = 0; k < rContours.size(); ++k) {
+            const NDArray& src = rContours[k].mMesh.Points();
+            const std::size_t n = rContours[k].mMesh.NumPoints();
+            if (n != 0)
+                std::memcpy(dst + point_base[k] * Dim, src.Data(), n * Dim * sizeof(double));
+        }
+        out.AssignPoints(std::move(points));
+    }
+
+    // --- point_data (every contour carries the same names, from one simp) ----
+    for (const std::string& name : rContours[0].mMesh.PointDataNames()) {
+        const NDArray& a0 = rContours[0].mMesh.PointData(name);
+        const std::size_t rows0 = detail::rows(a0);
+        const std::size_t comp = rows0 == 0 ? a0.Size() : a0.Size() / rows0;
+        std::vector<std::size_t> shape = a0.Shape();
+        if (shape.empty())
+            shape = {total_points};
+        else
+            shape[0] = total_points;
+        NDArray dst_arr = NDArray::Uninit(DType::Float64, std::move(shape));
+        double* dst = dst_arr.As<double>();
+        for (std::size_t k = 0; k < rContours.size(); ++k) {
+            const NDArray& src = rContours[k].mMesh.PointData(name);
+            const std::size_t n = rContours[k].mMesh.NumPoints();
+            if (n != 0)
+                std::memcpy(dst + point_base[k] * comp, src.Data(), n * comp * sizeof(double));
+            // The contoured field reads back as *exactly* the isovalue: linear
+            // interpolation only reaches it to within round-off, and the value
+            // is known analytically. Not applied to a magnitude reduction --
+            // |lerp(v)| != lerp(|v|) mathematically, so there is nothing exact
+            // to write (see isosurface.hpp).
+            if (name == rExactName && comp != 0) {
+                const double v = rContours[k].mValue;
+                if (rExactComponent.has_value()) {
+                    const std::size_t c = static_cast<std::size_t>(*rExactComponent);
+                    for (std::size_t i = 0; i < n; ++i)
+                        dst[(point_base[k] + i) * comp + c] = v;
+                } else if (comp == 1) {
+                    for (std::size_t i = 0; i < n; ++i)
+                        dst[point_base[k] + i] = v;
+                }
+            }
+        }
+        out.AddPointData(name, std::move(dst_arr));
+    }
+
+    // --- cells: merge by type, in the cutter's canonical order ---------------
+    const std::string types[3] = {cell_type_name(CellType::Triangle),
+                                  cell_type_name(CellType::Quad), cell_type_name(CellType::Line)};
+    // Per output block: the (contour, source block) pairs feeding it.
+    std::vector<std::string> out_types;
+    std::vector<std::vector<std::pair<std::size_t, std::size_t>>> out_sources;
+    for (const std::string& type : types) {
+        std::vector<std::pair<std::size_t, std::size_t>> src;
+        for (std::size_t k = 0; k < rContours.size(); ++k) {
+            const std::optional<std::size_t> bi = iso_type_block(rContours[k].mMesh, type);
+            if (bi.has_value())
+                src.emplace_back(k, *bi);
+        }
+        if (!src.empty()) {
+            out_types.push_back(type);
+            out_sources.push_back(std::move(src));
+        }
+    }
+
+    for (std::size_t ob = 0; ob < out_types.size(); ++ob) {
+        std::size_t npc = 0;
+        std::size_t ncells = 0;
+        for (const auto& s : out_sources[ob]) {
+            const auto cb = rContours[s.first].mMesh.Cells(s.second);
+            npc = cb.NodesPerCell();
+            ncells += cb.NumCells();
+        }
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        std::size_t at = 0;
+        for (const auto& s : out_sources[ob]) {
+            const auto cb = rContours[s.first].mMesh.Cells(s.second);
+            const NDArray& src = cb.Conn();
+            const std::int64_t off = static_cast<std::int64_t>(point_base[s.first]);
+            const std::size_t n = cb.NumCells() * npc;
+            for (std::size_t i = 0; i < n; ++i)
+                dst[at + i] = detail::read_int(src, i) + off;
+            at += n;
+        }
+        out.AddCellBlock(out_types[ob], std::move(conn));
+    }
+
+    // --- cell_data: concatenate the parents' replicated rows -----------------
+    for (const std::string& name : rContours[0].mMesh.CellDataNames()) {
+        const NDArray& a0 = rContours[0].mMesh.CellData(name, 0);
+        const DType dt = a0.Dtype();
+        std::size_t comp = 1;
+        for (std::size_t d = 1; d < a0.Shape().size(); ++d)
+            comp *= a0.Shape()[d];
+        const std::size_t row_bytes = comp * dtype_size(dt);
+        std::vector<NDArray> blocks;
+        blocks.reserve(out_types.size());
+        for (std::size_t ob = 0; ob < out_types.size(); ++ob) {
+            std::size_t ncells = 0;
+            for (const auto& s : out_sources[ob])
+                ncells += rContours[s.first].mMesh.Cells(s.second).NumCells();
+            std::vector<std::size_t> shape = a0.Shape();
+            if (shape.empty())
+                shape = {ncells};
+            else
+                shape[0] = ncells;
+            NDArray dst_arr = NDArray::Uninit(dt, std::move(shape));
+            std::byte* dst = dst_arr.Data();
+            std::size_t at = 0;
+            for (const auto& s : out_sources[ob]) {
+                const std::size_t n = rContours[s.first].mMesh.Cells(s.second).NumCells();
+                const NDArray& src = rContours[s.first].mMesh.CellData(name, s.second);
+                if (n != 0)
+                    std::memcpy(dst + at * row_bytes, src.Data(), n * row_bytes);
+                at += n;
+            }
+            blocks.push_back(std::move(dst_arr));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+
+    // --- the contour tags ----------------------------------------------------
+    // iso:value is the real level; iso:index is its ordinal, and is what
+    // split(SplitBy::Tag) needs -- that criterion only accepts an integer array.
+    {
+        std::vector<NDArray> values;
+        std::vector<NDArray> indices;
+        values.reserve(out_types.size());
+        indices.reserve(out_types.size());
+        for (std::size_t ob = 0; ob < out_types.size(); ++ob) {
+            std::size_t ncells = 0;
+            for (const auto& s : out_sources[ob])
+                ncells += rContours[s.first].mMesh.Cells(s.second).NumCells();
+            NDArray v = NDArray::Uninit(DType::Float64, {ncells});
+            NDArray i = NDArray::Uninit(DType::Int64, {ncells});
+            double* vp = v.As<double>();
+            std::int64_t* ip = i.As<std::int64_t>();
+            std::size_t at = 0;
+            for (const auto& s : out_sources[ob]) {
+                const std::size_t n = rContours[s.first].mMesh.Cells(s.second).NumCells();
+                for (std::size_t c = 0; c < n; ++c) {
+                    vp[at + c] = rContours[s.first].mValue;
+                    ip[at + c] = rContours[s.first].mIndex;
+                }
+                at += n;
+            }
+            values.push_back(std::move(v));
+            indices.push_back(std::move(i));
+        }
+        out.AddCellData("iso:value", std::move(values));
+        out.AddCellData("iso:index", std::move(indices));
+    }
+
+    return out;
+}
+
+}  // namespace
+
+Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
+    if (rOptions.mArrayName.empty())
+        throw std::invalid_argument("meshio++: isosurface: an array name is required");
+    if (rOptions.mIsovalues.empty())
+        throw std::invalid_argument("meshio++: isosurface: at least one isovalue is required");
+    for (double v : rOptions.mIsovalues)
+        if (!std::isfinite(v))
+            throw std::invalid_argument("meshio++: isosurface: isovalues must be finite");
+
+    // A cell field is piecewise constant: there is no crossing to locate inside
+    // a cell, so there is no level set to draw. Say so by name rather than
+    // reporting "unknown array", and name the conversion that fixes it.
+    if (!rMesh.HasPointData(rOptions.mArrayName)) {
+        if (rMesh.HasCellData(rOptions.mArrayName))
+            throw std::invalid_argument(
+                "meshio++: isosurface: '" + rOptions.mArrayName +
+                "' is cell_data, which is piecewise constant and has no level set; convert it "
+                "first with cell_data_to_point_data (CLI: meshioplusplus data to-point)");
+        throw std::invalid_argument(
+            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
+    }
+
+    // Ascending, de-duplicated: contours are emitted in ascending order, and a
+    // repeated isovalue would otherwise emit the same contour twice.
+    std::vector<double> isovalues = rOptions.mIsovalues;
+    std::sort(isovalues.begin(), isovalues.end());
+    isovalues.erase(std::unique(isovalues.begin(), isovalues.end()), isovalues.end());
+
+    // Simplexify once; every isovalue is cut against the same prepared input.
+    const detail::MarchingInput input = detail::marching_prepare(rMesh);
+    const Mesh& simp = input.Simp();
+    const std::size_t nnodes = simp.NumPoints();
+    const std::size_t dim = simp.PointDim();
+
+    // The field rides through simplexify (points are untouched for a linear
+    // input; a higher-order one takes the linearization's row subset), so it is
+    // resolved against the *simplexified* mesh -- interpolate's rule.
+    std::vector<double> field(nnodes, 0.0);
+    {
+        const NDArray& a = simp.PointData(rOptions.mArrayName);
+        const std::size_t src_rows = detail::rows(a);
+        const std::size_t comp = src_rows == 0 ? 0 : a.Size() / src_rows;
+        if (comp == 0)
+            throw std::invalid_argument("meshio++: isosurface: '" + rOptions.mArrayName +
+                                        "' carries no values");
+        // Validate the component once, outside the loop, so a bad request fails
+        // by name rather than n times from inside a parallel region.
+        iso_scalarize(a, 0, comp, rOptions.mComponent);
+        parallel_for(nnodes, [&](std::size_t g) {
+            field[g] = iso_scalarize(a, g, comp, rOptions.mComponent);
+        });
+    }
+
+    detail::MarchingOptions cut_options;
+    cut_options.mProvenanceName = "iso:parent_cell";
+    cut_options.mRecordParentIds = rOptions.mRecordParentIds;
+    // A level set has no global direction, so faces are wound toward increasing
+    // field (slice, which does have one, uses FixedDirection).
+    cut_options.mOrientation = detail::MarchingOrientation::FieldGradient;
+
+    std::vector<IsoContour> contours;
+    contours.reserve(isovalues.size());
+    Mesh empty_like;
+    bool have_empty_like = false;
+    std::vector<double> dist(nnodes, 0.0);
+    for (std::size_t k = 0; k < isovalues.size(); ++k) {
+        const double iso = isovalues[k];
+        parallel_for(nnodes, [&](std::size_t g) { dist[g] = field[g] - iso; });
+        Mesh section = detail::marching_cut(input, dist, cut_options);
+        if (section.NumCellBlocks() == 0) {
+            // Out of range (or fully collapsed): no contour at this level. Keep
+            // the first such result so an all-empty request still returns a mesh
+            // carrying the (zero-row) point_data names, exactly like slice.
+            if (!have_empty_like) {
+                empty_like = std::move(section);
+                have_empty_like = true;
+            }
+            continue;
+        }
+        contours.push_back(IsoContour{std::move(section), iso, static_cast<std::int64_t>(k)});
+    }
+
+    if (contours.empty())
+        return have_empty_like ? std::move(empty_like) : Mesh{};
+
+    // The contoured array is written exactly, except under a magnitude
+    // reduction, where no exact value exists (see isosurface.hpp).
+    const std::size_t comp = [&]() {
+        const NDArray& a = simp.PointData(rOptions.mArrayName);
+        const std::size_t r = detail::rows(a);
+        return r == 0 ? std::size_t{0} : a.Size() / r;
+    }();
+    const bool exact = rOptions.mComponent.has_value() || comp == 1;
+    return iso_concat_contours(contours, dim, exact ? rOptions.mArrayName : std::string(),
+                               rOptions.mComponent);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/isosurface.cpp =====
 // ===== begin src/cpp/src/operations/merge.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -54422,148 +55478,27 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/reorder.cpp =====
 // ===== begin src/cpp/src/operations/slice.cpp =====
-#include <algorithm>
-#include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <stdexcept>
-#include <string>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
 
-namespace {
-
-using detail::Vec3;
-
-// A canonical (low, high) simplexified-node pair identifying one cut edge; two
-// simplices sharing an edge produce the same key, so the crossing point is
-// deduped to one output node (the section is watertight).
-using SliceEdgeKey = std::pair<std::int64_t, std::int64_t>;
-
-struct SliceEdgeKeyHash {
-    std::size_t operator()(const SliceEdgeKey& rKey) const {
-        std::size_t h = std::hash<std::int64_t>{}(rKey.first);
-        h ^= std::hash<std::int64_t>{}(rKey.second) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
-
-// Local edges of a tetrahedron: e0=(0,1) e1=(0,2) e2=(0,3) e3=(1,2) e4=(1,3) e5=(2,3).
-constexpr std::uint8_t kTetEdge[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
-
-// Local edges of a triangle: e0=(0,1) e1=(1,2) e2=(0,2).
-constexpr std::uint8_t kTriEdge[3][2] = {{0, 1}, {1, 2}, {0, 2}};
-
-// The crossing-edge ring of a cut simplex, keyed by its below-plane sign mask
-// (bit i set iff d_i < 0). The ring lists local edge indices in cyclic order;
-// its winding is fixed only up to a global flip, which slice() resolves at
-// runtime so every section face's Newell normal points toward the +normal side.
-struct SliceRing {
-    std::uint8_t mCount;
-    std::array<std::uint8_t, 4> mEdges;
-};
-
-// Marching-tetrahedra table (16 masks). 0/full masks emit nothing; a single
-// isolated vertex crosses 3 edges (triangle); a 2-2 split crosses 4 (quad). The
-// quad rings are the cyclic orders derived from the classic two-triangle cases.
-constexpr SliceRing kTetRing[16] = {
-    /*0x0*/ {0, {{0, 0, 0, 0}}}, /*0x1*/ {3, {{0, 1, 2, 0}}},
-    /*0x2*/ {3, {{0, 3, 4, 0}}}, /*0x3*/ {4, {{2, 1, 3, 4}}},
-    /*0x4*/ {3, {{1, 3, 5, 0}}}, /*0x5*/ {4, {{0, 2, 5, 3}}},
-    /*0x6*/ {4, {{0, 4, 5, 1}}}, /*0x7*/ {3, {{2, 4, 5, 0}}},
-    /*0x8*/ {3, {{2, 4, 5, 0}}}, /*0x9*/ {4, {{0, 4, 5, 1}}},
-    /*0xA*/ {4, {{0, 2, 5, 3}}}, /*0xB*/ {3, {{1, 3, 5, 0}}},
-    /*0xC*/ {4, {{2, 1, 3, 4}}}, /*0xD*/ {3, {{0, 3, 4, 0}}},
-    /*0xE*/ {3, {{0, 1, 2, 0}}}, /*0xF*/ {0, {{0, 0, 0, 0}}},
-};
-
-// Marching-triangle table (8 masks): a single isolated vertex crosses 2 edges
-// (a segment); 0/full masks emit nothing.
-constexpr SliceRing kTriRing[8] = {
-    /*0x0*/ {0, {{0, 0, 0, 0}}}, /*0x1*/ {2, {{0, 2, 0, 0}}},
-    /*0x2*/ {2, {{0, 1, 0, 0}}}, /*0x3*/ {2, {{1, 2, 0, 0}}},
-    /*0x4*/ {2, {{1, 2, 0, 0}}}, /*0x5*/ {2, {{0, 1, 0, 0}}},
-    /*0x6*/ {2, {{0, 2, 0, 0}}}, /*0x7*/ {0, {{0, 0, 0, 0}}},
-};
-
-// One cut simplex's section primitive: the ordered output node ids plus the
-// provenance needed to replicate cell_data and record the input cell.
-struct SliceFace {
-    std::uint8_t mNumVerts;              // 2 (line), 3 (triangle) or 4 (quad)
-    std::array<std::int64_t, 4> mNodes;  // section node ids (0-based)
-    std::size_t mParentBlock;            // simplexified block index
-    std::size_t mParentLocal;            // cell index within that block
-    std::int64_t mParentGlobalCell;      // global (block-major) input cell index
-};
-
-// Newell normal of a polygon corner ring (twin of test_skin.cpp's helper).
-Vec3 slice_newell(const std::vector<Vec3>& rRing) {
-    Vec3 n = {0.0, 0.0, 0.0};
-    const std::size_t k = rRing.size();
-    for (std::size_t i = 0; i < k; ++i) {
-        const Vec3& a = rRing[i];
-        const Vec3& b = rRing[(i + 1) % k];
-        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
-        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
-        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
-    }
-    return n;
-}
-
-// A staged output cell block: its type, connectivity, and per-cell provenance.
-struct SliceOutBlock {
-    std::string mType;
-    std::size_t mNodesPerCell;
-    std::vector<std::int64_t> mConn;
-    std::vector<std::size_t> mParentBlock;
-    std::vector<std::size_t> mParentLocal;
-    std::vector<std::int64_t> mParentGlobalCell;
-};
-
-}  // namespace
-
 Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
+    using detail::Vec3;
+
     const Vec3 origin = {rOptions.mOrigin[0], rOptions.mOrigin[1], rOptions.mOrigin[2]};
     const Vec3 normal = {rOptions.mNormal[0], rOptions.mNormal[1], rOptions.mNormal[2]};
     if (detail::vec3_norm_sq(normal) <= 0.0)
         throw std::invalid_argument("meshio++: slice: normal must be non-zero");
 
-    // Simplexify: every 3D cell becomes a tetra, every 2D cell a triangle, with
-    // convert:parent_cell recording the input cell (within its block).
-    ConvertCellsResult cc =
-        convert_cells(rMesh, {ConvertCellsMode::Simplexify, /*RecordParentIds=*/true});
-    const Mesh& simp = cc.mMesh;
-
-    const std::size_t nblocks = simp.NumCellBlocks();
+    // Simplexify: every 3D cell becomes a tetra, every 2D cell a triangle.
+    const detail::MarchingInput input = detail::marching_prepare(rMesh);
+    const Mesh& simp = input.Simp();
     const std::size_t dim = simp.PointDim();
-
-    // Original (input) global cell base per block: blocks map 1:1 through
-    // simplexify, so simp block bi corresponds to input block bi.
-    std::vector<std::int64_t> orig_block_base(nblocks, 0);
-    {
-        std::size_t bi = 0;
-        std::int64_t base = 0;
-        for (const auto cb : rMesh.CellRange()) {
-            if (bi < nblocks)
-                orig_block_base[bi] = base;
-            base += static_cast<std::int64_t>(cb.NumCells());
-            ++bi;
-        }
-    }
-
-    // The maximum topological dimension decides the cut: a volume mesh (any
-    // tetra) sections into surface faces, a 2D surface mesh into line segments.
-    int maxdim = 0;
-    for (const auto cb : simp.CellRange())
-        maxdim = std::max(maxdim, cell_type_dimension(cell_type_from_name(std::string(cb.Type()))));
-    const CellType want = maxdim == 3 ? CellType::Tetra : CellType::Triangle;
 
     // Signed distance of every simplexified node to the plane (the hot loop).
     const std::size_t nnodes_in = simp.NumPoints();
@@ -54578,258 +55513,15 @@ Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
         });
     }
 
-    const bool has_parent = simp.HasCellData("convert:parent_cell") &&
-                            simp.CellDataNumBlocks("convert:parent_cell") == nblocks;
+    detail::MarchingOptions options;
+    options.mProvenanceName = "slice:parent_cell";
+    options.mRecordParentIds = rOptions.mRecordParentIds;
+    // A plane has a global orientation, so every section face is wound toward
+    // the user's +normal side (an isosurface has none and uses FieldGradient).
+    options.mOrientation = detail::MarchingOrientation::FixedDirection;
+    options.mDirection = rOptions.mNormal;
 
-    // --- serial cut + edge-key dedup (the determinism pin) -------------------
-    // Iterated in a fixed (block, cell, ring-edge) order; node ids are handed
-    // out by a single sweep, so output is identical across backends and threads.
-    std::unordered_map<SliceEdgeKey, std::int64_t, SliceEdgeKeyHash> node_id;
-    std::vector<SliceEdgeKey> node_edges;
-    std::vector<SliceFace> faces;
-
-    if (maxdim == 2 || maxdim == 3) {
-        std::size_t bi = 0;
-        for (const auto cb : simp.CellRange()) {
-            const std::size_t block = bi++;
-            const CellType type = cell_type_from_name(std::string(cb.Type()));
-            if (type != want || cb.IsRagged())
-                continue;
-            const NDArray& conn = cb.Conn();
-            const std::size_t npc = cb.NodesPerCell();
-            const std::size_t ncorners = maxdim == 3 ? 4u : 3u;
-            const auto* edge_tbl = maxdim == 3 ? &kTetEdge[0] : &kTriEdge[0];
-            const SliceRing* ring_tbl = maxdim == 3 ? kTetRing : kTriRing;
-            const NDArray* parent =
-                has_parent ? &simp.CellData("convert:parent_cell", block) : nullptr;
-            const std::size_t nc = cb.NumCells();
-            for (std::size_t c = 0; c < nc; ++c) {
-                const std::size_t row = c * npc;
-                std::array<std::int64_t, 4> nid{};
-                unsigned mask = 0;
-                for (std::size_t k = 0; k < ncorners; ++k) {
-                    nid[k] = detail::read_int(conn, row + k);
-                    if (dist[static_cast<std::size_t>(nid[k])] < 0.0)
-                        mask |= (1u << k);
-                }
-                const SliceRing& ring = ring_tbl[mask];
-                if (ring.mCount == 0)
-                    continue;
-                SliceFace f;
-                f.mNumVerts = ring.mCount;
-                f.mParentBlock = block;
-                f.mParentLocal = c;
-                const std::int64_t within =
-                    parent ? detail::read_int(*parent, c) : static_cast<std::int64_t>(c);
-                f.mParentGlobalCell = orig_block_base[block] + within;
-                for (std::size_t e = 0; e < ring.mCount; ++e) {
-                    const std::uint8_t ei = ring.mEdges[e];
-                    const std::int64_t ga = nid[edge_tbl[ei][0]];
-                    const std::int64_t gb = nid[edge_tbl[ei][1]];
-                    const SliceEdgeKey key = ga < gb ? SliceEdgeKey{ga, gb} : SliceEdgeKey{gb, ga};
-                    auto it = node_id.find(key);
-                    std::int64_t id;
-                    if (it == node_id.end()) {
-                        id = static_cast<std::int64_t>(node_edges.size());
-                        node_id.emplace(key, id);
-                        node_edges.push_back(key);
-                    } else {
-                        id = it->second;
-                    }
-                    f.mNodes[e] = id;
-                }
-                faces.push_back(f);
-            }
-        }
-    }
-
-    const std::size_t nnodes = node_edges.size();
-
-    Mesh out;
-
-    // --- crossing-point coordinates (parallel) -------------------------------
-    NDArray out_points = NDArray::Uninit(DType::Float64, {nnodes, dim});
-    {
-        const NDArray& points = simp.Points();
-        double* dst = out_points.As<double>();
-        parallel_for_bw(nnodes, [&](std::size_t i) {
-            const std::int64_t lo = node_edges[i].first;
-            const std::int64_t hi = node_edges[i].second;
-            const double dl = dist[static_cast<std::size_t>(lo)];
-            const double dh = dist[static_cast<std::size_t>(hi)];
-            const double t = dl / (dl - dh);
-            for (std::size_t k = 0; k < dim; ++k) {
-                const double pl =
-                    detail::read_double(points, static_cast<std::size_t>(lo) * dim + k);
-                const double ph =
-                    detail::read_double(points, static_cast<std::size_t>(hi) * dim + k);
-                dst[i * dim + k] = pl + t * (ph - pl);
-            }
-        });
-    }
-    out.AssignPoints(std::move(out_points));
-
-    // --- point_data: interpolate every source array at the same t (Float64) --
-    for (const std::string& name : simp.PointDataNames()) {
-        const NDArray& a = simp.PointData(name);
-        const std::size_t src_rows = detail::rows(a);
-        if (src_rows == 0)
-            continue;
-        const std::size_t comp = a.Size() / src_rows;
-        std::vector<std::size_t> shape = a.Shape();
-        if (shape.empty())
-            shape = {nnodes};
-        else
-            shape[0] = nnodes;
-        NDArray dst_arr = NDArray::Uninit(DType::Float64, std::move(shape));
-        double* dst = dst_arr.As<double>();
-        parallel_for_bw(nnodes, [&](std::size_t i) {
-            const std::int64_t lo = node_edges[i].first;
-            const std::int64_t hi = node_edges[i].second;
-            const double dl = dist[static_cast<std::size_t>(lo)];
-            const double dh = dist[static_cast<std::size_t>(hi)];
-            const double t = dl / (dl - dh);
-            for (std::size_t k = 0; k < comp; ++k) {
-                const double vl = detail::read_double(a, static_cast<std::size_t>(lo) * comp + k);
-                const double vh = detail::read_double(a, static_cast<std::size_t>(hi) * comp + k);
-                dst[i * comp + k] = vl + t * (vh - vl);
-            }
-        });
-        out.AddPointData(name, std::move(dst_arr));
-    }
-
-    if (faces.empty())
-        return out;
-
-    // --- bbox-relative degeneracy tolerance ----------------------------------
-    double bbdiag = 0.0;
-    {
-        const double* p = out.Points().As<double>();
-        std::vector<double> lo(dim, 0.0), hi(dim, 0.0);
-        for (std::size_t k = 0; k < dim; ++k) {
-            lo[k] = p[k];
-            hi[k] = p[k];
-        }
-        for (std::size_t i = 0; i < nnodes; ++i)
-            for (std::size_t k = 0; k < dim; ++k) {
-                lo[k] = std::min(lo[k], p[i * dim + k]);
-                hi[k] = std::max(hi[k], p[i * dim + k]);
-            }
-        double s = 0.0;
-        for (std::size_t k = 0; k < dim; ++k)
-            s += (hi[k] - lo[k]) * (hi[k] - lo[k]);
-        bbdiag = std::sqrt(s);
-    }
-    const double rel = 1e-10;
-    const double area_tol = rel * bbdiag * bbdiag;  // |Newell| ~ 2 * area
-    const double len_tol = rel * bbdiag;
-
-    // --- stage output blocks: orient by Newell flip, drop collapses ----------
-    // Fixed output order: triangle, quad (volume) / line (surface).
-    SliceOutBlock tri_blk{cell_type_name(CellType::Triangle), 3, {}, {}, {}, {}};
-    SliceOutBlock quad_blk{cell_type_name(CellType::Quad), 4, {}, {}, {}, {}};
-    SliceOutBlock line_blk{cell_type_name(CellType::Line), 2, {}, {}, {}, {}};
-    const double* pts = out.Points().As<double>();
-    for (const SliceFace& f : faces) {
-        if (f.mNumVerts >= 3) {
-            std::vector<Vec3> ring(f.mNumVerts);
-            for (std::size_t v = 0; v < f.mNumVerts; ++v) {
-                const std::size_t nd = static_cast<std::size_t>(f.mNodes[v]);
-                ring[v] = detail::read_point(out.Points(), dim, static_cast<std::int64_t>(nd));
-            }
-            const Vec3 nrm = slice_newell(ring);
-            if (detail::vec3_norm(nrm) < area_tol)
-                continue;
-            const bool flip = detail::vec3_dot(nrm, normal) < 0.0;
-            SliceOutBlock& blk = f.mNumVerts == 3 ? tri_blk : quad_blk;
-            for (std::size_t v = 0; v < f.mNumVerts; ++v) {
-                const std::size_t src = flip ? (f.mNumVerts - 1 - v) : v;
-                blk.mConn.push_back(f.mNodes[src]);
-            }
-            blk.mParentBlock.push_back(f.mParentBlock);
-            blk.mParentLocal.push_back(f.mParentLocal);
-            blk.mParentGlobalCell.push_back(f.mParentGlobalCell);
-        } else {  // line segment
-            const std::size_t a = static_cast<std::size_t>(f.mNodes[0]);
-            const std::size_t b = static_cast<std::size_t>(f.mNodes[1]);
-            double s = 0.0;
-            for (std::size_t k = 0; k < dim; ++k) {
-                const double dd = pts[a * dim + k] - pts[b * dim + k];
-                s += dd * dd;
-            }
-            if (std::sqrt(s) < len_tol)
-                continue;
-            line_blk.mConn.push_back(f.mNodes[0]);
-            line_blk.mConn.push_back(f.mNodes[1]);
-            line_blk.mParentBlock.push_back(f.mParentBlock);
-            line_blk.mParentLocal.push_back(f.mParentLocal);
-            line_blk.mParentGlobalCell.push_back(f.mParentGlobalCell);
-        }
-    }
-
-    std::vector<SliceOutBlock*> out_blocks;
-    if (!tri_blk.mConn.empty())
-        out_blocks.push_back(&tri_blk);
-    if (!quad_blk.mConn.empty())
-        out_blocks.push_back(&quad_blk);
-    if (!line_blk.mConn.empty())
-        out_blocks.push_back(&line_blk);
-
-    for (SliceOutBlock* blk : out_blocks) {
-        const std::size_t ncells = blk->mConn.size() / blk->mNodesPerCell;
-        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, blk->mNodesPerCell});
-        std::memcpy(conn.Data(), blk->mConn.data(), blk->mConn.size() * sizeof(std::int64_t));
-        out.AddCellBlock(blk->mType, std::move(conn));
-    }
-
-    // --- cell_data: replicate each parent's row to its section cells ----------
-    for (const std::string& name : simp.CellDataNames()) {
-        if (name == "convert:parent_cell")
-            continue;
-        if (simp.CellDataNumBlocks(name) != nblocks)
-            continue;  // not per-cell data; dropped (new topology)
-        const NDArray& a0 = simp.CellData(name, 0);
-        const DType dt = a0.Dtype();
-        std::size_t comp = 1;
-        for (std::size_t d = 1; d < a0.Shape().size(); ++d)
-            comp *= a0.Shape()[d];
-        const std::size_t row_bytes = comp * dtype_size(dt);
-        std::vector<NDArray> blocks;
-        blocks.reserve(out_blocks.size());
-        for (SliceOutBlock* blk : out_blocks) {
-            const std::size_t ncells = blk->mParentGlobalCell.size();
-            std::vector<std::size_t> shape = a0.Shape();
-            if (shape.empty())
-                shape = {ncells};
-            else
-                shape[0] = ncells;
-            NDArray dst_arr = NDArray::Uninit(dt, std::move(shape));
-            std::byte* dst = dst_arr.Data();
-            for (std::size_t c = 0; c < ncells; ++c) {
-                const NDArray& src = simp.CellData(name, blk->mParentBlock[c]);
-                std::memcpy(dst + c * row_bytes, src.Data() + blk->mParentLocal[c] * row_bytes,
-                            row_bytes);
-            }
-            blocks.push_back(std::move(dst_arr));
-        }
-        out.AddCellData(name, std::move(blocks));
-    }
-
-    // --- slice:parent_cell provenance ----------------------------------------
-    if (rOptions.mRecordParentIds) {
-        std::vector<NDArray> blocks;
-        blocks.reserve(out_blocks.size());
-        for (SliceOutBlock* blk : out_blocks) {
-            NDArray a = NDArray::Uninit(DType::Int64, {blk->mParentGlobalCell.size()});
-            if (!blk->mParentGlobalCell.empty())
-                std::memcpy(a.Data(), blk->mParentGlobalCell.data(),
-                            blk->mParentGlobalCell.size() * sizeof(std::int64_t));
-            blocks.push_back(std::move(a));
-        }
-        out.AddCellData("slice:parent_cell", std::move(blocks));
-    }
-
-    return out;
+    return detail::marching_cut(input, dist, options);
 }
 
 }  // namespace meshioplusplus

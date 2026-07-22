@@ -182,6 +182,32 @@
             </p>
             <button type="button" id="op-section-apply">Apply</button>
           </details>
+
+          <details class="op">
+            <summary>Isosurface</summary>
+            <label
+              ><span>array</span>
+              <select id="op-iso-array"></select></label
+            >
+            <label
+              ><span>isovalue</span>
+              <input type="number" id="op-iso-value" value="0" step="any" /></label
+            >
+            <label
+              ><span>component</span>
+              <input
+                type="number"
+                id="op-iso-component"
+                min="0"
+                step="1"
+                placeholder="magnitude"
+            /></label>
+            <p class="hint" id="op-iso-note">
+              The level set of a point field — the data-driven cousin of the
+              section. Leave the component blank to contour the row magnitude.
+            </p>
+            <button type="button" id="op-iso-apply">Apply</button>
+          </details>
         </section>
 
         <section id="convert-section" hidden>

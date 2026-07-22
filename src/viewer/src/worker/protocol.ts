@@ -71,6 +71,17 @@ export type OpSpec =
           point: Vector3;
           normal: Vector3;
           mode: 'all' | 'any';
+      }
+    | {
+          /**
+           * The level set of a scalar `point_data` field (isosurface) — the
+           * data-driven sibling of `section`, and like it a surface one
+           * dimension lower. `component` is negative for the row magnitude.
+           */
+          op: 'isosurface';
+          array: string;
+          isovalue: number;
+          component: number;
       };
 
 export type OpName = OpSpec['op'];
@@ -173,6 +184,7 @@ export const OP_DEFAULTS: { [K in OpName]: Extract<OpSpec, { op: K }> } = {
         normal: [0, 0, 1],
         mode: 'all',
     },
+    isosurface: { op: 'isosurface', array: '', isovalue: 0, component: -1 },
 };
 
 /** Human label for a pipeline chip. */
@@ -194,5 +206,7 @@ export function describeOp(spec: OpSpec): string {
             const sign = (spec.normal[axis] ?? 1) < 0 ? '−' : '+';
             return `section · ${sign}${name}`;
         }
+        case 'isosurface':
+            return `isosurface · ${spec.array} = ${spec.isovalue}`;
     }
 }

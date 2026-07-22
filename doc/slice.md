@@ -13,6 +13,11 @@ This is different from [`crop`](/crop) in plane mode, which keeps *whole cells*
 on one side of the plane: `slice` computes the intersection itself and lowers
 the dimension.
 
+Its data-driven sibling is [`isosurface`](/isosurface), which cuts where a
+scalar field equals an isovalue rather than where the distance to a plane is
+zero. The two share one marching-tetrahedra cutter, so everything below about
+watertightness, winding, degeneracy and determinism holds identically there.
+
 ```python
 import meshioplusplus
 

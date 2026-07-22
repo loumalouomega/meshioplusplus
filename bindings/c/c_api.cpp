@@ -72,6 +72,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -849,6 +850,23 @@ mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const double* no
         opts.mNormal = {normal[0], normal[1], normal[2]};
         opts.mRecordParentIds = record_parent_ids != 0;
         return new mio_mesh{meshioplusplus::slice(mesh->mMesh, opts)};
+    });
+}
+
+mio_mesh* mio_isosurface(const mio_mesh* mesh, const char* array_name, const double* isovalues,
+                         int n_isovalues, int component, int record_parent_ids) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !array_name || !isovalues)
+            throw meshioplusplus::ReadError("meshio++: mesh/array_name/isovalues is NULL");
+        if (n_isovalues <= 0)
+            throw meshioplusplus::ReadError("meshio++: at least one isovalue is required");
+        meshioplusplus::IsosurfaceOptions opts;
+        opts.mArrayName = array_name;
+        opts.mIsovalues.assign(isovalues, isovalues + n_isovalues);
+        if (component >= 0)
+            opts.mComponent = component;
+        opts.mRecordParentIds = record_parent_ids != 0;
+        return new mio_mesh{meshioplusplus::isosurface(mesh->mMesh, opts)};
     });
 }
 
