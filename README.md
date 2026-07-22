@@ -324,6 +324,24 @@ tagged = meshioplusplus.refine(mesh, record_parent_ids=True)
 
 Children inherit the parent's orientation (zero newly-inverted cells for a well-oriented input), and volume is conserved — exactly for `tetra` always, and for `wedge`/`hexahedron` when the parent is affine. Higher-order cells, `pyramid`, and ragged blocks have no same-type subdivision and raise by name.
 
+#### Decimation
+
+**`meshioplusplus.decimate`** is `refine`'s inverse: it *reduces* a surface mesh's face count by greedy quadric-error-metric (Garland–Heckbert) edge collapse, preserving shape, boundaries and features. Exactly one stopping criterion is given — `ratio` (fraction of faces to keep), `target_faces`, or `max_error` — and the output is all-triangle (`quad`/`polygon` blocks are triangulated first, block structure kept 1:1). See `doc/decimate.md`.
+
+<p align="center">
+<img alt="a refined sphere before and after decimation to 25% of its faces" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/public/images/decimate_before_after.png" width="85%">
+</p>
+
+<!--pytest-codeblocks:skip-->
+
+```python
+coarse = meshioplusplus.decimate(mesh, ratio=0.25)            # keep 25% of the faces
+coarse = meshioplusplus.decimate(mesh, target_faces=5000)     # absolute face budget
+coarse, report = meshioplusplus.decimate(mesh, max_error=1e-6, return_report=True)
+```
+
+Boundary vertices (once-used-edge test) and feature vertices (face normals differing by more than `feature_angle`, default 30°) are pinned by default, so an open patch keeps its outline exactly and a cube keeps its corners; the link condition and a normal-flip guard reject any collapse that would change topology, create a non-manifold edge, or fold the surface. Float `point_data` blends along the collapsed edge; integer arrays keep the survivor's value. Volume meshes raise by name — run `extract_surface` first, then decimate the skin.
+
 #### Partitioning
 
 **`meshioplusplus.partition`** decomposes a mesh into exactly N balanced pieces for domain decomposition — the count-driven complement to the criterion-driven `split`. See `doc/partition.md`.
