@@ -342,6 +342,48 @@ TEST(CApi, Merge) {
     mio_mesh_free(b);
 }
 
+TEST(CApi, Interpolate) {
+    // Source: two points on the x-axis carrying a scalar field.
+    mio_mesh* src = mio_mesh_create();
+    const std::vector<double> spts = {0, 0, 0, 1, 0, 0};
+    ASSERT_EQ(mio_mesh_set_points(src, MIO_FLOAT64, 2, 3, spts.data()), MIO_OK);
+    const std::vector<double> f = {10.0, 20.0};
+    const std::int64_t shape1[] = {2};
+    ASSERT_EQ(mio_mesh_add_point_data(src, "f", MIO_FLOAT64, 1, shape1, f.data()), MIO_OK);
+
+    // Target: one point near the second source point.
+    mio_mesh* tgt = mio_mesh_create();
+    const std::vector<double> tpts = {0.9, 0, 0};
+    ASSERT_EQ(mio_mesh_set_points(tgt, MIO_FLOAT64, 1, 3, tpts.data()), MIO_OK);
+
+    // Default arrays (= all source point_data), default method (nearest).
+    mio_mesh* out = mio_interpolate(src, tgt, nullptr, nullptr, 0, 0, 0.0, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT32;
+    ASSERT_EQ(mio_mesh_get_point_data(out, "f", &data, &dt, nullptr, nullptr), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    EXPECT_DOUBLE_EQ(static_cast<const double*>(data)[0], 20.0);
+    mio_mesh_free(out);
+
+    // An explicit name list goes through the char** + count convention.
+    const char* names[] = {"f"};
+    out = mio_interpolate(src, tgt, "nearest", names, 1, 0, 0.0, "error");
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    mio_mesh_free(out);
+
+    // Error paths: bad method / unknown array / NULL meshes.
+    EXPECT_EQ(mio_interpolate(src, tgt, "bogus", nullptr, 0, 0, 0.0, nullptr), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    const char* bad[] = {"nope"};
+    EXPECT_EQ(mio_interpolate(src, tgt, nullptr, bad, 1, 0, 0.0, nullptr), nullptr);
+    EXPECT_EQ(mio_interpolate(nullptr, tgt, nullptr, nullptr, 0, 0, 0.0, nullptr), nullptr);
+    EXPECT_EQ(mio_interpolate(src, nullptr, nullptr, nullptr, 0, 0, 0.0, nullptr), nullptr);
+
+    mio_mesh_free(src);
+    mio_mesh_free(tgt);
+}
+
 TEST(CApi, Diff) {
     mio_mesh* a = build_tet_mesh();
     mio_mesh* b = build_tet_mesh();
@@ -977,10 +1019,10 @@ TEST(CApi, SmoothMovesInteriorAndPinsBoundary) {
 
     std::int64_t moved = -1, skipped = -1;
     double max_disp = -1.0;
-    mio_mesh* out = mio_smooth(m, "laplacian", /*iterations=*/10, /*lambda=*/-1.0, /*mu=*/-0.34,
-                               /*fix_boundary=*/1, /*preserve_features=*/1,
-                               /*feature_angle=*/30.0, /*guard_inversion=*/1, &moved, &max_disp,
-                               &skipped);
+    mio_mesh* out =
+        mio_smooth(m, "laplacian", /*iterations=*/10, /*lambda=*/-1.0, /*mu=*/-0.34,
+                   /*fix_boundary=*/1, /*preserve_features=*/1,
+                   /*feature_angle=*/30.0, /*guard_inversion=*/1, &moved, &max_disp, &skipped);
     ASSERT_NE(out, nullptr);
 
     // Geometry only: same counts, same connectivity.
@@ -1006,8 +1048,8 @@ TEST(CApi, SmoothMovesInteriorAndPinsBoundary) {
 
     // A NULL method defaults to taubin rather than failing, and the counter
     // out-params are all individually optional.
-    mio_mesh* dflt = mio_smooth(m, nullptr, 3, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr,
-                                nullptr);
+    mio_mesh* dflt =
+        mio_smooth(m, nullptr, 3, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr, nullptr);
     EXPECT_NE(dflt, nullptr);
     mio_mesh_free(dflt);
 
@@ -1031,9 +1073,9 @@ TEST(CApi, SmoothRejectsBadArguments) {
     EXPECT_EQ(mio_smooth(m, "taubin", 1, 0.4, -0.2, 1, 1, 30.0, 1, nullptr, nullptr, nullptr),
               nullptr);
     // No exception may cross the ABI for a NULL mesh either.
-    EXPECT_EQ(mio_smooth(nullptr, "taubin", 1, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr,
-                         nullptr),
-              nullptr);
+    EXPECT_EQ(
+        mio_smooth(nullptr, "taubin", 1, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr, nullptr),
+        nullptr);
     EXPECT_NE(std::string(mio_last_error()), "");
 
     mio_mesh_free(m);
