@@ -16,6 +16,7 @@ from . import (
     _extract_surface,
     _info,
     _interpolate,
+    _isosurface,
     _merge,
     _partition,
     _quality,
@@ -133,6 +134,13 @@ def main(argv=None):
     )
     _slice.add_args(parser)
     parser.set_defaults(func=_slice.slice_cmd)
+
+    parser = subparsers.add_parser(
+        "isosurface",
+        help="Level set of a scalar point_data field (volume -> surface, surface -> lines)",
+    )
+    _isosurface.add_args(parser)
+    parser.set_defaults(func=_isosurface.isosurface_cmd)
 
     parser = subparsers.add_parser(
         "split",

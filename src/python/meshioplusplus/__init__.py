@@ -66,6 +66,7 @@ from ._helpers import (
     write_points_cells,
 )
 from ._interpolate import interpolate
+from ._isosurface import isosurface
 from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
 from ._partition import partition, partition_labels
@@ -147,6 +148,7 @@ __all__ = [
     "merge",
     "interpolate",
     "slice",
+    "isosurface",
     "transform",
     "clean",
     "crop",
