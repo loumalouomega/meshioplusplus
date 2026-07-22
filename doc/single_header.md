@@ -71,3 +71,7 @@ The single header is **generated** from the sources under `cpp/` by [`tools/amal
 ```
 
 The generator emits every header once, at file scope, in dependency order (so a header can never be trapped inside another's `#ifdef`), then the `.cpp` bodies under a single `MESHIOPLUSPLUS_IMPLEMENTATION` guard.
+
+## Example notebooks
+
+[`example/cpp/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/cpp) is a set of Jupyter notebooks against this header — the C++ counterpart of [`example/python/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/python), read/render/convert/operations tours called directly against the C++ core instead of the Python bindings. They run on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) `clang-repl`-based Jupyter kernel; since there is no PyVista in C++, renders go through meshio++'s own [SVG writer](formats/svg.md#data-driven-colouring) instead. See [`example/cpp/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/cpp/README.md) for kernel setup and a list of xeus-cpp/amalgamation quirks worth knowing before editing them (shared global namespace across cells, no auto-print of a trailing expression, capture-default lambdas rejected at cell top level, only 3 built-in colormaps).

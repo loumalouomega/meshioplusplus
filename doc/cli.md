@@ -478,6 +478,45 @@ meshioplusplus smooth in.msh out.vtu --no-fix-boundary --no-guard-inversion -q
 
 ---
 
+## meshioplusplus interpolate
+
+Sample data arrays from a SOURCE mesh onto a TARGET mesh (see
+[interpolation](/interpolate)). The output is a copy of the target — geometry,
+connectivity and its own data preserved exactly — with the requested source
+arrays sampled onto it.
+
+```
+meshioplusplus interpolate [options] SOURCE TARGET OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--method nearest\|barycentric` | Nearest source point (default; dtype-preserving) or linear interpolation in a simplexified source (exact on a linear field; Float64) |
+| `--arrays a,b` | Comma-separated source array names to transfer (default: every source `point_data` array; `cell_data` transfers only when named) |
+| `--extrapolate` | `barycentric` only: give a target point outside the source domain the nearest source point's value instead of the default value |
+| `--default-value=V` | `barycentric` only: fill value for target points outside the source domain (default `0`; negative values need the `--default-value=` form) |
+| `--on-conflict error\|overwrite\|suffix` | What to do when a transferred name already exists on the target (default `error`; `suffix` writes to `NAME_interp`) |
+| `--quiet` (`-q`) | Suppress the transfer summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input (both files) / output format |
+
+Source `point_data` is sampled at the target's points, source `cell_data` at
+the target's cell centroids — always by nearest source-cell centroid, whatever
+the method. Under `barycentric` the source is simplexified first, so on a
+quad/hex source the result is the simplex-linear interpolant, and triangle
+sources are evaluated in the xy-plane (use `nearest` for a curved surface
+embedded in 3D).
+
+**Examples:**
+
+```sh
+meshioplusplus interpolate coarse.vtu fine.vtu out.vtu
+meshioplusplus interpolate coarse.vtu fine.vtu out.vtu --method barycentric
+meshioplusplus interpolate a.msh b.msh out.vtu --arrays T,v --on-conflict suffix
+meshioplusplus interpolate a.msh b.msh out.vtu --method barycentric --extrapolate
+```
+
+---
+
 ## meshioplusplus partition
 
 Decompose a mesh into N balanced parts for domain decomposition (see
