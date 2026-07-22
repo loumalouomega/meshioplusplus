@@ -17,7 +17,7 @@ import {
     cssGradient,
     formatValue,
     makeColorTransferFunction,
-} from '../../src/render/colormaps.ts';
+} from '../../../src/viewer/src/render/colormaps.ts';
 
 /** vtk.js quantizes its internal table, so allow a small tolerance. */
 const TOL = 0.02;

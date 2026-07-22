@@ -70,5 +70,5 @@ Boundary (patch) faces: `triangle`, `quad`, and `polygon<N>` for `N > 4` (groupe
 
 ## Notes
 
-- No `tests/meshes/` reference fixture (no case directory is checked in); `tests/test_openfoam.py` builds small ASCII/binary `polyMesh` file sets inline under `tmp_path`, covering ASCII and binary variants, all 4 named volume cell types, general polyhedra, boundary polygon grouping, and the `.foam`/case-dir/`polyMesh`-dir path-resolution forms. Most tests import the internal Python functions directly (keeping the Python reference exercised); the public-API test drives the C++ path.
+- No `tests/python/meshes/` reference fixture (no case directory is checked in); `tests/python/test_openfoam.py` builds small ASCII/binary `polyMesh` file sets inline under `tmp_path`, covering ASCII and binary variants, all 4 named volume cell types, general polyhedra, boundary polygon grouping, and the `.foam`/case-dir/`polyMesh`-dir path-resolution forms. Most tests import the internal Python functions directly (keeping the Python reference exercised); the public-API test drives the C++ path.
 - Ported from [Simvia's meshlane fork](https://github.com/simvia-tech/meshlane) (see `CHANGELOG.md`) — this format did not exist upstream before that.

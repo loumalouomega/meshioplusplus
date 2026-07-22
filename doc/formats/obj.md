@@ -50,5 +50,5 @@ Faces are grouped by vertex count into `triangle` (3), `quad` (4), or `polygon` 
 
 ## Notes
 
-- `tests/meshes/obj/elephav.obj` — a real triangle-mesh scan (vertex-only `v` lines plus `f` triangle lines).
+- `tests/python/meshes/obj/elephav.obj` — a real triangle-mesh scan (vertex-only `v` lines plus `f` triangle lines).
 - Fully handled by the C++ core.

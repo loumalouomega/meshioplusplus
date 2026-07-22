@@ -15,5 +15,5 @@
     "noUncheckedIndexedAccess": false,
     "types": []
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "../../tests/viewer/**/*.ts"]
 }

@@ -77,4 +77,4 @@ Node-order permutations (involutions — the same array is used in both directio
 
 ## Notes
 
-- `tests/meshes/nastran/cylinder.fem` and `cylinder_cells_first.fem` — HyperMesh/Optistruct-generated meshes matching `tests/meshes/med/cylinder.med` geometrically; used for a point-sum and per-type connectivity-sum checksum (`{line:241, triangle:171, quad:721, pyramid:1180, tetra:5309}`).
+- `tests/python/meshes/nastran/cylinder.fem` and `cylinder_cells_first.fem` — HyperMesh/Optistruct-generated meshes matching `tests/python/meshes/med/cylinder.med` geometrically; used for a point-sum and per-type connectivity-sum checksum (`{line:241, triangle:171, quad:721, pyramid:1180, tetra:5309}`).

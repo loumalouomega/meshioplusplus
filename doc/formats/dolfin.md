@@ -74,4 +74,4 @@ Each `cell_data` array is stored in a **separate sibling file**, not inline: for
 ## Notes
 
 - Fully handled by the C++ core (via the vendored pugixml + `std::filesystem` for the directory scan) — no Python fallback path is needed for this format.
-- No reference fixture exists under `tests/meshes/dolfin/`; tests round-trip synthetic meshes (`tri_mesh`, `tri_mesh_2d`, `tet_mesh`) plus a cell-data variant.
+- No reference fixture exists under `tests/python/meshes/dolfin/`; tests round-trip synthetic meshes (`tri_mesh`, `tri_mesh_2d`, `tet_mesh`) plus a cell-data variant.

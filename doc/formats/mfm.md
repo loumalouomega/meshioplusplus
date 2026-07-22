@@ -65,4 +65,4 @@ Linear elements only. Because MFM only stores **vertex** coordinates (no mid-edg
 ## Notes
 
 - Fully handled by the C++ core (Python fallback only for buffers or a non-default `float_fmt`).
-- No reference fixture exists under `tests/meshes/mfm/`; tests round-trip every supported linear type and explicitly verify `WriteError` on a mixed-type mesh.
+- No reference fixture exists under `tests/python/meshes/mfm/`; tests round-trip every supported linear type and explicitly verify `WriteError` on a mixed-type mesh.

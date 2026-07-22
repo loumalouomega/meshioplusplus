@@ -36,7 +36,7 @@ jobs:
           node-version: "20"
 
       - name: Smoke test
-        run: node src/wasm/test/smoke.mjs
+        run: node tests/wasm/smoke.mjs
 
       - name: Package sanity check (npm pack --dry-run)
         working-directory: src/wasm

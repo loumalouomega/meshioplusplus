@@ -65,5 +65,5 @@ Node ordering matches meshio for every type except `penta15`, which differs from
 
 ## Notes
 
-- `tests/meshes/ensight/simple.case`/`simple.geo` — hand-authored two-part ASCII example (non-sequential `node id given` ids, `tetra4` + `tria3` + `nsided`) exercising part concatenation, positional connectivity, and `ensight:part` tagging.
+- `tests/python/meshes/ensight/simple.case`/`simple.geo` — hand-authored two-part ASCII example (non-sequential `node id given` ids, `tetra4` + `tria3` + `nsided`) exercising part concatenation, positional connectivity, and `ensight:part` tagging.
 - Fully handled by the C++ core (ASCII + binary, both endiannesses); the pure-Python reference implements the identical feature set for fallback platforms.

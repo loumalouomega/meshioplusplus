@@ -43,8 +43,8 @@ coverage:
         threshold: 1%
 
 ignore:
-  - "tests/"
-  - "src/cpp/tests/"
+  - "tests/python/"
+  - "tests/cpp/"
   - "benchmark/"
   - "src/cpp/third_party/"
   - "doc/"

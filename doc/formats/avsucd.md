@@ -66,4 +66,4 @@ AVS-UCD → meshio++ is the same table for `tetra`/`wedge`/`hexahedron` (all inv
 ## Notes
 
 - Fully handled by the C++ core.
-- No reference fixture exists under `tests/meshes/avsucd/`; tests round-trip `empty_mesh`, `tri_mesh`, `quad_mesh`, `tri_quad_mesh`, `tet_mesh`, `hex_mesh`, plus a data variant naming `"avsucd:material"` explicitly alongside a scalar and a 3-vector array.
+- No reference fixture exists under `tests/python/meshes/avsucd/`; tests round-trip `empty_mesh`, `tri_mesh`, `quad_mesh`, `tri_quad_mesh`, `tet_mesh`, `hex_mesh`, plus a data variant naming `"avsucd:material"` explicitly alongside a scalar and a 3-vector array.

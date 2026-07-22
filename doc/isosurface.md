@@ -144,7 +144,7 @@ correct, just not vertex-minimal there.
 Every contour face is wound so that its Newell normal points toward
 **increasing field** — a globally consistent orientation (the level set of a
 temperature field faces the hotter side), pinned by a Newell-normal invariant
-test (`src/cpp/tests/test_isosurface.cpp`). The per-simplex reference direction
+test (`tests/cpp/test_isosurface.cpp`). The per-simplex reference direction
 is the centroid of the corners at or above the isovalue minus the centroid of
 those below, which needs no gradient solve and reproduces exactly in numpy.
 
@@ -160,7 +160,7 @@ flag.
 
 Output is byte-identical across the three mesh backends, across thread counts,
 and across the C++-core / numpy-fallback boundary (pinned by
-`tests/test_isosurface.py::test_cpp_matches_python`): the field-evaluation and
+`tests/python/test_isosurface.py::test_cpp_matches_python`): the field-evaluation and
 coordinate/`point_data` passes are parallel, but the cut-and-dedup sweep that
 hands out node ids is **serial** over a fixed `(block, cell, ring-edge)`
 traversal, the crossing `t` is computed from the sorted endpoint pair so both

@@ -72,7 +72,7 @@ A leading `int32` magic code — `1` for native byte order, or its byte-swap (`1
 
 ## Notes
 
-- `tests/meshes/medit/cube86.mesh` (ascii) — 39 points, 72 triangles, 86 tets, boundary tag counts `{1:14, 2:14, 3:14, 4:8, 5:14, 6:8}`.
+- `tests/python/meshes/medit/cube86.mesh` (ascii) — 39 points, 72 triangles, 86 tets, boundary tag counts `{1:14, 2:14, 3:14, 4:8, 5:14, 6:8}`.
 - `sphere_mixed.1.meshb` (binary) — 3270 points, 864 triangles, 3024 wedges, 9072 tets, tag counts `{1:432, 2:216, 3:216}`.
 - `hch_strct.4.meshb` / `hch_strct.4.be.meshb` (binary, little/big-endian pair, exercising the endian-swap path) — 306 points, 12 triangles, 178 quads, 96 wedges, 144 hexahedra, tag counts `{1:15, 2:15, 3:160}`.
 - All four originate from UGRID files converted with UGC (simcenter.msstate.edu).

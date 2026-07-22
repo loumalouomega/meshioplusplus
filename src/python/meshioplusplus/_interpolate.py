@@ -24,7 +24,7 @@ The numpy fallback below replicates the C++ core's accumulation and tie-break
 order expression for expression — grid cell size without ``cbrt`` (an integer
 loop plus one division), per-candidate distances summed axis by axis,
 barycentric weights applied corner by corner — so the two lanes produce
-byte-identical output (pinned by ``tests/test_interpolate.py``'s
+byte-identical output (pinned by ``tests/python/test_interpolate.py``'s
 ``test_cpp_matches_python``).
 """
 

@@ -10,7 +10,7 @@
  *
  * Storing uint8 rather than float control points is deliberate. The SVG/TikZ
  * writers are pinned byte-for-byte against their pure-Python twins
- * (`tests/test_svg.py`, `tests/test_tikz.py`), and a float control-point table
+ * (`tests/python/test_svg.py`, `tests/python/test_tikz.py`), and a float control-point table
  * would put a linear interpolation on every lookup that would then have to
  * round identically in C++ and in NumPy. With a full 256-entry table there is
  * nothing to interpolate: the entire floating-point surface of the color path
@@ -22,7 +22,7 @@
  * face. The Python twin, which has no header/source split, is
  * `src/python/meshioplusplus/_colormap.py`; all three files are emitted by
  * `tools/gen_colormaps.py` and pinned against each other by
- * `tests/test_colormap.py`.
+ * `tests/python/test_colormap.py`.
  */
 #pragma once
 

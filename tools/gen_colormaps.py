@@ -9,7 +9,7 @@ approximation; coolwarm is a segmented map sampled at the same 256 points
 matplotlib itself renders it at.
 
 Three files come out of this, and are pinned against each other by
-``tests/test_colormap.py`` (via the ``_core.colormap_table`` export), so a
+``tests/python/test_colormap.py`` (via the ``_core.colormap_table`` export), so a
 hand-edit to any one of them fails CI:
 
 - ``src/cpp/include/meshioplusplus/detail/colormap.hpp`` -- declarations only
@@ -107,7 +107,7 @@ def write_hpp() -> None:
  *
  * Storing uint8 rather than float control points is deliberate. The SVG/TikZ
  * writers are pinned byte-for-byte against their pure-Python twins
- * (`tests/test_svg.py`, `tests/test_tikz.py`), and a float control-point table
+ * (`tests/python/test_svg.py`, `tests/python/test_tikz.py`), and a float control-point table
  * would put a linear interpolation on every lookup that would then have to
  * round identically in C++ and in NumPy. With a full 256-entry table there is
  * nothing to interpolate: the entire floating-point surface of the color path
@@ -119,7 +119,7 @@ def write_hpp() -> None:
  * face. The Python twin, which has no header/source split, is
  * `src/python/meshioplusplus/_colormap.py`; all three files are emitted by
  * `tools/gen_colormaps.py` and pinned against each other by
- * `tests/test_colormap.py`.
+ * `tests/python/test_colormap.py`.
  */
 #pragma once
 
@@ -251,7 +251,7 @@ def write_py(tables: dict[str, bytes]) -> None:
 {GENERATED}
 
 Each colormap is a 256-entry table of packed uint8 RGB triples, identical byte
-for byte to the C++ table (pinned by ``tests/test_colormap.py`` against the
+for byte to the C++ table (pinned by ``tests/python/test_colormap.py`` against the
 ``_core.colormap_table`` export). See the C++ header for why the tables are
 stored as full 256-entry uint8 LUTs rather than as interpolated control points.
 Python has no header/source split, so -- unlike the C++ side -- the data and

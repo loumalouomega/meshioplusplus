@@ -47,7 +47,7 @@
  * and deduped by that key, so an edge shared by two simplices yields a single
  * output node — the section is watertight — and the result is byte-identical
  * across the three mesh backends, thread counts, and the C++/numpy boundary
- * (`tests/test_slice.py::test_cpp_matches_python`).
+ * (`tests/python/test_slice.py::test_cpp_matches_python`).
  *
  * Degeneracy rule (uniform): a node exactly on the plane (`d_i == 0`) is
  * classified on the **positive** side (`d_i >= 0`), which makes the sign mask

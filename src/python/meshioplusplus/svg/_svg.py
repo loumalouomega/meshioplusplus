@@ -155,7 +155,7 @@ def write(
 
     if stroke_width is None:
         # "%g", not str(): the C++ writer formats this with snprintf("%g", ...)
-        # and the two must agree byte for byte (tests/test_svg.py pins it).
+        # and the two must agree byte for byte (tests/python/test_svg.py pins it).
         stroke_width = "%g" % (width / 100)
 
     # On the flat path the drawn mesh IS the source mesh, so a face's cell
@@ -287,7 +287,7 @@ def _write_projected(
 
     if stroke_width is None:
         # "%g", not str(): the C++ writer formats this with snprintf("%g", ...)
-        # and the two must agree byte for byte (tests/test_svg.py pins it).
+        # and the two must agree byte for byte (tests/python/test_svg.py pins it).
         stroke_width = "%g" % (width / 100)
 
     fmt = " ".join(4 * [f"{{:{float_fmt}}}"])

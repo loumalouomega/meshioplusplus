@@ -90,5 +90,5 @@ Write uses a fixed reverse mapping (one Ansys type id per meshio++ type, regardl
 
 ## Notes
 
-- No dedicated `tests/meshes/` reference fixture; `tests/test_ansysInp.py` builds MAPDL snippets and meshes inline (including negative-range `CMBLOCK` expansion, multi-line `EBLOCK` continuation, and round-trips through `io.StringIO`/temp files) rather than shipping a binary fixture. The internal-helper tests import the Python module directly, so the pure- Python reference stays exercised alongside the C++ path.
+- No dedicated `tests/python/meshes/` reference fixture; `tests/python/test_ansysInp.py` builds MAPDL snippets and meshes inline (including negative-range `CMBLOCK` expansion, multi-line `EBLOCK` continuation, and round-trips through `io.StringIO`/temp files) rather than shipping a binary fixture. The internal-helper tests import the Python module directly, so the pure- Python reference stays exercised alongside the C++ path.
 - Ported from [Simvia's meshlane fork](https://github.com/simvia-tech/meshlane) (see `CHANGELOG.md`) — this format did not exist upstream before that.

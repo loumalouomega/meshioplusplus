@@ -1577,7 +1577,7 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_wkt(path));
     });
 
-    // Built-in colormap tables, exported so tests/test_colormap.py can pin the
+    // Built-in colormap tables, exported so tests/python/test_colormap.py can pin the
     // C++ table against its `_colormap.py` twin byte for byte (the two copies
     // are both emitted by tools/gen_colormaps.py).
     m.def(

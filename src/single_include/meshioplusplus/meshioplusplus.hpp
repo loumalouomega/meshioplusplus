@@ -3235,7 +3235,7 @@ inline bool surface_edge_supported(CellType Type) {
  *
  * Node numbering is meshio's (= VTK's). Conventions baked in, matching the
  * rest of this repo (see `openfoam.cpp`'s `build_*` orientation checks and
- * the `tests/helpers.py` fixtures):
+ * the `tests/python/helpers.py` fixtures):
  *  - tetra: base `(0,1,2)` normal points toward apex 3 → outward base is
  *    `(0,2,1)`.
  *  - hexahedron: base `(0,1,2,3)` normal points toward the top `(4,5,6,7)`.
@@ -3247,7 +3247,7 @@ inline bool surface_edge_supported(CellType Type) {
  *    penta15 involution (see CLAUDE.md) must NOT be applied here.
  *
  * The outward winding of every row is enforced by a gtest invariant
- * (`src/cpp/tests/test_skin.cpp`): on the reference element, the Newell normal
+ * (`tests/cpp/test_skin.cpp`): on the reference element, the Newell normal
  * of each face's corner ring must point away from the cell centroid.
  *
  * KEEP IN SYNC: `src/python/meshioplusplus/_skin.py` carries the Python twin of
@@ -3333,7 +3333,7 @@ inline bool skin_supported(CellType Type) {
  * Face rows here are wound in that VTK centre-node order, which is *not* the
  * outward winding of `cell_faces.hpp`. That is harmless for both consumers: a
  * face contributes only a sorted node key and the mean of its corners, and both
- * are winding-independent. `src/cpp/tests/test_cell_subdivision.cpp` cross-checks
+ * are winding-independent. `tests/cpp/test_cell_subdivision.cpp` cross-checks
  * every row against `cell_faces()`'s own centre-node columns so the two tables
  * cannot drift.
  *
@@ -3396,7 +3396,7 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type);
  *
  * Storing uint8 rather than float control points is deliberate. The SVG/TikZ
  * writers are pinned byte-for-byte against their pure-Python twins
- * (`tests/test_svg.py`, `tests/test_tikz.py`), and a float control-point table
+ * (`tests/python/test_svg.py`, `tests/python/test_tikz.py`), and a float control-point table
  * would put a linear interpolation on every lookup that would then have to
  * round identically in C++ and in NumPy. With a full 256-entry table there is
  * nothing to interpolate: the entire floating-point surface of the color path
@@ -3408,7 +3408,7 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type);
  * face. The Python twin, which has no header/source split, is
  * `src/python/meshioplusplus/_colormap.py`; all three files are emitted by
  * `tools/gen_colormaps.py` and pinned against each other by
- * `tests/test_colormap.py`.
+ * `tests/python/test_colormap.py`.
  */
 
 #include <cstddef>
@@ -3969,8 +3969,8 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
  * except the format's own color vocabulary lives here, so the logic exists
  * exactly twice (once per language) rather than four times. The Python twin is
  * `src/python/meshioplusplus/_facecolor.py`, and the two must stay in step: the two
- * writers are pinned byte-for-byte against each other by `tests/test_svg.py`
- * and `tests/test_tikz.py`, so every arithmetic step here has an
+ * writers are pinned byte-for-byte against each other by `tests/python/test_svg.py`
+ * and `tests/python/test_tikz.py`, so every arithmetic step here has an
  * expression-for-expression counterpart there.
  *
  * The resolution rules, in one place:
@@ -10891,7 +10891,7 @@ Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rF
  * blend parameter) are transcribed token for token into `_decimate.py`, so
  * output is byte-identical across the three mesh backends, thread counts, and
  * the C++/numpy-fallback boundary
- * (`tests/test_decimate.py::test_cpp_matches_python`).
+ * (`tests/python/test_decimate.py::test_cpp_matches_python`).
  *
  * Standard C++ and the uniform mesh API only, so it compiles under every mesh
  * backend. This is an operation, not a file format — it is deliberately not in
@@ -11272,7 +11272,7 @@ bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol = 1e-12, double rt
  * largest bbox extent), so the pure-numpy fallback reproduces it bit-for-bit;
  * output is byte-identical across the three mesh backends, across thread
  * counts, and across the C++-core / numpy-fallback boundary
- * (`tests/test_interpolate.py::test_cpp_matches_python`).
+ * (`tests/python/test_interpolate.py::test_cpp_matches_python`).
  */
 
 // System includes
@@ -11413,7 +11413,7 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
  * `mesh.info` and `gmsh_periodic` are **not** carried.
  *
  * Output is byte-identical across the three mesh backends, thread counts and the
- * C++/numpy boundary (`tests/test_isosurface.py::test_cpp_matches_python`).
+ * C++/numpy boundary (`tests/python/test_isosurface.py::test_cpp_matches_python`).
  */
 
 // System includes
@@ -12020,7 +12020,7 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method = ReorderMethod::R
  * and deduped by that key, so an edge shared by two simplices yields a single
  * output node — the section is watertight — and the result is byte-identical
  * across the three mesh backends, thread counts, and the C++/numpy boundary
- * (`tests/test_slice.py::test_cpp_matches_python`).
+ * (`tests/python/test_slice.py::test_cpp_matches_python`).
  *
  * Degeneracy rule (uniform): a node exactly on the plane (`d_i == 0`) is
  * classified on the **positive** side (`d_i >= 0`), which makes the sign mask
@@ -48658,7 +48658,7 @@ struct CcellsSimplexTemplate {
 };
 
 // The decomposition templates, all with consistently positive orientation for a
-// well-oriented parent (pinned by src/cpp/tests/test_convert_cells.cpp).
+// well-oriented parent (pinned by tests/cpp/test_convert_cells.cpp).
 //
 // Conventions come from detail/cell_faces.hpp: tetra base (0,1,2) normal points
 // toward apex 3; hexahedron base (0,1,2,3) normal points toward the top

@@ -39,7 +39,7 @@ requires_zlib = pytest.mark.skipif(
 def _baseline_mesh() -> meshioplusplus.Mesh:
     """A small mesh exercising 2 cell blocks, point_data and cell_data.
 
-    Built locally rather than taken from ``tests/helpers`` because several
+    Built locally rather than taken from ``tests/python/helpers`` because several
     pure-Python writers mutate the mesh they are handed, which would corrupt a
     shared module-level fixture for every later test in the session.
     """
@@ -74,7 +74,7 @@ def _sha(path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-# Regenerate with: pytest tests/test_io_baseline.py -k report -s
+# Regenerate with: pytest tests/python/test_io_baseline.py -k report -s
 BASELINE_HASHES = {
     "vtu_ascii": "691a4df086c4cfc7f7989c3de99e89c8d9163d86c83353b6f937ea85ffd52468",
     "vtu_binary_raw": "b6a19a63b3412f801accfc95581e6010b227b042a22435ca699165db15ae04f1",

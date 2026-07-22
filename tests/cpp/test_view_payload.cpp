@@ -2,7 +2,7 @@
 /// @file test_view_payload.cpp
 /// @brief Invariants of the mesh -> Polyscope mapping.
 ///
-/// These deliberately mirror the assertions in `tests/test_viewer.py`, which is
+/// These deliberately mirror the assertions in `tests/python/test_viewer.py`, which is
 /// what makes the C++ and Python payload builders a *parity* pair rather than
 /// two unrelated implementations that happen to coexist. When one changes,
 /// this file and that one should change together.
@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 
 #include "mesh_fixtures.hpp"
-#include "../cli/view_payload.hpp"
+#include "../../src/cpp/cli/view_payload.hpp"
 
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;

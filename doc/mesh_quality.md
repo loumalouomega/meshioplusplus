@@ -78,4 +78,4 @@ The metrics are in `src/cpp/src/operations/quality.cpp` (over the uniform mesh A
 with the per-cell loop parallelised) with reusable vector math in
 `src/cpp/include/meshioplusplus/detail/geometry.hpp`. A pure-numpy twin
 (`meshioplusplus._quality._compute_quality_py`) mirrors the formulas and is
-checked against the C++ core in `tests/test_quality.py`.
+checked against the C++ core in `tests/python/test_quality.py`.

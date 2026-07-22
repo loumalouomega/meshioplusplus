@@ -8,8 +8,8 @@
  * except the format's own color vocabulary lives here, so the logic exists
  * exactly twice (once per language) rather than four times. The Python twin is
  * `src/python/meshioplusplus/_facecolor.py`, and the two must stay in step: the two
- * writers are pinned byte-for-byte against each other by `tests/test_svg.py`
- * and `tests/test_tikz.py`, so every arithmetic step here has an
+ * writers are pinned byte-for-byte against each other by `tests/python/test_svg.py`
+ * and `tests/python/test_tikz.py`, so every arithmetic step here has an
  * expression-for-expression counterpart there.
  *
  * The resolution rules, in one place:

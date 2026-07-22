@@ -640,7 +640,7 @@ See the [C++ mesh backends](https://loumalouomega.github.io/meshioplusplus/cpp_b
 To run the meshio++ unit tests, check out this repository, install it with the test extras, and type
 
 ```
-pytest tests/
+pytest tests/python/
 ```
 
 ### License

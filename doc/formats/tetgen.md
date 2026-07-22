@@ -48,5 +48,5 @@ Write: for `.node`, attribute/marker keys are partitioned into at most one "ref"
 
 ## Notes
 
-- `tests/meshes/tetgen/mesh.node` (89 points, 1 attribute column named `"moje_data"` + 1 boundary-marker column named `"medit:ref"`) and `mesh.ele` (304 tetrahedra, 1 region attribute `"medit:ref"`) — checked via `mesh.point_data["tetgen:ref"].sum() == 12` and `mesh.cell_data["tetgen:ref"][0].sum() == 373`.
+- `tests/python/meshes/tetgen/mesh.node` (89 points, 1 attribute column named `"moje_data"` + 1 boundary-marker column named `"medit:ref"`) and `mesh.ele` (304 tetrahedra, 1 region attribute `"medit:ref"`) — checked via `mesh.point_data["tetgen:ref"].sum() == 12` and `mesh.cell_data["tetgen:ref"][0].sum() == 373`.
 - Fully handled by the C++ core (Python fallback only for buffers or a non-default `float_fmt`).

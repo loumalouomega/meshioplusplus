@@ -69,4 +69,4 @@ None — PERMAS produces no `point_data`/`cell_data`/`field_data` at all; `$NSET
 ## Notes
 
 - The C++ core handles the plain-text `.post`/`.dato` files. The gzip `.gz` containers fall back to the Python implementation.
-- No reference fixture exists under `tests/meshes/permas/`; tests round-trip synthetic meshes and check `.post`/`.post.gz`/`.0.post`/`.0.post.gz` extension/suffix dispatch.
+- No reference fixture exists under `tests/python/meshes/permas/`; tests round-trip synthetic meshes and check `.post`/`.post.gz`/`.0.post`/`.0.post.gz` extension/suffix dispatch.

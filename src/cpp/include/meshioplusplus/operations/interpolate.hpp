@@ -81,7 +81,7 @@
  * largest bbox extent), so the pure-numpy fallback reproduces it bit-for-bit;
  * output is byte-identical across the three mesh backends, across thread
  * counts, and across the C++-core / numpy-fallback boundary
- * (`tests/test_interpolate.py::test_cpp_matches_python`).
+ * (`tests/python/test_interpolate.py::test_cpp_matches_python`).
  */
 
 // System includes

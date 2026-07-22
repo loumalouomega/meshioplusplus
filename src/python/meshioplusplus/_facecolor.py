@@ -2,8 +2,8 @@
 
 The twin of ``src/cpp/include/meshioplusplus/detail/face_color.hpp`` -- see that
 header for the resolution rules. The SVG and TikZ writers are pinned
-byte-for-byte against the C++ core (``tests/test_svg.py``,
-``tests/test_tikz.py``), so every arithmetic step here mirrors the C++ one
+byte-for-byte against the C++ core (``tests/python/test_svg.py``,
+``tests/python/test_tikz.py``), so every arithmetic step here mirrors the C++ one
 expression for expression: sums run left to right in index order, values are
 cast to float before any arithmetic, and no NumPy reduction (``np.mean``,
 ``np.linalg.norm``, ``np.nanmin``) is used, since their pairwise summation

@@ -12,7 +12,7 @@ cutter itself -- marching tetrahedra on a simplexified input, the watertight
 edge dedup, the winding and the degeneracy rule -- lives in :mod:`._marching`,
 shared with :mod:`._isosurface` exactly as the C++ side shares
 ``detail/marching.hpp``; it reproduces the C++ result **byte for byte**, pinned
-by ``tests/test_slice.py::test_cpp_matches_python``.
+by ``tests/python/test_slice.py::test_cpp_matches_python``.
 
 ``slice`` shadows the Python built-in **only as a module attribute** -- the name
 ``meshioplusplus.slice`` is deliberate; the built-in is never rebound here.

@@ -31,7 +31,7 @@ Rules worth knowing before use (all documented at length in ``doc/isosurface.md`
 The C++ core (``_core.isosurface``) does the work; this module is the thin shim
 (try C++, fall back to a pure-numpy reference) plus the reference itself, which
 reproduces the C++ result **byte for byte**, pinned by
-``tests/test_isosurface.py::test_cpp_matches_python``.
+``tests/python/test_isosurface.py::test_cpp_matches_python``.
 
 Public API:
 

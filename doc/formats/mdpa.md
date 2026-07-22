@@ -86,7 +86,7 @@ MDPA has an unusually rich set of data keys, several structured differently from
 
 ## Notes
 
-- `tests/meshes/mdpa/test_small_cube.mdpa` — a small unit-cube tet mesh.
-- `tests/meshes/mdpa/test_submodelpart.mdpa` — a 2D quad mesh with a nested `SubModelPart` containing Nodes/Elements/Conditions/empty-Geometries/ empty-Constraints sub-blocks.
-- Additional `tests/input/mdpa/test_*.mdpa` fixtures target node-order permutation edge cases, minimal/degenerate geometries, hierarchical SubModelParts, and varied Table layouts.
-- `tests/test_mdpa.py` also builds many MDPA snippets **inline** (not as files) covering nearly every block type, including a `test_roundtrip_all_blocks` exercising almost all of them at once with a NaN-aware comparison helper.
+- `tests/python/meshes/mdpa/test_small_cube.mdpa` — a small unit-cube tet mesh.
+- `tests/python/meshes/mdpa/test_submodelpart.mdpa` — a 2D quad mesh with a nested `SubModelPart` containing Nodes/Elements/Conditions/empty-Geometries/ empty-Constraints sub-blocks.
+- Additional `tests/python/input/mdpa/test_*.mdpa` fixtures target node-order permutation edge cases, minimal/degenerate geometries, hierarchical SubModelParts, and varied Table layouts.
+- `tests/python/test_mdpa.py` also builds many MDPA snippets **inline** (not as files) covering nearly every block type, including a `test_roundtrip_all_blocks` exercising almost all of them at once with a NaN-aware comparison helper.

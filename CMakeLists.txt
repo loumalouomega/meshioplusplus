@@ -156,7 +156,7 @@ target_compile_features(meshioplusplus_core_obj PUBLIC cxx_std_20)
 # Clang's default -ffp-contract=on permits fusing `acc = acc + w * v` within a
 # single expression, changing the rounding by up to 1 ulp relative to numpy's
 # separately-rounded multiply and add (this is exactly what broke
-# tests/test_interpolate.py::test_cpp_matches_python on macOS). Disable
+# tests/python/test_interpolate.py::test_cpp_matches_python on macOS). Disable
 # contraction outright so this class of expression rounds identically on every
 # target; there is no MSVC equivalent needed since /fp:precise (the default)
 # never contracts.
@@ -614,13 +614,13 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
 
-  file(GLOB MESHIOPLUSPLUS_TEST_SOURCES src/cpp/tests/*.cpp)
+  file(GLOB MESHIOPLUSPLUS_TEST_SOURCES tests/cpp/*.cpp)
   if(NOT MESHIOPLUSPLUS_BUILD_C_API)
     list(REMOVE_ITEM MESHIOPLUSPLUS_TEST_SOURCES
-         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/tests/test_c_api.cpp)
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp/test_c_api.cpp)
   endif()
   add_executable(meshioplusplus_tests ${MESHIOPLUSPLUS_TEST_SOURCES})
-  target_include_directories(meshioplusplus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/tests)
+  target_include_directories(meshioplusplus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp)
   # The Polyscope payload builder is CLI-side but deliberately Polyscope-free,
   # so its invariants are tested here in the default build -- no OpenGL needed.
   target_sources(meshioplusplus_tests PRIVATE src/cpp/cli/view_payload.cpp)
@@ -637,7 +637,7 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
   if(MESHIOPLUSPLUS_BUILD_FORTRAN)
     # Plain Fortran program, nonzero exit on any failed check; argv[1] is a
     # path prefix for the files it writes.
-    add_executable(meshioplusplus_fortran_test bindings/fortran/test/test_fortran_api.f90)
+    add_executable(meshioplusplus_fortran_test tests/fortran/test_fortran_api.f90)
     target_link_libraries(meshioplusplus_fortran_test PRIVATE meshioplusplus_fortran)
     add_test(NAME fortran_api
              COMMAND meshioplusplus_fortran_test ${CMAKE_CURRENT_BINARY_DIR}/fortran_test_out)

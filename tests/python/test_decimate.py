@@ -27,7 +27,7 @@ def _grid(n=4):
 def _sphere(levels=3):
     """An octahedron refined ``levels`` times, pushed onto the unit sphere.
 
-    Same recipe as src/cpp/tests/test_decimate.cpp's ``sphere_mesh``.
+    Same recipe as tests/cpp/test_decimate.cpp's ``sphere_mesh``.
     """
     octa = mp.Mesh(
         np.array(

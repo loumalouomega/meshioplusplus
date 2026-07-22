@@ -21,7 +21,7 @@
       "label": "Test: pytest (all)",
       "detail": "Run the full Python test suite.",
       "type": "shell",
-      "command": ".venv/bin/pytest tests/ -q",
+      "command": ".venv/bin/pytest tests/python/ -q",
       "options": {
         "cwd": "${workspaceFolder}"
       },

@@ -65,6 +65,10 @@ src/viewer/dist-web/
 src/viewer/dist-embed/
 src/viewer/node_modules/
 src/viewer/test-results/
+# Symlink to src/viewer/node_modules, created by its postinstall script (see
+# src/viewer/tools/link-test-deps.mjs) so tests/viewer/*.spec.mjs can resolve
+# @playwright/test.
+tests/viewer/node_modules
 src/viewer/playwright-report/
 
 # doc/icons/ LaTeX build artifacts (svg-ui/ is committed; see doc/icons/README.md)

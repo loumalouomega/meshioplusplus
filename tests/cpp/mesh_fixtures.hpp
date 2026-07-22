@@ -19,9 +19,9 @@
 /**
  * @file mesh_fixtures.hpp
  * @brief Fixture-mesh builders and round-trip helpers shared by the C++ unit
- *        test suite (`src/cpp/tests/test_*.cpp`).
+ *        test suite (`tests/cpp/test_*.cpp`).
  *
- * This is the C++ analogue of Python's `tests/helpers.py`: rather than each
+ * This is the C++ analogue of Python's `tests/python/helpers.py`: rather than each
  * `test_<format>.cpp` hand-rolling its own small meshes, it builds a
  * `meshioplusplus::Mesh` fixture (e.g. `mt::tri_mesh()`, `mt::tet_mesh()`,
  * `mt::hex_mesh()`) once here and every format's test file exercises the
@@ -67,7 +67,7 @@ using meshioplusplus::NDArray;
 // nested `std::vector` literals into `meshioplusplus::NDArray`/`Mesh`
 // objects, followed by a set of named single-cell-type fixture meshes
 // (`line_mesh`, `tri_mesh`, `tet_mesh`, `hex_mesh`, ...) that mirror the
-// fixtures in Python's `tests/helpers.py`. Each fixture is a small,
+// fixtures in Python's `tests/python/helpers.py`. Each fixture is a small,
 // hand-picked, geometrically valid mesh (consistent winding / positive
 // volume for solid cells) meant to be fed straight into `roundtrip()` by a
 // format's test file.
@@ -134,7 +134,7 @@ inline Mesh make_mesh(std::vector<std::vector<double>> pts, const std::string& r
     return m;
 }
 
-// Fixture meshes mirroring tests/helpers.py (geometry chosen to be valid,
+// Fixture meshes mirroring tests/python/helpers.py (geometry chosen to be valid,
 // right-handed volume cells so FLAC3D's determinant reorder round-trips).
 
 /**
@@ -395,7 +395,7 @@ using Reader = std::function<Mesh(const std::string&)>;
  * an `std::error_code` overload, so a failed cleanup does not itself throw
  * or fail the test).
  *
- * Typical call site (see `src/cpp/tests/test_vtk.cpp`):
+ * Typical call site (see `tests/cpp/test_vtk.cpp`):
  * @code
  * mt::roundtrip(
  *     [=](const std::string& p, const mt::Mesh& m) {

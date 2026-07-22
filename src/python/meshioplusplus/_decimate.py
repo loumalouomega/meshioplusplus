@@ -16,7 +16,7 @@ expression that feeds a branch (plane, quadric, 3x3 solve, error form, blend
 parameter) is transcribed token for token from
 ``src/cpp/src/operations/decimate.cpp`` -- KEEP THEM IN SYNC -- so both sides take
 the same side of every discrete decision and the output is byte-identical
-(pinned by ``tests/test_decimate.py::test_cpp_matches_python``).
+(pinned by ``tests/python/test_decimate.py::test_cpp_matches_python``).
 
 ``point_sets`` are remapped through the returned point map (each entry lands on
 its survivor; duplicates collapse) and ``cell_sets`` through the per-block cell

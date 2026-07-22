@@ -87,4 +87,4 @@ Temporal XDMF is written/read with the `TimeSeriesWriter`/`TimeSeriesReader` cla
 
 ## Notes
 
-- No reference fixture exists under `tests/meshes/xdmf/`; tests use synthetic meshes across all three `data_format` values.
+- No reference fixture exists under `tests/python/meshes/xdmf/`; tests use synthetic meshes across all three `data_format` values.

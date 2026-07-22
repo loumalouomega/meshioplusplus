@@ -54,4 +54,4 @@ None — no point_data, cell_data, or field_data is read or written by this form
 ## Notes
 
 - Read/written through the C++ core when built with `MESHIO_WITH_HDF5`, otherwise through `h5py` — behavior is identical either way.
-- No reference fixture exists under `tests/meshes/cgns/`; the only test round-trips a synthetic `tet_mesh`.
+- No reference fixture exists under `tests/python/meshes/cgns/`; the only test round-trips a synthetic `tet_mesh`.

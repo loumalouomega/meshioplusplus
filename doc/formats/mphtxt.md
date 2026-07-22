@@ -74,4 +74,4 @@ Node-order permutation (COMSOL ↔ meshio++, self-inverse swaps — identity for
 ## Notes
 
 - Fully handled by the C++ core.
-- No reference fixture exists under `tests/meshes/mphtxt/`; tests round-trip linear, second-order, and hybrid (`tri_quad_mesh`) meshes.
+- No reference fixture exists under `tests/python/meshes/mphtxt/`; tests round-trip linear, second-order, and hybrid (`tri_quad_mesh`) meshes.

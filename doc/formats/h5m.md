@@ -75,4 +75,4 @@ MOAB element-type enum values (stored as the `element_type` attribute): `Edge=1,
 ## Notes
 
 - Read/written through the C++ core when built with `MESHIO_WITH_HDF5`, otherwise through `h5py`.
-- No reference fixture exists under `tests/meshes/h5m/`; `tests/test_moab.py` round-trips synthetic meshes only.
+- No reference fixture exists under `tests/python/meshes/h5m/`; `tests/python/test_moab.py` round-trips synthetic meshes only.

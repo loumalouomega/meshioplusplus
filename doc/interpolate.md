@@ -89,7 +89,7 @@ nothing is ever silently clobbered.
 
 The output is byte-identical across the three mesh backends, across thread
 counts, and across the C++-core / numpy-fallback boundary (pinned by
-`tests/test_interpolate.py::test_cpp_matches_python`):
+`tests/python/test_interpolate.py::test_cpp_matches_python`):
 
 - both search grids (source points, simplex bounding boxes) are bucket-grid
   spatial hashes (`detail/spatial_hash.hpp`, shared with [merge](/merge)'s

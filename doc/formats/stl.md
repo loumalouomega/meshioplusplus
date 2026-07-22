@@ -65,4 +65,4 @@ endsolid
 ## Notes
 
 - Fully handled by the C++ core (ASCII and binary).
-- No reference fixture exists under `tests/meshes/stl/`; tests round-trip synthetic meshes only.
+- No reference fixture exists under `tests/python/meshes/stl/`; tests round-trip synthetic meshes only.

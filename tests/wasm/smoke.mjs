@@ -6,11 +6,11 @@
 // (src/index.mjs) -- not the raw embind glue -- so this is exactly what a
 // real consumer would call.
 //
-// Usage: node src/wasm/test/smoke.mjs   (after `build/configure-wasm.sh --build`
+// Usage: node tests/wasm/smoke.mjs   (after `build/configure-wasm.sh --build`
 // has populated src/wasm/dist/meshioplusplus_wasm.{mjs,wasm})
 
 import assert from 'node:assert/strict';
-import { loadMeshioPlusPlus } from '../src/index.mjs';
+import { loadMeshioPlusPlus } from '../../src/wasm/src/index.mjs';
 
 let failed = false;
 function step(name, fn) {

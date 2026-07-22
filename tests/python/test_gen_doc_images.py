@@ -11,7 +11,7 @@ import pathlib
 
 import pytest
 
-REPO = pathlib.Path(__file__).resolve().parent.parent
+REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO / "tools" / "gen_doc_images.py"
 
 

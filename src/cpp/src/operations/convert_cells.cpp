@@ -97,7 +97,7 @@ struct CcellsSimplexTemplate {
 };
 
 // The decomposition templates, all with consistently positive orientation for a
-// well-oriented parent (pinned by src/cpp/tests/test_convert_cells.cpp).
+// well-oriented parent (pinned by tests/cpp/test_convert_cells.cpp).
 //
 // Conventions come from detail/cell_faces.hpp: tetra base (0,1,2) normal points
 // toward apex 3; hexahedron base (0,1,2,3) normal points toward the top

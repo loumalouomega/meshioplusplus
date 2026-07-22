@@ -5,10 +5,10 @@ import { defineConfig, devices } from '@playwright/test';
 const BASE = '/meshioplusplus/viewer/';
 
 export default defineConfig({
-    testDir: './tests',
+    testDir: '../../tests/viewer',
     // Only the browser specs. Playwright's default pattern also matches
     // `*.test.mjs`, which would drag in the `node --test` unit tests under
-    // tests/unit/ — they import TypeScript directly and are run by
+    // tests/viewer/unit/ — they import TypeScript directly and are run by
     // `npm run test:unit` instead.
     testMatch: '**/*.spec.mjs',
     // The WASM module has to instantiate before the first mesh can be read,

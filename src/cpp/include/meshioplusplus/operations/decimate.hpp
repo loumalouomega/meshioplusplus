@@ -106,7 +106,7 @@
  * blend parameter) are transcribed token for token into `_decimate.py`, so
  * output is byte-identical across the three mesh backends, thread counts, and
  * the C++/numpy-fallback boundary
- * (`tests/test_decimate.py::test_cpp_matches_python`).
+ * (`tests/python/test_decimate.py::test_cpp_matches_python`).
  *
  * Standard C++ and the uniform mesh API only, so it compiles under every mesh
  * backend. This is an operation, not a file format — it is deliberately not in

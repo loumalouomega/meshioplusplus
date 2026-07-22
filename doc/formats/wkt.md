@@ -42,6 +42,6 @@ None — plain `Mesh(points, [CellBlock("triangle", ...)])`, no point_data, cell
 
 ## Notes
 
-- `tests/meshes/wkt/simple.wkt` — 2 triangles sharing an edge, 4 unique points, point-sum reference `4`.
-- `tests/meshes/wkt/whitespaced.wkt` — the same 2 triangles with irregular internal whitespace and mixed-precision coordinate text, point-sum reference `3.2`.
+- `tests/python/meshes/wkt/simple.wkt` — 2 triangles sharing an edge, 4 unique points, point-sum reference `4`.
+- `tests/python/meshes/wkt/whitespaced.wkt` — the same 2 triangles with irregular internal whitespace and mixed-precision coordinate text, point-sum reference `3.2`.
 - Fully handled by the C++ core.

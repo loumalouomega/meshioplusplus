@@ -44,7 +44,7 @@
  * Face rows here are wound in that VTK centre-node order, which is *not* the
  * outward winding of `cell_faces.hpp`. That is harmless for both consumers: a
  * face contributes only a sorted node key and the mean of its corners, and both
- * are winding-independent. `src/cpp/tests/test_cell_subdivision.cpp` cross-checks
+ * are winding-independent. `tests/cpp/test_cell_subdivision.cpp` cross-checks
  * every row against `cell_faces()`'s own centre-node columns so the two tables
  * cannot drift.
  *

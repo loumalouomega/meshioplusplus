@@ -61,5 +61,5 @@ Generic `SCALARS`/`VECTORS`/`TENSORS`/`FIELD` blocks map 1:1 to `point_data`/`ce
 
 ## Notes
 
-- `tests/meshes/vtk/00_image.vtk`/`01_image.vtk` (`STRUCTURED_POINTS`, generating 81/100 and 72/147 points/cells), `02_structured.vtk` (`STRUCTURED_GRID`), `03-05_rectilinear.vtk` (`RECTILINEAR_GRID` variants), `06_unstructured.vtk` (hexahedron, 12/42), `06_color_scalars.vtk` (5 points/2 cells, exercises `COLOR_SCALARS`), `gh-935.vtk` (triangle regression test), `rbc_001.vtk` (996 cells, a red-blood-cell mesh).
+- `tests/python/meshes/vtk/00_image.vtk`/`01_image.vtk` (`STRUCTURED_POINTS`, generating 81/100 and 72/147 points/cells), `02_structured.vtk` (`STRUCTURED_GRID`), `03-05_rectilinear.vtk` (`RECTILINEAR_GRID` variants), `06_unstructured.vtk` (hexahedron, 12/42), `06_color_scalars.vtk` (5 points/2 cells, exercises `COLOR_SCALARS`), `gh-935.vtk` (triangle regression test), `rbc_001.vtk` (996 cells, a red-blood-cell mesh).
 - The C++ core handles both versions in ASCII and big-endian binary for `UNSTRUCTURED_GRID` only.

@@ -67,7 +67,7 @@ The reverse map (meshio++ → Abaqus) is lossy: several Abaqus names collapse to
 
 ## Notes
 
-- `tests/meshes/abaqus/UUea.inp` — point-sum 4950.0, 50 cells, 10 cell_sets.
+- `tests/python/meshes/abaqus/UUea.inp` — point-sum 4950.0, 50 cells, 10 cell_sets.
 - `nle1xf3c.inp` (MIT Abaqus course material) — point-sum ≈32.215275528, 12 cells, 3 cell_sets.
 - `element_elset.inp` — exercises inline `ELSET=` on `*ELEMENT`.
 - `wInclude_main.inp` + `wInclude_bulk.inp` — exercises `*INCLUDE`.

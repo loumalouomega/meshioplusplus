@@ -55,4 +55,4 @@ Linear only, dimension-dependent as above: `{triangle, line}` for 2D meshes, `{t
 ## Notes
 
 - Fully handled by the C++ core.
-- No reference fixture exists under `tests/meshes/freefem/`; tests round-trip `tri_mesh_2d`, `tri_mesh`, and `tet_mesh`.
+- No reference fixture exists under `tests/python/meshes/freefem/`; tests round-trip `tri_mesh_2d`, `tri_mesh`, and `tet_mesh`.

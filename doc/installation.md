@@ -32,7 +32,7 @@ pip install -e ".[all]"
 Run the test suite with:
 
 ```
-pytest tests/
+pytest tests/python/
 ```
 
 or via tox (tests against Python 3.9 and 3.12):
@@ -106,7 +106,7 @@ The same C++ core also compiles to WebAssembly for use in the browser or Node.js
 
 ```sh
 ./build/configure-wasm.sh --build
-node src/wasm/test/smoke.mjs
+node tests/wasm/smoke.mjs
 ```
 
 See [WebAssembly / JavaScript](./wasm.md) for the full usage guide, the supported-format list (27 of the 35+ formats — the HDF5/netCDF-backed ones are not yet ported to WASM), and known v1 limitations.

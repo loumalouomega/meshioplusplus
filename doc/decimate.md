@@ -142,7 +142,7 @@ QEM is inherently sequential — driven by a priority queue with the total order
 deletion. Output is **byte-identical** across the three mesh backends, across
 thread counts, and across the C++-core/numpy-fallback boundary: the pure
 Python fallback is an expression-for-expression twin, pinned by
-`tests/test_decimate.py::test_cpp_matches_python`.
+`tests/python/test_decimate.py::test_cpp_matches_python`.
 
 ## Other language surfaces
 

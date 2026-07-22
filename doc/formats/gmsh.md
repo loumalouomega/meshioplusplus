@@ -75,4 +75,4 @@ Five element types need a node-order permutation between Gmsh and meshio++ (ever
 
 ## Notes
 
-- `tests/meshes/msh/insulated-2.2.msh` and `insulated-4.1.msh` — the same mesh (Gmsh 4.2.2, `-format msh2` for the 2.2 variant): 111 triangles (2 Physical Surfaces) + 21 lines (1 Physical Line). Used to check point sums, cell counts, and `gmsh:physical`/`gmsh:geometrical`/`cell_sets` consistency, including the v4.1 `$Entities`-bearing variant.
+- `tests/python/meshes/msh/insulated-2.2.msh` and `insulated-4.1.msh` — the same mesh (Gmsh 4.2.2, `-format msh2` for the 2.2 variant): 111 triangles (2 Physical Surfaces) + 21 lines (1 Physical Line). Used to check point sums, cell counts, and `gmsh:physical`/`gmsh:geometrical`/`cell_sets` consistency, including the v4.1 `$Entities`-bearing variant.

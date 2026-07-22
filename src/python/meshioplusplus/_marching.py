@@ -10,8 +10,8 @@ plane: the algorithm cuts wherever a **per-node signed scalar** changes sign.
 Written to reproduce the C++ result **byte for byte** -- the traversal order, the
 ``t = d_lo/(d_lo - d_hi)`` crossing formula from the sorted edge endpoints, the
 Newell-normal orientation flip and the bbox-relative degeneracy tolerance --
-pinned by ``tests/test_slice.py::test_cpp_matches_python`` and
-``tests/test_isosurface.py::test_cpp_matches_python``.
+pinned by ``tests/python/test_slice.py::test_cpp_matches_python`` and
+``tests/python/test_isosurface.py::test_cpp_matches_python``.
 
 Two phases, mirroring the C++ header:
 

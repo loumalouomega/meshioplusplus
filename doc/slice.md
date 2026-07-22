@@ -85,7 +85,7 @@ the section is still geometrically correct, just not vertex-minimal there.
 
 Every section face is wound so that its Newell normal points toward the
 `+normal` side of the plane — a globally consistent orientation, pinned by a
-Newell-normal invariant test (`src/cpp/tests/test_slice.cpp`).
+Newell-normal invariant test (`tests/cpp/test_slice.cpp`).
 
 ## Provenance
 
@@ -99,7 +99,7 @@ replicated onto each section cell regardless of this flag.
 
 Output is byte-identical across the three mesh backends, across thread counts,
 and across the C++-core / numpy-fallback boundary (pinned by
-`tests/test_slice.py::test_cpp_matches_python`): the signed-distance and
+`tests/python/test_slice.py::test_cpp_matches_python`): the signed-distance and
 coordinate/`point_data` passes are parallel, but the cut-and-dedup sweep that
 hands out node ids is **serial** over a fixed `(block, cell, ring-edge)`
 traversal, and the crossing `t` is computed from the sorted endpoint pair so

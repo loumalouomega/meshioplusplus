@@ -83,5 +83,5 @@ Full Netgen→meshio++ node permutation table (meshio++[i] = netgen[table[i]]); 
 
 ## Notes
 
-- `tests/meshes/netgen/periodic_1d.vol`, `periodic_2d.vol`, `periodic_3d.vol` — each carries `identifications` data (used to test the `netgen:identifications`/`netgen:identificationtypes` round-trip, which always forces the Python path per the rules above).
+- `tests/python/meshes/netgen/periodic_1d.vol`, `periodic_2d.vol`, `periodic_3d.vol` — each carries `identifications` data (used to test the `netgen:identifications`/`netgen:identificationtypes` round-trip, which always forces the Python path per the rules above).
 - The C++ core handles the common `.vol` path (points, cells, `netgen:index`) for both ascii read/write.

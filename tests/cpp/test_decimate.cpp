@@ -99,7 +99,7 @@ Mesh bump_grid_mesh(int n) {
 }
 
 // An octahedron refined `levels` times with every point pushed onto the unit
-// sphere. Same recipe as tests/test_decimate.py's `_sphere`.
+// sphere. Same recipe as tests/python/test_decimate.py's `_sphere`.
 Mesh sphere_mesh(int levels) {
     Mesh octa = mt::make_mesh(
         {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}, "triangle",

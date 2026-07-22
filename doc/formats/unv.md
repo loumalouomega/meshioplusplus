@@ -104,4 +104,4 @@ Parabolic (second-order) elements use the **Salome/Code-Aster mid-node "sandwich
 ## Notes
 
 - Implemented against the [FEconv](https://github.com/victorsndvg/FEconv) format documentation and its FE-descriptor table.
-- No reference fixture exists under `tests/meshes/unv/`; tests round-trip synthetic meshes covering every supported linear and parabolic type, plus an explicit `test_groups` exercising `point_sets`/`cell_sets`.
+- No reference fixture exists under `tests/python/meshes/unv/`; tests round-trip synthetic meshes covering every supported linear and parabolic type, plus an explicit `test_groups` exercising `point_sets`/`cell_sets`.

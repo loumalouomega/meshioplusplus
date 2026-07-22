@@ -70,7 +70,7 @@ Follow the existing module layout under `src/python/meshioplusplus/`:
 
 6. **Import the module in `src/python/meshioplusplus/__init__.py`** — add it to both the import list and `__all__`.
 
-7. **Add `tests/test_<format>.py`** using `helpers.write_read`:
+7. **Add `tests/python/test_<format>.py`** using `helpers.write_read`:
 
    ```python
    import pytest

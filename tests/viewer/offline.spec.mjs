@@ -10,7 +10,7 @@
  * Generate the page first (see the `viewer-web` job in ci.yml):
  *
  *     python -c "...build_page(mesh)..." > /tmp/offline.html
- *     npx playwright test tests/offline.spec.mjs
+ *     cd src/viewer && npx playwright test ../../tests/viewer/offline.spec.mjs
  *
  * Skips when no page has been generated, so a bare `npm run test:e2e` — which
  * picks up every spec in this directory — does not fail for a missing fixture.

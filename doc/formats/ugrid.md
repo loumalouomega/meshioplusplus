@@ -71,7 +71,7 @@ Volume elements (6-9) get **zero-filled** boundary tags — UGRID has no per-vol
 
 ## Notes
 
-- `tests/meshes/ugrid/pyra_cube.ugrid` (ascii) — a unit cube split into 6 pyramids; used to verify the pyramid permutation via a signed-volume sum (≈1.0).
-- `tests/meshes/ugrid/sphere_mixed.1.lb8.ugrid` (little-endian binary) — 3270 points, 864 triangles, 3024 wedges, 9072 tets, boundary tag counts `{1:432, 2:216, 3:216}`.
-- `tests/meshes/ugrid/hch_strct.4.lb8.ugrid` — 306 points, 12 tri, 178 quad, 96 wedge, 144 hex; also used to check total surface area, catching any connectivity-order regression.
+- `tests/python/meshes/ugrid/pyra_cube.ugrid` (ascii) — a unit cube split into 6 pyramids; used to verify the pyramid permutation via a signed-volume sum (≈1.0).
+- `tests/python/meshes/ugrid/sphere_mixed.1.lb8.ugrid` (little-endian binary) — 3270 points, 864 triangles, 3024 wedges, 9072 tets, boundary tag counts `{1:432, 2:216, 3:216}`.
+- `tests/python/meshes/ugrid/hch_strct.4.lb8.ugrid` — 306 points, 12 tri, 178 quad, 96 wedge, 144 hex; also used to check total surface area, catching any connectivity-order regression.
 - Fully handled by the C++ core across every flavour (host-relative byte swapping).

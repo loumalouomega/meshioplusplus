@@ -60,6 +60,6 @@ Faces are grouped by vertex count: 1→`vertex`, 2→`line`, 3→`triangle`, 4�
 
 ## Notes
 
-- `tests/meshes/ply/bun_zipper_res4.ply` — the decimated Stanford bunny, 948 triangle cells, point-sum ≈34.14584.
-- `tests/meshes/ply/tet.ply` — a tiny 4-cell tetrahedron surface, point-sum 6 (exercises extra face properties, forcing the Python path).
+- `tests/python/meshes/ply/bun_zipper_res4.ply` — the decimated Stanford bunny, 948 triangle cells, point-sum ≈34.14584.
+- `tests/python/meshes/ply/tet.ply` — a tiny 4-cell tetrahedron surface, point-sum 6 (exercises extra face properties, forcing the Python path).
 - The C++ core handles ASCII and both binary endiannesses for the common case (index-only faces, non-list vertex properties).

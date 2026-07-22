@@ -76,7 +76,7 @@
  * `mesh.info` and `gmsh_periodic` are **not** carried.
  *
  * Output is byte-identical across the three mesh backends, thread counts and the
- * C++/numpy boundary (`tests/test_isosurface.py::test_cpp_matches_python`).
+ * C++/numpy boundary (`tests/python/test_isosurface.py::test_cpp_matches_python`).
  */
 
 // System includes

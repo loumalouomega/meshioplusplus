@@ -29,7 +29,7 @@
 
 namespace {
 
-// PLY has no dedicated src/cpp/tests file elsewhere -- src/cpp/src/formats/ply.cpp is
+// PLY has no dedicated tests/cpp file elsewhere -- src/cpp/src/formats/ply.cpp is
 // otherwise reached only through the Python shim. Exercise both the ASCII and
 // binary reader/writer halves here.
 

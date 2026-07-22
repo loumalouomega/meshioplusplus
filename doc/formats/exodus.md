@@ -69,4 +69,4 @@ The write-side reverse map picks one canonical Exodus name per meshio++ type (e.
 ## Notes
 
 - Read/written through the C++ core when built with `MESHIO_WITH_NETCDF`, otherwise through `netCDF4`.
-- No reference fixture exists under `tests/meshes/exodus/`; tests round-trip synthetic meshes, including one exercising `point_sets` (which always forces the Python path).
+- No reference fixture exists under `tests/python/meshes/exodus/`; tests round-trip synthetic meshes, including one exercising `point_sets` (which always forces the Python path).

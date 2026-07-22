@@ -57,6 +57,6 @@ Write: `NDIME=` from `points.shape[1]`; `NPOIN=` + coordinates; volume cells (`t
 
 ## Notes
 
-- `tests/meshes/su2/square.su2` (official SU2-docs example: structured 2D quad mesh, 9 points/8 quads/markers) — checked for 16 total cells, 9 points, 4 unique tags summing to 20.
-- `tests/meshes/su2/mixgrid.su2` (mixed-cell 3D grid) — checked for 30 cells, 16 points, 6 unique tags summing to 62.
+- `tests/python/meshes/su2/square.su2` (official SU2-docs example: structured 2D quad mesh, 9 points/8 quads/markers) — checked for 16 total cells, 9 points, 4 unique tags summing to 20.
+- `tests/python/meshes/su2/mixgrid.su2` (mixed-cell 3D grid) — checked for 30 cells, 16 points, 6 unique tags summing to 62.
 - Fully handled by the C++ core.

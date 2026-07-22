@@ -48,4 +48,4 @@ None — OFF carries no point_data, cell_data, or field_data; `Mesh(points, cell
 ## Notes
 
 - Fully handled by the C++ core.
-- `tests/meshes/off/cube_example.off` (6 quad faces) / `cube_example_as_triangs.off` (the same cube pre-triangulated into 12 triangles) — a unit cube, once per representation (from [issue #35](https://github.com/loumalouomega/meshioplusplus/issues/35), which reported that non-triangular faces were rejected outright); other tests round-trip synthetic `tri_mesh`/`quad_mesh`/`polygon_mesh_one_cell` fixtures and check `.off`/`.0.off` extension dispatch.
+- `tests/python/meshes/off/cube_example.off` (6 quad faces) / `cube_example_as_triangs.off` (the same cube pre-triangulated into 12 triangles) — a unit cube, once per representation (from [issue #35](https://github.com/loumalouomega/meshioplusplus/issues/35), which reported that non-triangular faces were rejected outright); other tests round-trip synthetic `tri_mesh`/`quad_mesh`/`polygon_mesh_one_cell` fixtures and check `.off`/`.0.off` extension dispatch.

@@ -90,7 +90,7 @@ an `ImportError` from inside the parser.
 
 ### Interop is tested, not assumed
 
-`tests/test_codecs.py` runs against a real VTK when one is installed
+`tests/python/test_codecs.py` runs against a real VTK when one is installed
 (`pip install vtk`) and asserts all three directions:
 
 - VTK reads a `.vtu` meshio++ wrote with `lz4`;

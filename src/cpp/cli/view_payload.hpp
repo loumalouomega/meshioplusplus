@@ -7,8 +7,8 @@
  * `_to_polyscope_payload` -- KEEP THEM IN SYNC.** Two implementations exist
  * because Python needs one that works with no compiled core (the pure-Python
  * fallback contract), so moving the logic here would relocate the duplication
- * rather than remove it. `src/cpp/tests/test_view_payload.cpp` and
- * `tests/test_viewer.py` assert the same invariants, which is what makes them
+ * rather than remove it. `tests/cpp/test_view_payload.cpp` and
+ * `tests/python/test_viewer.py` assert the same invariants, which is what makes them
  * a parity check rather than two unrelated suites.
  *
  * Deliberately free of any Polyscope header: this half is pure mapping, so it

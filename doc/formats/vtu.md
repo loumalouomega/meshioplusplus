@@ -74,5 +74,5 @@ The full VTK cell set, including VTK Lagrange high-order cells (`VTK_LAGRANGE_*`
 
 ## Notes
 
-- `tests/meshes/vtu/00_raw_binary.vtu`, `01_raw_binary_int64.vtu` (uses an Int64 header type), `02_raw_compressed.vtu` (zlib-compressed appended data) — each a 162-point, 64-cell `tetra` mesh, all exercised via the raw-binary fallback path described above.
+- `tests/python/meshes/vtu/00_raw_binary.vtu`, `01_raw_binary_int64.vtu` (uses an Int64 header type), `02_raw_compressed.vtu` (zlib-compressed appended data) — each a 162-point, 64-cell `tetra` mesh, all exercised via the raw-binary fallback path described above.
 - The C++ core handles ASCII, uncompressed binary, and **zlib** binary (when built with `MESHIO_WITH_ZLIB`; otherwise the Python stdlib handles zlib too) — see [native acceleration](../formats.md#native-acceleration-and-fallbacks).

@@ -6,12 +6,13 @@
   "description": "Browser mesh viewer built on the meshio++ WASM package and vtk.js",
   "license": "MIT",
   "scripts": {
+    "postinstall": "node tools/link-test-deps.mjs",
     "dev": "vite",
     "build:web": "vite build --outDir dist-web",
     "build:embed": "VITE_VIEWER_EMBEDDED=1 VITE_BASE=./ vite build --outDir dist-embed",
     "preview": "vite preview --outDir dist-web --port 4173 --strictPort",
     "test:e2e": "playwright test",
-    "test:unit": "node tests/unit/build-and-run.mjs",
+    "test:unit": "node ../../tests/viewer/unit/build-and-run.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

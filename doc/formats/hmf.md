@@ -51,4 +51,4 @@ Fully generic: any `point_data`/`cell_data` key name is preserved verbatim as an
 ## Notes
 
 - Read/written through the C++ core when built with `MESHIO_WITH_HDF5`, otherwise through `h5py`.
-- No reference fixture exists under `tests/meshes/hmf/`; tests round-trip synthetic meshes only.
+- No reference fixture exists under `tests/python/meshes/hmf/`; tests round-trip synthetic meshes only.

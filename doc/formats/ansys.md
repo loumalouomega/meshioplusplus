@@ -76,5 +76,5 @@ None — `point_data`/`cell_data`/`field_data` are always empty; this format car
 
 ## Notes
 
-- No reference fixture exists under `tests/meshes/ansys/`; tests round-trip synthetic meshes (`empty_mesh`, `tri_mesh`, `tri_mesh_2d`, `quad_mesh`, `tri_quad_mesh`, `tet_mesh`, `hex_mesh`, `pyramid_mesh`, `wedge_mesh`), parametrized over both ASCII and binary.
+- No reference fixture exists under `tests/python/meshes/ansys/`; tests round-trip synthetic meshes (`empty_mesh`, `tri_mesh`, `tri_mesh_2d`, `quad_mesh`, `tri_quad_mesh`, `tet_mesh`, `hex_mesh`, `pyramid_mesh`, `wedge_mesh`), parametrized over both ASCII and binary.
 - `.msh` is shared with [`gmsh`](./gmsh.md) and [`freefem`](./freefem.md); on auto-detection `ansys` is tried first. Pass `file_format` to disambiguate.

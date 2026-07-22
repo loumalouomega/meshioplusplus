@@ -28,7 +28,7 @@
  *
  * Node numbering is meshio's (= VTK's). Conventions baked in, matching the
  * rest of this repo (see `openfoam.cpp`'s `build_*` orientation checks and
- * the `tests/helpers.py` fixtures):
+ * the `tests/python/helpers.py` fixtures):
  *  - tetra: base `(0,1,2)` normal points toward apex 3 → outward base is
  *    `(0,2,1)`.
  *  - hexahedron: base `(0,1,2,3)` normal points toward the top `(4,5,6,7)`.
@@ -40,7 +40,7 @@
  *    penta15 involution (see CLAUDE.md) must NOT be applied here.
  *
  * The outward winding of every row is enforced by a gtest invariant
- * (`src/cpp/tests/test_skin.cpp`): on the reference element, the Newell normal
+ * (`tests/cpp/test_skin.cpp`): on the reference element, the Newell normal
  * of each face's corner ring must point away from the cell centroid.
  *
  * KEEP IN SYNC: `src/python/meshioplusplus/_skin.py` carries the Python twin of

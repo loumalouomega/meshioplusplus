@@ -46,5 +46,5 @@ None — no point_data, cell_data, or field_data; a bare `Mesh(points, [CellBloc
 
 ## Notes
 
-- `tests/meshes/neuroglancer/simple1` (100 bytes, no file extension) — checked for `ref_sum=20` and `ref_num_cells=4`.
+- `tests/python/meshes/neuroglancer/simple1` (100 bytes, no file extension) — checked for `ref_sum=20` and `ref_num_cells=4`.
 - Implemented in pure Python (no C++ core path).

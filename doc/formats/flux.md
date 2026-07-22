@@ -86,4 +86,4 @@ Hybrid meshes are supported.
 ## Notes
 
 - Fully handled by the C++ core.
-- No reference fixture exists under `tests/meshes/flux/`; tests round-trip every supported linear and second-order type.
+- No reference fixture exists under `tests/python/meshes/flux/`; tests round-trip every supported linear and second-order type.

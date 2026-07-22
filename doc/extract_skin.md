@@ -77,10 +77,10 @@ under all three mesh backends), with the per-cell-type face topology tables in
 `src/cpp/include/meshioplusplus/detail/cell_faces.hpp`; a pure-numpy fallback
 (`meshioplusplus._skin._extract_skin_py`) carries a twin of the tables and
 produces **identical output** (same block order, connectivity, and point
-order — asserted by `tests/test_skin.py`). The public `extract_skin` tries
+order — asserted by `tests/python/test_skin.py`). The public `extract_skin` tries
 the C++ core first and falls back to numpy, like the format shims. The
 face tables' outward winding is enforced by a gtest invariant
-(`src/cpp/tests/test_skin.cpp`): on each reference element, the Newell normal
+(`tests/cpp/test_skin.cpp`): on each reference element, the Newell normal
 of every face must point away from the cell centroid.
 
 `extract_skin` is exposed through every binding surface — Python, the C API
