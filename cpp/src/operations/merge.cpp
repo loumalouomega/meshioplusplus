@@ -22,7 +22,6 @@
 
 // System includes
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +34,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/detail/spatial_hash.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -115,31 +115,10 @@ void merge_fill_nan(NDArray& rOut, std::size_t outRow0, std::size_t nrows, std::
 }
 
 // --- spatial hash (weld) ----------------------------------------------------
-
-// Integer bucket-grid cell key: quantized coordinate of a point (cell size =
-// atol), so points within atol of each other fall in the same or an adjacent
-// cell (the 3x3x3 neighbourhood searched during dedup).
-struct MergeCellKey {
-    std::int64_t x, y, z;
-    bool operator==(const MergeCellKey& rOther) const {
-        return x == rOther.x && y == rOther.y && z == rOther.z;
-    }
-};
-
-struct MergeCellKeyHash {
-    std::size_t operator()(const MergeCellKey& rKey) const {
-        // A simple, well-mixed hash combine over the three signed axes.
-        std::uint64_t h = static_cast<std::uint64_t>(rKey.x) * 0x9e3779b97f4a7c15ULL;
-        h ^= static_cast<std::uint64_t>(rKey.y) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        h ^= static_cast<std::uint64_t>(rKey.z) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return static_cast<std::size_t>(h);
-    }
-};
-
-// Quantize one coordinate to its bucket index (floor(coord / atol)).
-std::int64_t merge_quantize(double coord, double atol) {
-    return static_cast<std::int64_t>(std::floor(coord / atol));
-}
+// The bucket grid itself lives in detail/spatial_hash.hpp (hoisted from here
+// in v7.13.0, shared with operations/interpolate.cpp); cell size = atol, so
+// points within atol of each other fall in the same or an adjacent cell (the
+// 3x3x3 neighbourhood searched during dedup).
 
 // Build the weld remap over the (Float64, global-order) `rPoints`: fills
 // `rRemap` (global point index -> output point index) and returns, per output
@@ -152,13 +131,14 @@ std::vector<std::int64_t> merge_build_weld_map(const NDArray& rPoints, std::size
     const std::size_t ddim = std::min<std::size_t>(dim, 3);
 
     // Phase 1 (parallel): quantized bucket key per point.
-    std::vector<MergeCellKey> keys(total);
+    std::vector<detail::GridKey> keys(total);
     parallel_for(total, [&](std::size_t g) {
         double c[3] = {0.0, 0.0, 0.0};
         for (std::size_t d = 0; d < ddim; ++d)
             c[d] = pts[g * dim + d];
-        keys[g] = MergeCellKey{merge_quantize(c[0], atol), merge_quantize(c[1], atol),
-                               merge_quantize(c[2], atol)};
+        keys[g] =
+            detail::GridKey{detail::grid_quantize(c[0], atol), detail::grid_quantize(c[1], atol),
+                            detail::grid_quantize(c[2], atol)};
     });
 
     // Phase 2 (serial, deterministic): first occurrence in a bucket wins; a
@@ -166,42 +146,35 @@ std::vector<std::int64_t> merge_build_weld_map(const NDArray& rPoints, std::size
     rRemap.assign(total, -1);
     std::vector<std::int64_t> rep_global;
     rep_global.reserve(total);
-    std::unordered_map<MergeCellKey, std::vector<std::int64_t>, MergeCellKeyHash> grid;
+    detail::SpatialGrid grid(atol);
     const double atol2 = atol * atol;
 
     for (std::size_t g = 0; g < total; ++g) {
-        const MergeCellKey k = keys[g];
+        const detail::GridKey k = keys[g];
         std::int64_t found = -1;
-        for (std::int64_t dz = -1; dz <= 1 && found < 0; ++dz) {
-            for (std::int64_t dy = -1; dy <= 1 && found < 0; ++dy) {
-                for (std::int64_t dx = -1; dx <= 1 && found < 0; ++dx) {
-                    const MergeCellKey nb{k.x + dx, k.y + dy, k.z + dz};
-                    auto it = grid.find(nb);
-                    if (it == grid.end())
-                        continue;
-                    for (std::int64_t rep : it->second) {
-                        const std::int64_t rg = rep_global[static_cast<std::size_t>(rep)];
-                        double d2 = 0.0;
-                        for (std::size_t d = 0; d < ddim; ++d) {
-                            const double delta =
-                                pts[g * dim + d] - pts[static_cast<std::size_t>(rg) * dim + d];
-                            d2 += delta * delta;
-                        }
-                        if (d2 <= atol2) {
-                            found = rep;
-                            break;
-                        }
-                    }
+        grid.ForEachIn27(k, [&](const std::vector<std::int64_t>& rReps) {
+            for (std::int64_t rep : rReps) {
+                const std::int64_t rg = rep_global[static_cast<std::size_t>(rep)];
+                double d2 = 0.0;
+                for (std::size_t d = 0; d < ddim; ++d) {
+                    const double delta =
+                        pts[g * dim + d] - pts[static_cast<std::size_t>(rg) * dim + d];
+                    d2 += delta * delta;
+                }
+                if (d2 <= atol2) {
+                    found = rep;
+                    return false;
                 }
             }
-        }
+            return true;
+        });
         if (found >= 0) {
             rRemap[g] = found;
         } else {
             const std::int64_t nidx = static_cast<std::int64_t>(rep_global.size());
             rRemap[g] = nidx;
             rep_global.push_back(static_cast<std::int64_t>(g));
-            grid[k].push_back(nidx);
+            grid.Insert(k, nidx);
         }
     }
     return rep_global;
