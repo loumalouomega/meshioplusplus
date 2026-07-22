@@ -475,6 +475,34 @@ program test_fortran_api
         end do
     end block
 
+    ! ---- isosurface (the level set of a point_data field) ----------------
+    block
+        type(mio_mesh) :: iso
+        integer :: st
+
+        ! temperature runs 1..5 over the 5 nodes, so the 3.0 level set cuts
+        ! both tetrahedra and yields a non-empty contour, tagged per cell.
+        iso = m%isosurface('temperature', [3.0_real64], record_parent_ids=.true., stat=st)
+        call check(st == 0, 'isosurface succeeded')
+        call check(iso%num_cell_blocks() >= 1_int64, 'isosurface produces contour cells')
+        call check(iso%num_points() > 0_int64, 'isosurface produces contour points')
+        call check(iso%cell_data_num_blocks('iso:value') >= 1_int64, 'iso:value tag attached')
+        call check(iso%cell_data_num_blocks('iso:index') >= 1_int64, 'iso:index tag attached')
+        call check(iso%cell_data_num_blocks('iso:parent_cell') >= 1_int64, &
+                   'iso:parent_cell attached')
+        call iso%free()
+
+        ! An isovalue outside the field's range is an empty contour, not a failure.
+        iso = m%isosurface('temperature', [99.0_real64], stat=st)
+        call check(st == 0, 'an out-of-range isovalue is not an error')
+        call check(iso%num_cell_blocks() == 0_int64, 'an out-of-range isovalue is empty')
+        call iso%free()
+
+        ! A cell_data name has no level set: it must fail through stat, not abort.
+        iso = m%isosurface('quality', [0.5_real64], stat=st)
+        call check(st /= 0, 'isosurface rejects a cell_data field')
+    end block
+
     call m%free()
     call r%free()
     call c%free()
