@@ -100,6 +100,7 @@ meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
 meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positions
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
 meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-section
+meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of a field
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -384,7 +385,19 @@ meshioplusplus.write("section.vtu", section)                  # a triangle/quad 
 
 (`slice` shadows the Python built-in only as a module attribute — `meshioplusplus.slice` is intended.)
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, and `meshioplusplus interpolate`.
+#### Isosurfaces / contours
+
+**`meshioplusplus.isosurface`** computes the level set of a scalar field — the locus where a `point_data` array equals a given isovalue, as a mesh one topological dimension below the cut cells: a 3D volume mesh yields a `triangle`/`quad` surface, a 2D surface mesh a `line` contour. It is the data-driven sibling of `slice` (which cuts where the distance to a plane is zero) and shares its marching-tetrahedra cutter, so contours are watertight in the same way. The field must be `point_data` — `cell_data` is piecewise constant and has no level set, so naming one raises and points at `cell_data_to_point_data`. Several isovalues land in one mesh, cut in ascending order and tagged per cell with a Float64 `iso:value` and an Int64 `iso:index` (the ordinal — the integer tag `split(by="region", tag=…)` needs). The contoured field reads back as **exactly** the isovalue on the cut points, faces are wound toward increasing field, and an out-of-range isovalue is an empty contour rather than an error. Output is byte-identical across backends, thread counts and the C++/numpy boundary. See `doc/isosurface.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+vol = meshioplusplus.read("part.vtu")                          # carrying point_data["T"]
+shells = meshioplusplus.isosurface(vol, "T", [300.0, 350.0, 400.0])
+meshioplusplus.write("shells.vtu", shells)                     # three tagged contour surfaces
+```
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface`.
 
 #### Data operations (rename / average / calc / condition / summarize)
 
