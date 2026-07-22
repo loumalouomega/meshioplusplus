@@ -487,6 +487,40 @@ step('interpolate: transfers fields onto a target mesh', () => {
     assert.throws(() => m.interpolate(src, tgt, 'nearest', ['nope']));
 });
 
+step('slice: the mid-plane cross-section of the unit cube has area 1', () => {
+    const sectioned = m.slice(cube, [0, 0, 0.5], [0, 0, 1], true);
+    // A volume mesh sections into surface faces (triangles here).
+    let area = 0;
+    let nfaces = 0;
+    for (const block of sectioned.cells) {
+        const npc = block.nodesPerCell;
+        const data = block.data;
+        for (let c = 0; c < data.length / npc; ++c) {
+            nfaces += 1;
+            const p = [];
+            for (let k = 0; k < npc; ++k) {
+                const n = data[c * npc + k];
+                p.push([sectioned.points[n * 3], sectioned.points[n * 3 + 1]]);
+            }
+            // Shoelace on the projected (x, y) ring — the section lies at z = 0.5.
+            let s = 0;
+            for (let k = 0; k < p.length; ++k) {
+                const a = p[k];
+                const b = p[(k + 1) % p.length];
+                s += a[0] * b[1] - b[0] * a[1];
+            }
+            area += Math.abs(s) / 2;
+        }
+    }
+    assert.ok(nfaces > 0, 'section is non-empty');
+    assert.ok(Math.abs(area - 1) < 1e-9, `section area ${area} != 1`);
+    assert.ok('slice:parent_cell' in sectioned.cell_data, 'parent ids attached');
+    // A plane missing the mesh yields an empty section.
+    const empty = m.slice(cube, [0, 0, 5], [0, 0, 1], false);
+    assert.equal(empty.cells.length, 0);
+    assert.throws(() => m.slice(cube, [0, 0, 0], [0, 0, 0]));
+});
+
 step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
     const grid = m.refine(cube);  // 8 hexahedra
     const pieces = m.partition(grid, 2);
@@ -551,6 +585,7 @@ step('every binding is reachable through the wrapper', () => {
         'clean',
         'smooth',
         'interpolate',
+        'slice',
         'cropBbox',
         'cropPlane',
         'split',
@@ -710,15 +745,26 @@ step('convertSurfaceOps runs each operation and reports its counters', () => {
     assert.deepEqual(both.steps.map((x) => x.op), ['refine', 'quality']);
 });
 
-step('convertSurfaceOps sections a solid and keeps it solid', () => {
+step('convertSurfaceOps takes a planar cross-section (slice)', () => {
     m.writeMesh('/sec.vtu', cube);
+    // The mid-plane cross-section of the unit cube is a non-empty surface (a
+    // unit square of section faces at z = 0.5), rendered directly.
     const r = m.convertSurfaceOps('/sec.vtu', '/sec.vtp', [
         { op: 'section', point: [0.5, 0.5, 0.5], normal: [0, 0, 1] },
     ]);
-    // The single hexahedron does not lie entirely on the keep side, so mode
-    // 'all' removes it -- and that must be reported, not rendered as blank.
     assert.equal(r.steps[0].op, 'section');
-    assert.ok(r.warnings.length > 0, 'an empty section must warn');
+    assert.equal(r.warnings.length, 0, 'a plane through the mesh must not warn');
+    const sec = m.readMesh('/sec.vtp');
+    assert.ok(sec.cells.length > 0, 'the section is non-empty');
+    for (const block of sec.cells)
+        for (let i = 2; i < sec.points.length; i += 3)
+            assert.ok(Math.abs(sec.points[i] - 0.5) < 1e-9, 'section lies at z = 0.5');
+
+    // A plane that misses the mesh yields an empty section, and that is warned.
+    const miss = m.convertSurfaceOps('/sec.vtu', '/sec-miss.vtp', [
+        { op: 'section', point: [0.5, 0.5, 5], normal: [0, 0, 1] },
+    ]);
+    assert.ok(miss.warnings.length > 0, 'an empty section must warn');
 });
 
 step('convertSurfaceOps keeps multi-component data through an operation', () => {
