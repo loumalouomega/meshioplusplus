@@ -94,10 +94,15 @@ test('operations stack and revert clears them all', async ({ page }) => {
     expect((await state(page)).numCells).toBe(before.numCells);
 });
 
-test('a section cuts cells away and undo restores them', async ({ page }) => {
+test('a section replaces the volume with its planar cross-section and undo restores it', async ({
+    page,
+}) => {
     await openSample(page, 'Block (volume)');
     const before = (await state(page)).numCells;
 
+    // Section now computes the true cross-section (slice): the volume is
+    // replaced by a lower-dimensional surface of section faces, not a
+    // cut-away half. The count changes and stays non-empty; undo restores.
     await applyOp(page, 'Section', 'op-section-apply');
     const sectioned = (await state(page)).numCells;
     expect(sectioned).toBeGreaterThan(0);

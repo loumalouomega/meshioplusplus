@@ -57,11 +57,15 @@ export type OpSpec =
       }
     | {
           /**
-           * Cut cells away on one side of a plane.
+           * The planar cross-section through the mesh (slice): the volume is
+           * replaced by the surface where the plane intersects it, one
+           * dimension lower.
            *
            * Stored in **world** coordinates rather than as a normalized slider
            * position, so the section stays where the user put it even if an
-           * earlier operation changes the mesh's extent.
+           * earlier operation changes the mesh's extent. `mode` is carried for
+           * backward compatibility but ignored by a cross-section (there is no
+           * "keep side").
            */
           op: 'section';
           point: Vector3;
