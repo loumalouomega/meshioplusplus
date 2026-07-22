@@ -93,6 +93,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -695,6 +696,24 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
                                                      "misses the mesh -- move or flip it"));
         return section;
     }
+    if (op == "isosurface") {
+        // The level set of a scalar point_data field -- slice's data-driven
+        // sibling, and like it a surface one dimension lower, so the shared
+        // re-skin tail linearizes and writes it directly.
+        meshioplusplus::IsosurfaceOptions opts;
+        opts.mArrayName = text("array", "");
+        opts.mIsovalues.push_back(number("isovalue", 0.0));
+        const int comp = static_cast<int>(number("component", -1.0));
+        if (comp >= 0)
+            opts.mComponent = comp;
+        Mesh contour = meshioplusplus::isosurface(mesh, opts);
+        step.set("contourCells", static_cast<double>(total_cells(contour)));
+        rSteps.call<void>("push", step);
+        if (total_cells(contour) == 0)
+            rWarnings.call<void>("push", std::string("the contour is empty; the isovalue "
+                                                     "lies outside the field's range"));
+        return contour;
+    }
     throw meshioplusplus::ReadError("meshio++ (wasm): unknown operation '" + op + "'");
 }
 
@@ -1019,6 +1038,28 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
         }
         options.mRecordParentIds = recordParentIds;
         return mesh_to_val(meshioplusplus::slice(val_to_mesh(rMeshObj), options));
+    });
+}
+
+/**
+ * @brief Isosurfaces / contours: the level set of a scalar point_data field,
+ * cut with the same marching tetrahedra as slice. `component` is negative for
+ * the row magnitude. Returns one mesh holding every contour, tagged per cell
+ * with `iso:value` (Float64) and `iso:index` (Int64).
+ */
+val isosurface_js(const val& rMeshObj, const std::string& rArray, const val& rIsovalues,
+                  int component, bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::IsosurfaceOptions options;
+        options.mArrayName = rArray;
+        const unsigned n = rIsovalues["length"].as<unsigned>();
+        options.mIsovalues.reserve(n);
+        for (unsigned i = 0; i < n; ++i)
+            options.mIsovalues.push_back(rIsovalues[i].as<double>());
+        if (component >= 0)
+            options.mComponent = component;
+        options.mRecordParentIds = recordParentIds;
+        return mesh_to_val(meshioplusplus::isosurface(val_to_mesh(rMeshObj), options));
     });
 }
 
@@ -1475,6 +1516,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("smooth", &smooth_js);
     emscripten::function("interpolate", &interpolate_js);
     emscripten::function("slice", &slice_js);
+    emscripten::function("isosurface", &isosurface_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("split", &split_js);
