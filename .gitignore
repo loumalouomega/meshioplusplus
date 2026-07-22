@@ -13,6 +13,14 @@
 *.xdmf
 *.xmf
 *.xml
+# ...except committed test fixtures under tests/python/meshes/, which
+# legitimately use several of the extensions above (e.g. *.msh, *.geo,
+# *.off) -- without this, `git mv`/`git add` silently drops them from
+# tracking instead of erroring, since an already-ignored path is simply
+# skipped rather than rejected (bit us once: five fixture files went
+# untracked across the tests/ reorg and only surfaced as CI-only
+# FileNotFoundErrors, since a local checkout still had them on disk).
+!tests/python/meshes/**
 # The compiled pybind11 extension (built in-place by `pip install -e .` /
 # scikit-build-core editable installs) - a stray committed copy of this once
 # got bundled into every manylinux wheel via wheel.packages, silently
