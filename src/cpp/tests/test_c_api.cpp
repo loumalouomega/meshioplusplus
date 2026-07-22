@@ -313,6 +313,69 @@ TEST(CApi, MeshOperations) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, Decimate) {
+    // A 4-triangle fan around a centre vertex: the centre collapses into the
+    // pinned boundary, leaving 2 triangles.
+    const std::array<double, 15> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0.5, 0};
+    const std::array<std::int64_t, 12> conn = {0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_NE(m, nullptr);
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "triangle", 4, 3, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_decimate_result* res =
+        mio_decimate(m, /*target_ratio=*/-1.0, /*target_faces=*/1, /*max_error=*/-1.0,
+                     /*placement=*/nullptr, /*preserve_boundary=*/1, /*preserve_features=*/1,
+                     /*feature_angle=*/30.0);
+    ASSERT_NE(res, nullptr) << mio_last_error();
+    const mio_mesh* dm = mio_decimate_result_mesh(res);
+    ASSERT_NE(dm, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(dm), 1);
+    EXPECT_EQ(block_type(dm, 0), "triangle");
+    EXPECT_EQ(mio_decimate_result_faces_removed(res), 2);
+    EXPECT_EQ(mio_decimate_result_points_removed(res), 1);
+    EXPECT_GE(mio_decimate_result_collapses_rejected(res), 0);
+    EXPECT_GE(mio_decimate_result_max_error_applied(res), 0.0);
+
+    // The point map lands every input point on a live output index (the
+    // collapsed centre maps to its survivor, not -1).
+    const void* pm = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_decimate_result_point_map(res, &pm, &dt, &n), MIO_OK) << mio_last_error();
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(n, 5);
+    {
+        const std::int64_t* p = static_cast<const std::int64_t*>(pm);
+        for (std::int64_t i = 0; i < n; ++i) {
+            EXPECT_GE(p[i], 0);
+            EXPECT_LT(p[i], 4);
+        }
+    }
+    ASSERT_EQ(mio_decimate_result_num_cell_maps(res), 1);
+    const void* cm = nullptr;
+    ASSERT_EQ(mio_decimate_result_cell_map(res, 0, &cm, &dt, &n), MIO_OK) << mio_last_error();
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(n, 4);
+    EXPECT_EQ(mio_decimate_result_cell_map(res, 7, &cm, &dt, &n), MIO_ERR_NOT_FOUND);
+
+    // Ownership transfer keeps the mesh alive after freeing the result.
+    mio_mesh* taken = mio_decimate_result_take_mesh(res);
+    ASSERT_NE(taken, nullptr) << mio_last_error();
+    mio_decimate_result_free(res);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(taken), 1);
+    mio_mesh_free(taken);
+
+    // Error paths fail cleanly: no criterion, a bad placement, a volume mesh.
+    EXPECT_EQ(mio_decimate(m, -1.0, -1, -1.0, nullptr, 1, 1, 30.0), nullptr);
+    EXPECT_EQ(mio_decimate(m, -1.0, 1, -1.0, "nearest", 1, 1, 30.0), nullptr);
+    mio_mesh_free(m);
+    mio_mesh* tet = build_tet_mesh();
+    EXPECT_EQ(mio_decimate(tet, 0.5, -1, -1.0, nullptr, 1, 1, 30.0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("extract_surface"), std::string::npos);
+    mio_mesh_free(tet);
+}
+
 TEST(CApi, Merge) {
     mio_mesh* a = build_tet_mesh();  // 5 points, 2 tetra
     mio_mesh* b = build_tet_mesh();
