@@ -69,6 +69,7 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
+ *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean) => Mesh,
@@ -211,6 +212,14 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
             Module.cropPlane(mesh, point, normal, mode, recordIds),
         slice: (mesh, origin, normal, recordParentIds = false) =>
             Module.slice(mesh, origin, normal, recordParentIds),
+        isosurface: (mesh, array, isovalues, component = -1, recordParentIds = false) =>
+            Module.isosurface(
+                mesh,
+                array,
+                Array.isArray(isovalues) ? isovalues : [isovalues],
+                component,
+                recordParentIds,
+            ),
         split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
         convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
             Module.convertCells(mesh, mode, recordParentIds),

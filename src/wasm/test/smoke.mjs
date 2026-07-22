@@ -521,6 +521,45 @@ step('slice: the mid-plane cross-section of the unit cube has area 1', () => {
     assert.throws(() => m.slice(cube, [0, 0, 0], [0, 0, 0]));
 });
 
+step('isosurface: the f = z level set of the unit cube has area 1', () => {
+    // f = z on the cube's 8 corners, so the isosurface at z = 0.5 is the same
+    // unit square slice() cuts there -- the data-driven route to it.
+    const field = { ...cube, point_data: { f: new Float64Array([0, 0, 0, 0, 1, 1, 1, 1]) } };
+    const iso = m.isosurface(field, 'f', 0.5, -1, true);
+    let area = 0;
+    let nfaces = 0;
+    for (const block of iso.cells) {
+        const npc = block.nodesPerCell;
+        const data = block.data;
+        for (let c = 0; c < data.length / npc; ++c) {
+            nfaces += 1;
+            let s = 0;
+            for (let k = 0; k < npc; ++k) {
+                const a = data[c * npc + k];
+                const b = data[c * npc + ((k + 1) % npc)];
+                s += iso.points[a * 3] * iso.points[b * 3 + 1] -
+                     iso.points[b * 3] * iso.points[a * 3 + 1];
+            }
+            area += Math.abs(s) / 2;
+        }
+    }
+    assert.ok(nfaces > 0, 'contour is non-empty');
+    assert.ok(Math.abs(area - 1) < 1e-9, `contour area ${area} != 1`);
+    // The contoured field reads back as exactly the isovalue.
+    for (const v of iso.point_data.f) assert.equal(v, 0.5);
+    assert.ok('iso:parent_cell' in iso.cell_data, 'parent ids attached');
+    assert.ok('iso:value' in iso.cell_data && 'iso:index' in iso.cell_data, 'contours tagged');
+
+    // Two isovalues land in one mesh, tagged and in ascending order.
+    const two = m.isosurface(field, 'f', [0.75, 0.25]);
+    const vals = [].concat(...two.cell_data['iso:value'].map((b) => Array.from(b)));
+    assert.deepEqual([...new Set(vals)], [0.25, 0.75], 'ascending, tagged');
+
+    // Out of range is an empty contour, not an error; a cell field has no level set.
+    assert.equal(m.isosurface(field, 'f', 5).cells.length, 0);
+    assert.throws(() => m.isosurface(cube, 'nope', 0.5));
+});
+
 step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
     const grid = m.refine(cube);  // 8 hexahedra
     const pieces = m.partition(grid, 2);
@@ -586,6 +625,7 @@ step('every binding is reachable through the wrapper', () => {
         'smooth',
         'interpolate',
         'slice',
+        'isosurface',
         'cropBbox',
         'cropPlane',
         'split',

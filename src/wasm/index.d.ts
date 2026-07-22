@@ -122,6 +122,17 @@ export type OpSpec =
       point: number[];
       normal: number[];
       mode?: CropMode;
+    }
+  | {
+      /**
+       * The level set of a scalar `point_data` field (isosurface) — section's
+       * data-driven sibling, and like it a surface one dimension lower.
+       * `component` is negative for the row magnitude.
+       */
+      op: 'isosurface';
+      array: string;
+      isovalue: number;
+      component?: number;
     };
 
 /** Per-operation counters and caveats from a pipeline run. */
@@ -460,6 +471,27 @@ export interface MeshioPlusPlusModule {
    * watertight; each section cell inherits its parent's cell_data.
    */
   slice(mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean): Mesh;
+
+  /**
+   * Isosurfaces / contours: the level set of a scalar `point_data` field, one
+   * dimension below the cut cells — slice's data-driven sibling, sharing its
+   * marching-tetrahedra cutter, so contours are watertight and faces are wound
+   * toward increasing field. Several isovalues land in the one returned mesh,
+   * tagged per cell with `iso:value` (Float64) and `iso:index` (Int64, the
+   * ordinal — the integer tag `split(…, "tag")` needs). `component` is negative
+   * for the row magnitude, in which case the contoured value is approximate
+   * rather than exactly the isovalue.
+   * @throws {Error} when `array` names a `cell_data` array (piecewise constant,
+   *   so it has no level set — convert it with `dataCellToPoint` first) or no
+   *   array at all.
+   */
+  isosurface(
+    mesh: Mesh,
+    array: string,
+    isovalues: number | number[],
+    component?: number,
+    recordParentIds?: boolean,
+  ): Mesh;
 
   /** Partition a mesh into submeshes by type, connected component, or tag. */
   split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];
