@@ -92,6 +92,11 @@ typedef struct mio_convert_cells_result mio_convert_cells_result;
  *  maps. Destroy with mio_refine_result_free(). */
 typedef struct mio_refine_result mio_refine_result;
 
+/** Opaque result of mio_decimate(): the decimated mesh plus the point/cell
+ *  index maps and the collapse summary. Destroy with
+ *  mio_decimate_result_free(). */
+typedef struct mio_decimate_result mio_decimate_result;
+
 /** Opaque result of mio_partition(): the pieces plus their point/cell index
  *  maps. Destroy with mio_partition_result_free(). */
 typedef struct mio_partition_result mio_partition_result;
@@ -794,6 +799,102 @@ MIO_API mio_status mio_refine_result_cell_map(const mio_refine_result* result, i
 
 /** Free a refine result (and the mesh it still owns). */
 MIO_API void mio_refine_result_free(mio_refine_result* result);
+
+/**
+ * Decimate a SURFACE mesh by greedy quadric-error-metric (Garland-Heckbert)
+ * edge collapse — the resolution-reducing inverse of mio_refine. The output is
+ * all-triangle (quad/polygon blocks are triangulated first) with the block
+ * structure kept 1:1. Boundary vertices (once-used-edge test) and feature
+ * vertices (incident face normals differing by more than feature_angle
+ * degrees) are pinned by default; the link condition and a normal-flip guard
+ * reject any collapse that would change topology or fold the surface. The
+ * caller frozen mask is not exposed across the C ABI (a documented flat-ABI
+ * gap, like mio_smooth's).
+ * @param target_ratio      fraction of the (triangulated) faces to KEEP, in
+ *                          (0, 1]; negative = unset.
+ * @param target_faces      absolute face count to stop at (the result lands
+ *                          within one collapse of it); negative = unset.
+ * @param max_error         collapse only while the cheapest candidate's
+ *                          quadric error is at most this; negative = unset.
+ *                          Exactly one of the three criteria must be set.
+ * @param placement         "optimal" (quadric minimizer, midpoint when
+ *                          ill-conditioned), "midpoint" or "endpoint"; NULL =
+ *                          "optimal".
+ * @param preserve_boundary nonzero to pin boundary vertices (default-on
+ *                          behaviour: pass 1).
+ * @param preserve_features nonzero to pin feature vertices.
+ * @param feature_angle     the feature angle in degrees (30 is the
+ *                          vtkFeatureEdges convention).
+ * @return a result handle (free with mio_decimate_result_free), or NULL on
+ *         failure — a 3D volume mesh (extract the surface first), higher-order
+ *         or ragged blocks, line/vertex blocks, and a criterion count != 1 all
+ *         fail by name.
+ */
+MIO_API mio_decimate_result* mio_decimate(const mio_mesh* mesh, double target_ratio,
+                                          int64_t target_faces, double max_error,
+                                          const char* placement, int preserve_boundary,
+                                          int preserve_features, double feature_angle);
+
+/**
+ * Borrow the decimated mesh. Owned by the result: valid until
+ * mio_decimate_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the decimated mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_decimate_result_mesh(const mio_decimate_result* result);
+
+/**
+ * Transfer ownership of the decimated mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_decimate_result_take_mesh(mio_decimate_result* result);
+
+/**
+ * Zero-copy borrow of the point map (int64, shape (num_points_in,), input
+ * point index -> output index). A collapsed point maps to its SURVIVOR's
+ * output index — which is what makes it usable for remapping external
+ * per-point arrays — and is -1 only when the survivor itself ended up
+ * unreferenced. The pointer is valid until the result is freed. Any out-param
+ * may be NULL.
+ * @param result a decimate result.
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the input point count.
+ */
+MIO_API mio_status mio_decimate_result_point_map(const mio_decimate_result* result,
+                                                 const void** data, mio_dtype* dtype, int64_t* n);
+
+/** Number of per-block cell maps in a decimate result, or -1 on error. */
+MIO_API int64_t mio_decimate_result_num_cell_maps(const mio_decimate_result* result);
+
+/**
+ * Zero-copy borrow of INPUT cell block `block`'s cell map (int64, shape
+ * (num_cells_in_block,), input cell -> the output index, within the
+ * corresponding output block, of its first surviving triangle; -1 when none
+ * survived). Any out-param may be NULL.
+ * @param result a decimate result.
+ * @param block  cell-block index in [0, mio_decimate_result_num_cell_maps).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's input cell count.
+ */
+MIO_API mio_status mio_decimate_result_cell_map(const mio_decimate_result* result, int64_t block,
+                                                const void** data, mio_dtype* dtype, int64_t* n);
+
+/** Triangles removed (counted on the triangulated mesh), or -1 on error. */
+MIO_API int64_t mio_decimate_result_faces_removed(const mio_decimate_result* result);
+
+/** Points removed (collapsed plus pruned-unreferenced), or -1 on error. */
+MIO_API int64_t mio_decimate_result_points_removed(const mio_decimate_result* result);
+
+/** Guard-rejection events during the run, or -1 on error. */
+MIO_API int64_t mio_decimate_result_collapses_rejected(const mio_decimate_result* result);
+
+/** The largest committed collapse error (0.0 when nothing collapsed), or a
+ *  negative value on error. */
+MIO_API double mio_decimate_result_max_error_applied(const mio_decimate_result* result);
+
+/** Free a decimate result (and the mesh it still owns). */
+MIO_API void mio_decimate_result_free(mio_decimate_result* result);
 
 /**
  * Decompose a mesh into `nparts` balanced pieces for domain decomposition (the

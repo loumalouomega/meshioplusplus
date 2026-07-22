@@ -68,6 +68,7 @@ export default defineConfig({
           { text: "Interactive viewer", link: "/viewer" },
           { text: "Cell conversion", link: "/convert_cells" },
           { text: "Uniform refinement", link: "/refine" },
+          { text: "Decimation (QEM edge collapse)", link: "/decimate" },
           { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },
           { text: "Interpolation (field transfer)", link: "/interpolate" },
           { text: "Slicing / cross-sections", link: "/slice" },

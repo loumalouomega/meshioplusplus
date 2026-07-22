@@ -54,6 +54,7 @@ from ._data_calc import data_calc
 from ._data_condition import data_condition
 from ._data_info import data_info
 from ._data_manage import data_drop, data_keep, data_manage, data_rename
+from ._decimate import decimate
 from ._diff import diff, meshes_equal
 from ._exceptions import ReadError, WriteError
 from ._helpers import (
@@ -155,6 +156,7 @@ __all__ = [
     "split",
     "convert_cells",
     "refine",
+    "decimate",
     "smooth",
     "partition",
     "partition_labels",

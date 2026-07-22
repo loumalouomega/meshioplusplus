@@ -105,6 +105,21 @@ export type OpSpec =
     }
   | { op: 'refine'; levels?: number }
   | {
+      /**
+       * QEM surface decimation. With no criterion given the pipeline chip
+       * defaults to `ratio: 0.5`.
+       */
+      op: 'decimate';
+      /** Fraction of the (triangulated) faces to KEEP, in (0, 1]. */
+      ratio?: number;
+      targetFaces?: number;
+      maxError?: number;
+      placement?: DecimatePlacement;
+      preserveBoundary?: boolean;
+      preserveFeatures?: boolean;
+      featureAngle?: number;
+    }
+  | {
       /** Attaches the assignment as `partition:part` cell data. */
       op: 'partition';
       nparts?: number;
@@ -174,6 +189,9 @@ export type ConvertCellsMode = 'linearize' | 'simplexify' | 'elevate';
 
 /** Smoothing operator applied by `smooth`. `'taubin'` is shrink-free. */
 export type SmoothMethod = 'laplacian' | 'taubin';
+
+/** Where `decimate` places the surviving vertex of a collapsed edge. */
+export type DecimatePlacement = 'optimal' | 'midpoint' | 'endpoint';
 
 /** How `interpolate` draws a target sample's value from the source.
  *  `'barycentric'` simplexifies the source first (simplex-linear on quad/hex
@@ -515,6 +533,38 @@ export interface MeshioPlusPlusModule {
    *   polygon/polyhedron block — none has a same-type subdivision.
    */
   refine(mesh: Mesh, levels?: number, recordParentIds?: boolean): Mesh;
+
+  /**
+   * Decimate a SURFACE mesh by quadric-error-metric (Garland-Heckbert) edge
+   * collapse — the resolution-reducing inverse of `refine`. Exactly one of
+   * `ratio` (fraction of the triangulated faces to KEEP, in (0, 1]),
+   * `targetFaces` and `maxError` must be non-negative. The output is
+   * all-triangle with the block structure kept 1:1; boundary vertices
+   * (once-used-edge test) and feature vertices (face normals differing by
+   * more than `featureAngle` degrees) are pinned by default, and the link
+   * condition plus a normal-flip guard reject any collapse that would change
+   * topology or fold the surface. The index maps and the frozen mask are not
+   * carried across the JS boundary, as on the other flat bindings.
+   * @throws {Error} on a 3D volume mesh (extract the surface first),
+   *   higher-order or ragged blocks, `line`/`vertex` blocks, an unknown
+   *   `placement`, or a criterion count other than one.
+   */
+  decimate(
+    mesh: Mesh,
+    ratio?: number,
+    targetFaces?: number,
+    maxError?: number,
+    placement?: DecimatePlacement,
+    preserveBoundary?: boolean,
+    preserveFeatures?: boolean,
+    featureAngle?: number,
+  ): {
+    mesh: Mesh;
+    facesRemoved: number;
+    pointsRemoved: number;
+    collapsesRejected: number;
+    maxErrorApplied: number;
+  };
 
   /**
    * Decompose a mesh into exactly `nparts` balanced pieces for domain

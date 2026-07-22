@@ -22,6 +22,8 @@ src/python/meshioplusplus/*.pyd
 .cache/
 MANIFEST
 README.rst
+# Claude ignore
+.claude/
 # Ignore build artifacts but keep the tracked configure scripts
 # (an ignored *directory* cannot have re-included children, so use build/*).
 build/*

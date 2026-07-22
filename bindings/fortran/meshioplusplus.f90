@@ -177,6 +177,7 @@ module meshioplusplus
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: refine => mesh_refine
+        procedure :: decimate => mesh_decimate
         procedure :: partition => mesh_partition
         procedure :: partition_labels => mesh_partition_labels
         procedure :: stats => mesh_stats
@@ -610,6 +611,69 @@ module meshioplusplus
 
         subroutine c_mio_refine_result_free(r) &
                 bind(c, name="mio_refine_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_decimate(h, ratio, faces, max_error, placement, preserve_boundary, &
+                                preserve_features, feature_angle) &
+                bind(c, name="mio_decimate") result(r)
+            import :: c_ptr, c_char, c_int, c_int64_t, c_double
+            type(c_ptr), value :: h
+            real(c_double), value :: ratio, max_error, feature_angle
+            integer(c_int64_t), value :: faces
+            character(kind=c_char), dimension(*), intent(in) :: placement
+            integer(c_int), value :: preserve_boundary, preserve_features
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_decimate_result_take_mesh(r) &
+                bind(c, name="mio_decimate_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_decimate_result_point_map(r, data, dtype, n) &
+                bind(c, name="mio_decimate_result_point_map") result(s)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: r
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int64_t), intent(out) :: n
+            integer(c_int) :: s
+        end function
+
+        function c_mio_decimate_result_faces_removed(r) &
+                bind(c, name="mio_decimate_result_faces_removed") result(v)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: v
+        end function
+
+        function c_mio_decimate_result_points_removed(r) &
+                bind(c, name="mio_decimate_result_points_removed") result(v)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: v
+        end function
+
+        function c_mio_decimate_result_collapses_rejected(r) &
+                bind(c, name="mio_decimate_result_collapses_rejected") result(v)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: v
+        end function
+
+        function c_mio_decimate_result_max_error_applied(r) &
+                bind(c, name="mio_decimate_result_max_error_applied") result(v)
+            import :: c_ptr, c_double
+            type(c_ptr), value :: r
+            real(c_double) :: v
+        end function
+
+        subroutine c_mio_decimate_result_free(r) &
+                bind(c, name="mio_decimate_result_free")
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
@@ -1960,6 +2024,92 @@ contains
         call c_mio_refine_result_free(res)
         if (.not. c_associated(out%handle)) then
             call handle_failure('refine', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Decimate a SURFACE mesh by quadric-error-metric edge collapse — the
+    !> resolution-reducing inverse of refine. Exactly one of `ratio`,
+    !> `target_faces`, `max_error` must be given. The output is all-triangle;
+    !> boundary and feature vertices are pinned by default. The optional
+    !> `point_map` receives, 1-based, each input point's surviving output index
+    !> (0 when the survivor itself was pruned).
+    function mesh_decimate(self, ratio, target_faces, max_error, placement, &
+                           preserve_boundary, preserve_features, feature_angle, &
+                           faces_removed, points_removed, collapses_rejected, &
+                           max_error_applied, point_map, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: ratio
+        integer(int64), intent(in), optional :: target_faces
+        real(real64), intent(in), optional :: max_error
+        character(*), intent(in), optional :: placement
+        logical, intent(in), optional :: preserve_boundary
+        logical, intent(in), optional :: preserve_features
+        real(real64), intent(in), optional :: feature_angle
+        integer(int64), intent(out), optional :: faces_removed
+        integer(int64), intent(out), optional :: points_removed
+        integer(int64), intent(out), optional :: collapses_rejected
+        real(real64), intent(out), optional :: max_error_applied
+        integer(int64), allocatable, intent(out), optional :: point_map(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res, cdata
+        real(c_double) :: cratio, cerror, cangle
+        integer(c_int64_t) :: cfaces, nlen
+        integer(c_int) :: cpb, cpf, s, dt
+        integer(c_int64_t), pointer :: fp(:)
+        character(:), allocatable :: cplacement
+        cratio = -1.0_c_double
+        if (present(ratio)) cratio = real(ratio, c_double)
+        cfaces = -1_c_int64_t
+        if (present(target_faces)) cfaces = int(target_faces, c_int64_t)
+        cerror = -1.0_c_double
+        if (present(max_error)) cerror = real(max_error, c_double)
+        cplacement = 'optimal'
+        if (present(placement)) cplacement = placement
+        cpb = 1
+        if (present(preserve_boundary)) then
+            if (.not. preserve_boundary) cpb = 0
+        end if
+        cpf = 1
+        if (present(preserve_features)) then
+            if (.not. preserve_features) cpf = 0
+        end if
+        cangle = 30.0_c_double
+        if (present(feature_angle)) cangle = real(feature_angle, c_double)
+        res = c_mio_decimate(self%handle, cratio, cfaces, cerror, c_str(cplacement), &
+                             cpb, cpf, cangle)
+        if (.not. c_associated(res)) then
+            call handle_failure('decimate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(faces_removed)) faces_removed = int(c_mio_decimate_result_faces_removed(res), int64)
+        if (present(points_removed)) points_removed = int(c_mio_decimate_result_points_removed(res), int64)
+        if (present(collapses_rejected)) then
+            collapses_rejected = int(c_mio_decimate_result_collapses_rejected(res), int64)
+        end if
+        if (present(max_error_applied)) then
+            max_error_applied = real(c_mio_decimate_result_max_error_applied(res), real64)
+        end if
+        if (present(point_map)) then
+            s = c_mio_decimate_result_point_map(res, cdata, dt, nlen)
+            if (s /= 0_c_int) then
+                call c_mio_decimate_result_free(res)
+                call handle_failure('decimate', mio_error_message(), stat, errmsg)
+                return
+            end if
+            allocate (point_map(nlen))
+            if (nlen > 0) then
+                call c_f_pointer(cdata, fp, [nlen])
+                point_map = int(fp, int64) + 1_int64  ! 0-based -> 1-based
+            end if
+        end if
+        out%handle = c_mio_decimate_result_take_mesh(res)
+        call c_mio_decimate_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('decimate', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

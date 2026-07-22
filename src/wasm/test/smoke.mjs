@@ -391,6 +391,36 @@ step('refine rejects a cell type with no same-type subdivision', () => {
     assert.throws(() => m.refine(up));
 });
 
+step('decimate: collapses a refined cube skin, pinning its creases', () => {
+    // The skin of a refined cube: 24 quads -> 48 triangles, with every cube
+    // edge/corner vertex a pinned feature; only face-interior vertices go.
+    const skin = m.extractSkin(m.refine(cube), true);
+    const out = m.decimate(skin, 0.5);
+    assert.equal(out.mesh.cells.length, 1);
+    assert.equal(out.mesh.cells[0].type, 'triangle');
+    assert.ok(out.mesh.cells[0].data.length / 3 < 48);
+    assert.ok(out.facesRemoved > 0);
+    assert.ok(out.pointsRemoved > 0);
+    assert.ok(out.collapsesRejected >= 0);
+    assert.ok(out.maxErrorApplied >= 0);
+});
+
+step('decimate rejects a volume mesh and a missing criterion', () => {
+    assert.throws(() => m.decimate(cube, 0.5), /extract_surface/);
+    const skin = m.extractSkin(cube, true);
+    assert.throws(() => m.decimate(skin));
+});
+
+step('decimate is reachable as a convertSurfaceOps pipeline step', () => {
+    // The pipeline runs against the loaded mesh itself, so hand it a surface
+    // mesh (decimate refuses volume input by design).
+    m.writeMesh('/dec.vtu', m.extractSkin(m.refine(cube), true));
+    const out = m.convertSurfaceOps('/dec.vtu', '/dec.vtp', [{ op: 'decimate' }]);
+    assert.equal(out.steps[0].op, 'decimate');
+    assert.equal(typeof out.steps[0].facesRemoved, 'number');
+    assert.ok(m.readMesh('/dec.vtp').cells[0].data.length / 3 < 48);
+});
+
 step('smooth: relaxes an interior node while pinning the boundary', () => {
     // A refined cube is a 3x3x3 node lattice: exactly one node (the body
     // centre) is interior, so it is the only one smoothing may move.
@@ -631,6 +661,7 @@ step('every binding is reachable through the wrapper', () => {
         'split',
         'convertCells',
         'refine',
+        'decimate',
         'partition',
         'partitionLabels',
         'stats',

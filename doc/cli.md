@@ -502,6 +502,45 @@ meshioplusplus refine coarse.vtu fine.vtu --levels 2 --record-parent-ids
 
 ---
 
+## meshioplusplus decimate
+
+Reduce a surface mesh's face count by quadric-error-metric edge collapse — the
+resolution-reducing inverse of `refine` (see [decimation](/decimate)).
+
+```
+meshioplusplus decimate [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--ratio R` | Fraction of the (triangulated) faces to KEEP, in (0, 1] |
+| `--target-faces N` | Absolute face count to stop at (within one collapse) |
+| `--max-error E` | Collapse only while the cheapest quadric error is at most `E` |
+| `--placement P` | `optimal` (default), `midpoint`, or `endpoint` |
+| `--no-preserve-boundary` | Allow boundary vertices to collapse (the outline may change) |
+| `--no-preserve-features` | Allow sharp corners/creases to collapse |
+| `--feature-angle A` | Degrees between face normals above which a vertex is a feature (default `30`) |
+| `--quiet` (`-q`) | Do not print the collapse summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Exactly one of `--ratio`, `--target-faces` and `--max-error` must be given.
+Surface meshes only: `quad`/`polygon` blocks are triangulated first (the output
+is all-triangle), and a volume mesh is an error — run `extract-surface` first.
+Boundary and feature vertices are pinned by default, and the link condition
+plus a normal-flip guard reject any collapse that would change topology or
+fold the surface.
+
+**Examples:**
+
+```sh
+meshioplusplus decimate scan.stl coarse.stl --ratio 0.25
+meshioplusplus decimate skin.vtu coarse.vtu --target-faces 5000
+meshioplusplus decimate skin.vtu coarse.vtu --max-error 1e-6 --placement midpoint
+meshioplusplus decimate open_patch.vtu out.vtu --ratio 0.1 --no-preserve-features -q
+```
+
+---
+
 ## meshioplusplus smooth
 
 Relax point coordinates toward their edge-neighbour centroids to improve element

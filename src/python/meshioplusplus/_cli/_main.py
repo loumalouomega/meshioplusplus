@@ -11,6 +11,7 @@ from . import (
     _convert_cells,
     _crop,
     _data,
+    _decimate,
     _decompress,
     _diff,
     _extract_surface,
@@ -162,6 +163,13 @@ def main(argv=None):
     )
     _refine.add_args(parser)
     parser.set_defaults(func=_refine.refine_cmd)
+
+    parser = subparsers.add_parser(
+        "decimate",
+        help="Reduce a surface mesh's face count by quadric edge collapse",
+    )
+    _decimate.add_args(parser)
+    parser.set_defaults(func=_decimate.decimate_cmd)
 
     parser = subparsers.add_parser(
         "partition",

@@ -62,6 +62,7 @@
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -418,6 +419,8 @@ void print_usage(std::ostream& os) {
           "  split                   Partition into multiple files (type/region/component)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
           "  refine                  Uniformly subdivide every cell (same-type children)\n"
+          "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"
+          "                            exactly one of --ratio/--target-faces/--max-error\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
@@ -1156,6 +1159,54 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
 
     auto result = meshioplusplus::refine(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_decimate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"ratio", {}, true},
+                                  {"target-faces", {}, true},
+                                  {"max-error", {}, true},
+                                  {"placement", {}, true},
+                                  {"feature-angle", {}, true},
+                                  {"no-preserve-boundary", {}, false},
+                                  {"no-preserve-features", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("decimate requires exactly INFILE and OUTFILE");
+    const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, "target-faces") ? 1 : 0) +
+                        (has_opt(p, "max-error") ? 1 : 0);
+    if (num_set != 1)
+        throw std::runtime_error(
+            "decimate: give exactly one of --ratio, --target-faces or --max-error");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::DecimateOptions options;
+    // Negative values are the "unset" sentinels the operation validates.
+    options.mTargetRatio = std::stod(opt_value(p, "ratio", "-1"));
+    options.mTargetFaces = std::stoll(opt_value(p, "target-faces", "-1"));
+    options.mMaxError = std::stod(opt_value(p, "max-error", "-1"));
+    options.mPlacement =
+        meshioplusplus::decimate_placement_from_name(opt_value(p, "placement", "optimal"));
+    options.mFeatureAngleDeg = std::stod(opt_value(p, "feature-angle", "30"));
+    options.mPreserveBoundary = !has_flag(p, "no-preserve-boundary");
+    options.mPreserveFeatures = !has_flag(p, "no-preserve-features");
+
+    auto r = meshioplusplus::decimate(mesh, options);
+    if (!has_flag(p, "quiet")) {
+        std::size_t faces_out = 0;
+        for (const auto cb : r.mMesh.CellRange())
+            faces_out += cb.NumCells();
+        std::cout << "decimated to " << faces_out << " faces\n";
+        std::cout << "  faces removed:            " << r.mFacesRemoved << "\n";
+        std::cout << "  points removed:           " << r.mPointsRemoved << "\n";
+        std::cout << "  collapses rejected:       " << r.mCollapsesRejected << "\n";
+        std::cout << "  max error applied:        " << r.mMaxErrorApplied << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -2089,6 +2140,8 @@ int main(int argc, char** argv) {
             return cmd_convert_cells(rest);
         if (cmd == "refine")
             return cmd_refine(rest);
+        if (cmd == "decimate")
+            return cmd_decimate(rest);
         if (cmd == "smooth")
             return cmd_smooth(rest);
         if (cmd == "interpolate")
