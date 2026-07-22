@@ -147,11 +147,20 @@ shrinking), returning `{ mesh, numNodesMoved, maxDisplacement,
 numSkippedInversion }`; only the point coordinates move, so connectivity and
 every data value come through unchanged. Boundary nodes, feature nodes and the
 nodes of blocks with unknown edge topology are pinned by default; the caller
-`frozen` mask of the C++ API is not exposed here. See
+`frozen` mask of the C++ API is not exposed here. The two cutters are exposed as
+`slice(mesh, origin, normal, recordParentIds)` — the planar cross-section, one
+dimension below the cut cells — and `isosurface(mesh, array, isovalues,
+component, recordParentIds)`, its data-driven sibling: the level set of a scalar
+`point_data` array. `isovalues` accepts a number or an array (several contours
+land in one mesh, tagged per cell with `iso:value` and `iso:index`), `component`
+is negative for the row magnitude, and naming a `cell_data` array throws a
+catchable `Error` — cell data is piecewise constant and has no level set, so
+convert it with `dataCellToPoint` first. See
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
 [cell conversion](./convert_cells.md), [refine](./refine.md),
-[partitioning](./partition.md), and [smoothing](./smooth.md).
+[partitioning](./partition.md), [smoothing](./smooth.md),
+[slicing](./slice.md), and [isosurfaces](./isosurface.md).
 
 ::: tip Reachable from `loadMeshioPlusPlus()` since v7.4.0
 Before v7.4.0 the geometry operations above were bound in the WASM module but

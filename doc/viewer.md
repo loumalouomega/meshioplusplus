@@ -138,7 +138,8 @@ no upload, no round trip:
 | **Smooth** | Laplacian or Taubin relaxation ([smoothing](/smooth)) |
 | **Refine** | uniform subdivision ([refine](/refine)) |
 | **Partition** | decomposes into balanced parts and colours by part ([partitioning](/partition)) |
-| **Section** | cuts cells away on one side of a plane ([crop](/crop)) |
+| **Section** | the planar cross-section — the actual intersection with a plane ([slice](/slice)) |
+| **Isosurface** | the level set of a `point_data` field ([isosurface](/isosurface)) |
 
 They compose: apply Refine then Quality and you are looking at the quality of
 the refined mesh. Each one appears as a chip you can remove, **Undo** steps
@@ -151,12 +152,16 @@ accumulates rounding. That same call is what keeps multi-component data alive:
 no mesh ever crosses back into JavaScript, whose flat representation cannot
 carry a vector or tensor array.
 
-::: tip The section follows element faces
-`Section` keeps whole cells, so the cut is stair-stepped rather than flat, and
-re-skinning the result exposes a genuine solid interior. A flat analytic cap
-would need a cell-plane clipper meshio++ does not have — and vtk.js's own
-`ClipClosedSurface` cannot colour one correctly, since it never interpolates
-point data onto the clip-edge points.
+::: tip Section and Isosurface are the same cutter
+Both run meshio++'s marching-tetrahedra cutter and return a surface one
+dimension below the cells they cut — `Section` where the distance to a plane is
+zero, `Isosurface` where a scalar field equals the isovalue you type. They go
+through meshio++ rather than vtk.js's own `ClipClosedSurface`, which cannot
+colour a cut correctly: it never interpolates point data onto the cut points.
+
+`Isosurface` only offers the mesh's **point** arrays. A cell array is piecewise
+constant, so it has no level set — convert it first
+(`meshioplusplus data to-point`).
 :::
 
 ### Click to inspect

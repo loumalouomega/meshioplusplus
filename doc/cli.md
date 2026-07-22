@@ -344,6 +344,44 @@ meshioplusplus slice part.msh section.vtu --normal=0,0,-1 --record-parent-ids
 
 ---
 
+## meshioplusplus isosurface
+
+Compute the level set(s) of a scalar `point_data` field — the data-driven
+sibling of `slice`, and like it one dimension below the cut cells (a volume mesh
+→ a `triangle`/`quad` surface, a 2D surface → a `line` contour). See
+[isosurface](/isosurface).
+
+```
+meshioplusplus isosurface [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The `point_data` array to contour (**required**) |
+| `--values v1,v2,…` | The isovalues (**required**); sorted ascending, duplicates dropped |
+| `--component I` | Component of a multi-component array; the row magnitude by default |
+| `--record-parent-ids` | Attach `iso:parent_cell` (the input cell each contour cell was cut from) |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Negative isovalues need the `=` form (`--values=-1.5`). A `cell_data` name is
+rejected: cell data is piecewise constant and has no level set — convert it with
+`meshioplusplus data to-point` first. Every contour cell is tagged with
+`iso:value` (Float64) and `iso:index` (Int64, the ordinal — the integer tag
+`split --by region --tag …` needs).
+
+**Examples:**
+
+```sh
+meshioplusplus isosurface part.vtu shell.vtu --array T --values 350
+meshioplusplus isosurface part.vtu shells.vtu --array T --values 300,350,400
+meshioplusplus isosurface part.vtu shell.vtu --array v --values=-1.5 --component 2
+
+# one file per contour, via the integer ordinal tag
+meshioplusplus split shells.vtu 'contour_{key}.vtu' --by region --tag iso:index
+```
+
+---
+
 ## meshioplusplus split
 
 Partition a mesh into several files by type, region, or connected component (see [split](/split)).
