@@ -82,6 +82,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -755,6 +756,28 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus_py::mesh_to_py(std::move(out));
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"),
+        py::arg("record_parent_ids") = false);
+
+    // Isosurfaces / contours: the level set of a scalar point_data field, cut
+    // with the same marching tetrahedra as slice. `component` is negative for
+    // the row magnitude. See operations/isosurface.hpp.
+    m.def(
+        "isosurface",
+        [](py::object pymesh, const std::string& array, const std::vector<double>& isovalues,
+           int component, bool record_parent_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::IsosurfaceOptions options;
+            options.mArrayName = array;
+            options.mIsovalues = isovalues;
+            if (component >= 0)
+                options.mComponent = component;
+            options.mRecordParentIds = record_parent_ids;
+            meshioplusplus::Mesh out = meshioplusplus::isosurface(cpp, options);
+            return meshioplusplus_py::mesh_to_py(std::move(out));
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("isovalues"), py::arg("component") = -1,
         py::arg("record_parent_ids") = false);
 
     // Partition into nparts balanced pieces (SFC or KaHIP). Returns a list of
