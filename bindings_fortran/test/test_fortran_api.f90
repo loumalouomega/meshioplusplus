@@ -371,6 +371,36 @@ program test_fortran_api
         call relaxed%free()
     end block
 
+    ! -- interpolate: cross-mesh field transfer --
+    block
+        type(mio_mesh) :: sampled, bad
+        real(real64), allocatable :: tdata(:)
+        integer :: st
+
+        ! Sampling the mesh onto itself: nearest reproduces the field exactly.
+        ! 'temperature' already exists on the target, so resolve by suffix.
+        sampled = mio_interpolate(m, m, method='nearest', &
+                                  arrays=[character(len=16) :: 'temperature'], &
+                                  on_conflict='suffix', stat=st)
+        call check(st == 0, 'interpolate succeeded')
+        call check(sampled%num_points() == m%num_points(), &
+                   'interpolate preserves the target point count')
+        call sampled%get_point_data('temperature_interp', tdata)
+        call check(size(tdata) == 5, 'interpolated array has one row per target point')
+        call check(maxval(abs(tdata - [1.0_real64, 2.0_real64, 3.0_real64, 4.0_real64, &
+                                       5.0_real64])) < 1.0e-12_real64, &
+                   'self-interpolation reproduces the field')
+        call sampled%free()
+
+        ! Every source point_data name collides under the default 'error'.
+        bad = mio_interpolate(m, m, stat=st)
+        call check(st /= 0, 'interpolate rejects a name collision under error')
+
+        ! An unknown method fails through stat, never by aborting.
+        bad = mio_interpolate(m, m, method='bogus', on_conflict='overwrite', stat=st)
+        call check(st /= 0, 'interpolate rejects an unknown method')
+    end block
+
     ! -- refine: uniform subdivision into same-type children --
     block
         type(mio_mesh) :: one, two, quadratic, bad
