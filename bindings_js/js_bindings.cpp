@@ -93,6 +93,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
@@ -678,21 +679,21 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
         return mesh;
     }
     if (op == "section") {
-        double point[3], normal[3];
-        read_vec3(rSpec["point"], point);
-        read_vec3(rSpec["normal"], normal);
-        const meshioplusplus::CropMode mode = text("mode", "all") == "any"
-                                                  ? meshioplusplus::CropMode::Any
-                                                  : meshioplusplus::CropMode::All;
-        const std::size_t before = total_cells(mesh);
-        auto result = meshioplusplus::crop_halfspace(mesh, point, normal, mode,
-                                                     /*recordIds=*/false);
-        step.set("cellsRemoved", static_cast<double>(before - total_cells(result.mMesh)));
+        // The planar cross-section: slice() intersects the mesh with the plane
+        // and returns a surface (triangle/quad) one dimension lower. Because a
+        // surface is not skinnable, convert_surface_ops' shared re-skin tail
+        // linearizes and writes it directly -- exactly the section is rendered,
+        // not the boundary of a retained half (the old crop_halfspace path).
+        meshioplusplus::SliceOptions opts;
+        read_vec3(rSpec["point"], opts.mOrigin.data());
+        read_vec3(rSpec["normal"], opts.mNormal.data());
+        Mesh section = meshioplusplus::slice(mesh, opts);
+        step.set("sectionFaces", static_cast<double>(total_cells(section)));
         rSteps.call<void>("push", step);
-        if (total_cells(result.mMesh) == 0)
-            rWarnings.call<void>("push", std::string("the section removed every cell; "
-                                                     "try flipping it or moving the plane"));
-        return std::move(result.mMesh);
+        if (total_cells(section) == 0)
+            rWarnings.call<void>("push", std::string("the section is empty; the plane "
+                                                     "misses the mesh -- move or flip it"));
+        return section;
     }
     throw meshioplusplus::ReadError("meshio++ (wasm): unknown operation '" + op + "'");
 }
@@ -1001,6 +1002,23 @@ val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
         return mesh_to_val(
             meshioplusplus::crop_halfspace(val_to_mesh(rMeshObj), point, normal, m, recordIds)
                 .mMesh);
+    });
+}
+
+/**
+ * @brief Planar cross-section of a mesh (marching tetrahedra on a simplexified
+ * input). Returns a new mesh one dimension below the cut cells: a triangle/quad
+ * surface for a volume mesh, a line mesh for a 2D surface mesh.
+ */
+val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SliceOptions options;
+        for (unsigned i = 0; i < 3; ++i) {
+            options.mOrigin[i] = rOrigin[i].as<double>();
+            options.mNormal[i] = rNormal[i].as<double>();
+        }
+        options.mRecordParentIds = recordParentIds;
+        return mesh_to_val(meshioplusplus::slice(val_to_mesh(rMeshObj), options));
     });
 }
 
@@ -1456,6 +1474,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("clean", &clean_js);
     emscripten::function("smooth", &smooth_js);
     emscripten::function("interpolate", &interpolate_js);
+    emscripten::function("slice", &slice_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("split", &split_js);
