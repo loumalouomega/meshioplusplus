@@ -73,6 +73,7 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean) => Mesh,
+ *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
  *   stats: (mesh: Mesh) => object,
  *   dataDrop: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataKeep: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
@@ -225,6 +226,28 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
             Module.convertCells(mesh, mode, recordParentIds),
         refine: (mesh, levels = 1, recordParentIds = false) =>
             Module.refine(mesh, levels, recordParentIds),
+        // Exactly one of ratio / targetFaces / maxError must be non-negative;
+        // the frozen mask is not exposed here, as on the other flat bindings.
+        decimate: (
+            mesh,
+            ratio = -1,
+            targetFaces = -1,
+            maxError = -1,
+            placement = 'optimal',
+            preserveBoundary = true,
+            preserveFeatures = true,
+            featureAngle = 30,
+        ) =>
+            Module.decimate(
+                mesh,
+                ratio,
+                targetFaces,
+                maxError,
+                placement,
+                preserveBoundary,
+                preserveFeatures,
+                featureAngle,
+            ),
         partition: (
             mesh,
             nparts,
