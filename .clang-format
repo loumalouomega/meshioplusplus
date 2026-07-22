@@ -1,6 +1,6 @@
 ---
-# Codifies the C++ style already in use across cpp/, bindings/python/, bindings/wasm/
-# (K&R braces, 4-space indent, no tabs). Does not apply to cpp/third_party
+# Codifies the C++ style already in use across src/cpp/, bindings/python/, bindings/wasm/
+# (K&R braces, 4-space indent, no tabs). Does not apply to src/cpp/third_party
 # (vendored dependencies) or any fetched build directory.
 BasedOnStyle: Google
 Language: Cpp

@@ -1,6 +1,6 @@
 #!/bin/sh
 # bench_backends.sh — build and run the C++ mesh-backend benchmark
-# (cpp/benchmark/bench_backends.cpp) for every mesh backend and collate the
+# (src/cpp/benchmark/bench_backends.cpp) for every mesh backend and collate the
 # results into benchmark/results_backends.csv.
 #
 # The mesh backend (MESHIO / NATIVE / KRATOS) is an exclusive compile-time

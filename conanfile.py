@@ -10,8 +10,8 @@
 # `project(... VERSION ...)` -- bump all three together on a release.
 #
 # Notes on optional dependencies:
-#   * pugixml is vendored in-tree (cpp/third_party/pugixml) -- no requirement.
-#   * Eigen is a git submodule (cpp/third_party/eigen), absent from a source
+#   * pugixml is vendored in-tree (src/cpp/third_party/pugixml) -- no requirement.
+#   * Eigen is a git submodule (src/cpp/third_party/eigen), absent from a source
 #     export, so `with_eigen` defaults False and the MED transpose uses the
 #     hand-written fallback loop. Enabling it would need a small CMake change to
 #     accept an external Eigen3::Eigen (tracked as a follow-up).
@@ -65,14 +65,14 @@ class MeshioplusplusConan(ConanFile):
         "fortran": False,
     }
 
-    # Everything the C API build needs. pugixml is inside cpp/third_party; the
+    # Everything the C API build needs. pugixml is inside src/cpp/third_party; the
     # Eigen submodule is deliberately not exported (with_eigen defaults off).
     exports_sources = (
         "CMakeLists.txt",
         "LICENSE",
-        "cpp/include/*",
-        "cpp/src/*",
-        "cpp/third_party/pugixml/*",
+        "src/cpp/include/*",
+        "src/cpp/src/*",
+        "src/cpp/third_party/pugixml/*",
         "bindings/c/*",
         "bindings/fortran/*",
         "cmake/*",

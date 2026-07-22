@@ -42,7 +42,7 @@ for (const id of svgIds) {
 }
 
 const generated = readFileSync(
-    path.join(HERE, '..', '..', 'viewer', 'src', 'ui', 'icons.ts'),
+    path.join(HERE, '..', '..', 'src', 'viewer', 'src', 'ui', 'icons.ts'),
     'utf8'
 );
 

@@ -133,7 +133,7 @@ typedef enum mio_dtype {
 #define MIO_MAX_NDIM 8
 
 /* X(EnumName) -- one entry per meshio++ cell type, in the exact order of the
- * C++ `meshioplusplus::CellType` enum (cpp/include/meshioplusplus/
+ * C++ `meshioplusplus::CellType` enum (src/cpp/include/meshioplusplus/
  * cell_type.hpp). c_api.cpp static_asserts every entry and the terminal
  * MIO_CELL_Custom against the C++ enum, so any drift between the two lists
  * is a compile error, never a runtime mismatch. */

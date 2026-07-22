@@ -17,8 +17,8 @@
 # scikit-build-core editable installs) - a stray committed copy of this once
 # got bundled into every manylinux wheel via wheel.packages, silently
 # reintroducing whatever toolchain built it regardless of the actual CI build.
-src/meshioplusplus/*.so
-src/meshioplusplus/*.pyd
+src/python/meshioplusplus/*.so
+src/python/meshioplusplus/*.pyd
 .cache/
 MANIFEST
 README.rst
@@ -39,7 +39,7 @@ test_package/build/
 CMakeUserPresets.json
 # Emscripten build output copied into the npm package staging dir -- built by
 # build/configure-wasm.sh, not committed (mirrors build/* above).
-wasm/dist/
+src/wasm/dist/
 # CMake FetchContent downloads (e.g. GoogleTest) land here inside a build dir
 _deps/
 dist/
@@ -57,13 +57,13 @@ foo.vtk
 # Jupyter
 .ipynb_checkpoints/
 
-# viewer/ build output (see viewer/README.md); the wheel-bundled asset is
-# committed separately at src/meshioplusplus/_viewer_assets/viewer.html
-viewer/dist-web/
-viewer/dist-embed/
-viewer/node_modules/
-viewer/test-results/
-viewer/playwright-report/
+# src/viewer/ build output (see src/viewer/README.md); the wheel-bundled asset is
+# committed separately at src/python/meshioplusplus/_viewer_assets/viewer.html
+src/viewer/dist-web/
+src/viewer/dist-embed/
+src/viewer/node_modules/
+src/viewer/test-results/
+src/viewer/playwright-report/
 
 # doc/icons/ LaTeX build artifacts (svg-ui/ is committed; see doc/icons/README.md)
 doc/icons/build-ui/

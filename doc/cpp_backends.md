@@ -14,11 +14,11 @@ The C++ core has three interchangeable **in-memory mesh backends**, selected at 
 ./build/configure.sh --mesh-backend KRATOS --tests --build
 ```
 
-Every format reader/writer is written against a **uniform mesh API** (`cpp/include/meshioplusplus/mesh_api.hpp`), so all ~36 formats compile and round-trip identically under every backend — the full GoogleTest suite runs per backend in CI. Selecting `NATIVE`/`KRATOS` together with `MESHIOPLUSPLUS_BUILD_PYTHON=ON` is a CMake configure error: the zero-copy numpy boundary is written against MESHIO's exact struct layout.
+Every format reader/writer is written against a **uniform mesh API** (`src/cpp/include/meshioplusplus/mesh_api.hpp`), so all ~36 formats compile and round-trip identically under every backend — the full GoogleTest suite runs per backend in CI. Selecting `NATIVE`/`KRATOS` together with `MESHIOPLUSPLUS_BUILD_PYTHON=ON` is a CMake configure error: the zero-copy numpy boundary is written against MESHIO's exact struct layout.
 
 ## The uniform mesh API
 
-`meshioplusplus::Mesh` is a compile-time alias (`cpp/include/meshioplusplus/mesh.hpp`) for the selected backend type. All backends implement:
+`meshioplusplus::Mesh` is a compile-time alias (`src/cpp/include/meshioplusplus/mesh.hpp`) for the selected backend type. All backends implement:
 
 **Ingestion** (what readers use — `NDArray` is the universal staging type, handed over by move):
 
@@ -85,7 +85,7 @@ mp.GetSubModelPart("gmsh_physical_1");  // built from integer tag arrays
 
 ### The Kratos bridge (works from any backend)
 
-`cpp/include/meshioplusplus/kratos_bridge.hpp` is header-only, templated, and independent of the selected mesh backend — `meshioplusplus::ModelPart` and the bridge compile in every build. `to_model_part` populates **any** Kratos-like class through the narrow creation API only (`CreateNewNode/CreateNewElement(name, id, nodeIds, properties)/...`), so it works with a real `Kratos::ModelPart` without meshio++ ever linking Kratos:
+`src/cpp/include/meshioplusplus/kratos_bridge.hpp` is header-only, templated, and independent of the selected mesh backend — `meshioplusplus::ModelPart` and the bridge compile in every build. `to_model_part` populates **any** Kratos-like class through the narrow creation API only (`CreateNewNode/CreateNewElement(name, id, nodeIds, properties)/...`), so it works with a real `Kratos::ModelPart` without meshio++ ever linking Kratos:
 
 ```cpp
 #include "meshioplusplus/kratos_bridge.hpp"
@@ -106,8 +106,8 @@ Sub model parts (including nested ones) are copied when the destination supports
 
 ## Benchmarks between backends
 
-`benchmark/bench_backends.sh` builds one benchmark binary per backend (`cpp/benchmark/bench_backends.cpp`, CMake option `MESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV comparing ingest, accessor traversal, ModelPart materialization (KRATOS only), and full file round-trips on a synthetic tet cube. See [Benchmarks](benchmarks.md#mesh-backend-benchmarks) for results and method.
+`benchmark/bench_backends.sh` builds one benchmark binary per backend (`src/cpp/benchmark/bench_backends.cpp`, CMake option `MESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV comparing ingest, accessor traversal, ModelPart materialization (KRATOS only), and full file round-trips on a synthetic tet cube. See [Benchmarks](benchmarks.md#mesh-backend-benchmarks) for results and method.
 
 ## Adding a backend
 
-One CMake branch defining `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>`, one `#elif` in `cpp/include/meshioplusplus/mesh.hpp`, and a `backends/<name>_mesh.hpp` implementing the uniform API (`mesh_api.hpp` documents the exact contract; `cpp/tests/test_mesh_api.cpp` is its executable form and must pass).
+One CMake branch defining `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>`, one `#elif` in `src/cpp/include/meshioplusplus/mesh.hpp`, and a `backends/<name>_mesh.hpp` implementing the uniform API (`mesh_api.hpp` documents the exact contract; `src/cpp/tests/test_mesh_api.cpp` is its executable form and must pass).

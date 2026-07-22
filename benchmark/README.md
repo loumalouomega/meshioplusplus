@@ -32,7 +32,7 @@ numpy speed in pure Python see little or no gain).
 KRATOS) — no Python involved. The backend is a compile-time choice, so the
 script configures one throwaway tree per backend under `build/bench-<backend>`
 (`-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`, Python off), runs
-`meshioplusplus_bench` (from `cpp/benchmark/bench_backends.cpp`) in each, and
+`meshioplusplus_bench` (from `src/cpp/benchmark/bench_backends.cpp`) in each, and
 collates `results_backends.csv`:
 
 ```sh

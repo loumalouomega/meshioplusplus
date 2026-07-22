@@ -35,7 +35,7 @@ jobs:
       # deployment, so a separate workflow would fight this one over the
       # `pages` concurrency group and overwrite the docs.
       #
-      # The Emscripten build is required, not incidental: wasm/dist/ is
+      # The Emscripten build is required, not incidental: src/wasm/dist/ is
       # gitignored, so the package the viewer consumes does not exist until it
       # is built. `npm ci` must follow it, because npm *copies* a `file:`
       # dependency rather than symlinking it.
@@ -46,7 +46,7 @@ jobs:
       - name: Build the meshio++ WASM package
         run: ./build/configure-wasm.sh --build
       - name: Build the viewer
-        working-directory: viewer
+        working-directory: src/viewer
         env:
           VITE_BASE: /meshioplusplus/viewer/
         run: |
@@ -66,7 +66,7 @@ jobs:
         # would nest dist-web inside it (viewer/dist-web/index.html) instead
         # of merging - the trailing `/.` copies dist-web's *contents* into
         # the existing directory so index.html lands at viewer/index.html.
-        run: cp -r viewer/dist-web/. doc/.vitepress/dist/viewer/
+        run: cp -r src/viewer/dist-web/. doc/.vitepress/dist/viewer/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

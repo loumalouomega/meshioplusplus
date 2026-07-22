@@ -8,7 +8,7 @@
 #
 # The single header is committed to the repo (a first-class drop-in deliverable,
 # like nlohmann/json). CI runs `--check` (and `--smoke`) so a PR that changes
-# cpp/ without regenerating the header fails.
+# src/cpp/ without regenerating the header fails.
 
 set -eu
 
@@ -64,7 +64,7 @@ echo "amalgamate: wrote $OUTPUT"
 if [ "$DO_SMOKE" = "yes" ]; then
     CXX="${CXX:-g++}"
     INCDIR=$(dirname -- "$(dirname -- "$OUTPUT")")   # the single_include/ dir
-    PUGI="$SOURCE_DIR/cpp/third_party/pugixml"
+    PUGI="$SOURCE_DIR/src/cpp/third_party/pugixml"
     WORK=$(mktemp -d)
     trap 'rm -rf "$WORK"' EXIT
 

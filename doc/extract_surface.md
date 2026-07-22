@@ -62,7 +62,7 @@ still cancel shared facets correctly.
 ## Relationship to `extract_skin`
 
 `extract_surface` and [`extract_skin`](./extract_skin.md) share one
-implementation (`cpp/src/operations/surface.cpp`). Use `extract_skin` when you
+implementation (`src/cpp/src/operations/surface.cpp`). Use `extract_skin` when you
 specifically want the volume skin with the optional `linearize` flag (what the
 STL/PLY/SVG/TikZ writers use); use `extract_surface` for the auto-dimension
 behavior, 2D-edge extraction, and parent-cell provenance.
@@ -78,7 +78,7 @@ Available in every binding surface: Python (`extract_surface`), the C API
 The extractor runs over the uniform mesh API (so it works under all three mesh
 backends) with a parallel facet-key phase and a serial dedup/emit phase that
 keeps output byte-identical across backends and thread counts. Face topology
-comes from `cpp/include/meshioplusplus/detail/cell_faces.hpp` and edge topology
+comes from `src/cpp/include/meshioplusplus/detail/cell_faces.hpp` and edge topology
 from `detail/cell_edges.hpp`; a pure-numpy twin
 (`meshioplusplus._surface._extract_surface_py`) produces identical output,
 asserted by `tests/test_extract_surface.py`.

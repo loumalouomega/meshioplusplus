@@ -8,7 +8,7 @@ PROJECT_NAME           = "meshio++"
 PROJECT_BRIEF          = "C++ / C API reference"
 
 OUTPUT_DIRECTORY       = doxygen-build
-INPUT                  = ../cpp/include ../bindings/c/include
+INPUT                  = ../src/cpp/include ../bindings/c/include
 RECURSIVE              = YES
 FILE_PATTERNS          = *.hpp *.h
 

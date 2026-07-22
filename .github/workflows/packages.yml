@@ -29,7 +29,7 @@ on:
       - "ports/**"
       - ".github/workflows/packages.yml"
       - "CMakeLists.txt"
-      - "cpp/**"
+      - "src/cpp/**"
       - "bindings/c/**"
       - "cmake/**"
   workflow_dispatch:

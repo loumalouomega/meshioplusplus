@@ -6,7 +6,7 @@
 
 [![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
 
-[![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](viewer/)
+[![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](src/viewer/)
 
 [![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus) [![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
 
@@ -645,7 +645,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 
 | Project | Used for | License |
 | --- | --- | --- |
-| [pugixml](https://pugixml.org/) | XML parsing in the C++ core (vendored in `cpp/third_party/`) | MIT |
+| [pugixml](https://pugixml.org/) | XML parsing in the C++ core (vendored in `src/cpp/third_party/`) | MIT |
 | [Eigen](https://eigen.tuxfamily.org/) | the MED Fortran↔C transpose (git submodule, optional) | MPL-2.0 |
 | [pybind11](https://github.com/pybind/pybind11) | the Python bindings | BSD-3-Clause |
 | [scikit-build-core](https://github.com/scikit-build/scikit-build-core) | the CMake-driven build backend | Apache-2.0 |
@@ -654,7 +654,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [zlib](https://zlib.net/), [Zstandard](https://facebook.github.io/zstd/), [LZ4](https://lz4.org/) | optional compression codecs | zlib / BSD-3-Clause / BSD-2-Clause |
 | [HDF5](https://www.hdfgroup.org/solutions/hdf5/), [netCDF](https://www.unidata.ucar.edu/software/netcdf/) | optional native paths for HDF5/netCDF-backed formats | BSD-3-Clause / MIT-like |
 
-#### Browser viewer (isolated under [`viewer/`](viewer/))
+#### Browser viewer (isolated under [`src/viewer/`](src/viewer/))
 
 | Project | Used for | License |
 | --- | --- | --- |

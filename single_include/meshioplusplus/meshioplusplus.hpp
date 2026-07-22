@@ -5,7 +5,7 @@
 //
 //  *** GENERATED FILE -- DO NOT EDIT BY HAND. ***
 //  Regenerate with:  ./tools/amalgamate.sh
-//  (CI verifies this file is up to date; edit the sources under cpp/, not here.)
+//  (CI verifies this file is up to date; edit the sources under src/cpp/, not here.)
 //
 //  Usage (STB-style, header-only):
 //
@@ -33,7 +33,7 @@
 // MESHIOPLUSPLUS_MESH_BACKEND_NATIVE or _KRATOS before including to change it.
 
 // ================= DECLARATIONS (always compiled) =================
-// ===== begin cpp/include/meshioplusplus/cell_type.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
  * @file cell_type.hpp
  * @brief `CellType`: a compact enum for meshio cell-type names, with
@@ -221,12 +221,12 @@ inline int cell_type_dimension(CellType type) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/cell_type.hpp =====
-// ===== begin cpp/include/meshioplusplus/backends/kratos_names.hpp =====
+// ===== end src/cpp/include/meshioplusplus/cell_type.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/backends/kratos_names.hpp =====
 /**
  * @file kratos_names.hpp
  * @brief Kratos Multiphysics entity/geometry name tables mapped to
- * `CellType`, ported from this repo's own MIT `src/meshioplusplus/mdpa/_mdpa.py`
+ * `CellType`, ported from this repo's own MIT `src/python/meshioplusplus/mdpa/_mdpa.py`
  * (`_kratos_elements_to_meshio_type`, `_kratos_conditions_to_meshio_type`,
  * `_kratos_geometries_to_meshio_type`, and the default
  * `_meshio_to_kratos_element/condition_type` pick tables).
@@ -389,8 +389,8 @@ inline const std::string& kratos_condition_name(CellType type) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/backends/kratos_names.hpp =====
-// ===== begin cpp/include/meshioplusplus/ndarray.hpp =====
+// ===== end src/cpp/include/meshioplusplus/backends/kratos_names.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/ndarray.hpp =====
 /**
  * @file ndarray.hpp
  * @brief `NDArray`: a minimal typed, n-dimensional, contiguous (row-major)
@@ -710,8 +710,8 @@ private:
 };
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/ndarray.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/named_arrays.hpp =====
+// ===== end src/cpp/include/meshioplusplus/ndarray.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/named_arrays.hpp =====
 /**
  * @file named_arrays.hpp
  * @brief Insertion-ordered `name -> NDArray` (and `name -> vector<NDArray>`)
@@ -797,8 +797,8 @@ using NamedArrayLists = NamedItems<std::vector<NDArray>>;
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/named_arrays.hpp =====
-// ===== begin cpp/include/meshioplusplus/backends/model_part.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/named_arrays.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/backends/model_part.hpp =====
 /**
  * @file model_part.hpp
  * @brief `meshioplusplus::ModelPart`: a standalone, Kratos-Multiphysics-style
@@ -1279,8 +1279,8 @@ private:
 };
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/backends/model_part.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/value_io.hpp =====
+// ===== end src/cpp/include/meshioplusplus/backends/model_part.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/value_io.hpp =====
 /**
  * @file value_io.hpp
  * @brief Shared helpers to read scalar values out of an `NDArray` regardless
@@ -1510,8 +1510,8 @@ inline void write_int(NDArray& rA, std::size_t i, std::int64_t v) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/value_io.hpp =====
-// ===== begin cpp/include/meshioplusplus/mesh_api.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/value_io.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/mesh_api.hpp =====
 /**
  * @file mesh_api.hpp
  * @brief The uniform format-facing mesh API: the compile-time contract every
@@ -1642,8 +1642,8 @@ private:
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/mesh_api.hpp =====
-// ===== begin cpp/include/meshioplusplus/backends/native_mesh.hpp =====
+// ===== end src/cpp/include/meshioplusplus/mesh_api.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/backends/native_mesh.hpp =====
 /**
  * @file native_mesh.hpp
  * @brief The NATIVE mesh backend: `meshioplusplus::NativeMesh`, a canonical
@@ -2017,8 +2017,8 @@ private:
 };
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/backends/native_mesh.hpp =====
-// ===== begin cpp/include/meshioplusplus/types.hpp =====
+// ===== end src/cpp/include/meshioplusplus/backends/native_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/types.hpp =====
 /**
  * @file types.hpp
  * @brief Cell-type metadata tables, ported 1:1 from the Python reference so
@@ -2222,8 +2222,8 @@ inline const std::unordered_map<std::string, int>& topological_dimension() {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/types.hpp =====
-// ===== begin cpp/include/meshioplusplus/backends/kratos_mesh.hpp =====
+// ===== end src/cpp/include/meshioplusplus/types.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/backends/kratos_mesh.hpp =====
 /**
  * @file kratos_mesh.hpp
  * @brief The KRATOS mesh backend: `meshioplusplus::KratosMesh`, the uniform
@@ -2237,7 +2237,7 @@ inline const std::unordered_map<std::string, int>& topological_dimension() {
  *  - Nodes get Ids `index + 1` (z = 0-padded for 2-D points).
  *  - Cell blocks whose topological dimension equals the mesh's maximum
  *    become **Elements**; lower-dimension blocks become **Conditions** (the
- *    Kratos convention, matching `src/meshioplusplus/mdpa/_mdpa.py`), each
+ *    Kratos convention, matching `src/python/meshioplusplus/mdpa/_mdpa.py`), each
  *    kind Id-numbered 1..N in block order, with default Kratos names from
  *    `kratos_names.hpp`.
  *  - `point_data` becomes nodal data; `cell_data` becomes elemental /
@@ -2710,8 +2710,8 @@ private:
 };
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/backends/kratos_mesh.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/map_order.hpp =====
+// ===== end src/cpp/include/meshioplusplus/backends/kratos_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/map_order.hpp =====
 /**
  * @file map_order.hpp
  * @brief Deterministic iteration order for the `Mesh` data maps.
@@ -2750,8 +2750,8 @@ std::vector<typename Map::key_type> sorted_keys(const Map& rM) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/map_order.hpp =====
-// ===== begin cpp/include/meshioplusplus/backends/meshio_mesh.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/map_order.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/backends/meshio_mesh.hpp =====
 /**
  * @file meshio_mesh.hpp
  * @brief The MESHIO mesh backend: `meshioplusplus::Mesh` and
@@ -3024,8 +3024,8 @@ struct Mesh {
 };
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/backends/meshio_mesh.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/byteswap.hpp =====
+// ===== end src/cpp/include/meshioplusplus/backends/meshio_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/byteswap.hpp =====
 /**
  * @file byteswap.hpp
  * @brief Endianness conversion primitives used by every binary format reader
@@ -3153,8 +3153,8 @@ inline void bswap_inplace(char* pP, int n) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/byteswap.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/cell_edges.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/byteswap.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/cell_edges.hpp =====
 /**
  * @file cell_edges.hpp
  * @brief Per-cell-type boundary-edge topology tables (local node indices of
@@ -3173,7 +3173,7 @@ inline void bswap_inplace(char* pP, int n) {
  * on no edge).
  *
  * `cell_edges` is looked up once per cell (not per node/scalar), so its table
- * lookup lives in `cpp/src/detail/cell_edges.cpp` rather than inline here.
+ * lookup lives in `src/cpp/src/detail/cell_edges.cpp` rather than inline here.
  */
 
 // System includes
@@ -3221,8 +3221,8 @@ inline bool surface_edge_supported(CellType Type) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/cell_edges.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/cell_faces.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/cell_edges.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/cell_faces.hpp =====
 /**
  * @file cell_faces.hpp
  * @brief Per-cell-type boundary-face topology tables (local node indices of
@@ -3247,15 +3247,15 @@ inline bool surface_edge_supported(CellType Type) {
  *    penta15 involution (see CLAUDE.md) must NOT be applied here.
  *
  * The outward winding of every row is enforced by a gtest invariant
- * (`cpp/tests/test_skin.cpp`): on the reference element, the Newell normal
+ * (`src/cpp/tests/test_skin.cpp`): on the reference element, the Newell normal
  * of each face's corner ring must point away from the cell centroid.
  *
- * KEEP IN SYNC: `src/meshioplusplus/_skin.py` carries the Python twin of
+ * KEEP IN SYNC: `src/python/meshioplusplus/_skin.py` carries the Python twin of
  * these tables for the pure-Python fallback — any change here must be
  * mirrored there.
  *
  * `cell_faces` is looked up once per cell (not per node/scalar), so its table
- * lookup lives in `cpp/src/detail/cell_faces.cpp` rather than inline here.
+ * lookup lives in `src/cpp/src/detail/cell_faces.cpp` rather than inline here.
  */
 
 // System includes
@@ -3303,8 +3303,8 @@ inline bool skin_supported(CellType Type) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/cell_faces.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/cell_subdivision.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/cell_faces.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/cell_subdivision.hpp =====
 /**
  * @file cell_subdivision.hpp
  * @brief The **shared** per-cell-type edge and quad-face tables used whenever a
@@ -3333,12 +3333,12 @@ inline bool skin_supported(CellType Type) {
  * Face rows here are wound in that VTK centre-node order, which is *not* the
  * outward winding of `cell_faces.hpp`. That is harmless for both consumers: a
  * face contributes only a sorted node key and the mean of its corners, and both
- * are winding-independent. `cpp/tests/test_cell_subdivision.cpp` cross-checks
+ * are winding-independent. `src/cpp/tests/test_cell_subdivision.cpp` cross-checks
  * every row against `cell_faces()`'s own centre-node columns so the two tables
  * cannot drift.
  *
  * These tables are looked up once per cell **block** (not per cell or per node),
- * so the lookups live in `cpp/src/detail/cell_subdivision.cpp` rather than
+ * so the lookups live in `src/cpp/src/detail/cell_subdivision.cpp` rather than
  * inline here.
  */
 
@@ -3382,8 +3382,8 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type);
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/cell_subdivision.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/colormap.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/cell_subdivision.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/colormap.hpp =====
 /**
  * @file colormap.hpp
  * @brief Built-in colormap lookup tables for data-driven SVG/TikZ coloring.
@@ -3402,11 +3402,11 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type);
  * nothing to interpolate: the entire floating-point surface of the color path
  * is the single index expression in colormap_lookup's body.
  *
- * The table data and function bodies live in `cpp/src/detail/colormap.cpp`,
+ * The table data and function bodies live in `src/cpp/src/detail/colormap.cpp`,
  * not here -- this header is declarations only, so including it does not pull
  * three 768-byte array literals into every translation unit that colours a
  * face. The Python twin, which has no header/source split, is
- * `src/meshioplusplus/_colormap.py`; all three files are emitted by
+ * `src/python/meshioplusplus/_colormap.py`; all three files are emitted by
  * `tools/gen_colormaps.py` and pinned against each other by
  * `tests/test_colormap.py`.
  */
@@ -3447,7 +3447,7 @@ std::vector<std::string> colormap_names();
  *          (callers route NaN to `nan_color` before reaching here).
  *
  * The index expression is the ONLY floating-point arithmetic in the color path,
- * and `src/meshioplusplus/_colormap.py` reproduces it character for character:
+ * and `src/python/meshioplusplus/_colormap.py` reproduces it character for character:
  * two IEEE-754 double operations in the same order, then a truncating cast.
  * Because `t` is non-negative here, truncation IS floor in both languages and
  * no tie-breaking is involved.
@@ -3460,8 +3460,8 @@ Rgb colormap_lookup(const std::uint8_t* pTable, double t);
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/colormap.hpp =====
-// ===== begin cpp/include/meshioplusplus/mesh.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/colormap.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/mesh.hpp =====
 /**
  * @file mesh.hpp
  * @brief Compile-time mesh-backend dispatch: selects which in-memory mesh
@@ -3506,8 +3506,8 @@ using Mesh = KratosMesh;
 // pybind11 binding layer sees literally the same type as before the
 // backends existed.
 #endif
-// ===== end cpp/include/meshioplusplus/mesh.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/data_common.hpp =====
+// ===== end src/cpp/include/meshioplusplus/mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/data_common.hpp =====
 /**
  * @file operations/data_common.hpp
  * @brief Shared vocabulary for the *data* operations — the ones that act on a
@@ -3628,8 +3628,8 @@ std::string data_unknown_key_message(const Mesh& rMesh, DataLocation Location,
 std::size_t data_num_components(const NDArray& rArray);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/data_common.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/data_ops.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/data_common.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/data_ops.hpp =====
 /**
  * @file data_ops.hpp
  * @brief Header-only helpers shared by the *data* operations (`data_manage`,
@@ -3652,10 +3652,10 @@ std::size_t data_num_components(const NDArray& rArray);
  * per element inside `accumulate_stats`'s inner loop, so that struct stays
  * inline too. Every other function is called once per array or once per cell
  * (never once per scalar), so those bodies live in
- * `cpp/src/detail/data_ops.cpp` instead.
+ * `src/cpp/src/detail/data_ops.cpp` instead.
  *
  * These are `detail::` helpers, so they are exempt from the unique-prefix rule
- * the anonymous-namespace helpers in `cpp/src/**.cpp` follow for the
+ * the anonymous-namespace helpers in `src/cpp/src/**.cpp` follow for the
  * single-header amalgamation.
  */
 
@@ -3855,8 +3855,8 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/data_ops.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/projection.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/data_ops.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/projection.hpp =====
 /**
  * @file projection.hpp
  * @brief Orthographic camera projection + painter's-algorithm face ordering
@@ -3873,7 +3873,7 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
  * is orthographic (`x' = p.u`, `y' = p.v`), and `depth = p.w` orders faces
  * back-to-front (painter's algorithm; larger depth = closer to the camera).
  *
- * KEEP IN SYNC: `src/meshioplusplus/_projection.py` is the Python twin used
+ * KEEP IN SYNC: `src/python/meshioplusplus/_projection.py` is the Python twin used
  * by the pure-Python fallback writers — the arithmetic (down to expression
  * order, which fixes the floating-point rounding) must stay identical so
  * TikZ output is byte-identical across the two implementations.
@@ -3881,7 +3881,7 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
  * `camera_basis` is called once per write, and `project_surface` once per
  * mesh (its own per-point/per-face loops are unaffected by where the
  * function itself is compiled), so both bodies live in
- * `cpp/src/detail/projection.cpp` rather than inline here.
+ * `src/cpp/src/detail/projection.cpp` rather than inline here.
  */
 
 // System includes
@@ -3957,18 +3957,18 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/projection.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/face_color.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/projection.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/face_color.hpp =====
 /**
  * @file face_color.hpp
  * @brief Resolve a named data array into one color per drawn face.
  *
  * This is the shared middle of the SVG and TikZ writers' data-driven coloring.
- * There are four emission sites for that feature -- `cpp/src/formats/svg.cpp`,
- * `cpp/src/formats/tikz.cpp` and their pure-Python twins -- and everything
+ * There are four emission sites for that feature -- `src/cpp/src/formats/svg.cpp`,
+ * `src/cpp/src/formats/tikz.cpp` and their pure-Python twins -- and everything
  * except the format's own color vocabulary lives here, so the logic exists
  * exactly twice (once per language) rather than four times. The Python twin is
- * `src/meshioplusplus/_facecolor.py`, and the two must stay in step: the two
+ * `src/python/meshioplusplus/_facecolor.py`, and the two must stay in step: the two
  * writers are pinned byte-for-byte against each other by `tests/test_svg.py`
  * and `tests/test_tikz.py`, so every arithmetic step here has an
  * expression-for-expression counterpart there.
@@ -4076,8 +4076,8 @@ FaceColors resolve_face_colors(const ColorSpec& rSpec, const Mesh& rSource, cons
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/face_color.hpp =====
-// ===== begin cpp/include/meshioplusplus/read_options.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/face_color.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/read_options.hpp =====
 /**
  * @file read_options.hpp
  * @brief Per-call reader options (selective/partial reads, memory mapping) and
@@ -4257,8 +4257,8 @@ struct MeshMetadata {
 MeshMetadata metadata_from_mesh(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/read_options.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/file_source.hpp =====
+// ===== end src/cpp/include/meshioplusplus/read_options.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/file_source.hpp =====
 /**
  * @file file_source.hpp
  * @brief Whole-file read access, memory-mapped where that helps and buffered
@@ -4292,7 +4292,7 @@ MeshMetadata metadata_from_mesh(const Mesh& rMesh);
  * and re-validates the mesh, so a violation fails loudly rather than becoming a
  * use-after-free in someone else's process.
  *
- * Implementation (`cpp/src/file_source.cpp`) is out-of-line: every platform
+ * Implementation (`src/cpp/src/file_source.cpp`) is out-of-line: every platform
  * header (`<windows.h>`, `<sys/mman.h>`, ...) stays there rather than leaking
  * into every translation unit -- and every amalgamation consumer -- that merely
  * needs the declarations below.
@@ -4406,8 +4406,8 @@ private:
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/file_source.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/format_compat.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/file_source.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/format_compat.hpp =====
 /**
  * @file format_compat.hpp
  * @brief Portable stand-in for `std::format` on toolchains whose `<format>`
@@ -4475,8 +4475,8 @@ std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&...
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/format_compat.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/geometry.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/format_compat.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/geometry.hpp =====
 /**
  * @file geometry.hpp
  * @brief Small, dependency-free 3D vector primitives and mesh-coordinate
@@ -4490,7 +4490,7 @@ std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&...
  * removing the function-call boundary is what lets the compiler fold/
  * vectorize the surrounding loop. `read_point`/`read_corner_coords`/
  * `cell_corner_count` are each called once per cell (not once per scalar), so
- * their bodies live in `cpp/src/detail/geometry.cpp` instead.
+ * their bodies live in `src/cpp/src/detail/geometry.cpp` instead.
  *
  * Coordinates are pulled out of an `NDArray` through `detail::read_double`, so
  * these work regardless of the point/connectivity dtype and under every mesh
@@ -4607,8 +4607,8 @@ int cell_corner_count(CellType type);
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/geometry.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/geometry.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
 /**
  * @file hdf5_util.hpp
  * @brief Shared low-level HDF5 helpers used by every C++ format that stores
@@ -4633,7 +4633,7 @@ int cell_corner_count(CellType type);
  * `Hid`'s methods and `SilenceErrors` are small RAII glue (a handful of lines
  * each), so they stay inline; every free function below is called once per
  * dataset/attribute/group (never once per element), so bodies live in
- * `cpp/src/detail/hdf5_util.cpp` (itself `#ifdef`-guarded to compile to an
+ * `src/cpp/src/detail/hdf5_util.cpp` (itself `#ifdef`-guarded to compile to an
  * empty TU when HDF5 is absent, matching every HDF5-backed format's own
  * `.cpp`) rather than inline here.
  */
@@ -4904,8 +4904,8 @@ struct SilenceErrors {
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
 /**
  * @file node_adjacency.hpp
  * @brief The node-to-node graph of a mesh in compressed-sparse-row form,
@@ -4949,7 +4949,7 @@ struct SilenceErrors {
  *
  * Free functions in `meshioplusplus::detail`, each called once per
  * reorder/smooth operation (not per element), so their bodies live in
- * `cpp/src/detail/node_adjacency.cpp` rather than inline here — the same
+ * `src/cpp/src/detail/node_adjacency.cpp` rather than inline here — the same
  * convention `detail/subset.hpp` follows for `build_cell_subset`.
  */
 
@@ -5018,8 +5018,8 @@ NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
 /**
  * @file source_location_compat.hpp
  * @brief Portable stand-in for `std::source_location` on toolchains whose
@@ -5080,8 +5080,8 @@ private:
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/space_filling.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/space_filling.hpp =====
 /**
  * @file detail/space_filling.hpp
  * @brief Space-filling-curve key functions (Morton, Hilbert) shared by the
@@ -5163,8 +5163,8 @@ inline std::uint64_t sfc_hilbert_key(const std::uint32_t q[3], int bits) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/space_filling.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/spatial_hash.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/space_filling.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/spatial_hash.hpp =====
 /**
  * @file spatial_hash.hpp
  * @brief The integer bucket-grid spatial hash shared by `operations/merge.cpp`
@@ -5371,8 +5371,8 @@ private:
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/spatial_hash.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/subset.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/spatial_hash.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/subset.hpp =====
 /**
  * @file detail/subset.hpp
  * @brief Shared "build a submesh from a chosen set of cells" helper used by the
@@ -5381,7 +5381,7 @@ private:
  *
  * Free functions in `meshioplusplus::detail`, each called once per crop/split
  * operation (not per element), so their bodies live in
- * `cpp/src/detail/subset.cpp` rather than inline here. Built on the uniform
+ * `src/cpp/src/detail/subset.cpp` rather than inline here. Built on the uniform
  * mesh API only, so it works under every backend.
  */
 
@@ -5428,8 +5428,8 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/subset.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/vtk_cells.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/subset.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/vtk_cells.hpp =====
 /**
  * @file vtk_cells.hpp
  * @brief Shared reconstruction of meshio cell blocks from the VTK/VTU
@@ -5450,7 +5450,7 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
  *
  * Every function here is called once per file read (or once per contiguous
  * run within it), never once per element, so bodies live in
- * `cpp/src/detail/vtk_cells.cpp` rather than inline here — moving them does
+ * `src/cpp/src/detail/vtk_cells.cpp` rather than inline here — moving them does
  * not change the granularity of their own internal `parallel_for_bw` loops,
  * which are unaffected by which translation unit compiles the enclosing
  * function.
@@ -5576,8 +5576,8 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/vtk_cells.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/vtu_binary.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/vtk_cells.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/vtu_binary.hpp =====
 /**
  * @file vtu_binary.hpp
  * @brief Base64 and VTU "binary" `DataArray` codecs (raw and zlib/zstd/lz4
@@ -5606,7 +5606,7 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
  *
  * Every function here is called once per data array or once per ~32 KiB
  * block — both far coarser than per-scalar — so bodies (and the zlib/zstd/lz4
- * `<...>` headers they need) live in `cpp/src/detail/vtu_binary.cpp` rather
+ * `<...>` headers they need) live in `src/cpp/src/detail/vtu_binary.cpp` rather
  * than inline here. Keeping the codec headers out of this header also keeps
  * them out of every translation unit (and amalgamation consumer) that merely
  * needs the declarations below.
@@ -5788,8 +5788,8 @@ std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, Vt
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/vtu_binary.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/vtk_xml.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/vtu_binary.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/vtk_xml.hpp =====
 /**
  * @file vtk_xml.hpp
  * @brief Shared VTK-XML `<DataArray>` helpers used by the VTU
@@ -5812,7 +5812,7 @@ std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, Vt
  * Every function here is called once per data array or once per parsed
  * value inside the ASCII path (where `snprintf`/`strtod` already dominate the
  * cost far past any function-call overhead), so bodies live in
- * `cpp/src/detail/vtk_xml.cpp` rather than inline here.
+ * `src/cpp/src/detail/vtk_xml.cpp` rather than inline here.
  */
 
 // System includes
@@ -5899,8 +5899,8 @@ std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/vtk_xml.hpp =====
-// ===== begin cpp/include/meshioplusplus/detail/xdmf_common.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/vtk_xml.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/xdmf_common.hpp =====
 /**
  * @file xdmf_common.hpp
  * @brief XDMF cell-type-name maps and cell-data raw<->blocks conversion,
@@ -5918,7 +5918,7 @@ std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
  *
  * Each function here is called once per cell-type-name lookup or once per
  * data array (not per element), so bodies live in
- * `cpp/src/detail/xdmf_common.cpp` rather than inline here.
+ * `src/cpp/src/detail/xdmf_common.cpp` rather than inline here.
  */
 
 // System includes
@@ -5982,8 +5982,8 @@ std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
 
 }  // namespace xdmfcommon
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/detail/xdmf_common.hpp =====
-// ===== begin cpp/include/meshioplusplus/exceptions.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/xdmf_common.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/exceptions.hpp =====
 /**
  * @file exceptions.hpp
  * @brief meshio I/O exception types thrown by the C++ core's readers/writers.
@@ -6032,8 +6032,8 @@ struct WriteError : std::runtime_error {
 };
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/exceptions.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/abaqus.hpp =====
+// ===== end src/cpp/include/meshioplusplus/exceptions.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/abaqus.hpp =====
 /**
  * @file abaqus.hpp
  * @brief Abaqus input-deck (.inp) C++ reader/writer.
@@ -6107,8 +6107,8 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh);
 Mesh read_abaqus(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/abaqus.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/ansys.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/abaqus.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/ansys.hpp =====
 /**
  * @file ansys.hpp
  * @brief Ansys/Fluent mesh (.msh) C++ reader/writer.
@@ -6190,15 +6190,15 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary);
 Mesh read_ansys(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/ansys.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/ansysinp.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/ansys.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/ansysinp.hpp =====
 /**
  * @file ansysinp.hpp
  * @brief Ansys MAPDL "coded database" (.cdb / .inp) C++ reader/writer.
  *
  * An autonomous format distinct from the unrelated Fluent `.msh` format in
  * ansys.hpp (both are named "ansys" in meshio++). Mirrors
- * `src/meshioplusplus/ansysInp/_ansysInp.py`. Parses whitespace/keyword-
+ * `src/python/meshioplusplus/ansysInp/_ansysInp.py`. Parses whitespace/keyword-
  * delimited MAPDL command blocks directly: `ET`/`ETBLOCK` (element-type
  * declarations), `NBLOCK` (fixed-width node rows, field widths parsed from
  * the format-spec line such as `(3i9,6e20.13)` rather than hardcoded),
@@ -6294,8 +6294,8 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo);
 void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo& rInfo);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/ansysinp.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/avsucd.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/ansysinp.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/avsucd.hpp =====
 /**
  * @file avsucd.hpp
  * @brief AVS-UCD (.avs) ASCII C++ reader/writer.
@@ -6364,8 +6364,8 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh);
 Mesh read_avsucd(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/avsucd.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/cgns.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/avsucd.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/cgns.hpp =====
 /**
  * @file cgns.hpp
  * @brief CGNS (.cgns) C++ reader/writer — a minimal tetrahedra-only subset
@@ -6436,8 +6436,8 @@ Mesh read_cgns(const std::string& rPath);
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/include/meshioplusplus/formats/cgns.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/dex.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/cgns.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/dex.hpp =====
 /**
  * @file dex.hpp
  * @brief FLUX field file (.dex) C++ reader/writer.
@@ -6463,8 +6463,8 @@ Mesh read_dex(const std::string& rPath);
 void write_dex(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/dex.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/dolfin.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/dex.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/dolfin.hpp =====
 /**
  * @file dolfin.hpp
  * @brief Legacy DOLFIN/FEniCS XML (.xml) C++ reader/writer.
@@ -6528,8 +6528,8 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh);
 Mesh read_dolfin(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/dolfin.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/ensight.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/dolfin.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/ensight.hpp =====
 /**
  * @file ensight.hpp
  * @brief EnSight Gold (.case/.geo) C++ reader/writer — geometry only.
@@ -6609,8 +6609,8 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary);
 Mesh read_ensight(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/ensight.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/exodus.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/ensight.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/exodus.hpp =====
 /**
  * @file exodus.hpp
  * @brief Exodus II (.e/.exo/.ex2) C++ reader/writer, stored in netCDF using
@@ -6691,8 +6691,8 @@ Mesh read_exodus(const std::string& rPath);
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_NETCDF
-// ===== end cpp/include/meshioplusplus/formats/exodus.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/flac3d.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/exodus.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/flac3d.hpp =====
 /**
  * @file flac3d.hpp
  * @brief Itasca FLAC3D grid (.f3grid) C++ reader/writer — common path
@@ -6781,8 +6781,8 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
 Mesh read_flac3d(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/flac3d.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/flux.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/flac3d.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/flux.hpp =====
 /**
  * @file flux.hpp
  * @brief Altair FLUX mesh (.pf3) C++ reader/writer.
@@ -6850,8 +6850,8 @@ void write_flux(const std::string& rPath, const Mesh& rMesh);
 Mesh read_flux(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/flux.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/freefem.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/flux.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/freefem.hpp =====
 /**
  * @file freefem.hpp
  * @brief FreeFem++ mesh (.msh) C++ reader/writer (as handled by FEconv).
@@ -6918,8 +6918,8 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh);
 Mesh read_freefem(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/freefem.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/gmsh.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/freefem.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/gmsh.hpp =====
 /**
  * @file gmsh.hpp
  * @brief Gmsh mesh format (.msh, versions 2.2 and 4.1) C++ reader/writer.
@@ -7049,8 +7049,8 @@ Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts = {});
 MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/gmsh.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/h5m.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/gmsh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/h5m.hpp =====
 /**
  * @file h5m.hpp
  * @brief MOAB H5M (.h5m) HDF5-backed C++ reader/writer.
@@ -7128,8 +7128,8 @@ Mesh read_h5m(const std::string& rPath);
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/include/meshioplusplus/formats/h5m.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/hmf.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/h5m.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/hmf.hpp =====
 /**
  * @file hmf.hpp
  * @brief HMF (.hmf) — meshio++'s experimental HDF5 mesh container.
@@ -7205,8 +7205,8 @@ Mesh read_hmf(const std::string& rPath);
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/include/meshioplusplus/formats/hmf.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/ip.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/hmf.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/ip.hpp =====
 /**
  * @file ip.hpp
  * @brief ANSYS Fluent interpolation file (.ip) C++ reader/writer.
@@ -7234,8 +7234,8 @@ Mesh read_ip(const std::string& rPath);
 void write_ip(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/ip.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/med.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/ip.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/med.hpp =====
 /**
  * @file med.hpp
  * @brief MED/Salome (.med) HDF5-backed C++ reader/writer.
@@ -7415,8 +7415,8 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/include/meshioplusplus/formats/med.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/medit.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/med.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/medit.hpp =====
 /**
  * @file medit.hpp
  * @brief Medit / GMF (.mesh) ASCII C++ reader/writer.
@@ -7486,8 +7486,8 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh);
 Mesh read_medit_ascii(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/medit.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/mff.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/medit.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/mff.hpp =====
 /**
  * @file mff.hpp
  * @brief Modulef Formatted Field (.mff) C++ reader/writer.
@@ -7514,8 +7514,8 @@ Mesh read_mff(const std::string& rPath);
 void write_mff(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/mff.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/mfm.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/mff.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/mfm.hpp =====
 /**
  * @file mfm.hpp
  * @brief Modulef Formatted Mesh (.mfm) ASCII C++ reader/writer.
@@ -7586,8 +7586,8 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
 Mesh read_mfm(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/mfm.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/mphtxt.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/mfm.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/mphtxt.hpp =====
 /**
  * @file mphtxt.hpp
  * @brief COMSOL text mesh (.mphtxt) C++ reader/writer.
@@ -7657,8 +7657,8 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh);
 Mesh read_mphtxt(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/mphtxt.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/nastran.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/mphtxt.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/nastran.hpp =====
 /**
  * @file nastran.hpp
  * @brief MSC/NX Nastran bulk-data (.bdf/.fem/.nas) C++ writer + reader.
@@ -7740,8 +7740,8 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh);
 Mesh read_nastran(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/nastran.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/netgen.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/nastran.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/netgen.hpp =====
 /**
  * @file netgen.hpp
  * @brief Netgen neutral mesh (.vol) C++ reader/writer — common path only.
@@ -7830,8 +7830,8 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
 Mesh read_netgen(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/netgen.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/obj_off.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/netgen.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/obj_off.hpp =====
 /**
  * @file obj_off.hpp
  * @brief Wavefront OBJ (.obj) and Geomview OFF (.off) ASCII C++
@@ -7934,8 +7934,8 @@ void write_obj(const std::string& rPath, const Mesh& rMesh);
 Mesh read_obj(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/obj_off.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/openfoam.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/obj_off.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/openfoam.hpp =====
 /**
  * @file openfoam.hpp
  * @brief OpenFOAM polyMesh (read-only) C++ reader.
@@ -8034,8 +8034,8 @@ struct OpenFoamInfo {
 Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/openfoam.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/permas.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/openfoam.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/permas.hpp =====
 /**
  * @file permas.hpp
  * @brief PERMAS (.post/.dato) plain-text C++ reader/writer.
@@ -8120,8 +8120,8 @@ void write_permas(const std::string& rPath, const Mesh& rMesh);
 Mesh read_permas(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/permas.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/ply.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/permas.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/ply.hpp =====
 /**
  * @file ply.hpp
  * @brief PLY (Polygon File Format / Stanford triangle format) C++
@@ -8207,8 +8207,8 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 Mesh read_ply(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/ply.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/stl.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/ply.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/stl.hpp =====
 /**
  * @file stl.hpp
  * @brief STL (stereolithography) C++ reader/writer, ascii and binary.
@@ -8289,8 +8289,8 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 Mesh read_stl(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/stl.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/su2.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/stl.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/su2.hpp =====
 /**
  * @file su2.hpp
  * @brief SU2 (.su2) ascii mesh C++ reader/writer.
@@ -8358,8 +8358,8 @@ void write_su2(const std::string& rPath, const Mesh& rMesh);
 Mesh read_su2(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/su2.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/svg.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/su2.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/svg.hpp =====
 /**
  * @file svg.hpp
  * @brief SVG (Scalable Vector Graphics) mesh writer (write-only).
@@ -8441,8 +8441,8 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
                const std::string& rNanColor = "#808080", bool Colorbar = false);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/svg.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/tecplot.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/svg.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/tecplot.hpp =====
 /**
  * @file tecplot.hpp
  * @brief Tecplot ASCII finite-element (.dat/.tec) C++ reader/writer,
@@ -8518,8 +8518,8 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh);
 Mesh read_tecplot(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/tecplot.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/tetgen.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/tecplot.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/tetgen.hpp =====
 /**
  * @file tetgen.hpp
  * @brief TetGen (.node/.ele) C++ reader/writer — a shared-stem file pair.
@@ -8593,8 +8593,8 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh);
 Mesh read_tetgen(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/tetgen.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/tikz.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/tetgen.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/tikz.hpp =====
 /**
  * @file tikz.hpp
  * @brief TikZ/PGF (LaTeX) 2D mesh writer (write-only).
@@ -8676,8 +8676,8 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
                 const std::string& rNanColor = "gray", bool Colorbar = false);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/tikz.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/triangle.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/tikz.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/triangle.hpp =====
 /**
  * @file triangle.hpp
  * @brief Triangle (.node/.ele/.poly) C++ reader/writer — Shewchuk's 2D
@@ -8741,8 +8741,8 @@ void write_triangle(const std::string& rPath, const Mesh& rMesh);
 Mesh read_triangle(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/triangle.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/ugrid.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/triangle.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/ugrid.hpp =====
 /**
  * @file ugrid.hpp
  * @brief AFLR UGRID (.ugrid) C++ reader/writer, ascii and every binary
@@ -8824,8 +8824,8 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh);
 Mesh read_ugrid(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/ugrid.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/unv.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/ugrid.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/unv.hpp =====
 /**
  * @file unv.hpp
  * @brief I-DEAS Universal (.unv) C++ reader/writer — datasets 2411 (nodes)
@@ -8965,8 +8965,8 @@ Mesh read_unv(const std::string& rPath);
 Mesh read_unv(const std::string& rPath, UnvInfo& rInfo);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/unv.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/vtk.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/unv.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vtk.hpp =====
 /**
  * @file vtk.hpp
  * @brief Legacy VTK (.vtk) `UNSTRUCTURED_GRID` C++ reader/writer, versions
@@ -9062,8 +9062,8 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 Mesh read_vtk(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/vtk.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/vtp.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/vtk.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vtp.hpp =====
 /**
  * @file vtp.hpp
  * @brief VTK XML PolyData (.vtp) C++ reader/writer.
@@ -9155,8 +9155,8 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
 MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/vtp.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/vtu.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/vtp.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vtu.hpp =====
 /**
  * @file vtu.hpp
  * @brief VTK XML UnstructuredGrid (.vtu) C++ reader/writer, ascii and inline
@@ -9282,8 +9282,8 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts = {});
 MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/vtu.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/wkt.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/vtu.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/wkt.hpp =====
 /**
  * @file wkt.hpp
  * @brief WKT (Well-Known Text) Triangulated Irregular Network C++
@@ -9340,8 +9340,8 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh);
 Mesh read_wkt(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/wkt.hpp =====
-// ===== begin cpp/include/meshioplusplus/formats/xdmf.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/wkt.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/xdmf.hpp =====
 /**
  * @file xdmf.hpp
  * @brief XDMF3 (.xdmf/.xmf) C++ reader/writer — "light data" XML with
@@ -9453,8 +9453,8 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts = {});
 MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/formats/xdmf.hpp =====
-// ===== begin cpp/include/meshioplusplus/kratos_bridge.hpp =====
+// ===== end src/cpp/include/meshioplusplus/formats/xdmf.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/kratos_bridge.hpp =====
 /**
  * @file kratos_bridge.hpp
  * @brief Header-only, templated bridge between `meshioplusplus::ModelPart`
@@ -9655,8 +9655,8 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/kratos_bridge.hpp =====
-// ===== begin cpp/include/meshioplusplus/log.hpp =====
+// ===== end src/cpp/include/meshioplusplus/kratos_bridge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/log.hpp =====
 /**
  * @file log.hpp
  * @brief Minimal, header-only logging built on C++20 `std::format` and
@@ -9887,8 +9887,8 @@ void error(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) 
 
 }  // namespace log
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/log.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/clean.hpp =====
+// ===== end src/cpp/include/meshioplusplus/log.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/clean.hpp =====
 /**
  * @file operations/clean.hpp
  * @brief Dependency-free one-pass mesh cleanup: weld coincident points, drop
@@ -9955,8 +9955,8 @@ struct CleanResult {
 CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/clean.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/convert_cells.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/clean.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/convert_cells.hpp =====
 /**
  * @file operations/convert_cells.hpp
  * @brief Dependency-free conversion of a mesh's *element representation*: drop
@@ -9995,7 +9995,7 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts = {});
  *
  * Output is deterministic: the decomposition templates are fixed, and the
  * Elevate mid-edge numbering is assigned by a serial pass over a
- * parallel-filled record buffer (`cpp/src/operations/surface.cpp`'s phase-split
+ * parallel-filled record buffer (`src/cpp/src/operations/surface.cpp`'s phase-split
  * idiom), so results are byte-identical across mesh backends and thread counts.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
@@ -10065,8 +10065,8 @@ struct ConvertCellsResult {
 ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/convert_cells.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/crop.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/convert_cells.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/crop.hpp =====
 /**
  * @file operations/crop.hpp
  * @brief Dependency-free spatial subsetting: extract the part of a mesh inside
@@ -10136,8 +10136,8 @@ CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double*
                           CropMode mode = CropMode::All, bool record_ids = false);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/crop.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/data_average.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/crop.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/data_average.hpp =====
 /**
  * @file operations/data_average.hpp
  * @brief Moves data between the point and cell locations by averaging, without
@@ -10236,8 +10236,8 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts 
 CellPointWeight cell_point_weight_from_name(const std::string& rName);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/data_average.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/data_calc.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/data_average.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/data_calc.hpp =====
 /**
  * @file operations/data_calc.hpp
  * @brief Derives a new data array from an elementwise expression over the
@@ -10328,8 +10328,8 @@ struct DataCalcOptions {
 Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalcOptions& rOpts);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/data_calc.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/data_condition.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/data_calc.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/data_condition.hpp =====
 /**
  * @file operations/data_condition.hpp
  * @brief Value conditioning for data arrays: clamp, normalize, standardize.
@@ -10438,8 +10438,8 @@ ConditionMode condition_mode_from_name(const std::string& rName);
 ConditionScope condition_scope_from_name(const std::string& rName);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/data_condition.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/data_info.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/data_condition.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/data_info.hpp =====
 /**
  * @file operations/data_info.hpp
  * @brief Read-only per-array summary of everything a mesh's data maps carry.
@@ -10525,8 +10525,8 @@ DataInfoReport data_info(const Mesh& rMesh);
 DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation Location, const std::string& rName);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/data_info.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/data_manage.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/data_info.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/data_manage.hpp =====
 /**
  * @file operations/data_manage.hpp
  * @brief Array management for a mesh's data: rename, drop, and keep-only.
@@ -10644,8 +10644,8 @@ Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rF
                  const std::string& rTo);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/data_manage.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/diff.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/data_manage.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/diff.hpp =====
 /**
  * @file operations/diff.hpp
  * @brief Dependency-free mesh comparison ("diff"): compare two meshes and
@@ -10832,8 +10832,8 @@ DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts = {});
 bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol = 1e-12, double rtol = 1e-9);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/diff.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/interpolate.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/diff.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/interpolate.hpp =====
 /**
  * @file interpolate.hpp
  * @brief Cross-mesh field transfer: sample a SOURCE mesh's data arrays onto a
@@ -10978,8 +10978,8 @@ struct InterpolateOptions {
 Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOptions& rOptions = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/interpolate.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/merge.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/interpolate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/merge.hpp =====
 /**
  * @file operations/merge.hpp
  * @brief Dependency-free mesh merge/weld: combine an ordered list of two or
@@ -11060,8 +11060,8 @@ struct MergeResult {
 MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& rOpts = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/merge.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/partition.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/merge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/partition.hpp =====
 /**
  * @file partition.hpp
  * @brief Mesh partitioning: decompose a mesh into `nparts` balanced pieces for
@@ -11218,8 +11218,8 @@ std::vector<NDArray> partition_labels(const Mesh& rMesh, const PartitionOptions&
 bool partition_has_kahip() noexcept;
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/partition.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/quality.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/partition.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/quality.hpp =====
 /**
  * @file operations/quality.hpp
  * @brief Per-cell mesh quality metrics + inverted-element detection, part of
@@ -11301,8 +11301,8 @@ QualityReport compute_quality(const Mesh& rMesh);
 Mesh attach_quality(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/quality.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/refine.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/refine.hpp =====
 /**
  * @file refine.hpp
  * @brief Uniform mesh refinement: subdivide every cell into congruent children
@@ -11359,7 +11359,7 @@ Mesh attach_quality(const Mesh& rMesh);
  *
  * Determinism: the templates are fixed and the new-node numbering comes from a
  * **serial** dedup pass over a `parallel_for`-filled disjoint-slot buffer
- * (`cpp/src/operations/surface.cpp`'s phase-split idiom), never from a
+ * (`src/cpp/src/operations/surface.cpp`'s phase-split idiom), never from a
  * concurrent hash insert. Output is byte-identical across mesh backends and
  * thread counts.
  *
@@ -11415,8 +11415,8 @@ struct RefineResult {
 RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/refine.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/reorder.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/refine.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/reorder.hpp =====
 /**
  * @file operations/reorder.hpp
  * @brief Dependency-free mesh renumbering: permute node/element indices to
@@ -11502,8 +11502,8 @@ std::int64_t compute_bandwidth(const Mesh& rMesh);
 ReorderResult reorder(const Mesh& rMesh, ReorderMethod method = ReorderMethod::RCM);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/reorder.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/slice.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/reorder.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/slice.hpp =====
 /**
  * @file slice.hpp
  * @brief Planar cross-section of a mesh: the intersection of a mesh with a
@@ -11587,8 +11587,8 @@ struct SliceOptions {
 Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/slice.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/smooth.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/slice.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/smooth.hpp =====
 /**
  * @file smooth.hpp
  * @brief Geometric mesh smoothing: relax point coordinates toward their
@@ -11790,8 +11790,8 @@ struct SmoothResult {
 SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions = {});
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/smooth.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/sniff.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/smooth.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/sniff.hpp =====
 /**
  * @file operations/sniff.hpp
  * @brief Content-based mesh-format detection, part of the dependency-free
@@ -11821,8 +11821,8 @@ namespace meshioplusplus {
 std::string sniff_format(const std::string& rPath);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/sniff.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/split.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/sniff.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/split.hpp =====
 /**
  * @file operations/split.hpp
  * @brief Dependency-free partitioning: split one mesh into several submeshes by
@@ -11896,8 +11896,8 @@ SplitBy split_by_from_name(const std::string& rName);
 SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName = "");
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/split.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/stats.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/split.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/stats.hpp =====
 /**
  * @file operations/stats.hpp
  * @brief Dependency-free geometric statistics of a mesh (read-only), the
@@ -11949,8 +11949,8 @@ struct StatsReport {
 StatsReport compute_stats(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/stats.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/surface.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/stats.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/surface.hpp =====
 /**
  * @file operations/surface.hpp
  * @brief Surface/boundary extraction — the general form of boundary-skin
@@ -12060,8 +12060,8 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
 }  // namespace detail
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/surface.hpp =====
-// ===== begin cpp/include/meshioplusplus/operations/transform.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/surface.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/transform.hpp =====
 /**
  * @file operations/transform.hpp
  * @brief Dependency-free affine transform of point coordinates: translate,
@@ -12131,8 +12131,8 @@ AffineTransform transform_compose(const AffineTransform& rSecond, const AffineTr
 Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vector_data = false);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/operations/transform.hpp =====
-// ===== begin cpp/include/meshioplusplus/parallel.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/transform.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/parallel.hpp =====
 /**
  * @file parallel.hpp
  * @brief `parallel_for`/`parallel_for_bw`: a backend-agnostic parallel loop
@@ -12445,8 +12445,8 @@ void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_de
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/parallel.hpp =====
-// ===== begin cpp/include/meshioplusplus/registry.hpp =====
+// ===== end src/cpp/include/meshioplusplus/parallel.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/registry.hpp =====
 /**
  * @file registry.hpp
  * @brief C++-level format dispatch registry shared by the flat bindings
@@ -12457,7 +12457,7 @@ void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_de
  * flat bindings instead need a C++-side `format name -> read/write function`
  * table plus an `extension -> default format` map. Those tables originally
  * lived in `bindings/wasm/js_bindings.cpp`; they are hoisted here (compiled into
- * `meshioplusplus_core_obj` via `cpp/src/registry.cpp`) so the JS and C
+ * `meshioplusplus_core_obj` via `src/cpp/src/registry.cpp`) so the JS and C
  * bindings share one copy that cannot drift.
  *
  * Parameterized writers get a fixed default here (documented per entry in
@@ -12583,8 +12583,8 @@ MeshMetadata registry_read_metadata(const std::string& rPath, const std::string&
 /** @} */
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/registry.hpp =====
-// ===== begin cpp/include/meshioplusplus/skin.hpp =====
+// ===== end src/cpp/include/meshioplusplus/registry.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/skin.hpp =====
 /**
  * @file skin.hpp
  * @brief Boundary-skin extraction: derive the surface mesh of a 3D volume
@@ -12645,8 +12645,8 @@ Mesh extract_skin(const Mesh& rMesh, bool linearize = false);
 bool has_skinnable_cells(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/skin.hpp =====
-// ===== begin cpp/include/meshioplusplus/vtk_common.hpp =====
+// ===== end src/cpp/include/meshioplusplus/skin.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/vtk_common.hpp =====
 /**
  * @file vtk_common.hpp
  * @brief VTK cell-type metadata shared by the VTU and VTK legacy format
@@ -12838,11 +12838,11 @@ inline bool is_special_cell(const std::string& rMeshioType) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/include/meshioplusplus/vtk_common.hpp =====
+// ===== end src/cpp/include/meshioplusplus/vtk_common.hpp =====
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
-// ===== begin cpp/third_party/pugixml/pugixml.hpp =====
+// ===== begin src/cpp/third_party/pugixml/pugixml.hpp =====
 /**
  * pugixml parser - version 1.14
  * --------------------------------------------------------
@@ -14358,8 +14358,8 @@ namespace std
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
  */
-// ===== end cpp/third_party/pugixml/pugixml.hpp =====
-// ===== begin cpp/third_party/pugixml/pugixml.cpp =====
+// ===== end src/cpp/third_party/pugixml/pugixml.hpp =====
+// ===== begin src/cpp/third_party/pugixml/pugixml.cpp =====
 /**
  * pugixml parser - version 1.14
  * --------------------------------------------------------
@@ -27585,8 +27585,8 @@ namespace pugi
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
  */
-// ===== end cpp/third_party/pugixml/pugixml.cpp =====
-// ===== begin cpp/src/detail/cell_edges.cpp =====
+// ===== end src/cpp/third_party/pugixml/pugixml.cpp =====
+// ===== begin src/cpp/src/detail/cell_edges.cpp =====
 
 namespace meshioplusplus {
 namespace detail {
@@ -27633,8 +27633,8 @@ const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/cell_edges.cpp =====
-// ===== begin cpp/src/detail/cell_faces.cpp =====
+// ===== end src/cpp/src/detail/cell_edges.cpp =====
+// ===== begin src/cpp/src/detail/cell_faces.cpp =====
 
 namespace meshioplusplus {
 namespace detail {
@@ -27747,8 +27747,8 @@ const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/cell_faces.cpp =====
-// ===== begin cpp/src/detail/cell_subdivision.cpp =====
+// ===== end src/cpp/src/detail/cell_faces.cpp =====
+// ===== begin src/cpp/src/detail/cell_subdivision.cpp =====
 
 namespace meshioplusplus {
 namespace detail {
@@ -27839,8 +27839,8 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/cell_subdivision.cpp =====
-// ===== begin cpp/src/detail/colormap.cpp =====
+// ===== end src/cpp/src/detail/cell_subdivision.cpp =====
+// ===== begin src/cpp/src/detail/colormap.cpp =====
 #include <stdexcept>
 
 // Project includes
@@ -28082,8 +28082,8 @@ Rgb colormap_lookup(const std::uint8_t* pTable, double t) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/colormap.cpp =====
-// ===== begin cpp/src/detail/data_ops.cpp =====
+// ===== end src/cpp/src/detail/colormap.cpp =====
+// ===== begin src/cpp/src/detail/data_ops.cpp =====
 #include <algorithm>
 #include <cmath>
 
@@ -28227,8 +28227,8 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/data_ops.cpp =====
-// ===== begin cpp/src/detail/face_color.cpp =====
+// ===== end src/cpp/src/detail/data_ops.cpp =====
+// ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
 #include <stdexcept>
@@ -28481,8 +28481,8 @@ FaceColors resolve_face_colors(const ColorSpec& rSpec, const Mesh& rSource, cons
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/face_color.cpp =====
-// ===== begin cpp/src/detail/geometry.cpp =====
+// ===== end src/cpp/src/detail/face_color.cpp =====
+// ===== begin src/cpp/src/detail/geometry.cpp =====
 
 namespace meshioplusplus {
 namespace detail {
@@ -28588,8 +28588,8 @@ int cell_corner_count(CellType type) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/geometry.cpp =====
-// ===== begin cpp/src/detail/hdf5_util.cpp =====
+// ===== end src/cpp/src/detail/geometry.cpp =====
+// ===== begin src/cpp/src/detail/hdf5_util.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
@@ -28882,8 +28882,8 @@ std::vector<std::string> group_links_crt(hid_t loc) {
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/src/detail/hdf5_util.cpp =====
-// ===== begin cpp/src/detail/node_adjacency.cpp =====
+// ===== end src/cpp/src/detail/hdf5_util.cpp =====
+// ===== begin src/cpp/src/detail/node_adjacency.cpp =====
 #include <algorithm>
 #include <utility>
 
@@ -29038,8 +29038,8 @@ NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/node_adjacency.cpp =====
-// ===== begin cpp/src/detail/projection.cpp =====
+// ===== end src/cpp/src/detail/node_adjacency.cpp =====
+// ===== begin src/cpp/src/detail/projection.cpp =====
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -29167,8 +29167,8 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/projection.cpp =====
-// ===== begin cpp/src/detail/subset.cpp =====
+// ===== end src/cpp/src/detail/projection.cpp =====
+// ===== begin src/cpp/src/detail/subset.cpp =====
 #include <cstring>
 
 // Project includes
@@ -29391,8 +29391,8 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/subset.cpp =====
-// ===== begin cpp/src/detail/vtk_cells.cpp =====
+// ===== end src/cpp/src/detail/subset.cpp =====
+// ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <cstring>
 
@@ -29609,8 +29609,8 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/vtk_cells.cpp =====
-// ===== begin cpp/src/detail/vtk_xml.cpp =====
+// ===== end src/cpp/src/detail/vtk_cells.cpp =====
+// ===== begin src/cpp/src/detail/vtk_xml.cpp =====
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -29787,8 +29787,8 @@ std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/vtk_xml.cpp =====
-// ===== begin cpp/src/detail/vtu_binary.cpp =====
+// ===== end src/cpp/src/detail/vtk_xml.cpp =====
+// ===== begin src/cpp/src/detail/vtu_binary.cpp =====
 #include <algorithm>
 #include <cstring>
 
@@ -30245,8 +30245,8 @@ std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, Vt
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/vtu_binary.cpp =====
-// ===== begin cpp/src/detail/xdmf_common.cpp =====
+// ===== end src/cpp/src/detail/vtu_binary.cpp =====
+// ===== begin src/cpp/src/detail/xdmf_common.cpp =====
 #include <cstring>
 #include <unordered_map>
 
@@ -30356,8 +30356,8 @@ std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
 
 }  // namespace xdmfcommon
 }  // namespace meshioplusplus
-// ===== end cpp/src/detail/xdmf_common.cpp =====
-// ===== begin cpp/src/file_source.cpp =====
+// ===== end src/cpp/src/detail/xdmf_common.cpp =====
+// ===== begin src/cpp/src/file_source.cpp =====
 #include <cstdlib>
 #include <fstream>
 #include <utility>
@@ -30572,8 +30572,8 @@ void FileSource::MoveFrom(FileSource&& rOther) noexcept {
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end cpp/src/file_source.cpp =====
-// ===== begin cpp/src/formats/abaqus.cpp =====
+// ===== end src/cpp/src/file_source.cpp =====
+// ===== begin src/cpp/src/formats/abaqus.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -30864,8 +30864,8 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/abaqus.cpp =====
-// ===== begin cpp/src/formats/ansys.cpp =====
+// ===== end src/cpp/src/formats/abaqus.cpp =====
+// ===== begin src/cpp/src/formats/ansys.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -31272,8 +31272,8 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/ansys.cpp =====
-// ===== begin cpp/src/formats/ansysinp.cpp =====
+// ===== end src/cpp/src/formats/ansys.cpp =====
+// ===== begin src/cpp/src/formats/ansysinp.cpp =====
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -31875,8 +31875,8 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/ansysinp.cpp =====
-// ===== begin cpp/src/formats/avsucd.cpp =====
+// ===== end src/cpp/src/formats/ansysinp.cpp =====
+// ===== begin src/cpp/src/formats/avsucd.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -32247,8 +32247,8 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/avsucd.cpp =====
-// ===== begin cpp/src/formats/cgns.cpp =====
+// ===== end src/cpp/src/formats/avsucd.cpp =====
+// ===== begin src/cpp/src/formats/cgns.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
@@ -32406,8 +32406,8 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/src/formats/cgns.cpp =====
-// ===== begin cpp/src/formats/dex.cpp =====
+// ===== end src/cpp/src/formats/cgns.cpp =====
+// ===== begin src/cpp/src/formats/dex.cpp =====
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -32555,8 +32555,8 @@ void write_dex(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/dex.cpp =====
-// ===== begin cpp/src/formats/dolfin.cpp =====
+// ===== end src/cpp/src/formats/dex.cpp =====
+// ===== begin src/cpp/src/formats/dolfin.cpp =====
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -32793,8 +32793,8 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/dolfin.cpp =====
-// ===== begin cpp/src/formats/ensight.cpp =====
+// ===== end src/cpp/src/formats/dolfin.cpp =====
+// ===== begin src/cpp/src/formats/ensight.cpp =====
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -33647,8 +33647,8 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/ensight.cpp =====
-// ===== begin cpp/src/formats/exodus.cpp =====
+// ===== end src/cpp/src/formats/ensight.cpp =====
+// ===== begin src/cpp/src/formats/exodus.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
 
 // External includes
@@ -34240,8 +34240,8 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_NETCDF
-// ===== end cpp/src/formats/exodus.cpp =====
-// ===== begin cpp/src/formats/flac3d.cpp =====
+// ===== end src/cpp/src/formats/exodus.cpp =====
+// ===== begin src/cpp/src/formats/flac3d.cpp =====
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -34698,8 +34698,8 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/flac3d.cpp =====
-// ===== begin cpp/src/formats/flux.cpp =====
+// ===== end src/cpp/src/formats/flac3d.cpp =====
+// ===== begin src/cpp/src/formats/flux.cpp =====
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -34949,8 +34949,8 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/flux.cpp =====
-// ===== begin cpp/src/formats/freefem.cpp =====
+// ===== end src/cpp/src/formats/flux.cpp =====
+// ===== begin src/cpp/src/formats/freefem.cpp =====
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -35115,8 +35115,8 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/freefem.cpp =====
-// ===== begin cpp/src/formats/gmsh.cpp =====
+// ===== end src/cpp/src/formats/freefem.cpp =====
+// ===== begin src/cpp/src/formats/gmsh.cpp =====
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -36440,8 +36440,8 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/gmsh.cpp =====
-// ===== begin cpp/src/formats/h5m.cpp =====
+// ===== end src/cpp/src/formats/gmsh.cpp =====
+// ===== begin src/cpp/src/formats/h5m.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
@@ -36696,8 +36696,8 @@ void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids,
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/src/formats/h5m.cpp =====
-// ===== begin cpp/src/formats/hmf.cpp =====
+// ===== end src/cpp/src/formats/h5m.cpp =====
+// ===== begin src/cpp/src/formats/hmf.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
@@ -36818,8 +36818,8 @@ void write_hmf(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/src/formats/hmf.cpp =====
-// ===== begin cpp/src/formats/ip.cpp =====
+// ===== end src/cpp/src/formats/hmf.cpp =====
+// ===== begin src/cpp/src/formats/ip.cpp =====
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -36967,8 +36967,8 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/ip.cpp =====
-// ===== begin cpp/src/formats/med.cpp =====
+// ===== end src/cpp/src/formats/ip.cpp =====
+// ===== begin src/cpp/src/formats/med.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
@@ -37534,8 +37534,8 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
-// ===== end cpp/src/formats/med.cpp =====
-// ===== begin cpp/src/formats/medit.cpp =====
+// ===== end src/cpp/src/formats/med.cpp =====
+// ===== begin src/cpp/src/formats/medit.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -37810,8 +37810,8 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/medit.cpp =====
-// ===== begin cpp/src/formats/mff.cpp =====
+// ===== end src/cpp/src/formats/medit.cpp =====
+// ===== begin src/cpp/src/formats/mff.cpp =====
 #include <fstream>
 #include <string>
 #include <vector>
@@ -37885,8 +37885,8 @@ void write_mff(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/mff.cpp =====
-// ===== begin cpp/src/formats/mfm.cpp =====
+// ===== end src/cpp/src/formats/mff.cpp =====
+// ===== begin src/cpp/src/formats/mfm.cpp =====
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -38074,8 +38074,8 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/mfm.cpp =====
-// ===== begin cpp/src/formats/mphtxt.cpp =====
+// ===== end src/cpp/src/formats/mfm.cpp =====
+// ===== begin src/cpp/src/formats/mphtxt.cpp =====
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -38290,8 +38290,8 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/mphtxt.cpp =====
-// ===== begin cpp/src/formats/nastran.cpp =====
+// ===== end src/cpp/src/formats/mphtxt.cpp =====
+// ===== begin src/cpp/src/formats/nastran.cpp =====
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -38637,8 +38637,8 @@ Mesh read_nastran(const std::string& rPath) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/nastran.cpp =====
-// ===== begin cpp/src/formats/netgen.cpp =====
+// ===== end src/cpp/src/formats/nastran.cpp =====
+// ===== begin src/cpp/src/formats/netgen.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -39054,8 +39054,8 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/netgen.cpp =====
-// ===== begin cpp/src/formats/obj.cpp =====
+// ===== end src/cpp/src/formats/netgen.cpp =====
+// ===== begin src/cpp/src/formats/obj.cpp =====
 #include <array>
 #include <cctype>
 #include <cstdint>
@@ -39262,8 +39262,8 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/obj.cpp =====
-// ===== begin cpp/src/formats/off.cpp =====
+// ===== end src/cpp/src/formats/obj.cpp =====
+// ===== begin src/cpp/src/formats/off.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -39426,8 +39426,8 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/off.cpp =====
-// ===== begin cpp/src/formats/openfoam.cpp =====
+// ===== end src/cpp/src/formats/off.cpp =====
+// ===== begin src/cpp/src/formats/openfoam.cpp =====
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -40202,8 +40202,8 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/openfoam.cpp =====
-// ===== begin cpp/src/formats/permas.cpp =====
+// ===== end src/cpp/src/formats/openfoam.cpp =====
+// ===== begin src/cpp/src/formats/permas.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -40451,8 +40451,8 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/permas.cpp =====
-// ===== begin cpp/src/formats/ply.cpp =====
+// ===== end src/cpp/src/formats/permas.cpp =====
+// ===== begin src/cpp/src/formats/ply.cpp =====
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -40945,8 +40945,8 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/ply.cpp =====
-// ===== begin cpp/src/formats/stl.cpp =====
+// ===== end src/cpp/src/formats/ply.cpp =====
+// ===== begin src/cpp/src/formats/stl.cpp =====
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -41270,8 +41270,8 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/stl.cpp =====
-// ===== begin cpp/src/formats/su2.cpp =====
+// ===== end src/cpp/src/formats/stl.cpp =====
+// ===== begin src/cpp/src/formats/su2.cpp =====
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -41626,8 +41626,8 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/su2.cpp =====
-// ===== begin cpp/src/formats/svg.cpp =====
+// ===== end src/cpp/src/formats/su2.cpp =====
+// ===== begin src/cpp/src/formats/svg.cpp =====
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -41955,8 +41955,8 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/svg.cpp =====
-// ===== begin cpp/src/formats/tecplot.cpp =====
+// ===== end src/cpp/src/formats/svg.cpp =====
+// ===== begin src/cpp/src/formats/tecplot.cpp =====
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -42407,8 +42407,8 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/tecplot.cpp =====
-// ===== begin cpp/src/formats/tetgen.cpp =====
+// ===== end src/cpp/src/formats/tecplot.cpp =====
+// ===== begin src/cpp/src/formats/tetgen.cpp =====
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -42732,8 +42732,8 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/tetgen.cpp =====
-// ===== begin cpp/src/formats/tikz.cpp =====
+// ===== end src/cpp/src/formats/tetgen.cpp =====
+// ===== begin src/cpp/src/formats/tikz.cpp =====
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -43047,8 +43047,8 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/tikz.cpp =====
-// ===== begin cpp/src/formats/triangle.cpp =====
+// ===== end src/cpp/src/formats/tikz.cpp =====
+// ===== begin src/cpp/src/formats/triangle.cpp =====
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -43519,8 +43519,8 @@ void write_triangle(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/triangle.cpp =====
-// ===== begin cpp/src/formats/ugrid.cpp =====
+// ===== end src/cpp/src/formats/triangle.cpp =====
+// ===== begin src/cpp/src/formats/ugrid.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -44165,8 +44165,8 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/ugrid.cpp =====
-// ===== begin cpp/src/formats/unv.cpp =====
+// ===== end src/cpp/src/formats/ugrid.cpp =====
+// ===== begin src/cpp/src/formats/unv.cpp =====
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -44841,8 +44841,8 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/unv.cpp =====
-// ===== begin cpp/src/formats/vtk.cpp =====
+// ===== end src/cpp/src/formats/unv.cpp =====
+// ===== begin src/cpp/src/formats/vtk.cpp =====
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -45180,8 +45180,8 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/vtk.cpp =====
-// ===== begin cpp/src/formats/vtk_read.cpp =====
+// ===== end src/cpp/src/formats/vtk.cpp =====
+// ===== begin src/cpp/src/formats/vtk_read.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -45545,8 +45545,8 @@ Mesh read_vtk(const std::string& rPath) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/vtk_read.cpp =====
-// ===== begin cpp/src/formats/vtp.cpp =====
+// ===== end src/cpp/src/formats/vtk_read.cpp =====
+// ===== begin src/cpp/src/formats/vtp.cpp =====
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -45766,8 +45766,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/vtp.cpp =====
-// ===== begin cpp/src/formats/vtp_read.cpp =====
+// ===== end src/cpp/src/formats/vtp.cpp =====
+// ===== begin src/cpp/src/formats/vtp_read.cpp =====
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -46050,8 +46050,8 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/vtp_read.cpp =====
-// ===== begin cpp/src/formats/vtu.cpp =====
+// ===== end src/cpp/src/formats/vtp_read.cpp =====
+// ===== begin src/cpp/src/formats/vtu.cpp =====
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -46241,8 +46241,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/vtu.cpp =====
-// ===== begin cpp/src/formats/vtu_read.cpp =====
+// ===== end src/cpp/src/formats/vtu.cpp =====
+// ===== begin src/cpp/src/formats/vtu_read.cpp =====
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -46486,8 +46486,8 @@ MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions&) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/vtu_read.cpp =====
-// ===== begin cpp/src/formats/wkt.cpp =====
+// ===== end src/cpp/src/formats/vtu_read.cpp =====
+// ===== begin src/cpp/src/formats/wkt.cpp =====
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -46671,8 +46671,8 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/wkt.cpp =====
-// ===== begin cpp/src/formats/xdmf.cpp =====
+// ===== end src/cpp/src/formats/wkt.cpp =====
+// ===== begin src/cpp/src/formats/xdmf.cpp =====
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -47271,8 +47271,8 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/formats/xdmf.cpp =====
-// ===== begin cpp/src/operations/clean.cpp =====
+// ===== end src/cpp/src/formats/xdmf.cpp =====
+// ===== begin src/cpp/src/operations/clean.cpp =====
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -47660,8 +47660,8 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/clean.cpp =====
-// ===== begin cpp/src/operations/convert_cells.cpp =====
+// ===== end src/cpp/src/operations/clean.cpp =====
+// ===== begin src/cpp/src/operations/convert_cells.cpp =====
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -47726,7 +47726,7 @@ struct CcellsSimplexTemplate {
 };
 
 // The decomposition templates, all with consistently positive orientation for a
-// well-oriented parent (pinned by cpp/tests/test_convert_cells.cpp).
+// well-oriented parent (pinned by src/cpp/tests/test_convert_cells.cpp).
 //
 // Conventions come from detail/cell_faces.hpp: tetra base (0,1,2) normal points
 // toward apex 3; hexahedron base (0,1,2,3) normal points toward the top
@@ -48445,8 +48445,8 @@ ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& r
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/convert_cells.cpp =====
-// ===== begin cpp/src/operations/crop.cpp =====
+// ===== end src/cpp/src/operations/convert_cells.cpp =====
+// ===== begin src/cpp/src/operations/crop.cpp =====
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -48552,8 +48552,8 @@ CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double*
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/crop.cpp =====
-// ===== begin cpp/src/operations/data_average.cpp =====
+// ===== end src/cpp/src/operations/crop.cpp =====
+// ===== begin src/cpp/src/operations/data_average.cpp =====
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -48811,8 +48811,8 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/data_average.cpp =====
-// ===== begin cpp/src/operations/data_calc.cpp =====
+// ===== end src/cpp/src/operations/data_average.cpp =====
+// ===== begin src/cpp/src/operations/data_calc.cpp =====
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -49495,8 +49495,8 @@ Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalc
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/data_calc.cpp =====
-// ===== begin cpp/src/operations/data_common.cpp =====
+// ===== end src/cpp/src/operations/data_calc.cpp =====
+// ===== begin src/cpp/src/operations/data_common.cpp =====
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -49597,8 +49597,8 @@ std::size_t data_num_components(const NDArray& rArray) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/data_common.cpp =====
-// ===== begin cpp/src/operations/data_condition.cpp =====
+// ===== end src/cpp/src/operations/data_common.cpp =====
+// ===== begin src/cpp/src/operations/data_condition.cpp =====
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -49926,8 +49926,8 @@ Mesh data_condition(const Mesh& rMesh, const DataConditionOptions& rOpts) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/data_condition.cpp =====
-// ===== begin cpp/src/operations/data_info.cpp =====
+// ===== end src/cpp/src/operations/data_condition.cpp =====
+// ===== begin src/cpp/src/operations/data_info.cpp =====
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -50053,8 +50053,8 @@ DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation Location, const st
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/data_info.cpp =====
-// ===== begin cpp/src/operations/data_manage.cpp =====
+// ===== end src/cpp/src/operations/data_info.cpp =====
+// ===== begin src/cpp/src/operations/data_manage.cpp =====
 #include <array>
 #include <algorithm>
 #include <cstddef>
@@ -50242,8 +50242,8 @@ Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rF
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/data_manage.cpp =====
-// ===== begin cpp/src/operations/diff.cpp =====
+// ===== end src/cpp/src/operations/data_manage.cpp =====
+// ===== begin src/cpp/src/operations/diff.cpp =====
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -50755,8 +50755,8 @@ bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol, double rtol) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/diff.cpp =====
-// ===== begin cpp/src/operations/interpolate.cpp =====
+// ===== end src/cpp/src/operations/diff.cpp =====
+// ===== begin src/cpp/src/operations/interpolate.cpp =====
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -51460,8 +51460,8 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/interpolate.cpp =====
-// ===== begin cpp/src/operations/merge.cpp =====
+// ===== end src/cpp/src/operations/interpolate.cpp =====
+// ===== begin src/cpp/src/operations/merge.cpp =====
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -52128,8 +52128,8 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/merge.cpp =====
-// ===== begin cpp/src/operations/partition.cpp =====
+// ===== end src/cpp/src/operations/merge.cpp =====
+// ===== begin src/cpp/src/operations/partition.cpp =====
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -52730,8 +52730,8 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/partition.cpp =====
-// ===== begin cpp/src/operations/quality.cpp =====
+// ===== end src/cpp/src/operations/partition.cpp =====
+// ===== begin src/cpp/src/operations/quality.cpp =====
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -53401,8 +53401,8 @@ Mesh attach_quality(const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/quality.cpp =====
-// ===== begin cpp/src/operations/refine.cpp =====
+// ===== end src/cpp/src/operations/quality.cpp =====
+// ===== begin src/cpp/src/operations/refine.cpp =====
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -53971,8 +53971,8 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/refine.cpp =====
-// ===== begin cpp/src/operations/reorder.cpp =====
+// ===== end src/cpp/src/operations/refine.cpp =====
+// ===== begin src/cpp/src/operations/reorder.cpp =====
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -54420,8 +54420,8 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/reorder.cpp =====
-// ===== begin cpp/src/operations/slice.cpp =====
+// ===== end src/cpp/src/operations/reorder.cpp =====
+// ===== begin src/cpp/src/operations/slice.cpp =====
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -54833,8 +54833,8 @@ Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/slice.cpp =====
-// ===== begin cpp/src/operations/smooth.cpp =====
+// ===== end src/cpp/src/operations/slice.cpp =====
+// ===== begin src/cpp/src/operations/smooth.cpp =====
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -55634,8 +55634,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/smooth.cpp =====
-// ===== begin cpp/src/operations/sniff.cpp =====
+// ===== end src/cpp/src/operations/smooth.cpp =====
+// ===== begin src/cpp/src/operations/sniff.cpp =====
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -55720,8 +55720,8 @@ std::string sniff_format(const std::string& rPath) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/sniff.cpp =====
-// ===== begin cpp/src/operations/split.cpp =====
+// ===== end src/cpp/src/operations/sniff.cpp =====
+// ===== begin src/cpp/src/operations/split.cpp =====
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -55986,8 +55986,8 @@ SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/split.cpp =====
-// ===== begin cpp/src/operations/stats.cpp =====
+// ===== end src/cpp/src/operations/split.cpp =====
+// ===== begin src/cpp/src/operations/stats.cpp =====
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -56189,8 +56189,8 @@ StatsReport compute_stats(const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/stats.cpp =====
-// ===== begin cpp/src/operations/surface.cpp =====
+// ===== end src/cpp/src/operations/stats.cpp =====
+// ===== begin src/cpp/src/operations/surface.cpp =====
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -56642,8 +56642,8 @@ void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/surface.cpp =====
-// ===== begin cpp/src/operations/transform.cpp =====
+// ===== end src/cpp/src/operations/surface.cpp =====
+// ===== begin src/cpp/src/operations/transform.cpp =====
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -56880,8 +56880,8 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/operations/transform.cpp =====
-// ===== begin cpp/src/read_options.cpp =====
+// ===== end src/cpp/src/operations/transform.cpp =====
+// ===== begin src/cpp/src/read_options.cpp =====
 #include <algorithm>
 #include <cstddef>
 #include <limits>
@@ -56942,8 +56942,8 @@ MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/read_options.cpp =====
-// ===== begin cpp/src/registry.cpp =====
+// ===== end src/cpp/src/read_options.cpp =====
+// ===== begin src/cpp/src/registry.cpp =====
 /**
  * @file registry.cpp
  * @brief The shared format-dispatch tables (see registry.hpp). Bodies hoisted
@@ -57131,7 +57131,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
 
 // Extension -> canonical format key for the non-ambiguous cases; `.msh`
 // defaults to gmsh and `.inp` to abaqus (matching this repo's own import
-// order in src/meshioplusplus/__init__.py). Pass an explicit `format` to
+// order in src/python/meshioplusplus/__init__.py). Pass an explicit `format` to
 // select ansys/freefem (.msh) or ansysinp (.inp) instead. Optional-dependency
 // extensions are mapped even in builds where the format is compiled out, so
 // the resulting error names the missing dependency (registry_compiled_out())
@@ -57301,5 +57301,5 @@ const char* registry_compiled_out(const std::string& rFormat) {
 }
 
 }  // namespace meshioplusplus
-// ===== end cpp/src/registry.cpp =====
+// ===== end src/cpp/src/registry.cpp =====
 #endif  // MESHIOPLUSPLUS_IMPLEMENTATION

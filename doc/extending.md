@@ -51,9 +51,9 @@ This removes the format from all internal maps. Useful for overriding a built-in
 
 ## Adding a new built-in format
 
-Follow the existing module layout under `src/meshioplusplus/`:
+Follow the existing module layout under `src/python/meshioplusplus/`:
 
-1. **Create the module directory** `src/meshioplusplus/<format>/` with an `__init__.py` that exports `read` and `write`.
+1. **Create the module directory** `src/python/meshioplusplus/<format>/` with an `__init__.py` that exports `read` and `write`.
 
 2. **Implement `read(filename)`** — return a `meshioplusplus.Mesh`.
 
@@ -68,7 +68,7 @@ Follow the existing module layout under `src/meshioplusplus/`:
    register_format("myformat", [".myfmt"], read, {"myformat": write})
    ```
 
-6. **Import the module in `src/meshioplusplus/__init__.py`** — add it to both the import list and `__all__`.
+6. **Import the module in `src/python/meshioplusplus/__init__.py`** — add it to both the import list and `__all__`.
 
 7. **Add `tests/test_<format>.py`** using `helpers.write_read`:
 

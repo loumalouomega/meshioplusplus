@@ -20,7 +20,7 @@ meshioplusplus.ansysInp.write("out.cdb", mesh)
 
 Both `read(filename)` and `write(filename, mesh)` take no keyword arguments.
 
-**Note on `.inp`**: this format registers **both** `.cdb` and `.inp` as extensions, colliding with [Abaqus](abaqus.md)'s pre-existing `.inp` registration. Since `abaqus` is imported before `ansysInp` in `src/meshioplusplus/__init__.py`, plain extension-based dispatch (`meshioplusplus.read("x.inp")`) still resolves to **Abaqus** by default — pass `file_format="ansysInp"` explicitly, or call `meshioplusplus.ansysInp.read`/`write` directly, to select this format for a `.inp` file.
+**Note on `.inp`**: this format registers **both** `.cdb` and `.inp` as extensions, colliding with [Abaqus](abaqus.md)'s pre-existing `.inp` registration. Since `abaqus` is imported before `ansysInp` in `src/python/meshioplusplus/__init__.py`, plain extension-based dispatch (`meshioplusplus.read("x.inp")`) still resolves to **Abaqus** by default — pass `file_format="ansysInp"` explicitly, or call `meshioplusplus.ansysInp.read`/`write` directly, to select this format for a `.inp` file.
 
 ## File structure
 

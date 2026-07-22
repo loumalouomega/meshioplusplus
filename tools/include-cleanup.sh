@@ -20,8 +20,8 @@
 # installed (as CI does) -- with those libraries absent, the HDF5/netCDF format
 # registrations compile out and their headers look spuriously unused.
 #
-# Only our own sources are analyzed (cpp/src, cpp/include, bindings/c) -- never
-# cpp/third_party. Deliberately-kept includes carry `// IWYU pragma: keep`.
+# Only our own sources are analyzed (src/cpp/src, src/cpp/include, bindings/c) -- never
+# src/cpp/third_party. Deliberately-kept includes carry `// IWYU pragma: keep`.
 
 set -eu
 
@@ -79,7 +79,7 @@ trap 'rm -f "$LOG"' EXIT
 # over many files trips a "no input files" quirk); include-cleaner also visits
 # the headers each TU pulls in (filtered by HeaderFilterRegex in .clang-tidy).
 n=0
-for f in $(find "$SOURCE_DIR/cpp/src" "$SOURCE_DIR/bindings/c" -name '*.cpp' | sort); do
+for f in $(find "$SOURCE_DIR/src/cpp/src" "$SOURCE_DIR/bindings/c" -name '*.cpp' | sort); do
     "$CLANG_TIDY" -p "$BUILD_DIR" --quiet "$f" 2>&1 >/dev/null | tee -a "$LOG" >/dev/null || true
     n=$((n + 1))
 done

@@ -316,7 +316,7 @@ Mesh val_to_mesh(const val& rObj) {
 // JS-side analogue of Python's extension_to_filetypes in _helpers.py --
 // bindings/_core.cpp exposes one function per format and leaves dispatch
 // entirely to Python, while the flat bindings (this file and bindings/c/)
-// share the C++-level tables in cpp/src/registry.cpp. Parameterized writers
+// share the C++-level tables in src/cpp/src/registry.cpp. Parameterized writers
 // get a fixed default there (documented per-entry); per-call overrides are a
 // possible future API addition, deliberately out of scope for v1. Under
 // Emscripten the HDF5/netCDF-conditional registry entries are compiled out,

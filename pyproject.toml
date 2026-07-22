@@ -73,7 +73,7 @@ meshioplusplus = "meshioplusplus._cli:main"
 # extension and bundles it next to the pure-Python package (src layout).
 minimum-version = "0.8"
 build-dir = "build/{wheel_tag}"
-wheel.packages = ["src/meshioplusplus"]
+wheel.packages = ["src/python/meshioplusplus"]
 cmake.version = ">=3.15"
 cmake.build-type = "Release"
 
@@ -85,8 +85,8 @@ verbose = false
 [tool.coverage.run]
 # The `coverage` CI job measures the installed package through an editable
 # install, so coverage.py would otherwise record absolute
-# .../src/meshioplusplus/... paths that Codecov's `python` flag
-# (paths: src/meshioplusplus/) can't match. `relative_files` rewrites them to
+# .../src/python/meshioplusplus/... paths that Codecov's `python` flag
+# (paths: src/python/meshioplusplus/) can't match. `relative_files` rewrites them to
 # repo-relative paths; `source` scopes measurement to the package.
 source = ["meshioplusplus"]
 relative_files = true

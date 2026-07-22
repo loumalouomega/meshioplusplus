@@ -504,7 +504,7 @@ def test_bundled_viewer_asset_is_present_and_current():
     """
     from meshioplusplus._viewer_browser import _ASSET, _PAYLOAD_SLOT
 
-    assert _ASSET.exists(), f"{_ASSET} is missing; see viewer/README.md"
+    assert _ASSET.exists(), f"{_ASSET} is missing; see src/viewer/README.md"
     page = _ASSET.read_text(encoding="utf-8")
     assert _PAYLOAD_SLOT in page
     assert ".wasm" not in page, "the embedded viewer must not carry WebAssembly"

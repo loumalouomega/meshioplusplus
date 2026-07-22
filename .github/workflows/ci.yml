@@ -160,7 +160,7 @@ jobs:
               return dest.NumberOfElements() == 1 ? 0 : 1;
           }
           EOF
-          g++ -std=c++20 -fsyntax-only -Icpp/include -I/tmp/CoSimIO/co_sim_io \
+          g++ -std=c++20 -fsyntax-only -Isrc/cpp/include -I/tmp/CoSimIO/co_sim_io \
             -I/tmp/CoSimIO/external_libraries /tmp/bridge_check.cpp
           echo "bridge compile-check OK"
 
@@ -275,8 +275,8 @@ jobs:
 
   # Regenerate the committed single-header amalgamation and fail if it is stale,
   # then smoke-compile it (declarations-only, MESHIOPLUSPLUS_IMPLEMENTATION, and
-  # a two-TU link) so a change under cpp/ that breaks the header-only build is
-  # caught here. pugixml is committed under cpp/third_party (not a submodule),
+  # a two-TU link) so a change under src/cpp/ that breaks the header-only build is
+  # caught here. pugixml is committed under src/cpp/third_party (not a submodule),
   # so no LFS/submodule checkout is needed.
   amalgamation:
     name: Single-header amalgamation
@@ -469,7 +469,7 @@ jobs:
                --output-file cpp-coverage.info \
                --ignore-errors mismatch,inconsistent,version,unused,empty,gcov,negative,range,corrupt
           lcov --remove cpp-coverage.info \
-               '*/cpp/third_party/*' '*/_deps/*' '*/build*/_deps/*' '/usr/*' \
+               '*/src/cpp/third_party/*' '*/_deps/*' '*/build*/_deps/*' '/usr/*' \
                '*/backends/native_mesh.hpp' '*/backends/kratos_mesh.hpp' \
                '*/backends/model_part.hpp' '*/backends/kratos_names.hpp' \
                --output-file cpp-coverage.info \
@@ -551,7 +551,7 @@ jobs:
   # workflow only triggers on v* tags, and this needs to run on every PR that
   # could break the app.
   #
-  # The Emscripten build is not optional: wasm/dist/ is gitignored, so the
+  # The Emscripten build is not optional: src/wasm/dist/ is gitignored, so the
   # package the viewer consumes does not exist until it is built. And npm
   # *copies* a `file:` dependency, so `npm ci` has to come after that build --
   # vite.config.mjs fails loudly if this order is ever broken.
@@ -575,20 +575,20 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: viewer/package-lock.json
+          cache-dependency-path: src/viewer/package-lock.json
 
       - name: WASM smoke test
-        run: node wasm/test/smoke.mjs
+        run: node src/wasm/test/smoke.mjs
 
       # Must come before typecheck/lint/unit-tests below -- they all need
       # node_modules (including the @meshioplusplus/wasm file: dependency
-      # this npm ci copies in from the just-built wasm/dist/).
+      # this npm ci copies in from the just-built src/wasm/dist/).
       - name: Install viewer dependencies
-        working-directory: viewer
+        working-directory: src/viewer
         run: npm ci
 
       - name: Type-check the viewer
-        working-directory: viewer
+        working-directory: src/viewer
         run: npm run typecheck
 
       # The one lint rule worth a job of its own. Every vtk.js typing gap is
@@ -596,34 +596,34 @@ jobs:
       # stays checked; `as any` would quietly opt out of the whole migration.
       - name: No `as any` in viewer sources
         run: |
-          if grep -rn ' as any' viewer/src --include='*.ts'; then
+          if grep -rn ' as any' src/viewer/src --include='*.ts'; then
             echo "use vtk-augmentations.d.ts or vtk-shims.ts instead" >&2
             exit 1
           fi
 
       - name: Unit tests (colour maps)
-        working-directory: viewer
+        working-directory: src/viewer
         run: npm run test:unit
 
       - name: Build the viewer
-        working-directory: viewer
+        working-directory: src/viewer
         run: |
           npm run build:web
           npm run build:embed
 
       - name: The embedded build is a single self-contained file
         run: |
-          test "$(ls viewer/dist-embed | wc -l)" -eq 1
+          test "$(ls src/viewer/dist-embed | wc -l)" -eq 1
           # All three payload slots Python fills. Matched as exact strings on
           # the Python side, so singlefile mangling one must fail here rather
           # than at view() time.
-          grep -q 'id="vtp-payload"' viewer/dist-embed/index.html
-          grep -q 'id="stats-payload"' viewer/dist-embed/index.html
-          grep -q 'id="view-config"' viewer/dist-embed/index.html
+          grep -q 'id="vtp-payload"' src/viewer/dist-embed/index.html
+          grep -q 'id="stats-payload"' src/viewer/dist-embed/index.html
+          grep -q 'id="view-config"' src/viewer/dist-embed/index.html
           # It must never carry WebAssembly: Python writes the payload, so the
           # page only renders. Dead-code elimination alone did not achieve this
           # (Vite's worker plugin emits chunks at transform time), so assert it.
-          ! grep -q '\.wasm' viewer/dist-embed/index.html
+          ! grep -q '\.wasm' src/viewer/dist-embed/index.html
 
       # Size drift alone cannot catch the failure that matters most -- the
       # WASM binary returning under a differently-named chunk, or a heavy
@@ -633,11 +633,11 @@ jobs:
           python - <<'PY'
           import pathlib, sys
           caps = {
-              "viewer/dist-embed/index.html": 2_000_000,
-              "viewer/dist-web/assets": 4_000_000,
+              "src/viewer/dist-embed/index.html": 2_000_000,
+              "src/viewer/dist-web/assets": 4_000_000,
           }
-          embed = pathlib.Path("viewer/dist-embed/index.html").stat().st_size
-          if embed > caps["viewer/dist-embed/index.html"]:
+          embed = pathlib.Path("src/viewer/dist-embed/index.html").stat().st_size
+          if embed > caps["src/viewer/dist-embed/index.html"]:
               sys.exit(f"dist-embed/index.html is {embed} bytes, over the 2 MB budget")
           print(f"ok: dist-embed/index.html {embed} bytes")
           PY
@@ -650,26 +650,26 @@ jobs:
         run: |
           python - <<'PY'
           import pathlib, sys
-          fresh = pathlib.Path("viewer/dist-embed/index.html").stat().st_size
+          fresh = pathlib.Path("src/viewer/dist-embed/index.html").stat().st_size
           committed = pathlib.Path(
-              "src/meshioplusplus/_viewer_assets/viewer.html"
+              "src/python/meshioplusplus/_viewer_assets/viewer.html"
           ).stat().st_size
           drift = abs(fresh - committed) / max(fresh, committed)
           if drift > 0.10:
               sys.exit(
                   f"the committed viewer asset looks stale: {committed} bytes vs "
                   f"{fresh} freshly built ({drift:.0%} drift). Regenerate it:\n"
-                  "  cd viewer && npm run build:embed\n"
-                  "  cp dist-embed/index.html ../src/meshioplusplus/_viewer_assets/viewer.html"
+                  "  cd src/viewer && npm run build:embed\n"
+                  "  cp dist-embed/index.html ../python/meshioplusplus/_viewer_assets/viewer.html"
               )
           PY
 
       - name: Install Playwright
-        working-directory: viewer
+        working-directory: src/viewer
         run: npx playwright install --with-deps chromium
 
       - name: End-to-end smoke test
-        working-directory: viewer
+        working-directory: src/viewer
         run: npm run test:e2e
 
       # The offline page Python generates must actually render. Nothing else
@@ -681,13 +681,13 @@ jobs:
           python -c "
           import pathlib, meshioplusplus as m
           from meshioplusplus._viewer_browser import build_page
-          mesh = m.read('viewer/public/samples/block.vtu')
+          mesh = m.read('src/viewer/public/samples/block.vtu')
           pathlib.Path('/tmp/offline.html').write_text(build_page(mesh, title='offline'))
           # The quality path bakes ~10 arrays in; it must still render.
           pathlib.Path('/tmp/offline-quality.html').write_text(
               build_page(mesh, title='offline', quality=True))
           "
-          cd viewer
+          cd src/viewer
           npx playwright test tests/offline.spec.mjs
           VIEWER_OFFLINE_PAGE=/tmp/offline-quality.html npx playwright test tests/offline.spec.mjs
 
@@ -695,7 +695,7 @@ jobs:
         if: failure()
         with:
           name: playwright-report
-          path: viewer/playwright-report
+          path: src/viewer/playwright-report
 
   # --------------------------------------------------------------------------
   # The viewer asset ships as package data. scikit-build-core's
@@ -779,7 +779,7 @@ jobs:
           ./build-view/meshioplusplus --help | grep -q '^  view '
           # Without the flag this reports the flag instead of rendering, so a
           # silent EXISTS-guard miss would be caught right here.
-          ! ./build-view/meshioplusplus view viewer/public/samples/block.vtu 2>&1 \
+          ! ./build-view/meshioplusplus view src/viewer/public/samples/block.vtu 2>&1 \
             | grep -q 'MESHIOPLUSPLUS_WITH_POLYSCOPE'
 
       - name: Headless screenshot
@@ -788,7 +788,7 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: |
           xvfb-run -a -s "-screen 0 1280x960x24" \
-            ./build-view/meshioplusplus screenshot viewer/public/samples/block.vtu \
+            ./build-view/meshioplusplus screenshot src/viewer/public/samples/block.vtu \
             /tmp/cli.png --size 320x240
           python - <<'PY'
           import pathlib, struct, sys

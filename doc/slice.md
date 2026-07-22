@@ -80,7 +80,7 @@ the section is still geometrically correct, just not vertex-minimal there.
 
 Every section face is wound so that its Newell normal points toward the
 `+normal` side of the plane — a globally consistent orientation, pinned by a
-Newell-normal invariant test (`cpp/tests/test_slice.cpp`).
+Newell-normal invariant test (`src/cpp/tests/test_slice.cpp`).
 
 ## Provenance
 

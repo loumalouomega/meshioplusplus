@@ -124,12 +124,12 @@ endif()
 # it at all, which is what keeps "the core is dependency-free" literally true
 # rather than true-by-default: Polyscope pulls in OpenGL, GLFW and X11.
 #
-# Vendored as a git submodule at cpp/third_party/polyscope (it is in no package
+# Vendored as a git submodule at src/cpp/third_party/polyscope (it is in no package
 # manager and its own docs offer only add_subdirectory/FetchContent). It has
 # nested submodules, so `git submodule update --init --recursive` is required;
 # with a plain --init the EXISTS guard below simply leaves the viewer out.
 option(MESHIOPLUSPLUS_WITH_POLYSCOPE
-       "Build the CLI's native viewer (needs OpenGL/GLFW; see cpp/third_party/polyscope)"
+       "Build the CLI's native viewer (needs OpenGL/GLFW; see src/cpp/third_party/polyscope)"
        OFF)
 
 # --------------------------------------------------------------------------
@@ -140,8 +140,8 @@ option(MESHIOPLUSPLUS_WITH_POLYSCOPE
 # both consumers inherit them.
 # --------------------------------------------------------------------------
 file(GLOB_RECURSE MESHIOPLUSPLUS_CORE_SOURCES
-    cpp/src/*.cpp
-    cpp/third_party/pugixml/pugixml.cpp)
+    src/cpp/src/*.cpp
+    src/cpp/third_party/pugixml/pugixml.cpp)
 
 add_library(meshioplusplus_core_obj OBJECT ${MESHIOPLUSPLUS_CORE_SOURCES})
 set_target_properties(meshioplusplus_core_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -177,8 +177,8 @@ if(MESHIOPLUSPLUS_STATIC_RUNTIME AND MSVC AND NOT MESHIOPLUSPLUS_BUILD_PYTHON)
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 target_include_directories(
-  meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include
-                         ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/pugixml)
+  meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+                         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/pugixml)
 
 if(EMSCRIPTEN)
   # Emscripten disables JS-catchable C++ exceptions by default (an uncaught
@@ -289,23 +289,23 @@ else()
   message(STATUS "meshio++: netCDF not found/disabled - Exodus falls back to Python")
 endif()
 
-# Eigen (header-only, vendored as a git submodule at cpp/third_party/eigen):
+# Eigen (header-only, vendored as a git submodule at src/cpp/third_party/eigen):
 # used for the MED Fortran<->C transpose. Optional -- when the submodule is not
 # checked out (e.g. an sdist without submodules) the code falls back to the
 # hand-written transpose loop. Run `git submodule update --init` to enable it.
 option(MESHIOPLUSPLUS_WITH_EIGEN "Use vendored Eigen for the MED transpose" ON)
 if(MESHIOPLUSPLUS_WITH_EIGEN AND
-   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/eigen/Eigen/Dense")
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/eigen/Eigen/Dense")
   message(STATUS "meshio++: Eigen enabled (MED transpose)")
   target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_EIGEN)
   target_include_directories(
-    meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/eigen)
+    meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/eigen)
 else()
   message(STATUS "meshio++: Eigen not found/disabled - MED transpose uses the plain loop")
 endif()
 
 # --------------------------------------------------------------------------
-# Parallel backend for meshioplusplus::parallel_for (cpp/include/meshioplusplus/parallel.hpp).
+# Parallel backend for meshioplusplus::parallel_for (src/cpp/include/meshioplusplus/parallel.hpp).
 # Selected at configure time; exactly one MESHIOPLUSPLUS_PARALLEL_* macro is defined:
 #   AUTO   - (default) OpenMP if available, else STL, else SEQ. Prefers OpenMP
 #            because it is portable and needs no TBB; STL without TBB would
@@ -317,7 +317,7 @@ endif()
 #   OPENMP - #pragma omp parallel for (hard error if OpenMP is missing)
 #   TBB    - tbb::parallel_for        (hard error if TBB is missing)
 # Adding a new backend (Kokkos, ...) = a branch here + one #elif block in
-# cpp/include/meshioplusplus/parallel.hpp.
+# src/cpp/include/meshioplusplus/parallel.hpp.
 # --------------------------------------------------------------------------
 set(MESHIOPLUSPLUS_PARALLEL_BACKEND "AUTO" CACHE STRING
     "Parallel backend for meshioplusplus::parallel_for: AUTO, SEQ, STL, OPENMP or TBB")
@@ -389,7 +389,7 @@ endif()
 message(STATUS "meshio++: parallel backend: ${_meshioplusplus_parallel}")
 
 # ---------------------------------------------------------------------------
-# In-memory mesh backend (cpp/include/meshioplusplus/mesh.hpp). Exactly one
+# In-memory mesh backend (src/cpp/include/meshioplusplus/mesh.hpp). Exactly one
 # MESHIOPLUSPLUS_MESH_BACKEND_* macro is defined; all format code is written
 # against the uniform mesh API (mesh_api.hpp) so any backend compiles:
 #   MESHIO - (default) the meshio-mirroring Mesh/CellBlock over dtype-erased
@@ -614,16 +614,16 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
 
-  file(GLOB MESHIOPLUSPLUS_TEST_SOURCES cpp/tests/*.cpp)
+  file(GLOB MESHIOPLUSPLUS_TEST_SOURCES src/cpp/tests/*.cpp)
   if(NOT MESHIOPLUSPLUS_BUILD_C_API)
     list(REMOVE_ITEM MESHIOPLUSPLUS_TEST_SOURCES
-         ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests/test_c_api.cpp)
+         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/tests/test_c_api.cpp)
   endif()
   add_executable(meshioplusplus_tests ${MESHIOPLUSPLUS_TEST_SOURCES})
-  target_include_directories(meshioplusplus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests)
+  target_include_directories(meshioplusplus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/tests)
   # The Polyscope payload builder is CLI-side but deliberately Polyscope-free,
   # so its invariants are tested here in the default build -- no OpenGL needed.
-  target_sources(meshioplusplus_tests PRIVATE cpp/cli/view_payload.cpp)
+  target_sources(meshioplusplus_tests PRIVATE src/cpp/cli/view_payload.cpp)
   target_link_libraries(meshioplusplus_tests PRIVATE meshioplusplus_core_obj GTest::gtest_main)
   if(MESHIOPLUSPLUS_BUILD_C_API)
     # Link the C API's objects directly (not the shared lib): the gtest binary
@@ -645,19 +645,19 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
 endif()
 
 # --------------------------------------------------------------------------
-# C++ backend benchmark (cpp/benchmark/bench_backends.cpp): one binary per
+# C++ backend benchmark (src/cpp/benchmark/bench_backends.cpp): one binary per
 # mesh backend (the backend is a compile-time choice); benchmark/
 # bench_backends.sh builds all three variants and collates the CSV output.
 # No external benchmark framework -- std::chrono, warmup + median-of-N.
 # --------------------------------------------------------------------------
 option(MESHIOPLUSPLUS_BUILD_BENCHMARKS "Build the C++ mesh-backend benchmark binary" OFF)
 if(MESHIOPLUSPLUS_BUILD_BENCHMARKS)
-  add_executable(meshioplusplus_bench cpp/benchmark/bench_backends.cpp)
+  add_executable(meshioplusplus_bench src/cpp/benchmark/bench_backends.cpp)
   target_link_libraries(meshioplusplus_bench PRIVATE meshioplusplus_core_obj)
 endif()
 
 # --------------------------------------------------------------------------
-# Native command-line binary (cpp/cli/main.cpp): a Python-free CLI over
+# Native command-line binary (src/cpp/cli/main.cpp): a Python-free CLI over
 # meshioplusplus_core_obj, mirroring the Python console script's verbs
 # (convert/info/ascii/binary/compress/decompress/quality/extract-surface/
 # reorder/diff). Installed executable name is `meshioplusplus`. Opt-in like the
@@ -665,8 +665,8 @@ endif()
 # --------------------------------------------------------------------------
 option(MESHIOPLUSPLUS_BUILD_CLI "Build the native command-line binary" OFF)
 if(MESHIOPLUSPLUS_BUILD_CLI)
-  add_executable(meshioplusplus_cli cpp/cli/main.cpp)
-  target_sources(meshioplusplus_cli PRIVATE cpp/cli/view_payload.cpp)
+  add_executable(meshioplusplus_cli src/cpp/cli/main.cpp)
+  target_sources(meshioplusplus_cli PRIVATE src/cpp/cli/view_payload.cpp)
   target_link_libraries(meshioplusplus_cli PRIVATE meshioplusplus_core_obj)
   target_compile_definitions(meshioplusplus_cli
     PRIVATE MESHIOPLUSPLUS_CLI_VERSION="${PROJECT_VERSION}")
@@ -675,15 +675,15 @@ if(MESHIOPLUSPLUS_BUILD_CLI)
   # acquire an OpenGL dependency through it. EXCLUDE_FROM_ALL keeps Polyscope's
   # own examples and tests out of the build.
   if(MESHIOPLUSPLUS_WITH_POLYSCOPE AND NOT EMSCRIPTEN)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/polyscope/CMakeLists.txt")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/polyscope/CMakeLists.txt")
       message(STATUS "meshio++: Polyscope viewer enabled (CLI only)")
-      add_subdirectory(cpp/third_party/polyscope EXCLUDE_FROM_ALL)
-      target_sources(meshioplusplus_cli PRIVATE cpp/cli/polyscope_view.cpp)
+      add_subdirectory(src/cpp/third_party/polyscope EXCLUDE_FROM_ALL)
+      target_sources(meshioplusplus_cli PRIVATE src/cpp/cli/polyscope_view.cpp)
       target_link_libraries(meshioplusplus_cli PRIVATE polyscope)
       target_compile_definitions(meshioplusplus_cli PRIVATE MESHIOPLUSPLUS_HAS_POLYSCOPE)
     else()
       message(STATUS
-        "meshio++: Polyscope requested but cpp/third_party/polyscope is empty - "
+        "meshio++: Polyscope requested but src/cpp/third_party/polyscope is empty - "
         "run `git submodule update --init --recursive`; view/screenshot will raise")
     endif()
   endif()

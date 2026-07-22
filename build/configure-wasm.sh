@@ -106,16 +106,16 @@ fi
 echo
 echo "== next steps =="
 echo "  emmake cmake --build \"$BUILD_DIR\" -j"
-echo "  cp \"$BUILD_DIR\"/meshioplusplus_wasm.{mjs,wasm} \"$SOURCE_DIR/wasm/dist/\""
-echo "  node \"$SOURCE_DIR/wasm/test/smoke.mjs\""
-echo "  (cd \"$SOURCE_DIR/wasm\" && npm pack)"
+echo "  cp \"$BUILD_DIR\"/meshioplusplus_wasm.{mjs,wasm} \"$SOURCE_DIR/src/wasm/dist/\""
+echo "  node \"$SOURCE_DIR/src/wasm/test/smoke.mjs\""
+echo "  (cd \"$SOURCE_DIR/src/wasm\" && npm pack)"
 
 if [ "$DO_BUILD" = "yes" ]; then
     echo
     echo "== building =="
     emmake cmake --build "$BUILD_DIR" -j
-    mkdir -p "$SOURCE_DIR/wasm/dist"
-    cp "$BUILD_DIR"/meshioplusplus_wasm.mjs "$SOURCE_DIR/wasm/dist/"
-    cp "$BUILD_DIR"/meshioplusplus_wasm.wasm "$SOURCE_DIR/wasm/dist/"
-    echo "copied build artifacts to $SOURCE_DIR/wasm/dist/"
+    mkdir -p "$SOURCE_DIR/src/wasm/dist"
+    cp "$BUILD_DIR"/meshioplusplus_wasm.mjs "$SOURCE_DIR/src/wasm/dist/"
+    cp "$BUILD_DIR"/meshioplusplus_wasm.wasm "$SOURCE_DIR/src/wasm/dist/"
+    echo "copied build artifacts to $SOURCE_DIR/src/wasm/dist/"
 fi

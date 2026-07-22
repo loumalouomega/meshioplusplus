@@ -94,7 +94,7 @@ Notes:
 - With GCC/libstdc++ the STL backend requires TBB (`apt install libtbb-dev`); when TBB is unusable, CMake warns and falls back to the sequential backend. This is why `AUTO` does not pick STL first: without TBB it runs sequentially.
 - `_core.__parallel_backend__` reports the backend actually compiled in.
 - MSVC's STL backend needs nothing extra; Apple's libc++ has no parallel STL (use OpenMP via `brew install libomp`, or SEQ).
-- The design is open to new backends (Kokkos, …): one CMake branch plus one `#elif` block in `cpp/include/meshioplusplus/parallel.hpp`.
+- The design is open to new backends (Kokkos, …): one CMake branch plus one `#elif` block in `src/cpp/include/meshioplusplus/parallel.hpp`.
 
 ### Logging
 
@@ -106,7 +106,7 @@ The same C++ core also compiles to WebAssembly for use in the browser or Node.js
 
 ```sh
 ./build/configure-wasm.sh --build
-node wasm/test/smoke.mjs
+node src/wasm/test/smoke.mjs
 ```
 
 See [WebAssembly / JavaScript](./wasm.md) for the full usage guide, the supported-format list (27 of the 35+ formats — the HDF5/netCDF-backed ones are not yet ported to WASM), and known v1 limitations.

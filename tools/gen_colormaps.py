@@ -12,16 +12,16 @@ Three files come out of this, and are pinned against each other by
 ``tests/test_colormap.py`` (via the ``_core.colormap_table`` export), so a
 hand-edit to any one of them fails CI:
 
-- ``cpp/include/meshioplusplus/detail/colormap.hpp`` -- declarations only
+- ``src/cpp/include/meshioplusplus/detail/colormap.hpp`` -- declarations only
   (`Rgb`, `kColormapSize`, the three function signatures). No table data, so
   every translation unit that includes it stays cheap to compile.
-- ``cpp/src/detail/colormap.cpp`` -- the table data (file-private, in an
+- ``src/cpp/src/detail/colormap.cpp`` -- the table data (file-private, in an
   anonymous namespace) and the function bodies. Mirrors the rest of
-  `cpp/src/detail/`: a body that runs once per call (`colormap_table`,
+  `src/cpp/src/detail/`: a body that runs once per call (`colormap_table`,
   `colormap_names`) or once per face (`colormap_lookup`, the same "once per
   cell" bucket `FiniteStats`'s neighbours in `data_ops.hpp` document) belongs
   out of line, not inlined into every including TU.
-- ``src/meshioplusplus/_colormap.py`` -- the Python twin. Python has no
+- ``src/python/meshioplusplus/_colormap.py`` -- the Python twin. Python has no
   header/source split, so this one file carries both the tables and the
   functions, as before.
 
@@ -113,11 +113,11 @@ def write_hpp() -> None:
  * nothing to interpolate: the entire floating-point surface of the color path
  * is the single index expression in colormap_lookup's body.
  *
- * The table data and function bodies live in `cpp/src/detail/colormap.cpp`,
+ * The table data and function bodies live in `src/cpp/src/detail/colormap.cpp`,
  * not here -- this header is declarations only, so including it does not pull
  * three 768-byte array literals into every translation unit that colours a
  * face. The Python twin, which has no header/source split, is
- * `src/meshioplusplus/_colormap.py`; all three files are emitted by
+ * `src/python/meshioplusplus/_colormap.py`; all three files are emitted by
  * `tools/gen_colormaps.py` and pinned against each other by
  * `tests/test_colormap.py`.
  */
@@ -159,7 +159,7 @@ std::vector<std::string> colormap_names();
  *          (callers route NaN to `nan_color` before reaching here).
  *
  * The index expression is the ONLY floating-point arithmetic in the color path,
- * and `src/meshioplusplus/_colormap.py` reproduces it character for character:
+ * and `src/python/meshioplusplus/_colormap.py` reproduces it character for character:
  * two IEEE-754 double operations in the same order, then a truncating cast.
  * Because `t` is non-negative here, truncation IS floor in both languages and
  * no tie-breaking is involved.

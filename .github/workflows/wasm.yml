@@ -36,16 +36,16 @@ jobs:
           node-version: "20"
 
       - name: Smoke test
-        run: node wasm/test/smoke.mjs
+        run: node src/wasm/test/smoke.mjs
 
       - name: Package sanity check (npm pack --dry-run)
-        working-directory: wasm
+        working-directory: src/wasm
         run: npm pack --dry-run
 
       - uses: actions/upload-artifact@v4
         with:
           name: wasm-package
-          path: wasm/
+          path: src/wasm/
           if-no-files-found: error
 
   publish-npm:
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: wasm-package
-          path: wasm
+          path: src/wasm
 
       - uses: actions/setup-node@v4
         with:
@@ -68,7 +68,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish to npm
-        working-directory: wasm
+        working-directory: src/wasm
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

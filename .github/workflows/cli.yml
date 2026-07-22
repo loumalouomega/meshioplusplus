@@ -1,6 +1,6 @@
 name: cli
 
-# Build the standalone native command-line binary (cpp/cli/main.cpp, see
+# Build the standalone native command-line binary (src/cpp/cli/main.cpp, see
 # doc/c_api.md#native-command-line-binary) for every OS/arch the project
 # supports -- Linux x86_64, Linux arm64, macOS (universal), Windows x86_64 --
 # as a single statically-linked executable with no Python/pybind11 and no
@@ -22,9 +22,9 @@ on:
   pull_request:
     paths:
       - "CMakeLists.txt"
-      - "cpp/cli/**"
-      - "cpp/include/**"
-      - "cpp/src/**"
+      - "src/cpp/cli/**"
+      - "src/cpp/include/**"
+      - "src/cpp/src/**"
       - "build/configure.sh"
       - "build/configure.bat"
       - ".github/workflows/cli.yml"

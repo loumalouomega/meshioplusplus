@@ -74,8 +74,8 @@ the C API (`mio_attach_quality` + `mio_quality_counts`), Fortran
 
 ## Implementation
 
-The metrics are in `cpp/src/operations/quality.cpp` (over the uniform mesh API,
+The metrics are in `src/cpp/src/operations/quality.cpp` (over the uniform mesh API,
 with the per-cell loop parallelised) with reusable vector math in
-`cpp/include/meshioplusplus/detail/geometry.hpp`. A pure-numpy twin
+`src/cpp/include/meshioplusplus/detail/geometry.hpp`. A pure-numpy twin
 (`meshioplusplus._quality._compute_quality_py`) mirrors the formulas and is
 checked against the C++ core in `tests/test_quality.py`.

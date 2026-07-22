@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Regenerates ../../viewer/src/ui/icons.ts from svg-ui/*.svg (each produced by
+ * Regenerates ../../src/viewer/src/ui/icons.ts from svg-ui/*.svg (each produced by
  * `make ui` from the matching tikz-ui/*.tex — see README.md).
  *
  * Pure Node: as long as svg-ui/*.svg is up to date, and it is committed for
@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SVG_DIR = path.join(HERE, 'svg-ui');
 const TEX_DIR = path.join(HERE, 'tikz-ui');
-const OUT_FILE = path.join(HERE, '..', '..', 'viewer', 'src', 'ui', 'icons.ts');
+const OUT_FILE = path.join(HERE, '..', '..', 'src', 'viewer', 'src', 'ui', 'icons.ts');
 
 /**
  * Sentinel colours from preamble.tex, and the opacity each maps to.

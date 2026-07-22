@@ -43,7 +43,7 @@ int main() {
 g++ -std=c++20 -I single_include main.cpp -o main
 ```
 
-The public surface is the same uniform mesh API and format [registry](https://github.com/loumalouomega/meshioplusplus/blob/main/cpp/include/meshioplusplus/registry.hpp) the rest of the C++ core uses: `registry_readers()` / `registry_writers()` (`name -> function`), `resolve_format(path, "")`, plus the `Mesh` type and the `ReadError` / `WriteError` exceptions.
+The public surface is the same uniform mesh API and format [registry](https://github.com/loumalouomega/meshioplusplus/blob/main/src/cpp/include/meshioplusplus/registry.hpp) the rest of the C++ core uses: `registry_readers()` / `registry_writers()` (`name -> function`), `resolve_format(path, "")`, plus the `Mesh` type and the `ReadError` / `WriteError` exceptions.
 
 ## Configuration macros
 
@@ -63,7 +63,7 @@ Optional-dependency code stays behind its `MESHIOPLUSPLUS_HAS_*` guard, so the d
 
 ## How it is generated
 
-The single header is **generated** from the sources under `cpp/` by [`tools/amalgamate.sh`](https://github.com/loumalouomega/meshioplusplus/blob/main/tools/amalgamate.sh) (which drives `tools/amalgamate/amalgamate.py`) and **committed** to the repo. CI regenerates it on every push and fails if the committed copy is stale, then smoke-compiles it (declarations-only, `MESHIOPLUSPLUS_IMPLEMENTATION`, and a two-TU link). **Do not edit the generated file by hand** — edit the sources under `cpp/` and run:
+The single header is **generated** from the sources under `src/cpp/` by [`tools/amalgamate.sh`](https://github.com/loumalouomega/meshioplusplus/blob/main/tools/amalgamate.sh) (which drives `tools/amalgamate/amalgamate.py`) and **committed** to the repo. CI regenerates it on every push and fails if the committed copy is stale, then smoke-compiles it (declarations-only, `MESHIOPLUSPLUS_IMPLEMENTATION`, and a two-TU link). **Do not edit the generated file by hand** — edit the sources under `src/cpp/` and run:
 
 ```sh
 ./tools/amalgamate.sh          # regenerate single_include/…/meshioplusplus.hpp

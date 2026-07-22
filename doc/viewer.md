@@ -206,13 +206,13 @@ undo a replay rather than an inverse.
 ### Running it locally
 
 ```sh
-cd viewer
+cd src/viewer
 npm install
 npm run dev     # http://localhost:5173/meshioplusplus/viewer/
 ```
 
-See [`viewer/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/viewer/README.md)
-for the build layout, and note that after changing `bindings/wasm/` or `cpp/` you
+See [`src/viewer/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/src/viewer/README.md)
+for the build layout, and note that after changing `bindings/wasm/` or `src/cpp/` you
 must rebuild the WASM package *and* force npm to refresh its copy.
 
 ### The offline page

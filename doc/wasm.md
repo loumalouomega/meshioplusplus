@@ -222,7 +222,7 @@ cd emsdk && ./emsdk install latest && ./emsdk activate latest
 source ./emsdk_env.sh
 cd ../meshioplusplus  # this repo
 ./build/configure-wasm.sh --build
-node wasm/test/smoke.mjs
+node src/wasm/test/smoke.mjs
 ```
 
 `build/configure-wasm.sh` always configures with `-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` (no Python/pybind11 involved), `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ` (OpenMP/TBB/the parallel STL have no meaningful story on this target yet), `-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE` (the fastest [in-memory mesh backend](cpp_backends.md) — canonical Float64/Int64 storage, so the embind typed-array boundary needs no dtype dispatch; the JS API shape is unchanged, and `meshBackend()` on the loaded module reports `"native"`), and HDF5/netCDF off. See `--help` for the `--without-zlib`/`--build-type` options. CI (`.github/workflows/wasm.yml`) builds and smoke-tests on every push/PR and publishes to npm on `v*` tags.

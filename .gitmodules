@@ -1,8 +1,8 @@
 [submodule "cpp/third_party/eigen"]
-	path = cpp/third_party/eigen
+	path = src/cpp/third_party/eigen
 	url = https://gitlab.com/libeigen/eigen.git
 [submodule "cpp/third_party/polyscope"]
-	path = cpp/third_party/polyscope
+	path = src/cpp/third_party/polyscope
 	url = https://github.com/nmwsharp/polyscope.git
 	# Polyscope has its own nested submodules (glfw, imgui, glm, implot,
 	# ImGuizmo, happly), so it needs `--recursive`. `ignore = dirty` keeps

@@ -1,7 +1,7 @@
 """The built-in colormap LUTs and their C++/Python parity.
 
-The tables exist twice -- `cpp/include/meshioplusplus/detail/colormap.hpp` and
-`src/meshioplusplus/_colormap.py`, both emitted by `tools/gen_colormaps.py` --
+The tables exist twice -- `src/cpp/include/meshioplusplus/detail/colormap.hpp` and
+`src/python/meshioplusplus/_colormap.py`, both emitted by `tools/gen_colormaps.py` --
 so a hand-edit to either copy has to fail here rather than silently desync the
 SVG/TikZ writers' byte-parity guarantee.
 """

@@ -12,7 +12,7 @@ canvas of roughly -13..13 mm.
 
 ```
 tikz-ui/<id>.tex → pdflatex → dvisvgm → svg-ui/<id>.svg
-                 → build-icons.mjs → ../../viewer/src/ui/icons.ts
+                 → build-icons.mjs → ../../src/viewer/src/ui/icons.ts
 ```
 
 The same `pdflatex` + `dvisvgm` pair [`logo/build.sh`](../logo/build.sh)
@@ -24,7 +24,7 @@ single-quoted attributes, hex colours, `pt` dimensions, and wraps everything in
 ```bash
 cd doc/icons
 make ui     # tex → svg   (needs pdflatex + dvisvgm)
-make ts     # svg → ../../viewer/src/ui/icons.ts   (pure Node)
+make ts     # svg → ../../src/viewer/src/ui/icons.ts   (pure Node)
 make clean
 node check-icons.mjs   # what CI runs; needs neither TeX nor a build
 ```
@@ -61,4 +61,4 @@ Create `tikz-ui/<newId>.tex` (see `_template.tex.example`), run `make ts`, then
 reference `ICONS.newId`. Because `IconId` is a union, `tsc --noEmit` checks
 every reference — a typo is a compile error, not a blank square.
 
-**Never hand-edit `viewer/src/ui/icons.ts`**; `make ts` rewrites it wholesale.
+**Never hand-edit `src/viewer/src/ui/icons.ts`**; `make ts` rewrites it wholesale.

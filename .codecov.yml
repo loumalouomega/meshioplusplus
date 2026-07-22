@@ -8,11 +8,11 @@ comment: no
 flags:
   python:
     paths:
-      - src/meshioplusplus/
+      - src/python/meshioplusplus/
     carryforward: false
   cpp:
     paths:
-      - cpp/
+      - src/cpp/
       - bindings/
     carryforward: false
 
@@ -44,22 +44,22 @@ coverage:
 
 ignore:
   - "tests/"
-  - "cpp/tests/"
+  - "src/cpp/tests/"
   - "benchmark/"
-  - "cpp/third_party/"
+  - "src/cpp/third_party/"
   - "doc/"
   - "example/"
   - "tools/"
-  # Generated single-header amalgamation: a verbatim duplicate of cpp/ (kept in
-  # sync by CI). Counting it would double every cpp/ line.
+  # Generated single-header amalgamation: a verbatim duplicate of src/cpp/ (kept in
+  # sync by CI). Counting it would double every src/cpp/ line.
   - "single_include/"
   # Non-MESHIO mesh backends: instantiated only by the standalone `cpp-tests`
   # backend matrix, never by the MESHIO-only instrumented `coverage` job, so
   # they are structurally unreachable here. Mirrors the lcov --remove in ci.yml.
-  - "cpp/include/meshioplusplus/backends/native_mesh.hpp"
-  - "cpp/include/meshioplusplus/backends/kratos_mesh.hpp"
-  - "cpp/include/meshioplusplus/backends/model_part.hpp"
-  - "cpp/include/meshioplusplus/backends/kratos_names.hpp"
+  - "src/cpp/include/meshioplusplus/backends/native_mesh.hpp"
+  - "src/cpp/include/meshioplusplus/backends/kratos_mesh.hpp"
+  - "src/cpp/include/meshioplusplus/backends/model_part.hpp"
+  - "src/cpp/include/meshioplusplus/backends/kratos_names.hpp"
   # Not compiled by the coverage job (no Emscripten / no Fortran toolchain in
   # this job); listed for clarity so a future config change can't silently
   # start counting them as uncovered.

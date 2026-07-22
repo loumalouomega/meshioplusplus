@@ -7,7 +7,7 @@
 # STB-style single header:
 #
 #   * declarations are always visible on a plain ``#include``;
-#   * the out-of-line implementations of every ``cpp/src/*.cpp`` (and the
+#   * the out-of-line implementations of every ``src/cpp/src/*.cpp`` (and the
 #     bundled pugixml) are compiled only in the one translation unit that first
 #     ``#define``s ``MESHIOPLUSPLUS_IMPLEMENTATION`` before including the header.
 #
@@ -167,8 +167,8 @@ def main(argv=None):
 
     repo = Path(args.repo_root).resolve()
     _REPO_ROOT = repo
-    include_dir = repo / "cpp" / "include"
-    pugixml_dir = repo / "cpp" / "third_party" / "pugixml"
+    include_dir = repo / "src" / "cpp" / "include"
+    pugixml_dir = repo / "src" / "cpp" / "third_party" / "pugixml"
 
     all_headers = sorted((include_dir / "meshioplusplus").rglob("*.hpp"))
     # Every header is emitted once, at top level, in dependency order. The three
@@ -196,7 +196,7 @@ def main(argv=None):
     # header the sources need but the decl section didn't emit (pugixml.hpp,
     # pugiconfig.hpp) is emitted here first, at top level.
     sources = [pugixml_dir / "pugixml.cpp"]
-    sources += sorted((repo / "cpp" / "src").rglob("*.cpp"))
+    sources += sorted((repo / "src" / "cpp" / "src").rglob("*.cpp"))
 
     prelude = []
     for s in sources:
@@ -235,7 +235,7 @@ BANNER = """\
 //
 //  *** GENERATED FILE -- DO NOT EDIT BY HAND. ***
 //  Regenerate with:  ./tools/amalgamate.sh
-//  (CI verifies this file is up to date; edit the sources under cpp/, not here.)
+//  (CI verifies this file is up to date; edit the sources under src/cpp/, not here.)
 //
 //  Usage (STB-style, header-only):
 //

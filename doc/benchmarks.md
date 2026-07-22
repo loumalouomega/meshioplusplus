@@ -57,7 +57,7 @@ The notebook records the machine, library versions, and the inputs (the bundled 
 
 ## Mesh-backend benchmarks
 
-The C++ core's [mesh backend](cpp_backends.md) (MESHIO / NATIVE / KRATOS) is an exclusive compile-time choice, so `benchmark/bench_backends.sh` builds one benchmark binary per backend (`cpp/benchmark/bench_backends.cpp`, enabled with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV (`benchmark/results_backends.csv`). Method mirrors the Python harness: warmup + median of 5 (`std::chrono`), a synthetic structured tet cube (default 6·35³ = 257k tets over 46k shared points), and four kinds of rows:
+The C++ core's [mesh backend](cpp_backends.md) (MESHIO / NATIVE / KRATOS) is an exclusive compile-time choice, so `benchmark/bench_backends.sh` builds one benchmark binary per backend (`src/cpp/benchmark/bench_backends.cpp`, enabled with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV (`benchmark/results_backends.csv`). Method mirrors the Python harness: warmup + median of 5 (`std::chrono`), a synthetic structured tet cube (default 6·35³ = 257k tets over 46k shared points), and four kinds of rows:
 
 - **ingest** — building the mesh through the uniform ingestion API (the reader side's cost);
 - **traverse** — a full writer-side accessor sweep;
