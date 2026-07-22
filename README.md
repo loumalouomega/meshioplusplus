@@ -99,6 +99,7 @@ meshioplusplus refine     in.vtu out.vtu --levels 2          # uniform subdivisi
 meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
 meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positions
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
+meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-section
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -369,7 +370,21 @@ mapped = meshioplusplus.interpolate(coarse, fine, method="barycentric")
 meshioplusplus.write("mapped.vtu", mapped)
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, and `meshioplusplus interpolate`.
+#### Slicing / cross-sections
+
+**`meshioplusplus.slice`** computes the planar cross-section of a mesh — the actual intersection of the mesh with a plane, one topological dimension below the cut cells: a 3D volume mesh yields a `triangle`/`quad` surface, a 2D surface mesh a `line` mesh. Unlike `crop` (plane mode), which keeps whole cells on one side, `slice` computes the intersection and lowers the dimension. It uses robust marching tetrahedra (the input is simplexified first, so each cell's cross-section is a well-defined convex primitive), deduping crossing points on shared edges into single nodes so the section is watertight, and winding every face consistently toward the `+normal` side. Each section cell inherits its parent's `cell_data`; `record_parent_ids=True` attaches `slice:parent_cell`, and `point_data` is interpolated at the cut. Output is byte-identical across backends, thread counts and the C++/numpy boundary. See `doc/slice.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+vol = meshioplusplus.read("part.vtu")                          # a tetra/hex/wedge mesh
+section = meshioplusplus.slice(vol, origin=(0, 0, 0.5), normal=(0, 0, 1))
+meshioplusplus.write("section.vtu", section)                  # a triangle/quad surface at z=0.5
+```
+
+(`slice` shadows the Python built-in only as a module attribute — `meshioplusplus.slice` is intended.)
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, and `meshioplusplus interpolate`.
 
 #### Data operations (rename / average / calc / condition / summarize)
 
