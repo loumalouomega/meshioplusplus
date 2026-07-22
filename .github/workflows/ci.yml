@@ -291,12 +291,12 @@ jobs:
         run: ./tools/amalgamate.sh --smoke
       - name: Fail if the committed single header is stale
         run: |
-          git diff --exit-code single_include/ \
-            || { echo '::error::single_include/ is out of date -- run ./tools/amalgamate.sh and commit.'; exit 1; }
+          git diff --exit-code src/single_include/ \
+            || { echo '::error::src/single_include/ is out of date -- run ./tools/amalgamate.sh and commit.'; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: meshioplusplus-single-header
-          path: single_include/meshioplusplus/meshioplusplus.hpp
+          path: src/single_include/meshioplusplus/meshioplusplus.hpp
 
   test:
     needs: [lint]

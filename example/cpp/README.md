@@ -5,7 +5,7 @@ meshio++, called directly against the **C++ core** instead of the Python
 bindings, on the same bundled bracket geometry. No Python is involved --
 these notebooks run on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp)
 Jupyter kernel (a `clang-repl`-based C++ interpreter) against
-[`meshioplusplus.hpp`](../../single_include/meshioplusplus/meshioplusplus.hpp),
+[`meshioplusplus.hpp`](../../src/single_include/meshioplusplus/meshioplusplus.hpp),
 the committed single-header amalgamation -- `#include` it,
 `#define MESHIOPLUSPLUS_IMPLEMENTATION` once, and every format and operation
 in the core is available with no separate build step.
@@ -98,7 +98,7 @@ export MAMBA_ROOT_PREFIX=$PWD/.micromamba
 
 nbconvert sets the kernel's working directory to the notebook's own folder,
 which is why the cells use paths relative to `example/cpp/`
-(`../../single_include/...`, `mio_notebook.hpp`, `example.vtu`) rather than
+(`../../src/single_include/...`, `mio_notebook.hpp`, `example.vtu`) rather than
 absolute ones.
 
 ## xeus-cpp / amalgamation quirks worth knowing before editing these notebooks

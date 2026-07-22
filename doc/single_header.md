@@ -1,6 +1,6 @@
 # Single-header C++ (header-only)
 
-The whole meshio++ C++ core is also available as **one self-contained header**, [`single_include/meshioplusplus/meshioplusplus.hpp`](https://github.com/loumalouomega/meshioplusplus/blob/main/single_include/meshioplusplus/meshioplusplus.hpp). Drop it into any project — no CMake, no submodules, nothing to link (unless you opt into the optional formats below). It follows the well-known [STB](https://github.com/nothings/stb) single-file-library convention:
+The whole meshio++ C++ core is also available as **one self-contained header**, [`src/single_include/meshioplusplus/meshioplusplus.hpp`](https://github.com/loumalouomega/meshioplusplus/blob/main/src/single_include/meshioplusplus/meshioplusplus.hpp). Drop it into any project — no CMake, no submodules, nothing to link (unless you opt into the optional formats below). It follows the well-known [STB](https://github.com/nothings/stb) single-file-library convention:
 
 ```cpp
 // in exactly ONE .cpp of your project — pulls in all the implementations:
@@ -40,7 +40,7 @@ int main() {
 ```
 
 ```sh
-g++ -std=c++20 -I single_include main.cpp -o main
+g++ -std=c++20 -I src/single_include main.cpp -o main
 ```
 
 The public surface is the same uniform mesh API and format [registry](https://github.com/loumalouomega/meshioplusplus/blob/main/src/cpp/include/meshioplusplus/registry.hpp) the rest of the C++ core uses: `registry_readers()` / `registry_writers()` (`name -> function`), `resolve_format(path, "")`, plus the `Mesh` type and the `ReadError` / `WriteError` exceptions.
@@ -66,7 +66,7 @@ Optional-dependency code stays behind its `MESHIOPLUSPLUS_HAS_*` guard, so the d
 The single header is **generated** from the sources under `src/cpp/` by [`tools/amalgamate.sh`](https://github.com/loumalouomega/meshioplusplus/blob/main/tools/amalgamate.sh) (which drives `tools/amalgamate/amalgamate.py`) and **committed** to the repo. CI regenerates it on every push and fails if the committed copy is stale, then smoke-compiles it (declarations-only, `MESHIOPLUSPLUS_IMPLEMENTATION`, and a two-TU link). **Do not edit the generated file by hand** — edit the sources under `src/cpp/` and run:
 
 ```sh
-./tools/amalgamate.sh          # regenerate single_include/…/meshioplusplus.hpp
+./tools/amalgamate.sh          # regenerate src/single_include/…/meshioplusplus.hpp
 ./tools/amalgamate.sh --smoke  # regenerate + smoke-compile
 ```
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # amalgamate.sh -- regenerate the single-header amalgamation of the meshio++ C++
-# core at single_include/meshioplusplus/meshioplusplus.hpp.
+# core at src/single_include/meshioplusplus/meshioplusplus.hpp.
 #
 #   ./tools/amalgamate.sh              # regenerate the committed single header
 #   ./tools/amalgamate.sh --check      # fail if the committed header is stale
@@ -15,7 +15,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR=$(dirname -- "$SCRIPT_DIR")
 
-OUTPUT="$SOURCE_DIR/single_include/meshioplusplus/meshioplusplus.hpp"
+OUTPUT="$SOURCE_DIR/src/single_include/meshioplusplus/meshioplusplus.hpp"
 PYTHON="${PYTHON:-python3}"
 DO_CHECK="no"
 DO_SMOKE="no"
@@ -27,7 +27,7 @@ Usage: $0 [options]
               committed single header (does not modify the tree)
   --smoke     after regenerating, smoke-compile the header in decls-only and
               MESHIOPLUSPLUS_IMPLEMENTATION modes and link two TUs together
-  --output <path>   output header path (default: single_include/.../meshioplusplus.hpp)
+  --output <path>   output header path (default: src/single_include/.../meshioplusplus.hpp)
   -h, --help  this help
 EOF
 }
@@ -63,7 +63,7 @@ echo "amalgamate: wrote $OUTPUT"
 
 if [ "$DO_SMOKE" = "yes" ]; then
     CXX="${CXX:-g++}"
-    INCDIR=$(dirname -- "$(dirname -- "$OUTPUT")")   # the single_include/ dir
+    INCDIR=$(dirname -- "$(dirname -- "$OUTPUT")")   # the src/single_include/ dir
     PUGI="$SOURCE_DIR/src/cpp/third_party/pugixml"
     WORK=$(mktemp -d)
     trap 'rm -rf "$WORK"' EXIT

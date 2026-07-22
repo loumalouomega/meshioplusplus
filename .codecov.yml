@@ -52,7 +52,7 @@ ignore:
   - "tools/"
   # Generated single-header amalgamation: a verbatim duplicate of src/cpp/ (kept in
   # sync by CI). Counting it would double every src/cpp/ line.
-  - "single_include/"
+  - "src/single_include/"
   # Non-MESHIO mesh backends: instantiated only by the standalone `cpp-tests`
   # backend matrix, never by the MESHIO-only instrumented `coverage` job, so
   # they are structurally unreachable here. Mirrors the lcov --remove in ci.yml.
