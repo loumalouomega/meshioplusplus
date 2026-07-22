@@ -8,7 +8,7 @@
 #
 # SHA512 must be refreshed on every release tag: it is the hash of the
 # https://github.com/loumalouomega/meshioplusplus/archive/v${VERSION}.tar.gz
-# tarball. `vcpkg install meshioplusplus --overlay-ports=ports` prints the
+# tarball. `vcpkg install meshioplusplus --overlay-ports=packages/vcpkg` prints the
 # expected value on mismatch; the packages.yml CI workflow computes it on tag.
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH

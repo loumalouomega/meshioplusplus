@@ -34,8 +34,8 @@ build-tbb/
 build-cpp-cov/
 # Local micromamba env for the example/cpp/ xeus-cpp kernel (see example/cpp/README.md)
 .micromamba/
-# Conan test_package build output + CMake presets emitted by `conan create`.
-test_package/build/
+# Conan test package build output + CMake presets emitted by `conan create`.
+packages/conan/build/
 CMakeUserPresets.json
 # Emscripten build output copied into the npm package staging dir -- built by
 # build/configure-wasm.sh, not committed (mirrors build/* above).

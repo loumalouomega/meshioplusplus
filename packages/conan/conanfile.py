@@ -1,4 +1,4 @@
-# Conan test_package: builds a tiny C consumer against the packaged C API and
+# Conan test package (packages/conan/): builds a tiny C consumer against the packaged C API and
 # runs it, proving the config-package + target name (meshioplusplus::meshioplusplus)
 # resolve for a downstream find_package.
 import os

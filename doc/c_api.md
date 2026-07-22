@@ -37,17 +37,17 @@ HDF5/netCDF/zlib are detected at configure time exactly as for the Python build;
 
 ## Package managers (Conan & vcpkg)
 
-The C API also ships as a **Conan** recipe (root [`conanfile.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/conanfile.py)) and a **vcpkg** overlay port ([`ports/meshioplusplus/`](https://github.com/loumalouomega/meshioplusplus/tree/main/ports/meshioplusplus)). Both are self-hosted in the repo and drive the same `-DMESHIOPLUSPLUS_BUILD_C_API=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` install path, so consumers get the identical `meshioplusplus::meshioplusplus` target:
+The C API also ships as a **Conan** recipe (root [`conanfile.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/conanfile.py)) and a **vcpkg** overlay port ([`packages/vcpkg/meshioplusplus/`](https://github.com/loumalouomega/meshioplusplus/tree/main/packages/vcpkg/meshioplusplus)). Both are self-hosted in the repo and drive the same `-DMESHIOPLUSPLUS_BUILD_C_API=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` install path, so consumers get the identical `meshioplusplus::meshioplusplus` target:
 
 ```sh
 # Conan (options: with_hdf5 / with_netcdf / with_zlib / with_eigen / fortran)
 conan create . -o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcdf=True
 
 # vcpkg (features: hdf5 / netcdf / zlib -- all on by default)
-vcpkg install meshioplusplus --overlay-ports=ports
+vcpkg install meshioplusplus --overlay-ports=packages/vcpkg
 ```
 
-`ports/` also carries a second overlay, `ports/libaec/`, alongside `ports/meshioplusplus/` — it replaces vcpkg registry's own `libaec` port (a transitive dependency of `hdf5`'s `szip` feature) with an otherwise-identical one that sources the same release from `libaec`'s official GitHub mirror instead of its `gitlab.dkrz.de` host, which had been intermittently rate-limiting this project's release CI. `--overlay-ports=ports` picks up both automatically.
+`packages/vcpkg/` also carries a second overlay, `packages/vcpkg/libaec/`, alongside `packages/vcpkg/meshioplusplus/` — it replaces vcpkg registry's own `libaec` port (a transitive dependency of `hdf5`'s `szip` feature) with an otherwise-identical one that sources the same release from `libaec`'s official GitHub mirror instead of its `gitlab.dkrz.de` host, which had been intermittently rate-limiting this project's release CI. `--overlay-ports=packages/vcpkg` picks up both automatically.
 
 Both are validated in CI on every PR and on `v*` release tags (`.github/workflows/packages.yml`). Two caveats: the shared library is **shared-only** (no static build yet), and the vendored **Eigen** submodule is off in both recipes (the MED transpose falls back to a hand-written loop), since it is absent from a source tarball. Neither is submitted to Conan Center / the upstream vcpkg registry today, so nothing resolves `meshioplusplus` as a plain requirement out of the box; as a stopgap, every `v*` release attaches ready-to-use Linux artifacts, for both x86_64 and arm64, to its [GitHub Release](https://github.com/loumalouomega/meshioplusplus/releases) that supply the missing recipe:
 

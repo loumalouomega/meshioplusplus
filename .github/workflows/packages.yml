@@ -25,8 +25,8 @@ on:
   pull_request:
     paths:
       - "conanfile.py"
-      - "test_package/**"
-      - "ports/**"
+      - "packages/conan/**"
+      - "packages/vcpkg/**"
       - ".github/workflows/packages.yml"
       - "CMakeLists.txt"
       - "src/cpp/**"
@@ -36,7 +36,7 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Conan: build + package + run test_package on two option sets -- the
+  # Conan: build + package + run the Conan test package on two option sets -- the
   # no-heavy-deps fallback and the full HDF5/netCDF/zlib build.
   # ---------------------------------------------------------------------------
   conan:
@@ -69,7 +69,7 @@ jobs:
           pip install "conan>=2.0,<3"
           conan profile detect --force
       - name: conan create (${{ matrix.name }})
-        run: conan create . --build=missing ${{ matrix.opts }}
+        run: conan create . --test-folder=packages/conan --build=missing ${{ matrix.opts }}
       - name: Save Conan package (release only)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -94,20 +94,20 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate manifest JSON
         run: |
-          python -c "import json,sys; json.load(open('ports/meshioplusplus/vcpkg.json')); print('meshioplusplus/vcpkg.json OK')"
-          python -c "import json,sys; json.load(open('ports/libaec/vcpkg.json')); print('libaec/vcpkg.json OK')"
+          python -c "import json,sys; json.load(open('packages/vcpkg/meshioplusplus/vcpkg.json')); print('meshioplusplus/vcpkg.json OK')"
+          python -c "import json,sys; json.load(open('packages/vcpkg/libaec/vcpkg.json')); print('libaec/vcpkg.json OK')"
       - name: format-manifest (schema check)
         # Validates the manifests against vcpkg's schema. It also canonicalizes
         # field order in place; if that changes anything, print the diff as a
         # hint but don't fail the job (run `vcpkg format-manifest` and commit).
-        # ports/libaec is our own overlay of vcpkg registry's libaec port (see
+        # packages/vcpkg/libaec is our own overlay of vcpkg registry's libaec port (see
         # its portfile.cmake) -- it sources from a GitHub mirror instead of the
         # gitlab.dkrz.de host that had been intermittently rate-limiting this
         # workflow's vcpkg-build job.
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" format-manifest ports/meshioplusplus/vcpkg.json ports/libaec/vcpkg.json
-          git diff --exit-code ports/meshioplusplus/vcpkg.json ports/libaec/vcpkg.json \
-            || echo "::warning::run 'vcpkg format-manifest ports/meshioplusplus/vcpkg.json ports/libaec/vcpkg.json' and commit the canonical form"
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" format-manifest packages/vcpkg/meshioplusplus/vcpkg.json packages/vcpkg/libaec/vcpkg.json
+          git diff --exit-code packages/vcpkg/meshioplusplus/vcpkg.json packages/vcpkg/libaec/vcpkg.json \
+            || echo "::warning::run 'vcpkg format-manifest packages/vcpkg/meshioplusplus/vcpkg.json packages/vcpkg/libaec/vcpkg.json' and commit the canonical form"
 
   vcpkg-build:
     name: vcpkg install (overlay)
@@ -122,18 +122,18 @@ jobs:
           url="https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_REF_NAME}.tar.gz"
           curl -fsSL "$url" -o src.tar.gz
           sha="$(sha512sum src.tar.gz | cut -d' ' -f1)"
-          sed -i "s/SHA512 0$/SHA512 ${sha}/" ports/meshioplusplus/portfile.cmake
-          grep "SHA512" ports/meshioplusplus/portfile.cmake
+          sed -i "s/SHA512 0$/SHA512 ${sha}/" packages/vcpkg/meshioplusplus/portfile.cmake
+          grep "SHA512" packages/vcpkg/meshioplusplus/portfile.cmake
       - name: vcpkg install
-        run: "\"$VCPKG_INSTALLATION_ROOT/vcpkg\" install meshioplusplus --overlay-ports=\"$PWD/ports\""
+        run: "\"$VCPKG_INSTALLATION_ROOT/vcpkg\" install meshioplusplus --overlay-ports=\"$PWD/packages/vcpkg\""
       - name: Package overlay port
-        # The SHA512 patched into ports/meshioplusplus/portfile.cmake above is
+        # The SHA512 patched into packages/vcpkg/meshioplusplus/portfile.cmake above is
         # local to this checkout (not committed back to the repo, which keeps
         # the placeholder -- see the file's own comment); zip it up so release
         # consumers get a ready-to-use overlay port with no manual hash step.
         run: |
           version="${GITHUB_REF_NAME#v}"
-          zip -r "meshioplusplus-vcpkg-overlay-port-${version}.zip" ports/meshioplusplus
+          zip -r "meshioplusplus-vcpkg-overlay-port-${version}.zip" packages/vcpkg/meshioplusplus
       - uses: actions/upload-artifact@v4
         with:
           name: vcpkg-overlay-port

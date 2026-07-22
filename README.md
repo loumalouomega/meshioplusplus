@@ -562,7 +562,7 @@ call m%write("out.vtu")
 call m%free()
 ```
 
-The C API is also packaged for **Conan** (root [`conanfile.py`](conanfile.py)) and **vcpkg** (overlay port under [`ports/meshioplusplus/`](ports/meshioplusplus)), both driving the same install/`find_package` path:
+The C API is also packaged for **Conan** (root [`conanfile.py`](conanfile.py)) and **vcpkg** (overlay port under [`packages/vcpkg/meshioplusplus/`](packages/vcpkg/meshioplusplus)), both driving the same install/`find_package` path:
 
 ```
 conan create . -o meshioplusplus/*:with_hdf5=True
