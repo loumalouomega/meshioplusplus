@@ -29,9 +29,9 @@ converts to SVG with `dvisvgm`. PNGs are produced with PyMuPDF (or
 square icon, `favicon.ico`, and the GitHub social-preview PNG (see below;
 skipped with a warning if PyMuPDF/Pillow aren't installed). After
 regenerating, sync the copies used by the docs site:
-`cp logo-with-text.svg ../doc/public/logo.svg` and
-`cp logo-icon.svg logo-icon.png ../doc/public/` (`favicon.ico` is written
-directly to `../doc/public/` by `make_icon_assets.py`, no copy needed).
+`cp logo-with-text.svg ../public/logo.svg` and
+`cp logo-icon.svg logo-icon.png ../public/` (`favicon.ico` is written
+directly to `../public/` by `make_icon_assets.py`, no copy needed).
 
 ## Assets (committed)
 
@@ -43,7 +43,7 @@ directly to `../doc/public/` by `make_icon_assets.py`, no copy needed).
 | `logo.png`, `logo-icon.png` | raster fallbacks of the two SVGs above |
 | `logo.pdf`, `logo-icon.pdf` | print / vector source output |
 | `social-preview.png` | 1280x640 banner-on-white, for GitHub's repo social-preview image |
-| `../doc/public/favicon.ico` | 16/32/48/64px multi-resolution favicon, derived from `logo-icon-square.png` |
+| `../public/favicon.ico` | 16/32/48/64px multi-resolution favicon, derived from `logo-icon-square.png` |
 | `repository-open-graph-template.png` | GitHub's own blank social-preview template (icon+wordmark / headline / subtext on a 1280x640 canvas with a red safe-area guide ~80px from each edge, "leave a 40pt border"); reference only, not consumed by any script — `make_icon_assets.py`'s `SOCIAL_PREVIEW_SAFE_MARGIN` was measured directly off its guide lines so `social-preview.png` fills that safe area instead of an arbitrary fraction of the canvas |
 
 Sources: `logo.tex`, `logo-icon.tex`, `gen_logo_tikz.py`, `build.sh`,

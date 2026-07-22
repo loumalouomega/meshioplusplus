@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/loumalouomega/meshioplusplus"><img alt="meshio++" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/logo/logo-with-text.svg" width="60%"></a>
+  <a href="https://github.com/loumalouomega/meshioplusplus"><img alt="meshio++" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/logo/logo-with-text.svg" width="60%"></a>
   <p align="center">I/O for mesh files.</p>
 </p>
 
@@ -61,7 +61,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) (`.xdmf`, `.xmf`).
 
 <p align="center">
-  <img alt="" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/logo/logo-icon-square.png" width="64">
+  <img alt="" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/logo/logo-icon-square.png" width="64">
 </p>
 
 meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF acceleration and a **selectable parallel backend** (`AUTO` by default — prefers OpenMP, then STL+TBB, then sequential; override with `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`). Every format has a pure-Python fallback, so behaviour and file compatibility are identical whether or not the native libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS) or `build/configure.bat` (Windows). Full docs (install, data model, per-format options, CLI) live at [the documentation site](https://loumalouomega.github.io/meshioplusplus/) (sources under [`doc/`](https://github.com/loumalouomega/meshioplusplus/tree/main/doc)).

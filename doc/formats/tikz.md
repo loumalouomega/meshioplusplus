@@ -1,6 +1,6 @@
 # TikZ (`.tikz`)
 
-[TikZ/PGF](https://tikz.dev/) output — a **write-only** visualization format that draws the mesh cells as a LaTeX figure. Flat 2D meshes draw directly; genuinely 3D meshes are **rendered**: the boundary skin of any volume cells is extracted (see [`extract_skin`](../extract_skin.md)) and projected through an orthographic camera, drawn back-to-front. By default it emits a standalone, directly `pdflatex`-compilable document; it can also emit a bare `tikzpicture` snippet for `\input` into a larger LaTeX document. It is the LaTeX counterpart to the [SVG](./svg.md) writer (the project logo — the Stanford bunny — is produced through this machinery, see `logo/gen_logo_tikz.py`).
+[TikZ/PGF](https://tikz.dev/) output — a **write-only** visualization format that draws the mesh cells as a LaTeX figure. Flat 2D meshes draw directly; genuinely 3D meshes are **rendered**: the boundary skin of any volume cells is extracted (see [`extract_skin`](../extract_skin.md)) and projected through an orthographic camera, drawn back-to-front. By default it emits a standalone, directly `pdflatex`-compilable document; it can also emit a bare `tikzpicture` snippet for `\input` into a larger LaTeX document. It is the LaTeX counterpart to the [SVG](./svg.md) writer (the project logo — the Stanford bunny — is produced through this machinery, see `doc/logo/gen_logo_tikz.py`).
 
 | | |
 |---|---|

@@ -12,7 +12,7 @@ canvas of roughly -13..13 mm.
 
 ```
 tikz-ui/<id>.tex → pdflatex → dvisvgm → svg-ui/<id>.svg
-                 → build-icons.mjs → ../viewer/src/ui/icons.ts
+                 → build-icons.mjs → ../../viewer/src/ui/icons.ts
 ```
 
 The same `pdflatex` + `dvisvgm` pair [`logo/build.sh`](../logo/build.sh)
@@ -22,9 +22,9 @@ single-quoted attributes, hex colours, `pt` dimensions, and wraps everything in
 `<g id='page1'>`.
 
 ```bash
-cd icons
+cd doc/icons
 make ui     # tex → svg   (needs pdflatex + dvisvgm)
-make ts     # svg → ../viewer/src/ui/icons.ts   (pure Node)
+make ts     # svg → ../../viewer/src/ui/icons.ts   (pure Node)
 make clean
 node check-icons.mjs   # what CI runs; needs neither TeX nor a build
 ```

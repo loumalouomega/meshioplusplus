@@ -65,5 +65,5 @@ viewer/node_modules/
 viewer/test-results/
 viewer/playwright-report/
 
-# icons/ LaTeX build artifacts (svg-ui/ is committed; see icons/README.md)
-icons/build-ui/
+# doc/icons/ LaTeX build artifacts (svg-ui/ is committed; see doc/icons/README.md)
+doc/icons/build-ui/

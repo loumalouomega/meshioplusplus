@@ -25,9 +25,9 @@ jobs:
           node-version: "20"
       # Needs neither a TeX install nor a build: it regenerates the icon module
       # in memory from the committed SVGs and diffs, and checks that the .tex,
-      # .svg and .ts sets are in step. See icons/README.md.
+      # .svg and .ts sets are in step. See doc/icons/README.md.
       - name: Icons are current and well-formed
-        run: node icons/check-icons.mjs
+        run: node doc/icons/check-icons.mjs
 
   cpp-tests:
     name: C++ tests (${{ matrix.mesh }} mesh / ${{ matrix.parallel }})

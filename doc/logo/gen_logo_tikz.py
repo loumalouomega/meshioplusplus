@@ -35,7 +35,7 @@ import meshioplusplus
 from meshioplusplus._projection import ISO_AZIMUTH, ISO_ELEVATION, project_surface
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BUNNY = os.path.join(HERE, "..", "example", "Bunny.stl")
+BUNNY = os.path.join(HERE, "..", "..", "example", "Bunny.stl")
 OUT = os.path.join(HERE, "_mesh_icon.tex")
 
 # Palette (RGB 0-255): deep blue -> bright teal, as before.

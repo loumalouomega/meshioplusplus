@@ -1,4 +1,4 @@
-# Toolbar icons: tikz-ui/*.tex -> svg-ui/*.svg -> ../viewer/src/ui/icons.ts
+# Toolbar icons: tikz-ui/*.tex -> svg-ui/*.svg -> ../../viewer/src/ui/icons.ts
 #
 # Same visual language as the sibling CAD-Preview / MDPA-Preview icon sets, and
 # the same toolchain the repository already uses for logo/ (pdflatex +

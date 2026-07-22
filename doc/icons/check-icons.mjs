@@ -42,14 +42,14 @@ for (const id of svgIds) {
 }
 
 const generated = readFileSync(
-    path.join(HERE, '..', 'viewer', 'src', 'ui', 'icons.ts'),
+    path.join(HERE, '..', '..', 'viewer', 'src', 'ui', 'icons.ts'),
     'utf8'
 );
 
 for (const id of svgIds) {
     const svg = postProcess(readFileSync(path.join(HERE, 'svg-ui', `${id}.svg`), 'utf8'));
     if (!generated.includes(JSON.stringify(svg))) {
-        problems.push(`icons.ts is stale for '${id}' — run \`cd icons && make ts\``);
+        problems.push(`icons.ts is stale for '${id}' — run \`cd doc/icons && make ts\``);
     }
     if (!svg.includes('currentColor')) {
         problems.push(`${id}: no currentColor — did it draw outside the sentinel colours?`);

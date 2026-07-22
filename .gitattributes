@@ -32,3 +32,9 @@ src/meshioplusplus/_viewer_assets/viewer.html -diff linguist-generated=true
 example/python/*.ipynb linguist-generated=true
 example/cpp/*.ipynb linguist-generated=true
 benchmark/*.ipynb linguist-generated=true
+
+# Icon/logo build tooling: TikZ sources plus their compiled SVG/PNG/PDF
+# assets. Not representative of the project's own C++/Python source and the
+# TikZ .tex files otherwise show up as a "TeX" sliver in the Languages bar.
+doc/icons/** linguist-vendored
+doc/logo/** linguist-vendored

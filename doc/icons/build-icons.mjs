@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Regenerates ../viewer/src/ui/icons.ts from svg-ui/*.svg (each produced by
+ * Regenerates ../../viewer/src/ui/icons.ts from svg-ui/*.svg (each produced by
  * `make ui` from the matching tikz-ui/*.tex — see README.md).
  *
  * Pure Node: as long as svg-ui/*.svg is up to date, and it is committed for
@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SVG_DIR = path.join(HERE, 'svg-ui');
 const TEX_DIR = path.join(HERE, 'tikz-ui');
-const OUT_FILE = path.join(HERE, '..', 'viewer', 'src', 'ui', 'icons.ts');
+const OUT_FILE = path.join(HERE, '..', '..', 'viewer', 'src', 'ui', 'icons.ts');
 
 /**
  * Sentinel colours from preamble.tex, and the opacity each maps to.
@@ -102,9 +102,9 @@ function main() {
  * GENERATED FILE — do not hand-edit.
  *
  * Regenerate with:
- *   cd icons && make ts
+ *   cd doc/icons && make ts
  *
- * Sources are icons/tikz-ui/*.tex; see icons/README.md. Each icon is inline
+ * Sources are doc/icons/tikz-ui/*.tex; see doc/icons/README.md. Each icon is inline
  * SVG using \`currentColor\`, so it takes the colour of whatever element it
  * sits in and needs no light/dark variants.
  *

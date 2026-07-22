@@ -2,9 +2,9 @@
  * GENERATED FILE — do not hand-edit.
  *
  * Regenerate with:
- *   cd icons && make ts
+ *   cd doc/icons && make ts
  *
- * Sources are icons/tikz-ui/*.tex; see icons/README.md. Each icon is inline
+ * Sources are doc/icons/tikz-ui/*.tex; see doc/icons/README.md. Each icon is inline
  * SVG using `currentColor`, so it takes the colour of whatever element it
  * sits in and needs no light/dark variants.
  *

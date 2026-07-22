@@ -24,7 +24,7 @@ import fitz  # PyMuPDF
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DOC_PUBLIC = os.path.join(HERE, "..", "doc", "public")
+DOC_PUBLIC = os.path.join(HERE, "..", "public")
 
 ICON_MASTER_SIZE = 512  # px, square, transparent
 FAVICON_SIZES = [16, 32, 48, 64]

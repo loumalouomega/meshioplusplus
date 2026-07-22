@@ -23,5 +23,5 @@ and meshing options it was generated from.
 by MakerBot, licensed under the
 [Creative Commons - Attribution](https://creativecommons.org/licenses/by/3.0/)
 license (~112k triangles, binary STL). It feeds the project logo
-(`logo/gen_logo_tikz.py` renders it through meshio++'s 3D TikZ path) and makes
+(`doc/logo/gen_logo_tikz.py` renders it through meshio++'s 3D TikZ path) and makes
 a handy real-world surface mesh for trying the STL/PLY/SVG/TikZ writers.

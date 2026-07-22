@@ -17,8 +17,8 @@ cd "$HERE"
 
 PY="${PYTHON:-}"
 if [ -z "$PY" ]; then
-    if [ -x "$HERE/../.venv/bin/python" ]; then
-        PY="$HERE/../.venv/bin/python"
+    if [ -x "$HERE/../../.venv/bin/python" ]; then
+        PY="$HERE/../../.venv/bin/python"
     else
         PY=$(command -v python3 || command -v python)
     fi
@@ -88,4 +88,4 @@ echo
 echo "== assets =="
 ls -la logo-with-text.svg logo-icon.svg logo.pdf logo-icon.pdf 2>/dev/null || true
 ls -la logo.png logo-icon.png logo-icon-square.png social-preview.png 2>/dev/null || true
-ls -la ../doc/public/favicon.ico 2>/dev/null || true
+ls -la ../public/favicon.ico 2>/dev/null || true

@@ -50,7 +50,6 @@ ignore:
   - "cpp/third_party/"
   - "doc/"
   - "example/"
-  - "logo/"
   - "tools/"
   # Generated single-header amalgamation: a verbatim duplicate of cpp/ (kept in
   # sync by CI). Counting it would double every cpp/ line.
