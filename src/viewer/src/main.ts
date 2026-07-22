@@ -403,7 +403,13 @@ async function boot(): Promise<void> {
             // rendered extent: VTU's fast metadata path reports no bbox, and
             // without one the section control would silently do nothing.
             present(result, file.name);
-            opsPanel.reset(result.bounds ?? renderer.bounds(), result.meta.numCells);
+            opsPanel.reset(
+                result.bounds ?? renderer.bounds(),
+                result.meta.numCells,
+                // Only point arrays: a cell field is piecewise constant and has
+                // no level set, so isosurface would reject it by name.
+                result.meta.pointDataNames ?? []
+            );
             opsPanel.setAvailable(true);
             show($('convert-section'));
         } catch (e) {

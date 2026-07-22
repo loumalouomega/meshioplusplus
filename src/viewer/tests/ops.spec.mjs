@@ -118,3 +118,28 @@ test('partition attaches a part id to colour by', async ({ page }) => {
     await applyOp(page, 'Partition', 'op-partition-apply');
     expect((await state(page)).arrays).toContain('partition:part');
 });
+
+test('an isosurface replaces the mesh with the level set of a point field', async ({
+    page,
+}) => {
+    await openSample(page, 'Wave (point data)');
+    const before = (await state(page)).numCells;
+
+    // The data-driven cousin of the section: the level set of `height` at 0,
+    // which on this triangle sheet is a set of contour lines.
+    await page.getByText('Isosurface', { exact: true }).click();
+    await page.locator('#op-iso-array').selectOption('height');
+    await page.locator('#op-iso-value').fill('0');
+    await page.locator('#op-iso-apply').click();
+    await expect.poll(() => page.evaluate(() => window.__viewerState.status)).toBe('ready');
+
+    const contoured = (await state(page)).numCells;
+    expect(contoured).toBeGreaterThan(0);
+    expect(contoured).not.toBe(before);
+    await expect(page.locator('.op-chip')).toContainText('isosurface · height = 0');
+
+    // Undo is exact here too -- the worker replays the shortened pipeline.
+    await page.locator('#ops-undo').click();
+    await expect.poll(() => page.evaluate(() => window.__viewerState.status)).toBe('ready');
+    expect((await state(page)).numCells).toBe(before);
+});

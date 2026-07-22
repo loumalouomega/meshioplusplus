@@ -2,7 +2,8 @@
  * The operations panel.
  *
  * Runs meshio++'s own mesh operations on the open file and re-renders the
- * result — quality, clean, smooth, refine, partition, and a sectioning cut.
+ * result — quality, clean, smooth, refine, partition, a sectioning cut and
+ * the isosurface of a point field.
  * This is what distinguishes the viewer from a generic vtk.js app: the whole
  * point of the demo is that a real mesh library is running in the browser.
  *
@@ -60,6 +61,7 @@ export class OpsPanel {
         this.wireRefine();
         this.wirePartition();
         this.wireSection();
+        this.wireIsosurface();
         this.renderChips();
     }
 
@@ -73,12 +75,17 @@ export class OpsPanel {
     }
 
     /** A new mesh was opened; the pipeline no longer applies to it. */
-    reset(bounds: { min: Vector3; max: Vector3 } | null, cellCount: number): void {
+    reset(
+        bounds: { min: Vector3; max: Vector3 } | null,
+        cellCount: number,
+        pointArrays: string[] = []
+    ): void {
         this.ops = [];
         this.bounds = bounds;
         this.cellCount = cellCount;
         this.warnings.replaceChildren();
         this.resetSectionSlider();
+        this.setIsosurfaceArrays(pointArrays);
         this.renderChips();
     }
 
@@ -301,6 +308,44 @@ export class OpsPanel {
             // before choosing a position does not create one.
             if (this.ops.some((o) => o.op === 'section')) apply();
         });
+    }
+
+    private wireIsosurface(): void {
+        $('op-iso-apply').addEventListener('click', () => {
+            const array = $<HTMLSelectElement>('op-iso-array').value;
+            if (!array) {
+                // Only cell fields (or none) — say so rather than looking broken,
+                // the way the section control does with an unknown extent.
+                this.warnings.replaceChildren(
+                    Object.assign(document.createElement('li'), {
+                        textContent:
+                            'this mesh carries no point_data, and a cell field is ' +
+                            'piecewise constant — it has no level set',
+                    })
+                );
+                return;
+            }
+            const component = $<HTMLInputElement>('op-iso-component').value;
+            this.push({
+                ...OP_DEFAULTS.isosurface,
+                array,
+                isovalue: Number($<HTMLInputElement>('op-iso-value').value) || 0,
+                component: component === '' ? -1 : Number(component),
+            });
+        });
+    }
+
+    /** Offer the mesh's own point arrays; a cell field has no level set. */
+    private setIsosurfaceArrays(names: string[]): void {
+        const select = maybe<HTMLSelectElement>('op-iso-array');
+        if (!select) return;
+        setOptions(
+            select,
+            names.map((name) => ({ value: name, label: name })),
+            names[0] ?? ''
+        );
+        const apply = maybe<HTMLButtonElement>('op-iso-apply');
+        if (apply) apply.disabled = names.length === 0;
     }
 
     private resetSectionSlider(): void {
