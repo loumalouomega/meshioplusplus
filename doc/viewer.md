@@ -212,7 +212,7 @@ npm run dev     # http://localhost:5173/meshioplusplus/viewer/
 ```
 
 See [`viewer/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/viewer/README.md)
-for the build layout, and note that after changing `bindings_js/` or `cpp/` you
+for the build layout, and note that after changing `bindings/wasm/` or `cpp/` you
 must rebuild the WASM package *and* force npm to refresh its copy.
 
 ### The offline page

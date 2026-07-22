@@ -30,7 +30,7 @@ on:
       - ".github/workflows/packages.yml"
       - "CMakeLists.txt"
       - "cpp/**"
-      - "bindings_c/**"
+      - "bindings/c/**"
       - "cmake/**"
   workflow_dispatch:
 

@@ -210,7 +210,7 @@ bool has_opt(const cli_parsed& rP, const std::string& rName) {
 }
 
 // --------------------------------------------------------------------------
-// Format dispatch (mirrors bindings_c / bindings_js)
+// Format dispatch (mirrors bindings/c / bindings/wasm)
 // --------------------------------------------------------------------------
 
 std::string compiled_out_hint(const std::string& rFormat) {

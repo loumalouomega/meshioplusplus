@@ -18,7 +18,7 @@
 /**
  * @file registry.cpp
  * @brief The shared format-dispatch tables (see registry.hpp). Bodies hoisted
- *        verbatim from `bindings_js/js_bindings.cpp`, extended with the
+ *        verbatim from `bindings/wasm/js_bindings.cpp`, extended with the
  *        HDF5/netCDF-conditional entries native (non-WASM) builds can serve.
  */
 

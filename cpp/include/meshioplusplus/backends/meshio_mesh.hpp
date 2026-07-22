@@ -24,11 +24,11 @@
  * This is the default mesh backend (see `mesh.hpp` for the compile-time
  * dispatch and `mesh_api.hpp` for the uniform format-facing API it
  * implements), and the only one compatible with the pybind11 extension —
- * `bindings/np_conversions.hpp` is written against these exact members.
+ * `bindings/python/np_conversions.hpp` is written against these exact members.
  *
  * It mirrors the fields of the pure-Python `meshio.Mesh`: it is the type
  * every C++ format reader produces and every C++ format writer consumes.
- * The pybind11 binding layer (`bindings/np_conversions.hpp`) converts between
+ * The pybind11 binding layer (`bindings/python/np_conversions.hpp`) converts between
  * this type and the pure-Python `meshio.Mesh` at the I/O boundary, following
  * a "zero-copy at the boundary" strategy: `py_to_mesh` builds non-owning
  * `NDArray` *views* over the caller's numpy buffers (write path, no input

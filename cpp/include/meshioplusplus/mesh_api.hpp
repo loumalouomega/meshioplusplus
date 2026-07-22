@@ -35,10 +35,10 @@
  *    (Nodes/Elements/Conditions/SubModelParts) behind the same API
  *    (`backends/kratos_mesh.hpp`).
  *
- * Format readers/writers (and `bindings_js/`) MUST use only the methods
+ * Format readers/writers (and `bindings/wasm/`) MUST use only the methods
  * below — never backend-specific members — so every format compiles
- * unchanged under all backends. (`bindings/np_conversions.hpp` is the one
- * sanctioned exception: the Python build is pinned to MESHIO.)
+ * unchanged under all backends. (`bindings/python/np_conversions.hpp` is the
+ * one sanctioned exception: the Python build is pinned to MESHIO.)
  *
  * ## The contract (duck-typed; each backend implements these members)
  *

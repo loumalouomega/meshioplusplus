@@ -15,7 +15,7 @@
 !
 !
 ! The meshio++ Fortran interface: a modern OO Fortran 2008 module layered on
-! the C API (bindings_c/include/meshioplusplus/meshioplusplus.h) via
+! the C API (bindings/c/include/meshioplusplus/meshioplusplus.h) via
 ! ISO_C_BINDING, in the HDF5/PETSc style:
 !
 !     use meshioplusplus
@@ -118,7 +118,7 @@ module meshioplusplus
     integer, parameter :: STRBUF_LEN = 4096
 
     !> Interop mirror of C `mio_read_opts`. Field order and types are ABI and
-    !> must match bindings_c/include/meshioplusplus/meshioplusplus.h exactly;
+    !> must match bindings/c/include/meshioplusplus/meshioplusplus.h exactly;
     !> `reserved` is padding for additive growth and must stay zero.
     type, bind(c) :: mio_read_opts_t
         integer(c_int) :: points_only = 0

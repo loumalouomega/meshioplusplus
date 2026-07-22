@@ -184,7 +184,7 @@ if(EMSCRIPTEN)
   # Emscripten disables JS-catchable C++ exceptions by default (an uncaught
   # exception calls abort() instead of unwinding into a JS Error) -- readers/
   # writers here throw ReadError/WriteError routinely (e.g. on an unsupported
-  # construct), and bindings_js/js_bindings.cpp relies on those surfacing as
+  # construct), and bindings/wasm/js_bindings.cpp relies on those surfacing as
   # normal catchable JS exceptions. -fwasm-exceptions enables the native Wasm
   # exception-handling proposal (supported by all current browsers/Node),
   # which is faster than the legacy JS-longjmp emulation and needs no
@@ -394,7 +394,7 @@ message(STATUS "meshio++: parallel backend: ${_meshioplusplus_parallel}")
 # against the uniform mesh API (mesh_api.hpp) so any backend compiles:
 #   MESHIO - (default) the meshio-mirroring Mesh/CellBlock over dtype-erased
 #            NDArrays. REQUIRED when MESHIOPLUSPLUS_BUILD_PYTHON=ON (the
-#            zero-copy numpy boundary in bindings/np_conversions.hpp is
+#            zero-copy numpy boundary in bindings/python/np_conversions.hpp is
 #            written against it).
 #   NATIVE - canonical statically-typed storage (Float64 points, Int64
 #            connectivity, CellType enum, CSR ragged blocks). The fastest
@@ -430,9 +430,9 @@ message(STATUS "meshio++: mesh backend: ${_meshioplusplus_mesh_backend}")
 
 if(MESHIOPLUSPLUS_BUILD_PYTHON)
   # The pybind11 extension: bindings + the shared core object library.
-  file(GLOB MESHIOPLUSPLUS_BINDING_SOURCES bindings/*.cpp)
+  file(GLOB MESHIOPLUSPLUS_BINDING_SOURCES bindings/python/*.cpp)
   pybind11_add_module(_core ${MESHIOPLUSPLUS_BINDING_SOURCES})
-  target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings)
+  target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings/python)
   target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
 
   # LDFLAGS env-var seeding of CMAKE_MODULE_LINKER_FLAGS was tried first and
@@ -462,9 +462,9 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
       "meshio++: MESHIOPLUSPLUS_BUILD_WASM requires the Emscripten toolchain "
       "(configure with emcmake, e.g. via build/configure-wasm.sh).")
   endif()
-  file(GLOB MESHIOPLUSPLUS_JS_BINDING_SOURCES bindings_js/*.cpp)
+  file(GLOB MESHIOPLUSPLUS_JS_BINDING_SOURCES bindings/wasm/*.cpp)
   add_executable(meshioplusplus_wasm ${MESHIOPLUSPLUS_JS_BINDING_SOURCES})
-  target_include_directories(meshioplusplus_wasm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings_js)
+  target_include_directories(meshioplusplus_wasm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bindings/wasm)
   target_link_libraries(meshioplusplus_wasm PRIVATE meshioplusplus_core_obj)
   # -sUSE_ZLIB=1 is not repeated here: meshioplusplus_core_obj already applies
   # it PUBLIC (both compile and link) when MESHIOPLUSPLUS_WITH_ZLIB is on, and
@@ -482,7 +482,7 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
 endif()
 
 # --------------------------------------------------------------------------
-# C API (bindings_c/): the installable `libmeshioplusplus` shared library +
+# C API (bindings/c/): the installable `libmeshioplusplus` shared library +
 # the pure-C header, the third flat binding over the same core (alongside
 # WASM). Written against the uniform mesh API only, so it builds under every
 # MESHIOPLUSPLUS_MESH_BACKEND. The object-library split lets the GoogleTest
@@ -500,10 +500,10 @@ if(MESHIOPLUSPLUS_BUILD_C_API)
   include(GNUInstallDirs)  # before any use of CMAKE_INSTALL_*DIR below
   include(CMakePackageConfigHelpers)
 
-  add_library(meshioplusplus_c_obj OBJECT bindings_c/c_api.cpp)
+  add_library(meshioplusplus_c_obj OBJECT bindings/c/c_api.cpp)
   set_target_properties(meshioplusplus_c_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
   target_include_directories(meshioplusplus_c_obj
-    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/bindings_c/include>)
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include>)
   # MIO_SHARED/MIO_BUILDING drive the MIO_API dllexport/dllimport macro on
   # Windows; consumers of the installed library get MIO_SHARED from the
   # INTERFACE definition on the shared lib below.
@@ -521,7 +521,7 @@ if(MESHIOPLUSPLUS_BUILD_C_API)
   add_library(meshioplusplus SHARED)
   target_link_libraries(meshioplusplus PRIVATE meshioplusplus_c_obj meshioplusplus_core_obj)
   target_include_directories(meshioplusplus
-    INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/bindings_c/include>
+    INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include>
               $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_compile_definitions(meshioplusplus INTERFACE MIO_SHARED)
   set_target_properties(meshioplusplus PROPERTIES
@@ -532,7 +532,7 @@ if(MESHIOPLUSPLUS_BUILD_C_API)
           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
           ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
           RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-  install(FILES bindings_c/include/meshioplusplus/meshioplusplus.h
+  install(FILES bindings/c/include/meshioplusplus/meshioplusplus.h
           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/meshioplusplus)
   install(EXPORT meshioplusplusTargets NAMESPACE meshioplusplus::
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/meshioplusplus)
@@ -568,7 +568,7 @@ if(MESHIOPLUSPLUS_BUILD_C_API)
 endif()
 
 # --------------------------------------------------------------------------
-# Fortran module (bindings_fortran/): a modern OO Fortran 2008 interface
+# Fortran module (bindings/fortran/): a modern OO Fortran 2008 interface
 # (`type(mio_mesh)` with type-bound procedures) layered on the C API via
 # ISO_C_BINDING. The .f90 source is installed alongside the compiled .mod
 # because .mod files are compiler-(major-version-)specific -- consumers on a
@@ -576,7 +576,7 @@ endif()
 # --------------------------------------------------------------------------
 if(MESHIOPLUSPLUS_BUILD_FORTRAN)
   enable_language(Fortran)
-  add_library(meshioplusplus_fortran SHARED bindings_fortran/meshioplusplus.f90)
+  add_library(meshioplusplus_fortran SHARED bindings/fortran/meshioplusplus.f90)
   target_link_libraries(meshioplusplus_fortran PUBLIC meshioplusplus)
   set_target_properties(meshioplusplus_fortran PROPERTIES
     VERSION ${PROJECT_VERSION}
@@ -591,7 +591,7 @@ if(MESHIOPLUSPLUS_BUILD_FORTRAN)
           ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
           RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   install(FILES ${CMAKE_CURRENT_BINARY_DIR}/fortran_modules/meshioplusplus.mod
-                bindings_fortran/meshioplusplus.f90
+                bindings/fortran/meshioplusplus.f90
           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/meshioplusplus/fortran)
 endif()
 
@@ -637,7 +637,7 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
   if(MESHIOPLUSPLUS_BUILD_FORTRAN)
     # Plain Fortran program, nonzero exit on any failed check; argv[1] is a
     # path prefix for the files it writes.
-    add_executable(meshioplusplus_fortran_test bindings_fortran/test/test_fortran_api.f90)
+    add_executable(meshioplusplus_fortran_test bindings/fortran/test/test_fortran_api.f90)
     target_link_libraries(meshioplusplus_fortran_test PRIVATE meshioplusplus_fortran)
     add_test(NAME fortran_api
              COMMAND meshioplusplus_fortran_test ${CMAKE_CURRENT_BINARY_DIR}/fortran_test_out)

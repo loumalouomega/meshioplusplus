@@ -5,12 +5,12 @@
 # hand-maintained // System vs // Project ordering is preserved).
 #
 # HeaderFilterRegex restricts diagnostics/fixes to our own headers under cpp/
-# and bindings_c/ -- cpp/third_party (pugixml, eigen) is never touched.
+# and bindings/c/ -- cpp/third_party (pugixml, eigen) is never touched.
 # Deliberately-"unused"-looking includes (compat shims, guarded optional-dep
 # headers) carry `// IWYU pragma: keep` in the source so include-cleaner leaves
 # them alone.
 ---
 Checks: '-*,misc-include-cleaner'
-HeaderFilterRegex: '.*/(cpp/(include|src)|bindings_c)/.*'
+HeaderFilterRegex: '.*/(cpp/(include|src)|bindings/c)/.*'
 WarningsAsErrors: ''
 FormatStyle: file

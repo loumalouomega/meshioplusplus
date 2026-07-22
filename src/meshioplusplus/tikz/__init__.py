@@ -47,7 +47,7 @@ def write(
     if not is_buffer(filename, "w"):
         try:
             # Positional, and the order is load-bearing: it must match the
-            # py::arg list in bindings/_core.cpp exactly.
+            # py::arg list in bindings/python/_core.cpp exactly.
             _core.tikz_write(
                 str(filename),
                 mesh,

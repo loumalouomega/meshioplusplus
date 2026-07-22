@@ -73,8 +73,8 @@ class MeshioplusplusConan(ConanFile):
         "cpp/include/*",
         "cpp/src/*",
         "cpp/third_party/pugixml/*",
-        "bindings_c/*",
-        "bindings_fortran/*",
+        "bindings/c/*",
+        "bindings/fortran/*",
         "cmake/*",
     )
 

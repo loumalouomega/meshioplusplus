@@ -14,7 +14,6 @@ flags:
     paths:
       - cpp/
       - bindings/
-      - bindings_c/
     carryforward: false
 
 coverage:
@@ -64,5 +63,5 @@ ignore:
   # Not compiled by the coverage job (no Emscripten / no Fortran toolchain in
   # this job); listed for clarity so a future config change can't silently
   # start counting them as uncovered.
-  - "bindings_js/"
-  - "bindings_fortran/"
+  - "bindings/wasm/"
+  - "bindings/fortran/"

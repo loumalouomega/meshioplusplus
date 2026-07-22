@@ -19,13 +19,13 @@
 /**
  * @file registry.hpp
  * @brief C++-level format dispatch registry shared by the flat bindings
- *        (WASM/JS in `bindings_js/`, the C API in `bindings_c/`).
+ *        (WASM/JS in `bindings/wasm/`, the C API in `bindings/c/`).
  *
- * The pybind11 binding (`bindings/_core.cpp`) exposes one function per format
- * and leaves extension dispatch entirely to Python (`_helpers.py`); the flat
- * bindings instead need a C++-side `format name -> read/write function` table
- * plus an `extension -> default format` map. Those tables originally lived in
- * `bindings_js/js_bindings.cpp`; they are hoisted here (compiled into
+ * The pybind11 binding (`bindings/python/_core.cpp`) exposes one function per
+ * format and leaves extension dispatch entirely to Python (`_helpers.py`); the
+ * flat bindings instead need a C++-side `format name -> read/write function`
+ * table plus an `extension -> default format` map. Those tables originally
+ * lived in `bindings/wasm/js_bindings.cpp`; they are hoisted here (compiled into
  * `meshioplusplus_core_obj` via `cpp/src/registry.cpp`) so the JS and C
  * bindings share one copy that cannot drift.
  *

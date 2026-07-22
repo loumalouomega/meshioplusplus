@@ -18,7 +18,7 @@
 
 #if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE) || defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
 #error \
-    "bindings/np_conversions.hpp requires the MESHIO mesh backend: the zero-copy numpy boundary is written against Mesh/CellBlock's members. Configure with -DMESHIOPLUSPLUS_MESH_BACKEND=MESHIO (the default) when building the Python extension."
+    "bindings/python/np_conversions.hpp requires the MESHIO mesh backend: the zero-copy numpy boundary is written against Mesh/CellBlock's members. Configure with -DMESHIOPLUSPLUS_MESH_BACKEND=MESHIO (the default) when building the Python extension."
 #endif
 
 /**
@@ -132,7 +132,7 @@ inline meshioplusplus::DType dtype_from_numpy(const py::dtype& rDt) {
  *
  * `PyMeshRefs::mKeep` exists to prevent exactly that: every `py::array` that
  * ends up backing a view is additionally pushed onto `mKeep`, which the
- * caller (typically a format-binding function in `bindings/_core.cpp`)
+ * caller (typically a format-binding function in `bindings/python/_core.cpp`)
  * keeps alive on its stack for the full duration it uses the resulting
  * `meshioplusplus::Mesh` (i.e. for the whole write call). Once that scope
  * ends, the mesh's views must not be dereferenced anymore.

@@ -17,7 +17,7 @@
 
 /**
  * @file test_c_api.cpp
- * @brief Tests for the C API (bindings_c/). Compiled into the gtest suite
+ * @brief Tests for the C API (bindings/c/). Compiled into the gtest suite
  *        only when MESHIOPLUSPLUS_BUILD_C_API=ON; written purely against the
  *        public C surface (plus mt:: fixtures for reference meshes), so it
  *        runs identically under every mesh backend.

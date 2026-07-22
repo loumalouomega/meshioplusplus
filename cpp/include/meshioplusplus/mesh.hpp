@@ -29,7 +29,7 @@
  *  - **MESHIO** (`backends/meshio_mesh.hpp`, the default): the
  *    meshio-mirroring `Mesh`/`CellBlock` over dtype-erased `NDArray`s.
  *    Required when the pybind11 extension is built — the zero-copy numpy
- *    boundary (`bindings/np_conversions.hpp`) is written against it.
+ *    boundary (`bindings/python/np_conversions.hpp`) is written against it.
  *  - **NATIVE** (`backends/native_mesh.hpp`): canonical statically-typed
  *    storage — Float64 points, Int64 connectivity, `CellType` enum,
  *    CSR-shaped ragged blocks. The fastest pure-C++ consumer surface; used

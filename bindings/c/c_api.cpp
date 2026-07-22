@@ -17,7 +17,7 @@
 
 /**
  * @file c_api.cpp
- * @brief Implementation of the meshio++ C API (bindings_c/include/
+ * @brief Implementation of the meshio++ C API (bindings/c/include/
  *        meshioplusplus/meshioplusplus.h), compiled into the installable
  *        `libmeshioplusplus` shared library.
  *

@@ -1,6 +1,6 @@
 // Ambient declarations for @meshioplusplus/wasm's hand-written wrapper
 // (src/index.mjs). Mirrors the JS-facing mesh object shape produced/consumed
-// by bindings_js/js_bindings.cpp's meshToVal/valToMesh (see doc/wasm.md for
+// by bindings/wasm/js_bindings.cpp's meshToVal/valToMesh (see doc/wasm.md for
 // the full format-support table and known v1 limitations).
 
 /** A single homogeneous group of cells, all the same meshio++ cell type. */

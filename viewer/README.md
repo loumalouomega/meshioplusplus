@@ -44,7 +44,7 @@ npm run dev          # http://localhost:5173/meshioplusplus/viewer/
 The viewer depends on `file:../wasm`, the package built from this repository.
 **npm *copies* a `file:` dependency rather than symlinking it — and a later
 `npm install` does not refresh that copy**, because nothing in `package.json`
-changed so npm skips it. After touching anything under `bindings_js/` or
+changed so npm skips it. After touching anything under `bindings/wasm/` or
 `cpp/`, rebuild the package and force the copy:
 
 ```sh

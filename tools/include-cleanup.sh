@@ -20,7 +20,7 @@
 # installed (as CI does) -- with those libraries absent, the HDF5/netCDF format
 # registrations compile out and their headers look spuriously unused.
 #
-# Only our own sources are analyzed (cpp/src, cpp/include, bindings_c) -- never
+# Only our own sources are analyzed (cpp/src, cpp/include, bindings/c) -- never
 # cpp/third_party. Deliberately-kept includes carry `// IWYU pragma: keep`.
 
 set -eu
@@ -56,10 +56,10 @@ done
 if [ -z "$BUILD_DIR" ]; then
     BUILD_DIR="$SOURCE_DIR/build/include-cleanup-cc"
     echo "include-cleanup: configuring compile database in $BUILD_DIR ..."
-    # BUILD_PYTHON=OFF: the pybind boundary (bindings/np_conversions.hpp) is the
-    # sanctioned uniform-API exception and is not analyzed here. C_API=ON pulls
-    # bindings_c into the database. SEQ backend avoids needing <omp.h>/TBB on the
-    # clang-tidy include path (include analysis is identical either way).
+    # BUILD_PYTHON=OFF: the pybind boundary (bindings/python/np_conversions.hpp)
+    # is the sanctioned uniform-API exception and is not analyzed here. C_API=ON
+    # pulls bindings/c into the database. SEQ backend avoids needing <omp.h>/TBB
+    # on the clang-tidy include path (include analysis is identical either way).
     cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
         -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
@@ -79,7 +79,7 @@ trap 'rm -f "$LOG"' EXIT
 # over many files trips a "no input files" quirk); include-cleaner also visits
 # the headers each TU pulls in (filtered by HeaderFilterRegex in .clang-tidy).
 n=0
-for f in $(find "$SOURCE_DIR/cpp/src" "$SOURCE_DIR/bindings_c" -name '*.cpp' | sort); do
+for f in $(find "$SOURCE_DIR/cpp/src" "$SOURCE_DIR/bindings/c" -name '*.cpp' | sort); do
     "$CLANG_TIDY" -p "$BUILD_DIR" --quiet "$f" 2>&1 >/dev/null | tee -a "$LOG" >/dev/null || true
     n=$((n + 1))
 done

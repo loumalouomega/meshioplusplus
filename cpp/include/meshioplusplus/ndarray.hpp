@@ -25,7 +25,7 @@
  * data array. It either *owns* its buffer (the common case: data produced by
  * a reader) or is a non-owning *view* over externally-owned memory (used to
  * wrap a numpy buffer zero-copy on the write path — see `py_to_mesh` in
- * `bindings/np_conversions.hpp`). The binding layer converts between
+ * `bindings/python/np_conversions.hpp`). The binding layer converts between
  * `NDArray` and numpy at the I/O boundary: owning buffers are moved into a
  * capsule backing a writeable numpy array on read, and numpy buffers are
  * wrapped as views (no copy) on write. `Dtype()` records the element type
@@ -186,7 +186,7 @@ inline const char* dtype_numpy_str(DType dt) {
  * (`mView != nullptr`); `IsView()` distinguishes the two, and `Data()`
  * transparently returns whichever buffer is active. Views exist so the
  * write path can wrap a numpy array's memory directly (see
- * `bindings/np_conversions.hpp`'s `py_to_mesh`) without copying it into a
+ * `bindings/python/np_conversions.hpp`'s `py_to_mesh`) without copying it into a
  * C++-owned buffer; `MakeOwned()` is the escape hatch for turning a view
  * into an owning copy when a buffer must outlive the memory it points to.
  * There is no reference counting: a view's caller is responsible for
