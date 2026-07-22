@@ -63,6 +63,7 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
+#include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -416,6 +417,8 @@ void print_usage(std::ostream& os) {
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
           "  smooth                  Relax node positions (Laplacian / Taubin)\n"
+          "  interpolate             Sample data arrays from a source mesh onto a target\n"
+          "                            (nearest / barycentric; --arrays a,b names them)\n"
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
           "  view                    Open a mesh in an interactive viewer\n"
           "  screenshot              Render a mesh to a PNG without a window\n"
@@ -1116,6 +1119,45 @@ int cmd_smooth(const std::vector<std::string>& rArgs) {
         std::cout << "  skipped (inversion):      " << r.mNumSkippedInversion << "\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_interpolate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"method", {}, true},
+                                  {"arrays", {}, true},
+                                  {"extrapolate", {}, false},
+                                  {"default-value", {}, true},
+                                  {"on-conflict", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("interpolate requires exactly SOURCE TARGET and OUTFILE");
+    Mesh source = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    Mesh target = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+
+    meshioplusplus::InterpolateOptions options;
+    options.mMethod =
+        meshioplusplus::interpolate_method_from_name(opt_value(p, "method", "nearest"));
+    if (has_opt(p, "arrays"))
+        options.mArrays = data_split_names(opt_value(p, "arrays"));
+    options.mExtrapolate = has_flag(p, "extrapolate");
+    // A negative value needs the --default-value=-1 form (the parser rule
+    // shared with --mu and --bbox).
+    options.mDefaultValue = std::stod(opt_value(p, "default-value", "0"));
+    options.mOnConflict =
+        meshioplusplus::interpolate_conflict_from_name(opt_value(p, "on-conflict", "error"));
+
+    Mesh out = meshioplusplus::interpolate(source, target, options);
+    if (!has_flag(p, "quiet")) {
+        const std::size_t n =
+            options.mArrays.empty() ? source.PointDataNames().size() : options.mArrays.size();
+        std::cout << "interpolated " << n << " array(s) onto " << out.NumPoints()
+                  << " target points\n";
+    }
+    write_mesh_cli(p.positionals[2], out, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -1967,6 +2009,8 @@ int main(int argc, char** argv) {
             return cmd_refine(rest);
         if (cmd == "smooth")
             return cmd_smooth(rest);
+        if (cmd == "interpolate")
+            return cmd_interpolate(rest);
         if (cmd == "partition")
             return cmd_partition(rest);
         if (cmd == "data")
