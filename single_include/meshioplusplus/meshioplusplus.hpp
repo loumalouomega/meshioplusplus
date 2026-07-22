@@ -400,7 +400,7 @@ inline const std::string& kratos_condition_name(CellType type) {
  * data array. It either *owns* its buffer (the common case: data produced by
  * a reader) or is a non-owning *view* over externally-owned memory (used to
  * wrap a numpy buffer zero-copy on the write path — see `py_to_mesh` in
- * `bindings/np_conversions.hpp`). The binding layer converts between
+ * `bindings/python/np_conversions.hpp`). The binding layer converts between
  * `NDArray` and numpy at the I/O boundary: owning buffers are moved into a
  * capsule backing a writeable numpy array on read, and numpy buffers are
  * wrapped as views (no copy) on write. `Dtype()` records the element type
@@ -561,7 +561,7 @@ inline const char* dtype_numpy_str(DType dt) {
  * (`mView != nullptr`); `IsView()` distinguishes the two, and `Data()`
  * transparently returns whichever buffer is active. Views exist so the
  * write path can wrap a numpy array's memory directly (see
- * `bindings/np_conversions.hpp`'s `py_to_mesh`) without copying it into a
+ * `bindings/python/np_conversions.hpp`'s `py_to_mesh`) without copying it into a
  * C++-owned buffer; `MakeOwned()` is the escape hatch for turning a view
  * into an owning copy when a buffer must outlive the memory it points to.
  * There is no reference counting: a view's caller is responsible for
@@ -1531,10 +1531,10 @@ inline void write_int(NDArray& rA, std::size_t i, std::int64_t v) {
  *    (Nodes/Elements/Conditions/SubModelParts) behind the same API
  *    (`backends/kratos_mesh.hpp`).
  *
- * Format readers/writers (and `bindings_js/`) MUST use only the methods
+ * Format readers/writers (and `bindings/wasm/`) MUST use only the methods
  * below — never backend-specific members — so every format compiles
- * unchanged under all backends. (`bindings/np_conversions.hpp` is the one
- * sanctioned exception: the Python build is pinned to MESHIO.)
+ * unchanged under all backends. (`bindings/python/np_conversions.hpp` is the
+ * one sanctioned exception: the Python build is pinned to MESHIO.)
  *
  * ## The contract (duck-typed; each backend implements these members)
  *
@@ -2760,11 +2760,11 @@ std::vector<typename Map::key_type> sorted_keys(const Map& rM) {
  * This is the default mesh backend (see `mesh.hpp` for the compile-time
  * dispatch and `mesh_api.hpp` for the uniform format-facing API it
  * implements), and the only one compatible with the pybind11 extension —
- * `bindings/np_conversions.hpp` is written against these exact members.
+ * `bindings/python/np_conversions.hpp` is written against these exact members.
  *
  * It mirrors the fields of the pure-Python `meshio.Mesh`: it is the type
  * every C++ format reader produces and every C++ format writer consumes.
- * The pybind11 binding layer (`bindings/np_conversions.hpp`) converts between
+ * The pybind11 binding layer (`bindings/python/np_conversions.hpp`) converts between
  * this type and the pure-Python `meshio.Mesh` at the I/O boundary, following
  * a "zero-copy at the boundary" strategy: `py_to_mesh` builds non-owning
  * `NDArray` *views* over the caller's numpy buffers (write path, no input
@@ -3475,7 +3475,7 @@ Rgb colormap_lookup(const std::uint8_t* pTable, double t);
  *  - **MESHIO** (`backends/meshio_mesh.hpp`, the default): the
  *    meshio-mirroring `Mesh`/`CellBlock` over dtype-erased `NDArray`s.
  *    Required when the pybind11 extension is built — the zero-copy numpy
- *    boundary (`bindings/np_conversions.hpp`) is written against it.
+ *    boundary (`bindings/python/np_conversions.hpp`) is written against it.
  *  - **NATIVE** (`backends/native_mesh.hpp`): canonical statically-typed
  *    storage — Float64 points, Int64 connectivity, `CellType` enum,
  *    CSR-shaped ragged blocks. The fastest pure-C++ consumer surface; used
@@ -12450,13 +12450,13 @@ void parallel_for_bw(std::size_t n, F&& f, std::size_t grain = parallel_grain_de
 /**
  * @file registry.hpp
  * @brief C++-level format dispatch registry shared by the flat bindings
- *        (WASM/JS in `bindings_js/`, the C API in `bindings_c/`).
+ *        (WASM/JS in `bindings/wasm/`, the C API in `bindings/c/`).
  *
- * The pybind11 binding (`bindings/_core.cpp`) exposes one function per format
- * and leaves extension dispatch entirely to Python (`_helpers.py`); the flat
- * bindings instead need a C++-side `format name -> read/write function` table
- * plus an `extension -> default format` map. Those tables originally lived in
- * `bindings_js/js_bindings.cpp`; they are hoisted here (compiled into
+ * The pybind11 binding (`bindings/python/_core.cpp`) exposes one function per
+ * format and leaves extension dispatch entirely to Python (`_helpers.py`); the
+ * flat bindings instead need a C++-side `format name -> read/write function`
+ * table plus an `extension -> default format` map. Those tables originally
+ * lived in `bindings/wasm/js_bindings.cpp`; they are hoisted here (compiled into
  * `meshioplusplus_core_obj` via `cpp/src/registry.cpp`) so the JS and C
  * bindings share one copy that cannot drift.
  *
@@ -56947,7 +56947,7 @@ MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
 /**
  * @file registry.cpp
  * @brief The shared format-dispatch tables (see registry.hpp). Bodies hoisted
- *        verbatim from `bindings_js/js_bindings.cpp`, extended with the
+ *        verbatim from `bindings/wasm/js_bindings.cpp`, extended with the
  *        HDF5/netCDF-conditional entries native (non-WASM) builds can serve.
  */
 
