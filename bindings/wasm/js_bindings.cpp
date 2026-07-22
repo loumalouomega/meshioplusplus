@@ -86,6 +86,7 @@
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -667,6 +668,26 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
         rSteps.call<void>("push", step);
         return std::move(result.mMesh);
     }
+    if (op == "decimate") {
+        meshioplusplus::DecimateOptions opts;
+        opts.mTargetRatio = number("ratio", -1.0);
+        const double faces = number("targetFaces", -1.0);
+        opts.mTargetFaces =
+            faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(faces);
+        opts.mMaxError = number("maxError", -1.0);
+        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0)
+            opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
+        opts.mPlacement =
+            meshioplusplus::decimate_placement_from_name(text("placement", "optimal"));
+        opts.mPreserveBoundary = flag("preserveBoundary", true);
+        opts.mPreserveFeatures = flag("preserveFeatures", true);
+        opts.mFeatureAngleDeg = number("featureAngle", 30.0);
+        auto result = meshioplusplus::decimate(mesh, opts);
+        step.set("facesRemoved", static_cast<double>(result.mFacesRemoved));
+        step.set("collapsesRejected", static_cast<double>(result.mCollapsesRejected));
+        rSteps.call<void>("push", step);
+        return std::move(result.mMesh);
+    }
     if (op == "partition") {
         meshioplusplus::PartitionOptions opts;
         opts.mNParts = static_cast<int>(number("nparts", 2));
@@ -1114,6 +1135,38 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds) {
     });
 }
 
+/**
+ * @brief Decimate a SURFACE mesh by quadric-error-metric edge collapse — the
+ * resolution-reducing inverse of `refine`. Exactly one of `ratio` (fraction of
+ * faces to keep, in (0, 1]), `targetFaces` and `maxError` must be non-negative.
+ * Returns an object `{mesh, facesRemoved, pointsRemoved, collapsesRejected,
+ * maxErrorApplied}`; the index maps are not carried across the JS boundary and
+ * the frozen mask is not exposed here, as on the other flat bindings.
+ */
+val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double maxError,
+                const std::string& rPlacement, bool preserveBoundary, bool preserveFeatures,
+                double featureAngle) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DecimateOptions options;
+        options.mTargetRatio = ratio;
+        options.mTargetFaces = targetFaces < 0.0 ? static_cast<std::int64_t>(-1)
+                                                 : static_cast<std::int64_t>(targetFaces);
+        options.mMaxError = maxError;
+        options.mPlacement = meshioplusplus::decimate_placement_from_name(rPlacement);
+        options.mPreserveBoundary = preserveBoundary;
+        options.mPreserveFeatures = preserveFeatures;
+        options.mFeatureAngleDeg = featureAngle;
+        meshioplusplus::DecimateResult r = meshioplusplus::decimate(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("facesRemoved", static_cast<double>(r.mFacesRemoved));
+        out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
+        out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
+        out.set("maxErrorApplied", r.mMaxErrorApplied);
+        return out;
+    });
+}
+
 namespace {
 
 meshioplusplus::PartitionOptions partition_options_js(int nparts, const std::string& rMethod,
@@ -1522,6 +1575,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("split", &split_js);
     emscripten::function("convertCells", &convert_cells_js);
     emscripten::function("refine", &refine_js);
+    emscripten::function("decimate", &decimate_js);
     emscripten::function("partition", &partition_js);
     emscripten::function("partitionLabels", &partition_labels_js);
     emscripten::function("stats", &stats_js);
