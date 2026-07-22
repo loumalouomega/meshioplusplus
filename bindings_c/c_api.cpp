@@ -72,6 +72,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
@@ -835,6 +836,19 @@ mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target, const 
         opts.mOnConflict =
             meshioplusplus::interpolate_conflict_from_name(on_conflict ? on_conflict : "error");
         return new mio_mesh{meshioplusplus::interpolate(source->mMesh, target->mMesh, opts)};
+    });
+}
+
+mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const double* normal,
+                    int record_parent_ids) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !origin || !normal)
+            throw meshioplusplus::ReadError("meshio++: mesh/origin/normal is NULL");
+        meshioplusplus::SliceOptions opts;
+        opts.mOrigin = {origin[0], origin[1], origin[2]};
+        opts.mNormal = {normal[0], normal[1], normal[2]};
+        opts.mRecordParentIds = record_parent_ids != 0;
+        return new mio_mesh{meshioplusplus::slice(mesh->mMesh, opts)};
     });
 }
 

@@ -82,6 +82,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
@@ -733,6 +734,28 @@ PYBIND11_MODULE(_core, m) {
         py::arg("source"), py::arg("target"), py::arg("method") = "nearest",
         py::arg("arrays") = py::none(), py::arg("extrapolate") = false,
         py::arg("default_value") = 0.0, py::arg("on_conflict") = "error");
+
+    // Planar cross-section (marching tetrahedra on a simplexified input).
+    // Returns a plain new mesh one dimension below the cut cells. See
+    // operations/slice.hpp.
+    m.def(
+        "slice",
+        [](py::object pymesh, const std::vector<double>& origin, const std::vector<double>& normal,
+           bool record_parent_ids) {
+            if (origin.size() != 3 || normal.size() != 3)
+                throw std::invalid_argument("slice: origin and normal must each have 3 elements");
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SliceOptions options;
+            options.mOrigin = {origin[0], origin[1], origin[2]};
+            options.mNormal = {normal[0], normal[1], normal[2]};
+            options.mRecordParentIds = record_parent_ids;
+            meshioplusplus::Mesh out = meshioplusplus::slice(cpp, options);
+            return meshioplusplus_py::mesh_to_py(std::move(out));
+        },
+        py::arg("mesh"), py::arg("origin"), py::arg("normal"),
+        py::arg("record_parent_ids") = false);
 
     // Partition into nparts balanced pieces (SFC or KaHIP). Returns a list of
     // dicts {part_id, mesh, point_map, cell_maps}. See operations/partition.hpp.

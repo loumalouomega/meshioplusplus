@@ -172,6 +172,7 @@ module meshioplusplus
         procedure :: smooth => mesh_smooth
         procedure :: crop_bbox => mesh_crop_bbox
         procedure :: crop_plane => mesh_crop_plane
+        procedure :: slice => mesh_slice
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: refine => mesh_refine
@@ -490,6 +491,15 @@ module meshioplusplus
             type(c_ptr), value :: h
             real(c_double), intent(in) :: point(*), normal(*)
             integer(c_int), value :: mode, record_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_slice(h, origin, normal, record_parent_ids) &
+                bind(c, name="mio_slice") result(r)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: origin(*), normal(*)
+            integer(c_int), value :: record_parent_ids
             type(c_ptr) :: r
         end function
 
@@ -1766,6 +1776,33 @@ contains
                                       real(normal, c_double), cmode, crec)
         if (.not. c_associated(out%handle)) then
             call handle_failure('crop_plane', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Planar cross-section of the mesh: the intersection with the plane through
+    !> `origin` with `normal`, one topological dimension below the cut cells (a
+    !> volume mesh -> a triangle/quad surface, a 2D surface -> a line mesh). The
+    !> input is simplexified first (marching tetrahedra); shared cut points are
+    !> deduped so the section is watertight. `record_parent_ids` (default
+    !> .false.) attaches a slice:parent_cell cell_data array.
+    function mesh_slice(self, origin, normal, record_parent_ids, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: origin(3), normal(3)
+        logical, intent(in), optional :: record_parent_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: crec
+        crec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) crec = 1
+        end if
+        out%handle = c_mio_slice(self%handle, real(origin, c_double), &
+                                 real(normal, c_double), crec)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('slice', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

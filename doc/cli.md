@@ -315,6 +315,35 @@ meshioplusplus crop in.vtu out.vtu --plane 0.5,0,0,1,0,0 --mode any
 
 ---
 
+## meshioplusplus slice
+
+Compute the planar cross-section of a mesh — the intersection with a plane, one
+dimension below the cut cells (a volume mesh → a `triangle`/`quad` surface, a 2D
+surface → a `line` mesh). See [slice](/slice).
+
+```
+meshioplusplus slice [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--origin x,y,z` | A point on the cutting plane (default `0,0,0`) |
+| `--normal x,y,z` | The plane normal (default `0,0,1`; non-zero) |
+| `--record-parent-ids` | Attach `slice:parent_cell` (the input cell each section cell was cut from) |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Negative components need the `=` form (`--normal=0,0,-1`). Unlike `crop`, which
+keeps whole cells on one side, `slice` computes the intersection itself.
+
+**Examples:**
+
+```sh
+meshioplusplus slice in.vtu section.vtu --origin 0,0,0.5 --normal 0,0,1
+meshioplusplus slice part.msh section.vtu --normal=0,0,-1 --record-parent-ids
+```
+
+---
+
 ## meshioplusplus split
 
 Partition a mesh into several files by type, region, or connected component (see [split](/split)).

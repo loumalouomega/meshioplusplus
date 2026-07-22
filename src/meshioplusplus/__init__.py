@@ -73,6 +73,7 @@ from ._quality import attach_quality, compute_quality
 from ._refine import refine
 from ._reorder import compute_bandwidth, reorder
 from ._skin import extract_skin
+from ._slice import slice
 from ._smooth import smooth
 from ._sniff import sniff_format
 from ._split import split
@@ -145,6 +146,7 @@ __all__ = [
     "meshes_equal",
     "merge",
     "interpolate",
+    "slice",
     "transform",
     "clean",
     "crop",

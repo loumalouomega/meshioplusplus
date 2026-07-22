@@ -112,11 +112,11 @@ export type OpSpec =
     }
   | {
       /**
-       * Cut cells away on one side of a plane, in **world** coordinates.
-       *
-       * `mode: "all"` keeps only cells lying entirely on the keep side, so the
-       * cut follows element faces rather than being flat — re-skinning then
-       * exposes a genuine, solid, correctly-coloured section.
+       * The planar cross-section through the mesh (slice), in **world**
+       * coordinates: the volume is replaced by the surface where the plane
+       * intersects it, one dimension lower — a genuine, flat, correctly-coloured
+       * section. `mode` is accepted for backward compatibility but ignored (a
+       * cross-section has no "keep side").
        */
       op: 'section';
       point: number[];
@@ -452,6 +452,14 @@ export interface MeshioPlusPlusModule {
     mode?: CropMode,
     recordIds?: boolean,
   ): Mesh;
+
+  /**
+   * Planar cross-section of a mesh (marching tetrahedra on a simplexified
+   * input): a volume mesh yields a triangle/quad surface, a 2D surface mesh a
+   * line mesh. Crossing points on shared edges are deduped so the section is
+   * watertight; each section cell inherits its parent's cell_data.
+   */
+  slice(mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean): Mesh;
 
   /** Partition a mesh into submeshes by type, connected component, or tag. */
   split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];

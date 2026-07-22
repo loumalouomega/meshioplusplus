@@ -8,6 +8,40 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.14.0 (2026-07-22)
+
+New **`slice`** operation — the planar cross-section of a mesh: the actual
+intersection of the mesh with a plane, one topological dimension below the cut
+cells (a 3D volume mesh yields a `triangle`/`quad` surface, a 2D surface mesh a
+`line` mesh). Unlike `crop` (plane mode), which keeps whole cells on one side,
+`slice` computes the intersection and lowers the dimension.
+
+- `slice(mesh, origin=, normal=, record_parent_ids=)`: robust marching
+  tetrahedra on a simplexified input (every 3D cell becomes a tetra, every 2D
+  cell a triangle), so each cell's cross-section is a well-defined convex
+  primitive — a hex/wedge section is therefore the union of its simplices'
+  sections. The signed-distance crossing `t = d_i/(d_i - d_j)` is computed from
+  the sorted edge endpoints and deduped by that edge key, so shared edges yield
+  a single output node (the section is watertight). Degeneracy rule: a node on
+  the plane (`d == 0`) is classified positive, making the sign mask total, so a
+  plane grazing a shared face is emitted exactly once (no double emission);
+  collapsed primitives are dropped. Section faces are wound so their Newell
+  normal points toward the `+normal` side. Each section cell inherits its
+  parent's `cell_data`; `record_parent_ids` attaches an Int64
+  `slice:parent_cell`. `point_data` is interpolated at the cut (Float64 output);
+  `point_sets`/`cell_sets` are not carried (the section is new topology). Output
+  is byte-identical across the three mesh backends, thread counts, and the
+  C++-core/numpy-fallback boundary.
+- Exposed on every surface: pybind `_core` + the numpy fallback (`slice` shadows
+  the built-in only as a module attribute), C API `mio_slice`, Fortran
+  type-bound `m%slice`, WASM `slice`, and the `slice IN OUT --origin --normal`
+  verb in both CLIs.
+- The browser viewer's planar "section" now routes through `slice` (the true
+  cross-section) instead of the previous crop-half-space + re-skin.
+- Docs: new `doc/slice.md`, CLI reference entry, README "Slicing /
+  cross-sections" section, and a notebook demo in both
+  `example/python/03_mesh_operations.ipynb` and the C++ mirror.
+
 ## v7.13.0 (2026-07-21)
 
 New **`interpolate`** operation — cross-mesh field transfer, the first two-mesh

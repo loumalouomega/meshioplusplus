@@ -556,6 +556,24 @@ MIO_API mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target
                                   const char* on_conflict);
 
 /**
+ * Planar cross-section of a mesh: the intersection with a plane, one topological
+ * dimension below the cut cells (a volume mesh yields a triangle/quad surface, a
+ * 2D surface mesh yields a line mesh). The input is simplexified first
+ * (marching tetrahedra); crossing points on shared edges are deduped so the
+ * section is watertight, and each section cell inherits its parent's cell_data.
+ * @param origin            a point on the cutting plane (3 doubles).
+ * @param normal            the plane normal (3 doubles, non-zero; need not be
+ *                          unit length).
+ * @param record_parent_ids nonzero to attach an Int64 "slice:parent_cell"
+ *                          cell_data array (per section cell, the global input
+ *                          cell it was cut from).
+ * @return the cross-section mesh (free with mio_mesh_free), empty when the plane
+ *         misses the geometry, or NULL on failure.
+ */
+MIO_API mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const double* normal,
+                            int record_parent_ids);
+
+/**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).
  * @param mesh       input mesh.
  * @param lo         box lower corner (3 doubles).
