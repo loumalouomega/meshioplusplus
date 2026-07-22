@@ -65,6 +65,7 @@
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -410,6 +411,7 @@ void print_usage(std::ostream& os) {
           "  transform               Affine transform (translate/scale/rotate/matrix/units)\n"
           "  clean                   Weld / prune / de-dup a mesh\n"
           "  crop                    Subset by bounding box or half-space\n"
+          "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
           "  split                   Partition into multiple files (type/region/component)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
           "  refine                  Uniformly subdivide every cell (same-type children)\n"
@@ -993,6 +995,37 @@ int cmd_crop(const std::vector<std::string>& rArgs) {
         r = meshioplusplus::crop_halfspace(mesh, point, normal, mode, record_ids);
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_slice(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"origin", {}, true},
+                                  {"normal", {}, true},
+                                  {"record-parent-ids", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("slice requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    // Negatives need the --origin=/--normal= form (the parser rule shared with
+    // --bbox / --mu).
+    auto o = parse_doubles(opt_value(p, "origin", "0,0,0"));
+    auto n = parse_doubles(opt_value(p, "normal", "0,0,1"));
+    if (o.size() != 3)
+        throw std::runtime_error("slice: --origin expects 'x,y,z'");
+    if (n.size() != 3)
+        throw std::runtime_error("slice: --normal expects 'x,y,z'");
+
+    meshioplusplus::SliceOptions options;
+    options.mOrigin = {o[0], o[1], o[2]};
+    options.mNormal = {n[0], n[1], n[2]};
+    options.mRecordParentIds = has_flag(p, "record-parent-ids");
+    Mesh out = meshioplusplus::slice(mesh, options);
+
+    write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -2001,6 +2034,8 @@ int main(int argc, char** argv) {
             return cmd_clean(rest);
         if (cmd == "crop")
             return cmd_crop(rest);
+        if (cmd == "slice")
+            return cmd_slice(rest);
         if (cmd == "split")
             return cmd_split(rest);
         if (cmd == "convert-cells")
