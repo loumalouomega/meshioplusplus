@@ -65,6 +65,7 @@
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -412,6 +413,8 @@ void print_usage(std::ostream& os) {
           "  clean                   Weld / prune / de-dup a mesh\n"
           "  crop                    Subset by bounding box or half-space\n"
           "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
+          "  isosurface              Level set of a scalar point_data field (contours)\n"
+          "                            --array NAME --values v1,v2 [--component I]\n"
           "  split                   Partition into multiple files (type/region/component)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
           "  refine                  Uniformly subdivide every cell (same-type children)\n"
@@ -1024,6 +1027,48 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     options.mNormal = {n[0], n[1], n[2]};
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
     Mesh out = meshioplusplus::slice(mesh, options);
+
+    write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_isosurface(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"array", {}, true},
+                                  {"values", {}, true},
+                                  {"component", {}, true},
+                                  {"record-parent-ids", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("isosurface requires exactly INFILE and OUTFILE");
+    const std::string array = opt_value(p, "array");
+    if (array.empty())
+        throw std::runtime_error("isosurface: --array NAME is required");
+    const std::string values = opt_value(p, "values");
+    if (values.empty())
+        throw std::runtime_error("isosurface: --values 'v1,v2,...' is required");
+
+    // Negatives need the --values= form (the parser rule shared with --bbox /
+    // --origin / --mu).
+    auto vals = parse_doubles(values);
+    if (vals.empty())
+        throw std::runtime_error("isosurface: --values expects at least one isovalue");
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::IsosurfaceOptions options;
+    options.mArrayName = array;
+    options.mIsovalues = std::move(vals);
+    const std::string comp = opt_value(p, "component");
+    if (!comp.empty()) {
+        const int c = std::stoi(comp);
+        if (c >= 0)
+            options.mComponent = c;
+    }
+    options.mRecordParentIds = has_flag(p, "record-parent-ids");
+    Mesh out = meshioplusplus::isosurface(mesh, options);
 
     write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
     return 0;
@@ -2036,6 +2081,8 @@ int main(int argc, char** argv) {
             return cmd_crop(rest);
         if (cmd == "slice")
             return cmd_slice(rest);
+        if (cmd == "isosurface")
+            return cmd_isosurface(rest);
         if (cmd == "split")
             return cmd_split(rest);
         if (cmd == "convert-cells")
