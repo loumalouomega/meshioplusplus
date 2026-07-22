@@ -8,6 +8,42 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v7.16.0 (2026-07-22)
+
+New **`decimate`** operation — reduce a surface mesh's face count by greedy
+quadric-error-metric (Garland–Heckbert) edge collapse, preserving shape,
+boundaries and features: the resolution-*reducing* inverse of `refine`,
+completing the pair. Surface meshes only (`quad`/`polygon` blocks are
+triangulated first, so the output is all-triangle with the block structure
+kept 1:1); a volume mesh raises by name pointing at `extract_surface`.
+
+- Stopping criteria (exactly one): `ratio` (fraction of faces to keep),
+  `target_faces` (absolute, within one collapse), or `max_error` (collapse
+  while the cheapest quadric error is below it).
+- Placement `optimal` (quadric minimizer, midpoint fallback when the 3x3
+  system is ill-conditioned) / `midpoint` / `endpoint`. Float `point_data` is
+  blended along the collapsed edge (clamped parameter); integer arrays keep
+  the survivor's value.
+- Boundary vertices (once-used-edge test) and feature vertices (face normals
+  differing by more than `feature_angle`, default 30°) are pinned by default;
+  an optional `frozen` mask pins more. The link condition and a normal-flip
+  guard reject any collapse that would change topology, create a non-manifold
+  edge, or fold the surface — rejections are counted in the report.
+- Deterministic: parallel setup with pinned FP order, serial greedy loop with
+  a total heap ordering. Output is byte-identical across the three mesh
+  backends, thread counts, and the C++/numpy-fallback boundary
+  (`test_cpp_matches_python`).
+- Exposed everywhere: Python `meshioplusplus.decimate` (with `return_report`),
+  C API `mio_decimate` + opaque `mio_decimate_result` (maps + counters;
+  `frozen` is a documented flat-ABI gap), Fortran `m%decimate(...)`, WASM
+  `decimate(...)` (also a `convertSurfaceOps` pipeline op, so the browser
+  viewer's worker can reach it), and a `decimate` verb in both CLIs.
+- Docs: `doc/decimate.md`, README "Decimation" section, notebook demo cell.
+
+Also: fixed two path strings in `CLAUDE.md` corrupted by the repository
+restructure's `cpp/` → `src/cpp/` rewrite, and its "five version files"
+sentence (there are six).
+
 ## v7.15.0 (2026-07-22)
 
 New **`isosurface`** operation — the level set of a scalar field: the locus where
