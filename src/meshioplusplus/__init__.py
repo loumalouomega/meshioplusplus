@@ -65,6 +65,7 @@ from ._helpers import (
     write,
     write_points_cells,
 )
+from ._interpolate import interpolate
 from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
 from ._partition import partition, partition_labels
@@ -143,6 +144,7 @@ __all__ = [
     "diff",
     "meshes_equal",
     "merge",
+    "interpolate",
     "transform",
     "clean",
     "crop",

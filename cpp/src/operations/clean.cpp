@@ -78,12 +78,12 @@ struct CleanKey {
 
 struct CleanKeyHash {
     std::size_t operator()(const CleanKey& k) const {
-        std::size_t h = 1469598103934665603ULL;
+        std::uint64_t h = 1469598103934665603ULL;
         for (std::int64_t v : {k.x, k.y, k.z}) {
-            h ^= static_cast<std::size_t>(v);
+            h ^= static_cast<std::uint64_t>(v);
             h *= 1099511628211ULL;
         }
-        return h;
+        return static_cast<std::size_t>(h);
     }
 };
 

@@ -183,6 +183,27 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
                 featureAngle,
                 guardInversion,
             ),
+        // Cross-mesh field transfer: source point_data sampled at the target's
+        // points, source cell_data by nearest source-cell centroid regardless
+        // of the method. An empty `arrays` = every source point_data array.
+        interpolate: (
+            source,
+            target,
+            method = 'nearest',
+            arrays = [],
+            extrapolate = false,
+            defaultValue = 0,
+            onConflict = 'error',
+        ) =>
+            Module.interpolate(
+                source,
+                target,
+                method,
+                arrays,
+                extrapolate,
+                defaultValue,
+                onConflict,
+            ),
         cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false) =>
             Module.cropBbox(mesh, lo, hi, mode, recordIds),
         cropPlane: (mesh, point, normal, mode = 'all', recordIds = false) =>

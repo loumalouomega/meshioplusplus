@@ -69,6 +69,7 @@ export default defineConfig({
           { text: "Cell conversion", link: "/convert_cells" },
           { text: "Uniform refinement", link: "/refine" },
           { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },
+          { text: "Interpolation (field transfer)", link: "/interpolate" },
           { text: "Data operations", link: "/data_operations" },
           { text: "· Array management", link: "/data_manage" },
           { text: "· Location averaging", link: "/data_average" },

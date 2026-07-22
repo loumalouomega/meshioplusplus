@@ -87,6 +87,7 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
+#include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
@@ -689,9 +690,8 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
         step.set("cellsRemoved", static_cast<double>(before - total_cells(result.mMesh)));
         rSteps.call<void>("push", step);
         if (total_cells(result.mMesh) == 0)
-            rWarnings.call<void>("push",
-                                 std::string("the section removed every cell; "
-                                             "try flipping it or moving the plane"));
+            rWarnings.call<void>("push", std::string("the section removed every cell; "
+                                                     "try flipping it or moving the plane"));
         return std::move(result.mMesh);
     }
     throw meshioplusplus::ReadError("meshio++ (wasm): unknown operation '" + op + "'");
@@ -722,8 +722,8 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
  * @return `{steps: [{op, ...counters}], warnings: [string]}`.
  */
 val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat,
-                        const std::string& rOutPath, const std::string& rOutFormat,
-                        const val& rOps, bool keepProvenance) {
+                        const std::string& rOutPath, const std::string& rOutFormat, const val& rOps,
+                        bool keepProvenance) {
     return with_js_errors([&]() -> val {
         std::string rfmt = resolve_format(rInPath, rInFormat);
         std::string wfmt = resolve_format(rOutPath, rOutFormat);
@@ -1404,6 +1404,30 @@ val data_info_js(const val& rMeshObj) {
     });
 }
 
+/**
+ * @brief Cross-mesh field transfer: sample the source's data arrays onto the
+ * target (source point_data at the target's points, source cell_data by
+ * nearest source-cell centroid regardless of the method). `method` is
+ * "nearest" or "barycentric"; `arrays` is a JS array of source names
+ * (undefined/null/empty = every source point_data array; cell_data only when
+ * named); `onConflict` is "error", "overwrite" or "suffix" (name + "_interp").
+ * Returns the target copy as a plain mesh object.
+ */
+val interpolate_js(const val& rSourceObj, const val& rTargetObj, const std::string& rMethod,
+                   const val& rArrays, bool extrapolate, double defaultValue,
+                   const std::string& rOnConflict) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::InterpolateOptions options;
+        options.mMethod = meshioplusplus::interpolate_method_from_name(rMethod);
+        options.mArrays = val_to_string_vector(rArrays);
+        options.mExtrapolate = extrapolate;
+        options.mDefaultValue = defaultValue;
+        options.mOnConflict = meshioplusplus::interpolate_conflict_from_name(rOnConflict);
+        return mesh_to_val(
+            meshioplusplus::interpolate(val_to_mesh(rSourceObj), val_to_mesh(rTargetObj), options));
+    });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
@@ -1431,6 +1455,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("transform", &transform_js);
     emscripten::function("clean", &clean_js);
     emscripten::function("smooth", &smooth_js);
+    emscripten::function("interpolate", &interpolate_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("split", &split_js);

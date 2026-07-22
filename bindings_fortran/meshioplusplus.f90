@@ -57,6 +57,7 @@ module meshioplusplus
     public :: mio_sniff_format
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
     public :: mio_merge
+    public :: mio_interpolate
     ! Length of the fixed-width string buffers the `keys` out-arguments of
     ! `split` and `data_info` use; consumers need it to declare those arrays.
     public :: STRBUF_LEN
@@ -420,6 +421,20 @@ module meshioplusplus
             integer(c_int64_t), value :: count
             integer(c_int), value :: weld, source_tag, data_policy, drop_dup
             real(c_double), value :: atol
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_interpolate(source, target, method, arrays, count, extrapolate, &
+                                   default_value, on_conflict) &
+                bind(c, name="mio_interpolate") result(r)
+            import :: c_ptr, c_char, c_int, c_int64_t, c_double
+            type(c_ptr), value :: source, target
+            character(kind=c_char), dimension(*), intent(in) :: method
+            type(c_ptr), value :: arrays
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: extrapolate
+            real(c_double), value :: default_value
+            character(kind=c_char), dimension(*), intent(in) :: on_conflict
             type(c_ptr) :: r
         end function
 
@@ -1475,6 +1490,56 @@ contains
         out%handle = c_mio_merge(handles, int(n, c_int64_t), cweld, catol, csrc, cpolicy, cdrop)
         if (.not. c_associated(out%handle)) then
             call handle_failure('merge', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Sample data arrays from `source` onto `target` (cross-mesh field
+    !> transfer): source point_data at the target's points, source cell_data by
+    !> nearest source-cell centroid regardless of the method. `method` is
+    !> 'nearest' (default) or 'barycentric' (linear in a simplexified source;
+    !> a target point outside the source domain receives `default_value`
+    !> unless `extrapolate`). `arrays` omitted or zero-sized means every source
+    !> point_data array; cell_data transfers only when named. `on_conflict` is
+    !> 'error' (default), 'overwrite' or 'suffix' (name + '_interp').
+    function mio_interpolate(source, target, method, arrays, extrapolate, &
+                             default_value, on_conflict, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: source, target
+        character(*), intent(in), optional :: method, on_conflict
+        character(*), intent(in), optional :: arrays(:)
+        logical, intent(in), optional :: extrapolate
+        real(real64), intent(in), optional :: default_value
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        integer(c_int) :: cextrap
+        real(c_double) :: cdefault
+        character(:), allocatable :: cmethod, cconflict
+        cmethod = 'nearest'
+        if (present(method)) cmethod = trim(method)
+        cconflict = 'error'
+        if (present(on_conflict)) cconflict = trim(on_conflict)
+        cextrap = 0
+        if (present(extrapolate)) then
+            if (extrapolate) cextrap = 1
+        end if
+        cdefault = 0.0_c_double
+        if (present(default_value)) cdefault = real(default_value, c_double)
+        if (present(arrays)) then
+            call c_str_array(arrays, storage, cptrs, arr, count)
+        else
+            arr = c_null_ptr
+            count = 0_c_int64_t
+        end if
+        out%handle = c_mio_interpolate(source%handle, target%handle, c_str(cmethod), arr, &
+                                       count, cextrap, cdefault, c_str(cconflict))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('interpolate', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

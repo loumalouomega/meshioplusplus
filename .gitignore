@@ -32,6 +32,8 @@ build-tests/
 build-omp/
 build-tbb/
 build-cpp-cov/
+# Local micromamba env for the example/cpp/ xeus-cpp kernel (see example/cpp/README.md)
+.micromamba/
 # Conan test_package build output + CMake presets emitted by `conan create`.
 test_package/build/
 CMakeUserPresets.json

@@ -76,6 +76,7 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
+#include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
@@ -705,6 +706,33 @@ PYBIND11_MODULE(_core, m) {
         py::arg("lambda_") = -1.0, py::arg("mu") = -0.34, py::arg("fix_boundary") = true,
         py::arg("preserve_features") = true, py::arg("feature_angle") = 30.0,
         py::arg("guard_inversion") = true, py::arg("frozen") = py::none());
+
+    // Cross-mesh field transfer: sample the source's data arrays onto the
+    // target. Returns the target copy as a plain mesh (no maps/counters).
+    // See operations/interpolate.hpp.
+    m.def(
+        "interpolate",
+        [](py::object pysource, py::object pytarget, const std::string& method, py::object arrays,
+           bool extrapolate, double default_value, const std::string& on_conflict) {
+            meshioplusplus_py::PyMeshRefs refs_src;
+            meshioplusplus_py::PyMeshRefs refs_tgt;
+            meshioplusplus::Mesh src = meshioplusplus_py::py_to_mesh(
+                pysource, refs_src, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::Mesh tgt = meshioplusplus_py::py_to_mesh(
+                pytarget, refs_tgt, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::InterpolateOptions options;
+            options.mMethod = meshioplusplus::interpolate_method_from_name(method);
+            if (!arrays.is_none())
+                options.mArrays = py::cast<std::vector<std::string>>(arrays);
+            options.mExtrapolate = extrapolate;
+            options.mDefaultValue = default_value;
+            options.mOnConflict = meshioplusplus::interpolate_conflict_from_name(on_conflict);
+            meshioplusplus::Mesh out = meshioplusplus::interpolate(src, tgt, options);
+            return meshioplusplus_py::mesh_to_py(std::move(out));
+        },
+        py::arg("source"), py::arg("target"), py::arg("method") = "nearest",
+        py::arg("arrays") = py::none(), py::arg("extrapolate") = false,
+        py::arg("default_value") = 0.0, py::arg("on_conflict") = "error");
 
     // Partition into nparts balanced pieces (SFC or KaHIP). Returns a list of
     // dicts {part_id, mesh, point_map, cell_maps}. See operations/partition.hpp.

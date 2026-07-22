@@ -449,6 +449,44 @@ step('smooth rejects an unknown method', () => {
     assert.throws(() => m.smooth(cube, 'not-a-method'));
 });
 
+step('interpolate: transfers fields onto a target mesh', () => {
+    // Nearest: the single target point sits next to the second source point.
+    const src = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0]),
+        dim: 3,
+        cells: [],
+        point_data: { f: new Float64Array([10, 20]) },
+        cell_data: {},
+        field_data: {},
+    };
+    const tgt = {
+        points: new Float64Array([0.9, 0, 0]),
+        dim: 3,
+        cells: [],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const out = m.interpolate(src, tgt);
+    assert.deepEqual(Array.from(out.point_data.f), [20]);
+
+    // Barycentric is exact on a linear field (g = x at the cube's corners).
+    const cubeSrc = { ...cube, point_data: { g: new Float64Array([0, 1, 1, 0, 0, 1, 1, 0]) } };
+    const probe = {
+        points: new Float64Array([0.25, 0.5, 0.5]),
+        dim: 3,
+        cells: [],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const bar = m.interpolate(cubeSrc, probe, 'barycentric');
+    assert.ok(Math.abs(bar.point_data.g[0] - 0.25) < 1e-12);
+
+    assert.throws(() => m.interpolate(src, tgt, 'not-a-method'));
+    assert.throws(() => m.interpolate(src, tgt, 'nearest', ['nope']));
+});
+
 step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
     const grid = m.refine(cube);  // 8 hexahedra
     const pieces = m.partition(grid, 2);
@@ -512,6 +550,7 @@ step('every binding is reachable through the wrapper', () => {
         'transform',
         'clean',
         'smooth',
+        'interpolate',
         'cropBbox',
         'cropPlane',
         'split',
