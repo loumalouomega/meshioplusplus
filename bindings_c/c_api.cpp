@@ -66,6 +66,7 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
+#include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
@@ -804,6 +805,36 @@ mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, d
         if (skipped_inversion)
             *skipped_inversion = r.mNumSkippedInversion;
         return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target, const char* method,
+                          const char* const* arrays, int64_t arrays_count, int extrapolate,
+                          double default_value, const char* on_conflict) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!source)
+            throw meshioplusplus::ReadError("meshio++: source mesh is NULL");
+        if (!target)
+            throw meshioplusplus::ReadError("meshio++: target mesh is NULL");
+        meshioplusplus::InterpolateOptions opts;
+        opts.mMethod = meshioplusplus::interpolate_method_from_name(method ? method : "nearest");
+        // NULL or a non-positive count means "every source point_data array"
+        // (deliberately laxer than data_name_list — empty-means-all is the
+        // core's own convention for this option).
+        if (arrays && arrays_count > 0) {
+            opts.mArrays.reserve(static_cast<std::size_t>(arrays_count));
+            for (int64_t i = 0; i < arrays_count; ++i) {
+                if (!arrays[i])
+                    throw meshioplusplus::ReadError("meshio++: arrays[" + std::to_string(i) +
+                                                    "] is NULL");
+                opts.mArrays.emplace_back(arrays[i]);
+            }
+        }
+        opts.mExtrapolate = extrapolate != 0;
+        opts.mDefaultValue = default_value;
+        opts.mOnConflict =
+            meshioplusplus::interpolate_conflict_from_name(on_conflict ? on_conflict : "error");
+        return new mio_mesh{meshioplusplus::interpolate(source->mMesh, target->mMesh, opts)};
     });
 }
 
