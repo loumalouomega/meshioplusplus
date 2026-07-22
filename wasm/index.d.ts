@@ -164,6 +164,16 @@ export type ConvertCellsMode = 'linearize' | 'simplexify' | 'elevate';
 /** Smoothing operator applied by `smooth`. `'taubin'` is shrink-free. */
 export type SmoothMethod = 'laplacian' | 'taubin';
 
+/** How `interpolate` draws a target sample's value from the source.
+ *  `'barycentric'` simplexifies the source first (simplex-linear on quad/hex
+ *  sources; triangles evaluated in the xy-plane) and is exact on a linear
+ *  field; `'nearest'` copies the nearest source point's value bit-for-bit. */
+export type InterpolateMethod = 'nearest' | 'barycentric';
+
+/** What `interpolate` does when a transferred name already exists on the
+ *  target: throw, replace, or write to `name + '_interp'`. */
+export type InterpolateOnConflict = 'error' | 'overwrite' | 'suffix';
+
 /** Partitioning backend: SFC is always available; KaHIP is never compiled
  *  into the WASM build, so `'kahip'` always throws and `'auto'` = `'sfc'`. */
 export type PartitionMethod = 'sfc' | 'kahip' | 'auto';
@@ -407,6 +417,29 @@ export interface MeshioPlusPlusModule {
     featureAngle?: number,
     guardInversion?: boolean,
   ): { mesh: Mesh; numNodesMoved: number; maxDisplacement: number; numSkippedInversion: number };
+
+  /**
+   * Sample data arrays from `source` onto `target` (cross-mesh field
+   * transfer). Returns a copy of the target — geometry, connectivity and its
+   * own data preserved exactly — with the requested source arrays sampled onto
+   * it: source point_data at the target's points, source cell_data at the
+   * target's cell centroids (always by nearest source-cell centroid, whatever
+   * the method). An empty `arrays` transfers every source point_data array;
+   * cell_data transfers only when named. Under `'barycentric'` a target point
+   * outside the source domain receives `defaultValue` unless `extrapolate`.
+   * @throws {Error} on an unknown method/onConflict, an unknown array name, a
+   *   name collision under `'error'`, or a barycentric source with no
+   *   triangle/tetrahedron cells after simplexification.
+   */
+  interpolate(
+    source: Mesh,
+    target: Mesh,
+    method?: InterpolateMethod,
+    arrays?: string[],
+    extrapolate?: boolean,
+    defaultValue?: number,
+    onConflict?: InterpolateOnConflict,
+  ): Mesh;
 
   /** Subset a mesh to an axis-aligned bounding box. */
   cropBbox(mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean): Mesh;
