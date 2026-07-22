@@ -147,6 +147,23 @@ add_library(meshioplusplus_core_obj OBJECT ${MESHIOPLUSPLUS_CORE_SOURCES})
 set_target_properties(meshioplusplus_core_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(meshioplusplus_core_obj PUBLIC cxx_std_20)
 
+# Several operations (interpolate's barycentric weighted sum, merge/partition's
+# weighted accumulations, ...) are pinned byte-identical against a pure-Python/
+# numpy twin, which never fuses a multiply-add into one rounding step. x86_64
+# has no FMA instruction unless a target flag (-mfma/-march=...) opts in, so
+# this was silently never an issue on the Linux/Windows CI legs -- but AArch64
+# (e.g. GitHub's arm64 macos-latest runners) has FMA in baseline hardware, and
+# Clang's default -ffp-contract=on permits fusing `acc = acc + w * v` within a
+# single expression, changing the rounding by up to 1 ulp relative to numpy's
+# separately-rounded multiply and add (this is exactly what broke
+# tests/test_interpolate.py::test_cpp_matches_python on macOS). Disable
+# contraction outright so this class of expression rounds identically on every
+# target; there is no MSVC equivalent needed since /fp:precise (the default)
+# never contracts.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(meshioplusplus_core_obj PUBLIC -ffp-contract=off)
+endif()
+
 # On MSVC, /MT vs /MD is a *compile*-time flag baked into each .obj (unlike
 # GNU's -static-libgcc/-static-libstdc++, which is link-only) -- every object
 # library feeding a static-runtime final link must be compiled with the same
