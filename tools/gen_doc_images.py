@@ -50,7 +50,11 @@ IMAGE_WIDTH = 800.0
 # The bundled bracket has ~298k cells, whose skin is ~58k facets -- a 4.5 MB SVG
 # that is also illegible at figure size, since every element is sub-pixel. The
 # figures therefore use a corner of it: real bracket geometry, ~1.1k facets, and
-# individual elements you can actually see.
+# individual elements you can actually see. (Decimating the whole skin instead
+# was tried when `decimate` landed: feature pinning floors the collapse at
+# ~6.6k facets even at feature_angle=60 -- the bracket is mostly creases and
+# fillets at this resolution -- which is still a ~700 kB SVG, so the crop
+# stays.)
 CROP_FRACTION = 0.40
 
 
