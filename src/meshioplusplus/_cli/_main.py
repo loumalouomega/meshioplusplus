@@ -15,6 +15,7 @@ from . import (
     _diff,
     _extract_surface,
     _info,
+    _interpolate,
     _merge,
     _partition,
     _quality,
@@ -159,6 +160,14 @@ def main(argv=None):
     )
     _smooth.add_args(parser)
     parser.set_defaults(func=_smooth.smooth_cmd)
+
+    parser = subparsers.add_parser(
+        "interpolate",
+        help="Sample data arrays from a source mesh onto a target mesh "
+        "(nearest / barycentric)",
+    )
+    _interpolate.add_args(parser)
+    parser.set_defaults(func=_interpolate.interpolate_cmd)
 
     parser = subparsers.add_parser(
         "stats",
