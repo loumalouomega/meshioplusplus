@@ -522,6 +522,40 @@ MIO_API mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int itera
                              double* max_displacement, int64_t* skipped_inversion);
 
 /**
+ * Sample data arrays from a source mesh onto a target mesh (cross-mesh field
+ * transfer). Returns a copy of the target — geometry, connectivity and its own
+ * data preserved exactly — with the requested source arrays sampled onto it:
+ * source point_data at the target's points, source cell_data at the target's
+ * cell centroids (always by nearest source-cell centroid, whatever the method).
+ * Under "barycentric" the source is simplexified first, so on a quad/hex source
+ * the result is the simplex-linear interpolant (triangles are evaluated in the
+ * xy-plane); "nearest" copies the nearest source point's value bit-for-bit.
+ * @param source        the mesh whose data is sampled.
+ * @param target        the mesh receiving the samples.
+ * @param method        "nearest" or "barycentric"; NULL means "nearest".
+ * @param arrays        source array names to transfer, as an array of C strings
+ *                      with an explicit count (the mio_data_* convention). NULL
+ *                      or arrays_count <= 0 means every source point_data array;
+ *                      cell_data transfers only when named explicitly.
+ * @param arrays_count  number of entries in arrays (see above).
+ * @param extrapolate   barycentric only: nonzero to give a target point outside
+ *                      the source domain the nearest source point's value
+ *                      instead of default_value.
+ * @param default_value barycentric only: the fill value (every component) for a
+ *                      target point outside the source domain when extrapolate
+ *                      is zero.
+ * @param on_conflict   what to do when a transferred name already exists on the
+ *                      target: "error", "overwrite" or "suffix" (writes to
+ *                      name + "_interp"); NULL means "error".
+ * @return the target copy with the sampled arrays (free with mio_mesh_free), or
+ *         NULL on failure.
+ */
+MIO_API mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target,
+                                  const char* method, const char* const* arrays,
+                                  int64_t arrays_count, int extrapolate, double default_value,
+                                  const char* on_conflict);
+
+/**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).
  * @param mesh       input mesh.
  * @param lo         box lower corner (3 doubles).
