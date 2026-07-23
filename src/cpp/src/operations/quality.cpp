@@ -653,23 +653,50 @@ QualityReport compute_quality(const Mesh& rMesh) {
         s.mMax = a.mMax;
         s.mMean = a.mSum / static_cast<double>(a.mCount);
     }
+    // Fixed-size chunks over the block-major global cell index, one partial
+    // histogram per chunk, merged serially in chunk order (stats.cpp's chunked
+    // reduction; bins are integer counts, so the merge is bit-identical to the
+    // serial loop for any thread count).
     const int K = QualityMetricSummary::K;
-    for (const std::vector<CellMetrics>& vals : block_vals) {
-        for (const CellMetrics& v : vals) {
-            for (int mi = 0; mi < NUM_METRICS; ++mi) {
-                const double x = v[mi];
-                if (!std::isfinite(x))
-                    continue;
-                QualityMetricSummary& s = summ[mi];
-                const double span = s.mMax - s.mMin;
-                int bin = 0;
-                if (span > 0.0)
-                    bin = static_cast<int>((x - s.mMin) / span * K);
-                bin = std::clamp(bin, 0, K - 1);
-                ++s.mHistogram[bin];
+    std::vector<std::size_t> starts(block_vals.size() + 1, 0);
+    for (std::size_t bi = 0; bi < block_vals.size(); ++bi)
+        starts[bi + 1] = starts[bi] + block_vals[bi].size();
+    const std::size_t total_cells = starts.back();
+    constexpr std::size_t hist_chunk = 4096;
+    const std::size_t nchunks = (total_cells + hist_chunk - 1) / hist_chunk;
+    using Hist = std::array<std::array<std::int64_t, QualityMetricSummary::K>, NUM_METRICS>;
+    std::vector<Hist> partial(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            Hist& h = partial[ci];
+            const std::size_t lo = ci * hist_chunk;
+            const std::size_t hi = std::min(total_cells, lo + hist_chunk);
+            std::size_t bi = static_cast<std::size_t>(
+                std::upper_bound(starts.begin(), starts.end(), lo) - starts.begin() - 1);
+            for (std::size_t g = lo; g < hi; ++g) {
+                while (g >= starts[bi + 1])
+                    ++bi;
+                const CellMetrics& v = block_vals[bi][g - starts[bi]];
+                for (int mi = 0; mi < NUM_METRICS; ++mi) {
+                    const double x = v[mi];
+                    if (!std::isfinite(x))
+                        continue;
+                    const QualityMetricSummary& s = summ[mi];
+                    const double span = s.mMax - s.mMin;
+                    int bin = 0;
+                    if (span > 0.0)
+                        bin = static_cast<int>((x - s.mMin) / span * K);
+                    bin = std::clamp(bin, 0, K - 1);
+                    ++h[mi][bin];
+                }
             }
-        }
-    }
+        },
+        /*grain=*/1);
+    for (const Hist& h : partial)
+        for (int mi = 0; mi < NUM_METRICS; ++mi)
+            for (int k = 0; k < K; ++k)
+                summ[mi].mHistogram[k] += h[mi][k];
 
     // --- assemble the report ---
     for (int mi = 0; mi < NUM_METRICS; ++mi) {
@@ -679,8 +706,7 @@ QualityReport compute_quality(const Mesh& rMesh) {
         for (const std::vector<CellMetrics>& vals : block_vals) {
             NDArray a = NDArray::Uninit(DType::Float64, {vals.size(), 1});
             double* d = a.As<double>();
-            for (std::size_t c = 0; c < vals.size(); ++c)
-                d[c] = vals[c][mi];
+            parallel_for_bw(vals.size(), [&](std::size_t c) { d[c] = vals[c][mi]; });
             arrays.push_back(std::move(a));
         }
         rep.mCellArrays.emplace_back(QUALITY_METRIC_NAMES[mi], std::move(arrays));
