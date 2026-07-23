@@ -14,6 +14,8 @@ grid.plot(scalars="T")
 
 Three targets ship today: **PyVista**, **trimesh**, and **Apache Arrow /
 Parquet**. Open3D and DOLFINx are [Phase 2](#phase-2-open3d-and-dolfinx).
+The same story continues on the [GPU handoff page](./gpu) — DLPack export and
+CuPy transfer, built on this module's payload conventions.
 
 Nothing here is part of the C++ core, which stays dependency-free. This is pure
 Python over the numpy the readers already return: no format is added, no binding
