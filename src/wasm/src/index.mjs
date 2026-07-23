@@ -126,8 +126,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
         topologicalDimension: () => Module.topologicalDimension(),
         meshBackend: () => Module.meshBackend(),
         // What this build can actually read/write, both sorted. Prefer this
-        // over a hardcoded table: the wasm build has no HDF5/netCDF formats,
-        // and a few formats are read-only (openfoam) or write-only (svg/tikz).
+        // over a hardcoded table: a few formats are read-only (openfoam) or
+        // write-only (svg/tikz), and the HDF5/netCDF-backed ones are present
+        // only in a build that linked them (the official artifact does).
         availableFormats: () => Module.availableFormats(),
         // Mesh operations (see doc/*.md per operation): computations ON a mesh,
         // not file formats. Index maps (crop/split/convertCells) are not carried
