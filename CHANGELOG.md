@@ -8,6 +8,79 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.2.0 (2026-07-23)
+
+**In-memory interoperability with the wider ecosystem, without a file
+round-trip.** A new Python-only module,
+`src/python/meshioplusplus/_interop.py`, converts a `Mesh` to and from the
+in-memory objects of its main consumers, sharing the underlying numpy buffers
+wherever the target accepts them as they are. Nothing here touches the
+C++/WASM/C/Fortran core, which stays dependency-free — this is pure Python over
+the numpy the readers already return.
+
+- **PyVista** — `to_pyvista(mesh, zero_copy_only=False)` /
+  `from_pyvista(grid)`. Builds the VTK 9 `connectivity`/`offsets`/`celltypes`
+  triple from the mesh's blocks in order, so mixed-type meshes are the normal
+  case. This exists because PyVista's own `from_meshio` targets the upstream
+  `meshio` package and does not recognize `meshioplusplus`.
+- **trimesh** — `to_trimesh` / `from_trimesh`. trimesh holds triangles only, so
+  non-triangle input is routed through meshio++'s *existing* operations rather
+  than a reimplementation: volume meshes through `extract_surface`,
+  higher-order cells through `convert_cells("linearize")`, quads and polygons
+  through `convert_cells("simplexify")`.
+- **Apache Arrow / Parquet** — `to_arrow` / `from_arrow` / `write_parquet` /
+  `read_parquet`, plus a `meshioplusplus data export IN OUT.parquet
+  [--location point|cell]` sub-verb in the Python CLI's `data` group (the
+  native C++ CLI has no counterpart). This is a **tabular export of data
+  arrays for analytics — not a mesh format**: it moves `point_data`/`cell_data`
+  into pandas/polars/DuckDB, does not round-trip geometry, and is deliberately
+  *not* registered in the format registry, so
+  `meshioplusplus convert mesh.vtu out.parquet` does not work. Multi-component
+  arrays become Arrow `fixed_size_list` columns rather than `_0`/`_1`/`_2`
+  suffix columns, which would lose the shape, and the mesh's counts, cell
+  types, version, location and region names ride along in the schema metadata.
+
+**The zero-copy contract.** Buffers are shared when the target accepts the array
+as-is (contiguous, supported dtype, right shape). Every `to_*` takes
+`zero_copy_only`: `False` (default) records each copy in a `notes` list surfaced
+as a warning; `True` raises instead, naming the array and the reason. It governs
+arrays that exist in the `Mesh` — `points`, each data array, and single-block
+connectivity — but not *derived* ones: VTK's `offsets`/`celltypes` have no
+meshio++ counterpart and a multi-block mesh has no single connectivity array to
+share, so making those fatal would reject every mixed-type mesh. Copies are
+forced by an int32→int64 connectivity widening, a `wedge` block (whose meshio
+node order differs from VTK's), a 2-D mesh's point padding, and any
+cross-block concatenation. Returned wrappers hold references to every shared
+array, so they stay valid after the source mesh is garbage-collected.
+
+**Regions per target.** `Point` and `Cell` regions export as int8 `region:<name>`
+mask arrays, plus a JSON sidecar (`meshioplusplus:regions` in PyVista's
+`field_data`, trimesh's `metadata`) carrying each region's `dim`/`tag`, which a
+mask alone cannot express — so a gmsh physical group's integer tag survives a
+PyVista round-trip exactly. `Side` regions are dropped with a warning naming
+them: neither target has a `(cell, local facet)` concept. For trimesh, regions
+follow the composed operations' own documented behaviour and get no second
+policy — a pure-triangle input keeps them, anything routed through
+`extract_surface` loses them.
+
+**New extras**, all pip-friendly and all Python-only: `[pyvista]`, `[trimesh]`,
+`[arrow]`, and the aggregate `[interop]`. They are deliberately **not** in
+`[all]`, which means "the optional deps the *formats* need" (h5py/netCDF4);
+`[viewer]`/`[kahip]`/`[codecs]` stand apart for the same reason. Every
+third-party import is lazy and raises a named `pip install meshioplusplus[...]`
+error when absent.
+
+**Open3D and DOLFINx are deferred to Phase 2.** `has_open3d()`/`has_dolfinx()`
+ship returning `False` and `to_open3d`/`to_dolfinx` raise `NotImplementedError`
+naming the phase. The constraints are recorded now in
+[`doc/interop.md`](doc/interop.md): Open3D's `Vector3dVector` typically copies
+(so the zero-copy claim differs per structure) and its wheel is ~400 MB, while
+DOLFINx needs a single-cell-type mesh, a `ufl`/`basix` domain, an MPI
+communicator and a VTK→basix node-ordering permutation, and is conda/apt-only so
+it can never be a pip extra.
+
+Docs: [`doc/interop.md`](doc/interop.md).
+
 ## v8.1.0 (2026-07-23)
 
 **Named groups of entities are now a first-class part of the core.** A `Region`
