@@ -279,14 +279,22 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/kokkos-install
-          key: kokkos-4.5.01-${{ runner.os }}
+          key: kokkos-4.5.01-pic-${{ runner.os }}
       - name: Build Kokkos 4.5.01 from source
         if: steps.kokkos-cache.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch 4.5.01 https://github.com/kokkos/kokkos.git /tmp/kokkos-src
+          # -DCMAKE_POSITION_INDEPENDENT_CODE=ON is required: Kokkos's static
+          # archives get linked into libmeshioplusplus.so (MESHIOPLUSPLUS_BUILD_C_API),
+          # and a non-PIC static archive can't go into a shared object --
+          # "relocation R_X86_64_TPOFF32 ... can not be used when making a
+          # shared object" from ld. meshioplusplus_core_obj itself is already
+          # -fPIC (it's shared between the static test binary and the shared
+          # C API lib), so anything linked into it must be too.
           cmake -S /tmp/kokkos-src -B /tmp/kokkos-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DKokkos_ENABLE_OPENMP=ON -DKokkos_ENABLE_SERIAL=ON \
-            -DCMAKE_CXX_STANDARD=20 -DCMAKE_INSTALL_PREFIX="$HOME/kokkos-install"
+            -DCMAKE_CXX_STANDARD=20 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/kokkos-install"
           cmake --build /tmp/kokkos-build -j
           cmake --install /tmp/kokkos-build
       # netCDF stays off here (the standalone-executable link quirk); the
