@@ -20,6 +20,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/subset.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -51,7 +52,7 @@ NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>&
 SubsetResult build_cell_subset(const Mesh& rMesh,
                                const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
                                const std::string& rPointIdName, const std::string& rCellIdName,
-                               bool drop_empty_blocks) {
+                               bool drop_empty_blocks, const std::string& rOpName) {
     SubsetResult res;
     const std::size_t n = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
@@ -235,6 +236,23 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
         res.mCellMaps.push_back(std::move(cmap));
         ++b;
     }
+
+    // 8) named regions. Doing this here rather than in each caller is what makes
+    // crop, split and partition agree: they all subset through this function, and
+    // the input -> output block mapping (which `drop_empty_blocks` perturbs) is
+    // only known here.
+    RegionRemap rmap;
+    rmap.pPointMap = &res.mPointMap;
+    rmap.mCellMapKind = CellMapKind::Direct;
+    rmap.pCellMaps = &res.mCellMaps;
+    rmap.mOpName = rOpName.empty() ? "subset" : rOpName;
+    if (drop_empty_blocks) {
+        rmap.mBlockMap.reserve(rKeptCellsPerBlock.size());
+        std::size_t out_block = 0;
+        for (const std::vector<std::int64_t>& kept : rKeptCellsPerBlock)
+            rmap.mBlockMap.push_back(kept.empty() ? kBlockDropped : out_block++);
+    }
+    remap_regions(rMesh, res.mMesh, rmap);
 
     return res;
 }

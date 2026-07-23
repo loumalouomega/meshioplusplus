@@ -63,12 +63,20 @@ NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>&
  *        point indices under this name.
  * @param rCellIdName if non-empty, attach an Int64 `cell_data` of original cell
  *        indices under this name (per block).
- * @return the pruned submesh plus the point/cell index maps.
+ * @param drop_empty_blocks omit blocks that keep no cells from the output (the
+ *        `split` behaviour); the input -> output block shift this causes is
+ *        handled for the named regions below.
+ * @param rOpName the calling operation's name, used only in the warning
+ *        `detail::remap_regions` emits when a region cannot be carried.
+ * @return the pruned submesh — with its `point_data`, `cell_data`, `field_data`
+ *         **and named regions** already carried over — plus the index maps.
  */
 SubsetResult build_cell_subset(const Mesh& rMesh,
                                const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
                                const std::string& rPointIdName = "",
-                               const std::string& rCellIdName = "", bool drop_empty_blocks = false);
+                               const std::string& rCellIdName = "",
+                               bool drop_empty_blocks = false,
+                               const std::string& rOpName = "");
 
 }  // namespace detail
 }  // namespace meshioplusplus
