@@ -875,16 +875,25 @@ jobs:
       - name: Install native libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev zlib1g-dev
+          sudo apt-get install -y zlib1g-dev
       - name: Install build tools
         run: python -m pip install --upgrade pip cmake ninja
 
+      # HDF5 and netCDF are both off, not just netCDF: Debian/Ubuntu's
+      # libhdf5-dev pulls in libhdf5_openmpi, which links the system libcurl.
+      # Julia bundles its own libcurl, and an IJulia kernel subprocess's
+      # dlopen of a HDF5-linked libmeshioplusplus.so mixes the two, failing
+      # with "libcurl.so.4: version `CURL_OPENSSL_4' not found" -- a real
+      # Debian/Ubuntu + Julia interaction, not a meshio++ bug, confirmed by
+      # building the C API with HDF5 on vs. off. None of these formats are
+      # needed to test the binding itself.
       - name: Build and install the C API
         run: |
           cmake -S . -B build-capi -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
             -DMESHIOPLUSPLUS_BUILD_C_API=ON \
+            -DMESHIOPLUSPLUS_WITH_HDF5=OFF \
             -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
           cmake --build build-capi
           cmake --install build-capi --prefix "$PWD/inst"
