@@ -8,6 +8,71 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.1.0 (2026-07-23)
+
+**Named groups of entities are now a first-class part of the core.** A `Region`
+— a named group of *points*, *cells* or, for the first time, *cell facets* —
+lives in `meshioplusplus::Region`, is carried by all three mesh backends, crosses
+the pybind11 boundary natively, and is visible from the C API, Fortran,
+WebAssembly and the native CLI. This is Phase 1 of unifying what every format
+spells differently: gmsh physical groups, Exodus blocks and sets, Abaqus
+`*NSET`/`*ELSET`/`*SURFACE`, MED families, UNV groups, Ansys components,
+OpenFOAM patches, Kratos SubModelParts.
+
+What round-trips now:
+
+- **Gmsh** (`.msh` 2.2) — physical groups map to `cell` regions carrying their
+  dimension and their integer tag, derived from the `gmsh:physical` cell_data
+  and `$PhysicalNames` on read and synthesized into both on write. A mesh whose
+  groups came from another format now writes real physical groups.
+- **Abaqus** (`.inp`) — `*NSET` → point regions, `*ELSET` → cell regions and
+  `*SURFACE` → **side** regions, in both the C++ core and the Python reference.
+  The C++ reader gained full parity with the Python one along the way
+  (`GENERATE`, set-of-set references, `ELSET=` on an `*ELEMENT` line,
+  `*INCLUDE`), so a set-carrying `.inp` no longer falls back.
+- **Side sets have no precedent anywhere in meshio++** — they are only reachable
+  through `.regions`, not through `point_sets`/`cell_sets`.
+
+`point_sets` and `cell_sets` keep working exactly as they always have. They are
+now views over the mesh's regions: reading one materializes the historical shape,
+writing one creates or replaces the matching regions. Two accommodations make
+that lossless rather than nearly so — a `cell_sets` entry that is not cell-index
+data (gmsh's `gmsh:bounding_entities`, whose entity tags are signed) is kept
+verbatim through a passthrough, and a `None` block becomes an empty array, which
+every consumer already treated identically.
+
+Also in this release:
+
+- **`detail/region_remap.hpp`** — one shared remapper replaces nine near-identical
+  per-operation Python implementations. `crop`, `split`, `merge` (with source-id
+  namespacing), `reorder`, `clean`, `partition`, `convert_cells`, `refine` and
+  `decimate` remap regions in C++; `transform`, `smooth`, `interpolate` and the
+  data operations pass them through; `slice`, `isosurface` and surface extraction
+  drop them with a warning naming the operation, never silently.
+- **`detail/cell_index.hpp`** — the single owner of the global (block-major) cell
+  index that `cell` and `side` regions are defined against.
+- **KRATOS backend**: regions materialize as SubModelParts, taking precedence
+  over the names the integer-tag inference would have claimed.
+- **C API**: `mio_regions_create` / `_count` / `_name` / `_info` / `_entries` /
+  `_free` plus `mio_mesh_add_region`. **Fortran**: `m%regions(...)` and
+  `m%add_region(...)`. **WebAssembly**: regions travel on the mesh object, so
+  `readMesh` / `writeMesh` / `convert` carry them with no new call.
+- **Native CLI**: `info` prints point/cell/side sets, closing its documented
+  omission, and `diff` compares regions in the core rather than only in the
+  Python shim.
+
+Deferred to Phase 2, explicitly: Exodus blocks/node sets/side sets, MED families
+and groups (absorbing `MedInfo`), UNV and Ansys (absorbing `UnvInfo`/`AnsysInfo`),
+OpenFOAM boundary patches, XDMF Sets, and VTU/VTP — which have no native set
+concept, so a convention has to be chosen rather than invented silently. A
+`regions` CLI group and a region-aware `split --by region` are deferred with them.
+
+Two behaviour changes worth calling out. A remapped set now comes back **sorted**
+rather than in the permutation's own order, because region entries are canonical
+(sorted, de-duplicated) so that membership comparison is exact. And an `*ELSET`
+declared inside an `*INCLUDE`d Abaqus file is now carried through the merge; it
+used to be dropped under a TODO in `_abaqus.py`.
+
 ## v8.0.0 (2026-07-23)
 
 **The WebAssembly build now ships every format the C++ core has.** `cgns`,
