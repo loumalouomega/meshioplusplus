@@ -1,0 +1,61 @@
+#!/bin/sh
+# Locate the installed meshio++ C library and generate src/Makevars.
+#
+# Plain POSIX sh -- no autoconf. Generating Makevars from Makevars.in is the
+# CRAN-blessed pattern (what `sf` and `xml2` do); a committed Makevars with a
+# `$(shell ...)` in it earns a "non-portable flags" NOTE from
+# `R CMD check --as-cran` instead.
+#
+# Resolution order:
+#   1. pkg-config meshioplusplus  -- the relocatable .pc the C API installs
+#   2. $MESHIOPLUSPLUS_HOME       -- a plain install prefix
+
+set -e
+
+PKG_CPPFLAGS=""
+PKG_LIBS=""
+
+if [ -n "${MESHIOPLUSPLUS_CFLAGS}" ] || [ -n "${MESHIOPLUSPLUS_LIBS}" ]; then
+    # Fully manual override, for unusual layouts.
+    PKG_CPPFLAGS="${MESHIOPLUSPLUS_CFLAGS}"
+    PKG_LIBS="${MESHIOPLUSPLUS_LIBS}"
+    echo "meshioplusplus: using MESHIOPLUSPLUS_CFLAGS / MESHIOPLUSPLUS_LIBS"
+elif [ -n "${MESHIOPLUSPLUS_HOME}" ]; then
+    PKG_CPPFLAGS="-I${MESHIOPLUSPLUS_HOME}/include"
+    PKG_LIBS="-L${MESHIOPLUSPLUS_HOME}/lib -lmeshioplusplus"
+    echo "meshioplusplus: using MESHIOPLUSPLUS_HOME=${MESHIOPLUSPLUS_HOME}"
+elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists meshioplusplus; then
+    PKG_CPPFLAGS="$(pkg-config --cflags meshioplusplus)"
+    PKG_LIBS="$(pkg-config --libs meshioplusplus)"
+    echo "meshioplusplus: using pkg-config ($(pkg-config --modversion meshioplusplus))"
+else
+    cat >&2 <<'EOF'
+------------------------- ERROR: meshio++ not found -------------------------
+
+This package binds the meshio++ C library (libmeshioplusplus), which must be
+built and installed first:
+
+    ./build/configure.sh --c-api --build
+    cmake --install build/cpp-release --prefix /your/prefix
+
+Then make it discoverable, either through pkg-config:
+
+    export PKG_CONFIG_PATH=/your/prefix/lib/pkgconfig
+
+or by naming the prefix directly:
+
+    export MESHIOPLUSPLUS_HOME=/your/prefix
+
+At run time the shared library must also be on the loader path
+(LD_LIBRARY_PATH on Linux, DYLD_LIBRARY_PATH on macOS).
+
+-----------------------------------------------------------------------------
+EOF
+    exit 1
+fi
+
+sed -e "s|@PKG_CPPFLAGS@|${PKG_CPPFLAGS}|" \
+    -e "s|@PKG_LIBS@|${PKG_LIBS}|" \
+    src/Makevars.in > src/Makevars
+
+exit 0

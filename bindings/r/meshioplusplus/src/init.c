@@ -1,0 +1,169 @@
+/* Registration of the .Call entry points.
+ *
+ * R_useDynamicSymbols(FALSE) plus a full CallMethodDef table is what keeps
+ * `R CMD check` quiet about symbol registration, and it means R resolves each
+ * entry point once at load rather than by name on every call. */
+
+#include "mio_r.h"
+
+#include <R_ext/Rdynload.h>
+#include <R_ext/Visibility.h>
+
+/* mesh.c */
+extern SEXP R_mio_version(void);
+extern SEXP R_mio_mesh_backend(void);
+extern SEXP R_mio_last_error(void);
+extern SEXP R_mio_format_readable(SEXP);
+extern SEXP R_mio_format_writable(SEXP);
+extern SEXP R_mio_sniff_format(SEXP);
+extern SEXP R_mio_cell_type_num_nodes(SEXP);
+extern SEXP R_mio_cell_type_dimension(SEXP);
+extern SEXP R_mio_reader_supports_options(SEXP);
+extern SEXP R_mio_mesh_create(void);
+extern SEXP R_mio_mesh_release(SEXP);
+extern SEXP R_mio_mesh_is_open(SEXP);
+extern SEXP R_mio_read(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_write(SEXP, SEXP, SEXP);
+extern SEXP R_mio_convert(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_read_metadata(SEXP, SEXP);
+extern SEXP R_mio_num_points(SEXP);
+extern SEXP R_mio_point_dim(SEXP);
+extern SEXP R_mio_num_cell_blocks(SEXP);
+extern SEXP R_mio_cell_block_info(SEXP, SEXP);
+extern SEXP R_mio_cell_block_type(SEXP, SEXP);
+extern SEXP R_mio_points(SEXP);
+extern SEXP R_mio_connectivity(SEXP, SEXP);
+extern SEXP R_mio_connectivity_raw(SEXP, SEXP);
+extern SEXP R_mio_point_data_names(SEXP);
+extern SEXP R_mio_cell_data_names(SEXP);
+extern SEXP R_mio_field_data_names(SEXP);
+extern SEXP R_mio_cell_data_num_blocks(SEXP, SEXP);
+extern SEXP R_mio_point_data(SEXP, SEXP);
+extern SEXP R_mio_cell_data(SEXP, SEXP, SEXP);
+extern SEXP R_mio_field_data(SEXP, SEXP);
+extern SEXP R_mio_set_points(SEXP, SEXP);
+extern SEXP R_mio_add_cell_block(SEXP, SEXP, SEXP);
+extern SEXP R_mio_add_point_data(SEXP, SEXP, SEXP);
+extern SEXP R_mio_append_cell_data(SEXP, SEXP, SEXP);
+extern SEXP R_mio_add_field_data(SEXP, SEXP, SEXP);
+extern SEXP R_mio_regions(SEXP);
+extern SEXP R_mio_add_region(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+
+/* ops.c */
+extern SEXP R_mio_extract_surface(SEXP, SEXP);
+extern SEXP R_mio_extract_skin(SEXP, SEXP);
+extern SEXP R_mio_attach_quality(SEXP);
+extern SEXP R_mio_quality_counts(SEXP);
+extern SEXP R_mio_transform(SEXP, SEXP, SEXP);
+extern SEXP R_mio_clean(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_smooth(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_crop_bbox(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_crop_plane(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_slice(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_merge(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_stats(SEXP);
+extern SEXP R_mio_compute_bandwidth(SEXP);
+extern SEXP R_mio_reorder(SEXP, SEXP);
+extern SEXP R_mio_split(SEXP, SEXP, SEXP);
+extern SEXP R_mio_convert_cells(SEXP, SEXP, SEXP);
+extern SEXP R_mio_refine(SEXP, SEXP, SEXP);
+extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_partition_labels(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_data_drop(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_data_keep(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_data_rename(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_data_point_to_cell(SEXP, SEXP, SEXP);
+extern SEXP R_mio_data_cell_to_point(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_data_calc(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_data_condition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_data_info(SEXP);
+
+#define CALLDEF(name, n) {#name, (DL_FUNC)&name, n}
+
+static const R_CallMethodDef CallEntries[] = {
+    CALLDEF(R_mio_version, 0),
+    CALLDEF(R_mio_mesh_backend, 0),
+    CALLDEF(R_mio_last_error, 0),
+    CALLDEF(R_mio_format_readable, 1),
+    CALLDEF(R_mio_format_writable, 1),
+    CALLDEF(R_mio_sniff_format, 1),
+    CALLDEF(R_mio_cell_type_num_nodes, 1),
+    CALLDEF(R_mio_cell_type_dimension, 1),
+    CALLDEF(R_mio_reader_supports_options, 1),
+    CALLDEF(R_mio_mesh_create, 0),
+    CALLDEF(R_mio_mesh_release, 1),
+    CALLDEF(R_mio_mesh_is_open, 1),
+    CALLDEF(R_mio_read, 6),
+    CALLDEF(R_mio_write, 3),
+    CALLDEF(R_mio_convert, 4),
+    CALLDEF(R_mio_read_metadata, 2),
+    CALLDEF(R_mio_num_points, 1),
+    CALLDEF(R_mio_point_dim, 1),
+    CALLDEF(R_mio_num_cell_blocks, 1),
+    CALLDEF(R_mio_cell_block_info, 2),
+    CALLDEF(R_mio_cell_block_type, 2),
+    CALLDEF(R_mio_points, 1),
+    CALLDEF(R_mio_connectivity, 2),
+    CALLDEF(R_mio_connectivity_raw, 2),
+    CALLDEF(R_mio_point_data_names, 1),
+    CALLDEF(R_mio_cell_data_names, 1),
+    CALLDEF(R_mio_field_data_names, 1),
+    CALLDEF(R_mio_cell_data_num_blocks, 2),
+    CALLDEF(R_mio_point_data, 2),
+    CALLDEF(R_mio_cell_data, 3),
+    CALLDEF(R_mio_field_data, 2),
+    CALLDEF(R_mio_set_points, 2),
+    CALLDEF(R_mio_add_cell_block, 3),
+    CALLDEF(R_mio_add_point_data, 3),
+    CALLDEF(R_mio_append_cell_data, 3),
+    CALLDEF(R_mio_add_field_data, 3),
+    CALLDEF(R_mio_regions, 1),
+    CALLDEF(R_mio_add_region, 6),
+    CALLDEF(R_mio_extract_surface, 2),
+    CALLDEF(R_mio_extract_skin, 2),
+    CALLDEF(R_mio_attach_quality, 1),
+    CALLDEF(R_mio_quality_counts, 1),
+    CALLDEF(R_mio_transform, 3),
+    CALLDEF(R_mio_clean, 6),
+    CALLDEF(R_mio_smooth, 9),
+    CALLDEF(R_mio_crop_bbox, 5),
+    CALLDEF(R_mio_crop_plane, 5),
+    CALLDEF(R_mio_slice, 4),
+    CALLDEF(R_mio_isosurface, 5),
+    CALLDEF(R_mio_merge, 6),
+    CALLDEF(R_mio_interpolate, 7),
+    CALLDEF(R_mio_meshes_equal, 5),
+    CALLDEF(R_mio_diff, 5),
+    CALLDEF(R_mio_stats, 1),
+    CALLDEF(R_mio_compute_bandwidth, 1),
+    CALLDEF(R_mio_reorder, 2),
+    CALLDEF(R_mio_split, 3),
+    CALLDEF(R_mio_convert_cells, 3),
+    CALLDEF(R_mio_refine, 3),
+    CALLDEF(R_mio_decimate, 8),
+    CALLDEF(R_mio_partition, 9),
+    CALLDEF(R_mio_partition_labels, 8),
+    CALLDEF(R_mio_data_drop, 4),
+    CALLDEF(R_mio_data_keep, 4),
+    CALLDEF(R_mio_data_rename, 4),
+    CALLDEF(R_mio_data_point_to_cell, 3),
+    CALLDEF(R_mio_data_cell_to_point, 4),
+    CALLDEF(R_mio_data_calc, 5),
+    CALLDEF(R_mio_data_condition, 10),
+    CALLDEF(R_mio_data_info, 1),
+    {NULL, NULL, 0}};
+
+void attribute_visible R_init_meshioplusplus(DllInfo *dll) {
+    /* Rf_install() interns the symbol permanently, so caching it in a global
+     * needs no further protection. It tags our external pointers, which is
+     * what makes a foreign pointer an error rather than a crash. */
+    mio_r_mesh_tag = Rf_install("mio_mesh_handle");
+    R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
+    R_useDynamicSymbols(dll, FALSE);
+    R_forceSymbols(dll, TRUE);
+}

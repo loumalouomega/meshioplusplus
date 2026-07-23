@@ -16,3 +16,9 @@ title: "meshio++: Tools for mesh files"
 doi: 10.5281/zenodo.21384760
 url: https://github.com/loumalouomega/meshioplusplus
 license: MIT
+# One exception to the MIT licence above: the Julia binding in bindings/julia/
+# is released under GPL-3.0 (copyleft: no permission needed to use/modify/
+# sell it, but distributing it or a modified version must stay GPL-3.0 with
+# source available; private use carries no obligation). The C++ core, the C
+# API it calls and the R binding in bindings/r/ are all MIT. See
+# bindings/julia/LICENSE.

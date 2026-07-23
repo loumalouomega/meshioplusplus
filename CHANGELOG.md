@@ -8,6 +8,91 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.3.0 (2026-07-23)
+
+**Julia and R bindings** — the next two languages of the scientific-computing
+audience after Python, C, Fortran and JavaScript. Both sit on the **existing**
+C API (`libmeshioplusplus`, the installed pure-C99 header), exactly as the
+Fortran module does: no new C++ is written, and the C++/WebAssembly/Python core
+is untouched.
+
+- **Julia** — `bindings/julia/MeshioPlusPlus/`, docs
+  [`doc/julia.md`](doc/julia.md). `ccall` into the installed shared library,
+  discovered through `MESHIOPLUSPLUS_LIB` or the standard loader path. A `Mesh`
+  wraps the opaque handle with a GC **finalizer** (unlike Fortran, which frees
+  explicitly). Genuine **zero-copy borrows** — `points_ptr`,
+  `connectivity_ptr`, `point_data_ptr`, … — are returned as a `MeshBorrow`
+  that both keeps its owning mesh alive and records the mesh's mutation
+  generation, so using one after a mutating call raises `BorrowError` rather
+  than reading stale memory. That is the C header's rule 3 *enforced*, not
+  merely documented.
+- **R** — `bindings/r/meshioplusplus/`, docs [`doc/r.md`](doc/r.md). Plain
+  `.Call` over R's own C API rather than Rcpp, keeping the dependency
+  footprint at zero; the handle is an external pointer with a registered
+  finalizer. **R is copy-only**: R vectors are R-managed, so the C API's
+  zero-copy borrow cannot survive into R without ALTREP machinery that is out
+  of scope, and every accessor copies. There is therefore no `_ptr` accessor
+  at all — the 0-based reader is named `mio_connectivity_raw`, deliberately
+  not `_ptr`, so nobody reads it as a borrow. R also has no native 64-bit
+  integer, so `int64` arrays arrive as `double` (exact to 2^53, no `bit64`
+  dependency), with the stored dtype reported in a `"dtype"` attribute.
+
+Both cover the full Fortran surface: lifecycle, read/write (including the
+selective-read options and file metadata), every setter and getter, named
+regions, and all ~24 operations — including the ones returning an opaque C
+result, which are always drained through `_take_mesh` so every mesh handed to
+the caller owns its handle and no piece can dangle when its result is freed.
+
+Both follow the Fortran module's two conventions verbatim, because Julia and R
+are column-major too: points shaped `(dim, n)` and connectivity
+`(nodes_per_cell, n)` are the **same memory** as the C API's row-major shapes,
+so **nothing is transposed anywhere**; and connectivity is **1-based**, with
+the ±1 shift applied inside the copying accessors only. Index maps and
+permutations shift the same way, with the C API's `-1` "pruned / absent"
+sentinel becoming `0` — never a valid 1-based index. `partition_labels`
+returns part *ids* rather than indices and is deliberately left unshifted.
+
+> **Licence exception, deliberate and the one thing to know:** the Julia
+> binding in `bindings/julia/` is **not MIT**. It is released under the
+> **GNU General Public License, version 3 (GPL-3.0)** — a copyleft license,
+> not a permission-required one: anyone, including a company, may use,
+> modify or sell it commercially with **no permission needed**; the
+> condition is on *conveying* (distributing) it — a distributed copy or
+> modified version must be under GPL-3.0 too, with source available.
+> Purely private/internal use that is never distributed carries **no
+> obligation** at all. Because GPL-3.0 **is** OSI-approved, the package is
+> eligible for Julia's General registry (registration itself is a separate
+> follow-up, not done yet), and it still installs by path or URL in the
+> meantime; there is also no BinaryBuilder JLL yet. Everything else — the
+> C++ core, the C API the binding calls, and the R binding — remains MIT.
+
+Neither binding invents a workaround for the C ABI's documented gaps (point and
+cell sets beyond regions, the `frozen` pin masks, per-cell-type counts in the
+statistics report, ragged block connectivity, the combined `data_manage`); each
+repeats the same list in its own README and doc page. CI gains a `julia` and an
+`r` job, both mirroring the existing external-consumer smoke test: build the C
+API, `cmake --install` it, then consume it exactly as a user would — `Pkg.test`
+and `R CMD check --as-cran` respectively — and each also asserts that a missing
+library fails with a message naming how to build one.
+
+**Julia and R example notebooks** — `example/julia/*.ipynb` and `example/r/*.ipynb`, the same
+three-notebook tour (`01_read_and_visualize`, `02_convert_and_inspect`, `03_mesh_operations`) as the
+existing C++ notebooks, called through the new bindings on their own Jupyter kernels ([IJulia](https://github.com/JuliaLang/IJulia.jl)
+/ [IRkernel](https://irkernel.github.io/)). Since the flat C API these bindings ride on can't drive the SVG
+writer's per-call data-driven colouring either (a gap the C++ notebooks don't hit, since they call
+`write_svg` directly), quality/field renders that the C++ tour shows as a coloured mesh are shown as a
+small chart instead — hand-rolled SVG bar/histogram charts in Julia, plain base-R graphics in R, neither
+needing a plotting-library dependency. Writing these caught two real, now-fixed defects: `smooth()`'s `mu`
+default had been hardcoded `-0.53` in **both** new bindings — an invented value, never checked against the
+real default (`-0.34`, matching Fortran and the Python bindings) — which is wide enough to reliably degrade
+a tangled mesh rather than recover it; and R's data setters were found to always write `Float64` regardless
+of the R vector's storage mode, meaning `mio_split(by = "region")` cannot be driven by a tag built fresh in
+R (only one already present in a read file, or produced by the C++ core itself), now a documented `doc/r.md`
+gap distinct from Julia, which has no such restriction. Building the C API with HDF5 on for Julia notebooks
+also surfaced a real Debian/Ubuntu + Julia interaction — an IJulia kernel's `dlopen` of a
+`libhdf5_openmpi`-linked library can fail on a `libcurl` symbol-version mismatch against Julia's own bundled
+`libcurl` — documented in `doc/julia.md` and fixed in the `julia` CI job (HDF5 off, not just netCDF).
+
 ## v8.2.0 (2026-07-23)
 
 **In-memory interoperability with the wider ecosystem, without a file

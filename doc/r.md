@@ -1,0 +1,153 @@
+# R
+
+meshio++ ships an R package, `meshioplusplus`, layered on the [C API](/c_api) — the same flat C library the [Fortran](/fortran) and [Julia](/julia) bindings sit on:
+
+```r
+library(meshioplusplus)
+
+m <- mio_read("bracket.msh")
+m
+#> <mio_mesh: 9231 points, 42145 cells in 3 block(s)>
+
+surf <- mio_extract_surface(m)
+mio_write(surf, "bracket_surface.vtu")
+mio_release(m)
+```
+
+Every exported function is prefixed `mio_`, which keeps the package clear of base R names such as `points()`, `stats()`, `split()` and `merge()`.
+
+The package is MIT-licensed like the rest of meshio++. (The sibling [Julia](/julia) binding is deliberately not — see its page.)
+
+## Building and installing
+
+The package binds the **installed** C library; it compiles only its own thin C shim.
+
+```sh
+./build/configure.sh --c-api --build
+cmake --install build/cpp-release --prefix /opt/meshioplusplus
+```
+
+Then make it discoverable, either through pkg-config (the relocatable `.pc` the C API already installs):
+
+```sh
+export PKG_CONFIG_PATH=/opt/meshioplusplus/lib/pkgconfig
+```
+
+or by naming the prefix directly:
+
+```sh
+export MESHIOPLUSPLUS_HOME=/opt/meshioplusplus
+```
+
+and install:
+
+```sh
+R CMD INSTALL bindings/r/meshioplusplus
+```
+
+At run time the shared library must also be on the loader path (`LD_LIBRARY_PATH` on Linux, `DYLD_LIBRARY_PATH` on macOS). On Windows `configure` is not run: set `MESHIOPLUSPLUS_HOME` and put `libmeshioplusplus.dll` on `PATH`.
+
+The package's `configure` script probes those two routes and generates `src/Makevars` from `src/Makevars.in`. That indirection is deliberate: a committed `Makevars` containing a `$(shell ...)` earns a *non-portable flags* NOTE from `R CMD check --as-cran`, while generating it from a `.in` is the pattern CRAN packages such as **sf** and **xml2** use.
+
+## Array layout — column-major, no transpose
+
+R matrices are column-major and the C core row-major, so
+
+```r
+mio_points(m)                     # dim x num_points
+mio_connectivity(m, i)            # nodes_per_cell x num_cells
+mio_point_data(m, "displacement") # components x num_points
+```
+
+are the **same layout** as the C API's row-major `(num_points, dim)`, `(num_cells, nodes_per_cell)` and `(num_points, components)`. One `memcpy` and the shape is already right — nothing is transposed on either side, exactly as in the Fortran and Julia bindings.
+
+The one deliberate exception is `mio_transform()`, whose 4×4 affine matrix *is* transposed on the way out: that is a mathematical object, not a mesh array.
+
+## R is copy-only
+
+::: warning No zero-copy borrow in R
+R vectors are R-managed, so the C API's zero-copy borrow **does not survive into R** without ALTREP machinery that is out of scope here. **Every accessor in this package copies.** That is a real difference from the [Julia](/julia) and [Fortran](/fortran) bindings, which do hand out live views into the C++ core's buffers.
+:::
+
+Because of that there is **no `_ptr` accessor at all**. The 0-based reader is named `mio_connectivity_raw()`, deliberately *not* `mio_connectivity_ptr()`, so nobody reads it as a borrow:
+
+| accessor | copies? | node indices |
+|---|---|---|
+| `mio_points(m)` | yes | n/a |
+| `mio_connectivity(m, i)` | yes | **1-based** |
+| `mio_connectivity_raw(m, i)` | yes | **0-based** — the ABI's own |
+
+The ±1 shift happens in that copy, which is where the other two bindings put it too.
+
+## 64-bit integers
+
+R has no native 64-bit integer type. The `int64` arrays the C API returns — connectivity, region entries, index maps, permutations — therefore arrive as `double`. That is exact to 2^53, far beyond any mesh this library will meet, and it avoids a hard dependency on **bit64** for a theoretical case. It is a limitation of the R side, not of the ABI.
+
+The dtype a data array was actually stored as is reported separately rather than silently lost:
+
+```r
+attr(mio_point_data(m, "temperature"), "dtype")
+#> [1] "float64"
+```
+
+## Indexing
+
+Cell-block indices, data-name indices, connectivity and region entries are all **1-based**. Index maps and permutations are 1-based too, with the C API's `-1` "pruned / absent" sentinel becoming **`0`** — never a valid 1-based index, so it stays unambiguous. That is verbatim the Fortran and Julia rule.
+
+`mio_partition_labels()` is the exception: those are part **ids**, not indices, so they stay in `0:(nparts - 1)`.
+
+Region entries are 1-based with one further exception (see [`doc/regions.md`](/regions)): for a `"side"` region the second row is a **facet ordinal within the cell type**, not a mesh index, so it is passed through unshifted.
+
+## Memory management
+
+A mesh handle is an **external pointer** (`R_MakeExternalPtr`) with a registered finalizer calling `mio_mesh_free`, so it is released when garbage-collected. `mio_release()` frees it immediately and is idempotent; using a released handle raises a clean R error rather than crashing, and so does passing something that is not a mesh handle at all.
+
+Operations producing an opaque C result (`mio_split()`, `mio_partition()`, `mio_reorder()`, `mio_refine()`, `mio_decimate()`, `mio_convert_cells()`) always **transfer ownership** of the mesh out of that result rather than returning a borrow into it, so a piece stays valid after the result is gone.
+
+## Error handling
+
+Every failure becomes an R condition carrying the C API's own thread-local message via `Rf_error()`; a `mio_status` code never reaches R.
+
+```r
+mio_read("/nope.vtu")
+#> Error: meshio++: cannot open file '/nope.vtu'
+```
+
+## Named regions
+
+```r
+mio_add_region(m, "inlet", "point", c(1, 3, 5))
+mio_add_region(m, "solid", "cell", c(1, 2), dim = 3L, tag = 17)
+mio_add_region(m, "wall", "side", matrix(c(1, 0, 2, 2), nrow = 2))
+
+for (r in mio_regions(m)) {
+  cat(r$name, r$kind, ncol(r$entries), "entries\n")
+}
+```
+
+## Why plain `.Call`, not Rcpp
+
+`.Call` with R's own C API keeps the dependency footprint at exactly zero — the package has no `Imports` and needs no C++ toolchain during `R CMD check` — and it matches the flat C ABI the rest of meshio++'s bindings sit on. The whole surface is scalars, vectors and matrices, where `Rf_allocVector` / `Rf_allocMatrix` plus a `memcpy` is all that is required; Rcpp would buy convenience this surface does not need.
+
+## Documented gaps
+
+These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [Julia](/julia) bindings; the R package invents no workaround for any of them:
+
+- **point / cell sets beyond regions** never reach the C++ core at all;
+- the **`frozen` pin mask** of `mio_smooth()` and `mio_decimate()`;
+- **per-cell-type counts** in `mio_stats()` — use `mio_cell_block_types()` with `mio_cell_block_info()`;
+- **ragged block connectivity**: `mio_cell_block_info()$is_ragged` reports such a block, and `mio_connectivity()` then raises an error rather than returning something wrong;
+- the combined **`data_manage`** — `mio_data_drop()` / `mio_data_keep()` / `mio_data_rename()` compose to the same effect.
+
+As on the Julia page: **gmsh does not currently round-trip named regions** (the `$PhysicalNames` entry is written, but no physical tag is attached to an entity in `$Elements`, so a reader cannot rebuild the group). This is pre-existing meshio++ behaviour, reproducible from Python; `abaqus` round-trips regions correctly.
+
+One further limitation is specific to this binding rather than the C ABI: **the data *setters* always write `Float64`.** `mio_add_point_data()`, `mio_append_cell_data()` and `mio_add_field_data()` copy through `REALSXP` regardless of the R vector's own storage mode, because R has no integer type reaching the C ABI here — the same reason [64-bit integers](#bit-integers) come back as `double` on the *reading* side. The practical consequence: `mio_split(by = "region")` needs a genuinely **integer** cell-data tag, so a tag array built fresh in R cannot drive it — only an integer tag already present in a *read* file (a gmsh physical group, an Exodus block id, an `mio_isosurface()`-produced `iso:index`, …) can. `example/r/03_mesh_operations.ipynb`'s split demo uses `by = "type"` for exactly this reason.
+
+## Tests
+
+```sh
+R CMD build bindings/r/meshioplusplus
+R CMD check --as-cran meshioplusplus_*.tar.gz
+```
+
+with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.

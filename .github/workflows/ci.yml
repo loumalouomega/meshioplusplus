@@ -849,3 +849,161 @@ jobs:
               sys.exit(f"expected 320x240, got {width}x{height}")
           print(f"ok: {len(data)} byte PNG at {width}x{height}")
           PY
+
+  # The Julia binding (bindings/julia/), which consumes the INSTALLED C API
+  # exactly as an external user would -- the same shape as the "Install +
+  # consumer smoke test" step of the cpp-tests NATIVE leg above. No C++ of its
+  # own is compiled here.
+  #
+  # netCDF stays off (the standalone-executable link quirk); the cpp-tests
+  # matrix covers those formats.
+  julia:
+    name: Julia binding
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive  # vendored Eigen (MED transpose)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev
+      - name: Install build tools
+        run: python -m pip install --upgrade pip cmake ninja
+
+      # HDF5 and netCDF are both off, not just netCDF: Debian/Ubuntu's
+      # libhdf5-dev pulls in libhdf5_openmpi, which links the system libcurl.
+      # Julia bundles its own libcurl, and an IJulia kernel subprocess's
+      # dlopen of a HDF5-linked libmeshioplusplus.so mixes the two, failing
+      # with "libcurl.so.4: version `CURL_OPENSSL_4' not found" -- a real
+      # Debian/Ubuntu + Julia interaction, not a meshio++ bug, confirmed by
+      # building the C API with HDF5 on vs. off. None of these formats are
+      # needed to test the binding itself.
+      - name: Build and install the C API
+        run: |
+          cmake -S . -B build-capi -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_BUILD_C_API=ON \
+            -DMESHIOPLUSPLUS_WITH_HDF5=OFF \
+            -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          cmake --build build-capi
+          cmake --install build-capi --prefix "$PWD/inst"
+
+      # MESHIOPLUSPLUS_LIB is the package's first discovery route; the loader
+      # path is the fallback. Setting both exercises the documented primary one
+      # while keeping any dependent .so resolvable.
+      - name: Run the test suite
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
+        run: |
+          export MESHIOPLUSPLUS_LIB="$PWD/inst/lib/libmeshioplusplus.so"
+          julia --project=bindings/julia/MeshioPlusPlus -e 'using Pkg; Pkg.test()'
+
+      - name: Run the doc example
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
+        run: |
+          export MESHIOPLUSPLUS_LIB="$PWD/inst/lib/libmeshioplusplus.so"
+          julia --project=bindings/julia/MeshioPlusPlus doc/examples/julia_example.jl
+
+      # The package must fail with a message naming how to build the library,
+      # not with an opaque dlopen error, when it cannot find one.
+      - name: A missing library fails by name
+        run: |
+          julia --project=bindings/julia/MeshioPlusPlus -e '
+            try
+              using MeshioPlusPlus
+              error("expected loading to fail without the library")
+            catch err
+              msg = sprint(showerror, err)
+              occursin("configure.sh --c-api", msg) || error("unhelpful error:\n" * msg)
+              println("ok: failed by name")
+            end'
+
+  # The R binding (bindings/r/), against the same installed prefix. `R CMD
+  # check --as-cran` is the real quality gate for an R package, so that is what
+  # runs rather than a bare test invocation.
+  r:
+    name: R binding
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      # testthat is the package's only dependency (no Imports at all), so it is
+      # installed directly rather than through setup-r-dependencies, which would
+      # resolve a DESCRIPTION whose configure step needs a C library that does
+      # not exist yet at this point in the job.
+      - name: Install testthat
+        run: install.packages("testthat")
+        shell: Rscript {0}
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev zlib1g-dev pkg-config
+      - name: Install build tools
+        run: python -m pip install --upgrade pip cmake ninja
+
+      - name: Build and install the C API
+        run: |
+          cmake -S . -B build-capi -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_BUILD_C_API=ON \
+            -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          cmake --build build-capi
+          cmake --install build-capi --prefix "$PWD/inst"
+
+      # pkg-config is the package's first discovery route (the relocatable .pc
+      # the C API installs); MESHIOPLUSPLUS_HOME is the documented fallback.
+      - name: R CMD check --as-cran
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/inst/lib/pkgconfig
+          LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
+          _R_CHECK_FORCE_SUGGESTS_: "false"
+        run: |
+          pkg-config --exists meshioplusplus
+          R CMD build bindings/r/meshioplusplus
+          # A LaTeX-less runner cannot build the PDF manual, and that failure
+          # says nothing about the package.
+          R CMD check --as-cran --no-manual meshioplusplus_*.tar.gz
+
+      - name: Show the check log
+        if: always()
+        run: cat meshioplusplus.Rcheck/00check.log || true
+
+      - name: Install and run the doc example
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/inst/lib/pkgconfig
+          LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
+        run: |
+          R CMD INSTALL bindings/r/meshioplusplus
+          Rscript doc/examples/r_example.R
+
+      # The configure script must explain how to build the library rather than
+      # failing with a bare compiler error.
+      - name: A missing library fails by name
+        run: |
+          cd bindings/r/meshioplusplus
+          if env -u PKG_CONFIG_PATH -u MESHIOPLUSPLUS_HOME ./configure 2>err.log; then
+            echo "expected configure to fail without the library" && exit 1
+          fi
+          grep -q 'configure.sh --c-api' err.log
+          echo "ok: failed by name"

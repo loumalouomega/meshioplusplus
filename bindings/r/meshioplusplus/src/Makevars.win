@@ -1,0 +1,9 @@
+# Windows build. The `configure` script is not run on Windows, so the meshio++
+# install prefix is named directly through MESHIOPLUSPLUS_HOME:
+#
+#     set MESHIOPLUSPLUS_HOME=C:/path/to/meshioplusplus-install
+#
+# built with `build/configure.bat --c-api` followed by `cmake --install`.
+# libmeshioplusplus.dll must also be on PATH at run time.
+PKG_CPPFLAGS = -I"$(MESHIOPLUSPLUS_HOME)/include"
+PKG_LIBS = -L"$(MESHIOPLUSPLUS_HOME)/lib" -lmeshioplusplus

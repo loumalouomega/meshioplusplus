@@ -1,0 +1,21 @@
+Package: meshioplusplus
+Type: Package
+Title: Read and Write Scientific Computing and FEM Mesh Formats
+Version: 8.3.0
+Authors@R: person("Vicente", "Mataix Ferrandiz", email = "tote1989@gmail.com",
+                  role = c("aut", "cre"))
+Description: Bindings to the 'meshio++' C library for reading and writing the
+    mesh file formats used in scientific computing and finite element analysis
+    (Gmsh, VTK, VTU, Abaqus, Exodus, MED, XDMF and many others), together with
+    its operations layer: surface extraction, mesh quality metrics, refinement,
+    decimation, partitioning, smoothing, slicing and isosurfaces. The 'meshio++'
+    C library must be installed separately; see the package README.
+License: MIT + file LICENSE
+URL: https://github.com/loumalouomega/meshioplusplus
+BugReports: https://github.com/loumalouomega/meshioplusplus/issues
+SystemRequirements: meshio++ C library (libmeshioplusplus), C99
+Encoding: UTF-8
+NeedsCompilation: yes
+Suggests: testthat (>= 3.0.0)
+Config/testthat/edition: 3
+RoxygenNote: 7.3.2
