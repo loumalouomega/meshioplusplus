@@ -8,7 +8,7 @@ meshioplusplus --help
 meshioplusplus <subcommand> --help
 ```
 
-The same verbs are also available as a **standalone native C++ binary** that needs no Python interpreter and no pybind11 extension — see [Native CLI (C API)](./c_api.md#native-command-line-binary) for how to build it (`build/configure.sh --cli --build`), or download a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page. It shares the [C API](./c_api.md)'s flat-surface limitations: point/cell **sets** and `convert -s/-d` are unavailable there (they live only in the Python `Mesh`), and there is no Python fallback for formats whose C++ reader raises. Everything below otherwise applies identically to both.
+The same verbs are also available as a **standalone native C++ binary** that needs no Python interpreter and no pybind11 extension — see [Native CLI (C API)](./c_api.md#native-command-line-binary) for how to build it (`build/configure.sh --cli --build`), or download a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page. It shares the [C API](./c_api.md)'s remaining flat-surface limitation — `convert -s/-d` is unavailable there (it lives only in the Python `Mesh`) — and has no Python fallback for formats whose C++ reader raises. Named **sets** are carried since v8.1.0: they are [regions](./regions.md) in the core, so `info` prints them and `diff` compares them. Everything below otherwise applies identically to both.
 
 ---
 
@@ -80,7 +80,7 @@ meshioplusplus info [options] INFILE
 |--------|-------|-------------|
 | `--input-format FORMAT` | `-i` | Force input format |
 
-Output includes: number of points, cell blocks and their types/counts, point/cell sets, point/cell data names, field data names. It also warns if cells reference nonexistent points or if there are unused points.
+Output includes: number of points, cell blocks and their types/counts, point/cell/**side** sets (see [Named regions](./regions.md)), point/cell data names, field data names. It also warns if cells reference nonexistent points or if there are unused points.
 
 **Example:**
 

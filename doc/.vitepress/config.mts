@@ -42,6 +42,7 @@ export default defineConfig({
         text: "Concepts",
         items: [
           { text: "Mesh data model", link: "/mesh_data_model" },
+          { text: "Named regions", link: "/regions" },
           { text: "C++ mesh backends", link: "/cpp_backends" },
           { text: "Cell types", link: "/cell_types" },
         ],
