@@ -331,6 +331,28 @@ if [ "$WITH_NETCDF" = "yes" ]; then
     fi
 fi
 
+# $ZLIB_LIBRARY is Emscripten's zlib PORT archive, which lives under
+# `em-config CACHE` -- i.e. under $EMSDK, which on CI is a fresh directory
+# named after the *current job's* runner-assigned temp dir every single run.
+# $PREFIX itself (the fixups above) stays valid across runs -- the checkout
+# always lands at the same workspace path -- but a $ZLIB_LIBRARY baked in by
+# an EARLIER run and then reused via CI's `actions/cache` on wasm-deps/ points
+# at that earlier run's now-nonexistent $EMSDK, so ninja fails with "missing
+# and no known rule to make it" on a cache hit. The two fixups above already
+# make this run's paths correct when they actually execute (a fresh build),
+# but they are skipped entirely on the "already installed" fast path above --
+# so unconditionally re-point any stale libz.a reference at the CURRENT run's
+# $ZLIB_LIBRARY, whether or not this run just built it. A same-run rebuild
+# rewrites the already-correct path to itself, which is a no-op.
+for target_file in "$PREFIX/cmake/hdf5-targets.cmake" \
+                    "$PREFIX/lib/cmake/netCDF/netCDFTargets.cmake"; do
+    [ -f "$target_file" ] || continue
+    sed -i.bak \
+        "s#[^\";[:space:]]*/sysroot/lib/wasm32-emscripten/libz\\.a#${ZLIB_LIBRARY}#g" \
+        "$target_file"
+    rm -f "$target_file.bak"
+done
+
 # The unpacked sources and CMake build trees are ~1 GB and re-derivable from
 # the (checksummed) tarballs in _dl, so they are not kept -- what matters, and
 # what CI caches, is the install prefix.

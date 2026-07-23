@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "8.1.0"
+version = "8.2.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -54,6 +54,16 @@ kahip = ["kahip"]
 # Python-only and strictly optional -- it never reaches the C++/WASM/C/Fortran
 # core, and the browser backend of `view()` needs nothing from this extra.
 viewer = ["polyscope>=2.4"]
+# In-memory interoperability (src/python/meshioplusplus/_interop.py). Python-only
+# and strictly optional: none of these reaches the C++/WASM/C/Fortran core, and
+# every import is lazy, so the package works exactly as before without them.
+# Deliberately NOT in `all`, which means "the optional deps the FORMATS need"
+# (h5py/netCDF4) -- quietly adding a PyVista-sized dependency there would
+# surprise people. `viewer`/`kahip`/`codecs` stand apart for the same reason.
+pyvista = ["pyvista>=0.44"]
+trimesh = ["trimesh>=4.0"]
+arrow = ["pyarrow>=14"]
+interop = ["pyvista>=0.44", "trimesh>=4.0", "pyarrow>=14"]
 all = [
     "netCDF4",
     "h5py",  # CGNS, H5M, MED, XDMF formats

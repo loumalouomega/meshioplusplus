@@ -66,6 +66,21 @@ from ._helpers import (
     write,
     write_points_cells,
 )
+from ._interop import (
+    from_arrow,
+    from_pyvista,
+    from_trimesh,
+    has_arrow,
+    has_dolfinx,
+    has_open3d,
+    has_pyvista,
+    has_trimesh,
+    read_parquet,
+    to_arrow,
+    to_pyvista,
+    to_trimesh,
+    write_parquet,
+)
 from ._interpolate import interpolate
 from ._isosurface import isosurface
 from ._merge import merge
@@ -174,6 +189,19 @@ __all__ = [
     "view",
     "screenshot",
     "has_viewer",
+    "to_pyvista",
+    "from_pyvista",
+    "to_trimesh",
+    "from_trimesh",
+    "to_arrow",
+    "from_arrow",
+    "write_parquet",
+    "read_parquet",
+    "has_pyvista",
+    "has_trimesh",
+    "has_arrow",
+    "has_open3d",
+    "has_dolfinx",
     "Mesh",
     "CellBlock",
     "Region",

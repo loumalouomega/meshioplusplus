@@ -393,12 +393,22 @@ jobs:
       - name: Install native libraries and lcov
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov \
+            libgl1 libglx-mesa0
 
+      # pyvista/trimesh/pyarrow are here (not just the dedicated `interop` job)
+      # so tests/python/test_interop.py's gated half -- to_pyvista/from_pyvista/
+      # to_trimesh/from_trimesh/to_arrow/from_arrow/write_parquet/read_parquet --
+      # is exercised under coverage instrumentation. The `interop` job runs the
+      # same tests but uploads no coverage; without these installed here, that
+      # code is real and tested but shows up as 0% in the Codecov patch check,
+      # since instrumented + uploaded is the only thing that counts.
+      # libgl1/libglx-mesa0 above are for pyvista's VTK import, not rendering.
       - name: Install build and test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja
+          pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
+            pyvista trimesh pyarrow
 
       # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
       # so re-runs reuse objects. compiler-check=content keeps hits valid across
@@ -545,6 +555,45 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
         run: xvfb-run -a -s "-screen 0 1280x960x24" python -m pytest tests/python/test_viewer.py tests/python/test_cli.py -m viewer -v
+
+  # --------------------------------------------------------------------------
+  # In-memory interoperability (src/python/meshioplusplus/_interop.py).
+  #
+  # PyVista, trimesh and pyarrow are Python-only optional extras that never
+  # reach the C++/WASM/C/Fortran core, so this is one plain pip job -- the
+  # per-backend C++ matrix is deliberately untouched.
+  #
+  # The `test` matrix above stays clean: with none of these installed,
+  # test_interop.py still runs its pure-payload half (the whole point of the
+  # `_viewer`-style split) and skips the gated half via importorskip.
+  # --------------------------------------------------------------------------
+  interop:
+    name: Interop (PyVista, trimesh, Arrow)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive  # vendored Eigen (MED transpose)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No rendering happens here -- building a vtkUnstructuredGrid needs no
+      # display -- but the VTK wheel PyVista pulls in wants libGL at import.
+      - name: Install a GL runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglx-mesa0
+
+      - name: Install meshio++ with the interop extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[interop]" pytest
+
+      - name: Interop tests
+        run: python -m pytest tests/python/test_interop.py -v
 
   # --------------------------------------------------------------------------
   # The browser viewer. Lives here rather than in wasm.yml because that

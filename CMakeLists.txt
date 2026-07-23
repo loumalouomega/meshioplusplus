@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # VERSION properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 8.1.0
+  VERSION 8.2.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 

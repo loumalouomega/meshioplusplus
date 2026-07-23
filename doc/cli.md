@@ -665,7 +665,7 @@ meshioplusplus partition domain.msh 'p_{part}.vtu' -n 8 --weights cost --record-
 
 ## meshioplusplus data
 
-A nested group of nine verbs operating on a mesh's `point_data` / `cell_data` /
+A nested group of ten verbs operating on a mesh's `point_data` / `cell_data` /
 `field_data` arrays (see [data operations](/data_operations)). **The geometry is
 never modified** by any of them — points, connectivity, block order and block
 types come through bit-identical.
@@ -685,9 +685,19 @@ meshioplusplus data <subcommand> [options]
 | `calc` | Derive an array from an expression (see [expressions](/data_calc)) |
 | `clamp` | Clamp values into a range (see [conditioning](/data_condition)) |
 | `normalize` | Rescale values to a target range |
+| `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 
 Every verb takes `--input-format` (`-i`), and every verb but `info` takes an
-`OUTFILE` and `--output-format` (`-o`).
+`OUTFILE` and `--output-format` (`-o`). `export` is the exception on the output
+side: it writes a Parquet file, so it takes no `--output-format`.
+
+::: warning `data export` is not a mesh conversion
+It writes `point_data` / `cell_data` to Parquet **for analytics** (pandas,
+polars, DuckDB) and does not round-trip geometry — Parquet is deliberately not
+in the format registry, so `meshioplusplus convert mesh.vtu out.parquet` does
+not work. It needs `pip install meshioplusplus[arrow]`, and it exists in the
+**Python CLI only**: the native binary has no counterpart.
+:::
 
 ::: warning Colons in names
 Data names routinely contain colons (`gmsh:physical`). `data rename` therefore
@@ -738,6 +748,12 @@ The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric
 literals, array names, and `abs`/`sqrt`/`min`/`max`/`norm` — nothing else is
 evaluated.
 
+### data export
+
+| Option | Description |
+|--------|-------------|
+| `--location` | `point` (default) or `cell` |
+
 ### data clamp / normalize
 
 | Option | Description |
@@ -770,6 +786,9 @@ meshioplusplus data calc in.vtu out.vtu --cell  "dp = p_new - p_old"
 meshioplusplus data clamp     in.vtu out.vtu --point T --min 0 --max 100
 meshioplusplus data normalize in.vtu out.vtu --cell damage --to 0,1
 meshioplusplus data normalize in.vtu out.vtu --point T --zero-mean
+
+meshioplusplus data export in.vtu points.parquet
+meshioplusplus data export in.vtu cells.parquet --location cell
 ```
 
 ---
