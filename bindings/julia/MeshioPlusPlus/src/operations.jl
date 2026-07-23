@@ -1,0 +1,870 @@
+# The operations layer: computations *on* a mesh, not file formats. Full parity
+# with the Fortran module's `type(mio_mesh)` procedures.
+#
+# Ownership rule for the opaque C results (`mio_split_result`,
+# `mio_partition_result`, `mio_reorder_result`, `mio_refine_result`,
+# `mio_convert_cells_result`, `mio_decimate_result`): read the maps and
+# counters first, then TAKE the mesh(es) out of the result, then free it. Every
+# `Mesh` handed to the caller therefore owns its handle, and no Julia value can
+# dangle when the result goes away.
+
+"""
+Copy an int64 index map, shifting to 1-based. The C API's `-1` sentinel
+("pruned" / "absent" / "not in this piece") becomes `0`, which is never a valid
+1-based index and so stays unambiguous. This is exactly the Fortran module's
+rule; the two bindings must agree.
+"""
+function _shift_map(ptr::Ptr{Cvoid}, n::Integer)
+    n <= 0 && return Int[]
+    src = unsafe_wrap(Array, Ptr{Int64}(ptr), (Int(n),); own=false)
+    out = Vector{Int}(undef, Int(n))
+    @inbounds for i in eachindex(out)
+        v = src[i]
+        out[i] = v < 0 ? 0 : Int(v) + 1
+    end
+    out
+end
+
+"""Read a `(result) -> (data, dtype, n)` zero-copy map getter into a 1-based copy."""
+function _result_map(result::Ptr{Cvoid}, sym::Symbol)
+    data = Ref{Ptr{Cvoid}}(C_NULL); dt = Ref{Cint}(0); n = Ref{Int64}(0)
+    _check(ccall(_sym(sym), Cint,
+                 (Ptr{Cvoid}, Ptr{Ptr{Cvoid}}, Ptr{Cint}, Ptr{Int64}), result, data, dt, n))
+    _shift_map(data[], n[])
+end
+
+"""Read a `(result, block) -> (data, dtype, n)` map getter into a 1-based copy."""
+function _result_block_map(result::Ptr{Cvoid}, sym::Symbol, block::Integer)
+    data = Ref{Ptr{Cvoid}}(C_NULL); dt = Ref{Cint}(0); n = Ref{Int64}(0)
+    _check(ccall(_sym(sym), Cint,
+                 (Ptr{Cvoid}, Int64, Ptr{Ptr{Cvoid}}, Ptr{Cint}, Ptr{Int64}),
+                 result, Int64(block), data, dt, n))
+    _shift_map(data[], n[])
+end
+
+"""Collect all per-block cell maps of an opaque result."""
+function _result_cell_maps(result::Ptr{Cvoid}, count_sym::Symbol, map_sym::Symbol)
+    n = _check_count(ccall(_sym(count_sym), Int64, (Ptr{Cvoid},), result), string(count_sym))
+    [_result_block_map(result, map_sym, b) for b in 0:(n-1)]
+end
+
+# --- surface / skin / quality ------------------------------------------------
+
+"""
+    extract_surface(mesh; record_parent_ids=false) -> Mesh
+
+Boundary of the mesh's highest-dimension cells: a volume mesh yields its
+boundary faces, a 2-D surface mesh its boundary edges.
+
+`record_parent_ids` attaches an Int64 `"surface:parent_cell"` cell-data array
+naming each output facet's owning input cell.
+
+Named regions are **not** carried through (the operation warns); see
+`doc/extract_surface.md`.
+"""
+extract_surface(m::Mesh; record_parent_ids::Bool=false) =
+    Mesh(_check_ptr(ccall(_sym(:mio_extract_surface), Ptr{Cvoid}, (Ptr{Cvoid}, Cint),
+                          _handle(m), record_parent_ids ? Cint(1) : Cint(0))))
+
+"""
+    extract_skin(mesh; linearize=false) -> Mesh
+
+Boundary skin of a volume mesh as a new surface mesh. `linearize` emits corner
+nodes only (triangle/quad output).
+"""
+extract_skin(m::Mesh; linearize::Bool=false) =
+    Mesh(_check_ptr(ccall(_sym(:mio_extract_skin), Ptr{Cvoid}, (Ptr{Cvoid}, Cint),
+                          _handle(m), linearize ? Cint(1) : Cint(0))))
+
+"""
+    attach_quality(mesh) -> Mesh
+
+A copy of the mesh with the per-cell quality metrics attached as cell data
+(names `"quality:<metric>"`). See `doc/mesh_quality.md`.
+"""
+attach_quality(m::Mesh) =
+    Mesh(_check_ptr(ccall(_sym(:mio_attach_quality), Ptr{Cvoid}, (Ptr{Cvoid},), _handle(m))))
+
+"""
+    quality_counts(mesh) -> (; num_cells, num_inverted, num_degenerate)
+"""
+function quality_counts(m::Mesh)
+    nc = Ref{Int64}(0); ni = Ref{Int64}(0); nd = Ref{Int64}(0)
+    _check(ccall(_sym(:mio_quality_counts), Cint,
+                 (Ptr{Cvoid}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}), _handle(m), nc, ni, nd))
+    (num_cells=Int(nc[]), num_inverted=Int(ni[]), num_degenerate=Int(nd[]))
+end
+
+# --- geometry-preserving transforms -----------------------------------------
+
+"""
+    transform(mesh, matrix; rotate_vector_data=false) -> Mesh
+
+Affine transform of the point coordinates. `matrix` is 4×4; a point `p` maps to
+`M * [p.x, p.y, p.z, 1]`. Connectivity and data are carried through; only the
+points change, unless `rotate_vector_data` also rotates vector (trailing
+dimension 3) and tensor (trailing dimension 9) point data by the transform's
+3×3 linear block.
+
+The matrix is passed to the C API row-major, so a `4×4` Julia matrix is
+transposed on the way out — this is the one place a transpose is correct,
+because a 4×4 affine matrix is a mathematical object, not a mesh array.
+"""
+function transform(m::Mesh, matrix::AbstractMatrix{<:Real};
+                   rotate_vector_data::Bool=false)
+    size(matrix) == (4, 4) || throw(ArgumentError(
+        "the affine matrix must be 4x4, got $(size(matrix))"))
+    rowmajor = Float64[matrix[i, j] for i in 1:4 for j in 1:4]
+    ptr = GC.@preserve rowmajor ccall(_sym(:mio_transform), Ptr{Cvoid},
+                                      (Ptr{Cvoid}, Ptr{Cdouble}, Cint),
+                                      _handle(m), pointer(rowmajor),
+                                      rotate_vector_data ? Cint(1) : Cint(0))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    clean(mesh; weld=false, atol=1e-12, remove_orphans=true, drop_degenerate=true,
+          drop_duplicate_cells=true)
+        -> (; mesh, points_welded, points_removed_orphan,
+              cells_dropped_degenerate, cells_dropped_duplicate)
+
+One-pass weld / prune / de-duplicate. The default set matches the CLI's
+no-flag behaviour: no welding, the other three steps on.
+"""
+function clean(m::Mesh; weld::Bool=false, atol::Real=1e-12, remove_orphans::Bool=true,
+               drop_degenerate::Bool=true, drop_duplicate_cells::Bool=true)
+    w = Ref{Int64}(0); o = Ref{Int64}(0); dg = Ref{Int64}(0); du = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_clean), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cint, Cdouble, Cint, Cint, Cint,
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), weld ? Cint(1) : Cint(0), Float64(atol),
+                remove_orphans ? Cint(1) : Cint(0), drop_degenerate ? Cint(1) : Cint(0),
+                drop_duplicate_cells ? Cint(1) : Cint(0), w, o, dg, du)
+    (mesh=Mesh(_check_ptr(ptr)), points_welded=Int(w[]),
+     points_removed_orphan=Int(o[]), cells_dropped_degenerate=Int(dg[]),
+     cells_dropped_duplicate=Int(du[]))
+end
+
+"""
+    smooth(mesh; method="taubin", iterations=10, lambda=-1.0, mu=-0.53,
+           fix_boundary=true, preserve_features=true, feature_angle=30.0,
+           guard_inversion=true)
+        -> (; mesh, num_nodes_moved, max_displacement, num_skipped_inversion)
+
+Relax the point coordinates toward their edge-neighbour centroids. Topology and
+every data value pass through unchanged — only the points move.
+
+A **negative `lambda` means "this method's own default"**: 0.5 for
+`"laplacian"`, 0.33 for `"taubin"`. Taubin additionally needs
+`mu < -lambda < 0`. See `doc/smooth.md`.
+
+The `frozen` pin mask of the C++ API is **not reachable across the C ABI** (a
+documented flat-ABI gap shared with Fortran).
+"""
+function smooth(m::Mesh; method::AbstractString="taubin", iterations::Integer=10,
+                lambda::Real=-1.0, mu::Real=-0.53, fix_boundary::Bool=true,
+                preserve_features::Bool=true, feature_angle::Real=30.0,
+                guard_inversion::Bool=true)
+    moved = Ref{Int64}(0); disp = Ref{Cdouble}(0.0); skipped = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_smooth), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cint, Cdouble, Cdouble, Cint, Cint, Cdouble, Cint,
+                 Ptr{Int64}, Ptr{Cdouble}, Ptr{Int64}),
+                _handle(m), method, Cint(iterations), Float64(lambda), Float64(mu),
+                fix_boundary ? Cint(1) : Cint(0), preserve_features ? Cint(1) : Cint(0),
+                Float64(feature_angle), guard_inversion ? Cint(1) : Cint(0),
+                moved, disp, skipped)
+    (mesh=Mesh(_check_ptr(ptr)), num_nodes_moved=Int(moved[]),
+     max_displacement=Float64(disp[]), num_skipped_inversion=Int(skipped[]))
+end
+
+# --- subsetting --------------------------------------------------------------
+
+_crop_mode(mode::Symbol) = mode === :all ? Cint(0) : mode === :any ? Cint(1) :
+                           throw(ArgumentError("mode must be :all or :any, got :$mode"))
+
+"""
+    crop_bbox(mesh, lo, hi; mode=:all, record_ids=false) -> Mesh
+
+Keep the cells inside the axis-aligned box `lo .<= p .<= hi` (3-element
+vectors). `mode` is `:all` (every node inside) or `:any` (at least one).
+`record_ids` attaches `crop:original_point_id` / `crop:original_cell_id`.
+"""
+function crop_bbox(m::Mesh, lo::AbstractVector{<:Real}, hi::AbstractVector{<:Real};
+                   mode::Symbol=:all, record_ids::Bool=false)
+    l = Float64[lo[1], lo[2], lo[3]]; h = Float64[hi[1], hi[2], hi[3]]
+    ptr = GC.@preserve l h ccall(_sym(:mio_crop_bbox), Ptr{Cvoid},
+                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cint),
+                                 _handle(m), pointer(l), pointer(h), _crop_mode(mode),
+                                 record_ids ? Cint(1) : Cint(0))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    crop_plane(mesh, point, normal; mode=:all, record_ids=false) -> Mesh
+
+Keep the cells in the half-space `(p - point) . normal >= 0`. Unlike
+[`slice`](@ref), whole cells are kept and the dimension is unchanged.
+"""
+function crop_plane(m::Mesh, point::AbstractVector{<:Real},
+                    normal::AbstractVector{<:Real}; mode::Symbol=:all,
+                    record_ids::Bool=false)
+    p = Float64[point[1], point[2], point[3]]; n = Float64[normal[1], normal[2], normal[3]]
+    ptr = GC.@preserve p n ccall(_sym(:mio_crop_plane), Ptr{Cvoid},
+                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cint),
+                                 _handle(m), pointer(p), pointer(n), _crop_mode(mode),
+                                 record_ids ? Cint(1) : Cint(0))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    slice(mesh, origin, normal; record_parent_ids=false) -> Mesh
+
+Planar cross-section: the actual **intersection** with the plane, one
+topological dimension below the cut cells (a volume mesh yields a
+triangle/quad surface, a 2-D surface mesh a line mesh). Contrast
+[`crop_plane`](@ref), which keeps whole cells on one side.
+
+Empty when the plane misses the geometry — not an error. See `doc/slice.md`.
+"""
+function slice(m::Mesh, origin::AbstractVector{<:Real}, normal::AbstractVector{<:Real};
+               record_parent_ids::Bool=false)
+    o = Float64[origin[1], origin[2], origin[3]]
+    n = Float64[normal[1], normal[2], normal[3]]
+    ptr = GC.@preserve o n ccall(_sym(:mio_slice), Ptr{Cvoid},
+                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint),
+                                 _handle(m), pointer(o), pointer(n),
+                                 record_parent_ids ? Cint(1) : Cint(0))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    isosurface(mesh, array, isovalues; component=-1, record_parent_ids=false) -> Mesh
+
+Level set of a scalar **point-data** field — the data-driven sibling of
+[`slice`](@ref), sharing its marching-tetrahedra cutter.
+
+`isovalues` may be a single number or a vector; all contours land in the one
+returned mesh, tagged per cell with a Float64 `"iso:value"` and an Int64
+`"iso:index"`. `component` selects a component of a multi-component array;
+negative means the row magnitude.
+
+Naming a *cell-data* array fails by name: cell data is piecewise constant and
+has no level set — convert it with [`data_cell_to_point`](@ref) first. See
+`doc/isosurface.md`.
+"""
+function isosurface(m::Mesh, array::AbstractString, isovalues;
+                    component::Integer=-1, record_parent_ids::Bool=false)
+    vals = Float64[Float64(v) for v in (isovalues isa Number ? (isovalues,) : isovalues)]
+    isempty(vals) && throw(ArgumentError("at least one isovalue is required"))
+    ptr = GC.@preserve vals ccall(_sym(:mio_isosurface), Ptr{Cvoid},
+                                  (Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint, Cint, Cint),
+                                  _handle(m), array, pointer(vals), Cint(length(vals)),
+                                  Cint(component), record_parent_ids ? Cint(1) : Cint(0))
+    Mesh(_check_ptr(ptr))
+end
+
+# --- combining / comparing ---------------------------------------------------
+
+"""
+    merge(meshes; weld=false, atol=1e-12, source_tag=true,
+          data_policy=:intersection, drop_duplicate_cells=false) -> Mesh
+
+Combine two or more meshes into one. `data_policy` is `:intersection` (keep
+only keys present in every input) or `:fill` (union, NaN for missing rows).
+`source_tag` adds an Int64 `"source_mesh_id"` cell-data array.
+
+Not exported (it would shadow `Base.merge`): call it qualified.
+"""
+function merge(meshes::AbstractVector{Mesh}; weld::Bool=false, atol::Real=1e-12,
+               source_tag::Bool=true, data_policy::Symbol=:intersection,
+               drop_duplicate_cells::Bool=false)
+    isempty(meshes) && throw(ArgumentError("merge needs at least one mesh"))
+    policy = data_policy === :intersection ? Cint(0) : data_policy === :fill ? Cint(1) :
+             throw(ArgumentError("data_policy must be :intersection or :fill"))
+    handles = Ptr{Cvoid}[_handle(x) for x in meshes]
+    ptr = GC.@preserve meshes handles ccall(
+        _sym(:mio_merge), Ptr{Cvoid},
+        (Ptr{Ptr{Cvoid}}, Int64, Cint, Cdouble, Cint, Cint, Cint),
+        pointer(handles), Int64(length(handles)), weld ? Cint(1) : Cint(0),
+        Float64(atol), source_tag ? Cint(1) : Cint(0), policy,
+        drop_duplicate_cells ? Cint(1) : Cint(0))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    interpolate(source, target; method="nearest", arrays=String[],
+                extrapolate=false, default_value=0.0, on_conflict="error") -> Mesh
+
+Sample data arrays from `source` onto `target` (cross-mesh field transfer).
+The result is a copy of `target` — geometry, connectivity and its own data
+preserved exactly — with the requested source arrays sampled onto it.
+
+An empty `arrays` means every source point-data array; cell data transfers only
+when named explicitly. `method` is `"nearest"` or `"barycentric"`;
+`on_conflict` is `"error"`, `"overwrite"` or `"suffix"`. See
+`doc/interpolate.md`.
+"""
+function interpolate(source::Mesh, target::Mesh; method::AbstractString="nearest",
+                     arrays=String[], extrapolate::Bool=false,
+                     default_value::Real=0.0, on_conflict::AbstractString="error")
+    sh = _handle(source); th = _handle(target)
+    ptr = _with_names(arrays) do names_ptr, count
+        ccall(_sym(:mio_interpolate), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Cstring, Ptr{Cstring}, Int64, Cint, Cdouble, Cstring),
+              sh, th, method, names_ptr, count, extrapolate ? Cint(1) : Cint(0),
+              Float64(default_value), on_conflict)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    meshes_equal(a, b; atol=0.0, rtol=0.0, unordered=false) -> Bool
+
+Are two meshes equal within tolerance (i.e. the diff verdict is not
+`:different`)? Named regions are **not** considered — they never reach the C++
+comparison.
+"""
+function meshes_equal(a::Mesh, b::Mesh; atol::Real=0.0, rtol::Real=0.0,
+                      unordered::Bool=false)
+    out = Ref{Cint}(0)
+    _check(ccall(_sym(:mio_meshes_equal), Cint,
+                 (Ptr{Cvoid}, Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Cint}),
+                 _handle(a), _handle(b), Float64(atol), Float64(rtol),
+                 unordered ? Cint(1) : Cint(0), out))
+    out[] != 0
+end
+
+"""
+    DiffReport
+
+Structured result of [`diff`](@ref). `verdict` is `:identical`,
+`:equal_within_tolerance` or `:different`.
+"""
+struct DiffReport
+    verdict::Symbol
+    points::NamedTuple{(:max_abs_error, :max_rel_error, :worst_index, :num_exceeding),
+                       Tuple{Float64,Float64,Int,Int}}
+    blocks::Vector{NamedTuple{(:type_mismatch, :count_mismatch, :conn_mismatch_count),
+                              Tuple{Bool,Bool,Int}}}
+end
+
+const _VERDICTS = (:identical, :equal_within_tolerance, :different)
+
+"""
+    diff(a, b; atol=0.0, rtol=0.0, unordered=false) -> DiffReport
+
+Compare two meshes: points, cell blocks and point/cell/field data, within
+`abs_err <= atol + rtol*|expected|` with `expected` taken from `a`.
+`unordered` matches points by spatial proximity instead of by index.
+
+Named regions are **not** compared (they never reach the C++ core). Not
+exported (it would shadow `Base.diff`): call it qualified.
+"""
+function diff(a::Mesh, b::Mesh; atol::Real=0.0, rtol::Real=0.0, unordered::Bool=false)
+    out = Ref{Ptr{Cvoid}}(C_NULL)
+    _check(ccall(_sym(:mio_diff), Cint,
+                 (Ptr{Cvoid}, Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Ptr{Cvoid}}),
+                 _handle(a), _handle(b), Float64(atol), Float64(rtol),
+                 unordered ? Cint(1) : Cint(0), out))
+    result = out[]
+    try
+        v = ccall(_sym(:mio_diff_result_verdict), Cint, (Ptr{Cvoid},), result)
+        mabs = Ref{Cdouble}(0.0); mrel = Ref{Cdouble}(0.0)
+        worst = Ref{Int64}(0); nex = Ref{Int64}(0)
+        _check(ccall(_sym(:mio_diff_result_point_summary), Cint,
+                     (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Int64}, Ptr{Int64}),
+                     result, mabs, mrel, worst, nex))
+        nb = ccall(_sym(:mio_diff_result_num_block_diffs), Int64, (Ptr{Cvoid},), result)
+        nb < 0 && (nb = 0)
+        blocks = NamedTuple{(:type_mismatch, :count_mismatch, :conn_mismatch_count),
+                            Tuple{Bool,Bool,Int}}[]
+        for i in 0:(nb-1)
+            tm = Ref{Cint}(0); cm = Ref{Cint}(0); cc = Ref{Int64}(0)
+            _check(ccall(_sym(:mio_diff_result_block), Cint,
+                         (Ptr{Cvoid}, Int64, Ptr{Cint}, Ptr{Cint}, Ptr{Int64}),
+                         result, i, tm, cm, cc))
+            push!(blocks, (type_mismatch=tm[] != 0, count_mismatch=cm[] != 0,
+                           conn_mismatch_count=Int(cc[])))
+        end
+        # worst_index is a flat index into the coordinate buffer: 1-based here,
+        # with the C API's -1 "no offender" becoming 0.
+        w = worst[] < 0 ? 0 : Int(worst[]) + 1
+        DiffReport(_VERDICTS[v+1],
+                   (max_abs_error=Float64(mabs[]), max_rel_error=Float64(mrel[]),
+                    worst_index=w, num_exceeding=Int(nex[])), blocks)
+    finally
+        ccall(_sym(:mio_diff_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+# --- statistics --------------------------------------------------------------
+
+"""
+    stats(mesh) -> NamedTuple
+
+Read-only geometric statistics: counts, bounding box, extent, centroid, total
+area, signed / unsigned volume and the inverted-cell count.
+
+Per-cell-type counts are **not carried across the C ABI** (a documented gap);
+use [`cell_block_types`](@ref) with [`cell_block_info`](@ref) instead.
+"""
+function stats(m::Mesh)
+    out = Ref{_CStatsReport}()
+    _check(ccall(_sym(:mio_stats), Cint, (Ptr{Cvoid}, Ptr{_CStatsReport}), _handle(m), out))
+    r = out[]
+    (num_points=Int(r.num_points), num_cells=Int(r.num_cells),
+     bbox_min=r.bbox_min, bbox_max=r.bbox_max, extent=r.extent, centroid=r.centroid,
+     total_area=r.total_area, signed_volume=r.signed_volume,
+     unsigned_volume=r.unsigned_volume, num_inverted=Int(r.num_inverted))
+end
+
+"""
+    compute_bandwidth(mesh) -> Int
+
+Connectivity bandwidth: the maximum over all cells of (max node index − min
+node index) within a cell. A before/after measure for [`reorder`](@ref).
+"""
+compute_bandwidth(m::Mesh) =
+    Int(_check_count(ccall(_sym(:mio_compute_bandwidth), Int64, (Ptr{Cvoid},), _handle(m)),
+                     "mio_compute_bandwidth"))
+
+# --- opaque-result operations ------------------------------------------------
+
+"""
+    reorder(mesh, method) -> (; mesh, node_perm, cell_perms)
+
+Renumber a mesh as a **pure permutation** of node and element indices, to
+reduce sparse-matrix bandwidth or improve cache locality. `method` is `"rcm"`,
+`"morton"` or `"hilbert"`.
+
+`node_perm` and each entry of `cell_perms` are 1-based old→new index vectors.
+See `doc/reorder.md`.
+"""
+function reorder(m::Mesh, method::AbstractString)
+    result = _check_ptr(ccall(_sym(:mio_reorder), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring),
+                              _handle(m), method))
+    try
+        node_perm = _result_map(result, :mio_reorder_result_node_perm)
+        cell_perms = _result_cell_maps(result, :mio_reorder_result_num_cell_perms,
+                                       :mio_reorder_result_cell_perm)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_reorder_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, node_perm=node_perm, cell_perms=cell_perms)
+    finally
+        ccall(_sym(:mio_reorder_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
+    split(mesh; by="type", tag="") -> Vector{Pair{String,Mesh}}
+
+Partition a mesh into submeshes by a criterion: `by` is `"type"` (one piece per
+cell type), `"component"` (connected components) or `"region"`/`"tag"` (the
+distinct values of an integer cell-data array, named by `tag`, or the first
+integer array when `tag` is empty).
+
+Each pair is `key => piece`. Every piece owns its handle. Not exported (it
+would shadow `Base.split`): call it qualified. See `doc/split.md`.
+"""
+function split(m::Mesh; by::AbstractString="type", tag::AbstractString="")
+    result = _check_ptr(ccall(_sym(:mio_split), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring, Cstring),
+                              _handle(m), by, tag))
+    try
+        n = _check_count(ccall(_sym(:mio_split_result_count), Int64, (Ptr{Cvoid},), result),
+                         "mio_split_result_count")
+        out = Pair{String,Mesh}[]
+        for i in 0:(n-1)
+            key = _getstring() do buf, len
+                ccall(_sym(:mio_split_result_key), Int64,
+                      (Ptr{Cvoid}, Int64, Ptr{UInt8}, Int64), result, i, buf, len)
+            end
+            piece = Mesh(_check_ptr(ccall(_sym(:mio_split_result_take_mesh), Ptr{Cvoid},
+                                          (Ptr{Cvoid}, Int64), result, i)))
+            push!(out, key => piece)
+        end
+        out
+    finally
+        ccall(_sym(:mio_split_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
+    convert_cells(mesh, mode; record_parent_ids=false) -> (; mesh, point_map, cell_maps)
+
+Convert the **element representation** (not the file format). `mode` is
+`"linearize"` (higher-order cells → their linear base, pruning orphaned
+nodes), `"simplexify"` (decompose into same-dimension simplices) or
+`"elevate"` (linear → serendipity quadratic).
+
+`point_map` is 1-based input-point → output-point, `0` where the point was
+pruned; each `cell_maps[b]` is input cell → its **first child** in the
+corresponding output block. See `doc/convert_cells.md`.
+"""
+function convert_cells(m::Mesh, mode::AbstractString; record_parent_ids::Bool=false)
+    result = _check_ptr(ccall(_sym(:mio_convert_cells), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Cstring, Cint), _handle(m), mode,
+                              record_parent_ids ? Cint(1) : Cint(0)))
+    try
+        pm = _result_map(result, :mio_convert_cells_result_point_map)
+        cm = _result_cell_maps(result, :mio_convert_cells_result_num_cell_maps,
+                               :mio_convert_cells_result_cell_map)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_convert_cells_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, point_map=pm, cell_maps=cm)
+    finally
+        ccall(_sym(:mio_convert_cells_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
+    refine(mesh; levels=1, record_parent_ids=false) -> (; mesh, point_map, cell_maps)
+
+Uniformly subdivide every cell into same-type children (line → 2, triangle →
+4, quad → 4, tetra → 8, wedge → 8, hexahedron → 8), sharing the new
+edge/face/body nodes so the result has no hanging nodes.
+
+Higher-order cells, pyramids and ragged blocks have no same-type subdivision
+and fail by name. See `doc/refine.md`.
+"""
+function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false)
+    result = _check_ptr(ccall(_sym(:mio_refine), Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Cint),
+                              _handle(m), Cint(levels),
+                              record_parent_ids ? Cint(1) : Cint(0)))
+    try
+        pm = _result_map(result, :mio_refine_result_point_map)
+        cm = _result_cell_maps(result, :mio_refine_result_num_cell_maps,
+                               :mio_refine_result_cell_map)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_refine_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, point_map=pm, cell_maps=cm)
+    finally
+        ccall(_sym(:mio_refine_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
+    decimate(mesh; ratio=-1.0, target_faces=-1, max_error=-1.0, placement="optimal",
+             preserve_boundary=true, preserve_features=true, feature_angle=30.0)
+        -> (; mesh, point_map, cell_maps, faces_removed, points_removed,
+              collapses_rejected, max_error_applied)
+
+Reduce a **surface** mesh's face count by greedy quadric-error-metric edge
+collapse — the inverse of [`refine`](@ref). Exactly one of `ratio` (fraction of
+faces to KEEP), `target_faces` and `max_error` must be set; a negative value
+means "unset".
+
+A 3-D volume mesh fails by name (extract the surface first), as do
+higher-order, ragged and line/vertex blocks. The caller `frozen` mask is not
+exposed across the C ABI. See `doc/decimate.md`.
+"""
+function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
+                  max_error::Real=-1.0, placement::AbstractString="optimal",
+                  preserve_boundary::Bool=true, preserve_features::Bool=true,
+                  feature_angle::Real=30.0)
+    result = _check_ptr(ccall(_sym(:mio_decimate), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Cdouble, Int64, Cdouble, Cstring, Cint, Cint,
+                               Cdouble),
+                              _handle(m), Float64(ratio), Int64(target_faces),
+                              Float64(max_error), placement,
+                              preserve_boundary ? Cint(1) : Cint(0),
+                              preserve_features ? Cint(1) : Cint(0), Float64(feature_angle)))
+    try
+        pm = _result_map(result, :mio_decimate_result_point_map)
+        cm = _result_cell_maps(result, :mio_decimate_result_num_cell_maps,
+                               :mio_decimate_result_cell_map)
+        fr = ccall(_sym(:mio_decimate_result_faces_removed), Int64, (Ptr{Cvoid},), result)
+        pr = ccall(_sym(:mio_decimate_result_points_removed), Int64, (Ptr{Cvoid},), result)
+        cr = ccall(_sym(:mio_decimate_result_collapses_rejected), Int64, (Ptr{Cvoid},), result)
+        me = ccall(_sym(:mio_decimate_result_max_error_applied), Cdouble, (Ptr{Cvoid},), result)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_decimate_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, point_map=pm, cell_maps=cm, faces_removed=Int(fr),
+         points_removed=Int(pr), collapses_rejected=Int(cr),
+         max_error_applied=Float64(me))
+    finally
+        ccall(_sym(:mio_decimate_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
+    partition(mesh, nparts; method="auto", imbalance=0.03, mode="eco", seed=0,
+              record_ids=false, ghost_layers=0, weights="")
+        -> Vector{@NamedTuple{part_id::Int, mesh::Mesh, point_map::Vector{Int},
+                              cell_maps::Vector{Vector{Int}}}}
+
+Decompose a mesh into exactly `nparts` balanced pieces (the count-driven
+complement to [`split`](@ref)). `method` is `"sfc"` (Hilbert curve, always
+available), `"kahip"` (only in a build configured with KaHIP; requesting it
+elsewhere fails by name) or `"auto"`.
+
+Every piece keeps the input's cell-block structure 1:1, so the cell maps index
+by input block and the pieces recombine into the input. `ghost_layers` must be
+0 in v1. See `doc/partition.md`.
+"""
+function partition(m::Mesh, nparts::Integer; method::AbstractString="auto",
+                   imbalance::Real=0.03, mode::AbstractString="eco", seed::Integer=0,
+                   record_ids::Bool=false, ghost_layers::Integer=0,
+                   weights::AbstractString="")
+    result = _check_ptr(ccall(_sym(:mio_partition), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Cint, Cstring, Cdouble, Cstring, Cint, Cint,
+                               Cint, Cstring),
+                              _handle(m), Cint(nparts), method, Float64(imbalance), mode,
+                              Cint(seed), record_ids ? Cint(1) : Cint(0),
+                              Cint(ghost_layers), weights))
+    try
+        n = _check_count(ccall(_sym(:mio_partition_result_num_pieces), Int64,
+                               (Ptr{Cvoid},), result), "mio_partition_result_num_pieces")
+        nmaps = _check_count(ccall(_sym(:mio_partition_result_num_cell_maps), Int64,
+                                   (Ptr{Cvoid},), result),
+                             "mio_partition_result_num_cell_maps")
+        out = @NamedTuple{part_id::Int, mesh::Mesh, point_map::Vector{Int},
+                          cell_maps::Vector{Vector{Int}}}[]
+        for i in 0:(n-1)
+            pid = ccall(_sym(:mio_partition_result_part_id), Cint, (Ptr{Cvoid}, Int64),
+                        result, i)
+            data = Ref{Ptr{Cvoid}}(C_NULL); dt = Ref{Cint}(0); len = Ref{Int64}(0)
+            _check(ccall(_sym(:mio_partition_result_point_map), Cint,
+                         (Ptr{Cvoid}, Int64, Ptr{Ptr{Cvoid}}, Ptr{Cint}, Ptr{Int64}),
+                         result, i, data, dt, len))
+            pm = _shift_map(data[], len[])
+            cms = Vector{Int}[]
+            for b in 0:(nmaps-1)
+                d2 = Ref{Ptr{Cvoid}}(C_NULL); t2 = Ref{Cint}(0); l2 = Ref{Int64}(0)
+                _check(ccall(_sym(:mio_partition_result_cell_map), Cint,
+                             (Ptr{Cvoid}, Int64, Int64, Ptr{Ptr{Cvoid}}, Ptr{Cint},
+                              Ptr{Int64}), result, i, b, d2, t2, l2))
+                push!(cms, _shift_map(d2[], l2[]))
+            end
+            piece = Mesh(_check_ptr(ccall(_sym(:mio_partition_result_take_mesh), Ptr{Cvoid},
+                                          (Ptr{Cvoid}, Int64), result, i)))
+            push!(out, (part_id=Int(pid), mesh=piece, point_map=pm, cell_maps=cms))
+        end
+        out
+    finally
+        ccall(_sym(:mio_partition_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
+    partition_labels(mesh, nparts; method="auto", imbalance=0.03, mode="eco",
+                     seed=0, weights="") -> Vector{Int}
+
+The per-cell part assignment only, without building the pieces: one entry per
+cell in **block-major global cell order** (block 1's cells first, then block
+2's, …), with values in `0:nparts-1`.
+
+These are part **ids**, not indices, so they are deliberately **not** shifted
+to 1-based — the same rule the Fortran module follows.
+"""
+function partition_labels(m::Mesh, nparts::Integer; method::AbstractString="auto",
+                          imbalance::Real=0.03, mode::AbstractString="eco",
+                          seed::Integer=0, weights::AbstractString="")
+    n = num_cells(m)
+    labels = Vector{Int64}(undef, n)
+    _check(GC.@preserve labels ccall(_sym(:mio_partition_labels), Cint,
+                                     (Ptr{Cvoid}, Cint, Cstring, Cdouble, Cstring, Cint,
+                                      Cstring, Ptr{Int64}, Int64),
+                                     _handle(m), Cint(nparts), method, Float64(imbalance),
+                                     mode, Cint(seed), weights, pointer(labels), Int64(n)))
+    Int[Int(x) for x in labels]
+end
+
+# --- data operations ---------------------------------------------------------
+#
+# These act on point_data / cell_data / field_data and never touch geometry:
+# points, connectivity and block order come through bit-identical.
+
+const _LOCATIONS = Dict(:point => MIO_DATA_POINT, :cell => MIO_DATA_CELL,
+                        :field => MIO_DATA_FIELD)
+
+function _location(loc::Symbol)
+    haskey(_LOCATIONS, loc) || throw(ArgumentError(
+        "location must be :point, :cell or :field, got :$loc"))
+    _LOCATIONS[loc]
+end
+
+"""
+    data_drop(mesh, location, names; ignore_missing=false) -> Mesh
+
+Drop the named data arrays at one location (`:point`, `:cell` or `:field`).
+
+The C ABI exposes the three primitives (`drop` / `keep` / `rename`) but not the
+combined `data_manage`; they compose to the same effect. See
+`doc/data_manage.md`.
+"""
+function data_drop(m::Mesh, location::Symbol, names; ignore_missing::Bool=false)
+    h = _handle(m); loc = _location(location)
+    ptr = _with_names(names) do p, c
+        ccall(_sym(:mio_data_drop), Ptr{Cvoid},
+              (Ptr{Cvoid}, Cint, Ptr{Cstring}, Int64, Cint), h, loc, p, c,
+              ignore_missing ? Cint(1) : Cint(0))
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    data_keep(mesh, location, names; ignore_missing=false) -> Mesh
+
+Keep only the named arrays at one location, dropping the rest **there**; the
+other two locations are untouched. An empty `names` drops everything at
+`location`.
+"""
+function data_keep(m::Mesh, location::Symbol, names; ignore_missing::Bool=false)
+    h = _handle(m); loc = _location(location)
+    ptr = _with_names(names) do p, c
+        ccall(_sym(:mio_data_keep), Ptr{Cvoid},
+              (Ptr{Cvoid}, Cint, Ptr{Cstring}, Int64, Cint), h, loc, p, c,
+              ignore_missing ? Cint(1) : Cint(0))
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    data_rename(mesh, location, from, to) -> Mesh
+
+Rename one data array, preserving its values, dtype and shape.
+"""
+data_rename(m::Mesh, location::Symbol, from::AbstractString, to::AbstractString) =
+    Mesh(_check_ptr(ccall(_sym(:mio_data_rename), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Cint, Cstring, Cstring),
+                          _handle(m), _location(location), from, to)))
+
+"""
+    data_point_to_cell(mesh, names=String[]; suffix="") -> Mesh
+
+Average point data onto the cells: each cell's value is the mean over its own
+nodes. The output is always `Float64`. An empty `names` converts every
+point-data array. See `doc/data_average.md`.
+"""
+function data_point_to_cell(m::Mesh, names=String[]; suffix::AbstractString="")
+    h = _handle(m)
+    ptr = _with_names(names) do p, c
+        ccall(_sym(:mio_data_point_to_cell), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cstring}, Int64, Cstring), h, p, c, suffix)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    data_cell_to_point(mesh, names=String[]; weight=:uniform, suffix="") -> Mesh
+
+Average cell data onto the points: each point's value is the (optionally
+measure-weighted) mean over the incident cells. `weight` is `:uniform` or
+`:measure`. A point touched by no cell gets `NaN`; the output is always
+`Float64`.
+"""
+function data_cell_to_point(m::Mesh, names=String[]; weight::Symbol=:uniform,
+                            suffix::AbstractString="")
+    w = weight === :uniform ? Cint(0) : weight === :measure ? Cint(1) :
+        throw(ArgumentError("weight must be :uniform or :measure, got :$weight"))
+    h = _handle(m)
+    ptr = _with_names(names) do p, c
+        ccall(_sym(:mio_data_cell_to_point), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cstring}, Int64, Cint, Cstring), h, p, c, w, suffix)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    data_calc(mesh, expression, output_name; location=:point, overwrite=false) -> Mesh
+
+Evaluate an elementwise expression over the arrays at `location` and store the
+result there as `output_name`.
+
+The grammar accepts `+ - * /`, unary minus, parentheses, numeric literals,
+array names, and the functions `abs`, `sqrt`, `min`, `max` and `norm`. Nothing
+else is evaluated — there is **no arbitrary-code path**. See `doc/data_calc.md`.
+"""
+data_calc(m::Mesh, expression::AbstractString, output_name::AbstractString;
+          location::Symbol=:point, overwrite::Bool=false) =
+    Mesh(_check_ptr(ccall(_sym(:mio_data_calc), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Cstring, Cint, Cstring, Cint),
+                          _handle(m), expression, _location(location), output_name,
+                          overwrite ? Cint(1) : Cint(0))))
+
+"""
+    data_condition(mesh, location, names=String[]; mode=:clamp, lo=0.0, hi=1.0,
+                   scope=:component, nan_policy=:ignore, nan_replacement=0.0,
+                   suffix="") -> Mesh
+
+Condition the values of the selected arrays. `mode` is `:clamp`, `:normalize`
+or `:standardize`; `scope` is `:component` (each trailing component
+independently) or `:magnitude` (rescale whole rows, preserving direction);
+`nan_policy` is `:ignore`, `:replace` or `:fail`.
+
+For cell data the statistics are computed **jointly across all blocks**. An
+empty `names` conditions every array at `location`. See
+`doc/data_condition.md`.
+"""
+function data_condition(m::Mesh, location::Symbol, names=String[]; mode::Symbol=:clamp,
+                        lo::Real=0.0, hi::Real=1.0, scope::Symbol=:component,
+                        nan_policy::Symbol=:ignore, nan_replacement::Real=0.0,
+                        suffix::AbstractString="")
+    md = mode === :clamp ? Cint(0) : mode === :normalize ? Cint(1) :
+         mode === :standardize ? Cint(2) :
+         throw(ArgumentError("mode must be :clamp, :normalize or :standardize"))
+    sc = scope === :component ? Cint(0) : scope === :magnitude ? Cint(1) :
+         throw(ArgumentError("scope must be :component or :magnitude"))
+    np = nan_policy === :ignore ? Cint(0) : nan_policy === :replace ? Cint(1) :
+         nan_policy === :fail ? Cint(2) :
+         throw(ArgumentError("nan_policy must be :ignore, :replace or :fail"))
+    h = _handle(m); loc = _location(location)
+    ptr = _with_names(names) do p, c
+        ccall(_sym(:mio_data_condition), Ptr{Cvoid},
+              (Ptr{Cvoid}, Cint, Ptr{Cstring}, Int64, Cint, Cdouble, Cdouble, Cint, Cint,
+               Cdouble, Cstring),
+              h, loc, p, c, md, Float64(lo), Float64(hi), sc, np,
+              Float64(nan_replacement), suffix)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    data_info(mesh) -> Vector{NamedTuple}
+
+Summarize every data array the mesh carries: location, name, dtype, shape,
+counts, whole-array and per-component min/max/mean, and the NaN/inf/finite
+counts. Read-only, and it **never throws on non-finite values** — it counts
+them. See `doc/data_info.md`.
+"""
+function data_info(m::Mesh)
+    handle = _check_ptr(ccall(_sym(:mio_data_info_create), Ptr{Cvoid}, (Ptr{Cvoid},),
+                              _handle(m)))
+    try
+        n = _check_count(ccall(_sym(:mio_data_info_count), Int64, (Ptr{Cvoid},), handle),
+                         "mio_data_info_count")
+        out = []
+        for i in 0:(n-1)
+            name = _getstring() do buf, len
+                ccall(_sym(:mio_data_info_name), Int64,
+                      (Ptr{Cvoid}, Int64, Ptr{UInt8}, Int64), handle, i, buf, len)
+            end
+            entry = Ref{_CDataArrayInfo}()
+            _check(ccall(_sym(:mio_data_info_entry), Cint,
+                         (Ptr{Cvoid}, Int64, Ptr{_CDataArrayInfo}), handle, i, entry))
+            e = entry[]
+            comps = NamedTuple{(:min, :max, :mean),Tuple{Float64,Float64,Float64}}[]
+            for c in 0:(e.num_components-1)
+                lo = Ref{Cdouble}(0.0); hi = Ref{Cdouble}(0.0); mu = Ref{Cdouble}(0.0)
+                _check(ccall(_sym(:mio_data_info_component), Cint,
+                             (Ptr{Cvoid}, Int64, Int64, Ptr{Cdouble}, Ptr{Cdouble},
+                              Ptr{Cdouble}), handle, i, c, lo, hi, mu))
+                push!(comps, (min=Float64(lo[]), max=Float64(hi[]), mean=Float64(mu[])))
+            end
+            push!(out, (name=name, location=_LOCATION_SYMS[e.location+1],
+                        dtype=_jltype(e.dtype), num_blocks=Int(e.num_blocks),
+                        num_entries=Int(e.num_entries),
+                        num_components=Int(e.num_components),
+                        num_values=Int(e.num_values), min=e.min, max=e.max, mean=e.mean,
+                        num_nan=Int(e.num_nan), num_inf=Int(e.num_inf),
+                        num_finite=Int(e.num_finite),
+                        inconsistent_blocks=e.inconsistent_blocks != 0,
+                        components=comps))
+        end
+        out
+    finally
+        ccall(_sym(:mio_data_info_free), Cvoid, (Ptr{Cvoid},), handle)
+    end
+end
+
+const _LOCATION_SYMS = (:point, :cell, :field)
