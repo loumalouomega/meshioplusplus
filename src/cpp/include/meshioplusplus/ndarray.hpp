@@ -41,6 +41,8 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <numeric>
 #include <type_traits>
 #include <utility>
@@ -48,58 +50,143 @@
 
 namespace meshioplusplus {
 
+/**
+ * @brief A caller-supplied allocator for `NDArray`'s *owning* buffers.
+ *
+ * Plain C-style callbacks (no `std::function`) so a hook can be installed
+ * from any binding layer. `alloc` must return a buffer of at least `bytes`
+ * bytes (uninitialized) or `nullptr` on failure (surfaced as
+ * `std::bad_alloc`); `free` receives the same pointer, byte count, and
+ * `pUser` back. This is the GPU-pipeline enabler recorded in `doc/gpu.md`:
+ * install a pinned-memory (e.g. CUDA page-locked) allocator and every array
+ * a reader produces lands directly in pinned memory, removing the staging
+ * copy of a later host->device transfer.
+ */
+struct BufferAllocator {
+    void* (*alloc)(std::size_t bytes, void* pUser);
+    void (*free)(void* pPtr, std::size_t bytes, void* pUser);
+    void* pUser;
+};
+
+namespace detail {
+inline std::mutex& buffer_allocator_mutex() {
+    static std::mutex m;
+    return m;
+}
+inline std::shared_ptr<const BufferAllocator>& buffer_allocator_storage() {
+    static std::shared_ptr<const BufferAllocator> a;
+    return a;
+}
+/** @brief The currently installed hook (may be null = default heap). */
+inline std::shared_ptr<const BufferAllocator> current_buffer_allocator() {
+    std::lock_guard<std::mutex> lk(buffer_allocator_mutex());
+    return buffer_allocator_storage();
+}
+}  // namespace detail
+
+/**
+ * @brief Installs (or, with `nullptr`, removes) the process-global allocator
+ * used for every subsequently created *owning* `NDArray` buffer.
+ *
+ * Consulted only at allocation time: each buffer keeps its own
+ * `shared_ptr` reference to the allocator it was born with, so buffers
+ * outlive any later `set_buffer_allocator` call structurally — the hook's
+ * `free` stays reachable until the last buffer allocated through it is
+ * destroyed. Consequences worth knowing: uninstalling never orphans live
+ * buffers, and a *copy* of an array allocates through the allocator current
+ * at copy time (pinned-ness does not propagate through copies). Views
+ * (`MakeView`) are unaffected — they own nothing.
+ * @param pAllocator The hook to install, or `nullptr` to restore the default
+ *                   heap (`::operator new`/`delete`).
+ */
+inline void set_buffer_allocator(std::shared_ptr<const BufferAllocator> pAllocator) {
+    std::lock_guard<std::mutex> lk(detail::buffer_allocator_mutex());
+    detail::buffer_allocator_storage() = std::move(pAllocator);
+}
+
 namespace detail {
 /**
- * @brief Allocator that leaves elements *default*-initialized rather than
- * value-initialized.
+ * @brief `NDArray`'s owning byte buffer: `(pointer, size, allocator ref)`.
  *
- * For a trivial type like `std::byte` that means the buffer is left
- * uninitialized instead of zero-filled. `NDArray` uses this (via `ByteBuf`)
- * so a buffer it is about to fully overwrite (reader outputs, reconstruction
- * blocks — see `NDArray::Uninit`) can skip the zero-fill `memset`, which for
- * a fresh large allocation is an entire extra cold pass over just-faulted
- * pages (numpy's `calloc`-backed arrays skip it too, for the same reason).
- * `std::vector` with this allocator stays copyable/movable like a normal
- * vector, unlike a raw `unique_ptr` buffer, so `NDArray` can keep value
- * semantics.
+ * Replaces the former `std::vector`-based buffer so each buffer can carry
+ * the `BufferAllocator` it was allocated through (the `shared_ptr` is what
+ * makes the deleter outlive install/uninstall windows). Value semantics are
+ * preserved: copying deep-copies through the *currently installed* hook,
+ * moving steals the pointer + allocator reference. Memory is always left
+ * uninitialized on allocation (the old `NoInitAllocator` behaviour —
+ * `NDArray`'s zeroing constructor memsets explicitly); `resize` is
+ * allocate-exact, since `NDArray` only ever sizes a buffer once.
  *
- * @tparam T The element type being allocated (used as `std::byte` here).
- *
- * @note The member names below (`value_type`, `allocate`, `deallocate`,
- * `construct`, `rebind`, `operator==`/`operator!=`) are fixed by the C++
- * standard library's Allocator named requirements and must keep these exact
- * spellings regardless of naming convention.
+ * @note `data`/`size`/`resize` keep their `std::vector` spellings (rather
+ * than the PascalCase convention) so `NDArray`'s call sites are unchanged.
  */
-template <class T>
-struct NoInitAllocator {
-    using value_type = T;
-    NoInitAllocator() = default;
-    template <class U>
-    NoInitAllocator(const NoInitAllocator<U>&) noexcept {}
-    template <class U>
-    struct rebind {
-        using other = NoInitAllocator<U>;
-    };
-    T* allocate(std::size_t n) { return std::allocator<T>{}.allocate(n); }
-    void deallocate(T* pPtr, std::size_t n) { std::allocator<T>{}.deallocate(pPtr, n); }
-    // Default-init (no zeroing) for the no-arg case resize() uses; forward
-    // everything else so the vector still behaves normally.
-    template <class U>
-    void construct(U* pPtr) noexcept(std::is_nothrow_default_constructible_v<U>) {
-        ::new (static_cast<void*>(pPtr)) U;
+class OwnedBuf {
+public:
+    OwnedBuf() = default;
+    ~OwnedBuf() { FreeBuf(); }
+    OwnedBuf(const OwnedBuf& rOther) { CopyFrom(rOther); }
+    OwnedBuf& operator=(const OwnedBuf& rOther) {
+        if (this != &rOther) {
+            FreeBuf();
+            CopyFrom(rOther);
+        }
+        return *this;
     }
-    template <class U, class... Args>
-    void construct(U* pPtr, Args&&... args) {
-        ::new (static_cast<void*>(pPtr)) U(std::forward<Args>(args)...);
+    OwnedBuf(OwnedBuf&& rOther) noexcept
+        : mPtr(rOther.mPtr), mSize(rOther.mSize), mAllocator(std::move(rOther.mAllocator)) {
+        rOther.mPtr = nullptr;
+        rOther.mSize = 0;
     }
-    template <class U>
-    bool operator==(const NoInitAllocator<U>&) const noexcept {
-        return true;
+    OwnedBuf& operator=(OwnedBuf&& rOther) noexcept {
+        if (this != &rOther) {
+            FreeBuf();
+            mPtr = rOther.mPtr;
+            mSize = rOther.mSize;
+            mAllocator = std::move(rOther.mAllocator);
+            rOther.mPtr = nullptr;
+            rOther.mSize = 0;
+        }
+        return *this;
     }
-    template <class U>
-    bool operator!=(const NoInitAllocator<U>&) const noexcept {
-        return false;
+    void resize(std::size_t n) {
+        if (n == mSize)
+            return;
+        FreeBuf();
+        if (n == 0)
+            return;
+        mAllocator = current_buffer_allocator();
+        void* p = (mAllocator && mAllocator->alloc) ? mAllocator->alloc(n, mAllocator->pUser)
+                                                    : ::operator new(n);
+        if (p == nullptr)
+            throw std::bad_alloc{};
+        mPtr = static_cast<std::byte*>(p);
+        mSize = n;
     }
+    std::byte* data() noexcept { return mPtr; }
+    const std::byte* data() const noexcept { return mPtr; }
+    std::size_t size() const noexcept { return mSize; }
+
+private:
+    void FreeBuf() noexcept {
+        if (mPtr != nullptr) {
+            if (mAllocator && mAllocator->free)
+                mAllocator->free(mPtr, mSize, mAllocator->pUser);
+            else
+                ::operator delete(mPtr);
+        }
+        mPtr = nullptr;
+        mSize = 0;
+        mAllocator.reset();
+    }
+    void CopyFrom(const OwnedBuf& rOther) {
+        resize(rOther.mSize);
+        if (rOther.mSize != 0)
+            std::memcpy(mPtr, rOther.mPtr, rOther.mSize);
+    }
+
+    std::byte* mPtr = nullptr;
+    std::size_t mSize = 0;
+    std::shared_ptr<const BufferAllocator> mAllocator;
 };
 }  // namespace detail
 
@@ -181,8 +268,9 @@ inline const char* dtype_numpy_str(DType dt) {
 /**
  * @brief A minimal typed, n-dimensional, row-major contiguous array.
  *
- * `NDArray` is either *owning* (holds its own `ByteBuf`, freed on
- * destruction) or a non-owning *view* over externally-managed memory
+ * `NDArray` is either *owning* (holds its own `detail::OwnedBuf`, freed on
+ * destruction — allocated through the `set_buffer_allocator` hook when one
+ * is installed) or a non-owning *view* over externally-managed memory
  * (`mView != nullptr`); `IsView()` distinguishes the two, and `Data()`
  * transparently returns whichever buffer is active. Views exist so the
  * write path can wrap a numpy array's memory directly (see
@@ -203,7 +291,7 @@ public:
      */
     NDArray(DType dt, std::vector<std::size_t> shape) : mDtype(dt), mShape(std::move(shape)) {
         const std::size_t nb = Nbytes();
-        mOwned.resize(nb);                  // uninitialised (NoInitAllocator)
+        mOwned.resize(nb);                  // uninitialised (OwnedBuf)
         std::memset(mOwned.data(), 0, nb);  // explicit zero-fill
     }
 
@@ -303,10 +391,8 @@ public:
         if (mView == nullptr)
             return;
         const std::size_t nb = Nbytes();
-        ByteBuf buf;
-        buf.resize(nb);  // uninitialised; fully overwritten by the memcpy below
-        std::memcpy(buf.data(), mView, nb);
-        mOwned = std::move(buf);
+        mOwned.resize(nb);  // uninitialised; fully overwritten by the memcpy below
+        std::memcpy(mOwned.data(), mView, nb);
         mView = nullptr;
     }
 
@@ -327,10 +413,9 @@ public:
     }
 
 private:
-    using ByteBuf = std::vector<std::byte, detail::NoInitAllocator<std::byte>>;
     DType mDtype = DType::Float64;
     std::vector<std::size_t> mShape;
-    ByteBuf mOwned;
+    detail::OwnedBuf mOwned;
     std::byte* mView = nullptr;
 };
 
