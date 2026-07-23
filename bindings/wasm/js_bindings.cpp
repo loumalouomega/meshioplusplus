@@ -38,11 +38,12 @@
  * identifiers can follow the project's snake_case free-function convention
  * without changing the JS API surface.
  *
- * Format scope (v1): the 28 formats with no HDF5/netCDF dependency, plus
- * XDMF's XML/Binary data path (not its HDF variant) -- 29 readable, 28
- * writable (`openfoam` is read-only). CGNS/H5M/HMF/MED/Exodus
- * are not registered here -- porting HDF5/netCDF to WASM is a separate,
- * larger undertaking (see doc/wasm.md). Ambiguous extensions (`.msh` shared
+ * Format scope: whatever `registry.cpp` was compiled with -- this file has no
+ * format table of its own, so it needs no edit when one is added or when an
+ * optional dependency comes or goes. Since v8.0.0 that is every format the
+ * core has, CGNS/H5M/HMF/MED/Exodus and XDMF's HDF data path included:
+ * build/build-wasm-deps.sh produces the wasm32 HDF5/netCDF the build links
+ * (see doc/wasm.md). Ambiguous extensions (`.msh` shared
  * by ansys/freefem/gmsh, `.inp` shared by abaqus/ansysinp) require an
  * explicit `format` argument, mirroring Python's `file_format=` kwarg;
  * `.msh` defaults to gmsh and `.inp` to abaqus when `format` is omitted.
