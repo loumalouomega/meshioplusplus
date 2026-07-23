@@ -1,9 +1,14 @@
 """The nested ``meshioplusplus data <verb>`` command group.
 
-The nine verbs are thin front-ends over the five data operations:
+Nine of the ten verbs are thin front-ends over the five data operations:
 ``rename``/``drop``/``keep`` call ``data_manage``, ``to-cell``/``to-point``
 call the two averaging entry points, ``clamp``/``normalize`` call
 ``data_condition`` with a preset mode, and ``calc``/``info`` map one-to-one.
+The tenth, ``export``, writes the arrays to Parquet through
+:mod:`meshioplusplus._interop` — a **tabular data export for analytics, not a
+mesh format**: it does not round-trip geometry, and pyarrow is an optional
+extra, so its import stays inside the handler. It has no counterpart in the
+native C++ CLI.
 
 This is the repository's first two-level subcommand. It needs no change to
 ``_main.py``'s dispatch because ``set_defaults(func=...)`` on the *inner*
@@ -445,6 +450,37 @@ def normalize_cmd(args):
     return 0
 
 
+def add_export_args(parser):
+    parser.add_argument("infile", type=str, help="mesh file to be read from")
+    parser.add_argument("outfile", type=str, help="Parquet file to be written to")
+    parser.add_argument(
+        "--input-format",
+        "-i",
+        type=str,
+        choices=sorted(list(reader_map.keys())),
+        help="input file format",
+        default=None,
+    )
+    parser.add_argument(
+        "--location",
+        type=str,
+        choices=("point", "cell"),
+        default="point",
+        help="which data location to export (default: point)",
+    )
+
+
+def export_cmd(args):
+    # Imported here, not at module scope: pyarrow is an optional extra and the
+    # other nine verbs must keep working without it.
+    from .._interop import write_parquet
+
+    mesh = read(args.infile, file_format=args.input_format)
+    write_parquet(mesh, args.outfile, location=args.location)
+    print(f"exported {args.location}_data to {args.outfile}")
+    return 0
+
+
 # --- group wiring ----------------------------------------------------------
 
 _VERBS = (
@@ -471,6 +507,13 @@ _VERBS = (
         "Rescale values to a target range (or zero mean / unit std)",
         add_normalize_args,
         normalize_cmd,
+    ),
+    (
+        "export",
+        "Export data arrays to Parquet for analytics (NOT a mesh format: "
+        "geometry is not round-tripped; needs `pip install meshioplusplus[arrow]`)",
+        add_export_args,
+        export_cmd,
     ),
 )
 
