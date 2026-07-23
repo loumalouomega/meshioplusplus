@@ -503,6 +503,46 @@ meshioplusplus screenshot part.msh part.png --size 1600 1200
 
 See [the viewer docs](https://loumalouomega.github.io/meshioplusplus/viewer.html) for how volume meshes are handled and what each backend can and cannot do.
 
+### Interoperability
+
+Hand a mesh straight to the tools you reach for next — no file round-trip, and the numpy buffers are **shared**, not copied, wherever the target accepts them as they are:
+
+<!--pytest-codeblocks:skip-->
+
+```python
+import meshioplusplus
+
+mesh = meshioplusplus.read("bracket.msh")
+
+grid = meshioplusplus.to_pyvista(mesh)      # a pyvista.UnstructuredGrid
+tm = meshioplusplus.to_trimesh(mesh)        # a trimesh.Trimesh (triangles only)
+```
+
+Both directions exist (`from_pyvista`, `from_trimesh`). Mixed-type meshes are the normal case, and named regions ride along as `region:<name>` mask arrays plus a metadata sidecar, so even a gmsh physical group's integer tag survives a PyVista round-trip. `zero_copy_only=True` turns any step that would copy into a named error instead of a silent one.
+
+Data arrays also export to Apache Arrow and Parquet for the analytics stack:
+
+<!--pytest-codeblocks:skip-->
+
+```python
+meshioplusplus.write_parquet(mesh, "cells.parquet", location="cell")
+
+import pandas
+pandas.read_parquet("cells.parquet").head()
+```
+
+<!--pytest-codeblocks:skip-->
+
+```sh
+meshioplusplus data export bracket.msh cells.parquet --location cell
+```
+
+Multi-component arrays keep their shape (as Arrow `fixed_size_list` columns), and the mesh's counts, cell types and region names travel in the schema metadata. This is a **data** export, not a mesh format — it does not round-trip geometry and is deliberately not in the format registry.
+
+PyVista, trimesh and pyarrow are Python-only optional extras (`pip install meshioplusplus[interop]`, or one at a time with `[pyvista]` / `[trimesh]` / `[arrow]`). They are kept out of `[all]`, which means "the optional dependencies the *formats* need". None of them reaches the C++/WebAssembly/C/Fortran core, which stays dependency-free.
+
+See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch.
+
 ### ParaView plugin
 
 <img alt="gmsh paraview" src="https://nschloe.github.io/meshio/gmsh-paraview.png" width="60%">
@@ -667,6 +707,9 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | Project | Extra | Used for | License |
 | --- | --- | --- | --- |
 | [Polyscope](https://polyscope.run/) | `[viewer]` | the desktop viewer and `screenshot()` | MIT |
+| [PyVista](https://pyvista.org/) | `[pyvista]` / `[interop]` | `to_pyvista()` / `from_pyvista()` | BSD-3-Clause |
+| [trimesh](https://trimesh.org/) | `[trimesh]` / `[interop]` | `to_trimesh()` / `from_trimesh()` | MIT |
+| [pyarrow](https://arrow.apache.org/) | `[arrow]` / `[interop]` | the Arrow/Parquet data export | Apache-2.0 |
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |
 | [netCDF4](https://unidata.github.io/netcdf4-python/) | `[all]` | the Python fallback for Exodus | MIT |
 | [KaHIP](https://kahip.github.io/) | `[kahip]` / CMake | the quality graph-partitioning backend | MIT |
