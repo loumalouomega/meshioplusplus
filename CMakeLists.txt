@@ -2,12 +2,14 @@ cmake_minimum_required(VERSION 3.15...3.30)
 
 # VERSION must track pyproject.toml's `version`, conanfile.py's `version`,
 # packages/vcpkg/meshioplusplus/vcpkg.json's `version`, src/wasm/package.json's
-# `version` and the "../wasm" entry in src/viewer/package-lock.json (bump all
-# six together on a release) -- it feeds mio_version(), the shared-library
-# VERSION properties, and the find_package/pkg-config metadata of the C API.
+# `version`, the "../wasm" entry in src/viewer/package-lock.json,
+# bindings/julia/MeshioPlusPlus/Project.toml's `version` and
+# bindings/r/meshioplusplus/DESCRIPTION's `Version:` (bump all eight together
+# on a release) -- it feeds mio_version(), the shared-library VERSION
+# properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 8.4.0
+  VERSION 8.5.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -330,12 +332,18 @@ endif()
 #            fallback to SEQ (warning) when unusable (e.g. Apple libc++).
 #   OPENMP - #pragma omp parallel for (hard error if OpenMP is missing)
 #   TBB    - tbb::parallel_for        (hard error if TBB is missing)
-# Adding a new backend (Kokkos, ...) = a branch here + one #elif block in
+#   KOKKOS - Kokkos::parallel_for on the HOST execution space (hard error if
+#            Kokkos is missing). Bring-your-own like KaHIP: never picked by
+#            AUTO, located via find_package(Kokkos CONFIG) — point Kokkos_DIR
+#            or CMAKE_PREFIX_PATH at an installed Kokkos. Host-space only:
+#            loop bodies capture host pointers, so device execution is served
+#            by the DLPack/CuPy handoff (doc/gpu.md), not by this backend.
+# Adding a new backend (HPX, ...) = a branch here + one #elif block in
 # src/cpp/include/meshioplusplus/parallel.hpp.
 # --------------------------------------------------------------------------
 set(MESHIOPLUSPLUS_PARALLEL_BACKEND "AUTO" CACHE STRING
-    "Parallel backend for meshioplusplus::parallel_for: AUTO, SEQ, STL, OPENMP or TBB")
-set_property(CACHE MESHIOPLUSPLUS_PARALLEL_BACKEND PROPERTY STRINGS AUTO SEQ STL OPENMP TBB)
+    "Parallel backend for meshioplusplus::parallel_for: AUTO, SEQ, STL, OPENMP, TBB or KOKKOS")
+set_property(CACHE MESHIOPLUSPLUS_PARALLEL_BACKEND PROPERTY STRINGS AUTO SEQ STL OPENMP TBB KOKKOS)
 string(TOUPPER "${MESHIOPLUSPLUS_PARALLEL_BACKEND}" _meshioplusplus_parallel)
 
 # AUTO: prefer OpenMP (portable: libgomp on manylinux, MSVC built-in, libomp on
@@ -393,12 +401,20 @@ elseif(_meshioplusplus_parallel STREQUAL "TBB")
   find_package(TBB CONFIG REQUIRED)
   target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_TBB)
   target_link_libraries(meshioplusplus_core_obj PUBLIC TBB::tbb)
+elseif(_meshioplusplus_parallel STREQUAL "KOKKOS")
+  if(EMSCRIPTEN)
+    message(FATAL_ERROR
+      "meshio++: the KOKKOS parallel backend is not supported under Emscripten (use SEQ)")
+  endif()
+  find_package(Kokkos REQUIRED CONFIG)
+  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+  target_link_libraries(meshioplusplus_core_obj PUBLIC Kokkos::kokkos)
 elseif(_meshioplusplus_parallel STREQUAL "SEQ")
   target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_SEQ)
 else()
   message(FATAL_ERROR
     "meshio++: unknown MESHIOPLUSPLUS_PARALLEL_BACKEND '${MESHIOPLUSPLUS_PARALLEL_BACKEND}' "
-    "(use SEQ, STL, OPENMP or TBB)")
+    "(use SEQ, STL, OPENMP, TBB or KOKKOS)")
 endif()
 message(STATUS "meshio++: parallel backend: ${_meshioplusplus_parallel}")
 
