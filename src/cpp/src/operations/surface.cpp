@@ -35,6 +35,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_edges.hpp"
@@ -372,6 +373,12 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
                 std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
         surface.AddPointData(name, std::move(b));
     }
+
+    // The extracted facets are newly created cells one dimension below the
+    // input's, so no named region can be carried across. Say so rather than
+    // dropping them silently; `record_parent_ids` is the escape hatch for a
+    // caller that wants to rebuild a group itself.
+    detail::warn_regions_dropped(rMesh, pOpName ? pOpName : "extract_surface");
 
     return surface;
 }

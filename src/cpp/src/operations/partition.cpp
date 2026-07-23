@@ -618,7 +618,7 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
         detail::SubsetResult sub = detail::build_cell_subset(
             rMesh, kept[p], rOptions.mRecordIds ? "partition:original_point_id" : "",
             rOptions.mRecordIds ? "partition:original_cell_id" : "",
-            /*drop_empty_blocks=*/false);
+            /*drop_empty_blocks=*/false, "partition");
         PartitionPiece piece;
         piece.mPartId = static_cast<int>(p);
         piece.mMesh = std::move(sub.mMesh);

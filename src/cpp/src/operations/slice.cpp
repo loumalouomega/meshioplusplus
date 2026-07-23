@@ -30,6 +30,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/slice.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/marching.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -70,6 +71,7 @@ Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
     options.mOrientation = detail::MarchingOrientation::FixedDirection;
     options.mDirection = rOptions.mNormal;
 
+    detail::warn_regions_dropped(rMesh, "slice");
     return detail::marching_cut(input, dist, options);
 }
 

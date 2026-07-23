@@ -568,6 +568,10 @@ Mesh quality_clone_mesh(const Mesh& rMesh) {
     }
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, quality_owned_copy(rMesh.FieldData(name)));
+    // Named regions pass through verbatim: attaching quality metrics adds
+    // cell_data and renumbers nothing.
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
     return out;
 }
 

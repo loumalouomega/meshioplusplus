@@ -85,6 +85,31 @@
  *    `HasCellData(name)` / `HasFieldData(name)`; `PointData(name)` /
  *    `FieldData(name)` (`const NDArray&`), `CellData(name, block)`
  *    (`const NDArray&`, one per cell block).
+ *
+ * ## Named regions (`region.hpp`)
+ *
+ * Named groups of entities — gmsh physical groups, Exodus blocks/node sets/side
+ * sets, Abaqus `*NSET`/`*ELSET`/`*SURFACE`, MED families, Kratos SubModelParts
+ * — are first-class members of this API rather than a Python-only side channel:
+ *
+ *  - `void AddRegion(Region region)` — insert, or replace the region with the
+ *    same `(kind, name, dim, tag)` key. Entries are canonicalized (sorted,
+ *    de-duplicated) on the way in.
+ *  - `std::size_t NumRegions() const`, and
+ *    `const meshioplusplus::Region& Region(std::size_t i) const` — indexed in
+ *    `(kind, name, dim, tag)` order, so the sequence is identical on every
+ *    backend and at every thread count.
+ *  - `std::vector<std::string> RegionNames() const` — **sorted and unique**,
+ *    matching the data-map guarantee above (a name shared by two kinds or two
+ *    dimensions is reported once).
+ *  - `bool HasRegion(name)` / `bool HasRegion(name, kind)` /
+ *    `std::size_t FindRegion(name, kind)` (`Mesh::npos` when absent).
+ *
+ * @warning Because `Region` is also the name of the accessor, the *type*
+ * `meshioplusplus::Region` is hidden for the remainder of each backend's class
+ * body. Every declaration after the accessor must spell the type out
+ * fully-qualified — which is why the accessor itself returns
+ * `const meshioplusplus::Region&`.
  */
 
 // System includes

@@ -132,11 +132,37 @@ struct DataDiff {
 };
 
 /**
+ * @brief Comparison of two meshes' named regions (`region.hpp`).
+ *
+ * A region is identified by its name *and* kind, since the same name may
+ * legitimately label a node set and an element set. Membership is compared
+ * exactly: entries are canonical (sorted, de-duplicated), so two regions
+ * describing the same group are bitwise equal and no tolerance applies.
+ */
+struct RegionDiff {
+    /// `"name (kind)"` for every region in A but not B (sorted).
+    std::vector<std::string> mOnlyInA;
+    /// `"name (kind)"` for every region in B but not A (sorted).
+    std::vector<std::string> mOnlyInB;
+    /// `"name (kind)"` for every region present in both whose membership,
+    /// dimension or tag differs (sorted).
+    std::vector<std::string> mChanged;
+
+    /// Whether any region differs at all.
+    bool Differs() const { return !mOnlyInA.empty() || !mOnlyInB.empty() || !mChanged.empty(); }
+};
+
+/**
  * @brief The full structured result of `diff`.
  */
 struct DiffReport {
     /// Overall verdict (the maximum severity over every section).
     DiffVerdict mVerdict = DiffVerdict::Identical;
+    /// The same verdict with `mRegions` left out. `meshes_equal` uses this:
+    /// that helper is documented to compare geometry and data, not named
+    /// groups, and the Python shim has always recomputed a sets-agnostic
+    /// verdict for exactly this reason.
+    DiffVerdict mVerdictIgnoringRegions = DiffVerdict::Identical;
     /// The unordered (proximity) node-matching mode was used.
     bool mUnordered = false;
     /// Unordered mode could not build a robust one-to-one node correspondence.
@@ -162,6 +188,12 @@ struct DiffReport {
     DataDiff mPointData;
     DataDiff mCellData;
     DataDiff mFieldData;
+
+    // --- named regions ---
+    /// Named-group comparison. Before meshio++ 8.1 sets never reached the C++
+    /// core, so only the Python shim could compare them; this is the core's
+    /// own answer, which is what the native CLI and the flat bindings report.
+    RegionDiff mRegions;
 
     /// Human-readable notes (e.g. "connectivity not comparable: ragged").
     std::vector<std::string> mMessages;

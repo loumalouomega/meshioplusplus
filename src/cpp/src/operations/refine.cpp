@@ -40,6 +40,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
@@ -569,6 +570,23 @@ std::size_t refine_projected_cells(const Mesh& rMesh) {
 
 // --- public API --------------------------------------------------------------
 
+namespace {
+
+// Carry the input's named regions onto the output. The cell map is FirstChild:
+// a parent's children occupy a contiguous run. Side regions are dropped — a
+// child cell is a new cell of a subdivided topology, so its facets have no
+// correspondence with the parent's. See detail/region_remap.hpp.
+void refine_carry_regions(const Mesh& rIn, RefineResult& rRes) {
+    detail::RegionRemap rmap;
+    rmap.pPointMap = &rRes.mPointMap;
+    rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+    rmap.pCellMaps = &rRes.mCellMaps;
+    rmap.mOpName = "refine";
+    detail::remap_regions(rIn, rRes.mMesh, rmap);
+}
+
+}  // namespace
+
 RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     if (rOptions.mLevels <= 0) {
         RefineResult res;
@@ -579,6 +597,7 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
             res.mCellMaps.push_back(refine_identity_map(cb.NumCells()));
         if (rOptions.mRecordParentIds)
             refine_attach_parent_ids(res);
+        refine_carry_regions(rMesh, res);
         return res;
     }
 
@@ -597,6 +616,7 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     }
     if (rOptions.mRecordParentIds)
         refine_attach_parent_ids(acc);
+    refine_carry_regions(rMesh, acc);
     return acc;
 }
 

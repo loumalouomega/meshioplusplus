@@ -257,6 +257,12 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, transform_owned_copy(rMesh.FieldData(name)));
 
+    // Named regions pass through verbatim: a transform moves coordinates and
+    // renumbers nothing, so every point, cell and facet index still names the
+    // same entity.
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
+
     return out;
 }
 

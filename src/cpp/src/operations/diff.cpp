@@ -32,6 +32,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/diff.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -439,6 +440,35 @@ const std::string& diff_verdict_name(DiffVerdict verdict) {
     return kDifferent;
 }
 
+// Compare two meshes' named regions. Identity is (name, kind): the same name
+// may legitimately label a node set and an element set. Membership comparison
+// is exact -- canonical entries make two equal groups bitwise equal, so no
+// tolerance is involved.
+void diff_compare_regions(const Mesh& rA, const Mesh& rB, RegionDiff& rOut) {
+    auto label = [](const Region& r) { return r.mName + " (" + region_kind_name(r.mKind) + ")"; };
+    auto find = [](const Mesh& rMesh, const Region& r) -> const Region* {
+        const std::size_t i = rMesh.FindRegion(r.mName, r.mKind);
+        return i == Mesh::npos ? nullptr : &rMesh.Region(i);
+    };
+
+    for (std::size_t i = 0; i < rA.NumRegions(); ++i) {
+        const Region& a = rA.Region(i);
+        const Region* b = find(rB, a);
+        if (b == nullptr)
+            rOut.mOnlyInA.push_back(label(a));
+        else if (!regions_equal(a, *b))
+            rOut.mChanged.push_back(label(a));
+    }
+    for (std::size_t i = 0; i < rB.NumRegions(); ++i) {
+        const Region& b = rB.Region(i);
+        if (find(rA, b) == nullptr)
+            rOut.mOnlyInB.push_back(label(b));
+    }
+    std::sort(rOut.mOnlyInA.begin(), rOut.mOnlyInA.end());
+    std::sort(rOut.mOnlyInB.begin(), rOut.mOnlyInB.end());
+    std::sort(rOut.mChanged.begin(), rOut.mChanged.end());
+}
+
 DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts) {
     DiffReport rep;
     rep.mUnordered = rOpts.unordered;
@@ -507,6 +537,8 @@ DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts) {
     diff_compare_data_section(rA.FieldDataNames(), rB.FieldDataNames(), rep.mFieldData, rA, rB,
                               nullptr, /*cell_data=*/false, atol, rtol);
 
+    diff_compare_regions(rA, rB, rep.mRegions);
+
     // --- verdict ---
     DiffVerdict v = DiffVerdict::Identical;
     if (rep.mPointCountMismatch || rep.mBlockCountMismatch)
@@ -522,6 +554,11 @@ DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts) {
         for (const ArrayDiff& ad : dd->mShared)
             diff_bump(v, diff_array_verdict(ad));
     }
+    rep.mVerdictIgnoringRegions = v;
+    // A named group differing is a structural difference, not a numerical one,
+    // so it goes straight to Different rather than through diff_bump.
+    if (rep.mRegions.Differs())
+        v = DiffVerdict::Different;
     rep.mVerdict = v;
     return rep;
 }
@@ -530,7 +567,7 @@ bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol, double rtol) {
     DiffOptions opts;
     opts.atol = atol;
     opts.rtol = rtol;
-    return diff(rA, rB, opts).mVerdict != DiffVerdict::Different;
+    return diff(rA, rB, opts).mVerdictIgnoringRegions != DiffVerdict::Different;
 }
 
 }  // namespace meshioplusplus

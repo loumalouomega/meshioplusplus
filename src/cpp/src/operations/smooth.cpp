@@ -75,8 +75,8 @@ SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
     if (p.mLambda < 0.0)
         p.mLambda = p.mTaubin ? 0.33 : 0.5;  // the sentinel: each method's own default
     if (!(p.mLambda > 0.0 && p.mLambda < 1.0))
-        throw std::invalid_argument(
-            "meshio++: smooth: lambda must lie in (0, 1); got " + std::to_string(p.mLambda));
+        throw std::invalid_argument("meshio++: smooth: lambda must lie in (0, 1); got " +
+                                    std::to_string(p.mLambda));
 
     if (p.mTaubin) {
         p.mMu = rOptions.mMu;
@@ -112,8 +112,8 @@ std::vector<double> smooth_read_coords(const Mesh& rMesh, std::size_t n, std::si
 
 // Write the leading `dim` columns back out, preserving the source dtype.
 // Mirrors transform.cpp's transform_apply_points.
-NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& rXyz,
-                            std::size_t n, std::size_t dim) {
+NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& rXyz, std::size_t n,
+                            std::size_t dim) {
     NDArray out = NDArray::Uninit(rPoints.Dtype(), {n, dim});
     if (n == 0 || dim == 0)
         return out;
@@ -189,7 +189,8 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
             bool ok = true;
             const std::size_t first = t.mCornerNodes.size();
             for (int k = 0; k < corners; ++k) {
-                const std::int64_t id = detail::read_int(conn, c * npc + static_cast<std::size_t>(k));
+                const std::int64_t id =
+                    detail::read_int(conn, c * npc + static_cast<std::size_t>(k));
                 if (id < 0 || static_cast<std::size_t>(id) >= n) {
                     ok = false;
                     break;
@@ -575,8 +576,8 @@ void smooth_mark_features(const std::vector<SmoothBoundaryFacet>& rFacets, std::
         const std::int64_t b = inc.mXadj[i];
         const std::int64_t e = inc.mXadj[i + 1];
         for (std::int64_t p = b; p < e; ++p) {
-            const Vec3& na = rFacets[static_cast<std::size_t>(inc.mAdj[static_cast<std::size_t>(p)])]
-                                 .mNormal;
+            const Vec3& na =
+                rFacets[static_cast<std::size_t>(inc.mAdj[static_cast<std::size_t>(p)])].mNormal;
             for (std::int64_t q = p + 1; q < e; ++q) {
                 const Vec3& nb =
                     rFacets[static_cast<std::size_t>(inc.mAdj[static_cast<std::size_t>(q)])]
@@ -642,9 +643,9 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     const std::size_t dim = rMesh.PointDim();
 
     if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument(
-            "meshio++: smooth: frozen mask has " + std::to_string(rOptions.mFrozen.size()) +
-            " entries but the mesh has " + std::to_string(n) + " points");
+        throw std::invalid_argument("meshio++: smooth: frozen mask has " +
+                                    std::to_string(rOptions.mFrozen.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
 
     // --- phase 0: coordinates as a flat double buffer ---
     const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
@@ -672,8 +673,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             if (boundary[i])
                 frozen[i] = 1;
         if (rOptions.mPreserveFeatures) {
-            const double cos_thr = std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 /
-                                            180.0);
+            const double cos_thr =
+                std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 / 180.0);
             smooth_mark_features(facets, n, cos_thr, frozen);
         }
     } else if (rOptions.mPreserveFeatures) {
@@ -699,8 +700,7 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     std::int64_t num_skipped = 0;
     for (int pass = 0; pass < params.mNumPasses; ++pass) {
         // Taubin alternates the shrinking (+lambda) and un-shrinking (mu) pass.
-        const double factor =
-            (!params.mTaubin || (pass % 2 == 0)) ? params.mLambda : params.mMu;
+        const double factor = (!params.mTaubin || (pass % 2 == 0)) ? params.mLambda : params.mMu;
 
         std::fill(skipped.begin(), skipped.end(), 0);
         parallel_for(n, [&](std::size_t i) {
@@ -718,7 +718,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             // thread counts.
             Vec3 sum = {0.0, 0.0, 0.0};
             for (std::int64_t k = b; k < e; ++k) {
-                const std::size_t p = static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
+                const std::size_t p =
+                    static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
                 sum[0] += prev[p];
                 sum[1] += prev[p + 1];
                 sum[2] += prev[p + 2];
@@ -823,6 +824,11 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     }
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, smooth_owned_copy(rMesh.FieldData(name)));
+
+    // Named regions pass through verbatim: smoothing is a pure coordinate move,
+    // so no point, cell or facet is renumbered.
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
 
     return result;
 }
