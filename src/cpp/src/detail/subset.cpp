@@ -58,7 +58,9 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
     const std::size_t dim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
 
-    // 1) mark used points across all kept cells.
+    // 1) mark used points across all kept cells. Serial: parallel iterations
+    // would store the same value 1 to shared slots — benign in practice but a
+    // formal data race (std::atomic_ref needs libc++ 19, above the macOS floor).
     std::vector<char> used(n, 0);
     std::size_t b = 0;
     for (const auto cb : rMesh.CellRange()) {
@@ -124,9 +126,8 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
     }
     if (!rPointIdName.empty()) {
         NDArray ids = NDArray::Uninit(DType::Int64, {point_src.size()});
-        std::int64_t* p = ids.As<std::int64_t>();
-        for (std::size_t j = 0; j < point_src.size(); ++j)
-            p[j] = point_src[j];
+        std::memcpy(ids.As<std::int64_t>(), point_src.data(),
+                    point_src.size() * sizeof(std::int64_t));
         out.AddPointData(rPointIdName, std::move(ids));
     }
 
@@ -141,7 +142,7 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
         const std::string type(cb.Type());
         if (cb.IsPolyhedron()) {
             std::vector<std::vector<std::vector<std::int64_t>>> cells(kept.size());
-            for (std::size_t i = 0; i < kept.size(); ++i) {
+            parallel_for_bw(kept.size(), [&](std::size_t i) {
                 const std::size_t c = static_cast<std::size_t>(kept[i]);
                 cells[i].resize(cb.NumFaces(c));
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
@@ -150,28 +151,28 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
                     for (std::size_t k = 0; k < face.second; ++k)
                         cells[i][f].push_back(new_point[static_cast<std::size_t>(face.first[k])]);
                 }
-            }
+            });
             out.AddPolyhedronBlock(type, std::move(cells));
         } else if (cb.IsRagged()) {
             std::vector<std::vector<std::int64_t>> rows(kept.size());
-            for (std::size_t i = 0; i < kept.size(); ++i) {
+            parallel_for_bw(kept.size(), [&](std::size_t i) {
                 const std::size_t c = static_cast<std::size_t>(kept[i]);
                 rows[i].reserve(cb.RowSize(c));
                 for (std::size_t k = 0; k < cb.RowSize(c); ++k)
                     rows[i].push_back(new_point[static_cast<std::size_t>(cb.Row(c)[k])]);
-            }
+            });
             out.AddPolygonBlock(type, std::move(rows));
         } else {
             const NDArray& conn = cb.Conn();
             const std::size_t npc = cb.NodesPerCell();
             NDArray outconn = NDArray::Uninit(DType::Int64, {kept.size(), npc});
             std::int64_t* cd = outconn.As<std::int64_t>();
-            for (std::size_t i = 0; i < kept.size(); ++i) {
+            parallel_for_bw(kept.size(), [&](std::size_t i) {
                 const std::size_t c = static_cast<std::size_t>(kept[i]);
                 for (std::size_t k = 0; k < npc; ++k)
                     cd[i * npc + k] =
                         new_point[static_cast<std::size_t>(read_int(conn, c * npc + k))];
-            }
+            });
             out.AddCellBlock(type, std::move(outconn));
         }
         ++b;
@@ -205,9 +206,7 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
             if (drop_empty_blocks && kept.empty())
                 continue;
             NDArray ids = NDArray::Uninit(DType::Int64, {kept.size()});
-            std::int64_t* p = ids.As<std::int64_t>();
-            for (std::size_t i = 0; i < kept.size(); ++i)
-                p[i] = kept[i];
+            std::memcpy(ids.As<std::int64_t>(), kept.data(), kept.size() * sizeof(std::int64_t));
             idblocks.push_back(std::move(ids));
         }
         out.AddCellData(rCellIdName, std::move(idblocks));
@@ -220,19 +219,18 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 
     // 7) index maps.
     res.mPointMap = NDArray::Uninit(DType::Int64, {n});
-    std::int64_t* pm = res.mPointMap.As<std::int64_t>();
-    for (std::size_t g = 0; g < n; ++g)
-        pm[g] = new_point[g];
+    std::memcpy(res.mPointMap.As<std::int64_t>(), new_point.data(), n * sizeof(std::int64_t));
 
     b = 0;
     for (const auto cb : rMesh.CellRange()) {
         NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
         std::int64_t* cm = cmap.As<std::int64_t>();
-        for (std::size_t c = 0; c < cb.NumCells(); ++c)
-            cm[c] = -1;
+        const std::size_t nc = cb.NumCells();
+        parallel_for_bw(nc, [&](std::size_t c) { cm[c] = -1; });
         const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
-        for (std::size_t i = 0; i < kept.size(); ++i)
+        parallel_for_bw(kept.size(), [&](std::size_t i) {
             cm[static_cast<std::size_t>(kept[i])] = static_cast<std::int64_t>(i);
+        });
         res.mCellMaps.push_back(std::move(cmap));
         ++b;
     }

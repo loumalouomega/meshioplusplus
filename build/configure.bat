@@ -127,7 +127,7 @@ exit /b 0
 
 :usage
 echo Usage: configure.bat [options]
-echo   --backend ^<SEQ^|STL^|OPENMP^|TBB^>  parallel backend (default: STL)
+echo   --backend ^<SEQ^|STL^|OPENMP^|TBB^|KOKKOS^>  parallel backend (default: STL)
 echo   --mesh-backend ^<MESHIO^|NATIVE^|KRATOS^>  mesh backend (default: MESHIO;
 echo                                    NATIVE/KRATOS disable the Python extension)
 echo   --build-type ^<type^>             CMake build type (default: Release)

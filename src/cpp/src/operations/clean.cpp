@@ -352,29 +352,32 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
         // cell map: old local -> new local (or -1).
         NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
         std::int64_t* cm = cmap.As<std::int64_t>();
-        for (std::size_t c = 0; c < cb.NumCells(); ++c)
-            cm[c] = -1;
-        for (std::size_t j = 0; j < bo.kept_cells.size(); ++j)
+        parallel_for_bw(cb.NumCells(), [&](std::size_t c) { cm[c] = -1; });
+        parallel_for_bw(bo.kept_cells.size(), [&](std::size_t j) {
             cm[static_cast<std::size_t>(bo.kept_cells[j])] = static_cast<std::int64_t>(j);
+        });
         res.mCellMaps.push_back(std::move(cmap));
 
         if (bo.kind == 0) {
             const std::size_t kept = bo.kept_cells.size();
             NDArray conn = NDArray::Uninit(DType::Int64, {kept, bo.npc});
             std::int64_t* cd = conn.As<std::int64_t>();
-            for (std::size_t i = 0; i < bo.rect_conn.size(); ++i)
+            parallel_for_bw(bo.rect_conn.size(), [&](std::size_t i) {
                 cd[i] = new_point[static_cast<std::size_t>(bo.rect_conn[i])];
+            });
             out.AddCellBlock(bo.type, std::move(conn));
         } else if (bo.kind == 1) {
-            for (auto& row : bo.poly_rows)
-                for (std::int64_t& v : row)
+            parallel_for_bw(bo.poly_rows.size(), [&](std::size_t r) {
+                for (std::int64_t& v : bo.poly_rows[r])
                     v = new_point[static_cast<std::size_t>(v)];
+            });
             out.AddPolygonBlock(bo.type, std::move(bo.poly_rows));
         } else {
-            for (auto& cell : bo.polyh)
-                for (auto& face : cell)
+            parallel_for_bw(bo.polyh.size(), [&](std::size_t ci) {
+                for (auto& face : bo.polyh[ci])
                     for (std::int64_t& v : face)
                         v = new_point[static_cast<std::size_t>(v)];
+            });
             out.AddPolyhedronBlock(bo.type, std::move(bo.polyh));
         }
         ++bi;
@@ -407,8 +410,8 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
     // --- point map (input global -> output point, or -1) --------------------
     res.mPointMap = NDArray::Uninit(DType::Int64, {n});
     std::int64_t* pm = res.mPointMap.As<std::int64_t>();
-    for (std::size_t g = 0; g < n; ++g)
-        pm[g] = new_point[static_cast<std::size_t>(weld_rep[g])];
+    parallel_for_bw(
+        n, [&](std::size_t g) { pm[g] = new_point[static_cast<std::size_t>(weld_rep[g])]; });
 
     // --- named regions ------------------------------------------------------
     // Block structure is 1:1 and cell types are unchanged, so this is a Direct

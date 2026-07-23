@@ -19,6 +19,8 @@
 
 // System includes
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <string>
 
 // External includes
@@ -142,4 +144,87 @@ TEST(Quality, QuadraticTetraUsesCorners) {
     // Just assert tetra10 is scored (finite volume), exercising the corner path.
     EXPECT_TRUE(std::isfinite(q_val(compute_quality(quad), "quality:volume", 0, 0)));
     EXPECT_GT(q_val(compute_quality(lin), "quality:volume", 0, 0), 0.0);
+}
+
+TEST(Quality, DeterministicAcrossRuns) {
+    using meshioplusplus::DType;
+    using meshioplusplus::NDArray;
+
+    // A jittered mixed hex+tetra mesh spanning several histogram chunks; the
+    // whole report must come back byte-identical on every run.
+    const std::size_t N = 20;  // 8000 hexes
+    const std::size_t np = (N + 1) * (N + 1) * (N + 1);
+    NDArray pts = NDArray::Uninit(DType::Float64, {np, 3});
+    double* p = pts.As<double>();
+    std::size_t idx = 0;
+    for (std::size_t k = 0; k <= N; ++k)
+        for (std::size_t j = 0; j <= N; ++j)
+            for (std::size_t i = 0; i <= N; ++i) {
+                p[idx * 3 + 0] = static_cast<double>(i) + 0.2 * std::sin(1.7 * idx);
+                p[idx * 3 + 1] = static_cast<double>(j) + 0.2 * std::sin(2.3 * idx + 1.0);
+                p[idx * 3 + 2] = static_cast<double>(k) + 0.2 * std::sin(3.1 * idx + 2.0);
+                ++idx;
+            }
+    auto nid = [&](std::size_t i, std::size_t j, std::size_t k) {
+        return static_cast<std::int64_t>((k * (N + 1) + j) * (N + 1) + i);
+    };
+    NDArray hexes = NDArray::Uninit(DType::Int64, {N * N * N, 8});
+    std::int64_t* h = hexes.As<std::int64_t>();
+    std::size_t c = 0;
+    for (std::size_t k = 0; k < N; ++k)
+        for (std::size_t j = 0; j < N; ++j)
+            for (std::size_t i = 0; i < N; ++i) {
+                h[c * 8 + 0] = nid(i, j, k);
+                h[c * 8 + 1] = nid(i + 1, j, k);
+                h[c * 8 + 2] = nid(i + 1, j + 1, k);
+                h[c * 8 + 3] = nid(i, j + 1, k);
+                h[c * 8 + 4] = nid(i, j, k + 1);
+                h[c * 8 + 5] = nid(i + 1, j, k + 1);
+                h[c * 8 + 6] = nid(i + 1, j + 1, k + 1);
+                h[c * 8 + 7] = nid(i, j + 1, k + 1);
+                ++c;
+            }
+    const std::size_t ntets = 600;
+    NDArray tets = NDArray::Uninit(DType::Int64, {ntets, 4});
+    std::int64_t* t = tets.As<std::int64_t>();
+    for (std::size_t q = 0; q < ntets; ++q) {
+        t[q * 4 + 0] = h[q * 8 + 0];
+        t[q * 4 + 1] = h[q * 8 + 1];
+        t[q * 4 + 2] = h[q * 8 + 3];
+        t[q * 4 + 3] = h[q * 8 + 4];
+    }
+    Mesh m;
+    m.AssignPoints(std::move(pts));
+    m.AddCellBlock("hexahedron", std::move(hexes));
+    m.AddCellBlock("tetra", std::move(tets));
+
+    const QualityReport first = compute_quality(m);
+    for (int run = 0; run < 3; ++run) {
+        const QualityReport again = compute_quality(m);
+        ASSERT_EQ(again.mNumInverted, first.mNumInverted);
+        ASSERT_EQ(again.mNumDegenerate, first.mNumDegenerate);
+        ASSERT_EQ(again.mMetrics.size(), first.mMetrics.size());
+        for (std::size_t mi = 0; mi < first.mMetrics.size(); ++mi) {
+            const auto& a = first.mMetrics[mi].second;
+            const auto& b = again.mMetrics[mi].second;
+            ASSERT_EQ(b.mCount, a.mCount);
+            // Bitwise, not merely close (and NaN-safe for count-0 metrics).
+            ASSERT_EQ(std::memcmp(&b.mMin, &a.mMin, sizeof(double)), 0) << "run " << run;
+            ASSERT_EQ(std::memcmp(&b.mMax, &a.mMax, sizeof(double)), 0) << "run " << run;
+            ASSERT_EQ(std::memcmp(&b.mMean, &a.mMean, sizeof(double)), 0) << "run " << run;
+            ASSERT_EQ(b.mHistogram, a.mHistogram)
+                << "run " << run << ", metric " << first.mMetrics[mi].first;
+        }
+        ASSERT_EQ(again.mCellArrays.size(), first.mCellArrays.size());
+        for (std::size_t mi = 0; mi < first.mCellArrays.size(); ++mi) {
+            const auto& av = first.mCellArrays[mi].second;
+            const auto& bv = again.mCellArrays[mi].second;
+            ASSERT_EQ(bv.size(), av.size());
+            for (std::size_t bidx = 0; bidx < av.size(); ++bidx) {
+                ASSERT_EQ(bv[bidx].Nbytes(), av[bidx].Nbytes());
+                ASSERT_EQ(std::memcmp(bv[bidx].Data(), av[bidx].Data(), av[bidx].Nbytes()), 0)
+                    << "run " << run << ", block " << bidx;
+            }
+        }
+    }
 }
