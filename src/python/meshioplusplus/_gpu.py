@@ -29,7 +29,7 @@ Nothing here is part of the C++ core. This is pure Python over the numpy the
 readers already return; every third-party import is lazy and named.
 
 There is deliberately **no pip extra** for CuPy: its wheels are
-CUDA-version-specific (``cupy-cuda12x``, ``cupy-cuda11x``, ``cupy-rocm-*``), so
+CUDA-version-specific (``cupy-cuda13x``, ``cupy-cuda12x``, ``cupy-rocm-*``), so
 a ``meshioplusplus[gpu]`` extra pinning any one of them would break for most
 users. Install the wheel matching your toolkit; the install error names the
 recipe. See ``doc/gpu.md``.
@@ -396,9 +396,10 @@ def _require_cupy(op):
     raise ImportError(
         f"meshio++: {op}: cupy is not installed. There is deliberately no pip "
         "extra for it: CuPy wheels are CUDA-version-specific, so install the "
-        "wheel matching your toolkit — e.g. `pip install cupy-cuda12x` "
-        "(CUDA 12.x), `pip install cupy-cuda11x` (CUDA 11.x), or a "
-        "`cupy-rocm-*` wheel for ROCm. See doc/gpu.md."
+        "wheel matching your toolkit — e.g. `pip install cupy-cuda13x` "
+        "(CUDA 13.x), `pip install cupy-cuda12x` (CUDA 12.x), "
+        "`cupy-cuda11x` (CUDA 11.x), or a `cupy-rocm-*` wheel for ROCm. "
+        "See doc/gpu.md."
     )
 
 

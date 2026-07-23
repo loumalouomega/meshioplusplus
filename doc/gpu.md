@@ -39,6 +39,7 @@ toolkit yourself:
 
 | Your toolkit | Install |
 |---|---|
+| CUDA 13.x | `pip install cupy-cuda13x` |
 | CUDA 12.x | `pip install cupy-cuda12x` |
 | CUDA 11.x | `pip install cupy-cuda11x` |
 | ROCm | the matching `cupy-rocm-*` wheel (untested by meshio++) |
@@ -208,7 +209,7 @@ check by design. To run the device suite, use any machine with a CUDA device
 and a matching CuPy wheel (a self-hosted or cloud GPU runner does fine):
 
 ```bash
-pip install -e . cupy-cuda12x pytest
+pip install -e . cupy-cuda13x pytest    # or the wheel matching your toolkit
 python -m pytest tests/python/test_gpu.py -v      # gated tests now run
 ```
 

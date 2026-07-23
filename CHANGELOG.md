@@ -37,7 +37,7 @@ host buffer sharing and on-device adoption, never to the transfer itself.
   (`float32=True` / `int32=True`) — recorded in the warned `notes`, and int32
   index casts are range-checked, never wrapped.
 - Deliberately **no `[gpu]` pip extra**: CuPy wheels are CUDA-version-specific
-  (`cupy-cuda12x` / `cupy-cuda11x` / ROCm), so a pinned extra would break for
+  (`cupy-cuda13x` / `cupy-cuda12x` / `cupy-cuda11x` / ROCm), so a pinned extra would break for
   most users; the install error names the wheel recipe instead. Kept out of
   `[all]` and `[interop]`. Docs: [`doc/gpu.md`](doc/gpu.md).
 - CI covers the pure payload layer and the DLPack **host** round-trip only;
