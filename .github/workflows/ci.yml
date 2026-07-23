@@ -393,12 +393,22 @@ jobs:
       - name: Install native libraries and lcov
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov \
+            libgl1 libglx-mesa0
 
+      # pyvista/trimesh/pyarrow are here (not just the dedicated `interop` job)
+      # so tests/python/test_interop.py's gated half -- to_pyvista/from_pyvista/
+      # to_trimesh/from_trimesh/to_arrow/from_arrow/write_parquet/read_parquet --
+      # is exercised under coverage instrumentation. The `interop` job runs the
+      # same tests but uploads no coverage; without these installed here, that
+      # code is real and tested but shows up as 0% in the Codecov patch check,
+      # since instrumented + uploaded is the only thing that counts.
+      # libgl1/libglx-mesa0 above are for pyvista's VTK import, not rendering.
       - name: Install build and test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja
+          pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
+            pyvista trimesh pyarrow
 
       # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
       # so re-runs reuse objects. compiler-check=content keeps hits valid across
