@@ -344,11 +344,23 @@ fi
 # so unconditionally re-point any stale libz.a reference at the CURRENT run's
 # $ZLIB_LIBRARY, whether or not this run just built it. A same-run rebuild
 # rewrites the already-correct path to itself, which is a no-op.
+#
+# The path-prefix wildcard is a POSITIVE class of characters legal in a Unix
+# path (letters/digits/`_.-/`) -- not a negated "exclude quote/semicolon/
+# whitespace" class. HDF5's exported static-lib interface wraps a private
+# dependency like zlib in a $<LINK_ONLY:...> generator expression, and `$`/
+# `<`/`:` are not special to a *negated* class, so it greedily swallows the
+# `$<LINK_ONLY:` prefix too -- replacing the whole span with just
+# $ZLIB_LIBRARY and stranding the expression's closing `>` right after the
+# new path, which is exactly the "libz.a>" ninja reads and cannot find. The
+# positive class can never start a match inside `$<LINK_ONLY:`, so the
+# wrapper (and its `>`) is left alone and the generator expression stays
+# well-formed.
 for target_file in "$PREFIX/cmake/hdf5-targets.cmake" \
                     "$PREFIX/lib/cmake/netCDF/netCDFTargets.cmake"; do
     [ -f "$target_file" ] || continue
     sed -i.bak \
-        "s#[^\";[:space:]]*/sysroot/lib/wasm32-emscripten/libz\\.a#${ZLIB_LIBRARY}#g" \
+        "s#[A-Za-z0-9_./-]*/sysroot/lib/wasm32-emscripten/libz\\.a#${ZLIB_LIBRARY}#g" \
         "$target_file"
     rm -f "$target_file.bak"
 done
