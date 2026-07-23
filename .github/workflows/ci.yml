@@ -566,6 +566,11 @@ jobs:
   # The `test` matrix above stays clean: with none of these installed,
   # test_interop.py still runs its pure-payload half (the whole point of the
   # `_viewer`-style split) and skips the gated half via importorskip.
+  #
+  # test_gpu.py runs here too, but only its HOST half (pure payloads + the
+  # DLPack kDLCPU round-trip): CuPy is deliberately NOT installed -- hosted
+  # runners have no CUDA device, and the gated device tests need a real GPU
+  # (they skip; the device path is not covered by public CI -- doc/gpu.md).
   # --------------------------------------------------------------------------
   interop:
     name: Interop (PyVista, trimesh, Arrow)
@@ -593,7 +598,7 @@ jobs:
           pip install ".[interop]" pytest
 
       - name: Interop tests
-        run: python -m pytest tests/python/test_interop.py -v
+        run: python -m pytest tests/python/test_interop.py tests/python/test_gpu.py -v
 
   # --------------------------------------------------------------------------
   # The browser viewer. Lives here rather than in wasm.yml because that
