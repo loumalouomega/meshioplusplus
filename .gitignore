@@ -38,6 +38,11 @@ build/*
 !build/configure.sh
 !build/configure.bat
 !build/configure-wasm.sh
+!build/build-wasm-deps.sh
+# ...and the patches it applies to the sources it fetches. The prefix and the
+# download cache it produces (build/wasm-deps/) stay ignored by the rule above.
+!build/patches/
+!build/patches/*.patch
 build-tests/
 build-omp/
 build-tbb/
