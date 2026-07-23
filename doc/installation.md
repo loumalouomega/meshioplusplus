@@ -85,6 +85,7 @@ The C++ core parallelizes its hot loops through a compile-time-selected backend 
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=STL      # C++17 parallel algorithms
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=TBB
+-DMESHIOPLUSPLUS_PARALLEL_BACKEND=KOKKOS   # Kokkos host execution space (bring-your-own)
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ      # sequential
 ```
 
@@ -94,7 +95,8 @@ Notes:
 - With GCC/libstdc++ the STL backend requires TBB (`apt install libtbb-dev`); when TBB is unusable, CMake warns and falls back to the sequential backend. This is why `AUTO` does not pick STL first: without TBB it runs sequentially.
 - `_core.__parallel_backend__` reports the backend actually compiled in.
 - MSVC's STL backend needs nothing extra; Apple's libc++ has no parallel STL (use OpenMP via `brew install libomp`, or SEQ).
-- The design is open to new backends (Kokkos, …): one CMake branch plus one `#elif` block in `src/cpp/include/meshioplusplus/parallel.hpp`.
+- `KOKKOS` is bring-your-own, like KaHIP: it is never picked by `AUTO`, and CMake locates an installed [Kokkos](https://kokkos.org) via `find_package(Kokkos CONFIG)` — point `Kokkos_DIR` (or `CMAKE_PREFIX_PATH`) at the install prefix. It runs on Kokkos's **host** execution space deliberately: meshio++'s loop bodies work on host memory, so device (CUDA/HIP/SYCL) dispatch is not meaningful here — GPU data movement is what the [DLPack/CuPy handoff](gpu.md) is for. meshio++ initializes Kokkos lazily only if the embedding application hasn't already done so (apps wanting full lifecycle control should call `Kokkos::initialize()` before their first meshio++ call). Not available under Emscripten.
+- The design is open to new backends (HPX, …): one CMake branch plus one `#elif` block in `src/cpp/include/meshioplusplus/parallel.hpp`.
 
 ### Logging
 

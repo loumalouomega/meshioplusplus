@@ -215,11 +215,35 @@ python -m pytest tests/python/test_gpu.py -v      # gated tests now run
 
 ## Phase 2: reading directly into pinned memory
 
-Today the readers allocate ordinary pageable memory, so a pinned transfer
-stages through one extra host copy. Removing that copy means the C++ readers
-allocating their output buffers through a caller-supplied allocator (CuPy's
-pinned pool) — an allocator hook in the C++ core, which is a genuinely larger
-design (it touches `NDArray` ownership and every binding's adoption path) and
-**out of scope here**. Recorded the way [Open3D and DOLFINx's
-constraints](./interop#phase-2-open3d-and-dolfinx) are: known, bounded, and
-waiting on a real need rather than speculation.
+By default the readers allocate ordinary pageable memory, so a pinned transfer
+stages through one extra host copy. **The C++ half of removing that copy is in
+place since v8.5.0**: every owning `NDArray` buffer is allocated through an
+optional process-global hook —
+
+```cpp
+#include <meshioplusplus/ndarray.hpp>
+
+// meshioplusplus::BufferAllocator: plain C callbacks {alloc, free, user}.
+meshioplusplus::set_buffer_allocator(my_pinned_allocator);  // nullptr = default heap
+```
+
+— consulted only at allocation time. Each buffer keeps its own `shared_ptr`
+reference to the allocator it was born with, so arrays outlive any later
+`set_buffer_allocator` call: uninstalling the hook never orphans live buffers,
+and a buffer allocated pinned is freed through the pinned pool no matter when
+it dies. Two consequences worth knowing: a *copy* of an array allocates
+through the allocator current at copy time (pinned-ness does not propagate
+through copies), and views are unaffected (they own nothing). Content,
+zero-copy and determinism contracts are unchanged; the capsule handoff to
+numpy needs no change — the buffer's own deleter fires when numpy drops the
+last reference.
+
+**The Python/CuPy wiring is the remaining follow-up**: a
+`meshioplusplus._gpu.pinned_reads()` context manager installing a
+`cupy.cuda.alloc_pinned_memory`-backed allocator (the C++ shim must hold the
+`py::function` pair and a `ptr -> PinnedMemoryPointer` map, take the GIL in
+both callbacks, and guard the free path with `Py_IsInitialized()` for
+interpreter-shutdown stragglers), plus a `to_cupy(pinned=True)` fast path that
+skips the staging copy for arrays the hook allocated. Recorded the way
+[Open3D and DOLFINx's constraints](./interop#phase-2-open3d-and-dolfinx) are:
+known, bounded, and waiting on a real need rather than speculation.
