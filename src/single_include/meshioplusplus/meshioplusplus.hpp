@@ -416,6 +416,8 @@ inline const std::string& kratos_condition_name(CellType type) {
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <numeric>
 #include <type_traits>
 #include <utility>
@@ -423,58 +425,143 @@ inline const std::string& kratos_condition_name(CellType type) {
 
 namespace meshioplusplus {
 
+/**
+ * @brief A caller-supplied allocator for `NDArray`'s *owning* buffers.
+ *
+ * Plain C-style callbacks (no `std::function`) so a hook can be installed
+ * from any binding layer. `alloc` must return a buffer of at least `bytes`
+ * bytes (uninitialized) or `nullptr` on failure (surfaced as
+ * `std::bad_alloc`); `free` receives the same pointer, byte count, and
+ * `pUser` back. This is the GPU-pipeline enabler recorded in `doc/gpu.md`:
+ * install a pinned-memory (e.g. CUDA page-locked) allocator and every array
+ * a reader produces lands directly in pinned memory, removing the staging
+ * copy of a later host->device transfer.
+ */
+struct BufferAllocator {
+    void* (*alloc)(std::size_t bytes, void* pUser);
+    void (*free)(void* pPtr, std::size_t bytes, void* pUser);
+    void* pUser;
+};
+
+namespace detail {
+inline std::mutex& buffer_allocator_mutex() {
+    static std::mutex m;
+    return m;
+}
+inline std::shared_ptr<const BufferAllocator>& buffer_allocator_storage() {
+    static std::shared_ptr<const BufferAllocator> a;
+    return a;
+}
+/** @brief The currently installed hook (may be null = default heap). */
+inline std::shared_ptr<const BufferAllocator> current_buffer_allocator() {
+    std::lock_guard<std::mutex> lk(buffer_allocator_mutex());
+    return buffer_allocator_storage();
+}
+}  // namespace detail
+
+/**
+ * @brief Installs (or, with `nullptr`, removes) the process-global allocator
+ * used for every subsequently created *owning* `NDArray` buffer.
+ *
+ * Consulted only at allocation time: each buffer keeps its own
+ * `shared_ptr` reference to the allocator it was born with, so buffers
+ * outlive any later `set_buffer_allocator` call structurally — the hook's
+ * `free` stays reachable until the last buffer allocated through it is
+ * destroyed. Consequences worth knowing: uninstalling never orphans live
+ * buffers, and a *copy* of an array allocates through the allocator current
+ * at copy time (pinned-ness does not propagate through copies). Views
+ * (`MakeView`) are unaffected — they own nothing.
+ * @param pAllocator The hook to install, or `nullptr` to restore the default
+ *                   heap (`::operator new`/`delete`).
+ */
+inline void set_buffer_allocator(std::shared_ptr<const BufferAllocator> pAllocator) {
+    std::lock_guard<std::mutex> lk(detail::buffer_allocator_mutex());
+    detail::buffer_allocator_storage() = std::move(pAllocator);
+}
+
 namespace detail {
 /**
- * @brief Allocator that leaves elements *default*-initialized rather than
- * value-initialized.
+ * @brief `NDArray`'s owning byte buffer: `(pointer, size, allocator ref)`.
  *
- * For a trivial type like `std::byte` that means the buffer is left
- * uninitialized instead of zero-filled. `NDArray` uses this (via `ByteBuf`)
- * so a buffer it is about to fully overwrite (reader outputs, reconstruction
- * blocks — see `NDArray::Uninit`) can skip the zero-fill `memset`, which for
- * a fresh large allocation is an entire extra cold pass over just-faulted
- * pages (numpy's `calloc`-backed arrays skip it too, for the same reason).
- * `std::vector` with this allocator stays copyable/movable like a normal
- * vector, unlike a raw `unique_ptr` buffer, so `NDArray` can keep value
- * semantics.
+ * Replaces the former `std::vector`-based buffer so each buffer can carry
+ * the `BufferAllocator` it was allocated through (the `shared_ptr` is what
+ * makes the deleter outlive install/uninstall windows). Value semantics are
+ * preserved: copying deep-copies through the *currently installed* hook,
+ * moving steals the pointer + allocator reference. Memory is always left
+ * uninitialized on allocation (the old `NoInitAllocator` behaviour —
+ * `NDArray`'s zeroing constructor memsets explicitly); `resize` is
+ * allocate-exact, since `NDArray` only ever sizes a buffer once.
  *
- * @tparam T The element type being allocated (used as `std::byte` here).
- *
- * @note The member names below (`value_type`, `allocate`, `deallocate`,
- * `construct`, `rebind`, `operator==`/`operator!=`) are fixed by the C++
- * standard library's Allocator named requirements and must keep these exact
- * spellings regardless of naming convention.
+ * @note `data`/`size`/`resize` keep their `std::vector` spellings (rather
+ * than the PascalCase convention) so `NDArray`'s call sites are unchanged.
  */
-template <class T>
-struct NoInitAllocator {
-    using value_type = T;
-    NoInitAllocator() = default;
-    template <class U>
-    NoInitAllocator(const NoInitAllocator<U>&) noexcept {}
-    template <class U>
-    struct rebind {
-        using other = NoInitAllocator<U>;
-    };
-    T* allocate(std::size_t n) { return std::allocator<T>{}.allocate(n); }
-    void deallocate(T* pPtr, std::size_t n) { std::allocator<T>{}.deallocate(pPtr, n); }
-    // Default-init (no zeroing) for the no-arg case resize() uses; forward
-    // everything else so the vector still behaves normally.
-    template <class U>
-    void construct(U* pPtr) noexcept(std::is_nothrow_default_constructible_v<U>) {
-        ::new (static_cast<void*>(pPtr)) U;
+class OwnedBuf {
+public:
+    OwnedBuf() = default;
+    ~OwnedBuf() { FreeBuf(); }
+    OwnedBuf(const OwnedBuf& rOther) { CopyFrom(rOther); }
+    OwnedBuf& operator=(const OwnedBuf& rOther) {
+        if (this != &rOther) {
+            FreeBuf();
+            CopyFrom(rOther);
+        }
+        return *this;
     }
-    template <class U, class... Args>
-    void construct(U* pPtr, Args&&... args) {
-        ::new (static_cast<void*>(pPtr)) U(std::forward<Args>(args)...);
+    OwnedBuf(OwnedBuf&& rOther) noexcept
+        : mPtr(rOther.mPtr), mSize(rOther.mSize), mAllocator(std::move(rOther.mAllocator)) {
+        rOther.mPtr = nullptr;
+        rOther.mSize = 0;
     }
-    template <class U>
-    bool operator==(const NoInitAllocator<U>&) const noexcept {
-        return true;
+    OwnedBuf& operator=(OwnedBuf&& rOther) noexcept {
+        if (this != &rOther) {
+            FreeBuf();
+            mPtr = rOther.mPtr;
+            mSize = rOther.mSize;
+            mAllocator = std::move(rOther.mAllocator);
+            rOther.mPtr = nullptr;
+            rOther.mSize = 0;
+        }
+        return *this;
     }
-    template <class U>
-    bool operator!=(const NoInitAllocator<U>&) const noexcept {
-        return false;
+    void resize(std::size_t n) {
+        if (n == mSize)
+            return;
+        FreeBuf();
+        if (n == 0)
+            return;
+        mAllocator = current_buffer_allocator();
+        void* p = (mAllocator && mAllocator->alloc) ? mAllocator->alloc(n, mAllocator->pUser)
+                                                    : ::operator new(n);
+        if (p == nullptr)
+            throw std::bad_alloc{};
+        mPtr = static_cast<std::byte*>(p);
+        mSize = n;
     }
+    std::byte* data() noexcept { return mPtr; }
+    const std::byte* data() const noexcept { return mPtr; }
+    std::size_t size() const noexcept { return mSize; }
+
+private:
+    void FreeBuf() noexcept {
+        if (mPtr != nullptr) {
+            if (mAllocator && mAllocator->free)
+                mAllocator->free(mPtr, mSize, mAllocator->pUser);
+            else
+                ::operator delete(mPtr);
+        }
+        mPtr = nullptr;
+        mSize = 0;
+        mAllocator.reset();
+    }
+    void CopyFrom(const OwnedBuf& rOther) {
+        resize(rOther.mSize);
+        if (rOther.mSize != 0)
+            std::memcpy(mPtr, rOther.mPtr, rOther.mSize);
+    }
+
+    std::byte* mPtr = nullptr;
+    std::size_t mSize = 0;
+    std::shared_ptr<const BufferAllocator> mAllocator;
 };
 }  // namespace detail
 
@@ -556,8 +643,9 @@ inline const char* dtype_numpy_str(DType dt) {
 /**
  * @brief A minimal typed, n-dimensional, row-major contiguous array.
  *
- * `NDArray` is either *owning* (holds its own `ByteBuf`, freed on
- * destruction) or a non-owning *view* over externally-managed memory
+ * `NDArray` is either *owning* (holds its own `detail::OwnedBuf`, freed on
+ * destruction — allocated through the `set_buffer_allocator` hook when one
+ * is installed) or a non-owning *view* over externally-managed memory
  * (`mView != nullptr`); `IsView()` distinguishes the two, and `Data()`
  * transparently returns whichever buffer is active. Views exist so the
  * write path can wrap a numpy array's memory directly (see
@@ -578,7 +666,7 @@ public:
      */
     NDArray(DType dt, std::vector<std::size_t> shape) : mDtype(dt), mShape(std::move(shape)) {
         const std::size_t nb = Nbytes();
-        mOwned.resize(nb);                  // uninitialised (NoInitAllocator)
+        mOwned.resize(nb);                  // uninitialised (OwnedBuf)
         std::memset(mOwned.data(), 0, nb);  // explicit zero-fill
     }
 
@@ -678,10 +766,8 @@ public:
         if (mView == nullptr)
             return;
         const std::size_t nb = Nbytes();
-        ByteBuf buf;
-        buf.resize(nb);  // uninitialised; fully overwritten by the memcpy below
-        std::memcpy(buf.data(), mView, nb);
-        mOwned = std::move(buf);
+        mOwned.resize(nb);  // uninitialised; fully overwritten by the memcpy below
+        std::memcpy(mOwned.data(), mView, nb);
         mView = nullptr;
     }
 
@@ -702,10 +788,9 @@ public:
     }
 
 private:
-    using ByteBuf = std::vector<std::byte, detail::NoInitAllocator<std::byte>>;
     DType mDtype = DType::Float64;
     std::vector<std::size_t> mShape;
-    ByteBuf mOwned;
+    detail::OwnedBuf mOwned;
     std::byte* mView = nullptr;
 };
 
@@ -13367,9 +13452,10 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
  *
  * The active backend is chosen at compile time by the `MESHIOPLUSPLUS_PARALLEL_*`
  * preprocessor definitions (set from CMake's `MESHIOPLUSPLUS_PARALLEL_BACKEND` =
- * `AUTO|SEQ|STL|OPENMP|TBB`; `AUTO` prefers OpenMP — portable across
+ * `AUTO|SEQ|STL|OPENMP|TBB|KOKKOS`; `AUTO` prefers OpenMP — portable across
  * manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB) if
- * detected, else SEQ). `parallel_backend_name()`/`_core.__parallel_backend__`
+ * detected, else SEQ; KOKKOS is bring-your-own and never picked by AUTO).
+ * `parallel_backend_name()`/`_core.__parallel_backend__`
  * report which one is active. Iterations passed to `parallel_for` must be
  * independent (no cross-iteration state) since they may run concurrently in
  * any order; the first exception thrown by any iteration is captured and
@@ -13391,11 +13477,23 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
  *    usable bandwidth), unlike compute-bound loops which keep scaling to all
  *    cores.
  *
- * To add a new backend (e.g. Kokkos, HPX): add one CMake branch that defines
+ * To add a new backend (e.g. HPX): add one CMake branch that defines
  * a new `MESHIOPLUSPLUS_PARALLEL_<NAME>` macro and links the dependency, then
  * add one `#elif defined(MESHIOPLUSPLUS_PARALLEL_<NAME>)` branch in
  * `detail::parallel_for_impl` below (and extend `parallel_backend_name()`
- * to report it).
+ * to report it, plus the guarded include block).
+ *
+ * The KOKKOS backend runs on `Kokkos::DefaultHostExecutionSpace` DELIBERATELY,
+ * even in a build whose Kokkos has a device (CUDA/HIP/SYCL) enabled: every
+ * `parallel_for` body in this codebase captures host pointers
+ * (`NDArray::Data()`, `std::vector`, `std::string`) by reference and several
+ * call host-only libraries (zlib), so device dispatch is not meaningful here —
+ * GPU data movement is served by the DLPack/CuPy handoff (`doc/gpu.md`)
+ * instead. Kokkos is lazily initialized on first use ONLY if the embedding
+ * application has not already called `Kokkos::initialize()` itself; in that
+ * case a matching `Kokkos::finalize()` is registered with `std::atexit`. An
+ * application that wants full control of the Kokkos lifecycle should simply
+ * initialize Kokkos before its first meshio++ call.
  */
 
 // System includes
@@ -13418,6 +13516,12 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 #include <tbb/blocked_range.h>
 #include <tbb/global_control.h>
 #include <tbb/parallel_for.h>
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+#include <Kokkos_Core.hpp>
+
+#include <cstdint>
+#include <cstdlib>
+#include <mutex>
 #endif
 
 namespace meshioplusplus {
@@ -13452,7 +13556,7 @@ inline constexpr unsigned parallel_bandwidth_threads = 4;
  * them defined means the sequential fallback. Exposed to Python as
  * `_core.__parallel_backend__` so tests/diagnostics can assert which backend
  * actually built.
- * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"seq"`.
+ * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"kokkos"`, `"seq"`.
  */
 constexpr const char* parallel_backend_name() {
 #if defined(MESHIOPLUSPLUS_PARALLEL_STL)
@@ -13461,12 +13565,47 @@ constexpr const char* parallel_backend_name() {
     return "openmp";
 #elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
     return "tbb";
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+    return "kokkos";
 #else
     return "seq";
 #endif
 }
 
 namespace detail {
+
+#if defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+/**
+ * @brief Lazily initializes Kokkos on first `parallel_for`, once per process.
+ *
+ * A library must not fight its host over the Kokkos lifecycle: if the
+ * embedding application already called `Kokkos::initialize()`, this is a
+ * no-op and meshio++ never finalizes (the host owns the lifecycle). Only when
+ * nobody has initialized Kokkos yet does meshio++ initialize it (honouring
+ * the `KOKKOS_*` environment variables) and register a guarded
+ * `Kokkos::finalize()` with `std::atexit`. The `is_finalized()` check avoids
+ * the init-after-finalize abort if a host tears Kokkos down and a straggling
+ * meshio++ call arrives after that.
+ */
+inline void kokkos_ensure_initialized() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+    // Kokkos::is_finalized() only exists from Kokkos 3.7 on.
+#if defined(KOKKOS_VERSION) && KOKKOS_VERSION >= 30700
+        const bool can_init = !Kokkos::is_initialized() && !Kokkos::is_finalized();
+#else
+        const bool can_init = !Kokkos::is_initialized();
+#endif
+        if (can_init) {
+            Kokkos::initialize();
+            std::atexit([] {
+                if (Kokkos::is_initialized())
+                    Kokkos::finalize();
+            });
+        }
+    });
+}
+#endif
 
 /**
  * @brief Captures the first exception thrown by any parallel iteration, to
@@ -13525,6 +13664,15 @@ private:
  *  - **TBB**: `tbb::parallel_for` over a `blocked_range` of grain size
  *    `grain`, optionally under a `tbb::global_control` limiting
  *    `max_allowed_parallelism` to `max_threads`.
+ *  - **KOKKOS**: `Kokkos::parallel_for` over a `RangePolicy` pinned to
+ *    `Kokkos::DefaultHostExecutionSpace` (host deliberately — see the file
+ *    header). Kokkos has no per-call thread cap, so a non-zero `max_threads`
+ *    is honoured the way the STL branch does it: the range is partitioned
+ *    into at most `max_threads` coarse chunks, so at most that many threads
+ *    have work — which is what preserves `parallel_for_bw`'s bandwidth-cap
+ *    semantics. Plain `[&]` lambdas are fine (no `KOKKOS_LAMBDA` needed) —
+ *    host-space functors run on ordinary host threads, which is also why
+ *    `FirstException` works unchanged.
  *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
  *    unused (cast to `void` to silence warnings).
  *
@@ -13598,6 +13746,36 @@ void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_thr
     } else {
         body();
     }
+    exc.RethrowIfAny();
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+    kokkos_ensure_initialized();
+    FirstException exc;
+    using Policy =
+        Kokkos::RangePolicy<Kokkos::DefaultHostExecutionSpace, Kokkos::IndexType<std::int64_t> >;
+    if (max_threads) {
+        // At most max_threads coarse chunks (the STL branch's idiom), so at
+        // most that many threads have work — Kokkos has no per-call cap.
+        const std::size_t by_grain = (n + grain - 1) / grain;
+        const std::size_t nchunks =
+            std::max<std::size_t>(1, std::min<std::size_t>(max_threads, by_grain));
+        const std::size_t per = (n + nchunks - 1) / nchunks;
+        Kokkos::parallel_for("meshioplusplus::parallel_for_bw",
+                             Policy(0, static_cast<std::int64_t>(nchunks)), [&](std::int64_t c) {
+                                 exc.Run([&] {
+                                     const std::size_t b = static_cast<std::size_t>(c) * per;
+                                     const std::size_t e = std::min(n, b + per);
+                                     for (std::size_t i = b; i < e; ++i)
+                                         rF(i);
+                                 });
+                             });
+    } else {
+        Policy pol(0, static_cast<std::int64_t>(n));
+        pol.set_chunk_size(static_cast<int>(std::max<std::size_t>(grain / 4, 1)));
+        Kokkos::parallel_for("meshioplusplus::parallel_for", pol, [&](std::int64_t i) {
+            exc.Run([&] { rF(static_cast<std::size_t>(i)); });
+        });
+    }
+    Kokkos::fence();
     exc.RethrowIfAny();
 #else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
     (void)grain;
@@ -31094,7 +31272,9 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
     const std::size_t dim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
 
-    // 1) mark used points across all kept cells.
+    // 1) mark used points across all kept cells. Serial: parallel iterations
+    // would store the same value 1 to shared slots — benign in practice but a
+    // formal data race (std::atomic_ref needs libc++ 19, above the macOS floor).
     std::vector<char> used(n, 0);
     std::size_t b = 0;
     for (const auto cb : rMesh.CellRange()) {
@@ -31160,9 +31340,8 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
     }
     if (!rPointIdName.empty()) {
         NDArray ids = NDArray::Uninit(DType::Int64, {point_src.size()});
-        std::int64_t* p = ids.As<std::int64_t>();
-        for (std::size_t j = 0; j < point_src.size(); ++j)
-            p[j] = point_src[j];
+        std::memcpy(ids.As<std::int64_t>(), point_src.data(),
+                    point_src.size() * sizeof(std::int64_t));
         out.AddPointData(rPointIdName, std::move(ids));
     }
 
@@ -31177,7 +31356,7 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
         const std::string type(cb.Type());
         if (cb.IsPolyhedron()) {
             std::vector<std::vector<std::vector<std::int64_t>>> cells(kept.size());
-            for (std::size_t i = 0; i < kept.size(); ++i) {
+            parallel_for_bw(kept.size(), [&](std::size_t i) {
                 const std::size_t c = static_cast<std::size_t>(kept[i]);
                 cells[i].resize(cb.NumFaces(c));
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
@@ -31186,28 +31365,28 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
                     for (std::size_t k = 0; k < face.second; ++k)
                         cells[i][f].push_back(new_point[static_cast<std::size_t>(face.first[k])]);
                 }
-            }
+            });
             out.AddPolyhedronBlock(type, std::move(cells));
         } else if (cb.IsRagged()) {
             std::vector<std::vector<std::int64_t>> rows(kept.size());
-            for (std::size_t i = 0; i < kept.size(); ++i) {
+            parallel_for_bw(kept.size(), [&](std::size_t i) {
                 const std::size_t c = static_cast<std::size_t>(kept[i]);
                 rows[i].reserve(cb.RowSize(c));
                 for (std::size_t k = 0; k < cb.RowSize(c); ++k)
                     rows[i].push_back(new_point[static_cast<std::size_t>(cb.Row(c)[k])]);
-            }
+            });
             out.AddPolygonBlock(type, std::move(rows));
         } else {
             const NDArray& conn = cb.Conn();
             const std::size_t npc = cb.NodesPerCell();
             NDArray outconn = NDArray::Uninit(DType::Int64, {kept.size(), npc});
             std::int64_t* cd = outconn.As<std::int64_t>();
-            for (std::size_t i = 0; i < kept.size(); ++i) {
+            parallel_for_bw(kept.size(), [&](std::size_t i) {
                 const std::size_t c = static_cast<std::size_t>(kept[i]);
                 for (std::size_t k = 0; k < npc; ++k)
                     cd[i * npc + k] =
                         new_point[static_cast<std::size_t>(read_int(conn, c * npc + k))];
-            }
+            });
             out.AddCellBlock(type, std::move(outconn));
         }
         ++b;
@@ -31241,9 +31420,7 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
             if (drop_empty_blocks && kept.empty())
                 continue;
             NDArray ids = NDArray::Uninit(DType::Int64, {kept.size()});
-            std::int64_t* p = ids.As<std::int64_t>();
-            for (std::size_t i = 0; i < kept.size(); ++i)
-                p[i] = kept[i];
+            std::memcpy(ids.As<std::int64_t>(), kept.data(), kept.size() * sizeof(std::int64_t));
             idblocks.push_back(std::move(ids));
         }
         out.AddCellData(rCellIdName, std::move(idblocks));
@@ -31256,19 +31433,18 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 
     // 7) index maps.
     res.mPointMap = NDArray::Uninit(DType::Int64, {n});
-    std::int64_t* pm = res.mPointMap.As<std::int64_t>();
-    for (std::size_t g = 0; g < n; ++g)
-        pm[g] = new_point[g];
+    std::memcpy(res.mPointMap.As<std::int64_t>(), new_point.data(), n * sizeof(std::int64_t));
 
     b = 0;
     for (const auto cb : rMesh.CellRange()) {
         NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
         std::int64_t* cm = cmap.As<std::int64_t>();
-        for (std::size_t c = 0; c < cb.NumCells(); ++c)
-            cm[c] = -1;
+        const std::size_t nc = cb.NumCells();
+        parallel_for_bw(nc, [&](std::size_t c) { cm[c] = -1; });
         const std::vector<std::int64_t>& kept = rKeptCellsPerBlock[b];
-        for (std::size_t i = 0; i < kept.size(); ++i)
+        parallel_for_bw(kept.size(), [&](std::size_t i) {
             cm[static_cast<std::size_t>(kept[i])] = static_cast<std::int64_t>(i);
+        });
         res.mCellMaps.push_back(std::move(cmap));
         ++b;
     }
@@ -50037,29 +50213,32 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
         // cell map: old local -> new local (or -1).
         NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
         std::int64_t* cm = cmap.As<std::int64_t>();
-        for (std::size_t c = 0; c < cb.NumCells(); ++c)
-            cm[c] = -1;
-        for (std::size_t j = 0; j < bo.kept_cells.size(); ++j)
+        parallel_for_bw(cb.NumCells(), [&](std::size_t c) { cm[c] = -1; });
+        parallel_for_bw(bo.kept_cells.size(), [&](std::size_t j) {
             cm[static_cast<std::size_t>(bo.kept_cells[j])] = static_cast<std::int64_t>(j);
+        });
         res.mCellMaps.push_back(std::move(cmap));
 
         if (bo.kind == 0) {
             const std::size_t kept = bo.kept_cells.size();
             NDArray conn = NDArray::Uninit(DType::Int64, {kept, bo.npc});
             std::int64_t* cd = conn.As<std::int64_t>();
-            for (std::size_t i = 0; i < bo.rect_conn.size(); ++i)
+            parallel_for_bw(bo.rect_conn.size(), [&](std::size_t i) {
                 cd[i] = new_point[static_cast<std::size_t>(bo.rect_conn[i])];
+            });
             out.AddCellBlock(bo.type, std::move(conn));
         } else if (bo.kind == 1) {
-            for (auto& row : bo.poly_rows)
-                for (std::int64_t& v : row)
+            parallel_for_bw(bo.poly_rows.size(), [&](std::size_t r) {
+                for (std::int64_t& v : bo.poly_rows[r])
                     v = new_point[static_cast<std::size_t>(v)];
+            });
             out.AddPolygonBlock(bo.type, std::move(bo.poly_rows));
         } else {
-            for (auto& cell : bo.polyh)
-                for (auto& face : cell)
+            parallel_for_bw(bo.polyh.size(), [&](std::size_t ci) {
+                for (auto& face : bo.polyh[ci])
                     for (std::int64_t& v : face)
                         v = new_point[static_cast<std::size_t>(v)];
+            });
             out.AddPolyhedronBlock(bo.type, std::move(bo.polyh));
         }
         ++bi;
@@ -50092,8 +50271,8 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
     // --- point map (input global -> output point, or -1) --------------------
     res.mPointMap = NDArray::Uninit(DType::Int64, {n});
     std::int64_t* pm = res.mPointMap.As<std::int64_t>();
-    for (std::size_t g = 0; g < n; ++g)
-        pm[g] = new_point[static_cast<std::size_t>(weld_rep[g])];
+    parallel_for_bw(
+        n, [&](std::size_t g) { pm[g] = new_point[static_cast<std::size_t>(weld_rep[g])]; });
 
     // --- named regions ------------------------------------------------------
     // Block structure is 1:1 and cell types are unchanged, so this is a Direct
@@ -50958,9 +51137,11 @@ std::vector<std::vector<std::int64_t>> crop_kept_cells(const Mesh& rMesh,
     kept.reserve(rMesh.NumCellBlocks());
     const bool all = mode == CropMode::All;
     for (const auto cb : rMesh.CellRange()) {
-        std::vector<std::int64_t> block;
         const std::size_t nc = cb.NumCells();
-        for (std::size_t c = 0; c < nc; ++c) {
+        // Phase 1: per-cell keep flag in parallel (disjoint slots); phase 2:
+        // serial compaction, preserving the ascending kept order.
+        std::vector<char> keep(nc, 0);
+        parallel_for(nc, [&](std::size_t c) {
             bool any_in = false, all_in = true;
             auto visit = [&](std::int64_t v) {
                 const bool in = rMask[static_cast<std::size_t>(v)] != 0;
@@ -50982,9 +51163,12 @@ std::vector<std::vector<std::int64_t>> crop_kept_cells(const Mesh& rMesh,
                 for (std::size_t k = 0; k < npc; ++k)
                     visit(detail::read_int(conn, c * npc + k));
             }
-            if (all ? all_in : any_in)
+            keep[c] = (all ? all_in : any_in) ? 1 : 0;
+        });
+        std::vector<std::int64_t> block;
+        for (std::size_t c = 0; c < nc; ++c)
+            if (keep[c])
                 block.push_back(static_cast<std::int64_t>(c));
-        }
         kept.push_back(std::move(block));
     }
     return kept;
@@ -55488,9 +55672,10 @@ void merge_copy_rows(NDArray& rOut, std::size_t outRow0, const NDArray& rSrc, st
 // Fill `nrows` rows (`ncols` wide) of `rOut` starting at `outRow0` with NaN.
 void merge_fill_nan(NDArray& rOut, std::size_t outRow0, std::size_t nrows, std::size_t ncols) {
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    for (std::size_t r = 0; r < nrows; ++r)
+    parallel_for(nrows, [&](std::size_t r) {
         for (std::size_t k = 0; k < ncols; ++k)
             merge_store_double(rOut, (outRow0 + r) * ncols + k, nan);
+    });
 }
 
 // --- spatial hash (weld) ----------------------------------------------------
@@ -55672,8 +55857,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
     for (std::size_t m = 0; m < nm; ++m) {
         NDArray pm = NDArray::Uninit(DType::Int64, {np[m]});
         std::int64_t* d = pm.As<std::int64_t>();
-        for (std::size_t i = 0; i < np[m]; ++i)
-            d[i] = new_index(poff[m] + i);
+        parallel_for_bw(np[m], [&](std::size_t i) { d[i] = new_index(poff[m] + i); });
         res.mPointMaps.push_back(std::move(pm));
     }
 
@@ -55819,7 +56003,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             bb.polycells.resize(ob.pre_count);
             for (const Contribution& con : ob.contribs) {
                 Mesh::CellView cv = rMeshes[con.mesh]->Cells(con.in_block);
-                for (std::size_t c = 0; c < con.ncells; ++c) {
+                parallel_for_bw(con.ncells, [&](std::size_t c) {
                     const std::size_t p = con.start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(con.mesh);
                     bb.polycells[p].resize(cv.NumFaces(c));
@@ -55829,13 +56013,13 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                         for (std::size_t k = 0; k < face.second; ++k)
                             bb.polycells[p][f].push_back(remap_node(con.mesh, face.first[k]));
                     }
-                }
+                });
             }
         } else if (ob.ragged) {
             bb.polyrows.resize(ob.pre_count);
             for (const Contribution& con : ob.contribs) {
                 Mesh::CellView cv = rMeshes[con.mesh]->Cells(con.in_block);
-                for (std::size_t c = 0; c < con.ncells; ++c) {
+                parallel_for_bw(con.ncells, [&](std::size_t c) {
                     const std::size_t p = con.start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(con.mesh);
                     const std::int64_t* row = cv.Row(c);
@@ -55843,7 +56027,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                     bb.polyrows[p].reserve(sz);
                     for (std::size_t k = 0; k < sz; ++k)
                         bb.polyrows[p].push_back(remap_node(con.mesh, row[k]));
-                }
+                });
             }
         } else {
             const std::size_t npc = ob.npc;
@@ -55854,7 +56038,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                 const NDArray& conn = cv.Conn();
                 const std::size_t start = con.start;
                 const std::size_t mesh = con.mesh;
-                parallel_for(con.ncells, [&](std::size_t c) {
+                parallel_for_bw(con.ncells, [&](std::size_t c) {
                     const std::size_t p = start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(mesh);
                     for (std::size_t k = 0; k < npc; ++k)
@@ -55911,22 +56095,25 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         const std::size_t fc = bb.final_count;
         if (ob.poly) {
             std::vector<std::vector<std::vector<std::int64_t>>> cells(fc);
-            for (std::size_t f = 0; f < fc; ++f)
+            parallel_for_bw(fc, [&](std::size_t f) {
                 cells[f] = std::move(bb.polycells[static_cast<std::size_t>(bb.final_to_pre[f])]);
+            });
             out.AddPolyhedronBlock(ob.type, std::move(cells));
         } else if (ob.ragged) {
             std::vector<std::vector<std::int64_t>> rows(fc);
-            for (std::size_t f = 0; f < fc; ++f)
+            parallel_for_bw(fc, [&](std::size_t f) {
                 rows[f] = std::move(bb.polyrows[static_cast<std::size_t>(bb.final_to_pre[f])]);
+            });
             out.AddPolygonBlock(ob.type, std::move(rows));
         } else {
             NDArray conn = NDArray::Uninit(DType::Int64, {fc, ob.npc});
             std::int64_t* dst = conn.As<std::int64_t>();
             const std::int64_t* src = bb.conn.As<std::int64_t>();
-            for (std::size_t f = 0; f < fc; ++f)
+            parallel_for_bw(fc, [&](std::size_t f) {
                 std::memcpy(dst + f * ob.npc,
                             src + static_cast<std::size_t>(bb.final_to_pre[f]) * ob.npc,
                             ob.npc * sizeof(std::int64_t));
+            });
             out.AddCellBlock(ob.type, std::move(conn));
         }
     }
@@ -55940,8 +56127,9 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             const std::size_t fc = bb.final_count;
             NDArray a = NDArray::Uninit(DType::Int64, {fc});
             std::int64_t* d = a.As<std::int64_t>();
-            for (std::size_t f = 0; f < fc; ++f)
+            parallel_for_bw(fc, [&](std::size_t f) {
                 d[f] = bb.source_ids[static_cast<std::size_t>(bb.final_to_pre[f])];
+            });
             sblocks.push_back(std::move(a));
         }
         out.AddCellData("source_mesh_id", std::move(sblocks));
@@ -56022,9 +56210,10 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                 }
                 // Filter by dedup keep-first.
                 NDArray fin = NDArray::Uninit(dt, make_shape(bb.final_count));
-                for (std::size_t f = 0; f < bb.final_count; ++f)
+                parallel_for_bw(bb.final_count, [&](std::size_t f) {
                     merge_copy_rows(fin, f, pre, static_cast<std::size_t>(bb.final_to_pre[f]), 1,
                                     cols);
+                });
                 outblocks.push_back(std::move(fin));
             }
             out.AddCellData(name, std::move(outblocks));
@@ -56051,8 +56240,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         res.mCellMaps.emplace_back(NDArray::Uninit(DType::Int64, {in_ncells[m]}));
     for (std::size_t m = 0; m < nm; ++m) {
         std::int64_t* d = res.mCellMaps[m].As<std::int64_t>();
-        for (std::size_t i = 0; i < in_ncells[m]; ++i)
-            d[i] = -1;
+        parallel_for_bw(in_ncells[m], [&](std::size_t i) { d[i] = -1; });
     }
     for (std::size_t oi = 0; oi < blocks.size(); ++oi) {
         const OutBlock& ob = blocks[oi];
@@ -56060,10 +56248,10 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         for (const Contribution& con : ob.contribs) {
             std::int64_t* d = res.mCellMaps[con.mesh].As<std::int64_t>();
             const std::size_t gbase = in_block_base[con.mesh][con.in_block];
-            for (std::size_t c = 0; c < con.ncells; ++c) {
+            parallel_for_bw(con.ncells, [&](std::size_t c) {
                 const std::int64_t fl = bb.finalpos[con.start + c];
                 d[gbase + c] = (fl < 0) ? -1 : static_cast<std::int64_t>(out_block_base[oi]) + fl;
-            }
+            });
         }
     }
 
@@ -57332,23 +57520,50 @@ QualityReport compute_quality(const Mesh& rMesh) {
         s.mMax = a.mMax;
         s.mMean = a.mSum / static_cast<double>(a.mCount);
     }
+    // Fixed-size chunks over the block-major global cell index, one partial
+    // histogram per chunk, merged serially in chunk order (stats.cpp's chunked
+    // reduction; bins are integer counts, so the merge is bit-identical to the
+    // serial loop for any thread count).
     const int K = QualityMetricSummary::K;
-    for (const std::vector<CellMetrics>& vals : block_vals) {
-        for (const CellMetrics& v : vals) {
-            for (int mi = 0; mi < NUM_METRICS; ++mi) {
-                const double x = v[mi];
-                if (!std::isfinite(x))
-                    continue;
-                QualityMetricSummary& s = summ[mi];
-                const double span = s.mMax - s.mMin;
-                int bin = 0;
-                if (span > 0.0)
-                    bin = static_cast<int>((x - s.mMin) / span * K);
-                bin = std::clamp(bin, 0, K - 1);
-                ++s.mHistogram[bin];
+    std::vector<std::size_t> starts(block_vals.size() + 1, 0);
+    for (std::size_t bi = 0; bi < block_vals.size(); ++bi)
+        starts[bi + 1] = starts[bi] + block_vals[bi].size();
+    const std::size_t total_cells = starts.back();
+    constexpr std::size_t hist_chunk = 4096;
+    const std::size_t nchunks = (total_cells + hist_chunk - 1) / hist_chunk;
+    using Hist = std::array<std::array<std::int64_t, QualityMetricSummary::K>, NUM_METRICS>;
+    std::vector<Hist> partial(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            Hist& h = partial[ci];
+            const std::size_t lo = ci * hist_chunk;
+            const std::size_t hi = std::min(total_cells, lo + hist_chunk);
+            std::size_t bi = static_cast<std::size_t>(
+                std::upper_bound(starts.begin(), starts.end(), lo) - starts.begin() - 1);
+            for (std::size_t g = lo; g < hi; ++g) {
+                while (g >= starts[bi + 1])
+                    ++bi;
+                const CellMetrics& v = block_vals[bi][g - starts[bi]];
+                for (int mi = 0; mi < NUM_METRICS; ++mi) {
+                    const double x = v[mi];
+                    if (!std::isfinite(x))
+                        continue;
+                    const QualityMetricSummary& s = summ[mi];
+                    const double span = s.mMax - s.mMin;
+                    int bin = 0;
+                    if (span > 0.0)
+                        bin = static_cast<int>((x - s.mMin) / span * K);
+                    bin = std::clamp(bin, 0, K - 1);
+                    ++h[mi][bin];
+                }
             }
-        }
-    }
+        },
+        /*grain=*/1);
+    for (const Hist& h : partial)
+        for (int mi = 0; mi < NUM_METRICS; ++mi)
+            for (int k = 0; k < K; ++k)
+                summ[mi].mHistogram[k] += h[mi][k];
 
     // --- assemble the report ---
     for (int mi = 0; mi < NUM_METRICS; ++mi) {
@@ -57358,8 +57573,7 @@ QualityReport compute_quality(const Mesh& rMesh) {
         for (const std::vector<CellMetrics>& vals : block_vals) {
             NDArray a = NDArray::Uninit(DType::Float64, {vals.size(), 1});
             double* d = a.As<double>();
-            for (std::size_t c = 0; c < vals.size(); ++c)
-                d[c] = vals[c][mi];
+            parallel_for_bw(vals.size(), [&](std::size_t c) { d[c] = vals[c][mi]; });
             arrays.push_back(std::move(a));
         }
         rep.mCellArrays.emplace_back(QUALITY_METRIC_NAMES[mi], std::move(arrays));
@@ -58248,16 +58462,16 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
     // Cell blocks: remap connectivity node ids, then reorder cells by min new
     // node index. Keep each block's cell permutation for the cell_data below.
     std::vector<std::vector<std::int64_t>> block_cell_perms;
-    std::vector<std::int64_t> nodes;
     for (const auto cb : rMesh.CellRange()) {
         const std::size_t nc = cb.NumCells();
 
         // Per-cell sort key = min new node index; stable argsort -> cell order.
         std::vector<std::int64_t> key(nc);
-        for (std::size_t c = 0; c < nc; ++c) {
+        parallel_for_bw(nc, [&](std::size_t c) {
+            std::vector<std::int64_t> nodes;
             detail::cell_node_ids(cb, c, n, nodes);
             key[c] = reorder_cell_key(nodes, node_perm);
-        }
+        });
         std::vector<std::int64_t> cellorder(nc);
         std::iota(cellorder.begin(), cellorder.end(), std::int64_t{0});
         std::stable_sort(cellorder.begin(), cellorder.end(), [&](std::int64_t a, std::int64_t b) {
@@ -58274,7 +58488,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
         };
         if (cb.IsPolyhedron()) {
             std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
-            for (std::size_t p = 0; p < nc; ++p) {
+            parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 cells[p].resize(cb.NumFaces(oc));
                 for (std::size_t f = 0; f < cb.NumFaces(oc); ++f) {
@@ -58283,29 +58497,29 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
                     for (std::size_t k = 0; k < face.second; ++k)
                         cells[p][f].push_back(remap(face.first[k]));
                 }
-            }
+            });
             out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
         } else if (cb.IsRagged()) {
             std::vector<std::vector<std::int64_t>> rows(nc);
-            for (std::size_t p = 0; p < nc; ++p) {
+            parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 const std::int64_t* row = cb.Row(oc);
                 const std::size_t sz = cb.RowSize(oc);
                 rows[p].reserve(sz);
                 for (std::size_t k = 0; k < sz; ++k)
                     rows[p].push_back(remap(row[k]));
-            }
+            });
             out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
         } else {
             const NDArray& conn = cb.Conn();
             const std::size_t npc = cb.NodesPerCell();
             NDArray block = NDArray::Uninit(DType::Int64, {nc, npc});
             std::int64_t* dst = block.As<std::int64_t>();
-            for (std::size_t p = 0; p < nc; ++p) {
+            parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 for (std::size_t k = 0; k < npc; ++k)
                     dst[p * npc + k] = remap(detail::read_int(conn, oc * npc + k));
-            }
+            });
             out.AddCellBlock(std::string(cb.Type()), std::move(block));
         }
 
