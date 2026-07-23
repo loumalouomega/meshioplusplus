@@ -67,6 +67,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/mesh_api.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
 
@@ -320,6 +321,27 @@ public:
     bool HasFieldData(const std::string& rName) const { return mFieldData.Has(rName); }
     const NDArray& FieldData(const std::string& rName) const { return mFieldData.Get(rName); }
 
+    // --- named regions (region.hpp) ---------------------------------------
+    // NOTE: `Region(i)` hides the type name `meshioplusplus::Region` for the
+    // rest of this class body — every declaration below must qualify it.
+
+    /// Sentinel returned by `FindRegion` when no region matches.
+    static constexpr std::size_t npos = detail::RegionList::npos;
+
+    void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+    std::size_t NumRegions() const { return mRegions.Size(); }
+    const meshioplusplus::Region& Region(std::size_t i) const { return mRegions.At(i); }
+    std::vector<std::string> RegionNames() const { return mRegions.Names(); }
+    bool HasRegion(const std::string& rName) const { return mRegions.Has(rName); }
+    bool HasRegion(const std::string& rName, RegionKind kind) const {
+        return mRegions.Has(rName, kind);
+    }
+    std::size_t FindRegion(const std::string& rName, RegionKind kind) const {
+        return mRegions.Find(rName, kind);
+    }
+    /** @brief The whole region list (used by the KRATOS backend's staging forward). */
+    const detail::RegionList& Regions() const { return mRegions; }
+
     // --- fast-consumer surface (NATIVE-only extras) -----------------------
 
     /** @brief Contiguous `(NumPoints() * PointDim())` Float64 coordinate buffer. */
@@ -390,6 +412,7 @@ private:
     detail::NamedArrays mPointData;     // canonical Float64/Int64 arrays
     detail::NamedArrayLists mCellData;  // one array per block, block order
     detail::NamedArrays mFieldData;
+    detail::RegionList mRegions;  // named groups, canonical + sorted
     mutable std::optional<GlobalCsr> mGlobalCsr;
 };
 
