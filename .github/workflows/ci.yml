@@ -250,6 +250,63 @@ jobs:
           python -c "from meshioplusplus import _core; assert not _core.__has_kahip__"
           python -m pytest tests/python/test_partition.py -v
 
+  # The Kokkos parallel backend (host execution space) -- bring-your-own like
+  # KaHIP, never picked by AUTO. Source-built from the pinned release into a
+  # cached prefix; the full gtest suite doubles as the byte-identity pin (its
+  # DeterministicAcrossRuns/round-trip cases must agree with every other
+  # backend). A second ctest run under OMP_NUM_THREADS=2 varies the Kokkos
+  # host thread pool cheaply.
+  kokkos:
+    name: Kokkos parallel backend
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev zlib1g-dev pkg-config
+      - name: Install build tools
+        run: python -m pip install --upgrade pip cmake ninja
+      - name: Cache the Kokkos install
+        id: kokkos-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/kokkos-install
+          key: kokkos-4.5.01-${{ runner.os }}
+      - name: Build Kokkos 4.5.01 from source
+        if: steps.kokkos-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 4.5.01 https://github.com/kokkos/kokkos.git /tmp/kokkos-src
+          cmake -S /tmp/kokkos-src -B /tmp/kokkos-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DKokkos_ENABLE_OPENMP=ON -DKokkos_ENABLE_SERIAL=ON \
+            -DCMAKE_CXX_STANDARD=20 -DCMAKE_INSTALL_PREFIX="$HOME/kokkos-install"
+          cmake --build /tmp/kokkos-build -j
+          cmake --install /tmp/kokkos-build
+      # netCDF stays off here (the standalone-executable link quirk); the
+      # cpp-tests matrix covers the netCDF formats.
+      - name: Configure C++ tests with the KOKKOS backend
+        run: >-
+          cmake -S . -B build-kokkos -G Ninja
+          -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_BUILD_C_API=ON
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          -DMESHIOPLUSPLUS_PARALLEL_BACKEND=KOKKOS
+          -DKokkos_DIR=$HOME/kokkos-install/lib/cmake/Kokkos
+      - name: Build
+        run: cmake --build build-kokkos
+      - name: Run the full suite
+        run: ctest --test-dir build-kokkos --output-on-failure
+      - name: Run it again with a 2-thread Kokkos host pool
+        run: OMP_NUM_THREADS=2 ctest --test-dir build-kokkos --output-on-failure
+
   # Include hygiene: fail the PR on any UNUSED #include (clang-tidy's
   # misc-include-cleaner, driven by tools/include-cleanup.sh). Missing-include
   # suggestions are advisory only -- see the script + .clang-tidy. HDF5/netCDF
