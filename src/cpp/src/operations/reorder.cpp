@@ -304,16 +304,16 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
     // Cell blocks: remap connectivity node ids, then reorder cells by min new
     // node index. Keep each block's cell permutation for the cell_data below.
     std::vector<std::vector<std::int64_t>> block_cell_perms;
-    std::vector<std::int64_t> nodes;
     for (const auto cb : rMesh.CellRange()) {
         const std::size_t nc = cb.NumCells();
 
         // Per-cell sort key = min new node index; stable argsort -> cell order.
         std::vector<std::int64_t> key(nc);
-        for (std::size_t c = 0; c < nc; ++c) {
+        parallel_for_bw(nc, [&](std::size_t c) {
+            std::vector<std::int64_t> nodes;
             detail::cell_node_ids(cb, c, n, nodes);
             key[c] = reorder_cell_key(nodes, node_perm);
-        }
+        });
         std::vector<std::int64_t> cellorder(nc);
         std::iota(cellorder.begin(), cellorder.end(), std::int64_t{0});
         std::stable_sort(cellorder.begin(), cellorder.end(), [&](std::int64_t a, std::int64_t b) {
@@ -330,7 +330,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
         };
         if (cb.IsPolyhedron()) {
             std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
-            for (std::size_t p = 0; p < nc; ++p) {
+            parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 cells[p].resize(cb.NumFaces(oc));
                 for (std::size_t f = 0; f < cb.NumFaces(oc); ++f) {
@@ -339,29 +339,29 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
                     for (std::size_t k = 0; k < face.second; ++k)
                         cells[p][f].push_back(remap(face.first[k]));
                 }
-            }
+            });
             out.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
         } else if (cb.IsRagged()) {
             std::vector<std::vector<std::int64_t>> rows(nc);
-            for (std::size_t p = 0; p < nc; ++p) {
+            parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 const std::int64_t* row = cb.Row(oc);
                 const std::size_t sz = cb.RowSize(oc);
                 rows[p].reserve(sz);
                 for (std::size_t k = 0; k < sz; ++k)
                     rows[p].push_back(remap(row[k]));
-            }
+            });
             out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
         } else {
             const NDArray& conn = cb.Conn();
             const std::size_t npc = cb.NodesPerCell();
             NDArray block = NDArray::Uninit(DType::Int64, {nc, npc});
             std::int64_t* dst = block.As<std::int64_t>();
-            for (std::size_t p = 0; p < nc; ++p) {
+            parallel_for_bw(nc, [&](std::size_t p) {
                 const std::size_t oc = static_cast<std::size_t>(cellorder[p]);
                 for (std::size_t k = 0; k < npc; ++k)
                     dst[p * npc + k] = remap(detail::read_int(conn, oc * npc + k));
-            }
+            });
             out.AddCellBlock(std::string(cb.Type()), std::move(block));
         }
 
