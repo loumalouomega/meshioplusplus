@@ -110,9 +110,10 @@ void merge_copy_rows(NDArray& rOut, std::size_t outRow0, const NDArray& rSrc, st
 // Fill `nrows` rows (`ncols` wide) of `rOut` starting at `outRow0` with NaN.
 void merge_fill_nan(NDArray& rOut, std::size_t outRow0, std::size_t nrows, std::size_t ncols) {
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    for (std::size_t r = 0; r < nrows; ++r)
+    parallel_for(nrows, [&](std::size_t r) {
         for (std::size_t k = 0; k < ncols; ++k)
             merge_store_double(rOut, (outRow0 + r) * ncols + k, nan);
+    });
 }
 
 // --- spatial hash (weld) ----------------------------------------------------
@@ -294,8 +295,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
     for (std::size_t m = 0; m < nm; ++m) {
         NDArray pm = NDArray::Uninit(DType::Int64, {np[m]});
         std::int64_t* d = pm.As<std::int64_t>();
-        for (std::size_t i = 0; i < np[m]; ++i)
-            d[i] = new_index(poff[m] + i);
+        parallel_for_bw(np[m], [&](std::size_t i) { d[i] = new_index(poff[m] + i); });
         res.mPointMaps.push_back(std::move(pm));
     }
 
@@ -441,7 +441,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             bb.polycells.resize(ob.pre_count);
             for (const Contribution& con : ob.contribs) {
                 Mesh::CellView cv = rMeshes[con.mesh]->Cells(con.in_block);
-                for (std::size_t c = 0; c < con.ncells; ++c) {
+                parallel_for_bw(con.ncells, [&](std::size_t c) {
                     const std::size_t p = con.start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(con.mesh);
                     bb.polycells[p].resize(cv.NumFaces(c));
@@ -451,13 +451,13 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                         for (std::size_t k = 0; k < face.second; ++k)
                             bb.polycells[p][f].push_back(remap_node(con.mesh, face.first[k]));
                     }
-                }
+                });
             }
         } else if (ob.ragged) {
             bb.polyrows.resize(ob.pre_count);
             for (const Contribution& con : ob.contribs) {
                 Mesh::CellView cv = rMeshes[con.mesh]->Cells(con.in_block);
-                for (std::size_t c = 0; c < con.ncells; ++c) {
+                parallel_for_bw(con.ncells, [&](std::size_t c) {
                     const std::size_t p = con.start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(con.mesh);
                     const std::int64_t* row = cv.Row(c);
@@ -465,7 +465,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                     bb.polyrows[p].reserve(sz);
                     for (std::size_t k = 0; k < sz; ++k)
                         bb.polyrows[p].push_back(remap_node(con.mesh, row[k]));
-                }
+                });
             }
         } else {
             const std::size_t npc = ob.npc;
@@ -476,7 +476,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                 const NDArray& conn = cv.Conn();
                 const std::size_t start = con.start;
                 const std::size_t mesh = con.mesh;
-                parallel_for(con.ncells, [&](std::size_t c) {
+                parallel_for_bw(con.ncells, [&](std::size_t c) {
                     const std::size_t p = start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(mesh);
                     for (std::size_t k = 0; k < npc; ++k)
@@ -533,22 +533,25 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         const std::size_t fc = bb.final_count;
         if (ob.poly) {
             std::vector<std::vector<std::vector<std::int64_t>>> cells(fc);
-            for (std::size_t f = 0; f < fc; ++f)
+            parallel_for_bw(fc, [&](std::size_t f) {
                 cells[f] = std::move(bb.polycells[static_cast<std::size_t>(bb.final_to_pre[f])]);
+            });
             out.AddPolyhedronBlock(ob.type, std::move(cells));
         } else if (ob.ragged) {
             std::vector<std::vector<std::int64_t>> rows(fc);
-            for (std::size_t f = 0; f < fc; ++f)
+            parallel_for_bw(fc, [&](std::size_t f) {
                 rows[f] = std::move(bb.polyrows[static_cast<std::size_t>(bb.final_to_pre[f])]);
+            });
             out.AddPolygonBlock(ob.type, std::move(rows));
         } else {
             NDArray conn = NDArray::Uninit(DType::Int64, {fc, ob.npc});
             std::int64_t* dst = conn.As<std::int64_t>();
             const std::int64_t* src = bb.conn.As<std::int64_t>();
-            for (std::size_t f = 0; f < fc; ++f)
+            parallel_for_bw(fc, [&](std::size_t f) {
                 std::memcpy(dst + f * ob.npc,
                             src + static_cast<std::size_t>(bb.final_to_pre[f]) * ob.npc,
                             ob.npc * sizeof(std::int64_t));
+            });
             out.AddCellBlock(ob.type, std::move(conn));
         }
     }
@@ -562,8 +565,9 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             const std::size_t fc = bb.final_count;
             NDArray a = NDArray::Uninit(DType::Int64, {fc});
             std::int64_t* d = a.As<std::int64_t>();
-            for (std::size_t f = 0; f < fc; ++f)
+            parallel_for_bw(fc, [&](std::size_t f) {
                 d[f] = bb.source_ids[static_cast<std::size_t>(bb.final_to_pre[f])];
+            });
             sblocks.push_back(std::move(a));
         }
         out.AddCellData("source_mesh_id", std::move(sblocks));
@@ -644,9 +648,10 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                 }
                 // Filter by dedup keep-first.
                 NDArray fin = NDArray::Uninit(dt, make_shape(bb.final_count));
-                for (std::size_t f = 0; f < bb.final_count; ++f)
+                parallel_for_bw(bb.final_count, [&](std::size_t f) {
                     merge_copy_rows(fin, f, pre, static_cast<std::size_t>(bb.final_to_pre[f]), 1,
                                     cols);
+                });
                 outblocks.push_back(std::move(fin));
             }
             out.AddCellData(name, std::move(outblocks));
@@ -673,8 +678,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         res.mCellMaps.emplace_back(NDArray::Uninit(DType::Int64, {in_ncells[m]}));
     for (std::size_t m = 0; m < nm; ++m) {
         std::int64_t* d = res.mCellMaps[m].As<std::int64_t>();
-        for (std::size_t i = 0; i < in_ncells[m]; ++i)
-            d[i] = -1;
+        parallel_for_bw(in_ncells[m], [&](std::size_t i) { d[i] = -1; });
     }
     for (std::size_t oi = 0; oi < blocks.size(); ++oi) {
         const OutBlock& ob = blocks[oi];
@@ -682,10 +686,10 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         for (const Contribution& con : ob.contribs) {
             std::int64_t* d = res.mCellMaps[con.mesh].As<std::int64_t>();
             const std::size_t gbase = in_block_base[con.mesh][con.in_block];
-            for (std::size_t c = 0; c < con.ncells; ++c) {
+            parallel_for_bw(con.ncells, [&](std::size_t c) {
                 const std::int64_t fl = bb.finalpos[con.start + c];
                 d[gbase + c] = (fl < 0) ? -1 : static_cast<std::int64_t>(out_block_base[oi]) + fl;
-            }
+            });
         }
     }
 
