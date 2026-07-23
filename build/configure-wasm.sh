@@ -11,19 +11,28 @@
 #
 #   ./configure-wasm.sh --build
 #   ./configure-wasm.sh --without-zlib --build-type RelWithDebInfo --build
+#   ./configure-wasm.sh --without-hdf5 --without-netcdf --build   # small build
 #
 # Unlike configure.sh (the native Python-extension build), this script never
 # touches Python/pybind11 (-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF) and always
 # configures the sequential parallel backend (OpenMP/TBB/STL's parallel STL
 # all have no meaningful WASM story today; SEQ is fast enough for the format
-# parsers this target ships and keeps the configure deterministic). HDF5 and
-# netCDF are also off unconditionally: porting them to WASM is a separate,
-# much larger undertaking (see doc/wasm.md) -- the CGNS/H5M/HMF/MED/Exodus
-# formats are simply absent from bindings_js/js_bindings.cpp's dispatch
-# tables regardless of these flags. The mesh backend is pinned to NATIVE
-# (-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE): the fastest in-memory structure —
-# canonical Float64/Int64 storage means the embind boundary's typed arrays
-# convert with no dtype dispatch, and the JS API shape is unchanged.
+# parsers this target ships and keeps the configure deterministic). The mesh
+# backend is pinned to NATIVE (-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE): the
+# fastest in-memory structure — canonical Float64/Int64 storage means the
+# embind boundary's typed arrays convert with no dtype dispatch, and the JS
+# API shape is unchanged.
+#
+# HDF5 and netCDF are ON by default here, as they are for a native build, so
+# the published npm artifact reads and writes CGNS/H5M/HMF/MED/Exodus and
+# XDMF's Format="HDF" data path like any other build. They are not system
+# libraries on this target: build-wasm-deps.sh produces a wasm32 static build
+# of both into a self-contained prefix, which this script puts on
+# CMAKE_FIND_ROOT_PATH (the required knob -- the Emscripten toolchain sets
+# CMAKE_FIND_ROOT_PATH_MODE_PACKAGE/LIBRARY/INCLUDE to ONLY, so a plain
+# CMAKE_PREFIX_PATH or HINTS is ignored). If the prefix is missing it is built
+# automatically, once; that takes several minutes, so pass --deps-prefix to
+# reuse one you already have, or --without-hdf5 for a fast, small build.
 
 set -eu
 
@@ -32,16 +41,24 @@ SOURCE_DIR=$(dirname -- "$SCRIPT_DIR")
 
 BUILD_TYPE="Release"
 WITH_ZLIB="ON"
+WITH_HDF5="ON"
+WITH_NETCDF="ON"
+DEPS_PREFIX=""
 DO_BUILD="no"
 
 usage() {
     cat <<EOF
 Usage: $0 [options]
-  --build-type <type>          CMake build type (default: Release)
-  --with-zlib / --without-zlib VTU/XDMF zlib compression via Emscripten's
-                                built-in port (default: on)
-  --build                      run the build after configuring
-  -h, --help                   this help
+  --build-type <type>            CMake build type (default: Release)
+  --with-zlib / --without-zlib   VTU/XDMF zlib compression via Emscripten's
+                                  built-in port (default: on)
+  --with-hdf5 / --without-hdf5   CGNS/H5M/HMF/MED + XDMF-HDF (default: on)
+  --with-netcdf / --without-netcdf
+                                 Exodus (default: on; needs HDF5)
+  --deps-prefix <dir>            prefix holding the wasm32 HDF5/netCDF build
+                                  (default: build-wasm-deps.sh --print-prefix)
+  --build                        run the build after configuring
+  -h, --help                     this help
 EOF
 }
 
@@ -50,11 +67,30 @@ while [ $# -gt 0 ]; do
         --build-type) BUILD_TYPE="$2"; shift 2 ;;
         --with-zlib) WITH_ZLIB="ON"; shift ;;
         --without-zlib) WITH_ZLIB="OFF"; shift ;;
+        --with-hdf5) WITH_HDF5="ON"; shift ;;
+        --without-hdf5) WITH_HDF5="OFF"; WITH_NETCDF="OFF"; shift ;;
+        --with-netcdf) WITH_NETCDF="ON"; shift ;;
+        --without-netcdf) WITH_NETCDF="OFF"; shift ;;
+        --deps-prefix) DEPS_PREFIX="$2"; shift 2 ;;
         --build) DO_BUILD="yes"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
     esac
 done
+
+# netCDF-4 is layered on HDF5; asking for one without the other cannot work.
+if [ "$WITH_NETCDF" = "ON" ] && [ "$WITH_HDF5" = "OFF" ]; then
+    echo "error: --with-netcdf needs HDF5 (netCDF-4 is an HDF5 container)." >&2
+    exit 1
+fi
+
+# The HDF5-backed writers all compress (H5Pset_deflate, gzip level 4), so an
+# HDF5 build without zlib would produce files it cannot write.
+if [ "$WITH_HDF5" = "ON" ] && [ "$WITH_ZLIB" = "OFF" ]; then
+    echo "error: --with-hdf5 needs zlib (the MED/CGNS/H5M/HMF writers deflate)." >&2
+    echo "       Use --without-hdf5 as well, or drop --without-zlib." >&2
+    exit 1
+fi
 
 if ! command -v emcmake >/dev/null 2>&1; then
     echo "error: emcmake not found on PATH." >&2
@@ -70,24 +106,51 @@ if command -v ninja >/dev/null 2>&1; then
     GENERATOR="-G Ninja"
 fi
 
+# Locate (and if necessary produce) the wasm32 HDF5/netCDF prefix. Asking the
+# deps script for the default path rather than recomputing it here keeps the
+# version pins in exactly one place.
+FIND_ROOT_ARG=""
+if [ "$WITH_HDF5" = "ON" ]; then
+    [ -n "$DEPS_PREFIX" ] || DEPS_PREFIX=$("$SCRIPT_DIR/build-wasm-deps.sh" --print-prefix)
+    if [ ! -f "$DEPS_PREFIX/lib/libhdf5.a" ] ||
+       { [ "$WITH_NETCDF" = "ON" ] && [ ! -f "$DEPS_PREFIX/lib/libnetcdf.a" ]; }; then
+        echo "== building the wasm HDF5/netCDF dependencies (one-off, several minutes) =="
+        deps_args="--prefix $DEPS_PREFIX"
+        [ "$WITH_NETCDF" = "ON" ] || deps_args="$deps_args --without-netcdf"
+        # shellcheck disable=SC2086
+        "$SCRIPT_DIR/build-wasm-deps.sh" $deps_args
+        echo
+    fi
+    FIND_ROOT_ARG="-DCMAKE_FIND_ROOT_PATH=$DEPS_PREFIX"
+fi
+
 echo "== meshio++ WASM configure =="
 echo "  source:    $SOURCE_DIR"
 echo "  build:     $BUILD_DIR"
 echo "  type:      $BUILD_TYPE"
 echo "  zlib:      $WITH_ZLIB"
+echo "  hdf5:      $WITH_HDF5"
+echo "  netcdf:    $WITH_NETCDF"
+[ "$WITH_HDF5" = "OFF" ] || echo "  deps:      $DEPS_PREFIX"
 echo "  emcc:      $(command -v emcc)"
 echo
 
+# CMAKE_FIND_ROOT_PATH rather than CMAKE_PREFIX_PATH: the Emscripten toolchain
+# re-roots every find_package/find_library/find_path at the sysroot
+# (CMAKE_FIND_ROOT_PATH_MODE_* = ONLY), and appends the sysroot to whatever
+# CMAKE_FIND_ROOT_PATH already holds -- so passing our prefix here adds it as
+# a second root instead of replacing the toolchain's.
 # shellcheck disable=SC2086
 emcmake cmake $GENERATOR \
     -S "$SOURCE_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    $FIND_ROOT_ARG \
     -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
     -DMESHIOPLUSPLUS_BUILD_WASM=ON \
     -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ \
     -DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE \
-    -DMESHIOPLUSPLUS_WITH_HDF5=OFF \
-    -DMESHIOPLUSPLUS_WITH_NETCDF=OFF \
+    -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
+    -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
     -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB"
 
 if [ "$WITH_ZLIB" = "ON" ]; then
@@ -107,7 +170,7 @@ echo
 echo "== next steps =="
 echo "  emmake cmake --build \"$BUILD_DIR\" -j"
 echo "  cp \"$BUILD_DIR\"/meshioplusplus_wasm.{mjs,wasm} \"$SOURCE_DIR/src/wasm/dist/\""
-echo "  node \"$SOURCE_DIR/src/wasm/test/smoke.mjs\""
+echo "  node \"$SOURCE_DIR/tests/wasm/smoke.mjs\""
 echo "  (cd \"$SOURCE_DIR/src/wasm\" && npm pack)"
 
 if [ "$DO_BUILD" = "yes" ]; then
