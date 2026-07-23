@@ -57,6 +57,7 @@ from ._data_manage import data_drop, data_keep, data_manage, data_rename
 from ._decimate import decimate
 from ._diff import diff, meshes_equal
 from ._exceptions import ReadError, WriteError
+from ._gpu import from_cupy, has_cuda_device, has_cupy, to_cupy, to_dlpack
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -202,6 +203,11 @@ __all__ = [
     "has_arrow",
     "has_open3d",
     "has_dolfinx",
+    "to_dlpack",
+    "to_cupy",
+    "from_cupy",
+    "has_cupy",
+    "has_cuda_device",
     "Mesh",
     "CellBlock",
     "Region",

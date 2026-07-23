@@ -68,6 +68,7 @@ export default defineConfig({
           { text: "Geometric statistics", link: "/stats" },
           { text: "Interactive viewer", link: "/viewer" },
           { text: "Interoperability", link: "/interop" },
+          { text: "GPU handoff (DLPack / CuPy)", link: "/gpu" },
           { text: "Cell conversion", link: "/convert_cells" },
           { text: "Uniform refinement", link: "/refine" },
           { text: "Decimation (QEM edge collapse)", link: "/decimate" },

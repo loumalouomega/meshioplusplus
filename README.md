@@ -541,7 +541,19 @@ Multi-component arrays keep their shape (as Arrow `fixed_size_list` columns), an
 
 PyVista, trimesh and pyarrow are Python-only optional extras (`pip install meshioplusplus[interop]`, or one at a time with `[pyvista]` / `[trimesh]` / `[arrow]`). They are kept out of `[all]`, which means "the optional dependencies the *formats* need". None of them reaches the C++/WebAssembly/C/Fortran core, which stays dependency-free.
 
-See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch.
+Meshes also hand off to the GPU through the standard exchange protocols — DLPack as the primary export (which covers host arrays too), `__cuda_array_interface__` consumed on the way back:
+
+<!--pytest-codeblocks:skip-->
+
+```python
+gpu = meshioplusplus.to_cupy(mesh)            # one host→device transfer per array
+gpu.point_data["T"] *= 2.0                    # any CuPy / RAPIDS kernel
+meshioplusplus.write("out.vtu", meshioplusplus.from_cupy(gpu))
+```
+
+The host→device move is always a bus transfer — what this removes is the file round-trip and every *extra* copy around it. `to_dlpack(mesh)` exports host arrays any DLPack consumer (PyTorch, JAX, Numba, …) adopts in place. There is deliberately no `[gpu]` extra: CuPy wheels are CUDA-version-specific, so install the one matching your toolkit (e.g. `pip install cupy-cuda13x` for CUDA 13.x, `cupy-cuda12x` for 12.x).
+
+See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch, and [the GPU docs](https://loumalouomega.github.io/meshioplusplus/gpu.html) for the device handoff.
 
 ### ParaView plugin
 
@@ -733,6 +745,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [PyVista](https://pyvista.org/) | `[pyvista]` / `[interop]` | `to_pyvista()` / `from_pyvista()` | BSD-3-Clause |
 | [trimesh](https://trimesh.org/) | `[trimesh]` / `[interop]` | `to_trimesh()` / `from_trimesh()` | MIT |
 | [pyarrow](https://arrow.apache.org/) | `[arrow]` / `[interop]` | the Arrow/Parquet data export | Apache-2.0 |
+| [CuPy](https://cupy.dev/) | — (wheels are CUDA-version-specific, e.g. `cupy-cuda13x` — see the GPU docs) | `to_cupy()` / `from_cupy()` | MIT |
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |
 | [netCDF4](https://unidata.github.io/netcdf4-python/) | `[all]` | the Python fallback for Exodus | MIT |
 | [KaHIP](https://kahip.github.io/) | `[kahip]` / CMake | the quality graph-partitioning backend | MIT |
