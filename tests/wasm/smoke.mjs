@@ -141,6 +141,76 @@ step('GMSH ascii round-trip (tetra, volume format)', () => {
     assert.equal(back.points.length, 12);
 });
 
+// --------------------------------------------------------------------------
+// HDF5- and netCDF-backed formats. These exist only because
+// build/build-wasm-deps.sh produced a wasm32 libhdf5/libnetcdf for this build,
+// so they are round-tripped rather than read from a fixture: writing exercises
+// the deflate filter (every HDF5 writer here compresses at gzip level 4), and
+// a fixture would need a Git-LFS reference file for something the build can
+// generate itself.
+// --------------------------------------------------------------------------
+
+// MED is the one exception to writing `tet` as-is: the C++ MED writer defers a
+// mesh carrying named fields to the Python reference writer (CHA fields with
+// MED-4.1 bitmask/units/step metadata), and there is no Python anywhere in a
+// wasm build -- so here that documented fallback is simply an unsupported
+// case, and the geometry-only mesh is what this build can write. See
+// doc/wasm.md and doc/formats/med.md.
+const tetNoData = { points: tet.points, dim: 3, cells: tet.cells };
+
+for (const [format, path, mesh] of [
+    ['med', '/tet.med', tetNoData],
+    ['cgns', '/tet.cgns', tet],
+    ['h5m', '/tet.h5m', tet],
+    ['hmf', '/tet.hmf', tet],
+    ['exodus', '/tet.exo', tet],
+]) {
+    step(`${format} round-trip (HDF5/netCDF-backed)`, () => {
+        m.writeMesh(path, mesh, format);
+        // A container that never reached the disk would read back as an
+        // unrelated failure below; check the bytes exist first.
+        assert.ok(m.FS.stat(path).size > 0, `${path} is empty`);
+        const back = m.readMesh(path, format);
+        assert.equal(back.points.length, 12);
+        assert.equal(back.cells.length, 1);
+        assert.equal(back.cells[0].type, 'tetra');
+        assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
+    });
+}
+
+step('an ASCII read still works after netCDF/HDF5 has run (stack-size guard)', () => {
+    // Regression guard for a silent, global corruption, not a niceties check.
+    // HDF5's and netCDF-4's frames overran Emscripten's default 64 KiB stack,
+    // which grows down into the static data segment: one Exodus write clobbered
+    // libc++'s locale facets and every later `istream >> number` -- so every
+    // ASCII reader in the module -- trapped. CMakeLists.txt now links with
+    // -sSTACK_SIZE=4MB; this asserts that it still does. Order matters: the
+    // exodus round-trip above must have run first.
+    m.FS.writeFile('/after-exodus.obj', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n');
+    const back = m.readMesh('/after-exodus.obj', 'obj');
+    assert.equal(back.points.length, 9);
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2]);
+});
+
+step('MED rejects named fields by name rather than corrupting the file', () => {
+    // The Python fallback that normally serves this case does not exist here.
+    assert.throws(() => m.writeMesh('/fields.med', tet, 'med'), /Python fallback/);
+});
+
+step('xdmf writes an HDF companion file when HDF5 is available', () => {
+    // The registry's xdmf writer default follows the build (registry.cpp): with
+    // HDF5 linked in it emits Format="HDF" heavy data beside the XML, matching
+    // the Python reference writer. A JS caller therefore has TWO files to pull
+    // back out of the virtual FS, not one -- that is the whole point of this
+    // assertion.
+    m.writeMesh('/tet.xdmf', tet, 'xdmf');
+    assert.ok(m.FS.stat('/tet.xdmf').size > 0);
+    assert.ok(m.FS.stat('/tet.h5').size > 0, 'expected the .h5 companion beside /tet.xdmf');
+    const back = m.readMesh('/tet.xdmf', 'xdmf');
+    assert.equal(back.cells[0].type, 'tetra');
+    assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+});
+
 step('malformed file raises a catchable Error, not a WASM abort', () => {
     m.FS.writeFile('/bad.vtu', '<?xml version="1.0"?><NotVTK></NotVTK>');
     assert.throws(
@@ -696,8 +766,13 @@ step('availableFormats reports what this build can read and write', () => {
     // write-only. A viewer that assumes one list would offer broken menu items.
     assert.ok(readers.includes('openfoam') && !writers.includes('openfoam'));
     assert.ok(writers.includes('svg') && !readers.includes('svg'));
-    // No HDF5/netCDF-backed format is in a wasm build.
-    assert.ok(!readers.includes('med') && !writers.includes('med'));
+    // The HDF5- and netCDF-backed formats are in this build too (the wasm32
+    // libhdf5/libnetcdf come from build/build-wasm-deps.sh) -- if any of these
+    // is missing, the artifact was linked without its dependency and the
+    // regression is silent everywhere else, since the registry simply omits
+    // the entry rather than failing.
+    for (const fmt of ['cgns', 'h5m', 'hmf', 'med', 'exodus'])
+        assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // Sorted, so a UI can render them without sorting again.
     assert.deepEqual(readers, [...readers].sort());
     assert.deepEqual(writers, [...writers].sort());
