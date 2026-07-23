@@ -31,9 +31,12 @@ host pointers, so device offload is served by the DLPack/CuPy handoff, not by
 this backend). Bring-your-own like KaHIP (never picked by `AUTO`; point
 `Kokkos_DIR` at an installed Kokkos ≥ 3.4), lazily initialized only when the
 embedding application hasn't initialized Kokkos itself, `parallel_for_bw`'s
-4-thread bandwidth cap preserved by range partitioning. CI: the new `kokkos`
-job (cached source build of Kokkos 4.5.01, full gtest suite, plus a 2-thread
-pool re-run).
+4-thread bandwidth cap preserved by range partitioning. Building Kokkos
+alongside `MESHIOPLUSPLUS_BUILD_C_API=ON` needs Kokkos built with
+`-DCMAKE_POSITION_INDEPENDENT_CODE=ON` — its default static archives aren't
+PIC and fail to link into the shared `libmeshioplusplus.so`. CI: the new
+`kokkos` job (cached PIC source build of Kokkos 4.5.01, full gtest suite, plus
+a 2-thread pool re-run).
 
 **`NDArray` buffer-allocator hook** (`meshioplusplus::set_buffer_allocator`) —
 the `doc/gpu.md` Phase-2 enabler: every owning `NDArray` buffer is now
