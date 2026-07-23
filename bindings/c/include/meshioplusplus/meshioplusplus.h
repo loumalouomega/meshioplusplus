@@ -1469,6 +1469,88 @@ MIO_API mio_status mio_mesh_get_field_data(const mio_mesh* mesh, const char* nam
                                            const void** data, mio_dtype* dtype, int32_t* ndim,
                                            int64_t* shape);
 
+/* ---------------------------------------------------------------------
+ * Named regions
+ *
+ * A region is a named group of mesh entities: a gmsh physical group, an Exodus
+ * block / node set / side set, an Abaqus *NSET / *ELSET / *SURFACE, a MED
+ * family, a Kratos SubModelPart. Before meshio++ 8.1 these never left the
+ * Python layer at all -- this section is what closed that gap. See
+ * doc/regions.md.
+ *
+ * Entry conventions, by kind:
+ *   MIO_REGION_POINT  point indices,                     stride 1
+ *   MIO_REGION_CELL   GLOBAL cell indices, block-major   stride 1
+ *                     (block 0's cells first, then block 1's, ...)
+ *   MIO_REGION_SIDE   (global cell index, local facet)   stride 2
+ *
+ * Facets are numbered as meshio++ numbers the faces of a 3-D cell and the edges
+ * of a 2-D one. Entries are stored ascending and de-duplicated.
+ * --------------------------------------------------------------------- */
+
+/** What kind of entity a region groups. Mirrors meshioplusplus::RegionKind. */
+typedef enum mio_region_kind {
+    MIO_REGION_POINT = 0,
+    MIO_REGION_CELL = 1,
+    MIO_REGION_SIDE = 2
+} mio_region_kind;
+
+/** Opaque snapshot of a mesh's regions. Destroy with mio_regions_free(). */
+typedef struct mio_regions mio_regions;
+
+/** Fixed-size description of one region (see mio_regions_info). */
+typedef struct mio_region_info {
+    int32_t kind;         /**< a mio_region_kind */
+    int32_t dim;          /**< topological dimension, or -1 if unspecified */
+    int64_t tag;          /**< format-native integer id, or -1 if none */
+    int64_t num_entries;  /**< number of grouped entities (rows) */
+    int64_t stride;       /**< values per entry: 2 for SIDE, else 1 */
+} mio_region_info;
+
+/**
+ * Snapshot every named region a mesh carries (read-only).
+ * @return a handle (free with mio_regions_free), or NULL on failure.
+ */
+MIO_API mio_regions* mio_regions_create(const mio_mesh* mesh);
+
+/** @return the number of regions described, or -1 on error. */
+MIO_API int64_t mio_regions_count(const mio_regions* regions);
+
+/**
+ * Copy the `index`-th region's name into `buf`.
+ * @return the required length excluding the NUL (so a value >= buflen means the
+ *         name was truncated), or -1 on error.
+ */
+MIO_API int64_t mio_regions_name(const mio_regions* regions, int64_t index, char* buf,
+                                 int64_t buflen);
+
+/** Fill `out` with the `index`-th region's kind / dim / tag / sizes. */
+MIO_API mio_status mio_regions_info(const mio_regions* regions, int64_t index,
+                                    mio_region_info* out);
+
+/**
+ * Borrow the `index`-th region's entries: `num_entries * stride` int64 values,
+ * row-major. Valid until mio_regions_free().
+ * @param count receives `num_entries * stride` (may be NULL).
+ * @return the entry buffer, or NULL on error / when the region is empty.
+ */
+MIO_API const int64_t* mio_regions_entries(const mio_regions* regions, int64_t index,
+                                           int64_t* count);
+
+/** Destroy a regions handle. Safe to call with NULL. */
+MIO_API void mio_regions_free(mio_regions* regions);
+
+/**
+ * Add a region to a mesh, replacing any existing one with the same
+ * (kind, name, dim, tag). Entries are copied and canonicalized (sorted,
+ * de-duplicated).
+ * @param entries `count` int64 values: `count` indices for POINT/CELL, or
+ *                `count / 2` (cell, facet) pairs for SIDE.
+ */
+MIO_API mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_region_kind kind,
+                                       int32_t dim, int64_t tag, const int64_t* entries,
+                                       int64_t count);
+
 #ifdef __cplusplus
 }
 #endif

@@ -89,6 +89,12 @@ struct mio_mesh {
     meshioplusplus::Mesh mMesh;
 };
 
+struct mio_regions {
+    // A snapshot, not a borrow: the KRATOS backend serves Region(i) from lazily
+    // rebuilt staging, so a pointer into the mesh would not stay valid.
+    std::vector<meshioplusplus::Region> mRegions;
+};
+
 struct mio_reorder_result {
     mio_mesh mMesh;  // owns the renumbered mesh; borrowed via mio_reorder_result_mesh
     meshioplusplus::NDArray mNodePerm;
@@ -2158,6 +2164,107 @@ mio_status mio_mesh_get_field_data(const mio_mesh* mesh, const char* name, const
             return fail(MIO_ERR_NOT_FOUND,
                         "meshio++: no field_data named '" + std::string(name) + "'");
         return array_out(mesh->mMesh.FieldData(name), data, dtype, ndim, shape);
+    });
+}
+
+/* ---------------------------------------------------------------------
+ * Named regions (see the header, and doc/regions.md)
+ * --------------------------------------------------------------------- */
+
+static_assert(static_cast<int>(meshioplusplus::RegionKind::Point) == MIO_REGION_POINT, "");
+static_assert(static_cast<int>(meshioplusplus::RegionKind::Cell) == MIO_REGION_CELL, "");
+static_assert(static_cast<int>(meshioplusplus::RegionKind::Side) == MIO_REGION_SIDE, "");
+
+mio_regions* mio_regions_create(const mio_mesh* mesh) {
+    return guarded_ptr(static_cast<mio_regions*>(nullptr), [&]() -> mio_regions* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        auto* out = new mio_regions{};
+        out->mRegions.reserve(mesh->mMesh.NumRegions());
+        for (std::size_t i = 0; i < mesh->mMesh.NumRegions(); ++i)
+            out->mRegions.push_back(mesh->mMesh.Region(i));
+        return out;
+    });
+}
+
+int64_t mio_regions_count(const mio_regions* regions) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!regions)
+            throw meshioplusplus::ReadError("meshio++: regions is NULL");
+        return static_cast<int64_t>(regions->mRegions.size());
+    });
+}
+
+int64_t mio_regions_name(const mio_regions* regions, int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!regions)
+            throw meshioplusplus::ReadError("meshio++: regions is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= regions->mRegions.size())
+            throw meshioplusplus::ReadError("meshio++: region index " + std::to_string(index) +
+                                            " out of range");
+        return copy_string(regions->mRegions[static_cast<std::size_t>(index)].mName, buf, buflen);
+    });
+}
+
+mio_status mio_regions_info(const mio_regions* regions, int64_t index, mio_region_info* out) {
+    return guarded([&]() -> mio_status {
+        if (!regions || !out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: regions/out is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= regions->mRegions.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: region index " + std::to_string(index) + " out of range");
+        const meshioplusplus::Region& r = regions->mRegions[static_cast<std::size_t>(index)];
+        out->kind = static_cast<int32_t>(r.mKind);
+        out->dim = static_cast<int32_t>(r.mDim);
+        out->tag = r.mTag;
+        out->num_entries = static_cast<int64_t>(r.NumEntries());
+        out->stride = static_cast<int64_t>(r.Stride());
+        return MIO_OK;
+    });
+}
+
+const int64_t* mio_regions_entries(const mio_regions* regions, int64_t index, int64_t* count) {
+    return guarded_ptr(static_cast<const int64_t*>(nullptr), [&]() -> const int64_t* {
+        if (!regions)
+            throw meshioplusplus::ReadError("meshio++: regions is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= regions->mRegions.size())
+            throw meshioplusplus::ReadError("meshio++: region index " + std::to_string(index) +
+                                            " out of range");
+        const meshioplusplus::Region& r = regions->mRegions[static_cast<std::size_t>(index)];
+        if (count)
+            *count = static_cast<int64_t>(r.mEntries.Size());
+        return r.Entries();
+    });
+}
+
+void mio_regions_free(mio_regions* regions) {
+    delete regions;
+}
+
+mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_region_kind kind, int32_t dim,
+                               int64_t tag, const int64_t* entries, int64_t count) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || !name)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh/name is NULL");
+        if (count < 0 || (count > 0 && !entries))
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: region entries is NULL");
+        const auto region_kind = static_cast<meshioplusplus::RegionKind>(kind);
+        if (region_kind == meshioplusplus::RegionKind::Side && count % 2 != 0)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: a side region needs an even entry count "
+                        "((cell, facet) pairs)");
+        const auto n = static_cast<std::size_t>(count);
+        std::vector<std::size_t> shape;
+        if (region_kind == meshioplusplus::RegionKind::Side)
+            shape = {n / 2, 2};
+        else
+            shape = {n};
+        meshioplusplus::NDArray arr =
+            meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, std::move(shape));
+        for (std::size_t i = 0; i < n; ++i)
+            arr.As<std::int64_t>()[i] = entries[i];
+        mesh->mMesh.AddRegion(meshioplusplus::Region(name, region_kind, dim, tag, std::move(arr)));
+        return MIO_OK;
     });
 }
 

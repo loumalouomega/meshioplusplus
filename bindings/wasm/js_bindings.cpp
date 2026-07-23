@@ -78,6 +78,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -221,6 +222,23 @@ val mesh_to_val(const Mesh& rMesh) {
         field_data.set(name, ndarray_to_float64_array(rMesh.FieldData(name)));
     out.set("field_data", field_data);
 
+    // Named regions (doc/regions.md) ride on the mesh object itself rather than
+    // through a function of their own, so `readMesh` / `writeMesh` / `convert`
+    // carry them with no extra call. `entries` is flat: `n` indices for
+    // point/cell, `n` (cell, facet) pairs for side.
+    val regions = val::array();
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        val jr = val::object();
+        jr.set("name", r.mName);
+        jr.set("kind", std::string(meshioplusplus::region_kind_name(r.mKind)));
+        jr.set("dim", r.mDim);
+        jr.set("tag", static_cast<double>(r.mTag));
+        jr.set("entries", ndarray_to_int32_array(r.mEntries));
+        regions.call<void>("push", jr);
+    }
+    out.set("regions", regions);
+
     return out;
 }
 
@@ -309,6 +327,30 @@ Mesh val_to_mesh(const val& rObj) {
             val arr = fd[name];
             mesh.AddFieldData(name,
                               float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
+        }
+    }
+    // Named regions (see `mesh_to_val`). `dim`/`tag` default to -1, meaning
+    // "unspecified", so a caller building a plain group need not supply them.
+    if (rObj.hasOwnProperty("regions")) {
+        val regions = rObj["regions"];
+        const auto nregions = regions["length"].as<unsigned>();
+        for (unsigned i = 0; i < nregions; ++i) {
+            val jr = regions[i];
+            meshioplusplus::Region region;
+            region.mName = jr["name"].as<std::string>();
+            region.mKind = meshioplusplus::region_kind_from_name(jr["kind"].as<std::string>());
+            region.mDim = jr.hasOwnProperty("dim") ? jr["dim"].as<int>() : -1;
+            region.mTag =
+                jr.hasOwnProperty("tag") ? static_cast<std::int64_t>(jr["tag"].as<double>()) : -1;
+            val ent = jr["entries"];
+            const auto n = ent["length"].as<std::size_t>();
+            std::vector<std::size_t> shape;
+            if (region.mKind == meshioplusplus::RegionKind::Side)
+                shape = {n / 2, 2};
+            else
+                shape = {n};
+            region.mEntries = int64_ndarray_from_val(ent, std::move(shape));
+            mesh.AddRegion(std::move(region));
         }
     }
     return mesh;

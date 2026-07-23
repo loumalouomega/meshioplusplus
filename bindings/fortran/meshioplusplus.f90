@@ -67,6 +67,9 @@ module meshioplusplus
     public :: MIO_COND_CLAMP, MIO_COND_NORMALIZE, MIO_COND_STANDARDIZE
     public :: MIO_SCOPE_COMPONENT, MIO_SCOPE_MAGNITUDE
     public :: MIO_NAN_IGNORE, MIO_NAN_REPLACE, MIO_NAN_FAIL
+    ! Named regions (see doc/regions.md).
+    public :: MIO_REGION_POINT, MIO_REGION_CELL, MIO_REGION_SIDE
+    public :: mio_region_info
 
     ! Geometric statistics (bind(c); layout must match mio_stats_report in
     ! meshioplusplus.h). Per-cell-type counts are not carried across the C ABI.
@@ -113,6 +116,21 @@ module meshioplusplus
     integer(c_int), parameter :: MIO_COND_STANDARDIZE = 2
     integer(c_int), parameter :: MIO_SCOPE_COMPONENT = 0, MIO_SCOPE_MAGNITUDE = 1
     integer(c_int), parameter :: MIO_NAN_IGNORE = 0, MIO_NAN_REPLACE = 1, MIO_NAN_FAIL = 2
+
+    ! Region kinds (must match the C enum mio_region_kind).
+    integer(c_int), parameter :: MIO_REGION_POINT = 0, MIO_REGION_CELL = 1
+    integer(c_int), parameter :: MIO_REGION_SIDE = 2
+
+    ! Description of one named region (bind(c); layout must match
+    ! mio_region_info in meshioplusplus.h). The entries themselves come back
+    ! from the `regions` procedure as a separate allocatable array.
+    type, bind(c) :: mio_region_info
+        integer(c_int) :: kind               !< a MIO_REGION_* value
+        integer(c_int) :: dim                !< topological dimension, or -1
+        integer(c_int64_t) :: tag            !< format-native id, or -1
+        integer(c_int64_t) :: num_entries    !< grouped entities (rows)
+        integer(c_int64_t) :: stride         !< 2 for SIDE, else 1
+    end type
 
     integer, parameter :: MIO_MAX_NDIM = 8
     integer, parameter :: STRBUF_LEN = 4096
@@ -181,6 +199,11 @@ module meshioplusplus
         procedure :: partition => mesh_partition
         procedure :: partition_labels => mesh_partition_labels
         procedure :: stats => mesh_stats
+        !> Named regions (doc/regions.md): the groups a set-capable format
+        !> carries. `regions` returns one mio_region_info per group, with the
+        !> names in `keys` and the flat int64 entries in `entries`.
+        procedure :: regions => mesh_regions
+        procedure :: add_region => mesh_add_region
         procedure :: compute_bandwidth => mesh_compute_bandwidth
         procedure :: equals => mesh_equals
         procedure :: diff => mesh_diff
@@ -834,6 +857,61 @@ module meshioplusplus
             type(c_ptr), value :: r
             integer(c_int64_t), value :: index
             type(mio_data_array_info), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_regions_create(h) bind(c, name="mio_regions_create") result(r)
+            import :: c_ptr
+            type(c_ptr), value :: h
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_regions_count(r) bind(c, name="mio_regions_count") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_regions_name(r, index, buf, buflen) &
+                bind(c, name="mio_regions_name") result(n)
+            import :: c_ptr, c_int64_t, c_char
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), intent(inout) :: buf(*)
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_regions_info(r, index, out) &
+                bind(c, name="mio_regions_info") result(s)
+            import :: c_ptr, c_int64_t, c_int, mio_region_info
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            type(mio_region_info), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_regions_entries(r, index, count) &
+                bind(c, name="mio_regions_entries") result(p)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: p
+        end function
+
+        subroutine c_mio_regions_free(r) bind(c, name="mio_regions_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_mesh_add_region(h, name, kind, dim, tag, entries, count) &
+                bind(c, name="mio_mesh_add_region") result(s)
+            import :: c_ptr, c_char, c_int, c_int64_t
+            type(c_ptr), value :: h
+            character(kind=c_char), intent(in) :: name(*)
+            integer(c_int), value :: kind, dim
+            integer(c_int64_t), value :: tag, count
+            integer(c_int64_t), intent(in) :: entries(*)
             integer(c_int) :: s
         end function
 
@@ -2536,6 +2614,125 @@ contains
         call c_mio_data_info_free(res)
         call clear_status(stat, errmsg)
     end function
+
+    !> Named regions: a group of points, cells or cell facets carried by a
+    !> set-capable format (gmsh physical groups, Abaqus NSET / ELSET / SURFACE,
+    !> ...). See doc/regions.md.
+    !>
+    !> `entries` is the flat int64 buffer, `sum(out%num_entries * out%stride)`
+    !> long, with the groups laid out back to back in `out` order. Point and
+    !> cell indices are shifted to Fortran's 1-based convention on the way out;
+    !> the facet column of a side region is **not** shifted, matching the
+    !> `partition_labels` rule that a value which is not an index stays as it is.
+    function mesh_regions(self, keys, entries, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(len=STRBUF_LEN), allocatable, intent(out), optional :: keys(:)
+        integer(int64), allocatable, intent(out), optional :: entries(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_region_info), allocatable :: out(:)
+        type(c_ptr) :: res, p
+        integer(c_int64_t) :: count, i, n, nvals, total, off, k
+        integer(c_int) :: s
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        integer(c_int64_t), pointer :: vals(:)
+
+        res = c_mio_regions_create(self%handle)
+        if (.not. c_associated(res)) then
+            call handle_failure('regions', mio_error_message(), stat, errmsg)
+            allocate (out(0))
+            if (present(keys)) allocate (keys(0))
+            if (present(entries)) allocate (entries(0))
+            return
+        end if
+        count = c_mio_regions_count(res)
+        if (count < 0) count = 0
+        allocate (out(count))
+        if (present(keys)) allocate (keys(count))
+
+        total = 0
+        do i = 1, count
+            s = c_mio_regions_info(res, i - 1_c_int64_t, out(i))
+            if (s /= 0_c_int) then
+                call c_mio_regions_free(res)
+                call handle_failure('regions', mio_error_message(), stat, errmsg)
+                return
+            end if
+            total = total + out(i)%num_entries * out(i)%stride
+            if (present(keys)) then
+                n = c_mio_regions_name(res, i - 1_c_int64_t, buf, int(STRBUF_LEN, c_int64_t))
+                keys(i) = ''
+                if (n > 0) keys(i) = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+            end if
+        end do
+
+        if (present(entries)) then
+            allocate (entries(total))
+            off = 0
+            do i = 1, count
+                p = c_mio_regions_entries(res, i - 1_c_int64_t, nvals)
+                if (.not. c_associated(p) .or. nvals <= 0) cycle
+                call c_f_pointer(p, vals, [nvals])
+                if (out(i)%stride == 2) then
+                    ! (cell, facet) pairs: shift only the cell column.
+                    do k = 1, nvals, 2
+                        entries(off + k) = vals(k) + 1_c_int64_t
+                        entries(off + k + 1) = vals(k + 1)
+                    end do
+                else
+                    do k = 1, nvals
+                        entries(off + k) = vals(k) + 1_c_int64_t
+                    end do
+                end if
+                off = off + nvals
+            end do
+        end if
+
+        call c_mio_regions_free(res)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Add a named region, replacing any with the same (kind, name, dim, tag).
+    !> `entries` is 1-based for point/cell indices; a side region takes flat
+    !> (cell, facet) pairs whose facet column is passed through unshifted.
+    subroutine mesh_add_region(self, name, kind, entries, dim, tag, stat, errmsg)
+        class(mio_mesh), intent(inout) :: self
+        character(len=*), intent(in) :: name
+        integer(c_int), intent(in) :: kind
+        integer(int64), intent(in) :: entries(:)
+        integer, intent(in), optional :: dim
+        integer(int64), intent(in), optional :: tag
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int64_t), allocatable :: buf(:)
+        integer(c_int) :: s, c_dim
+        integer(c_int64_t) :: c_tag, k
+
+        c_dim = -1_c_int
+        if (present(dim)) c_dim = int(dim, c_int)
+        c_tag = -1_c_int64_t
+        if (present(tag)) c_tag = int(tag, c_int64_t)
+
+        allocate (buf(size(entries)))
+        if (kind == MIO_REGION_SIDE) then
+            do k = 1, int(size(entries), c_int64_t), 2
+                buf(k) = entries(k) - 1_c_int64_t
+                if (k + 1 <= size(entries)) buf(k + 1) = entries(k + 1)
+            end do
+        else
+            do k = 1, int(size(entries), c_int64_t)
+                buf(k) = entries(k) - 1_c_int64_t
+            end do
+        end if
+
+        s = c_mio_mesh_add_region(self%handle, c_str(name), kind, c_dim, c_tag, buf, &
+                                  int(size(entries), c_int64_t))
+        if (s /= 0_c_int) then
+            call handle_failure('add_region', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
 
     !> Connectivity bandwidth: max over cells of (max - min) node index.
     function mesh_compute_bandwidth(self, stat, errmsg) result(bw)
