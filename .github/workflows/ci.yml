@@ -688,8 +688,8 @@ jobs:
               build_page(mesh, title='offline', quality=True))
           "
           cd src/viewer
-          npx playwright test ../../tests/viewer/offline.spec.mjs
-          VIEWER_OFFLINE_PAGE=/tmp/offline-quality.html npx playwright test ../../tests/viewer/offline.spec.mjs
+          npx playwright test offline.spec.mjs
+          VIEWER_OFFLINE_PAGE=/tmp/offline-quality.html npx playwright test offline.spec.mjs
 
       - uses: actions/upload-artifact@v4
         if: failure()
