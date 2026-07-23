@@ -89,6 +89,8 @@ export default defineConfig({
           { text: "Single-header C++", link: "/single_header" },
           { text: "C API", link: "/c_api" },
           { text: "Fortran", link: "/fortran" },
+          { text: "Julia", link: "/julia" },
+          { text: "R", link: "/r" },
           { text: "Benchmarks", link: "/benchmarks" },
           { text: "API reference (Doxygen)", link: "/api/", target: "_self" },
         ],
