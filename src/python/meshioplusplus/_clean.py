@@ -271,12 +271,17 @@ def clean(
         }
     except Exception:
         out = None
+    used_cpp = out is not None
     if out is None:
         out, point_map, cell_maps, report = _clean_py(
             mesh, weld, atol, remove_orphans, drop_degenerate, drop_duplicate_cells
         )
 
-    _remap_sets(mesh, out, point_map, cell_maps)
+    # The C++ core carries named regions across itself (and therefore
+    # `point_sets`/`cell_sets`, which are views over them), so remapping again
+    # here would apply the maps twice. Only the numpy fallback needs it.
+    if not used_cpp:
+        _remap_sets(mesh, out, point_map, cell_maps)
 
     if return_report:
         return out, report

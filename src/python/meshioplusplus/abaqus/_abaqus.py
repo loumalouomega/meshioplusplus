@@ -100,6 +100,54 @@ abaqus_to_meshio_type = {
 meshio_to_abaqus_type = {v: k for k, v in abaqus_to_meshio_type.items()}
 
 
+# Abaqus face identifier (S1..S6) -> the meshio++ local facet index of
+# `detail/cell_faces.hpp` (3-D) / `cell_edges.hpp` (2-D). The two numberings
+# genuinely differ -- Abaqus C3D8 S1 is the 1-2-3-4 face, i.e. local nodes
+# {0,1,2,3}, which is meshio++'s face 4 -- so this is the Python twin of the
+# C++ table and the two must stay in step. Shell SPOS/SNEG name a side rather
+# than a facet and map to 0/1 (see doc/regions.md).
+_ABAQUS_FACE_ORDER = {
+    "tetra": [3, 0, 1, 2],
+    "tetra10": [3, 0, 1, 2],
+    "hexahedron": [4, 5, 2, 1, 3, 0],
+    "hexahedron20": [4, 5, 2, 1, 3, 0],
+    "wedge": [0, 1, 2, 3, 4],
+    "wedge15": [0, 1, 2, 3, 4],
+    "triangle": [0, 1, 2],
+    "triangle6": [0, 1, 2],
+    "quad": [0, 1, 2, 3],
+    "quad8": [0, 1, 2, 3],
+    "quad9": [0, 1, 2, 3],
+}
+
+
+def _face_index(cell_type, face):
+    """Abaqus face identifier -> local facet index, or None."""
+    face = face.strip().upper()
+    if face == "SPOS":
+        return 0
+    if face == "SNEG":
+        return 1
+    if not face.startswith("S") or not face[1:].isdigit():
+        return None
+    order = _ABAQUS_FACE_ORDER.get(cell_type)
+    n = int(face[1:]) - 1
+    if order is None or n < 0 or n >= len(order):
+        return None
+    return order[n]
+
+
+def _face_name(cell_type, facet):
+    """The inverse of :func:`_face_index`, for the writer."""
+    order = _ABAQUS_FACE_ORDER.get(cell_type)
+    if order is None:
+        return None
+    for n, f in enumerate(order):
+        if f == facet:
+            return f"S{n + 1}"
+    return None
+
+
 def read(filename):
     """Reads a Abaqus inp file."""
     with open_file(filename, "r") as f:
@@ -116,6 +164,7 @@ def read_buffer(f):
     cell_sets = {}
     cell_sets_element = {}  # Handle cell sets defined in ELEMENT
     cell_sets_element_order = []  # Order of keys is not preserved in Python 3.5
+    surfaces = []  # (name, [(element id | elset name, face identifier)])
     field_data = {}
     cell_data = {}
     point_data = {}
@@ -177,6 +226,16 @@ def read_buffer(f):
                         cell_sets[name].append(cell_sets_element[set_name])
                     else:
                         raise ReadError(f"Unknown cell set '{set_name}'")
+        elif keyword == "SURFACE":
+            # `*SURFACE, NAME=..., TYPE=ELEMENT`: each data row is
+            # `<element id | elset name>, <face identifier>`. Collected raw and
+            # resolved once every element and elset is known.
+            params_map = get_param_map(line)
+            rows, line = _read_surface_rows(f)
+            name = params_map.get("NAME")
+            stype = (params_map.get("TYPE") or "ELEMENT").upper()
+            if name and stype == "ELEMENT":
+                surfaces.append((name, rows))
         elif keyword == "INCLUDE":
             # Splitting line to get external input file path (example: *INCLUDE,INPUT=wInclude_bulk.inp)
             ext_input_file = pathlib.Path(line.split("=")[-1].strip())
@@ -217,7 +276,7 @@ def read_buffer(f):
                     cell_sets_element[name] if i == ic else np.array([], dtype="int32")
                 )
 
-    return Mesh(
+    mesh = Mesh(
         points,
         cells,
         point_data=point_data,
@@ -226,6 +285,72 @@ def read_buffer(f):
         point_sets=point_sets,
         cell_sets=cell_sets,
     )
+
+    if surfaces:
+        _attach_surfaces(mesh, surfaces, cells, cell_ids, cell_sets)
+
+    return mesh
+
+
+def _read_surface_rows(f):
+    """The `<who>, <face>` data rows of a `*SURFACE` block."""
+    rows = []
+    while True:
+        line = f.readline()
+        if not line or line.startswith("*"):
+            break
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = [p.strip() for p in stripped.split(",")]
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            rows.append((parts[0], parts[1]))
+    return rows, line
+
+
+def _attach_surfaces(mesh, surfaces, cells, cell_ids, cell_sets):
+    """Turn collected `*SURFACE` blocks into `side` regions on ``mesh``.
+
+    Entries are `(global block-major cell index, local facet index)` pairs, the
+    same convention the C++ reader produces -- see doc/regions.md.
+    """
+    from .._regions import Region
+
+    # element id -> global (block-major) cell index
+    elem_index = {}
+    base = 0
+    for block_ids, block in zip(cell_ids, cells):
+        for file_id, local in block_ids.items():
+            elem_index[file_id] = base + local
+        base += len(block.data)
+
+    bases = np.cumsum([0] + [len(c.data) for c in cells])
+
+    def type_of(g):
+        b = int(np.searchsorted(bases, g, side="right") - 1)
+        return cells[b].type
+
+    for name, rows in surfaces:
+        pairs = []
+        for who, face in rows:
+            if who in cell_sets:
+                members = []
+                for b, idx in enumerate(cell_sets[who]):
+                    if idx is None:
+                        continue
+                    members += [int(bases[b]) + int(v) for v in np.asarray(idx)]
+            elif who.lstrip("+-").isdigit() and int(who) in elem_index:
+                members = [elem_index[int(who)]]
+            else:
+                continue
+            for g in members:
+                facet = _face_index(type_of(g), face)
+                if facet is not None:
+                    pairs.append((g, facet))
+        entries = (
+            np.asarray(pairs, dtype=np.int64) if pairs else np.empty((0, 2), np.int64)
+        )
+        mesh.regions.append(Region(name, "side", entries))
 
 
 def _read_nodes(f):
@@ -311,6 +436,7 @@ def merge(
         new_point_id = 0
         points = ext_points
 
+    new_block_id = len(cells)
     cnt = 0
     for c in mesh.cells:
         new_data = np.array([d + new_point_id for d in c.data])
@@ -327,10 +453,16 @@ def merge(
     for key, val in mesh.point_sets.items():
         point_sets[key] = [x + new_point_id for x in val]
 
-    # Todo: Add support for merging cell sets
-    # cellblockref = [[] for i in range(cnt-new_cell_id)]
-    # for key, val in mesh.cell_sets.items():
-    #     cell_sets[key] = cellblockref + [np.array([x for x in val[0]])]
+    # Cell sets: the included file's blocks were appended after the ones already
+    # present, so its per-block lists are padded on the left by that many empty
+    # blocks, and every set declared earlier is padded on the right. (This used
+    # to be a TODO that silently dropped them; the C++ reader carries them, and
+    # the two paths must agree.)
+    for key, val in cell_sets.items():
+        cell_sets[key] = list(val) + [np.array([], dtype="int32")] * cnt
+    pad = [np.array([], dtype="int32")] * new_block_id
+    for key, val in mesh.cell_sets.items():
+        cell_sets[key] = pad + [np.asarray(v, dtype="int32") for v in val]
 
     return points, cells
 
@@ -444,6 +576,21 @@ def write(
                 ",\n".join(",".join(nds[i : i + nnl]) for i in range(0, len(nds), nnl))
                 + "\n"
             )
+
+        # Side regions -> *SURFACE. They have no point_sets/cell_sets
+        # equivalent, so this is the only way they leave the mesh.
+        bases = np.cumsum([0] + [len(c.data) for c in mesh.cells])
+        for region in getattr(mesh, "regions", []):
+            if region.kind != "side":
+                continue
+            f.write(f"*SURFACE, NAME={region.name}, TYPE=ELEMENT\n")
+            for g, facet in np.asarray(region.entries).reshape(-1, 2):
+                b = int(np.searchsorted(bases, g, side="right") - 1)
+                if b < 0 or b >= len(mesh.cells):
+                    continue
+                face = _face_name(mesh.cells[b].type, int(facet))
+                if face is not None:
+                    f.write(f"{int(g) + 1}, {face}\n")
 
         # https://github.com/nschloe/meshio/issues/747#issuecomment-643479921
         # f.write("*END")

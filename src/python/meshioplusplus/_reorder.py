@@ -417,10 +417,15 @@ def reorder(mesh, method: str = "rcm", return_permutation: bool = False):
         raise
     except Exception:
         out = None
+    used_cpp = out is not None
     if out is None:
         out, node_perm, cell_perms = _reorder_py(mesh, method)
 
-    _remap_sets(mesh, out, node_perm, cell_perms)
+    # The C++ core carries named regions across itself (and therefore
+    # `point_sets`/`cell_sets`, which are views over them), so remapping again
+    # here would apply the maps twice. Only the numpy fallback needs it.
+    if not used_cpp:
+        _remap_sets(mesh, out, node_perm, cell_perms)
 
     if return_permutation:
         return out, node_perm, cell_perms

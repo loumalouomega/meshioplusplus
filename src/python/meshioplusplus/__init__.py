@@ -73,6 +73,7 @@ from ._mesh import CellBlock, Mesh, topological_dimension
 from ._partition import partition, partition_labels
 from ._quality import attach_quality, compute_quality
 from ._refine import refine
+from ._regions import Region
 from ._reorder import compute_bandwidth, reorder
 from ._skin import extract_skin
 from ._slice import slice
@@ -175,6 +176,7 @@ __all__ = [
     "has_viewer",
     "Mesh",
     "CellBlock",
+    "Region",
     "ReadError",
     "WriteError",
     "topological_dimension",

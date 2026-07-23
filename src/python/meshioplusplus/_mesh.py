@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ._common import num_nodes_per_cell, warn
+from ._regions import CellSetsView, PointSetsView
 
 topological_dimension = {
     "line": 1,
@@ -145,6 +146,7 @@ class Mesh:
         cell_sets: Union[dict[str, list[ArrayLike]], None] = None,
         gmsh_periodic=None,
         info=None,
+        regions=None,
     ):
         self.points = np.asarray(points)
         if isinstance(cells, dict):
@@ -178,8 +180,27 @@ class Mesh:
         self.point_data = {} if point_data is None else point_data
         self.cell_data = {} if cell_data is None else cell_data
         self.field_data = {} if field_data is None else field_data
-        self.point_sets = {} if point_sets is None else point_sets
-        self.cell_sets = {} if cell_sets is None else cell_sets
+
+        # Named groups of points / cells / cell facets (see _regions.py). This
+        # is the storage; `point_sets` / `cell_sets` below are views over it.
+        # `_extra_cell_sets` is the escape hatch for `cell_sets` entries that
+        # are not cell-index data at all (gmsh's `gmsh:bounding_entities`).
+        self.regions = [] if regions is None else list(regions)
+        self._extra_cell_sets = {}
+
+        # Add through the views rather than assigning the properties: the
+        # property setters *replace* all regions of their kind, which would wipe
+        # the `regions=` argument above when the caller passes both (every
+        # C++-backed reader does — it hands over regions and no sets).
+        if point_sets:
+            view = PointSetsView(self)
+            for name, idx in point_sets.items():
+                view[name] = idx
+        if cell_sets:
+            view = CellSetsView(self)
+            for name, blocks in cell_sets.items():
+                view[name] = blocks
+
         self.gmsh_periodic = gmsh_periodic
         self.info = info
 
@@ -212,6 +233,37 @@ class Mesh:
                         + f"corresponding cell data item has length {len(data[k])}."
                     )
 
+    # ------------------------------------------------------------------ #
+    # point_sets / cell_sets: compat views over `regions`                 #
+    # ------------------------------------------------------------------ #
+    # These are the historical meshio API and keep working unchanged. Reading
+    # one materializes the shape it always had; writing one creates or replaces
+    # the matching regions. See _regions.py for the two accommodations that
+    # make that lossless (the passthrough escape hatch, and None -> empty).
+
+    @property
+    def point_sets(self):
+        return PointSetsView(self)
+
+    @point_sets.setter
+    def point_sets(self, value):
+        self.regions[:] = [r for r in self.regions if r.kind != "point"]
+        view = PointSetsView(self)
+        for name, idx in (value or {}).items():
+            view[name] = idx
+
+    @property
+    def cell_sets(self):
+        return CellSetsView(self)
+
+    @cell_sets.setter
+    def cell_sets(self, value):
+        self.regions[:] = [r for r in self.regions if r.kind != "cell"]
+        self._extra_cell_sets.clear()
+        view = CellSetsView(self)
+        for name, blocks in (value or {}).items():
+            view[name] = blocks
+
     def __repr__(self):
         lines = ["<meshio++ mesh object>", f"  Number of points: {len(self.points)}"]
         special_cells = [
@@ -243,6 +295,12 @@ class Mesh:
         if self.cell_sets:
             names = ", ".join(self.cell_sets.keys())
             lines.append(f"  Cell sets: {names}")
+
+        side_names = [r.name for r in self.regions if r.kind == "side"]
+        if side_names:
+            # Side regions have no point_sets/cell_sets equivalent, so this is
+            # the only place they show up in the summary.
+            lines.append(f"  Side sets: {', '.join(side_names)}")
 
         if self.point_data:
             names = ", ".join(self.point_data.keys())
