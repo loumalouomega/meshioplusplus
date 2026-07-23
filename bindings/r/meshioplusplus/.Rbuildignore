@@ -1,0 +1,5 @@
+^src/Makevars$
+^.*\.o$
+^.*\.so$
+^.*\.dll$
+^README\.md$
