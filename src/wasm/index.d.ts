@@ -33,6 +33,35 @@ export interface Mesh {
   cell_data?: Record<string, Float64Array[]>;
   /** name -> scalar/small metadata arrays (e.g. material ids). */
   field_data?: Record<string, Float64Array>;
+  /** Named groups of points / cells / cell facets (see {@link Region}). */
+  regions?: Region[];
+}
+
+/**
+ * A named group of mesh entities: a gmsh physical group, an Abaqus
+ * `*NSET`/`*ELSET`/`*SURFACE`, an Exodus block or set, a MED family, a Kratos
+ * SubModelPart. Regions travel on the {@link Mesh} object itself rather than
+ * through a function of their own, so `readMesh` / `writeMesh` / `convert`
+ * carry them with no extra call. See doc/regions.md.
+ */
+export interface Region {
+  name: string;
+  /**
+   * What `entries` indexes:
+   *  - `"point"` — point indices, one value per entry.
+   *  - `"cell"`  — **global** cell indices, block-major (block 0's cells first,
+   *    then block 1's, ...), one value per entry.
+   *  - `"side"`  — `(global cell index, local facet index)` pairs, so `entries`
+   *    holds two values per entry. Facets are numbered as meshio++ numbers the
+   *    faces of a 3-D cell and the edges of a 2-D one.
+   */
+  kind: 'point' | 'cell' | 'side';
+  /** Topological dimension the group was declared for, or -1 if unspecified. */
+  dim: number;
+  /** Format-native integer id (gmsh physical tag, MED family id), or -1. */
+  tag: number;
+  /** Flat entries, ascending and de-duplicated. */
+  entries: Int32Array;
 }
 
 export interface ConvertOptions {
