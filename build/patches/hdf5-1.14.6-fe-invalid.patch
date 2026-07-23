@@ -1,0 +1,21 @@
+--- a/src/H5Tinit_float.c
++++ b/src/H5Tinit_float.c
+@@ -608,9 +608,17 @@
+ #endif
+ 
+ done:
+-    /* Clear any FE_INVALID exceptions from NaN handling */
++    /* Clear any FE_INVALID exceptions from NaN handling.
++     *
++     * wasm32-emscripten has no floating-point exception flags at all: its
++     * <fenv.h> defines FE_ALL_EXCEPT as 0 and does not define FE_INVALID, so
++     * there is never anything to clear. Guard rather than substitute
++     * FE_ALL_EXCEPT, so every other platform keeps the exact original call.
++     */
++#ifdef FE_INVALID
+     if (feclearexcept(FE_INVALID) != 0)
+         HSYS_GOTO_ERROR(H5E_DATATYPE, H5E_CANTSET, FAIL, "can't clear floating-point exceptions");
++#endif
+ 
+     /* Restore the original environment */
+     if (feupdateenv(&saved_fenv) != 0)
