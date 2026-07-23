@@ -955,6 +955,48 @@ step('convertSurfaceOps rejects an unknown operation by name', () => {
     );
 });
 
+step('named regions round-trip through the wrapper', () => {
+    // Regions ride on the mesh object rather than through a callable, so this
+    // is their equivalent of the exhaustive forward guard above: if
+    // `mesh_to_val` / `val_to_mesh` stopped carrying them, this fails.
+    // (That is also why the list above did not grow -- nothing new is
+    // forwarded by src/index.mjs; see doc/regions.md.)
+    const tagged = {
+        ...tet,
+        regions: [
+            { name: 'fixed', kind: 'point', dim: -1, tag: -1, entries: Int32Array.from([0, 3]) },
+            { name: 'solid', kind: 'cell', dim: 3, tag: 42, entries: Int32Array.from([0]) },
+            { name: 'wall', kind: 'side', dim: 2, tag: -1, entries: Int32Array.from([0, 1]) },
+        ],
+    };
+    m.writeMesh('/regions.inp', tagged);
+    const back = m.readMesh('/regions.inp');
+    assert.ok(Array.isArray(back.regions), 'regions is an array');
+
+    const byName = Object.fromEntries(back.regions.map((r) => [r.name, r]));
+    assert.deepEqual(Object.keys(byName).sort(), ['fixed', 'solid', 'wall']);
+    assert.equal(byName.fixed.kind, 'point');
+    assert.deepEqual(Array.from(byName.fixed.entries), [0, 3]);
+    assert.equal(byName.solid.kind, 'cell');
+    assert.equal(byName.wall.kind, 'side');
+    // A side region's entries are (cell, facet) pairs, so two values per entry.
+    assert.equal(byName.wall.entries.length % 2, 0);
+    assert.deepEqual(Array.from(byName.wall.entries), [0, 1]);
+});
+
+step('regions survive an operation', () => {
+    const tagged = {
+        ...tet,
+        regions: [
+            { name: 'solid', kind: 'cell', dim: 3, tag: 7, entries: Int32Array.from([0]) },
+        ],
+    };
+    const out = m.cropBbox(tagged, [-9, -9, -9], [9, 9, 9], 'all', false);
+    const solid = out.regions.find((r) => r.name === 'solid');
+    assert.ok(solid, 'the region survived the crop');
+    assert.equal(solid.tag, 7, 'the format-native id rides along');
+});
+
 step('sniffFormat identifies a file by its leading bytes', () => {
     // Deliberately misleading extension: sniffing must go by content.
     m.writeMesh('/sniffme.vtu', tet);
