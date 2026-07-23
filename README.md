@@ -110,7 +110,7 @@ meshioplusplus data normalize in.vtu out.vtu --cell damage --to 0,1
 
 with any of the supported formats.
 
-The same verbs are available as a **standalone C++ binary** that needs no Python: grab a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page, or build it yourself with `build/configure.sh --cli --build` (or `-DMESHIOPLUSPLUS_BUILD_CLI=ON`). It links only the C++ core, so point/cell *sets* (and `convert -s/-d`) — which live only in the Python `Mesh` — are unavailable there; use the Python CLI for those.
+The same verbs are available as a **standalone C++ binary** that needs no Python: grab a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page, or build it yourself with `build/configure.sh --cli --build` (or `-DMESHIOPLUSPLUS_BUILD_CLI=ON`). It links only the C++ core. Named [regions](https://loumalouomega.github.io/meshioplusplus/regions) — and so point/cell *sets* — are carried there since v8.1.0, so `info` lists them and `diff` compares them; `convert -s/-d` is still Python-only.
 
 In Python, simply do
 
