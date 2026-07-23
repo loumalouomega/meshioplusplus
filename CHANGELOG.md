@@ -8,6 +8,71 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.3.0 (2026-07-23)
+
+**Julia and R bindings** — the next two languages of the scientific-computing
+audience after Python, C, Fortran and JavaScript. Both sit on the **existing**
+C API (`libmeshioplusplus`, the installed pure-C99 header), exactly as the
+Fortran module does: no new C++ is written, and the C++/WebAssembly/Python core
+is untouched.
+
+- **Julia** — `bindings/julia/MeshioPlusPlus/`, docs
+  [`doc/julia.md`](doc/julia.md). `ccall` into the installed shared library,
+  discovered through `MESHIOPLUSPLUS_LIB` or the standard loader path. A `Mesh`
+  wraps the opaque handle with a GC **finalizer** (unlike Fortran, which frees
+  explicitly). Genuine **zero-copy borrows** — `points_ptr`,
+  `connectivity_ptr`, `point_data_ptr`, … — are returned as a `MeshBorrow`
+  that both keeps its owning mesh alive and records the mesh's mutation
+  generation, so using one after a mutating call raises `BorrowError` rather
+  than reading stale memory. That is the C header's rule 3 *enforced*, not
+  merely documented.
+- **R** — `bindings/r/meshioplusplus/`, docs [`doc/r.md`](doc/r.md). Plain
+  `.Call` over R's own C API rather than Rcpp, keeping the dependency
+  footprint at zero; the handle is an external pointer with a registered
+  finalizer. **R is copy-only**: R vectors are R-managed, so the C API's
+  zero-copy borrow cannot survive into R without ALTREP machinery that is out
+  of scope, and every accessor copies. There is therefore no `_ptr` accessor
+  at all — the 0-based reader is named `mio_connectivity_raw`, deliberately
+  not `_ptr`, so nobody reads it as a borrow. R also has no native 64-bit
+  integer, so `int64` arrays arrive as `double` (exact to 2^53, no `bit64`
+  dependency), with the stored dtype reported in a `"dtype"` attribute.
+
+Both cover the full Fortran surface: lifecycle, read/write (including the
+selective-read options and file metadata), every setter and getter, named
+regions, and all ~24 operations — including the ones returning an opaque C
+result, which are always drained through `_take_mesh` so every mesh handed to
+the caller owns its handle and no piece can dangle when its result is freed.
+
+Both follow the Fortran module's two conventions verbatim, because Julia and R
+are column-major too: points shaped `(dim, n)` and connectivity
+`(nodes_per_cell, n)` are the **same memory** as the C API's row-major shapes,
+so **nothing is transposed anywhere**; and connectivity is **1-based**, with
+the ±1 shift applied inside the copying accessors only. Index maps and
+permutations shift the same way, with the C API's `-1` "pruned / absent"
+sentinel becoming `0` — never a valid 1-based index. `partition_labels`
+returns part *ids* rather than indices and is deliberately left unshifted.
+
+> **Licence exception, deliberate and the one thing to know:** the Julia
+> binding in `bindings/julia/` is **not MIT**. It is released under the
+> **PolyForm Noncommercial License 1.0.0**: noncommercial use — personal,
+> academic, research, teaching — is free, while use inside a private,
+> proprietary or otherwise commercial project, including internal use at a
+> company, requires the prior explicit written permission of the copyright
+> holder, Vicente Mataix Ferrándiz. Because that licence is not
+> OSI-approved, the package is **ineligible for Julia's General registry**
+> and installs by path, URL or private registry instead; there is also no
+> BinaryBuilder JLL yet. Everything else — the C++ core, the C API the
+> binding calls, and the R binding — remains MIT.
+
+Neither binding invents a workaround for the C ABI's documented gaps (point and
+cell sets beyond regions, the `frozen` pin masks, per-cell-type counts in the
+statistics report, ragged block connectivity, the combined `data_manage`); each
+repeats the same list in its own README and doc page. CI gains a `julia` and an
+`r` job, both mirroring the existing external-consumer smoke test: build the C
+API, `cmake --install` it, then consume it exactly as a user would — `Pkg.test`
+and `R CMD check --as-cran` respectively — and each also asserts that a missing
+library fails with a message naming how to build one.
+
 ## v8.2.0 (2026-07-23)
 
 **In-memory interoperability with the wider ecosystem, without a file

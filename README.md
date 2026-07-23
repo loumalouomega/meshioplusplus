@@ -6,7 +6,7 @@
 
 [![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384760.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21384760)
 
-[![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](src/viewer/)
+[![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![Julia](https://img.shields.io/badge/Julia-1.9%2B-9558b2.svg?style=flat-square&logo=julia&logoColor=white)](doc/julia.md) [![R](https://img.shields.io/badge/R-4.0%2B-276dc3.svg?style=flat-square&logo=r&logoColor=white)](doc/r.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](src/viewer/)
 
 [![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus) [![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
 
@@ -642,6 +642,29 @@ vcpkg install meshioplusplus --overlay-ports=ports
 
 Full mesh access (build meshes from raw arrays, zero-copy readback) is covered on the [C API](https://loumalouomega.github.io/meshioplusplus/c_api) and [Fortran](https://loumalouomega.github.io/meshioplusplus/fortran) doc pages.
 
+### Julia / R bindings
+
+The same installed C library also carries bindings for **Julia** and **R**, the two remaining languages of the scientific-computing audience. Both are layered on `libmeshioplusplus` exactly as the Fortran module is — no new C++, and the core stays untouched:
+
+```julia
+import MeshioPlusPlus as mio
+m = mio.read("bracket.msh")
+mio.write(mio.extract_surface(m), "surface.vtu")
+```
+
+```r
+library(meshioplusplus)
+m <- mio_read("bracket.msh")
+mio_write(mio_extract_surface(m), "surface.vtu")
+```
+
+Julia and R are both **column-major**, so — as in Fortran — points shaped `(dim, n)` and connectivity `(nodes_per_cell, n)` are the *same memory* as the C API's row-major shapes, and nothing is ever transposed. Node indices are **1-based**, with the shift applied inside the copying accessors only; Julia additionally exposes genuine zero-copy borrows (`points_ptr`, `connectivity_ptr`) whose validity window is enforced rather than merely documented. R is **copy-only** — R vectors are R-managed, so a borrow cannot survive into R — and says so plainly instead of implying parity.
+
+> [!IMPORTANT]
+> **The Julia binding is not MIT.** [`bindings/julia/`](bindings/julia) is released under the **PolyForm Noncommercial License 1.0.0**: noncommercial use is free, while use inside a private, proprietary or otherwise commercial project requires the copyright holder's prior explicit written permission. Everything else in this repository, including the C API it calls and the R binding, remains MIT.
+
+See the [Julia](https://loumalouomega.github.io/meshioplusplus/julia) and [R](https://loumalouomega.github.io/meshioplusplus/r) doc pages.
+
 ### Single-header C++
 
 The whole C++ core is also amalgamated into one self-contained, [STB](https://github.com/nothings/stb)-style header — [`src/single_include/meshioplusplus/meshioplusplus.hpp`](src/single_include/meshioplusplus/meshioplusplus.hpp) — with pugixml bundled and no external dependencies by default. Drop it in, no CMake or linking required:
@@ -685,7 +708,7 @@ pytest tests/python/
 
 ### License
 
-meshio++ is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_License).
+meshio++ is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_License), with **one exception**: the Julia binding in [`bindings/julia/`](bindings/julia) is released under the [PolyForm Noncommercial License 1.0.0](bindings/julia/LICENSE). Noncommercial use — personal, academic, research, teaching — is free; use inside a private, proprietary or otherwise commercial project, including internal use at a company, requires the prior explicit written permission of the copyright holder, Vicente Mataix Ferrándiz (<tote1989@gmail.com>). Nothing else is affected: the C++ core, the C API that binding calls, and the R binding are all MIT.
 
 ### Acknowledgements
 
