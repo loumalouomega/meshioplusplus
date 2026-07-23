@@ -61,9 +61,11 @@ std::vector<std::vector<std::int64_t>> crop_kept_cells(const Mesh& rMesh,
     kept.reserve(rMesh.NumCellBlocks());
     const bool all = mode == CropMode::All;
     for (const auto cb : rMesh.CellRange()) {
-        std::vector<std::int64_t> block;
         const std::size_t nc = cb.NumCells();
-        for (std::size_t c = 0; c < nc; ++c) {
+        // Phase 1: per-cell keep flag in parallel (disjoint slots); phase 2:
+        // serial compaction, preserving the ascending kept order.
+        std::vector<char> keep(nc, 0);
+        parallel_for(nc, [&](std::size_t c) {
             bool any_in = false, all_in = true;
             auto visit = [&](std::int64_t v) {
                 const bool in = rMask[static_cast<std::size_t>(v)] != 0;
@@ -85,9 +87,12 @@ std::vector<std::vector<std::int64_t>> crop_kept_cells(const Mesh& rMesh,
                 for (std::size_t k = 0; k < npc; ++k)
                     visit(detail::read_int(conn, c * npc + k));
             }
-            if (all ? all_in : any_in)
+            keep[c] = (all ? all_in : any_in) ? 1 : 0;
+        });
+        std::vector<std::int64_t> block;
+        for (std::size_t c = 0; c < nc; ++c)
+            if (keep[c])
                 block.push_back(static_cast<std::int64_t>(c));
-        }
         kept.push_back(std::move(block));
     }
     return kept;
