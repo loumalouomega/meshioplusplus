@@ -141,6 +141,8 @@ These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [Julia]
 
 As on the Julia page: **gmsh does not currently round-trip named regions** (the `$PhysicalNames` entry is written, but no physical tag is attached to an entity in `$Elements`, so a reader cannot rebuild the group). This is pre-existing meshio++ behaviour, reproducible from Python; `abaqus` round-trips regions correctly.
 
+One further limitation is specific to this binding rather than the C ABI: **the data *setters* always write `Float64`.** `mio_add_point_data()`, `mio_append_cell_data()` and `mio_add_field_data()` copy through `REALSXP` regardless of the R vector's own storage mode, because R has no integer type reaching the C ABI here — the same reason [64-bit integers](#bit-integers) come back as `double` on the *reading* side. The practical consequence: `mio_split(by = "region")` needs a genuinely **integer** cell-data tag, so a tag array built fresh in R cannot drive it — only an integer tag already present in a *read* file (a gmsh physical group, an Exodus block id, an `mio_isosurface()`-produced `iso:index`, …) can. `example/r/03_mesh_operations.ipynb`'s split demo uses `by = "type"` for exactly this reason.
+
 ## Tests
 
 ```sh

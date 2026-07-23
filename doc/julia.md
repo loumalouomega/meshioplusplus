@@ -13,9 +13,9 @@ mio.write(surf, "bracket_surface.vtu")
 ```
 
 ::: warning This binding is not MIT
-`bindings/julia/` is released under the **PolyForm Noncommercial License 1.0.0**, not the MIT licence covering the rest of meshio++. Noncommercial use — personal, academic, research, teaching — is free; **use inside a private, proprietary or otherwise commercial project, including internal use at a company, requires the prior explicit written permission** of the copyright holder, Vicente Mataix Ferrándiz (<tote1989@gmail.com>).
+`bindings/julia/` is released under the **GNU General Public License, version 3 (GPL-3.0)**, not the MIT licence covering the rest of meshio++. GPL-3.0 is a **copyleft** license, not a permission-required one: anyone — including a company — may use, modify or sell it commercially with **no permission needed**, but *distributing* it or a modified version of it must be under GPL-3.0 too, with source available. Purely private/internal use that is never distributed carries no obligation.
 
-The C API and C++ core this binding calls are unaffected and stay MIT. See [`bindings/julia/LICENSE`](https://github.com/loumalouomega/meshioplusplus/blob/master/bindings/julia/LICENSE).
+The C API and C++ core this binding calls are unaffected and stay MIT. Calling that stable, non-GPL C ABI via `ccall`/`dlopen` at runtime is the standard "linking exception" case — it does not require the C library to also be GPL. See [`bindings/julia/LICENSE`](https://github.com/loumalouomega/meshioplusplus/blob/master/bindings/julia/LICENSE).
 :::
 
 ## Building and installing
@@ -38,8 +38,12 @@ Pkg.develop(path="bindings/julia/MeshioPlusPlus")
 
 `MESHIOPLUSPLUS_LIB` is checked first, then the standard loader path (`Libdl.find_library`). Failing both raises an error naming these two build commands.
 
-::: tip No registry, and no JLL — for now
-A non-OSI licence makes the package **ineligible for Julia's General registry**, which requires one, so `Pkg.add("MeshioPlusPlus")` will not work; install by path, by URL, or from a private registry.
+::: warning A build with HDF5 can fail to load from Julia on Debian/Ubuntu
+If the C API was built with `-DMESHIOPLUSPLUS_WITH_HDF5=ON`, loading it from a Julia process can fail with `libcurl.so.4: version 'CURL_OPENSSL_4' not found`. This is a real Debian/Ubuntu + Julia interaction, not a meshio++ bug: `libhdf5-dev` there pulls in `libhdf5_openmpi`, which links the *system* `libcurl`, while Julia bundles its own `libcurl` — and depending on the process's library-resolution order (an IJulia kernel subprocess is more likely to hit it than an interactive `julia` invocation), the two can conflict. Build with `-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF` if this binding is all you need from the library, as the `julia` CI job does.
+:::
+
+::: tip No registration yet, and no JLL
+GPL-3.0 **is** OSI-approved, so the package is eligible for Julia's General registry — but registering it is a separate follow-up step, not done yet, so `Pkg.add("MeshioPlusPlus")` will not work until then; install by path or by URL in the meantime.
 
 There is also deliberately no [JLL](https://docs.binarybuilder.org/stable/jll/): shipping a binary artifact through BinaryBuilder/Yggdrasil is a real distribution step and belongs in a follow-up rather than being faked here.
 :::
