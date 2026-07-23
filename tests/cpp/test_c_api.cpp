@@ -1388,3 +1388,126 @@ TEST(CApi, IsosurfaceErrorsAreGuardedNotThrown) {
     EXPECT_EQ(mio_isosurface(m, "h", nullptr, 1, -1, 0), nullptr);
     mio_mesh_free(m);
 }
+
+// --- named regions (doc/regions.md) ------------------------------------------
+// Regions are the first thing on this ABI that carries named *groups* of
+// entities; before meshio++ 8.1 they never left the Python layer.
+
+TEST(CApi, RegionsRoundTripThroughTheOpaqueHandle) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0.5, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 4, 0, 2, 3, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 2, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    // Entries are given unsorted and with a duplicate: canonicalization is part
+    // of the contract, so what comes back is sorted and de-duplicated.
+    const std::int64_t nodes[4] = {3, 0, 3, 1};
+    ASSERT_EQ(mio_mesh_add_region(m, "fixed", MIO_REGION_POINT, -1, -1, nodes, 4), MIO_OK);
+    const std::int64_t cells[2] = {1, 0};
+    ASSERT_EQ(mio_mesh_add_region(m, "solid", MIO_REGION_CELL, 3, 42, cells, 2), MIO_OK);
+    const std::int64_t sides[4] = {1, 3, 0, 1};  // (cell, facet) pairs
+    ASSERT_EQ(mio_mesh_add_region(m, "wall", MIO_REGION_SIDE, 2, -1, sides, 4), MIO_OK);
+
+    mio_regions* r = mio_regions_create(m);
+    ASSERT_NE(r, nullptr);
+    ASSERT_EQ(mio_regions_count(r), 3);
+
+    // Order is (kind, name, dim, tag): Point, then Cell, then Side.
+    char buf[64];
+    ASSERT_GT(mio_regions_name(r, 0, buf, sizeof(buf)), 0);
+    EXPECT_EQ(std::string(buf), "fixed");
+    ASSERT_GT(mio_regions_name(r, 2, buf, sizeof(buf)), 0);
+    EXPECT_EQ(std::string(buf), "wall");
+
+    mio_region_info info{};
+    ASSERT_EQ(mio_regions_info(r, 0, &info), MIO_OK);
+    EXPECT_EQ(info.kind, MIO_REGION_POINT);
+    EXPECT_EQ(info.stride, 1);
+    EXPECT_EQ(info.num_entries, 3);  // the duplicate 3 was dropped
+
+    ASSERT_EQ(mio_regions_info(r, 1, &info), MIO_OK);
+    EXPECT_EQ(info.kind, MIO_REGION_CELL);
+    EXPECT_EQ(info.dim, 3);
+    EXPECT_EQ(info.tag, 42);
+
+    ASSERT_EQ(mio_regions_info(r, 2, &info), MIO_OK);
+    EXPECT_EQ(info.kind, MIO_REGION_SIDE);
+    EXPECT_EQ(info.stride, 2);
+    EXPECT_EQ(info.num_entries, 2);
+
+    std::int64_t count = 0;
+    const std::int64_t* e = mio_regions_entries(r, 0, &count);
+    ASSERT_NE(e, nullptr);
+    ASSERT_EQ(count, 3);
+    EXPECT_EQ(e[0], 0);
+    EXPECT_EQ(e[1], 1);
+    EXPECT_EQ(e[2], 3);
+
+    e = mio_regions_entries(r, 2, &count);
+    ASSERT_NE(e, nullptr);
+    ASSERT_EQ(count, 4);  // 2 pairs, lexicographically sorted
+    EXPECT_EQ(e[0], 0);
+    EXPECT_EQ(e[1], 1);
+    EXPECT_EQ(e[2], 1);
+    EXPECT_EQ(e[3], 3);
+
+    mio_regions_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RegionErrorsAreGuardedNotThrown) {
+    mio_mesh* m = mio_mesh_create();
+    const std::int64_t one[1] = {0};
+
+    // No exception may cross the ABI: every one of these is a status/NULL.
+    EXPECT_EQ(mio_mesh_add_region(nullptr, "x", MIO_REGION_POINT, -1, -1, one, 1),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_mesh_add_region(m, nullptr, MIO_REGION_POINT, -1, -1, one, 1),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_mesh_add_region(m, "x", MIO_REGION_POINT, -1, -1, nullptr, 1),
+              MIO_ERR_INVALID_ARG);
+    // A side region needs (cell, facet) pairs.
+    EXPECT_EQ(mio_mesh_add_region(m, "x", MIO_REGION_SIDE, -1, -1, one, 1), MIO_ERR_INVALID_ARG);
+
+    EXPECT_EQ(mio_regions_create(nullptr), nullptr);
+    mio_regions* r = mio_regions_create(m);
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(mio_regions_count(r), 0);
+    mio_region_info info{};
+    EXPECT_EQ(mio_regions_info(r, 0, &info), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_regions_entries(r, 5, nullptr), nullptr);
+    EXPECT_EQ(mio_regions_name(r, 5, nullptr, 0), -1);
+    mio_regions_free(r);
+    mio_regions_free(nullptr);  // NULL is safe
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RegionsSurviveAnOperation) {
+    // crop keeps both tetra, so the cell region survives whole; the point
+    // region is remapped through the pruned point numbering.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0.5, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 4, 0, 2, 3, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 2, 4, MIO_INT64, conn.data()), MIO_OK);
+    const std::int64_t cells[1] = {0};
+    ASSERT_EQ(mio_mesh_add_region(m, "solid", MIO_REGION_CELL, 3, 7, cells, 1), MIO_OK);
+
+    const double lo[3] = {-1, -1, -1};
+    const double hi[3] = {2, 2, 2};
+    mio_mesh* out = mio_crop_bbox(m, lo, hi, 0, 0);
+    ASSERT_NE(out, nullptr);
+
+    mio_regions* r = mio_regions_create(out);
+    ASSERT_NE(r, nullptr);
+    ASSERT_EQ(mio_regions_count(r), 1);
+    mio_region_info info{};
+    ASSERT_EQ(mio_regions_info(r, 0, &info), MIO_OK);
+    EXPECT_EQ(info.num_entries, 1);
+    EXPECT_EQ(info.tag, 7);  // the format-native id rides along
+    mio_regions_free(r);
+
+    mio_mesh_free(out);
+    mio_mesh_free(m);
+}
