@@ -569,7 +569,7 @@ mio_clean <- function(mesh, weld = FALSE, atol = 1e-12, remove_orphans = TRUE,
 #' @rdname mio_extract_surface
 #' @export
 mio_smooth <- function(mesh, method = "taubin", iterations = 10L, lambda = -1,
-                       mu = -0.53, fix_boundary = TRUE, preserve_features = TRUE,
+                       mu = -0.34, fix_boundary = TRUE, preserve_features = TRUE,
                        feature_angle = 30, guard_inversion = TRUE) {
   .Call(
     R_mio_smooth, mesh, as.character(method), as.integer(iterations),

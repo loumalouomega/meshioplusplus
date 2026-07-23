@@ -170,6 +170,17 @@ reader finds nothing to reconstruct the group from. This is a pre-existing
 meshio++ behaviour, reproducible from Python; `abaqus` round-trips regions
 correctly and is what the test suite uses.
 
+A second limitation is specific to this binding: **the data setters always
+write `Float64`.** `mio_add_point_data()`, `mio_append_cell_data()` and
+`mio_add_field_data()` copy through `REALSXP` regardless of the R vector's
+storage mode — R has no integer type reaching the C ABI here, the write-side
+twin of the 64-bit-integer read limitation above. In practice this means
+`mio_split(by = "region")` needs an integer cell-data tag that must come from
+a *read* file (a gmsh physical group, an Exodus block id, an
+`mio_isosurface()`-produced `iso:index`, …) rather than one built fresh in R —
+see `example/r/03_mesh_operations.ipynb`, which hits exactly this and uses
+`by = "type"` instead.
+
 ## Why plain `.Call`, not Rcpp
 
 Zero dependencies, no C++ toolchain in `R CMD check`, and it matches the flat

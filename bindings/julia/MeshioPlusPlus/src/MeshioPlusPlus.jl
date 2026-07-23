@@ -42,9 +42,11 @@ mio.write(m, "bracket.vtu")
 # Licence
 
 This binding is **not** MIT like the rest of meshio++: it is released under
-the PolyForm Noncommercial License 1.0.0. Noncommercial use is free; use in a
-private, proprietary or otherwise commercial project requires the copyright
-holder's explicit written permission. See `bindings/julia/LICENSE`.
+the GNU General Public License, version 3 (GPL-3.0), a copyleft license.
+Anyone may use, modify or sell it commercially with no permission needed;
+distributing it or a modified version of it must be under GPL-3.0 too, with
+source available. Purely private use carries no obligation. See
+`bindings/julia/LICENSE`.
 """
 module MeshioPlusPlus
 

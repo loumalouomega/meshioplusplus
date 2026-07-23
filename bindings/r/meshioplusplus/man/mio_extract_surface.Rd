@@ -51,7 +51,7 @@ mio_smooth(
   method = "taubin",
   iterations = 10L,
   lambda = -1,
-  mu = -0.53,
+  mu = -0.34,
   fix_boundary = TRUE,
   preserve_features = TRUE,
   feature_angle = 30,

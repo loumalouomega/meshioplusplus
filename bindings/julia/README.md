@@ -8,22 +8,29 @@ partition, smooth, slice, isosurface, …) on the results.
 ## Licence — read this first
 
 **This binding is not MIT like the rest of meshio++.** It is released under the
-[PolyForm Noncommercial License 1.0.0](LICENSE):
+**GNU General Public License, version 3 (GPL-3.0)** — see [`LICENSE`](LICENSE)
+for the full, unmodified text.
 
-* personal, academic, research, teaching and other **noncommercial** use is
-  free;
-* use inside a **private, proprietary or otherwise commercial project** —
-  including internal use at a company — requires the **prior explicit written
-  permission** of the copyright holder, Vicente Mataix Ferrándiz
-  (<tote1989@gmail.com>).
+GPL-3.0 is a **copyleft** license, not a permission-required one:
+
+* anyone — including a company — may use, modify, and even sell this binding
+  commercially, **with no permission needed**;
+* the condition is on *conveying* (distributing) it: if you distribute this
+  binding or a modified version of it, you must do so under GPL-3.0 too, with
+  source available to whoever receives it;
+* purely private/internal use that is never distributed outside your
+  organization carries **no obligation** under GPL-3.0 at all.
 
 The meshio++ C API and C++ core this binding calls are unaffected and remain
 MIT under the repository root `LICENSE`. Only the Julia sources in this
-directory carry the noncommercial licence.
+directory are GPL-3.0. Calling a stable, non-GPL C ABI via `ccall`/`dlopen` at
+runtime — as this binding does — is the standard "linking exception" case: it
+does not require the C library on the other side of that ABI to also be
+GPL-licensed.
 
-Because that licence is not OSI-approved, this package **cannot be registered
-in Julia's General registry**, which requires one. Install it by path or URL,
-or from a private registry — see below.
+Because GPL-3.0 **is** OSI-approved, this package is eligible for Julia's
+General registry (registration is a separate follow-up step, not done yet);
+until then, install by path or URL — see below.
 
 ## Prerequisite: build and install the C library
 

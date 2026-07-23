@@ -146,7 +146,7 @@ function clean(m::Mesh; weld::Bool=false, atol::Real=1e-12, remove_orphans::Bool
 end
 
 """
-    smooth(mesh; method="taubin", iterations=10, lambda=-1.0, mu=-0.53,
+    smooth(mesh; method="taubin", iterations=10, lambda=-1.0, mu=-0.34,
            fix_boundary=true, preserve_features=true, feature_angle=30.0,
            guard_inversion=true)
         -> (; mesh, num_nodes_moved, max_displacement, num_skipped_inversion)
@@ -162,7 +162,7 @@ The `frozen` pin mask of the C++ API is **not reachable across the C ABI** (a
 documented flat-ABI gap shared with Fortran).
 """
 function smooth(m::Mesh; method::AbstractString="taubin", iterations::Integer=10,
-                lambda::Real=-1.0, mu::Real=-0.53, fix_boundary::Bool=true,
+                lambda::Real=-1.0, mu::Real=-0.34, fix_boundary::Bool=true,
                 preserve_features::Bool=true, feature_angle::Real=30.0,
                 guard_inversion::Bool=true)
     moved = Ref{Int64}(0); disp = Ref{Cdouble}(0.0); skipped = Ref{Int64}(0)
