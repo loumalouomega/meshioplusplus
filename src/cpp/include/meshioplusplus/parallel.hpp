@@ -23,9 +23,10 @@
  *
  * The active backend is chosen at compile time by the `MESHIOPLUSPLUS_PARALLEL_*`
  * preprocessor definitions (set from CMake's `MESHIOPLUSPLUS_PARALLEL_BACKEND` =
- * `AUTO|SEQ|STL|OPENMP|TBB`; `AUTO` prefers OpenMP — portable across
+ * `AUTO|SEQ|STL|OPENMP|TBB|KOKKOS`; `AUTO` prefers OpenMP — portable across
  * manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB) if
- * detected, else SEQ). `parallel_backend_name()`/`_core.__parallel_backend__`
+ * detected, else SEQ; KOKKOS is bring-your-own and never picked by AUTO).
+ * `parallel_backend_name()`/`_core.__parallel_backend__`
  * report which one is active. Iterations passed to `parallel_for` must be
  * independent (no cross-iteration state) since they may run concurrently in
  * any order; the first exception thrown by any iteration is captured and
@@ -47,11 +48,23 @@
  *    usable bandwidth), unlike compute-bound loops which keep scaling to all
  *    cores.
  *
- * To add a new backend (e.g. Kokkos, HPX): add one CMake branch that defines
+ * To add a new backend (e.g. HPX): add one CMake branch that defines
  * a new `MESHIOPLUSPLUS_PARALLEL_<NAME>` macro and links the dependency, then
  * add one `#elif defined(MESHIOPLUSPLUS_PARALLEL_<NAME>)` branch in
  * `detail::parallel_for_impl` below (and extend `parallel_backend_name()`
- * to report it).
+ * to report it, plus the guarded include block).
+ *
+ * The KOKKOS backend runs on `Kokkos::DefaultHostExecutionSpace` DELIBERATELY,
+ * even in a build whose Kokkos has a device (CUDA/HIP/SYCL) enabled: every
+ * `parallel_for` body in this codebase captures host pointers
+ * (`NDArray::Data()`, `std::vector`, `std::string`) by reference and several
+ * call host-only libraries (zlib), so device dispatch is not meaningful here —
+ * GPU data movement is served by the DLPack/CuPy handoff (`doc/gpu.md`)
+ * instead. Kokkos is lazily initialized on first use ONLY if the embedding
+ * application has not already called `Kokkos::initialize()` itself; in that
+ * case a matching `Kokkos::finalize()` is registered with `std::atexit`. An
+ * application that wants full control of the Kokkos lifecycle should simply
+ * initialize Kokkos before its first meshio++ call.
  */
 
 // System includes
@@ -74,6 +87,12 @@
 #include <tbb/blocked_range.h>
 #include <tbb/global_control.h>
 #include <tbb/parallel_for.h>
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+#include <Kokkos_Core.hpp>
+
+#include <cstdint>
+#include <cstdlib>
+#include <mutex>
 #endif
 
 namespace meshioplusplus {
@@ -108,7 +127,7 @@ inline constexpr unsigned parallel_bandwidth_threads = 4;
  * them defined means the sequential fallback. Exposed to Python as
  * `_core.__parallel_backend__` so tests/diagnostics can assert which backend
  * actually built.
- * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"seq"`.
+ * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"kokkos"`, `"seq"`.
  */
 constexpr const char* parallel_backend_name() {
 #if defined(MESHIOPLUSPLUS_PARALLEL_STL)
@@ -117,12 +136,47 @@ constexpr const char* parallel_backend_name() {
     return "openmp";
 #elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
     return "tbb";
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+    return "kokkos";
 #else
     return "seq";
 #endif
 }
 
 namespace detail {
+
+#if defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+/**
+ * @brief Lazily initializes Kokkos on first `parallel_for`, once per process.
+ *
+ * A library must not fight its host over the Kokkos lifecycle: if the
+ * embedding application already called `Kokkos::initialize()`, this is a
+ * no-op and meshio++ never finalizes (the host owns the lifecycle). Only when
+ * nobody has initialized Kokkos yet does meshio++ initialize it (honouring
+ * the `KOKKOS_*` environment variables) and register a guarded
+ * `Kokkos::finalize()` with `std::atexit`. The `is_finalized()` check avoids
+ * the init-after-finalize abort if a host tears Kokkos down and a straggling
+ * meshio++ call arrives after that.
+ */
+inline void kokkos_ensure_initialized() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+    // Kokkos::is_finalized() only exists from Kokkos 3.7 on.
+#if defined(KOKKOS_VERSION) && KOKKOS_VERSION >= 30700
+        const bool can_init = !Kokkos::is_initialized() && !Kokkos::is_finalized();
+#else
+        const bool can_init = !Kokkos::is_initialized();
+#endif
+        if (can_init) {
+            Kokkos::initialize();
+            std::atexit([] {
+                if (Kokkos::is_initialized())
+                    Kokkos::finalize();
+            });
+        }
+    });
+}
+#endif
 
 /**
  * @brief Captures the first exception thrown by any parallel iteration, to
@@ -181,6 +235,15 @@ private:
  *  - **TBB**: `tbb::parallel_for` over a `blocked_range` of grain size
  *    `grain`, optionally under a `tbb::global_control` limiting
  *    `max_allowed_parallelism` to `max_threads`.
+ *  - **KOKKOS**: `Kokkos::parallel_for` over a `RangePolicy` pinned to
+ *    `Kokkos::DefaultHostExecutionSpace` (host deliberately — see the file
+ *    header). Kokkos has no per-call thread cap, so a non-zero `max_threads`
+ *    is honoured the way the STL branch does it: the range is partitioned
+ *    into at most `max_threads` coarse chunks, so at most that many threads
+ *    have work — which is what preserves `parallel_for_bw`'s bandwidth-cap
+ *    semantics. Plain `[&]` lambdas are fine (no `KOKKOS_LAMBDA` needed) —
+ *    host-space functors run on ordinary host threads, which is also why
+ *    `FirstException` works unchanged.
  *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
  *    unused (cast to `void` to silence warnings).
  *
@@ -254,6 +317,36 @@ void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_thr
     } else {
         body();
     }
+    exc.RethrowIfAny();
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+    kokkos_ensure_initialized();
+    FirstException exc;
+    using Policy =
+        Kokkos::RangePolicy<Kokkos::DefaultHostExecutionSpace, Kokkos::IndexType<std::int64_t> >;
+    if (max_threads) {
+        // At most max_threads coarse chunks (the STL branch's idiom), so at
+        // most that many threads have work — Kokkos has no per-call cap.
+        const std::size_t by_grain = (n + grain - 1) / grain;
+        const std::size_t nchunks =
+            std::max<std::size_t>(1, std::min<std::size_t>(max_threads, by_grain));
+        const std::size_t per = (n + nchunks - 1) / nchunks;
+        Kokkos::parallel_for("meshioplusplus::parallel_for_bw",
+                             Policy(0, static_cast<std::int64_t>(nchunks)), [&](std::int64_t c) {
+                                 exc.Run([&] {
+                                     const std::size_t b = static_cast<std::size_t>(c) * per;
+                                     const std::size_t e = std::min(n, b + per);
+                                     for (std::size_t i = b; i < e; ++i)
+                                         rF(i);
+                                 });
+                             });
+    } else {
+        Policy pol(0, static_cast<std::int64_t>(n));
+        pol.set_chunk_size(static_cast<int>(std::max<std::size_t>(grain / 4, 1)));
+        Kokkos::parallel_for("meshioplusplus::parallel_for", pol, [&](std::int64_t i) {
+            exc.Run([&] { rF(static_cast<std::size_t>(i)); });
+        });
+    }
+    Kokkos::fence();
     exc.RethrowIfAny();
 #else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
     (void)grain;
