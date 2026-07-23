@@ -561,7 +561,7 @@ Additional dependencies (`netcdf4`, `h5py`) are required for some of the output 
 pip install meshioplusplus[all]
 ```
 
-For JavaScript / browser use, the C++ core also ships as a WebAssembly npm package covering 29 of the formats above:
+For JavaScript / browser use, the C++ core also ships as a WebAssembly npm package covering every format above — including the HDF5- and netCDF-backed ones (CGNS, H5M, HMF, MED, Exodus), as of v8.0.0:
 
 ```
 npm install @meshioplusplus/wasm

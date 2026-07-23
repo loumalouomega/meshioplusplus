@@ -3,6 +3,22 @@ name: wasm
 on:
   push:
     tags: ["v*"]
+  # Also on PRs that touch the wasm surface or the C++ core it wraps. This
+  # workflow used to be tag-only, which was tenable while the build had no
+  # external dependencies; now that it links a wasm32 HDF5 and netCDF, a break
+  # would otherwise surface for the first time at release. The path filter and
+  # the dependency cache keep the added cost to one short job.
+  pull_request:
+    paths:
+      - "CMakeLists.txt"
+      - "build/configure-wasm.sh"
+      - "build/build-wasm-deps.sh"
+      - "build/patches/**"
+      - "bindings/wasm/**"
+      - "src/cpp/**"
+      - "src/wasm/**"
+      - "tests/wasm/**"
+      - ".github/workflows/wasm.yml"
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref.
@@ -16,20 +32,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        # No submodules: this build always configures with
-        # -DMESHIOPLUSPLUS_WITH_HDF5=OFF (see build/configure-wasm.sh), so the
-        # vendored Eigen submodule (only used by MED, which needs HDF5) would
-        # sit unused -- CMake's EXISTS guard degrades gracefully when it's
-        # absent, same as any other source checkout without submodules.
+
+      - name: Check out the Eigen submodule
+        # Targeted, not `submodules: true`: Eigen is the only submodule this
+        # build can use (the MED Fortran<->C transpose, now that MED is built
+        # here), and a blanket checkout would also pull the Polyscope viewer,
+        # which the wasm target must never see.
+        run: git submodule update --init src/cpp/third_party/eigen
 
       - name: Set up Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
-          # Pinned to the version verified locally; bump deliberately.
+          # Pinned to the version verified locally; bump deliberately. The key
+          # of the dependency cache below includes this, since a static wasm
+          # archive is only guaranteed to link against a compatible toolchain.
           version: "6.0.3"
+
+      # The wasm32 HDF5/netCDF build takes several minutes and changes only
+      # when its pins do, so it is cached rather than rebuilt per run.
+      # build/build-wasm-deps.sh is idempotent: on a cache hit the configure
+      # step below finds the prefix already populated and skips it entirely.
+      - name: Cache the wasm HDF5/netCDF prefix
+        uses: actions/cache@v4
+        with:
+          # The install prefix only -- not build/wasm-deps as a whole, which
+          # also holds the downloaded tarballs the script no longer needs once
+          # the libraries are installed.
+          path: build/wasm-deps/hdf5-*-netcdf-*
+          key: wasm-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/patches/*.patch') }}
+
+      - name: Build the wasm HDF5/netCDF dependencies
+        run: ./build/build-wasm-deps.sh
 
       - name: Configure + build (WASM)
         run: ./build/configure-wasm.sh --build
+
+      - name: Report artifact size
+        # This build links two static C libraries; size regressions are the
+        # thing most likely to go unnoticed, since nothing else fails.
+        run: ls -l src/wasm/dist/
 
       - uses: actions/setup-node@v4
         with:

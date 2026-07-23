@@ -1,6 +1,6 @@
 # WebAssembly / JavaScript
 
-The C++ core also compiles to WebAssembly and ships as an npm package, [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm), for reading and writing meshes in the browser or Node.js. (It is one of two "flat" bindings over the same core and shared format-dispatch registry — the other is the [C API](/c_api), which native HDF5/netCDF-capable builds can use.)
+The C++ core also compiles to WebAssembly and ships as an npm package, [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm), for reading and writing meshes in the browser or Node.js. (It is one of two "flat" bindings over the same core and shared format-dispatch registry — the other is the [C API](/c_api).)
 
 ## Install
 
@@ -198,11 +198,22 @@ catchable `Error`. See [data operations](./data_operations.md),
 
 ## Format support
 
-The WASM build ships the 36 formats with no HDF5/netCDF dependency, plus XDMF's XML/Binary data path (not its HDF variant) — 35 readable formats in total, 36 writable (`openfoam` is read-only; `svg` and `tikz` are write-only):
+**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 41 formats: 40 readable, 41 writable (`openfoam` is read-only; `svg` and `tikz` are write-only).
 
-`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `flac3d`, `flux`, `freefem`, `gmsh`, `ip`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML/Binary only). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
+`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
 
-**Not yet supported: `cgns`, `h5m`, `hmf`, `med`, `exodus`.** All five need HDF5 and/or netCDF, which are not built for this target — porting those C libraries to WebAssembly is a separate, materially larger undertaking than the rest of the C++ core (both have autotools/CMake builds assuming a POSIX filesystem and, in HDF5's case, sometimes MPI). They may follow in a future release; there is no runtime fallback the way there is for the Python bindings, since there's no Python present at all in this build.
+Ask the loaded module rather than trusting this list — it is generated from the same registry the build actually links:
+
+```javascript
+const { readers, writers } = m.availableFormats();
+```
+
+### What the HDF5/netCDF formats cost, and what changed
+
+- **The `.wasm` is ~5.5 MB, up from ~2.3 MB** (the published npm tarball is ~1.8 MB, since the binary compresses about 3:1 and browsers fetch it compressed). libhdf5 and libnetcdf are statically linked, and they are real bytes. If you do not need these five formats, build your own artifact with `./build/configure-wasm.sh --without-hdf5 --build` (see below) — the JS API is identical and `availableFormats()` reports the smaller set.
+- **Breaking: `.xdmf` now writes an HDF companion file.** The registry's XDMF writer default follows the build, exactly as it does natively: with HDF5 present it emits `Format="HDF"` heavy data into a sibling `<base>.h5` and leaves only the XML skeleton in the `.xdmf`. A caller that used to pull one file out of the virtual filesystem must now pull **two**. Reading is unaffected (all three data formats are read).
+- **MED cannot write named fields here.** The C++ MED writer defers a mesh carrying `point_data`/`cell_data` to the Python reference writer (the MED-4.1 `CHA` field metadata is inspected byte-for-byte by tests), and this build has no Python to defer to — so it throws by name instead. MED geometry, `point_tags`/`cell_tags` and families are written normally. See [MED quirks](./formats/med.md#quirks-limitations).
+- **`sniffFormat` still cannot identify them.** A plain HDF5 magic number says nothing about which of `med`/`cgns`/`h5m`/`hmf`/XDMF-HDF a file is, so the sniffer deliberately never claims it. Use the extension, or pass `format` explicitly.
 
 ### Ambiguous extensions
 
@@ -234,7 +245,22 @@ cd ../meshioplusplus  # this repo
 node tests/wasm/smoke.mjs
 ```
 
-`build/configure-wasm.sh` always configures with `-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` (no Python/pybind11 involved), `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ` (OpenMP/TBB/the parallel STL have no meaningful story on this target yet), `-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE` (the fastest [in-memory mesh backend](cpp_backends.md) — canonical Float64/Int64 storage, so the embind typed-array boundary needs no dtype dispatch; the JS API shape is unchanged, and `meshBackend()` on the loaded module reports `"native"`), and HDF5/netCDF off. See `--help` for the `--without-zlib`/`--build-type` options. CI (`.github/workflows/wasm.yml`) builds and smoke-tests on every push/PR and publishes to npm on `v*` tags.
+`build/configure-wasm.sh` always configures with `-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` (no Python/pybind11 involved), `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ` (OpenMP/TBB/the parallel STL have no meaningful story on this target yet), and `-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE` (the fastest [in-memory mesh backend](cpp_backends.md) — canonical Float64/Int64 storage, so the embind typed-array boundary needs no dtype dispatch; the JS API shape is unchanged, and `meshBackend()` on the loaded module reports `"native"`). See `--help` for `--without-zlib`, `--without-hdf5`, `--without-netcdf`, `--deps-prefix` and `--build-type`. CI (`.github/workflows/wasm.yml`) builds and smoke-tests on PRs touching the wasm surface, and publishes to npm on `v*` tags.
+
+### The HDF5 and netCDF dependencies
+
+Neither is a system library on this target, and meshio++'s CMake never downloads anything — so `build/build-wasm-deps.sh` produces them, and CMake only *finds* the result:
+
+```sh
+./build/build-wasm-deps.sh                 # HDF5 1.14.6 + netcdf-c 4.9.3 -> a prefix
+./build/build-wasm-deps.sh --print-prefix   # where that prefix is
+```
+
+`configure-wasm.sh` runs it automatically the first time (several minutes) and passes the prefix to CMake via `CMAKE_FIND_ROOT_PATH` — the required knob, since the Emscripten toolchain re-roots every `find_package` at its sysroot, which makes `CMAKE_PREFIX_PATH` and `HINTS` alone ineffective. Pass `--deps-prefix` to reuse a prefix you already have.
+
+Both libraries are built static, `-Oz`, against Emscripten's own zlib port, with everything that assumes an OS this target does not have switched off: HDF5 without threadsafe/MPI/plugins and without the ROS3, direct, mirror and subfiling VFDs; netCDF without DAP, DAP4, byterange, NCZarr, S3, libxml2 (it falls back to its bundled `ezxml`), the `dlopen` plugin loader and mmap. Two upstream-neutral fix-ups are applied and documented in the script: a one-hunk patch guarding HDF5's `feclearexcept(FE_INVALID)` (wasm defines no floating-point exception flags at all), and a rewrite of the exported CMake link interfaces, which name imported targets (`ZLIB::ZLIB`, `HDF5::HDF5`, `hdf5::hdf5_hl`) that no single `find_package` in a consumer defines.
+
+**The wasm stack is sized for them.** `CMakeLists.txt` links the wasm target with `-sSTACK_SIZE=4MB`, well above Emscripten's 64 KiB default, because HDF5's and netCDF-4's frames overrun it. That overrun is silent — the stack grows down into the static data segment — and cost a real bug during development: one Exodus write clobbered libc++'s locale facets, after which every ASCII reader in the module trapped. `-sSTACK_OVERFLOW_CHECK=1` is on so a recurrence aborts loudly instead.
 
 ## Selective reads, metadata, and codecs
 
@@ -250,6 +276,7 @@ const meta = m.readMetadata('big.vtu');   // meta.fellBackToFullRead
 **Memory mapping is unavailable** here — the Emscripten virtual filesystem has nothing to map,
 so `FileSource` always uses buffered reads. The option is accepted and ignored.
 
-**zstd and lz4 are compiled out**, consistent with the HDF5/netCDF-backed formats: there is no
-Emscripten port for either. zlib (`-sUSE_ZLIB=1`) is unchanged and remains the default codec,
-so every file the WASM build wrote before it still round-trips.
+**zstd and lz4 are compiled out.** Unlike HDF5 and netCDF, which this build now carries, neither
+has an Emscripten port and neither is worth a from-source dependency for an optional VTK block
+codec. zlib (`-sUSE_ZLIB=1`) is unchanged and remains the default codec, so every file the WASM
+build wrote before it still round-trips.

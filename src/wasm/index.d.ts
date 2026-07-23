@@ -358,9 +358,10 @@ export interface MeshioPlusPlusModule {
    * The format names this build can actually read and write, both sorted.
    *
    * Prefer this over a hardcoded table when building a file-picker filter or a
-   * "convert to" menu: the wasm build carries no HDF5/netCDF-backed formats,
-   * and the two lists genuinely differ -- `openfoam` is read-only, `svg` and
-   * `tikz` are write-only.
+   * "convert to" menu: the two lists genuinely differ (`openfoam` is
+   * read-only, `svg` and `tikz` are write-only), and the set depends on how
+   * the artifact was built -- an official build carries the HDF5/netCDF-backed
+   * formats, one built with `--without-hdf5` does not.
    */
   availableFormats(): { readers: string[]; writers: string[] };
 

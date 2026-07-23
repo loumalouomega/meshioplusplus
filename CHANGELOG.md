@@ -8,6 +8,46 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.0.0 (2026-07-23)
+
+**The WebAssembly build now ships every format the C++ core has.** `cgns`,
+`h5m`, `hmf`, `med` and `exodus` — the five that need HDF5 or netCDF — are
+readable and writable from `@meshioplusplus/wasm`, as is XDMF's `Format="HDF"`
+data path. There is no longer a WASM-specific format gap: 41 formats, 40
+readable, 41 writable. `availableFormats()` reports them, and every wasm-written
+file was verified to read back correctly through the native h5py/netCDF4-backed
+Python package.
+
+- New `build/build-wasm-deps.sh` source-builds a wasm32 **HDF5 1.14.6** and
+  **netcdf-c 4.9.3** (pinned, SHA256-checked) into a self-contained prefix.
+  CMake still never downloads anything — it only *finds* the result, via
+  `CMAKE_FIND_ROOT_PATH`. `build/configure-wasm.sh` runs it automatically the
+  first time and gained `--with/--without-hdf5`, `--with/--without-netcdf` and
+  `--deps-prefix`. `--without-hdf5` reproduces the old, smaller artifact.
+- **Breaking:** writing `.xdmf` from the WASM build now emits an HDF companion
+  `<base>.h5` beside the XML instead of inlining the heavy data, because the
+  registry's XDMF writer default follows the build — the same rule every native
+  build already obeyed. A JS caller must pull **two** files out of the virtual
+  filesystem, not one. Reading all three XDMF data formats is unaffected.
+- **Breaking:** the published `.wasm` grows from ~2.3 MB to ~5.5 MB (statically
+  linked libhdf5 + libnetcdf). Build with `--without-hdf5` for the small
+  artifact; the JS API is identical either way.
+- MED **cannot write named fields** in the WASM build: the C++ MED writer defers
+  a mesh carrying `point_data`/`cell_data` to the Python reference writer, and
+  this build has no Python to defer to, so it throws by name. MED geometry,
+  `point_tags`/`cell_tags` and families write normally.
+- Fixed a latent, silent **stack overflow** in the WASM build, found while
+  adding the above: HDF5's and netCDF-4's frames overrun Emscripten's default
+  64 KiB stack, which grows down into the static data segment. One Exodus write
+  clobbered libc++'s locale facets, after which every `istream >> number` in the
+  module — i.e. every ASCII reader, `gmsh`/`obj`/`off`/`vtk` included — trapped.
+  The wasm target now links with `-sSTACK_SIZE=4MB` and
+  `-sSTACK_OVERFLOW_CHECK=1`, so a recurrence aborts loudly instead of
+  corrupting unrelated state.
+- CI: `wasm.yml` now also builds and smoke-tests on pull requests touching the
+  wasm surface or `src/cpp/` (it was tag-only), with the dependency prefix
+  cached.
+
 ## v7.16.0 (2026-07-22)
 
 New **`decimate`** operation — reduce a surface mesh's face count by greedy
