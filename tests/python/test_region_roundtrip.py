@@ -1,0 +1,179 @@
+"""The cross-format region round-trip matrix.
+
+One fixture mesh carrying **all three** region kinds is written to and read back
+from every format meshio++ can currently map regions onto, and the table below
+declares what each format keeps and what it loses. The table is the point: it
+makes the lossiness executable documentation rather than prose that drifts, and
+a format that silently starts or stops carrying a kind fails here.
+
+Phase 1 maps Gmsh and Abaqus. Exodus, MED, UNV, Ansys, OpenFOAM and XDMF are
+deferred to Phase 2 and are listed at the bottom so the gap is on the record.
+See ``doc/regions.md``.
+"""
+
+import numpy as np
+import pytest
+from numpy.testing import assert_array_equal
+
+import meshioplusplus
+
+
+def fixture_mesh():
+    """Two tetrahedra carrying a point, a cell and a side region.
+
+    Tetrahedra so that side entries have somewhere to point: each cell has four
+    faces, numbered as ``detail/cell_faces.hpp`` numbers them.
+    """
+    return meshioplusplus.Mesh(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 1.0],
+        ],
+        [("tetra", [[0, 1, 2, 4], [0, 2, 3, 4]])],
+        regions=[
+            meshioplusplus.Region("clamped", "point", [0, 3]),
+            meshioplusplus.Region("solid", "cell", [0, 1], dim=3, tag=42),
+            meshioplusplus.Region("wall", "side", [[0, 1], [1, 3]], dim=2),
+        ],
+    )
+
+
+# --------------------------------------------------------------------------- #
+# THE MATRIX                                                                   #
+#                                                                              #
+# Per format: which region kinds survive a write + read, and whether the        #
+# format-native integer `tag` comes back with them. Every "no" is a real,       #
+# understood limitation of the file format or of the Phase-1 mapping, spelled   #
+# out in `why` so the table doubles as the lossiness documentation.             #
+# --------------------------------------------------------------------------- #
+MATRIX = [
+    pytest.param(
+        "abaqus",
+        ".inp",
+        {"point": True, "cell": True, "side": True},
+        {"tag": False},
+        "*NSET / *ELSET / *SURFACE map onto the three kinds exactly. Abaqus "
+        "names its groups but has no integer id for them, so `tag` is lost.",
+        id="abaqus",
+    ),
+    pytest.param(
+        "gmsh22",
+        ".msh",
+        {"point": False, "cell": True, "side": False},
+        {"tag": True},
+        "A gmsh physical group is a named, tagged, per-dimension group of "
+        "*elements*: the per-element tag column carries cell membership and "
+        "$PhysicalNames the name/tag/dim. There is no node-set and no "
+        "side-set concept, so point and side regions are dropped. (A gmsh "
+        "dimension-0 group tags `vertex` cells, which is a cell region.)",
+        id="gmsh22",
+    ),
+]
+
+
+@pytest.mark.parametrize("fmt, suffix, survives, carries, why", MATRIX)
+def test_region_round_trip(fmt, suffix, survives, carries, why, tmp_path):
+    mesh = fixture_mesh()
+    path = tmp_path / ("regions" + suffix)
+    meshioplusplus.write(path, mesh, file_format=fmt)
+    back = meshioplusplus.read(path)
+
+    before = {(r.name, r.kind): r for r in mesh.regions}
+    after = {(r.name, r.kind): r for r in back.regions}
+
+    for name, kind in before:
+        expected = survives[kind]
+        got = (name, kind) in after
+        assert got == expected, (
+            f"{fmt}: region '{name}' ({kind}) "
+            f"{'vanished' if expected else 'unexpectedly survived'} — {why}"
+        )
+        if not got:
+            continue
+        # Membership must survive exactly. Entries are canonical on both sides
+        # (sorted, de-duplicated), so this is an equality, not a set compare.
+        assert_array_equal(
+            after[(name, kind)].entries,
+            before[(name, kind)].entries,
+            err_msg=f"{fmt}: region '{name}' ({kind}) changed membership",
+        )
+        if carries["tag"]:
+            assert (
+                after[(name, kind)].tag == before[(name, kind)].tag
+            ), f"{fmt}: region '{name}' lost its format-native tag"
+
+
+@pytest.mark.parametrize("fmt, suffix, survives, carries, why", MATRIX)
+def test_geometry_is_unaffected_by_regions(
+    fmt, suffix, survives, carries, why, tmp_path
+):
+    """Carrying regions must not perturb points or connectivity."""
+    mesh = fixture_mesh()
+    path = tmp_path / ("regions" + suffix)
+    meshioplusplus.write(path, mesh, file_format=fmt)
+    back = meshioplusplus.read(path)
+
+    assert np.allclose(back.points, mesh.points)
+    assert len(back.cells) == len(mesh.cells)
+    assert_array_equal(np.asarray(back.cells[0].data), np.asarray(mesh.cells[0].data))
+
+
+@pytest.mark.parametrize("fmt, suffix, survives, carries, why", MATRIX)
+def test_no_regions_writes_the_same_bytes(
+    fmt, suffix, survives, carries, why, tmp_path
+):
+    """A mesh with no regions must be byte-identical to one whose regions were
+    stripped — the guarantee that this feature costs existing files nothing."""
+    mesh = fixture_mesh()
+    plain = meshioplusplus.Mesh(
+        mesh.points, [("tetra", np.asarray(mesh.cells[0].data))]
+    )
+
+    a = tmp_path / ("a" + suffix)
+    b = tmp_path / ("b" + suffix)
+    meshioplusplus.write(a, plain, file_format=fmt)
+    stripped = fixture_mesh()
+    stripped.regions.clear()
+    meshioplusplus.write(b, stripped, file_format=fmt)
+
+    assert a.read_bytes() == b.read_bytes()
+
+
+def test_side_regions_are_the_new_capability():
+    """No format could express a side set before; Abaqus now can.
+
+    Spelled out separately because it is the one kind with no `point_sets` /
+    `cell_sets` equivalent at all — it is only reachable through `.regions`.
+    """
+    side_capable = [p.values[0] for p in MATRIX if p.values[2]["side"]]
+    assert side_capable == ["abaqus"]
+
+
+# --------------------------------------------------------------------------- #
+# Deferred to Phase 2 — recorded so the gap is explicit, not forgotten.        #
+# --------------------------------------------------------------------------- #
+PHASE_2 = {
+    "exodus": "element blocks + node sets + side sets",
+    "med": "families and groups (absorbing the MedInfo side channel)",
+    "unv": "groups (absorbing UnvInfo)",
+    "ansysInp": "components (absorbing AnsysInfo)",
+    "openfoam": "boundary patches, which are face groups (side regions)",
+    "xdmf": "XDMF Sets",
+    "vtu": "no native set concept — a convention has to be chosen, not invented silently",
+}
+
+
+@pytest.mark.parametrize("fmt", sorted(PHASE_2))
+def test_phase_2_formats_do_not_carry_regions_yet(fmt, tmp_path):
+    """These formats keep working; they simply do not map regions yet.
+
+    The assertion is deliberately weak — it only pins that nothing *claims* to
+    round-trip a region it cannot. When a format graduates to Phase 2, move it
+    into MATRIX and delete its entry here.
+    """
+    assert fmt not in {
+        p.values[0] for p in MATRIX
+    }, f"{fmt} now carries regions: move it from PHASE_2 into MATRIX"
