@@ -8,6 +8,47 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.4.0 (2026-07-23)
+
+**GPU handoff at the I/O boundary** (`to_dlpack` / `to_cupy` / `from_cupy`) —
+move a mesh's arrays to and from device memory through the standard exchange
+protocols, with no file round-trip. Python-only
+(`src/python/meshioplusplus/_gpu.py`); the C++/WASM/C/Fortran core is
+untouched and stays dependency-free. Stated plainly: **a host→device move is
+always a bus transfer** — what this removes is the file round-trip and every
+*extra* copy on either side of that one transfer; "zero-copy" applies only to
+host buffer sharing and on-device adoption, never to the transfer itself.
+
+- `to_dlpack(mesh)` returns a payload of host numpy arrays, each natively
+  speaking `__dlpack__`/`__dlpack_device__` (`kDLCPU`) — consumable by
+  `np.from_dlpack`, `torch.from_dlpack`, JAX, Numba, CuPy, … It honors the
+  interop layer's `zero_copy_only` **host** buffer-sharing contract.
+- `to_cupy(mesh, float32=…, int32=…, pinned=…, stream=…)` transfers the
+  payload to the CUDA device: points, per-block connectivity, point/cell data,
+  and named regions as device **index arrays** (`Side` `(cell, facet)` pairs
+  included — the one interop target that keeps them). Optional pinned-memory
+  staging with async DMA on a caller-supplied stream. Deliberately no
+  `zero_copy_only` parameter here — it would be a lie on a 100%-copy path.
+- `from_cupy(payload)` rebuilds an ordinary `Mesh` with one deliberate
+  device→host copy per array; arrays may be anything exposing DLPack or
+  `__cuda_array_interface__` (CuPy, torch, Numba). Host DLPack exporters are
+  adopted zero-copy without CuPy installed.
+- Dtypes stay canonical float64/int64 unless explicitly downcast
+  (`float32=True` / `int32=True`) — recorded in the warned `notes`, and int32
+  index casts are range-checked, never wrapped.
+- Deliberately **no `[gpu]` pip extra**: CuPy wheels are CUDA-version-specific
+  (`cupy-cuda12x` / `cupy-cuda11x` / ROCm), so a pinned extra would break for
+  most users; the install error names the wheel recipe instead. Kept out of
+  `[all]` and `[interop]`. Docs: [`doc/gpu.md`](doc/gpu.md).
+- CI covers the pure payload layer and the DLPack **host** round-trip only;
+  the CUDA device path runs under gated tests (`importorskip("cupy")` plus a
+  real device check) and is **not covered by public CI** — its lines read as
+  uncovered on the Codecov patch check by design.
+- Housekeeping: the `CLAUDE.md` version-bump checklist grew from six to
+  **eight** files — the Julia (`bindings/julia/MeshioPlusPlus/Project.toml`)
+  and R (`bindings/r/meshioplusplus/DESCRIPTION`) manifests added in v8.3.0
+  carry versions too and are exactly the kind that drift unnoticed.
+
 ## v8.3.0 (2026-07-23)
 
 **Julia and R bindings** — the next two languages of the scientific-computing
