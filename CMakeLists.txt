@@ -1,12 +1,13 @@
 cmake_minimum_required(VERSION 3.15...3.30)
 
-# VERSION must track pyproject.toml's `version`, conanfile.py's `version`, and
-# packages/vcpkg/meshioplusplus/vcpkg.json's `version` (bump all four together on a
-# release) -- it feeds mio_version(), the shared-library VERSION properties,
-# and the find_package/pkg-config metadata of the C API.
+# VERSION must track pyproject.toml's `version`, conanfile.py's `version`,
+# packages/vcpkg/meshioplusplus/vcpkg.json's `version`, src/wasm/package.json's
+# `version` and the "../wasm" entry in src/viewer/package-lock.json (bump all
+# six together on a release) -- it feeds mio_version(), the shared-library
+# VERSION properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 7.16.0
+  VERSION 8.0.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -93,18 +94,31 @@ option(MESHIOPLUSPLUS_WITH_HDF5 "Build the HDF5-backed formats (CGNS, HMF, H5M, 
 option(MESHIOPLUSPLUS_WITH_NETCDF "Build the netCDF-backed formats (Exodus)" ON)
 
 if(MESHIOPLUSPLUS_WITH_HDF5)
-  find_package(HDF5 QUIET COMPONENTS C)
-  if(NOT HDF5_FOUND)
-    # Some distros ship only an MPI-flavoured HDF5 (e.g. Debian's
-    # libhdf5-openmpi-dev); FindHDF5 prefers serial by default, so retry.
-    set(HDF5_PREFER_PARALLEL ON)
+  if(EMSCRIPTEN)
+    # There is only ever one HDF5 for this target: the static wasm32 build
+    # produced by build/build-wasm-deps.sh, which build/configure-wasm.sh puts
+    # on CMAKE_FIND_ROOT_PATH. It is serial by construction, so the
+    # MPI-flavour retry below has nothing to find and the MPI probe nothing to
+    # guard against -- both are skipped rather than left to mis-fire. Module
+    # mode is kept (not the installed hdf5-config.cmake) so the
+    # HDF5_INCLUDE_DIRS/HDF5_C_LIBRARIES plumbing further down stays identical
+    # for every platform.
+    set(HDF5_USE_STATIC_LIBRARIES ON)
     find_package(HDF5 QUIET COMPONENTS C)
-  endif()
-  # A parallel HDF5 needs mpi.h even for serial use of the API.
-  if(HDF5_FOUND AND HDF5_IS_PARALLEL)
-    find_package(MPI QUIET COMPONENTS C)
-    if(NOT MPI_C_FOUND)
-      set(HDF5_FOUND FALSE)  # unusable without MPI headers -> Python fallback
+  else()
+    find_package(HDF5 QUIET COMPONENTS C)
+    if(NOT HDF5_FOUND)
+      # Some distros ship only an MPI-flavoured HDF5 (e.g. Debian's
+      # libhdf5-openmpi-dev); FindHDF5 prefers serial by default, so retry.
+      set(HDF5_PREFER_PARALLEL ON)
+      find_package(HDF5 QUIET COMPONENTS C)
+    endif()
+    # A parallel HDF5 needs mpi.h even for serial use of the API.
+    if(HDF5_FOUND AND HDF5_IS_PARALLEL)
+      find_package(MPI QUIET COMPONENTS C)
+      if(NOT MPI_C_FOUND)
+        set(HDF5_FOUND FALSE)  # unusable without MPI headers -> Python fallback
+      endif()
     endif()
   endif()
 endif()
@@ -469,12 +483,30 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
   # -sUSE_ZLIB=1 is not repeated here: meshioplusplus_core_obj already applies
   # it PUBLIC (both compile and link) when MESHIOPLUSPLUS_WITH_ZLIB is on, and
   # this target inherits it transitively via target_link_libraries above.
+  # STACK_SIZE: Emscripten's default wasm stack is 64 KiB, which HDF5 and
+  # netCDF-4 overrun -- their call chains are deep and their frames large (name
+  # buffers, B-tree nodes, dataspace scratch). The overrun is SILENT: the stack
+  # grows downward into the static data segment, so the first symptom is
+  # unrelated global state going bad. Concretely, writing one Exodus file
+  # clobbered libc++'s locale facets, and every subsequent `istream >> number`
+  # in the module -- i.e. every ASCII reader, gmsh/obj/off/vtk included --
+  # trapped with "null function or function signature mismatch". 4 MiB is
+  # comfortably above what the deepest observed path needs (the minimum that
+  # survived a netCDF-4 write was 128 KiB) and is only an address-space
+  # reservation inside the growable heap.
+  #
+  # STACK_OVERFLOW_CHECK turns a future recurrence back into a loud abort
+  # rather than silent corruption of whatever happens to sit below the stack.
+  # It costs a canary check on stack allocation, which is the right trade for a
+  # library whose whole job is not corrupting the user's data.
   target_link_options(
     meshioplusplus_wasm PRIVATE
     "--bind"
     "-sMODULARIZE=1"
     "-sEXPORT_ES6=1"
     "-sALLOW_MEMORY_GROWTH=1"
+    "-sSTACK_SIZE=4MB"
+    "-sSTACK_OVERFLOW_CHECK=1"
     "-sFORCE_FILESYSTEM=1"
     "-sEXPORTED_RUNTIME_METHODS=['FS']")
   set_target_properties(meshioplusplus_wasm PROPERTIES OUTPUT_NAME "meshioplusplus_wasm"
