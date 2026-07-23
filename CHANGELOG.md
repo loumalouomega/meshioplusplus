@@ -8,6 +8,43 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.5.0 (2026-07-23)
+
+**Parallelization pass over the newer operations** — an audit of every
+operation's serial loops parallelized the remaining safe ones (independent
+iterations writing disjoint slots), with output staying **byte-identical**
+across backends and thread counts: `detail/subset.cpp`'s connectivity
+remaps/index maps (benefits crop, split and partition at once), quality's
+per-cell array assembly and histogram (fixed-chunk partials merged serially in
+chunk order; the min/max/sum summary stays serial so reported values are
+unchanged), reorder's per-cell sort keys and connectivity rebuilds, merge's
+ragged builds and dedup-filtered gathers, crop's kept-cell test (phase-split:
+parallel flag pass + serial compaction) and clean's rep→final remaps. The
+deliberately-serial determinism passes (first-seen dedup, FP scatter
+accumulation, greedy/BFS loops, stable argsorts) are untouched. New
+`Quality.DeterministicAcrossRuns` gtest.
+
+**KOKKOS parallel backend** (`-DMESHIOPLUSPLUS_PARALLEL_BACKEND=KOKKOS`) — a
+fifth backend for `meshioplusplus::parallel_for`, running on
+`Kokkos::DefaultHostExecutionSpace` (host deliberately: loop bodies capture
+host pointers, so device offload is served by the DLPack/CuPy handoff, not by
+this backend). Bring-your-own like KaHIP (never picked by `AUTO`; point
+`Kokkos_DIR` at an installed Kokkos ≥ 3.4), lazily initialized only when the
+embedding application hasn't initialized Kokkos itself, `parallel_for_bw`'s
+4-thread bandwidth cap preserved by range partitioning. CI: the new `kokkos`
+job (cached source build of Kokkos 4.5.01, full gtest suite, plus a 2-thread
+pool re-run).
+
+**`NDArray` buffer-allocator hook** (`meshioplusplus::set_buffer_allocator`) —
+the `doc/gpu.md` Phase-2 enabler: every owning `NDArray` buffer is now
+allocated through an optional process-global `BufferAllocator` (plain C
+callbacks), so readers can fill e.g. CUDA pinned memory directly, removing the
+staging copy of a later host→device transfer. Each buffer keeps a
+`shared_ptr` reference to the allocator it was born with, so uninstalling the
+hook never orphans live buffers; content, zero-copy and determinism contracts
+are unchanged (views are unaffected). The Python/CuPy wiring
+(`pinned_reads()`) is the recorded follow-up in `doc/gpu.md`.
+
 ## v8.4.0 (2026-07-23)
 
 **GPU handoff at the I/O boundary** (`to_dlpack` / `to_cupy` / `from_cupy`) —
