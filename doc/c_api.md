@@ -148,12 +148,13 @@ meshioplusplus diff a.vtu b.vtu          # nonzero exit if different
 meshioplusplus merge a.vtu b.vtu out.vtu
 ```
 
-Format dispatch reuses the shared registry (with a content-sniff fallback on read); ASCII/binary/compress variants call the per-format writers directly. Because it links only the C++ core it inherits the same flat-surface limitations as this C API: point/cell **sets** and the `convert -s/-d` sets↔data conversions are unavailable (they live only in the Python `Mesh`), so `info`/`diff` omit sets. There is also no Python fallback, so a file whose C++ reader raises (e.g. a Gmsh file using `$Entities`) is not readable by the native CLI — use the Python CLI for those. It works under any [mesh backend](/cpp_backends) and any optional-dependency configuration; verbs that touch a compiled-out HDF5/netCDF format report the missing dependency by name.
+Format dispatch reuses the shared registry (with a content-sniff fallback on read); ASCII/binary/compress variants call the per-format writers directly. Because it links only the C++ core it inherits this C API's remaining flat-surface limitation: the `convert -s/-d` sets↔data conversions are unavailable (they live only in the Python `Mesh`). Named **sets** are no longer on that list — since v8.1.0 they are [regions](./regions.md) in the core, so `info` prints point/cell/side sets and `diff` compares them. There is also no Python fallback, so a file whose C++ reader raises (e.g. a Gmsh file using `$Entities`) is not readable by the native CLI — use the Python CLI for those. It works under any [mesh backend](/cpp_backends) and any optional-dependency configuration; verbs that touch a compiled-out HDF5/netCDF format report the missing dependency by name.
 
 ## Limitations (v1)
 
 - **Ragged cell blocks** (polygons/polyhedra of varying size) cannot be built through the C API, and on meshes read from files their connectivity is not accessible (`mio_mesh_cell_block_conn` returns `MIO_ERR_UNSUPPORTED`; counts, type and `is_ragged` still work).
-- **Side-channel metadata** is dropped: `point_sets`/`cell_sets` (`ansysinp`, `unv`), MED families/groups, OpenFOAM cell tags. Use the Python API when you need those.
+- **Named regions are carried** (since v8.1.0): `mio_regions_create` / `_count` / `_name` / `_info` / `_entries` / `_free` snapshot a mesh's groups, and `mio_mesh_add_region` adds one. Kinds are `MIO_REGION_POINT` / `_CELL` / `_SIDE`; cell entries are global block-major indices and side entries `(cell, facet)` pairs. See [Named regions](./regions.md). Only the Phase-1 formats (gmsh, abaqus) map onto them so far.
+- **Remaining side-channel metadata** is still dropped: MED families/groups, OpenFOAM cell tags, and the `ansysinp`/`unv` set channels pending their Phase-2 region mapping. Use the Python API when you need those.
 - A `mio_mesh` handle is not thread-safe; distinct handles may be used from distinct threads freely.
 
 ## Selective reads and file summaries

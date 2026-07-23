@@ -219,6 +219,8 @@ meshioplusplus.flac3d.write(filename, mesh,
 
 ### Abaqus (`.inp`)
 
+Abaqus is one of the two Phase-1 [named region](./regions.md) formats, and the only one that can express a **side set**: `*NSET` → point regions, `*ELSET` → cell regions and `*SURFACE, TYPE=ELEMENT` → side regions, in both the C++ core and the Python reference. Abaqus names its groups but has no integer id for them, so a region's `tag` is not preserved. Face identifiers (`S1`..`S6`) are remapped to meshio++'s own facet numbering — the two differ, and the per-type table is spelled out in [Named regions](./regions.md#abaqus-face-identifiers).
+
 `meshioplusplus.abaqus.write(filename, mesh)` — no extra options.
 
 ### DOLFIN-XML (`.xml`)

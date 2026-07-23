@@ -48,14 +48,24 @@
  *   Python lists of numpy arrays (`ragged_data_to_py`) or parsed from them
  *   (`ragged_cellblock_from_py`), because there is no rectangular buffer to
  *   view into.
+ * - **Named regions** (`region.hpp` — the model behind the Python `Mesh`'s
+ *   `.regions`, and behind its `point_sets`/`cell_sets` compat views) cross in
+ *   both directions. The read path adopts each region's entry buffer through
+ *   the same capsule mechanism as everything else; the write path **copies**
+ *   once, because `Region::Canonicalize` sorts the entries in place and the
+ *   incoming numpy buffer is not ours to reorder. Regions are small next to
+ *   connectivity, and the copy buys an exact sorted/de-duplicated
+ *   representation that makes region equality — and hence the cross-format
+ *   round-trip matrix — exact rather than heuristic.
  *
  * See the "C++ core" section of the repository's top-level `CLAUDE.md` for
- * the broader architectural picture (side-channel structs such as `MedInfo`
- * for data this layer intentionally does not carry, the `allow_ragged`
- * opt-in policy, etc.).
+ * the broader architectural picture (side-channel structs for the remaining
+ * data this layer does not carry, the `allow_ragged` opt-in policy, etc.).
  */
 
 // System includes
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -68,6 +78,7 @@
 #include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace py = pybind11;
 
@@ -261,6 +272,52 @@ inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type, py::
 }
 
 /**
+ * @brief Read the Python `Mesh`'s `.regions` list into a C++ `Mesh`.
+ *
+ * A Python `meshioplusplus.Region` carries `name` / `kind` / `dim` / `tag` /
+ * `entries`; `kind` is the lower-case string the core's `region_kind_from_name`
+ * parses. Entries are **copied** (not viewed) because `Mesh::AddRegion`
+ * canonicalizes them in place — see the file-level note.
+ *
+ * A mesh with no regions costs one attribute lookup and nothing else, which is
+ * what keeps every existing writer's cost unchanged.
+ *
+ * @param pymesh The Python mesh (its `regions` attribute is read, if present).
+ * @param rMesh The C++ mesh to add the regions to.
+ */
+inline void py_regions_to_mesh(py::handle pymesh, meshioplusplus::Mesh& rMesh) {
+    if (!py::hasattr(pymesh, "regions"))
+        return;
+    py::object regions = pymesh.attr("regions");
+    if (regions.is_none())
+        return;
+    for (py::handle r : regions) {
+        meshioplusplus::Region region;
+        region.mName = py::cast<std::string>(r.attr("name"));
+        region.mKind = meshioplusplus::region_kind_from_name(py::cast<std::string>(r.attr("kind")));
+        region.mDim = py::cast<int>(r.attr("dim"));
+        region.mTag = py::cast<std::int64_t>(r.attr("tag"));
+
+        py::array_t<std::int64_t> ent = py::array_t<std::int64_t>::ensure(r.attr("entries"));
+        if (!ent)
+            throw meshioplusplus::WriteError("region '" + region.mName +
+                                             "': entries must be an integer array");
+        const std::size_t n = static_cast<std::size_t>(ent.size());
+        std::vector<std::size_t> shape;
+        if (region.mKind == meshioplusplus::RegionKind::Side)
+            shape = {n / 2, 2};
+        else
+            shape = {n};
+        meshioplusplus::NDArray arr =
+            meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, std::move(shape));
+        if (n)
+            std::memcpy(arr.Data(), ent.data(), n * sizeof(std::int64_t));
+        region.mEntries = std::move(arr);
+        rMesh.AddRegion(std::move(region));
+    }
+}
+
+/**
  * @brief Convert a Python `meshioplusplus.Mesh` into a C++ `meshioplusplus::Mesh`,
  *        for use by a format writer's C++ binding.
  *
@@ -367,6 +424,8 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& rRefs,
         }
     }
 
+    py_regions_to_mesh(pymesh, m);
+
     return m;
 }
 
@@ -414,6 +473,36 @@ inline py::array numpy_from_ndarray(meshioplusplus::NDArray&& arr) {
     }
     return py::array(py::dtype(meshioplusplus::dtype_numpy_str(heap->Dtype())), shape, strides,
                      heap->Data(), owner);
+}
+
+/**
+ * @brief Build the Python `Region` list for a C++ `Mesh`'s regions.
+ *
+ * The read-side counterpart of `py_regions_to_mesh`. Each region's entry buffer
+ * is adopted by numpy through `numpy_from_ndarray`, so the crossing costs one
+ * copy only when the backend's accessor cannot hand over ownership (which it
+ * never can — `Region(i)` is const on all three, and KRATOS serves it from
+ * lazily-rebuilt staging). Regions are small next to connectivity.
+ *
+ * @param rMesh The C++ mesh whose regions to export.
+ * @return A `py::list` of `meshioplusplus.Region` instances, in the core's
+ *         canonical `(kind, name, dim, tag)` order.
+ */
+inline py::list regions_to_py(const meshioplusplus::Mesh& rMesh) {
+    py::list out;
+    const std::size_t n = rMesh.NumRegions();
+    if (n == 0)
+        return out;
+    py::object RegionCls = py::module_::import("meshioplusplus").attr("Region");
+    for (std::size_t i = 0; i < n; ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        meshioplusplus::NDArray entries = r.mEntries;
+        entries.MakeOwned();
+        out.append(RegionCls(py::str(r.mName), py::str(meshioplusplus::region_kind_name(r.mKind)),
+                             numpy_from_ndarray(std::move(entries)), py::arg("dim") = r.mDim,
+                             py::arg("tag") = r.mTag));
+    }
+    return out;
 }
 
 /**
@@ -483,14 +572,16 @@ inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& rCb) {
  *         rectangular arrays are zero-copy views owned via capsules, and
  *         whose ragged cell block data (if any) are freshly copied Python
  *         lists.
- * @note This function does not carry over `mesh.info`, `cell_sets` or
- *       `point_sets` - per the conversion-boundary design, formats that
- *       need those attach them out-of-band via a side-channel struct
- *       (e.g. `MedInfo`, `AnsysInfo`, `OpenFoamInfo`) that the binding
- *       `setattr`s onto the returned Python object separately.
+ * @note Named regions **are** carried (as `.regions`, and therefore through
+ *       the `point_sets`/`cell_sets` compat views). What this function still
+ *       does not carry is `mesh.info` and `gmsh_periodic`; the formats that
+ *       need other out-of-band data attach it via a side-channel struct
+ *       (e.g. `OpenFoamInfo`) that the binding `setattr`s onto the returned
+ *       Python object separately.
  */
 inline py::object mesh_to_py(meshioplusplus::Mesh&& m) {
     py::object MeshCls = py::module_::import("meshioplusplus").attr("Mesh");
+    py::list regions = regions_to_py(m);
 
     py::array points = numpy_from_ndarray(std::move(m.mPoints));
 
@@ -523,7 +614,8 @@ inline py::object mesh_to_py(meshioplusplus::Mesh&& m) {
         field_data[py::str(name)] = numpy_from_ndarray(std::move(m.mFieldData.at(name)));
 
     return MeshCls(points, cells, py::arg("point_data") = point_data,
-                   py::arg("cell_data") = cell_data, py::arg("field_data") = field_data);
+                   py::arg("cell_data") = cell_data, py::arg("field_data") = field_data,
+                   py::arg("regions") = regions);
 }
 
 }  // namespace meshioplusplus_py

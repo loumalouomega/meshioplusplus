@@ -61,6 +61,7 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
@@ -605,7 +606,7 @@ int cmd_info(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("info requires exactly INFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
 
-    // Mirror Mesh.__repr__ (point/cell sets are unavailable in the C++ core).
+    // Mirror Mesh.__repr__, named regions included (doc/regions.md).
     std::cout << "<meshio++ mesh object>\n";
     std::cout << "  Number of points: " << mesh.NumPoints() << "\n";
     if (mesh.NumCellBlocks() > 0) {
@@ -618,6 +619,30 @@ int cmd_info(const std::vector<std::string>& rArgs) {
         }
     } else {
         std::cout << "  No cells.\n";
+    }
+    // Named groups, one line per kind, matching Mesh.__repr__'s order.
+    {
+        std::vector<std::string> point_sets, cell_sets, side_sets;
+        for (std::size_t i = 0; i < mesh.NumRegions(); ++i) {
+            const meshioplusplus::Region& r = mesh.Region(i);
+            switch (r.mKind) {
+                case meshioplusplus::RegionKind::Point:
+                    point_sets.push_back(r.mName);
+                    break;
+                case meshioplusplus::RegionKind::Cell:
+                    cell_sets.push_back(r.mName);
+                    break;
+                case meshioplusplus::RegionKind::Side:
+                    side_sets.push_back(r.mName);
+                    break;
+            }
+        }
+        if (!point_sets.empty())
+            std::cout << "  Point sets: " << join(point_sets) << "\n";
+        if (!cell_sets.empty())
+            std::cout << "  Cell sets: " << join(cell_sets) << "\n";
+        if (!side_sets.empty())
+            std::cout << "  Side sets: " << join(side_sets) << "\n";
     }
     if (mesh.NumPointData() > 0)
         std::cout << "  Point data: " << join(mesh.PointDataNames()) << "\n";
@@ -2000,6 +2025,20 @@ int cmd_diff(const std::vector<std::string>& rArgs) {
         print_data_diff("point_data", report.mPointData);
         print_data_diff("cell_data", report.mCellData);
         print_data_diff("field_data", report.mFieldData);
+
+        // Named regions (doc/regions.md). This used to be the Python shim's
+        // job alone -- sets never reached the C++ core, so the native CLI's
+        // diff simply omitted them.
+        const meshioplusplus::RegionDiff& rd = report.mRegions;
+        if (rd.Differs()) {
+            std::cout << "regions:\n";
+            if (!rd.mOnlyInA.empty())
+                std::cout << "  only in A: " << join(rd.mOnlyInA) << "\n";
+            if (!rd.mOnlyInB.empty())
+                std::cout << "  only in B: " << join(rd.mOnlyInB) << "\n";
+            if (!rd.mChanged.empty())
+                std::cout << "  differing membership: " << join(rd.mChanged) << "\n";
+        }
     }
 
     bool exact = has_flag(p, "exact");

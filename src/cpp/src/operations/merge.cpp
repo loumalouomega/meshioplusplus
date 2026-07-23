@@ -34,6 +34,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/spatial_hash.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
@@ -684,6 +685,37 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             for (std::size_t c = 0; c < con.ncells; ++c) {
                 const std::int64_t fl = bb.finalpos[con.start + c];
                 d[gbase + c] = (fl < 0) ? -1 : static_cast<std::int64_t>(out_block_base[oi]) + fl;
+            }
+        }
+    }
+
+    // --- named regions: remap per input, namespacing on collision -----------
+    // Same rule as field_data above: a name carried by more than one input is
+    // prefixed with its source index, so "0:wall" and "1:wall" stay distinct
+    // groups instead of the second silently replacing the first (they would
+    // share a `(kind, name, dim, tag)` region key). Renaming has to happen
+    // between remapping and storing, which is why this uses the per-region
+    // `remap_region` rather than the whole-mesh `remap_regions`. The map is
+    // Global: merge numbers cells across each whole input mesh, not per block.
+    {
+        std::map<std::string, int> region_counts;
+        for (std::size_t m = 0; m < nm; ++m)
+            for (const std::string& name : rMeshes[m]->RegionNames())
+                region_counts[name] += 1;
+        for (std::size_t m = 0; m < nm; ++m) {
+            detail::RegionRemap rmap;
+            rmap.pPointMap = &res.mPointMaps[m];
+            rmap.mCellMapKind = detail::CellMapKind::Global;
+            rmap.pGlobalCellMap = &res.mCellMaps[m];
+            rmap.mOpName = "merge";
+            for (std::size_t i = 0; i < rMeshes[m]->NumRegions(); ++i) {
+                const Region& r_src = rMeshes[m]->Region(i);
+                Region carried;
+                if (!detail::remap_region(*rMeshes[m], out, r_src, rmap, carried))
+                    continue;
+                if (region_counts[r_src.mName] > 1)
+                    carried.mName = std::to_string(m) + ":" + r_src.mName;
+                out.AddRegion(std::move(carried));
             }
         }
     }

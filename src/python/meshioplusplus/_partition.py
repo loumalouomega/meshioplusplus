@@ -623,6 +623,7 @@ def partition(
             raise
         except Exception:
             pieces = None
+    used_cpp = pieces is not None
     if pieces is None:
         flat = _labels_py(mesh, int(nparts), method, imbalance, mode, seed, weights)
         pieces = []
@@ -632,6 +633,10 @@ def partition(
 
     result = []
     for out, pm, cm in pieces:
-        _remap_piece_sets(mesh, out, pm, cm)
+        # The C++ core carries named regions onto each piece itself (and
+        # therefore `point_sets`/`cell_sets`, which are views over them);
+        # remapping again here would apply the maps twice.
+        if not used_cpp:
+            _remap_piece_sets(mesh, out, pm, cm)
         result.append(out)
     return result

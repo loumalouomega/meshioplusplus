@@ -33,6 +33,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/node_adjacency.hpp"
 #include "meshioplusplus/detail/space_filling.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -398,6 +399,19 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, reorder_owned_copy(rMesh.FieldData(name)));
 
+    // named regions: a pure permutation, so every entry survives — and because
+    // the cell type of each block is unchanged, side-set facets survive too.
+    // The maps are Direct (permutations are not monotone, so the FirstChild
+    // "next entry" rule would be wrong here).
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &res.mNodePermutation;
+        rmap.mCellMapKind = detail::CellMapKind::Direct;
+        rmap.pCellMaps = &res.mCellPermutations;
+        rmap.mOpName = "reorder";
+        detail::remap_regions(rMesh, out, rmap);
+    }
+
     return res;
 }
 
@@ -460,8 +474,7 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
     const std::size_t n = rMesh.NumPoints();
     std::vector<std::int64_t> perm;
     if (method == ReorderMethod::RCM) {
-        ReorderCsr csr =
-            detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Clique);
+        ReorderCsr csr = detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Clique);
         perm = reorder_rcm(csr, n);
     } else {
         std::vector<std::uint64_t> keys =

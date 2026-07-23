@@ -69,8 +69,10 @@
 #include "meshioplusplus/backends/native_mesh.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/mesh_api.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
 
 namespace meshioplusplus {
@@ -126,6 +128,10 @@ public:
         ResetModelPartOnly();
         mStage.AddFieldData(std::move(name), std::move(data));
     }
+    void AddRegion(meshioplusplus::Region region) {
+        ResetModelPartOnly();
+        mStage.AddRegion(std::move(region));
+    }
 
     // --- uniform API: writer-side accessors (staging, stale-synced) --------
 
@@ -159,6 +165,24 @@ public:
     std::size_t NumFieldData() const { return Stage().NumFieldData(); }
     bool HasFieldData(const std::string& rName) const { return Stage().HasFieldData(rName); }
     const NDArray& FieldData(const std::string& rName) const { return Stage().FieldData(rName); }
+
+    // --- named regions (region.hpp) ----------------------------------------
+    // NOTE: `Region(i)` hides the type name `meshioplusplus::Region` for the
+    // rest of this class body — every declaration below must qualify it.
+
+    /// Sentinel returned by `FindRegion` when no region matches.
+    static constexpr std::size_t npos = detail::RegionList::npos;
+
+    std::size_t NumRegions() const { return Stage().NumRegions(); }
+    const meshioplusplus::Region& Region(std::size_t i) const { return Stage().Region(i); }
+    std::vector<std::string> RegionNames() const { return Stage().RegionNames(); }
+    bool HasRegion(const std::string& rName) const { return Stage().HasRegion(rName); }
+    bool HasRegion(const std::string& rName, RegionKind kind) const {
+        return Stage().HasRegion(rName, kind);
+    }
+    std::size_t FindRegion(const std::string& rName, RegionKind kind) const {
+        return Stage().FindRegion(rName, kind);
+    }
 
     // --- KRATOS-specific surface -------------------------------------------
 
@@ -307,6 +331,13 @@ private:
             }
         }
 
+        // Named regions -> SubModelParts. These run FIRST and win their names:
+        // a region is an explicit, format-declared group, whereas the tag pass
+        // below is an inference from integer cell_data. Both go through the
+        // same `HasSubModelPart` guard, so the tag pass simply skips a name a
+        // region already claimed (documented in doc/regions.md).
+        BuildSubModelPartsFromRegions();
+
         // Integer tags -> SubModelParts (unless disabled).
         if (mTagsToSubModelParts)
             for (const auto& r_key : KnownTagKeys())
@@ -315,6 +346,87 @@ private:
                     BuildSubModelPartsFor(r_key);
 
         mMaterialized = true;
+    }
+
+    /**
+     * @brief Materialize every Point/Cell region as a named SubModelPart.
+     *
+     * Cell regions index cells *globally* (block-major, `detail/cell_index.hpp`);
+     * `mRecords` already knows each block's first entity Id and kind, so the
+     * translation to Element/Condition Ids is a scan over the block bases.
+     * Point regions become node-only SubModelParts. `Side` regions have no
+     * ModelPart entity to attach to and are skipped with a warning.
+     */
+    void BuildSubModelPartsFromRegions() {
+        const std::size_t nregions = mStage.NumRegions();
+        if (nregions == 0)
+            return;
+
+        // Global cell index -> (block, row), from the staged block sizes. Built
+        // once here rather than via detail::cell_index.hpp, which would need
+        // mesh.hpp and so create a circular include from a backend header.
+        std::vector<std::int64_t> bases;
+        bases.reserve(mStage.NumCellBlocks() + 1);
+        bases.push_back(0);
+        for (const auto& r_b : mStage.Blocks())
+            bases.push_back(bases.back() + static_cast<std::int64_t>(r_b.NumCells()));
+
+        for (std::size_t i = 0; i < nregions; ++i) {
+            const meshioplusplus::Region& r_region = mStage.Region(i);
+            if (r_region.mKind == RegionKind::Side) {
+                log::warn(
+                    "kratos backend: region '{}' is a side set; SubModelParts have no "
+                    "facet entities, so it is not materialized (the region itself is kept)",
+                    r_region.mName);
+                continue;
+            }
+            if (mpRoot->HasSubModelPart(r_region.mName))
+                continue;
+
+            const std::int64_t* entries = r_region.Entries();
+            const std::size_t n = r_region.NumEntries();
+            ModelPart& r_smp = mpRoot->CreateSubModelPart(r_region.mName);
+
+            if (r_region.mKind == RegionKind::Point) {
+                std::vector<IndexType> node_ids;
+                node_ids.reserve(n);
+                const auto npts = static_cast<std::int64_t>(mStage.NumPoints());
+                for (std::size_t k = 0; k < n; ++k)
+                    if (entries[k] >= 0 && entries[k] < npts)
+                        node_ids.push_back(static_cast<IndexType>(entries[k]) + 1);
+                r_smp.AddNodes(node_ids);
+                continue;
+            }
+
+            std::vector<IndexType> elems, conds;
+            for (std::size_t k = 0; k < n; ++k) {
+                const std::int64_t g = entries[k];
+                if (g < 0 || bases.empty() || g >= bases.back())
+                    continue;
+                std::size_t b = 0;
+                while (b + 1 < bases.size() && g >= bases[b + 1])
+                    ++b;
+                const BlockRecord& rec = mRecords[b];
+                if (rec.mKind == BlockRecord::Kind::Ragged)
+                    continue;  // ragged blocks have no ModelPart entities
+                const IndexType id = rec.mFirstId + static_cast<IndexType>(g - bases[b]);
+                (rec.mKind == BlockRecord::Kind::Element ? elems : conds).push_back(id);
+            }
+            r_smp.AddElements(elems);
+            r_smp.AddConditions(conds);
+            // Kratos convention: a sub model part contains its entities' nodes.
+            std::vector<IndexType> node_ids;
+            detail::IdList seen;
+            for (IndexType eid : elems)
+                for (IndexType nid : mpRoot->GetElement(eid).NodeIds())
+                    if (seen.Add(nid))
+                        node_ids.push_back(nid);
+            for (IndexType cid : conds)
+                for (IndexType nid : mpRoot->GetCondition(cid).NodeIds())
+                    if (seen.Add(nid))
+                        node_ids.push_back(nid);
+            r_smp.AddNodes(node_ids);
+        }
     }
 
     /** @brief Concatenate one cell-data name's arrays over blocks of one kind. */
@@ -439,6 +551,12 @@ private:
         RestoreCellData(r_mp.ConditionalDataNames(), BlockRecord::Kind::Condition, r_mp, fresh);
         for (const auto& r_name : mStage.FieldDataNames())
             fresh.AddFieldData(r_name, mStage.FieldData(r_name));
+        // Regions are not recoverable from SubModelParts (a SubModelPart cannot
+        // say which kind/dim/tag it came from, and the entity->global-cell map
+        // is gone once blocks are regrouped), so they ride through unchanged
+        // from staging — the same treatment field_data gets just above.
+        for (const auto& r_region : mStage.Regions().All())
+            fresh.AddRegion(r_region);
 
         mStage = std::move(fresh);
     }

@@ -1581,6 +1581,31 @@ inline void write_int(NDArray& rA, std::size_t i, std::int64_t v) {
  *    `HasCellData(name)` / `HasFieldData(name)`; `PointData(name)` /
  *    `FieldData(name)` (`const NDArray&`), `CellData(name, block)`
  *    (`const NDArray&`, one per cell block).
+ *
+ * ## Named regions (`region.hpp`)
+ *
+ * Named groups of entities — gmsh physical groups, Exodus blocks/node sets/side
+ * sets, Abaqus `*NSET`/`*ELSET`/`*SURFACE`, MED families, Kratos SubModelParts
+ * — are first-class members of this API rather than a Python-only side channel:
+ *
+ *  - `void AddRegion(Region region)` — insert, or replace the region with the
+ *    same `(kind, name, dim, tag)` key. Entries are canonicalized (sorted,
+ *    de-duplicated) on the way in.
+ *  - `std::size_t NumRegions() const`, and
+ *    `const meshioplusplus::Region& Region(std::size_t i) const` — indexed in
+ *    `(kind, name, dim, tag)` order, so the sequence is identical on every
+ *    backend and at every thread count.
+ *  - `std::vector<std::string> RegionNames() const` — **sorted and unique**,
+ *    matching the data-map guarantee above (a name shared by two kinds or two
+ *    dimensions is reported once).
+ *  - `bool HasRegion(name)` / `bool HasRegion(name, kind)` /
+ *    `std::size_t FindRegion(name, kind)` (`Mesh::npos` when absent).
+ *
+ * @warning Because `Region` is also the name of the accessor, the *type*
+ * `meshioplusplus::Region` is hidden for the remainder of each backend's class
+ * body. Every declaration after the accessor must spell the type out
+ * fully-qualified — which is why the accessor itself returns
+ * `const meshioplusplus::Region&`.
  */
 
 // System includes
@@ -1643,6 +1668,267 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/mesh_api.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/region.hpp =====
+/**
+ * @file region.hpp
+ * @brief `Region`: the unified, first-class model of a *named group of mesh
+ * entities* — the thing gmsh calls a physical group, Exodus a block / node set
+ * / side set, Abaqus an `*NSET` / `*ELSET` / `*SURFACE`, MED a family or group,
+ * UNV a group, Ansys a component, OpenFOAM a boundary patch and Kratos a
+ * SubModelPart.
+ *
+ * Before this type existed, named groups lived only on the Python `Mesh` as
+ * `point_sets` / `cell_sets`, never crossed the pybind11 boundary, and were
+ * therefore invisible to the C API, Fortran, WebAssembly and the native CLI.
+ * Each set-capable format smuggled them through its own side-channel struct.
+ * `Region` replaces all of that with one representation every mesh backend
+ * carries and every binding surface can see.
+ *
+ * ## The three kinds
+ *
+ *  - `RegionKind::Point` — entries are **point indices**.
+ *  - `RegionKind::Cell`  — entries are **global cell indices**, numbered
+ *    *block-major*: block 0's cells first, then block 1's, and so on. This is
+ *    the same numbering `partition_labels` uses for its flat buffer;
+ *    `detail/cell_index.hpp` is the single owner of the conversion to and from
+ *    `(block, row)` so nothing re-derives it.
+ *  - `RegionKind::Side`  — entries are `(global cell index, local facet index)`
+ *    **pairs**, stored as an `(n, 2)` array. Facets are numbered exactly as
+ *    `detail/cell_faces.hpp` numbers the faces of a 3-D cell and
+ *    `detail/cell_edges.hpp` the edges of a 2-D one. This kind has no
+ *    equivalent in the legacy `point_sets`/`cell_sets` model at all.
+ *
+ * ## `mDim` and `mTag`
+ *
+ * `mDim` is the topological dimension the group was declared for, or `-1` when
+ * the format does not say. Gmsh needs it: a physical group is per-dimension,
+ * and two groups of different dimensions may share a name. `mTag` is the
+ * format-native integer id (gmsh physical tag, MED family id, Exodus set id),
+ * or `-1` when there is none. Both are carried through conversion so a
+ * round-trip back to the originating format can restore them.
+ *
+ * ## Canonical entry ordering
+ *
+ * `Region::Canonicalize()` sorts entries ascending and removes duplicates
+ * (lexicographically on the pair, for `Side`). Every mesh backend calls it from
+ * `AddRegion`, so two regions built by different code paths — or by different
+ * backends, or by different thread counts — compare exactly equal whenever they
+ * describe the same group. That is what makes the cross-format round-trip
+ * matrix an equality assertion rather than a set-comparison heuristic.
+ *
+ * Entries are held in an `NDArray` rather than a `std::vector<std::int64_t>` so
+ * that the read path can hand the buffer to numpy through the existing capsule
+ * adoption in `numpy_from_ndarray` without copying. The write path copies once,
+ * because canonicalization must sort in place and the incoming buffer may be a
+ * view over Python-owned memory.
+ */
+
+// System includes
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief What kind of entity a `Region` groups.
+ *
+ * The enumerator values are part of the C ABI (`mio_region_kind`) and of the
+ * WebAssembly / Python string vocabulary; `c_api.cpp` static_asserts them.
+ */
+enum class RegionKind {
+    Point = 0,  ///< entries are point indices
+    Cell = 1,   ///< entries are global (block-major) cell indices
+    Side = 2,   ///< entries are (global cell index, local facet index) pairs
+};
+
+/**
+ * @brief The lower-case spelling of a `RegionKind`, as used by the CLIs, the
+ * WebAssembly bindings and the Python API.
+ * @param Kind The kind to name.
+ * @return `"point"`, `"cell"` or `"side"`.
+ */
+const char* region_kind_name(RegionKind Kind);
+
+/**
+ * @brief Parse a `RegionKind` from its lower-case spelling.
+ * @param rName One of `"point"`, `"cell"`, `"side"`.
+ * @return The matching enumerator.
+ * @throws std::invalid_argument naming the accepted values.
+ */
+RegionKind region_kind_from_name(const std::string& rName);
+
+/**
+ * @brief A named group of points, cells or cell facets.
+ *
+ * See the file-level documentation for the entry conventions of each kind and
+ * for why entries are canonicalized. Construct one directly and hand it to
+ * `Mesh::AddRegion`, which canonicalizes and stores it.
+ */
+struct Region {
+    /// The group's name, as the originating format spelled it.
+    std::string mName;
+    /// Which kind of entity the entries index.
+    RegionKind mKind = RegionKind::Point;
+    /// Topological dimension the group was declared for, or -1 if unspecified.
+    int mDim = -1;
+    /// Format-native integer id (gmsh physical tag, MED family id, ...), or -1.
+    std::int64_t mTag = -1;
+    /// Int64 entries: shape `(n,)` for Point/Cell, `(n, 2)` for Side.
+    NDArray mEntries;
+
+    Region() = default;
+    Region(std::string name, RegionKind kind, NDArray entries)
+        : mName(std::move(name)), mKind(kind), mEntries(std::move(entries)) {}
+    Region(std::string name, RegionKind kind, int dim, std::int64_t tag, NDArray entries)
+        : mName(std::move(name)), mKind(kind), mDim(dim), mTag(tag), mEntries(std::move(entries)) {}
+
+    /// Number of grouped entities (rows of `mEntries`).
+    std::size_t NumEntries() const {
+        const std::size_t stride = Stride();
+        return stride == 0 ? 0 : mEntries.Size() / stride;
+    }
+
+    /// Values per entry: 2 for `Side` (cell, facet), 1 otherwise.
+    std::size_t Stride() const { return mKind == RegionKind::Side ? 2u : 1u; }
+
+    /// Read-only view of the canonical Int64 entry buffer (may be null if empty).
+    const std::int64_t* Entries() const {
+        return mEntries.Size() ? mEntries.As<std::int64_t>() : nullptr;
+    }
+
+    /**
+     * @brief Sort ascending, remove duplicates and normalize dtype/shape.
+     *
+     * Converts `mEntries` to owned Int64 storage of shape `(n,)` (Point/Cell)
+     * or `(n, 2)` (Side), sorts it (lexicographically on the pair for `Side`)
+     * and drops duplicate entries. Idempotent. Called by every backend's
+     * `AddRegion`, so stored regions are always canonical.
+     */
+    void Canonicalize();
+
+    /**
+     * @brief The identity of a region: two regions with the same key describe
+     * the same group and replace one another in `AddRegion`.
+     * @return `(kind, name, dim, tag)`, which is also the storage sort order.
+     */
+    std::tuple<int, const std::string&, int, std::int64_t> Key() const {
+        return {static_cast<int>(mKind), mName, mDim, mTag};
+    }
+};
+
+/**
+ * @brief Whether two regions describe exactly the same group.
+ *
+ * Compares the key *and* the entries elementwise. Because stored regions are
+ * canonical, this is a true set equality and not an ordering-sensitive one.
+ * @param rA First region.
+ * @param rB Second region.
+ * @return `true` when name, kind, dim, tag and every entry match.
+ */
+bool regions_equal(const Region& rA, const Region& rB);
+
+/**
+ * @brief Strict-weak ordering on `Region::Key()`, used to keep a mesh's region
+ * list deterministically sorted across backends.
+ * @param rA First region.
+ * @param rB Second region.
+ * @return `true` when `rA` sorts before `rB`.
+ */
+inline bool region_key_less(const Region& rA, const Region& rB) {
+    return rA.Key() < rB.Key();
+}
+
+namespace detail {
+
+/**
+ * @brief The shared region-list storage every mesh backend delegates to.
+ *
+ * Kept here rather than duplicated in `meshio_mesh.hpp` / `native_mesh.hpp` /
+ * `kratos_mesh.hpp` so the three backends cannot drift on the canonicalization
+ * and ordering rules that the cross-backend determinism guarantee rests on.
+ */
+class RegionList {
+public:
+    /**
+     * @brief Insert a region, or replace the one with the same
+     * `(kind, name, dim, tag)` key.
+     * @param region The region to store; canonicalized on the way in.
+     */
+    void Add(Region region) {
+        region.Canonicalize();
+        auto it = std::lower_bound(mRegions.begin(), mRegions.end(), region, region_key_less);
+        if (it != mRegions.end() && it->Key() == region.Key())
+            *it = std::move(region);
+        else
+            mRegions.insert(it, std::move(region));
+    }
+
+    /** @brief Number of stored regions. */
+    std::size_t Size() const { return mRegions.size(); }
+    /** @brief Region @p i in `(kind, name, dim, tag)` order. */
+    const Region& At(std::size_t i) const { return mRegions[i]; }
+    /** @brief The whole list, for backends that need to forward it wholesale. */
+    const std::vector<Region>& All() const { return mRegions; }
+    /** @brief Drop every stored region. */
+    void Clear() { mRegions.clear(); }
+
+    /**
+     * @brief Sorted, de-duplicated region names.
+     *
+     * Matches the sorted-names guarantee `PointDataNames()` and friends make:
+     * a name shared by several kinds or dimensions is reported once.
+     */
+    std::vector<std::string> Names() const {
+        std::vector<std::string> out;
+        out.reserve(mRegions.size());
+        for (const auto& r_region : mRegions)
+            out.push_back(r_region.mName);
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }
+
+    /** @brief Whether any region carries this name, regardless of kind. */
+    bool Has(const std::string& rName) const {
+        for (const auto& r_region : mRegions)
+            if (r_region.mName == rName)
+                return true;
+        return false;
+    }
+
+    /** @brief Whether a region of this name *and* kind exists. */
+    bool Has(const std::string& rName, RegionKind kind) const { return Find(rName, kind) != npos; }
+
+    /**
+     * @brief Index of the first region with this name and kind.
+     * @param rName The region name to look for.
+     * @param kind The kind to look for.
+     * @return The index, or `npos` when absent.
+     */
+    std::size_t Find(const std::string& rName, RegionKind kind) const {
+        for (std::size_t i = 0; i < mRegions.size(); ++i)
+            if (mRegions[i].mKind == kind && mRegions[i].mName == rName)
+                return i;
+        return npos;
+    }
+
+    /// Sentinel returned by `Find` when no region matches.
+    static constexpr std::size_t npos = static_cast<std::size_t>(-1);
+
+private:
+    std::vector<Region> mRegions;  // kept sorted by Region::Key()
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/region.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/backends/native_mesh.hpp =====
 /**
  * @file native_mesh.hpp
@@ -1943,6 +2229,27 @@ public:
     bool HasFieldData(const std::string& rName) const { return mFieldData.Has(rName); }
     const NDArray& FieldData(const std::string& rName) const { return mFieldData.Get(rName); }
 
+    // --- named regions (region.hpp) ---------------------------------------
+    // NOTE: `Region(i)` hides the type name `meshioplusplus::Region` for the
+    // rest of this class body — every declaration below must qualify it.
+
+    /// Sentinel returned by `FindRegion` when no region matches.
+    static constexpr std::size_t npos = detail::RegionList::npos;
+
+    void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+    std::size_t NumRegions() const { return mRegions.Size(); }
+    const meshioplusplus::Region& Region(std::size_t i) const { return mRegions.At(i); }
+    std::vector<std::string> RegionNames() const { return mRegions.Names(); }
+    bool HasRegion(const std::string& rName) const { return mRegions.Has(rName); }
+    bool HasRegion(const std::string& rName, RegionKind kind) const {
+        return mRegions.Has(rName, kind);
+    }
+    std::size_t FindRegion(const std::string& rName, RegionKind kind) const {
+        return mRegions.Find(rName, kind);
+    }
+    /** @brief The whole region list (used by the KRATOS backend's staging forward). */
+    const detail::RegionList& Regions() const { return mRegions; }
+
     // --- fast-consumer surface (NATIVE-only extras) -----------------------
 
     /** @brief Contiguous `(NumPoints() * PointDim())` Float64 coordinate buffer. */
@@ -2013,11 +2320,375 @@ private:
     detail::NamedArrays mPointData;     // canonical Float64/Int64 arrays
     detail::NamedArrayLists mCellData;  // one array per block, block order
     detail::NamedArrays mFieldData;
+    detail::RegionList mRegions;  // named groups, canonical + sorted
     mutable std::optional<GlobalCsr> mGlobalCsr;
 };
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/backends/native_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/format_compat.hpp =====
+/**
+ * @file format_compat.hpp
+ * @brief Portable stand-in for `std::format` on toolchains whose `<format>`
+ * is unavailable (e.g. GCC < 13's libstdc++, or clang built against such a
+ * libstdc++ - the header does not exist there, so it cannot even be
+ * `#include`d, let alone used).
+ *
+ * Availability is detected through `<version>`'s `__cpp_lib_format` feature
+ * test macro rather than `__has_include(<format>)`: `<version>` is
+ * guaranteed to exist for any C++20 standard library, and only defines the
+ * macro when the library actually implements the feature - so querying it
+ * never risks the same "file not found" this header exists to work around.
+ *
+ * The fallback formatter supports only bare `"{}"` placeholders (no format
+ * specs, no positional arguments, no escaping of literal braces) - the only
+ * pattern the log/error messages in this codebase use.
+ */
+
+// System includes
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <version>
+
+#if !defined(MESHIOPLUSPLUS_FORCE_NO_STD_FORMAT) && defined(__cpp_lib_format) && \
+    __cpp_lib_format >= 201907L
+#define MESHIOPLUSPLUS_HAS_STD_FORMAT 1
+#include <format>
+#endif
+
+namespace meshioplusplus {
+namespace detail {
+
+#ifdef MESHIOPLUSPLUS_HAS_STD_FORMAT
+
+/** @brief Forwards to `std::format` (compile-time checked format string). */
+template <class... Args>
+std::string format_compat(std::format_string<Args...> rFmt, Args&&... rArgs) {
+    return std::format(rFmt, std::forward<Args>(rArgs)...);
+}
+
+#else
+
+/** @brief No-argument overload: the format string, verbatim. */
+inline std::string format_compat(std::string_view rFmt) {
+    return std::string(rFmt);
+}
+
+/**
+ * @brief Recursively substitutes each `"{}"` in `rFmt` with the next argument
+ * (via `operator<<`), left to right.
+ */
+template <class T, class... Rest>
+std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&... rRest) {
+    const std::size_t pos = rFmt.find("{}");
+    if (pos == std::string_view::npos)
+        return std::string(rFmt);
+    std::ostringstream out;
+    out << rFmt.substr(0, pos) << rValue;
+    return out.str() + format_compat(rFmt.substr(pos + 2), rRest...);
+}
+
+#endif
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/format_compat.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
+/**
+ * @file source_location_compat.hpp
+ * @brief Portable stand-in for `std::source_location` on toolchains whose
+ * `<source_location>` does not actually populate `std::source_location`
+ * (observed with clang-14 against some libstdc++ versions: the header
+ * includes without error, but `std::source_location` is simply not declared).
+ *
+ * Availability is detected through `<version>`'s `__cpp_lib_source_location`
+ * feature test macro. The fallback is implemented with the same
+ * `__builtin_FILE()`/`__builtin_LINE()` compiler builtins the standard
+ * implementations themselves are built on (supported by both GCC and Clang),
+ * so captured call sites are identical to the real thing.
+ */
+
+// System includes
+#include <cstdint>
+#include <version>
+
+#if defined(__cpp_lib_source_location) && __cpp_lib_source_location >= 201907L
+#define MESHIOPLUSPLUS_HAS_STD_SOURCE_LOCATION 1
+#include <source_location>
+#endif
+
+namespace meshioplusplus {
+namespace detail {
+
+#ifdef MESHIOPLUSPLUS_HAS_STD_SOURCE_LOCATION
+
+using source_location = std::source_location;
+
+#else
+
+class source_location {
+public:
+    // constexpr, not consteval: the "capture the caller's __builtin_FILE/LINE"
+    // trick only relies on default-argument re-evaluation per call site, which
+    // works identically for constexpr; consteval here trips a clang diagnostic
+    // ("cannot take address of consteval function ... outside of an immediate
+    // invocation") when used as a default argument inside another consteval
+    // function's parameter list (FormatWithLocation's constructor, log.hpp).
+    static constexpr source_location current(
+        const char* pFile = __builtin_FILE(), int Line = __builtin_LINE()) noexcept {
+        source_location loc;
+        loc.mFile = pFile;
+        loc.mLine = Line;
+        return loc;
+    }
+
+    constexpr const char* file_name() const noexcept { return mFile; }
+    constexpr std::uint_least32_t line() const noexcept { return static_cast<std::uint_least32_t>(mLine); }
+
+private:
+    const char* mFile = "";
+    int mLine = 0;
+};
+
+#endif
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/log.hpp =====
+/**
+ * @file log.hpp
+ * @brief Minimal, header-only logging built on C++20 `std::format` and
+ * `std::source_location`.
+ *
+ * Usage:
+ * @code
+ * meshioplusplus::log::warn("MED: orientation for '{}' not implemented", type);
+ * @endcode
+ *
+ * Design points:
+ *  - Format strings are compile-time checked (`std::format_string`), so a
+ *    mismatched `{}` placeholder is a compile error, not a runtime one.
+ *  - Every message automatically carries its call site (`file:line`) via a
+ *    defaulted `std::source_location` parameter — callers never pass it
+ *    explicitly.
+ *  - Runtime filtering is controlled by the `MESHIOPLUSPLUS_LOG_LEVEL`
+ *    environment variable: `"debug"`, `"info"`, `"warn"` (the default),
+ *    `"error"`, or `"off"`. The variable is read exactly once (cached in a
+ *    function-local `static`).
+ *  - Messages are written to stderr through `std::osyncstream` where the
+ *    standard library provides it (guaranteeing concurrent log calls, e.g.
+ *    from bodies passed to `parallel_for`, never interleave mid-line); on
+ *    standard libraries that ship a `<syncstream>` header without actually
+ *    defining `std::osyncstream` (observed with Emscripten's non-threaded
+ *    libc++ -- `__cpp_lib_syncbuf` is unset there), a `std::mutex`-guarded
+ *    plain write to `std::cerr` gives the same serialization guarantee.
+ *  - A filtered-out call costs a single branch: no formatting and no
+ *    allocation happen unless the level passes the threshold.
+ *  - There is no printf/`std::cerr` logging anywhere else in the codebase;
+ *    genuine error conditions remain C++ exceptions (see exceptions.hpp) —
+ *    this facility is for diagnostics/warnings only.
+ */
+
+// System includes
+#include <cstdlib>
+#include <iostream>
+#include <mutex>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <version>
+
+#if __has_include(<syncstream>)
+#include <syncstream>
+#endif
+
+// Project includes
+
+namespace meshioplusplus {
+namespace log {
+
+/**
+ * @brief Severity levels, ordered so a numerically larger value is louder.
+ *
+ * `threshold()` returns the minimum level that is actually emitted; a call
+ * at a given level is emitted iff `level >= threshold()`. `Off` suppresses
+ * every message.
+ */
+enum class Level : int { Debug = 0, Info = 1, Warn = 2, Error = 3, Off = 4 };
+
+/**
+ * @brief The active logging threshold, read once from `MESHIOPLUSPLUS_LOG_LEVEL`.
+ *
+ * Parses the environment variable on first call (memoized in a function-local
+ * `static`, so later changes to the environment have no effect for the
+ * lifetime of the process) and defaults to `Level::Warn` when unset or
+ * unrecognized. Accepted (case-sensitive) values: `debug`, `info`,
+ * `warn`/`warning`, `error`, `off`/`none`.
+ *
+ * @return The configured minimum `Level` to emit.
+ */
+inline Level threshold() {
+    static const Level lvl = [] {
+        const char* env = std::getenv("MESHIOPLUSPLUS_LOG_LEVEL");
+        if (env == nullptr)
+            return Level::Warn;
+        std::string_view s(env);
+        if (s == "debug")
+            return Level::Debug;
+        if (s == "info")
+            return Level::Info;
+        if (s == "warn" || s == "warning")
+            return Level::Warn;
+        if (s == "error")
+            return Level::Error;
+        if (s == "off" || s == "none")
+            return Level::Off;
+        return Level::Warn;
+    }();
+    return lvl;
+}
+
+/**
+ * @brief Whether a message at level `lvl` would actually be emitted.
+ * @param lvl The level to test.
+ * @return `true` iff `lvl >= threshold()`.
+ */
+inline bool enabled(Level lvl) {
+    return static_cast<int>(lvl) >= static_cast<int>(threshold());
+}
+
+/**
+ * @brief Formats and writes one log line to stderr.
+ *
+ * Strips any directory prefix from `loc.file_name()` (keeping just the
+ * basename) and writes `"meshio <level> [<file>:<line>] <msg>\n"` through a
+ * `std::osyncstream`, which serializes the write against other threads doing
+ * the same so concurrent callers (e.g. bodies run under `parallel_for`)
+ * never produce interleaved/garbled lines.
+ *
+ * @param lvl The severity to label the line with.
+ * @param msg The already-formatted message body.
+ * @param loc The call site to report (normally the caller's, captured via
+ *            `FormatWithLocation`).
+ */
+inline void write(Level lvl, std::string_view msg, const detail::source_location& rLoc) {
+    constexpr std::string_view names[] = {"debug", "info", "warning", "error"};
+    std::string_view file = rLoc.file_name();
+    if (auto p = file.find_last_of("/\\"); p != std::string_view::npos)
+        file.remove_prefix(p + 1);
+    std::string line = detail::format_compat("meshio {} [{}:{}] {}\n", names[static_cast<int>(lvl)],
+                                             file, rLoc.line(), msg);
+#if defined(__cpp_lib_syncbuf)
+    std::osyncstream(std::cerr) << line;
+#else
+    static std::mutex log_mutex;
+    std::lock_guard<std::mutex> lock(log_mutex);
+    std::cerr << line;
+#endif
+}
+
+/**
+ * @brief Wraps a compile-time-checked format string with the caller's
+ * source location, captured implicitly via a defaulted constructor
+ * parameter.
+ *
+ * This is the trick that lets `log::warn("x={}", x)` both (a) validate the
+ * format string against `Args...` at compile time (via `std::format_string`)
+ * and (b) automatically know its own call site, without the caller ever
+ * writing `std::source_location::current()` themselves: the implicit,
+ * `consteval` converting constructor captures `std::source_location::current()`
+ * as a default argument evaluated at the *call site* of `debug`/`info`/
+ * `warn`/`error`, then packages it alongside the checked format string into
+ * one object those functions take by value.
+ *
+ * @tparam Args The types of the format arguments, used to validate `fmt`.
+ */
+template <class... Args>
+struct FormatWithLocation {
+#ifdef MESHIOPLUSPLUS_HAS_STD_FORMAT
+    std::format_string<Args...> mFmt;
+#else
+    std::string_view mFmt;  // no compile-time placeholder check without <format>
+#endif
+    detail::source_location mLoc;
+
+    template <class S>
+    consteval FormatWithLocation(  // NOLINT(google-explicit-constructor)
+        const S& rS, detail::source_location l = detail::source_location::current())
+        : mFmt(rS), mLoc(l) {}
+};
+
+/**
+ * @brief Logs a debug-level message (lowest severity; off by default).
+ *
+ * No-op (no formatting, no allocation) unless `MESHIOPLUSPLUS_LOG_LEVEL=debug`.
+ * @tparam Args Format argument types, deduced from `args`.
+ * @param f Compile-time-checked format string + implicit call site.
+ * @param args Values substituted into `f`.
+ */
+template <class... Args>
+void debug(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
+    if (!enabled(Level::Debug))
+        return;
+    write(Level::Debug, detail::format_compat(f.mFmt, std::forward<Args>(args)...), f.mLoc);
+}
+
+/**
+ * @brief Logs an info-level message.
+ *
+ * No-op unless `MESHIOPLUSPLUS_LOG_LEVEL` is `debug` or `info`.
+ * @tparam Args Format argument types, deduced from `args`.
+ * @param f Compile-time-checked format string + implicit call site.
+ * @param args Values substituted into `f`.
+ */
+template <class... Args>
+void info(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
+    if (!enabled(Level::Info))
+        return;
+    write(Level::Info, detail::format_compat(f.mFmt, std::forward<Args>(args)...), f.mLoc);
+}
+
+/**
+ * @brief Logs a warn-level message. This is the default active threshold.
+ *
+ * Used, for example, when a C++ format implementation encounters a
+ * recognized-but-unhandled construct and degrades gracefully rather than
+ * failing (e.g. an unimplemented MED orientation).
+ * @tparam Args Format argument types, deduced from `args`.
+ * @param f Compile-time-checked format string + implicit call site.
+ * @param args Values substituted into `f`.
+ */
+template <class... Args>
+void warn(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
+    if (!enabled(Level::Warn))
+        return;
+    write(Level::Warn, detail::format_compat(f.mFmt, std::forward<Args>(args)...), f.mLoc);
+}
+
+/**
+ * @brief Logs an error-level message.
+ *
+ * @note This is diagnostic logging only, not the mechanism for signaling
+ * failures to callers — genuine error conditions must still be reported by
+ * throwing `ReadError`/`WriteError` (see exceptions.hpp); this call alone
+ * does not stop execution or propagate anything.
+ * @tparam Args Format argument types, deduced from `args`.
+ * @param f Compile-time-checked format string + implicit call site.
+ * @param args Values substituted into `f`.
+ */
+template <class... Args>
+void error(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
+    if (!enabled(Level::Error))
+        return;
+    write(Level::Error, detail::format_compat(f.mFmt, std::forward<Args>(args)...), f.mLoc);
+}
+
+}  // namespace log
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/log.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/types.hpp =====
 /**
  * @file types.hpp
@@ -2327,6 +2998,10 @@ public:
         ResetModelPartOnly();
         mStage.AddFieldData(std::move(name), std::move(data));
     }
+    void AddRegion(meshioplusplus::Region region) {
+        ResetModelPartOnly();
+        mStage.AddRegion(std::move(region));
+    }
 
     // --- uniform API: writer-side accessors (staging, stale-synced) --------
 
@@ -2360,6 +3035,24 @@ public:
     std::size_t NumFieldData() const { return Stage().NumFieldData(); }
     bool HasFieldData(const std::string& rName) const { return Stage().HasFieldData(rName); }
     const NDArray& FieldData(const std::string& rName) const { return Stage().FieldData(rName); }
+
+    // --- named regions (region.hpp) ----------------------------------------
+    // NOTE: `Region(i)` hides the type name `meshioplusplus::Region` for the
+    // rest of this class body — every declaration below must qualify it.
+
+    /// Sentinel returned by `FindRegion` when no region matches.
+    static constexpr std::size_t npos = detail::RegionList::npos;
+
+    std::size_t NumRegions() const { return Stage().NumRegions(); }
+    const meshioplusplus::Region& Region(std::size_t i) const { return Stage().Region(i); }
+    std::vector<std::string> RegionNames() const { return Stage().RegionNames(); }
+    bool HasRegion(const std::string& rName) const { return Stage().HasRegion(rName); }
+    bool HasRegion(const std::string& rName, RegionKind kind) const {
+        return Stage().HasRegion(rName, kind);
+    }
+    std::size_t FindRegion(const std::string& rName, RegionKind kind) const {
+        return Stage().FindRegion(rName, kind);
+    }
 
     // --- KRATOS-specific surface -------------------------------------------
 
@@ -2508,6 +3201,13 @@ private:
             }
         }
 
+        // Named regions -> SubModelParts. These run FIRST and win their names:
+        // a region is an explicit, format-declared group, whereas the tag pass
+        // below is an inference from integer cell_data. Both go through the
+        // same `HasSubModelPart` guard, so the tag pass simply skips a name a
+        // region already claimed (documented in doc/regions.md).
+        BuildSubModelPartsFromRegions();
+
         // Integer tags -> SubModelParts (unless disabled).
         if (mTagsToSubModelParts)
             for (const auto& r_key : KnownTagKeys())
@@ -2516,6 +3216,87 @@ private:
                     BuildSubModelPartsFor(r_key);
 
         mMaterialized = true;
+    }
+
+    /**
+     * @brief Materialize every Point/Cell region as a named SubModelPart.
+     *
+     * Cell regions index cells *globally* (block-major, `detail/cell_index.hpp`);
+     * `mRecords` already knows each block's first entity Id and kind, so the
+     * translation to Element/Condition Ids is a scan over the block bases.
+     * Point regions become node-only SubModelParts. `Side` regions have no
+     * ModelPart entity to attach to and are skipped with a warning.
+     */
+    void BuildSubModelPartsFromRegions() {
+        const std::size_t nregions = mStage.NumRegions();
+        if (nregions == 0)
+            return;
+
+        // Global cell index -> (block, row), from the staged block sizes. Built
+        // once here rather than via detail::cell_index.hpp, which would need
+        // mesh.hpp and so create a circular include from a backend header.
+        std::vector<std::int64_t> bases;
+        bases.reserve(mStage.NumCellBlocks() + 1);
+        bases.push_back(0);
+        for (const auto& r_b : mStage.Blocks())
+            bases.push_back(bases.back() + static_cast<std::int64_t>(r_b.NumCells()));
+
+        for (std::size_t i = 0; i < nregions; ++i) {
+            const meshioplusplus::Region& r_region = mStage.Region(i);
+            if (r_region.mKind == RegionKind::Side) {
+                log::warn(
+                    "kratos backend: region '{}' is a side set; SubModelParts have no "
+                    "facet entities, so it is not materialized (the region itself is kept)",
+                    r_region.mName);
+                continue;
+            }
+            if (mpRoot->HasSubModelPart(r_region.mName))
+                continue;
+
+            const std::int64_t* entries = r_region.Entries();
+            const std::size_t n = r_region.NumEntries();
+            ModelPart& r_smp = mpRoot->CreateSubModelPart(r_region.mName);
+
+            if (r_region.mKind == RegionKind::Point) {
+                std::vector<IndexType> node_ids;
+                node_ids.reserve(n);
+                const auto npts = static_cast<std::int64_t>(mStage.NumPoints());
+                for (std::size_t k = 0; k < n; ++k)
+                    if (entries[k] >= 0 && entries[k] < npts)
+                        node_ids.push_back(static_cast<IndexType>(entries[k]) + 1);
+                r_smp.AddNodes(node_ids);
+                continue;
+            }
+
+            std::vector<IndexType> elems, conds;
+            for (std::size_t k = 0; k < n; ++k) {
+                const std::int64_t g = entries[k];
+                if (g < 0 || bases.empty() || g >= bases.back())
+                    continue;
+                std::size_t b = 0;
+                while (b + 1 < bases.size() && g >= bases[b + 1])
+                    ++b;
+                const BlockRecord& rec = mRecords[b];
+                if (rec.mKind == BlockRecord::Kind::Ragged)
+                    continue;  // ragged blocks have no ModelPart entities
+                const IndexType id = rec.mFirstId + static_cast<IndexType>(g - bases[b]);
+                (rec.mKind == BlockRecord::Kind::Element ? elems : conds).push_back(id);
+            }
+            r_smp.AddElements(elems);
+            r_smp.AddConditions(conds);
+            // Kratos convention: a sub model part contains its entities' nodes.
+            std::vector<IndexType> node_ids;
+            detail::IdList seen;
+            for (IndexType eid : elems)
+                for (IndexType nid : mpRoot->GetElement(eid).NodeIds())
+                    if (seen.Add(nid))
+                        node_ids.push_back(nid);
+            for (IndexType cid : conds)
+                for (IndexType nid : mpRoot->GetCondition(cid).NodeIds())
+                    if (seen.Add(nid))
+                        node_ids.push_back(nid);
+            r_smp.AddNodes(node_ids);
+        }
     }
 
     /** @brief Concatenate one cell-data name's arrays over blocks of one kind. */
@@ -2640,6 +3421,12 @@ private:
         RestoreCellData(r_mp.ConditionalDataNames(), BlockRecord::Kind::Condition, r_mp, fresh);
         for (const auto& r_name : mStage.FieldDataNames())
             fresh.AddFieldData(r_name, mStage.FieldData(r_name));
+        // Regions are not recoverable from SubModelParts (a SubModelPart cannot
+        // say which kind/dim/tag it came from, and the entity->global-cell map
+        // is gone once blocks are regrouped), so they ride through unchanged
+        // from staging — the same treatment field_data gets just above.
+        for (const auto& r_region : mStage.Regions().All())
+            fresh.AddRegion(r_region);
 
         mStage = std::move(fresh);
     }
@@ -2772,12 +3559,12 @@ std::vector<typename Map::key_type> sorted_keys(const Map& rM) {
  * backing a writeable numpy array (read path, no output copy).
  *
  * The conversion layer carries `points`, `cells`, `point_data`, `cell_data`,
- * and `field_data` — but deliberately **not** `mesh.info`, `cell_sets`, or
- * `point_sets`, which are custom attributes that live only on the Python
- * `Mesh`. Formats that need those either defer entirely to the Python
- * fallback or carry the extra data out-of-band via a side-channel struct
- * that the binding `setattr`s onto the Python `Mesh` object after
- * conversion (e.g. `MedInfo`/`AnsysInfo` for `point_sets`/`cell_sets`,
+ * `field_data` **and `regions`** (`region.hpp` — named groups of points, cells
+ * or cell facets, which the Python `Mesh` exposes both as `.regions` and,
+ * compatibly, as `point_sets`/`cell_sets`). It deliberately does **not** carry
+ * `mesh.info` or `gmsh_periodic`, which remain Python-only attributes; the
+ * formats that still need other out-of-band data carry it via a side-channel
+ * struct the binding `setattr`s onto the Python `Mesh` after conversion (e.g.
  * `OpenFoamInfo` for `cell_tags`).
  */
 
@@ -2863,9 +3650,9 @@ struct CellBlock {
  * Produced by every C++ format reader and consumed by every C++ format
  * writer; see the file-level comment for how this maps to/from the
  * pure-Python `meshio.Mesh` at the pybind11 boundary. Note what is
- * deliberately absent from this struct: `mesh.info`, `point_sets`, and
- * `cell_sets` are Python-only attributes not represented here (they travel,
- * when needed, through a per-format side-channel struct instead).
+ * deliberately absent from this struct: `mesh.info` and `gmsh_periodic` are
+ * Python-only attributes not represented here. Named groups of entities are
+ * *not* in that list any more — they live in `mRegions` (see `region.hpp`).
  */
 struct Mesh {
     NDArray mPoints;  // (num_points, dim)
@@ -2878,6 +3665,11 @@ struct Mesh {
     std::unordered_map<std::string, NDArray> mPointData;
     std::unordered_map<std::string, std::vector<NDArray>> mCellData;
     std::unordered_map<std::string, NDArray> mFieldData;
+
+    // Named groups of points / cells / cell facets (region.hpp). Kept sorted by
+    // Region::Key() with canonical (sorted, de-duplicated) entries, so region
+    // order and content are identical on every backend.
+    detail::RegionList mRegions;
 
     /**
      * @brief Number of points in the mesh.
@@ -3021,6 +3813,32 @@ struct Mesh {
     bool HasFieldData(const std::string& rName) const { return mFieldData.count(rName) > 0; }
     /** @brief The field-data array named @p rName (throws if absent). */
     const NDArray& FieldData(const std::string& rName) const { return mFieldData.at(rName); }
+
+    // --- named regions (region.hpp) ---
+    // NOTE: `Region(i)` hides the type name `meshioplusplus::Region` for the
+    // rest of this class body — every declaration below must qualify it.
+
+    /// Sentinel returned by `FindRegion` when no region matches.
+    static constexpr std::size_t npos = detail::RegionList::npos;
+
+    /** @brief Adds a region, replacing one with the same (kind, name, dim, tag). */
+    void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+    /** @brief Number of named regions. */
+    std::size_t NumRegions() const { return mRegions.Size(); }
+    /** @brief Region @p i in `(kind, name, dim, tag)` order. */
+    const meshioplusplus::Region& Region(std::size_t i) const { return mRegions.At(i); }
+    /** @brief Region names in sorted order, de-duplicated across kinds. */
+    std::vector<std::string> RegionNames() const { return mRegions.Names(); }
+    /** @brief Whether any region carries this name, regardless of kind. */
+    bool HasRegion(const std::string& rName) const { return mRegions.Has(rName); }
+    /** @brief Whether a region of this name and kind exists. */
+    bool HasRegion(const std::string& rName, RegionKind kind) const {
+        return mRegions.Has(rName, kind);
+    }
+    /** @brief Index of the region with this name and kind, or `npos`. */
+    std::size_t FindRegion(const std::string& rName, RegionKind kind) const {
+        return mRegions.Find(rName, kind);
+    }
 };
 
 }  // namespace meshioplusplus
@@ -3304,6 +4122,143 @@ inline bool skin_supported(CellType Type) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/cell_faces.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/mesh.hpp =====
+/**
+ * @file mesh.hpp
+ * @brief Compile-time mesh-backend dispatch: selects which in-memory mesh
+ * structure `meshioplusplus::Mesh` is.
+ *
+ * meshio++ has three interchangeable mesh backends, selected at build time
+ * by the `MESHIOPLUSPLUS_MESH_BACKEND` CMake option (exactly one of the
+ * `MESHIOPLUSPLUS_MESH_BACKEND_*` macros is defined — mirroring the
+ * `MESHIOPLUSPLUS_PARALLEL_*` parallel-backend pattern in `parallel.hpp`):
+ *
+ *  - **MESHIO** (`backends/meshio_mesh.hpp`, the default): the
+ *    meshio-mirroring `Mesh`/`CellBlock` over dtype-erased `NDArray`s.
+ *    Required when the pybind11 extension is built — the zero-copy numpy
+ *    boundary (`bindings/python/np_conversions.hpp`) is written against it.
+ *  - **NATIVE** (`backends/native_mesh.hpp`): canonical statically-typed
+ *    storage — Float64 points, Int64 connectivity, `CellType` enum,
+ *    CSR-shaped ragged blocks. The fastest pure-C++ consumer surface; used
+ *    by the WebAssembly build.
+ *  - **KRATOS** (`backends/kratos_mesh.hpp`): a Kratos-Multiphysics-style
+ *    `ModelPart` (Nodes/Elements/Conditions/SubModelParts) behind the same
+ *    API, for near-costless exchange with Kratos (see `kratos_bridge.hpp`).
+ *
+ * All three implement the uniform format-facing API documented in
+ * `mesh_api.hpp`; format code compiles unchanged under any of them. To add
+ * a backend: add one CMake branch defining a new
+ * `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>` macro, one `#elif` below, and a
+ * `backends/<name>_mesh.hpp` implementing the API.
+ */
+
+// Project includes
+
+#if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
+namespace meshioplusplus {
+using Mesh = NativeMesh;
+}
+#elif defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
+namespace meshioplusplus {
+using Mesh = KratosMesh;
+}
+#else  // MESHIOPLUSPLUS_MESH_BACKEND_MESHIO (and the no-macro default)
+// backends/meshio_mesh.hpp defines `struct Mesh` directly (no alias) so the
+// pybind11 binding layer sees literally the same type as before the
+// backends existed.
+#endif
+// ===== end src/cpp/include/meshioplusplus/mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/cell_index.hpp =====
+/**
+ * @file detail/cell_index.hpp
+ * @brief The single owner of the **global (block-major) cell index**: block 0's
+ * cells first, then block 1's, and so on.
+ *
+ * Several parts of meshio++ already number cells this way — `partition_labels`
+ * fills its flat buffer in this order, `split`'s connected-component pass
+ * union-finds over it, and `Region`s of kind `Cell` and `Side` index into it.
+ * Each of those used to re-derive the prefix sum locally. They no longer do:
+ * the browser viewer's `_dimension_rows` counter bug (a running index that
+ * failed to advance over *skipped* blocks, so every per-cell quantity silently
+ * shifted) is the cautionary tale for what a second, subtly different copy of
+ * this arithmetic costs.
+ *
+ * Header-only inline helpers — they are called once per operation, not per
+ * element, but they are small enough that a translation unit of their own would
+ * only add link noise. Built on the uniform mesh API, so they compile under
+ * every mesh backend.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief Prefix sums of the mesh's per-block cell counts.
+ *
+ * Entry `b` is the global index of block `b`'s first cell; the last entry is
+ * the mesh's total cell count. Every block contributes, including empty ones
+ * and ragged ones, so the numbering never skips.
+ * @param rMesh The mesh to measure.
+ * @return `NumCellBlocks() + 1` ascending offsets, starting at 0.
+ */
+inline std::vector<std::int64_t> block_bases(const Mesh& rMesh) {
+    std::vector<std::int64_t> bases;
+    bases.reserve(rMesh.NumCellBlocks() + 1);
+    bases.push_back(0);
+    for (const auto cb : rMesh.CellRange())
+        bases.push_back(bases.back() + static_cast<std::int64_t>(cb.NumCells()));
+    return bases;
+}
+
+/// Total number of cells described by a `block_bases` table.
+inline std::int64_t total_cells(const std::vector<std::int64_t>& rBases) {
+    return rBases.empty() ? 0 : rBases.back();
+}
+
+/**
+ * @brief Global cell index of cell @p row of block @p block.
+ * @param rBases A `block_bases` table.
+ * @param block Block index.
+ * @param row Cell index within that block.
+ * @return The global (block-major) cell index.
+ */
+inline std::int64_t block_row_to_global(const std::vector<std::int64_t>& rBases, std::size_t block,
+                                        std::int64_t row) {
+    return rBases[block] + row;
+}
+
+/**
+ * @brief Split a global cell index back into `(block, row)`.
+ *
+ * Uses a linear scan rather than a binary search: meshes have a handful of
+ * blocks, and callers that convert many indices should hoist the scan (or sort
+ * their indices, which regions already are) instead.
+ * @param rBases A `block_bases` table.
+ * @param global The global cell index; must be in `[0, total_cells)`.
+ * @return `(block, row)`, or `(npos, 0)` when @p global is out of range.
+ */
+inline std::pair<std::size_t, std::int64_t> global_to_block_row(
+    const std::vector<std::int64_t>& rBases, std::int64_t global) {
+    constexpr std::size_t npos = static_cast<std::size_t>(-1);
+    if (rBases.size() < 2 || global < 0 || global >= rBases.back())
+        return {npos, 0};
+    for (std::size_t b = 0; b + 1 < rBases.size(); ++b)
+        if (global < rBases[b + 1])
+            return {b, global - rBases[b]};
+    return {npos, 0};
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/cell_index.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/cell_subdivision.hpp =====
 /**
  * @file cell_subdivision.hpp
@@ -3461,52 +4416,6 @@ Rgb colormap_lookup(const std::uint8_t* pTable, double t);
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/colormap.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/mesh.hpp =====
-/**
- * @file mesh.hpp
- * @brief Compile-time mesh-backend dispatch: selects which in-memory mesh
- * structure `meshioplusplus::Mesh` is.
- *
- * meshio++ has three interchangeable mesh backends, selected at build time
- * by the `MESHIOPLUSPLUS_MESH_BACKEND` CMake option (exactly one of the
- * `MESHIOPLUSPLUS_MESH_BACKEND_*` macros is defined — mirroring the
- * `MESHIOPLUSPLUS_PARALLEL_*` parallel-backend pattern in `parallel.hpp`):
- *
- *  - **MESHIO** (`backends/meshio_mesh.hpp`, the default): the
- *    meshio-mirroring `Mesh`/`CellBlock` over dtype-erased `NDArray`s.
- *    Required when the pybind11 extension is built — the zero-copy numpy
- *    boundary (`bindings/python/np_conversions.hpp`) is written against it.
- *  - **NATIVE** (`backends/native_mesh.hpp`): canonical statically-typed
- *    storage — Float64 points, Int64 connectivity, `CellType` enum,
- *    CSR-shaped ragged blocks. The fastest pure-C++ consumer surface; used
- *    by the WebAssembly build.
- *  - **KRATOS** (`backends/kratos_mesh.hpp`): a Kratos-Multiphysics-style
- *    `ModelPart` (Nodes/Elements/Conditions/SubModelParts) behind the same
- *    API, for near-costless exchange with Kratos (see `kratos_bridge.hpp`).
- *
- * All three implement the uniform format-facing API documented in
- * `mesh_api.hpp`; format code compiles unchanged under any of them. To add
- * a backend: add one CMake branch defining a new
- * `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>` macro, one `#elif` below, and a
- * `backends/<name>_mesh.hpp` implementing the API.
- */
-
-// Project includes
-
-#if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
-namespace meshioplusplus {
-using Mesh = NativeMesh;
-}
-#elif defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
-namespace meshioplusplus {
-using Mesh = KratosMesh;
-}
-#else  // MESHIOPLUSPLUS_MESH_BACKEND_MESHIO (and the no-macro default)
-// backends/meshio_mesh.hpp defines `struct Mesh` directly (no alias) so the
-// pybind11 binding layer sees literally the same type as before the
-// backends existed.
-#endif
-// ===== end src/cpp/include/meshioplusplus/mesh.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/data_common.hpp =====
 /**
  * @file operations/data_common.hpp
@@ -4407,75 +5316,6 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/file_source.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/detail/format_compat.hpp =====
-/**
- * @file format_compat.hpp
- * @brief Portable stand-in for `std::format` on toolchains whose `<format>`
- * is unavailable (e.g. GCC < 13's libstdc++, or clang built against such a
- * libstdc++ - the header does not exist there, so it cannot even be
- * `#include`d, let alone used).
- *
- * Availability is detected through `<version>`'s `__cpp_lib_format` feature
- * test macro rather than `__has_include(<format>)`: `<version>` is
- * guaranteed to exist for any C++20 standard library, and only defines the
- * macro when the library actually implements the feature - so querying it
- * never risks the same "file not found" this header exists to work around.
- *
- * The fallback formatter supports only bare `"{}"` placeholders (no format
- * specs, no positional arguments, no escaping of literal braces) - the only
- * pattern the log/error messages in this codebase use.
- */
-
-// System includes
-#include <sstream>
-#include <string>
-#include <string_view>
-#include <utility>
-#include <version>
-
-#if !defined(MESHIOPLUSPLUS_FORCE_NO_STD_FORMAT) && defined(__cpp_lib_format) && \
-    __cpp_lib_format >= 201907L
-#define MESHIOPLUSPLUS_HAS_STD_FORMAT 1
-#include <format>
-#endif
-
-namespace meshioplusplus {
-namespace detail {
-
-#ifdef MESHIOPLUSPLUS_HAS_STD_FORMAT
-
-/** @brief Forwards to `std::format` (compile-time checked format string). */
-template <class... Args>
-std::string format_compat(std::format_string<Args...> rFmt, Args&&... rArgs) {
-    return std::format(rFmt, std::forward<Args>(rArgs)...);
-}
-
-#else
-
-/** @brief No-argument overload: the format string, verbatim. */
-inline std::string format_compat(std::string_view rFmt) {
-    return std::string(rFmt);
-}
-
-/**
- * @brief Recursively substitutes each `"{}"` in `rFmt` with the next argument
- * (via `operator<<`), left to right.
- */
-template <class T, class... Rest>
-std::string format_compat(std::string_view rFmt, const T& rValue, const Rest&... rRest) {
-    const std::size_t pos = rFmt.find("{}");
-    if (pos == std::string_view::npos)
-        return std::string(rFmt);
-    std::ostringstream out;
-    out << rFmt.substr(0, pos) << rValue;
-    return out.str() + format_compat(rFmt.substr(pos + 2), rRest...);
-}
-
-#endif
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/detail/format_compat.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/geometry.hpp =====
 /**
  * @file geometry.hpp
@@ -5284,68 +6124,162 @@ NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/region_remap.hpp =====
 /**
- * @file source_location_compat.hpp
- * @brief Portable stand-in for `std::source_location` on toolchains whose
- * `<source_location>` does not actually populate `std::source_location`
- * (observed with clang-14 against some libstdc++ versions: the header
- * includes without error, but `std::source_location` is simply not declared).
+ * @file detail/region_remap.hpp
+ * @brief The one shared "carry a mesh's regions through an operation" helper:
+ * drop removed entries, remap survivors, expand parents to children, and decide
+ * whether a side-set facet still exists.
  *
- * Availability is detected through `<version>`'s `__cpp_lib_source_location`
- * feature test macro. The fallback is implemented with the same
- * `__builtin_FILE()`/`__builtin_LINE()` compiler builtins the standard
- * implementations themselves are built on (supported by both GCC and Clang),
- * so captured call sites are identical to the real thing.
+ * Every operation that renumbers points or cells already returns index maps
+ * (`mPointMap`, `mCellMaps`) so its caller can carry per-entity information
+ * across. Before regions existed, nine operation shims each re-implemented that
+ * carry in Python, subtly differently. This header is the single owner of it,
+ * in the repo's shared-`detail/` idiom (`subset.hpp`, `node_adjacency.hpp`,
+ * `spatial_hash.hpp`, `marching.hpp`, `cell_subdivision.hpp`,
+ * `space_filling.hpp`).
+ *
+ * ## The three cell-map shapes
+ *
+ * Operations do not all describe their cell maps the same way, and pretending
+ * otherwise would silently corrupt regions, so the shape is explicit:
+ *
+ *  - `CellMapKind::Direct` — per input block, `map[c]` is *the* output cell's
+ *    index within the corresponding output block, or -1 if it was dropped.
+ *    (crop, split, clean, partition, reorder.)
+ *  - `CellMapKind::FirstChild` — per input block, `map[c]` is the index of the
+ *    **first** of a contiguous run of children. The run ends at the next
+ *    non-negative map entry, or at the end of the output block. (convert_cells
+ *    under `Simplexify`, refine, decimate.) This shape also covers 1:1 maps
+ *    correctly, but `Direct` must not be replaced by it: a permutation's map is
+ *    not monotone, so the "next entry" rule would invent nonsense ranges.
+ *  - `CellMapKind::Global` — one flat array indexed by input **global** cell
+ *    index, yielding an output global cell index. (merge, whose maps are per
+ *    input *mesh* rather than per block.)
+ *
+ * ## Side regions
+ *
+ * A side entry `(global cell, local facet)` survives only if its cell survives
+ * **and** the facet still exists: the output cell must have the same type as
+ * the input cell, and the facet index must still be in range for that type.
+ * Under `FirstChild` a parent's children are new cells of a different or
+ * subdivided topology, so there is no facet correspondence to preserve at all
+ * and side regions are dropped by name. `mDropSideRegions` forces that for any
+ * operation that knows its facets do not survive.
+ *
+ * Free functions in `meshioplusplus::detail`, called once per operation rather
+ * than per element, so the bodies live in `src/cpp/src/detail/region_remap.cpp`.
+ * Built on the uniform mesh API only, so it works under every backend.
  */
 
 // System includes
+#include <cstddef>
 #include <cstdint>
-#include <version>
+#include <string>
+#include <vector>
 
-#if defined(__cpp_lib_source_location) && __cpp_lib_source_location >= 201907L
-#define MESHIOPLUSPLUS_HAS_STD_SOURCE_LOCATION 1
-#include <source_location>
-#endif
+// Project includes
 
 namespace meshioplusplus {
 namespace detail {
 
-#ifdef MESHIOPLUSPLUS_HAS_STD_SOURCE_LOCATION
-
-using source_location = std::source_location;
-
-#else
-
-class source_location {
-public:
-    // constexpr, not consteval: the "capture the caller's __builtin_FILE/LINE"
-    // trick only relies on default-argument re-evaluation per call site, which
-    // works identically for constexpr; consteval here trips a clang diagnostic
-    // ("cannot take address of consteval function ... outside of an immediate
-    // invocation") when used as a default argument inside another consteval
-    // function's parameter list (FormatWithLocation's constructor, log.hpp).
-    static constexpr source_location current(
-        const char* pFile = __builtin_FILE(), int Line = __builtin_LINE()) noexcept {
-        source_location loc;
-        loc.mFile = pFile;
-        loc.mLine = Line;
-        return loc;
-    }
-
-    constexpr const char* file_name() const noexcept { return mFile; }
-    constexpr std::uint_least32_t line() const noexcept { return static_cast<std::uint_least32_t>(mLine); }
-
-private:
-    const char* mFile = "";
-    int mLine = 0;
+/// How an operation's cell map describes the input -> output correspondence.
+enum class CellMapKind {
+    Direct,      ///< per block: map[c] = the output cell, -1 = dropped
+    FirstChild,  ///< per block: map[c] = first of a contiguous child run
+    Global,      ///< flat: map[global in cell] = global out cell, -1 = dropped
 };
 
-#endif
+/// The index maps an operation hands `remap_regions`.
+struct RegionRemap {
+    /// Int64 `(num_points_in,)`, input point -> output point (-1 = dropped).
+    /// Null means points were not renumbered (identity).
+    const NDArray* pPointMap = nullptr;
+
+    /// Which shape `pCellMaps` / `pGlobalCellMap` is in.
+    CellMapKind mCellMapKind = CellMapKind::Direct;
+
+    /// Per input block, Int64 `(num_cells_in_block,)`. Used by `Direct` and
+    /// `FirstChild`. Null means cells were not renumbered (identity).
+    const std::vector<NDArray>* pCellMaps = nullptr;
+
+    /// Flat Int64 map used by `CellMapKind::Global`.
+    const NDArray* pGlobalCellMap = nullptr;
+
+    /// Input block -> output block. Empty means the identity, which is the case
+    /// for every operation that keeps its block structure 1:1; `split` (which
+    /// drops empty blocks) is the one that must fill it in. An entry of
+    /// `kBlockDropped` means the block has no output counterpart.
+    std::vector<std::size_t> mBlockMap;
+
+    /// Force side regions to be dropped even under a `Direct` map.
+    bool mDropSideRegions = false;
+
+    /// Operation name, used in the "regions dropped" warning.
+    std::string mOpName;
+};
+
+/// `RegionRemap::mBlockMap` entry meaning "this input block has no output block".
+inline constexpr std::size_t kBlockDropped = static_cast<std::size_t>(-1);
+
+/**
+ * @brief Number of facets a cell type has: faces for a 3-D type
+ * (`cell_faces.hpp`), edges for a 2-D one (`cell_edges.hpp`).
+ * @param rType The meshio cell-type name.
+ * @return The facet count, or 0 for a type with no facet table (which makes
+ *         every side entry on it invalid, and so dropped).
+ */
+std::size_t region_num_facets(const std::string& rType);
+
+/**
+ * @brief Carry one region across, without adding it to the output mesh.
+ *
+ * The building block `remap_regions` loops over. It is public because `merge`
+ * needs to rename a region *between* remapping it and storing it: two inputs
+ * may carry the same region name, and adding both under that name would make
+ * the second replace the first (they share a `(kind, name, dim, tag)` key).
+ *
+ * @param rIn The operation's input mesh.
+ * @param rOut The operation's output mesh (read for block bases and cell types).
+ * @param rRegion The input region to carry.
+ * @param rMaps The index maps.
+ * @param rResult Receives the carried region on success.
+ * @return `false` when nothing survived, or when the kind cannot be carried at
+ *         all (in which case a `log::warn` has already been emitted).
+ */
+bool remap_region(const Mesh& rIn, const Mesh& rOut, const Region& rRegion,
+                  const RegionRemap& rMaps, Region& rResult);
+
+/**
+ * @brief Carry every region of @p rIn onto @p rOut through @p rMaps.
+ *
+ * Entries whose entity did not survive are dropped; a region left with no
+ * entries at all is not added to the output. Regions whose kind cannot be
+ * carried (see the file docs) are dropped with a single `log::warn` naming the
+ * region and the operation.
+ *
+ * @param rIn The operation's input mesh.
+ * @param rOut The operation's output mesh; regions are added to it.
+ * @param rMaps The index maps.
+ */
+void remap_regions(const Mesh& rIn, Mesh& rOut, const RegionRemap& rMaps);
+
+/**
+ * @brief Drop every region with one warning, for operations whose output has no
+ * entity correspondence with their input at all (slice, isosurface, surface
+ * extraction).
+ *
+ * A deliberate no-op when the input carries no regions, so the common case
+ * stays silent.
+ *
+ * @param rIn The operation's input mesh.
+ * @param rOpName The operation name, for the warning.
+ */
+void warn_regions_dropped(const Mesh& rIn, const std::string& rOpName);
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/detail/source_location_compat.hpp =====
+// ===== end src/cpp/include/meshioplusplus/detail/region_remap.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/space_filling.hpp =====
 /**
  * @file detail/space_filling.hpp
@@ -5684,12 +6618,20 @@ NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>&
  *        point indices under this name.
  * @param rCellIdName if non-empty, attach an Int64 `cell_data` of original cell
  *        indices under this name (per block).
- * @return the pruned submesh plus the point/cell index maps.
+ * @param drop_empty_blocks omit blocks that keep no cells from the output (the
+ *        `split` behaviour); the input -> output block shift this causes is
+ *        handled for the named regions below.
+ * @param rOpName the calling operation's name, used only in the warning
+ *        `detail::remap_regions` emits when a region cannot be carried.
+ * @return the pruned submesh — with its `point_data`, `cell_data`, `field_data`
+ *         **and named regions** already carried over — plus the index maps.
  */
 SubsetResult build_cell_subset(const Mesh& rMesh,
                                const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
                                const std::string& rPointIdName = "",
-                               const std::string& rCellIdName = "", bool drop_empty_blocks = false);
+                               const std::string& rCellIdName = "",
+                               bool drop_empty_blocks = false,
+                               const std::string& rOpName = "");
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -9921,238 +10863,6 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/kratos_bridge.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/log.hpp =====
-/**
- * @file log.hpp
- * @brief Minimal, header-only logging built on C++20 `std::format` and
- * `std::source_location`.
- *
- * Usage:
- * @code
- * meshioplusplus::log::warn("MED: orientation for '{}' not implemented", type);
- * @endcode
- *
- * Design points:
- *  - Format strings are compile-time checked (`std::format_string`), so a
- *    mismatched `{}` placeholder is a compile error, not a runtime one.
- *  - Every message automatically carries its call site (`file:line`) via a
- *    defaulted `std::source_location` parameter — callers never pass it
- *    explicitly.
- *  - Runtime filtering is controlled by the `MESHIOPLUSPLUS_LOG_LEVEL`
- *    environment variable: `"debug"`, `"info"`, `"warn"` (the default),
- *    `"error"`, or `"off"`. The variable is read exactly once (cached in a
- *    function-local `static`).
- *  - Messages are written to stderr through `std::osyncstream` where the
- *    standard library provides it (guaranteeing concurrent log calls, e.g.
- *    from bodies passed to `parallel_for`, never interleave mid-line); on
- *    standard libraries that ship a `<syncstream>` header without actually
- *    defining `std::osyncstream` (observed with Emscripten's non-threaded
- *    libc++ -- `__cpp_lib_syncbuf` is unset there), a `std::mutex`-guarded
- *    plain write to `std::cerr` gives the same serialization guarantee.
- *  - A filtered-out call costs a single branch: no formatting and no
- *    allocation happen unless the level passes the threshold.
- *  - There is no printf/`std::cerr` logging anywhere else in the codebase;
- *    genuine error conditions remain C++ exceptions (see exceptions.hpp) —
- *    this facility is for diagnostics/warnings only.
- */
-
-// System includes
-#include <cstdlib>
-#include <iostream>
-#include <mutex>
-#include <string_view>
-#include <type_traits>
-#include <utility>
-#include <version>
-
-#if __has_include(<syncstream>)
-#include <syncstream>
-#endif
-
-// Project includes
-
-namespace meshioplusplus {
-namespace log {
-
-/**
- * @brief Severity levels, ordered so a numerically larger value is louder.
- *
- * `threshold()` returns the minimum level that is actually emitted; a call
- * at a given level is emitted iff `level >= threshold()`. `Off` suppresses
- * every message.
- */
-enum class Level : int { Debug = 0, Info = 1, Warn = 2, Error = 3, Off = 4 };
-
-/**
- * @brief The active logging threshold, read once from `MESHIOPLUSPLUS_LOG_LEVEL`.
- *
- * Parses the environment variable on first call (memoized in a function-local
- * `static`, so later changes to the environment have no effect for the
- * lifetime of the process) and defaults to `Level::Warn` when unset or
- * unrecognized. Accepted (case-sensitive) values: `debug`, `info`,
- * `warn`/`warning`, `error`, `off`/`none`.
- *
- * @return The configured minimum `Level` to emit.
- */
-inline Level threshold() {
-    static const Level lvl = [] {
-        const char* env = std::getenv("MESHIOPLUSPLUS_LOG_LEVEL");
-        if (env == nullptr)
-            return Level::Warn;
-        std::string_view s(env);
-        if (s == "debug")
-            return Level::Debug;
-        if (s == "info")
-            return Level::Info;
-        if (s == "warn" || s == "warning")
-            return Level::Warn;
-        if (s == "error")
-            return Level::Error;
-        if (s == "off" || s == "none")
-            return Level::Off;
-        return Level::Warn;
-    }();
-    return lvl;
-}
-
-/**
- * @brief Whether a message at level `lvl` would actually be emitted.
- * @param lvl The level to test.
- * @return `true` iff `lvl >= threshold()`.
- */
-inline bool enabled(Level lvl) {
-    return static_cast<int>(lvl) >= static_cast<int>(threshold());
-}
-
-/**
- * @brief Formats and writes one log line to stderr.
- *
- * Strips any directory prefix from `loc.file_name()` (keeping just the
- * basename) and writes `"meshio <level> [<file>:<line>] <msg>\n"` through a
- * `std::osyncstream`, which serializes the write against other threads doing
- * the same so concurrent callers (e.g. bodies run under `parallel_for`)
- * never produce interleaved/garbled lines.
- *
- * @param lvl The severity to label the line with.
- * @param msg The already-formatted message body.
- * @param loc The call site to report (normally the caller's, captured via
- *            `FormatWithLocation`).
- */
-inline void write(Level lvl, std::string_view msg, const detail::source_location& rLoc) {
-    constexpr std::string_view names[] = {"debug", "info", "warning", "error"};
-    std::string_view file = rLoc.file_name();
-    if (auto p = file.find_last_of("/\\"); p != std::string_view::npos)
-        file.remove_prefix(p + 1);
-    std::string line = detail::format_compat("meshio {} [{}:{}] {}\n", names[static_cast<int>(lvl)],
-                                             file, rLoc.line(), msg);
-#if defined(__cpp_lib_syncbuf)
-    std::osyncstream(std::cerr) << line;
-#else
-    static std::mutex log_mutex;
-    std::lock_guard<std::mutex> lock(log_mutex);
-    std::cerr << line;
-#endif
-}
-
-/**
- * @brief Wraps a compile-time-checked format string with the caller's
- * source location, captured implicitly via a defaulted constructor
- * parameter.
- *
- * This is the trick that lets `log::warn("x={}", x)` both (a) validate the
- * format string against `Args...` at compile time (via `std::format_string`)
- * and (b) automatically know its own call site, without the caller ever
- * writing `std::source_location::current()` themselves: the implicit,
- * `consteval` converting constructor captures `std::source_location::current()`
- * as a default argument evaluated at the *call site* of `debug`/`info`/
- * `warn`/`error`, then packages it alongside the checked format string into
- * one object those functions take by value.
- *
- * @tparam Args The types of the format arguments, used to validate `fmt`.
- */
-template <class... Args>
-struct FormatWithLocation {
-#ifdef MESHIOPLUSPLUS_HAS_STD_FORMAT
-    std::format_string<Args...> mFmt;
-#else
-    std::string_view mFmt;  // no compile-time placeholder check without <format>
-#endif
-    detail::source_location mLoc;
-
-    template <class S>
-    consteval FormatWithLocation(  // NOLINT(google-explicit-constructor)
-        const S& rS, detail::source_location l = detail::source_location::current())
-        : mFmt(rS), mLoc(l) {}
-};
-
-/**
- * @brief Logs a debug-level message (lowest severity; off by default).
- *
- * No-op (no formatting, no allocation) unless `MESHIOPLUSPLUS_LOG_LEVEL=debug`.
- * @tparam Args Format argument types, deduced from `args`.
- * @param f Compile-time-checked format string + implicit call site.
- * @param args Values substituted into `f`.
- */
-template <class... Args>
-void debug(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
-    if (!enabled(Level::Debug))
-        return;
-    write(Level::Debug, detail::format_compat(f.mFmt, std::forward<Args>(args)...), f.mLoc);
-}
-
-/**
- * @brief Logs an info-level message.
- *
- * No-op unless `MESHIOPLUSPLUS_LOG_LEVEL` is `debug` or `info`.
- * @tparam Args Format argument types, deduced from `args`.
- * @param f Compile-time-checked format string + implicit call site.
- * @param args Values substituted into `f`.
- */
-template <class... Args>
-void info(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
-    if (!enabled(Level::Info))
-        return;
-    write(Level::Info, detail::format_compat(f.mFmt, std::forward<Args>(args)...), f.mLoc);
-}
-
-/**
- * @brief Logs a warn-level message. This is the default active threshold.
- *
- * Used, for example, when a C++ format implementation encounters a
- * recognized-but-unhandled construct and degrades gracefully rather than
- * failing (e.g. an unimplemented MED orientation).
- * @tparam Args Format argument types, deduced from `args`.
- * @param f Compile-time-checked format string + implicit call site.
- * @param args Values substituted into `f`.
- */
-template <class... Args>
-void warn(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
-    if (!enabled(Level::Warn))
-        return;
-    write(Level::Warn, detail::format_compat(f.mFmt, std::forward<Args>(args)...), f.mLoc);
-}
-
-/**
- * @brief Logs an error-level message.
- *
- * @note This is diagnostic logging only, not the mechanism for signaling
- * failures to callers — genuine error conditions must still be reported by
- * throwing `ReadError`/`WriteError` (see exceptions.hpp); this call alone
- * does not stop execution or propagate anything.
- * @tparam Args Format argument types, deduced from `args`.
- * @param f Compile-time-checked format string + implicit call site.
- * @param args Values substituted into `f`.
- */
-template <class... Args>
-void error(FormatWithLocation<std::type_identity_t<Args>...> f, Args&&... args) {
-    if (!enabled(Level::Error))
-        return;
-    write(Level::Error, detail::format_compat(f.mFmt, std::forward<Args>(args)...), f.mLoc);
-}
-
-}  // namespace log
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/log.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/clean.hpp =====
 /**
  * @file operations/clean.hpp
@@ -11134,11 +11844,37 @@ struct DataDiff {
 };
 
 /**
+ * @brief Comparison of two meshes' named regions (`region.hpp`).
+ *
+ * A region is identified by its name *and* kind, since the same name may
+ * legitimately label a node set and an element set. Membership is compared
+ * exactly: entries are canonical (sorted, de-duplicated), so two regions
+ * describing the same group are bitwise equal and no tolerance applies.
+ */
+struct RegionDiff {
+    /// `"name (kind)"` for every region in A but not B (sorted).
+    std::vector<std::string> mOnlyInA;
+    /// `"name (kind)"` for every region in B but not A (sorted).
+    std::vector<std::string> mOnlyInB;
+    /// `"name (kind)"` for every region present in both whose membership,
+    /// dimension or tag differs (sorted).
+    std::vector<std::string> mChanged;
+
+    /// Whether any region differs at all.
+    bool Differs() const { return !mOnlyInA.empty() || !mOnlyInB.empty() || !mChanged.empty(); }
+};
+
+/**
  * @brief The full structured result of `diff`.
  */
 struct DiffReport {
     /// Overall verdict (the maximum severity over every section).
     DiffVerdict mVerdict = DiffVerdict::Identical;
+    /// The same verdict with `mRegions` left out. `meshes_equal` uses this:
+    /// that helper is documented to compare geometry and data, not named
+    /// groups, and the Python shim has always recomputed a sets-agnostic
+    /// verdict for exactly this reason.
+    DiffVerdict mVerdictIgnoringRegions = DiffVerdict::Identical;
     /// The unordered (proximity) node-matching mode was used.
     bool mUnordered = false;
     /// Unordered mode could not build a robust one-to-one node correspondence.
@@ -11164,6 +11900,12 @@ struct DiffReport {
     DataDiff mPointData;
     DataDiff mCellData;
     DataDiff mFieldData;
+
+    // --- named regions ---
+    /// Named-group comparison. Before meshio++ 8.1 sets never reached the C++
+    /// core, so only the Python shim could compare them; this is the core's
+    /// own answer, which is what the native CLI and the flat bindings report.
+    RegionDiff mRegions;
 
     /// Human-readable notes (e.g. "connectivity not comparable: ragged").
     std::vector<std::string> mMessages;
@@ -28606,6 +29348,13 @@ Mesh clone_geometry(const Mesh& rMesh) {
             out.AddCellBlock(std::string(cb.Type()), data_owned_copy(cb.Conn()));
         }
     }
+    // Named regions ride through verbatim. Every caller of this function leaves
+    // the point and cell numbering untouched (the data operations, `transform`,
+    // `smooth`, `interpolate`'s target clone, `attach_quality`), so there is
+    // nothing to remap — see doc/regions.md's table of which operations remap
+    // and which pass through.
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
     return out;
 }
 
@@ -30100,6 +30849,212 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/projection.cpp =====
+// ===== begin src/cpp/src/detail/region_remap.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+/// Read entry `i` of a possibly-absent map array, or the identity.
+std::int64_t rremap_lookup(const NDArray* pMap, std::int64_t i) {
+    if (!pMap)
+        return i;  // null map == identity
+    if (i < 0 || static_cast<std::size_t>(i) >= pMap->Size())
+        return -1;
+    return read_int(*pMap, static_cast<std::size_t>(i));
+}
+
+/// Output block for input block @p b under @p rMaps (identity when unset).
+std::size_t rremap_out_block(const RegionRemap& rMaps, std::size_t b) {
+    if (rMaps.mBlockMap.empty())
+        return b;
+    return b < rMaps.mBlockMap.size() ? rMaps.mBlockMap[b] : kBlockDropped;
+}
+
+/// Build the Int64 entry array a remapped region owns.
+NDArray rremap_entries(const std::vector<std::int64_t>& rFlat, std::size_t stride) {
+    std::vector<std::size_t> shape;
+    if (stride == 1)
+        shape = {rFlat.size()};
+    else
+        shape = {rFlat.size() / stride, stride};
+    NDArray out = NDArray::Uninit(DType::Int64, std::move(shape));
+    for (std::size_t i = 0; i < rFlat.size(); ++i)
+        out.As<std::int64_t>()[i] = rFlat[i];
+    return out;
+}
+
+/**
+ * @brief Every output global cell an input global cell maps to.
+ *
+ * The `FirstChild` scan walks forward to the next non-negative map entry, which
+ * is also correct when intermediate parents were dropped (a dropped parent has
+ * no children of its own, so the run still contains exactly this parent's).
+ */
+void rremap_children(const RegionRemap& rMaps, const std::vector<std::int64_t>& rInBases,
+                     const std::vector<std::int64_t>& rOutBases, std::int64_t inGlobal,
+                     std::vector<std::int64_t>& rChildren) {
+    rChildren.clear();
+
+    if (rMaps.mCellMapKind == CellMapKind::Global) {
+        const std::int64_t g = rremap_lookup(rMaps.pGlobalCellMap, inGlobal);
+        if (g >= 0 && g < total_cells(rOutBases))
+            rChildren.push_back(g);
+        return;
+    }
+
+    const auto [b, row] = global_to_block_row(rInBases, inGlobal);
+    if (b == static_cast<std::size_t>(-1))
+        return;
+    const std::size_t ob = rremap_out_block(rMaps, b);
+    if (ob == kBlockDropped || ob + 1 >= rOutBases.size())
+        return;
+
+    const NDArray* p_map =
+        (rMaps.pCellMaps && b < rMaps.pCellMaps->size()) ? &(*rMaps.pCellMaps)[b] : nullptr;
+    const std::int64_t first = rremap_lookup(p_map, row);
+    if (first < 0)
+        return;
+
+    const std::int64_t out_block_cells = rOutBases[ob + 1] - rOutBases[ob];
+    if (rMaps.mCellMapKind == CellMapKind::Direct) {
+        if (first < out_block_cells)
+            rChildren.push_back(rOutBases[ob] + first);
+        return;
+    }
+
+    // FirstChild: the run ends at the next non-negative map entry.
+    std::int64_t end = out_block_cells;
+    if (p_map) {
+        const std::int64_t n_in = static_cast<std::int64_t>(p_map->Size());
+        for (std::int64_t c = row + 1; c < n_in; ++c) {
+            const std::int64_t nxt = read_int(*p_map, static_cast<std::size_t>(c));
+            if (nxt >= 0) {
+                end = nxt;
+                break;
+            }
+        }
+    } else {
+        end = first + 1;
+    }
+    for (std::int64_t k = first; k < end && k < out_block_cells; ++k)
+        rChildren.push_back(rOutBases[ob] + k);
+}
+
+/// The meshio type name of an output global cell, or an empty string.
+std::string rremap_type_at(const Mesh& rMesh, const std::vector<std::int64_t>& rBases,
+                           std::int64_t global) {
+    const auto [b, row] = global_to_block_row(rBases, global);
+    (void)row;
+    if (b == static_cast<std::size_t>(-1))
+        return {};
+    return std::string(rMesh.Cells(b).Type());
+}
+
+}  // namespace
+
+std::size_t region_num_facets(const std::string& rType) {
+    const CellType type = cell_type_from_name(rType);
+    const int dim = cell_type_dimension(type);
+    if (dim == 3)
+        return cell_faces(type).size();
+    if (dim == 2)
+        return cell_edges(type).size();
+    return 0;
+}
+
+bool remap_region(const Mesh& rIn, const Mesh& rOut, const Region& rRegion,
+                  const RegionRemap& rMaps, Region& rResult) {
+    const std::vector<std::int64_t> in_bases = block_bases(rIn);
+    const std::vector<std::int64_t> out_bases = block_bases(rOut);
+    const auto n_out_points = static_cast<std::int64_t>(rOut.NumPoints());
+
+    const std::int64_t* entries = rRegion.Entries();
+    const std::size_t n = rRegion.NumEntries();
+    std::vector<std::int64_t> children;
+    std::vector<std::int64_t> out;
+
+    if (rRegion.mKind == RegionKind::Point) {
+        out.reserve(n);
+        for (std::size_t k = 0; k < n; ++k) {
+            const std::int64_t p = rremap_lookup(rMaps.pPointMap, entries[k]);
+            if (p >= 0 && p < n_out_points)
+                out.push_back(p);
+        }
+    } else if (rRegion.mKind == RegionKind::Cell) {
+        out.reserve(n);
+        for (std::size_t k = 0; k < n; ++k) {
+            rremap_children(rMaps, in_bases, out_bases, entries[k], children);
+            out.insert(out.end(), children.begin(), children.end());
+        }
+    } else {
+        // Side: the facet must still exist, which needs a 1:1 cell map onto a
+        // cell of the same type. Anything else has no facet correspondence.
+        if (rMaps.mDropSideRegions || rMaps.mCellMapKind == CellMapKind::FirstChild) {
+            log::warn(
+                "{}: side region '{}' dropped — this operation does not preserve "
+                "facet identity",
+                rMaps.mOpName.empty() ? "operation" : rMaps.mOpName, rRegion.mName);
+            return false;
+        }
+        out.reserve(n * 2);
+        for (std::size_t k = 0; k < n; ++k) {
+            const std::int64_t cell = entries[k * 2];
+            const std::int64_t facet = entries[k * 2 + 1];
+            rremap_children(rMaps, in_bases, out_bases, cell, children);
+            if (children.size() != 1)
+                continue;
+            const std::string in_type = rremap_type_at(rIn, in_bases, cell);
+            const std::string out_type = rremap_type_at(rOut, out_bases, children[0]);
+            if (in_type.empty() || in_type != out_type)
+                continue;
+            if (facet < 0 || static_cast<std::size_t>(facet) >= region_num_facets(out_type))
+                continue;
+            out.push_back(children[0]);
+            out.push_back(facet);
+        }
+    }
+
+    // A region that lost every entry is still carried, as an empty group. The
+    // name is information in its own right — a crop or a partition piece that
+    // happens to contain none of "inlet"'s cells has still been told that an
+    // "inlet" exists — and it is what the per-operation Python shims did before
+    // this helper replaced them.
+    rResult = Region(rRegion.mName, rRegion.mKind, rRegion.mDim, rRegion.mTag,
+                     rremap_entries(out, rRegion.Stride()));
+    return true;
+}
+
+void remap_regions(const Mesh& rIn, Mesh& rOut, const RegionRemap& rMaps) {
+    const std::size_t nregions = rIn.NumRegions();
+    for (std::size_t i = 0; i < nregions; ++i) {
+        Region carried;
+        if (remap_region(rIn, rOut, rIn.Region(i), rMaps, carried))
+            rOut.AddRegion(std::move(carried));
+    }
+}
+
+void warn_regions_dropped(const Mesh& rIn, const std::string& rOpName) {
+    const std::size_t n = rIn.NumRegions();
+    if (n == 0)
+        return;
+    log::warn(
+        "{}: {} named region(s) dropped — the output cells and points are newly "
+        "created and have no correspondence with the input's",
+        rOpName, n);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/region_remap.cpp =====
 // ===== begin src/cpp/src/detail/subset.cpp =====
 #include <cstring>
 
@@ -30133,7 +31088,7 @@ NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>&
 SubsetResult build_cell_subset(const Mesh& rMesh,
                                const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
                                const std::string& rPointIdName, const std::string& rCellIdName,
-                               bool drop_empty_blocks) {
+                               bool drop_empty_blocks, const std::string& rOpName) {
     SubsetResult res;
     const std::size_t n = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
@@ -30317,6 +31272,23 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
         res.mCellMaps.push_back(std::move(cmap));
         ++b;
     }
+
+    // 8) named regions. Doing this here rather than in each caller is what makes
+    // crop, split and partition agree: they all subset through this function, and
+    // the input -> output block mapping (which `drop_empty_blocks` perturbs) is
+    // only known here.
+    RegionRemap rmap;
+    rmap.pPointMap = &res.mPointMap;
+    rmap.mCellMapKind = CellMapKind::Direct;
+    rmap.pCellMaps = &res.mCellMaps;
+    rmap.mOpName = rOpName.empty() ? "subset" : rOpName;
+    if (drop_empty_blocks) {
+        rmap.mBlockMap.reserve(rKeptCellsPerBlock.size());
+        std::size_t out_block = 0;
+        for (const std::vector<std::int64_t>& kept : rKeptCellsPerBlock)
+            rmap.mBlockMap.push_back(kept.empty() ? kBlockDropped : out_block++);
+    }
+    remap_regions(rMesh, res.mMesh, rmap);
 
     return res;
 }
@@ -31509,6 +32481,8 @@ void FileSource::MoveFrom(FileSource&& rOther) noexcept {
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -31628,9 +32602,324 @@ std::vector<std::string> split(const std::string& rS, char sep) {
     return out;
 }
 
-}  // namespace
+// --- parameter parsing --------------------------------------------------------
 
-Mesh read_abaqus(const std::string& rPath) {
+// The comma-separated `KEY` / `KEY=VALUE` parameters on a `*KEYWORD` line, keys
+// upper-cased (the Python reference's `get_param_map`). A bare key maps to an
+// empty value, which is how `GENERATE` is detected.
+//
+// The leading `*` on the keyword token is deliberately **kept**, exactly as the
+// Python reference does: `*ELSET, ELSET=solid` would otherwise put the bare
+// keyword and the real parameter under the same key, and the first one in wins.
+std::unordered_map<std::string, std::string> abq_param_map(const std::string& rLine) {
+    std::unordered_map<std::string, std::string> out;
+    for (const std::string& word : split(rLine, ',')) {
+        const std::size_t eq = word.find('=');
+        if (eq == std::string::npos)
+            out.insert_or_assign(abaqus_upper(abaqus_trim(word)), std::string());
+        else
+            out.insert_or_assign(abaqus_upper(abaqus_trim(word.substr(0, eq))),
+                                 abaqus_trim(word.substr(eq + 1)));
+    }
+    return out;
+}
+
+/// A parameter's value, or an empty string when it is absent or bare.
+std::string abq_param(const std::unordered_map<std::string, std::string>& rParams,
+                      const std::string& rKey) {
+    auto it = rParams.find(rKey);
+    return it == rParams.end() ? std::string() : it->second;
+}
+
+// --- side-set face identifiers ------------------------------------------------
+
+/**
+ * @brief Abaqus face identifier (`S1`..`S6`) -> the meshio++ local facet index
+ * of `detail/cell_faces.hpp` / `cell_edges.hpp`.
+ *
+ * The two numberings genuinely differ, so this table is not the identity. It is
+ * derived by matching node sets: Abaqus C3D8 `S1` is the 1-2-3-4 face, i.e.
+ * local nodes {0,1,2,3}, which is meshio++'s face 4 (`{0,3,2,1}`) — same face,
+ * different slot and winding. Getting this wrong yields a plausible-looking
+ * side set pointing at the wrong faces, so each row is spelled out.
+ *
+ * Shell elements use `SPOS`/`SNEG` for their two sides rather than a facet;
+ * there is no facet to name, so they map to 0 and 1 respectively and are
+ * documented as such in doc/regions.md.
+ *
+ * @param rCellType The meshio++ cell type of the element.
+ * @param rFace The Abaqus face identifier, upper-cased (e.g. `"S3"`).
+ * @return The local facet index, or -1 when the pair has no mapping.
+ */
+int abq_face_index(const std::string& rCellType, const std::string& rFace) {
+    if (rFace == "SPOS")
+        return 0;
+    if (rFace == "SNEG")
+        return 1;
+    if (rFace.size() < 2 || rFace[0] != 'S')
+        return -1;
+    int n = 0;
+    for (std::size_t k = 1; k < rFace.size(); ++k) {
+        if (!std::isdigit(static_cast<unsigned char>(rFace[k])))
+            return -1;
+        n = n * 10 + (rFace[k] - '0');
+    }
+    if (n < 1)
+        return -1;
+    const int s = n - 1;  // 0-based Abaqus face number
+
+    // tetra: Abaqus S1=1-2-3, S2=1-2-4, S3=2-3-4, S4=1-3-4
+    //        meshio++ 0={0,1,3} 1={1,2,3} 2={2,0,3} 3={0,2,1}
+    static const int tetra[4] = {3, 0, 1, 2};
+    // hexahedron: Abaqus S1=1-2-3-4, S2=5-8-7-6, S3=1-5-6-2,
+    //                    S4=2-6-7-3,  S5=3-7-8-4, S6=4-8-5-1
+    //             meshio++ 0={0,4,7,3} 1={1,2,6,5} 2={0,1,5,4}
+    //                      3={3,7,6,2} 4={0,3,2,1} 5={4,5,6,7}
+    static const int hexa[6] = {4, 5, 2, 1, 3, 0};
+    // wedge: Abaqus S1=1-2-3, S2=4-5-6, S3=1-2-5-4, S4=2-3-6-5, S5=3-1-4-6
+    //        meshio++ 0={0,2,1} 1={3,4,5} 2={0,1,4,3} 3={1,2,5,4} 4={2,0,3,5}
+    static const int wedge[5] = {0, 1, 2, 3, 4};
+    // 2-D elements: Abaqus numbers the edges 1-2, 2-3, ... in the same order
+    // detail/cell_edges.hpp does.
+    static const int identity[9] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+
+    const int* table = nullptr;
+    int count = 0;
+    if (rCellType == "tetra" || rCellType == "tetra10") {
+        table = tetra;
+        count = 4;
+    } else if (rCellType == "hexahedron" || rCellType == "hexahedron20") {
+        table = hexa;
+        count = 6;
+    } else if (rCellType == "wedge" || rCellType == "wedge15") {
+        table = wedge;
+        count = 5;
+    } else if (rCellType == "triangle" || rCellType == "triangle6") {
+        table = identity;
+        count = 3;
+    } else if (rCellType == "quad" || rCellType == "quad8" || rCellType == "quad9") {
+        table = identity;
+        count = 4;
+    }
+    if (table == nullptr || s >= count)
+        return -1;
+    return table[s];
+}
+
+/// The inverse of `abq_face_index`, for the writer.
+std::string abq_face_name(const std::string& rCellType, std::int64_t Facet) {
+    for (int n = 1; n <= 6; ++n) {
+        const std::string face = "S" + std::to_string(n);
+        if (abq_face_index(rCellType, face) == static_cast<int>(Facet))
+            return face;
+    }
+    return {};
+}
+
+// --- reader state -------------------------------------------------------------
+
+/// One `*ELEMENT` block being accumulated.
+struct AbqBlock {
+    std::string mType;  // meshio type
+    std::size_t mNodesPerCell = 0;
+    std::vector<std::int64_t> mConn;        // row-major, 0-based point indices
+    std::vector<std::int64_t> mElementIds;  // the file's element ids, in row order
+};
+
+/// Everything one `.inp` file (and everything it `*INCLUDE`s) contributes.
+struct AbqFile {
+    std::vector<std::vector<double>> mPoints;
+    std::unordered_map<std::int64_t, std::int64_t> mPointIds;  // file id -> point index
+    std::vector<AbqBlock> mBlocks;
+    // Named groups, kept as *file ids* until the very end: an ELSET may name
+    // another ELSET declared later, and a SURFACE may name an ELSET, so the
+    // resolution to indices has to wait until everything is known.
+    std::vector<std::pair<std::string, std::vector<std::int64_t>>> mNodeSets;
+    std::vector<std::pair<std::string, std::vector<std::int64_t>>> mElemSets;
+    // (name, [(element id or elset name, face identifier)])
+    std::vector<std::pair<std::string, std::vector<std::pair<std::string, std::string>>>> mSurfaces;
+};
+
+void abq_read_file(const std::string& rPath, AbqFile& rOut, int Depth);
+
+/// The data lines following a keyword, up to the next `*` line.
+std::vector<std::string> abq_data_lines(const std::vector<std::string>& rLines, std::size_t& rI) {
+    std::vector<std::string> out;
+    while (rI < rLines.size() && (rLines[rI].empty() || rLines[rI][0] != '*')) {
+        const std::string row = abaqus_trim(rLines[rI]);
+        ++rI;
+        if (!row.empty())
+            out.push_back(row);
+    }
+    return out;
+}
+
+/**
+ * @brief Read a `*NSET` / `*ELSET` body: numeric ids and/or referenced set names.
+ *
+ * `GENERATE` turns a `first, last, step` triple into the explicit range, which
+ * is what Abaqus means by it.
+ */
+void abq_read_set(const std::vector<std::string>& rRows, bool Generate,
+                  std::vector<std::int64_t>& rIds, std::vector<std::string>& rNames) {
+    for (const std::string& row : rRows) {
+        for (const std::string& tok : split(row, ',')) {
+            if (tok.empty())
+                continue;
+            const bool numeric =
+                std::isdigit(static_cast<unsigned char>(tok[0])) || tok[0] == '-' || tok[0] == '+';
+            if (numeric)
+                rIds.push_back(std::strtoll(tok.c_str(), nullptr, 10));
+            else
+                rNames.push_back(tok);
+        }
+    }
+    if (Generate) {
+        if (rIds.size() < 3)
+            throw ReadError("Abaqus: GENERATE needs first, last, step");
+        const std::int64_t first = rIds[0], last = rIds[1];
+        const std::int64_t step = rIds[2] == 0 ? 1 : rIds[2];
+        std::vector<std::int64_t> gen;
+        for (std::int64_t v = first; step > 0 ? v <= last : v >= last; v += step)
+            gen.push_back(v);
+        rIds = std::move(gen);
+    }
+}
+
+void abq_read_lines(const std::vector<std::string>& rLines, const std::string& rPath, AbqFile& rOut,
+                    int Depth) {
+    const auto& a2m = abaqus_to_meshio();
+    std::size_t i = 0;
+    while (i < rLines.size()) {
+        const std::string& line = rLines[i];
+        if (line.rfind("**", 0) == 0) {  // comment
+            ++i;
+            continue;
+        }
+        std::string kw = abaqus_upper(abaqus_trim(split(line, ',')[0]));
+        if (!kw.empty() && kw[0] == '*')
+            kw = kw.substr(1);
+        const std::unordered_map<std::string, std::string> params = abq_param_map(line);
+
+        if (kw == "NODE") {
+            ++i;
+            for (const std::string& row : abq_data_lines(rLines, i)) {
+                const std::vector<std::string> tok = split(row, ',');
+                const std::int64_t id = std::strtoll(tok[0].c_str(), nullptr, 10);
+                rOut.mPointIds[id] = static_cast<std::int64_t>(rOut.mPoints.size());
+                std::vector<double> c;
+                for (std::size_t k = 1; k < tok.size(); ++k)
+                    if (!tok[k].empty())
+                        c.push_back(std::strtod(tok[k].c_str(), nullptr));
+                rOut.mPoints.push_back(std::move(c));
+            }
+        } else if (kw == "ELEMENT") {
+            const std::string etype = abq_param(params, "TYPE");
+            if (etype.empty())
+                throw ReadError("Abaqus ELEMENT without TYPE");
+            auto it = a2m.find(abaqus_upper(etype));
+            if (it == a2m.end())
+                it = a2m.find(etype);  // types are case-sensitive in some files
+            if (it == a2m.end())
+                throw ReadError("Abaqus element type not supported: " + etype);
+            const std::string mtype = it->second;
+            const int n = num_nodes_per_cell().count(mtype) ? num_nodes_per_cell().at(mtype) : 0;
+            if (n == 0)
+                throw ReadError("Abaqus: unknown node count for " + mtype);
+
+            ++i;
+            std::vector<std::int64_t> vals;
+            for (const std::string& row : abq_data_lines(rLines, i))
+                for (const std::string& t : split(row, ','))
+                    if (!t.empty())
+                        vals.push_back(std::strtoll(t.c_str(), nullptr, 10));
+
+            const std::size_t stride = static_cast<std::size_t>(n) + 1;
+            if (vals.size() % stride != 0)
+                throw ReadError("Abaqus: bad element data");
+            AbqBlock block;
+            block.mType = mtype;
+            block.mNodesPerCell = static_cast<std::size_t>(n);
+            const std::size_t ncells = vals.size() / stride;
+            block.mConn.reserve(ncells * static_cast<std::size_t>(n));
+            block.mElementIds.reserve(ncells);
+            for (std::size_t r = 0; r < ncells; ++r) {
+                block.mElementIds.push_back(vals[r * stride]);
+                for (int j = 0; j < n; ++j) {
+                    const std::int64_t node = vals[r * stride + 1 + j];
+                    auto pit = rOut.mPointIds.find(node);
+                    if (pit == rOut.mPointIds.end())
+                        throw ReadError("Abaqus: unknown node id");
+                    block.mConn.push_back(pit->second);
+                }
+            }
+            // `*ELEMENT, ELSET=name` declares a set covering exactly this block.
+            const std::string elset = abq_param(params, "ELSET");
+            if (!elset.empty())
+                rOut.mElemSets.emplace_back(elset, block.mElementIds);
+            rOut.mBlocks.push_back(std::move(block));
+        } else if (kw == "NSET" || kw == "ELSET") {
+            const bool is_node = (kw == "NSET");
+            const std::string name = abq_param(params, is_node ? "NSET" : "ELSET");
+            if (name.empty())
+                throw ReadError("Abaqus " + kw + " without a name");
+            ++i;
+            const std::vector<std::string> rows = abq_data_lines(rLines, i);
+            std::vector<std::int64_t> ids;
+            std::vector<std::string> refs;
+            abq_read_set(rows, params.count("GENERATE") > 0, ids, refs);
+            // A set that names other sets is expanded once every set is known.
+            for (const std::string& ref : refs) {
+                const auto& src = is_node ? rOut.mNodeSets : rOut.mElemSets;
+                bool found = false;
+                for (const auto& kv : src)
+                    if (kv.first == ref) {
+                        ids.insert(ids.end(), kv.second.begin(), kv.second.end());
+                        found = true;
+                    }
+                if (!found)
+                    throw ReadError("Abaqus: unknown " + kw + " '" + ref + "'");
+            }
+            (is_node ? rOut.mNodeSets : rOut.mElemSets).emplace_back(name, std::move(ids));
+        } else if (kw == "SURFACE") {
+            // `*SURFACE, NAME=..., TYPE=ELEMENT`: each data row is
+            // `<element id | elset name>, <face identifier>`.
+            const std::string name = abq_param(params, "NAME");
+            const std::string type = abaqus_upper(abq_param(params, "TYPE"));
+            ++i;
+            const std::vector<std::string> rows = abq_data_lines(rLines, i);
+            if (name.empty() || (!type.empty() && type != "ELEMENT"))
+                continue;  // node-based surfaces have no facets: skip, don't fail
+            std::vector<std::pair<std::string, std::string>> members;
+            for (const std::string& row : rows) {
+                const std::vector<std::string> tok = split(row, ',');
+                if (tok.size() < 2 || tok[0].empty() || tok[1].empty())
+                    continue;
+                members.emplace_back(tok[0], abaqus_upper(tok[1]));
+            }
+            rOut.mSurfaces.emplace_back(name, std::move(members));
+        } else if (kw == "INCLUDE") {
+            if (Depth > 8)
+                throw ReadError("Abaqus: *INCLUDE nested too deeply");
+            const std::size_t eq = line.rfind('=');
+            if (eq == std::string::npos)
+                throw ReadError("Abaqus: *INCLUDE without INPUT=");
+            std::string inc = abaqus_trim(line.substr(eq + 1));
+            std::filesystem::path p(inc);
+            if (!std::filesystem::exists(p))
+                p = std::filesystem::path(rPath).parent_path() / inc;
+            abq_read_file(p.string(), rOut, Depth + 1);
+            ++i;
+        } else {
+            // There are far too many Abaqus keywords to enumerate; skip the
+            // keyword line and its data lines.
+            ++i;
+            abq_data_lines(rLines, i);
+        }
+    }
+}
+
+void abq_read_file(const std::string& rPath, AbqFile& rOut, int Depth) {
     std::ifstream in(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
@@ -31641,106 +32930,115 @@ Mesh read_abaqus(const std::string& rPath) {
             l.pop_back();
         lines.push_back(l);
     }
+    abq_read_lines(lines, rPath, rOut, Depth);
+}
+
+}  // namespace
+
+Mesh read_abaqus(const std::string& rPath) {
+    AbqFile file;
+    abq_read_file(rPath, file, 0);
 
     Mesh mesh;
-    std::unordered_map<std::int64_t, std::int64_t> point_ids;  // file id -> index
-    std::vector<std::vector<double>> pts;
+
+    // --- points -------------------------------------------------------------
     std::size_t dim = 3;
-    const auto& a2m = abaqus_to_meshio();
-
-    std::size_t i = 0;
-    while (i < lines.size()) {
-        const std::string& line = lines[i];
-        if (line.rfind("**", 0) == 0) {  // comment
-            ++i;
-            continue;
-        }
-        std::string kw = abaqus_upper(abaqus_trim(split(line, ',')[0]));
-        if (!kw.empty() && kw[0] == '*')
-            kw = kw.substr(1);
-
-        if (kw == "NODE") {
-            ++i;
-            while (i < lines.size() && (lines[i].empty() || lines[i][0] != '*')) {
-                std::string row = abaqus_trim(lines[i]);
-                ++i;
-                if (row.empty())
-                    continue;
-                std::vector<std::string> tok = split(row, ',');
-                std::int64_t id = std::strtoll(tok[0].c_str(), nullptr, 10);
-                point_ids[id] = static_cast<std::int64_t>(pts.size());
-                std::vector<double> c;
-                for (std::size_t k = 1; k < tok.size(); ++k)
-                    if (!tok[k].empty())
-                        c.push_back(std::strtod(tok[k].c_str(), nullptr));
-                pts.push_back(std::move(c));
-            }
-        } else if (kw == "ELEMENT") {
-            // TYPE= parameter
-            std::string etype;
-            for (const auto& p : split(line, ',')) {
-                std::vector<std::string> kv = split(p, '=');
-                if (kv.size() == 2 && abaqus_upper(kv[0]) == "TYPE")
-                    etype = kv[1];
-            }
-            if (etype.empty())
-                throw ReadError("Abaqus ELEMENT without TYPE");
-            auto it = a2m.find(abaqus_upper(etype));
-            // abaqus types are case-sensitive in file; try as-is too
-            if (it == a2m.end())
-                it = a2m.find(etype);
-            if (it == a2m.end())
-                throw ReadError("Abaqus element type not supported: " + etype);
-            std::string mtype = it->second;
-            int n = num_nodes_per_cell().count(mtype) ? num_nodes_per_cell().at(mtype) : 0;
-            if (n == 0)
-                throw ReadError("Abaqus: unknown node count for " + mtype);
-            ++i;
-            std::vector<std::int64_t> vals;
-            while (i < lines.size() && (lines[i].empty() || lines[i][0] != '*')) {
-                std::string row = abaqus_trim(lines[i]);
-                ++i;
-                if (row.empty())
-                    continue;
-                for (const auto& t : split(row, ','))
-                    if (!t.empty())
-                        vals.push_back(std::strtoll(t.c_str(), nullptr, 10));
-            }
-            std::size_t stride = static_cast<std::size_t>(n) + 1;
-            if (vals.size() % stride != 0)
-                throw ReadError("Abaqus: bad element data");
-            std::size_t ncells = vals.size() / stride;
-            NDArray data(DType::Int64, {ncells, static_cast<std::size_t>(n)});
-            std::int64_t* dp = data.As<std::int64_t>();
-            for (std::size_t r = 0; r < ncells; ++r)
-                for (int j = 0; j < n; ++j) {
-                    std::int64_t node = vals[r * stride + 1 + j];
-                    auto pit = point_ids.find(node);
-                    if (pit == point_ids.end())
-                        throw ReadError("Abaqus: unknown node id");
-                    dp[r * n + j] = pit->second;
-                }
-            mesh.AddCellBlock(mtype, std::move(data));
-        } else if (kw == "NSET" || kw == "ELSET" || kw == "INCLUDE") {
-            throw ReadError("Abaqus " + kw + " not supported by the C++ reader");
-        } else {
-            ++i;  // skip unknown keyword line; its data lines are skipped below
-            while (i < lines.size() && (lines[i].empty() || lines[i][0] != '*'))
-                ++i;
-        }
-    }
-
-    if (!pts.empty()) {
-        dim = pts[0].size();
+    if (!file.mPoints.empty()) {
+        dim = file.mPoints[0].size();
         if (dim == 0)
             dim = 3;
     }
-    NDArray points(DType::Float64, {pts.size(), dim});
+    NDArray points(DType::Float64, {file.mPoints.size(), dim});
     double* pp = points.As<double>();
-    for (std::size_t r = 0; r < pts.size(); ++r)
+    for (std::size_t r = 0; r < file.mPoints.size(); ++r)
         for (std::size_t c = 0; c < dim; ++c)
-            pp[r * dim + c] = (c < pts[r].size()) ? pts[r][c] : 0.0;
+            pp[r * dim + c] = (c < file.mPoints[r].size()) ? file.mPoints[r][c] : 0.0;
     mesh.AssignPoints(std::move(points));
+
+    // --- cells, plus element id -> global (block-major) cell index -----------
+    std::unordered_map<std::int64_t, std::int64_t> elem_index;
+    std::vector<std::string> block_types;
+    std::int64_t global = 0;
+    for (const AbqBlock& block : file.mBlocks) {
+        const std::size_t ncells = block.mElementIds.size();
+        NDArray data(DType::Int64, {ncells, block.mNodesPerCell});
+        std::int64_t* dp = data.As<std::int64_t>();
+        for (std::size_t k = 0; k < block.mConn.size(); ++k)
+            dp[k] = block.mConn[k];
+        mesh.AddCellBlock(block.mType, std::move(data));
+        block_types.push_back(block.mType);
+        for (std::size_t c = 0; c < ncells; ++c)
+            elem_index[block.mElementIds[c]] = global + static_cast<std::int64_t>(c);
+        global += static_cast<std::int64_t>(ncells);
+    }
+
+    // --- named groups -------------------------------------------------------
+    // Ids are resolved to indices only now, because a set may reference another
+    // set (or a surface an element set) declared later in the file.
+    for (const auto& [name, ids] : file.mNodeSets) {
+        std::vector<std::int64_t> idx;
+        idx.reserve(ids.size());
+        for (std::int64_t id : ids) {
+            auto it = file.mPointIds.find(id);
+            if (it != file.mPointIds.end())
+                idx.push_back(it->second);
+        }
+        NDArray entries = NDArray::Uninit(DType::Int64, {idx.size()});
+        for (std::size_t k = 0; k < idx.size(); ++k)
+            entries.As<std::int64_t>()[k] = idx[k];
+        mesh.AddRegion(Region(name, RegionKind::Point, std::move(entries)));
+    }
+
+    std::unordered_map<std::string, std::vector<std::int64_t>> elset_cells;
+    for (const auto& [name, ids] : file.mElemSets) {
+        std::vector<std::int64_t> idx;
+        idx.reserve(ids.size());
+        for (std::int64_t id : ids) {
+            auto it = elem_index.find(id);
+            if (it != elem_index.end())
+                idx.push_back(it->second);
+        }
+        NDArray entries = NDArray::Uninit(DType::Int64, {idx.size()});
+        for (std::size_t k = 0; k < idx.size(); ++k)
+            entries.As<std::int64_t>()[k] = idx[k];
+        elset_cells[name] = idx;
+        mesh.AddRegion(Region(name, RegionKind::Cell, std::move(entries)));
+    }
+
+    // Block-major cell index -> its block's meshio type, for the face mapping.
+    const std::vector<std::int64_t> bases = detail::block_bases(mesh);
+    auto type_of = [&](std::int64_t g) -> std::string {
+        const auto [b, row] = detail::global_to_block_row(bases, g);
+        (void)row;
+        return b == static_cast<std::size_t>(-1) ? std::string() : block_types[b];
+    };
+
+    for (const auto& [name, members] : file.mSurfaces) {
+        std::vector<std::int64_t> pairs;
+        for (const auto& [who, face] : members) {
+            std::vector<std::int64_t> cells;
+            auto sit = elset_cells.find(who);
+            if (sit != elset_cells.end()) {
+                cells = sit->second;
+            } else {
+                const std::int64_t id = std::strtoll(who.c_str(), nullptr, 10);
+                auto eit = elem_index.find(id);
+                if (eit != elem_index.end())
+                    cells.push_back(eit->second);
+            }
+            for (std::int64_t g : cells) {
+                const int facet = abq_face_index(type_of(g), face);
+                if (facet < 0)
+                    continue;  // an identifier this element type has no facet for
+                pairs.push_back(g);
+                pairs.push_back(facet);
+            }
+        }
+        NDArray entries = NDArray::Uninit(DType::Int64, {pairs.size() / 2, 2});
+        for (std::size_t k = 0; k < pairs.size(); ++k)
+            entries.As<std::int64_t>()[k] = pairs[k];
+        mesh.AddRegion(Region(name, RegionKind::Side, std::move(entries)));
+    }
 
     return mesh;
 }
@@ -31791,6 +33089,57 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
             for (std::size_t j = 0; j < k; ++j)
                 os << "," << (detail::read_int(conn, r * k + j) + 1);
             os << "\n";
+        }
+    }
+
+    // --- named groups -------------------------------------------------------
+    // Ids are 1-based on the way out, and wrapped at 8 per line, matching the
+    // Python reference writer so a set-carrying mesh produces the same file
+    // whichever path served it.
+    constexpr std::size_t per_line = 8;
+    auto write_ids = [&](const std::vector<std::int64_t>& rIds) {
+        for (std::size_t k = 0; k < rIds.size(); ++k) {
+            os << (rIds[k] + 1);
+            const bool last = (k + 1 == rIds.size());
+            os << (last ? "\n" : ((k + 1) % per_line == 0 ? ",\n" : ","));
+        }
+    };
+
+    // An empty group is still declared: the *name* is information, and it is
+    // what a round-trip through the Python reference writer has always
+    // produced (its per-block emission left the key behind even when nothing
+    // landed in it). Same rule as detail/region_remap.hpp's empty-region carry.
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell)
+            continue;
+        os << "*ELSET, ELSET=" << r.mName << "\n";
+        write_ids(std::vector<std::int64_t>(r.Entries(), r.Entries() + r.NumEntries()));
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Point)
+            continue;
+        os << "*NSET, NSET=" << r.mName << "\n";
+        write_ids(std::vector<std::int64_t>(r.Entries(), r.Entries() + r.NumEntries()));
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Side)
+            continue;
+        os << "*SURFACE, NAME=" << r.mName << ", TYPE=ELEMENT\n";
+        const std::int64_t* e = r.Entries();
+        for (std::size_t k = 0; k < r.NumEntries(); ++k) {
+            const auto [b, row] = detail::global_to_block_row(bases, e[k * 2]);
+            (void)row;
+            if (b == static_cast<std::size_t>(-1))
+                continue;
+            const std::string face =
+                abq_face_name(std::string(rMesh.Cells(b).Type()), e[k * 2 + 1]);
+            if (face.empty())
+                continue;  // no Abaqus identifier for this type/facet pair
+            os << (e[k * 2] + 1) << ", " << face << "\n";
         }
     }
 }
@@ -36056,6 +37405,8 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -36231,6 +37582,156 @@ void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArr
         rFieldData.emplace(name, std::move(v));
     }
     rCur.skip_to_end("PhysicalNames");
+}
+
+// --- physical groups <-> named regions ---------------------------------------
+//
+// Gmsh describes a physical group twice over: `$PhysicalNames` gives it a name,
+// a dimension and an integer tag (which meshio++ stores as `field_data[name] =
+// [tag, dim]`), and the per-element tag column says which cells belong to it
+// (stored as the `gmsh:physical` cell_data). Both of those stay exactly as they
+// were — every existing consumer is unaffected, and a mesh that carries them
+// writes byte-identical bytes. A `Region` is *derived* from the pair on read,
+// and consulted only to fill gaps on write. See doc/regions.md for the
+// precedence rule this implements.
+
+/// `$PhysicalNames` as `(tag, dim) -> name`, read back out of `field_data`.
+std::map<std::pair<std::int64_t, int>, std::string> gmsh_physical_names(const Mesh& rMesh) {
+    std::map<std::pair<std::int64_t, int>, std::string> out;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        const NDArray& d = rMesh.FieldData(name);
+        if (d.Size() < 2)
+            continue;
+        const std::int64_t tag = detail::read_int(d, 0);
+        const int dim = static_cast<int>(detail::read_int(d, 1));
+        out.emplace(std::make_pair(tag, dim), name);
+    }
+    return out;
+}
+
+/**
+ * @brief Derive one `Cell` region per named physical group.
+ *
+ * The region's `mTag` is the gmsh physical tag and its `mDim` the group's
+ * dimension, so a round-trip back to gmsh can restore both. Groups the file
+ * never named in `$PhysicalNames` get no region — their tag still lives in the
+ * `gmsh:physical` cell_data, which is untouched.
+ *
+ * Note that a dimension-0 physical group tags `vertex` *cells* in gmsh, not
+ * points, so it too becomes a `Cell` region (with `mDim == 0`) rather than a
+ * `Point` one.
+ */
+void gmsh_attach_regions(Mesh& rMesh) {
+    if (!rMesh.HasCellData("gmsh:physical"))
+        return;
+    const std::map<std::pair<std::int64_t, int>, std::string> names = gmsh_physical_names(rMesh);
+    if (names.empty())
+        return;
+    if (rMesh.CellDataNumBlocks("gmsh:physical") != rMesh.NumCellBlocks())
+        return;  // partial tag data cannot be aligned with the blocks
+
+    // Group cells by (tag, block dimension); the dimension disambiguates two
+    // physical groups that legitimately share a tag across dimensions.
+    std::map<std::pair<std::int64_t, int>, std::vector<std::int64_t>> members;
+    std::size_t b = 0;
+    std::int64_t base = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& tags = rMesh.CellData("gmsh:physical", b);
+        const std::size_t ncells = cb.NumCells();
+        int dim = cell_type_dimension(cell_type_from_name(std::string(cb.Type())));
+        if (dim < 0) {
+            auto it = topological_dimension().find(std::string(cb.Type()));
+            dim = it != topological_dimension().end() ? it->second : -1;
+        }
+        if (tags.Size() >= ncells)
+            for (std::size_t c = 0; c < ncells; ++c)
+                members[{detail::read_int(tags, c), dim}].push_back(base +
+                                                                    static_cast<std::int64_t>(c));
+        base += static_cast<std::int64_t>(ncells);
+        ++b;
+    }
+
+    for (const auto& [key, name] : names) {
+        auto it = members.find(key);
+        if (it == members.end())
+            continue;
+        NDArray entries = NDArray::Uninit(DType::Int64, {it->second.size()});
+        for (std::size_t i = 0; i < it->second.size(); ++i)
+            entries.As<std::int64_t>()[i] = it->second[i];
+        rMesh.AddRegion(Region(name, RegionKind::Cell, key.second, key.first, std::move(entries)));
+    }
+}
+
+/**
+ * @brief The `$PhysicalNames` rows to write: `field_data` first, then any
+ * region that describes a group `field_data` does not.
+ *
+ * `field_data` winning is what keeps output byte-identical for every mesh that
+ * already carried gmsh's own metadata; regions only add groups that came from
+ * another format.
+ * @return `(dim, tag, name)` rows, sorted — the order the writer emits.
+ */
+std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(const Mesh& rMesh) {
+    std::vector<std::tuple<long long, long long, std::string>> rows;
+    std::set<std::string> seen;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        const NDArray& d = rMesh.FieldData(name);
+        if (d.Size() < 2)
+            continue;
+        rows.emplace_back(detail::read_int(d, 1), detail::read_int(d, 0), name);
+        seen.insert(name);
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell || r.mTag < 0 || seen.count(r.mName))
+            continue;
+        rows.emplace_back(r.mDim, r.mTag, r.mName);
+        seen.insert(r.mName);
+    }
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+/**
+ * @brief Per-block `gmsh:physical` tag arrays synthesized from `Cell` regions.
+ *
+ * Only used when the mesh carries no `gmsh:physical` cell_data of its own — a
+ * mesh read from another format. Cells in no tagged region get tag 0, which is
+ * gmsh's "no physical group".
+ * @return one Int64 array per cell block, or an empty vector when there is
+ *         nothing to synthesize.
+ */
+std::vector<NDArray> gmsh_tags_from_regions(const Mesh& rMesh) {
+    std::vector<NDArray> blocks;
+    bool any = false;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind == RegionKind::Cell && r.mTag >= 0 && r.NumEntries() > 0)
+            any = true;
+    }
+    if (!any)
+        return blocks;
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    std::vector<std::int64_t> flat(static_cast<std::size_t>(detail::total_cells(bases)), 0);
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell || r.mTag < 0)
+            continue;
+        const std::int64_t* e = r.Entries();
+        for (std::size_t k = 0; k < r.NumEntries(); ++k)
+            if (e[k] >= 0 && e[k] < static_cast<std::int64_t>(flat.size()))
+                flat[static_cast<std::size_t>(e[k])] = r.mTag;
+    }
+    blocks.reserve(rMesh.NumCellBlocks());
+    for (std::size_t b = 0; b + 1 < bases.size(); ++b) {
+        const std::size_t n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
+        NDArray a = NDArray::Uninit(DType::Int64, {n});
+        for (std::size_t c = 0; c < n; ++c)
+            a.As<std::int64_t>()[c] = flat[static_cast<std::size_t>(bases[b]) + c];
+        blocks.push_back(std::move(a));
+    }
+    return blocks;
 }
 
 void read_nodes(GmshCursor& rCur, bool is_ascii, NDArray& rPoints,
@@ -36636,6 +38137,8 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
     if (!geom_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
         mesh.AddCellData("gmsh:geometrical", std::move(geom_blocks));
 
+    gmsh_attach_regions(mesh);
+
     return mesh;
 }
 
@@ -36896,6 +38399,8 @@ Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
     if (!geometrical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
         mesh.AddCellData("gmsh:geometrical", std::move(geometrical_blocks));
 
+    gmsh_attach_regions(mesh);
+
     return mesh;
 }
 
@@ -36904,18 +38409,13 @@ Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
 namespace {
 
 void write_physical_names(std::ostream& rOs, const Mesh& rMesh) {
-    std::vector<std::tuple<long long, long long, std::string>> sortable;  // dim, num, name
-    for (const auto& name : rMesh.FieldDataNames()) {
-        const NDArray& d = rMesh.FieldData(name);
-        if (d.Size() < 2)
-            continue;
-        long long num = detail::read_int(d, 0);
-        long long dim = detail::read_int(d, 1);
-        sortable.emplace_back(dim, num, name);
-    }
+    // field_data first, then any named region describing a group field_data
+    // does not — so a mesh carrying gmsh's own metadata writes byte-identical
+    // bytes, and one whose groups came from another format still gets them.
+    std::vector<std::tuple<long long, long long, std::string>> sortable =
+        gmsh_physical_rows(rMesh);  // dim, num, name
     if (sortable.empty())
         return;
-    std::sort(sortable.begin(), sortable.end());
     rOs << "$PhysicalNames\n" << sortable.size() << "\n";
     for (auto& e : sortable)
         rOs << std::get<0>(e) << ' ' << std::get<1>(e) << " \"" << std::get<2>(e) << "\"\n";
@@ -36984,9 +38484,16 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
     const bool has_physical = rMesh.HasCellData("gmsh:physical");
     const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
     std::vector<NDArray> zeros_phys, zeros_geom;
-    if (!has_physical)
-        for (const auto cb : rMesh.CellRange())
-            zeros_phys.emplace_back(DType::Int32, std::vector<std::size_t>{cb.NumCells()});
+    if (!has_physical) {
+        // No gmsh:physical column of its own: synthesize one from any tagged
+        // Cell regions, so a mesh whose groups came from another format still
+        // writes real physical groups. With no such regions this yields the
+        // per-block zeros it always did, and the output is byte-identical.
+        zeros_phys = gmsh_tags_from_regions(rMesh);
+        if (zeros_phys.empty())
+            for (const auto cb : rMesh.CellRange())
+                zeros_phys.emplace_back(DType::Int32, std::vector<std::size_t>{cb.NumCells()});
+    }
     if (!has_geometrical)
         for (const auto cb : rMesh.CellRange())
             zeros_geom.emplace_back(DType::Int32, std::vector<std::size_t>{cb.NumCells()});
@@ -48588,6 +50095,18 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
     for (std::size_t g = 0; g < n; ++g)
         pm[g] = new_point[static_cast<std::size_t>(weld_rep[g])];
 
+    // --- named regions ------------------------------------------------------
+    // Block structure is 1:1 and cell types are unchanged, so this is a Direct
+    // map and side-set facets survive along with their cells.
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &res.mPointMap;
+        rmap.mCellMapKind = detail::CellMapKind::Direct;
+        rmap.pCellMaps = &res.mCellMaps;
+        rmap.mOpName = "clean";
+        detail::remap_regions(rMesh, out, rmap);
+    }
+
     return res;
 }
 
@@ -49364,16 +50883,41 @@ ConvertCellsMode convert_cells_mode_from_name(const std::string& rName) {
                                 "' (expected 'linearize', 'simplexify', or 'elevate')");
 }
 
+namespace {
+
+// Carry the input's named regions onto the output. The cell map is FirstChild:
+// a parent's children occupy a contiguous run, which is also correct for the
+// 1:1 modes (their maps are the monotone identity). Side regions are dropped —
+// a child cell is a new cell of a subdivided or different topology, so its
+// facets have no correspondence with the parent's. See detail/region_remap.hpp.
+void ccells_carry_regions(const Mesh& rIn, ConvertCellsResult& rRes) {
+    detail::RegionRemap rmap;
+    rmap.pPointMap = &rRes.mPointMap;
+    rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+    rmap.pCellMaps = &rRes.mCellMaps;
+    rmap.mOpName = "convert_cells";
+    detail::remap_regions(rIn, rRes.mMesh, rmap);
+}
+
+}  // namespace
+
 ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions) {
+    ConvertCellsResult res;
     switch (rOptions.mMode) {
         case ConvertCellsMode::Linearize:
-            return ccells_linearize(rMesh, rOptions.mRecordParentIds);
+            res = ccells_linearize(rMesh, rOptions.mRecordParentIds);
+            break;
         case ConvertCellsMode::Simplexify:
-            return ccells_simplexify(rMesh, rOptions.mRecordParentIds);
+            res = ccells_simplexify(rMesh, rOptions.mRecordParentIds);
+            break;
         case ConvertCellsMode::Elevate:
-            return ccells_elevate(rMesh, rOptions.mRecordParentIds);
+            res = ccells_elevate(rMesh, rOptions.mRecordParentIds);
+            break;
+        default:
+            throw std::invalid_argument("convert_cells: unhandled mode");
     }
-    throw std::invalid_argument("convert_cells: unhandled mode");
+    ccells_carry_regions(rMesh, res);
+    return res;
 }
 
 }  // namespace meshioplusplus
@@ -49450,7 +50994,8 @@ CropResult crop_finish(const Mesh& rMesh, const std::vector<std::vector<std::int
                        bool record_ids) {
     detail::SubsetResult sub =
         detail::build_cell_subset(rMesh, rKept, record_ids ? "crop:original_point_id" : "",
-                                  record_ids ? "crop:original_cell_id" : "");
+                                  record_ids ? "crop:original_cell_id" : "",
+                                  /*drop_empty_blocks=*/false, "crop");
     CropResult res;
     res.mMesh = std::move(sub.mMesh);
     res.mPointMap = std::move(sub.mPointMap);
@@ -52240,6 +53785,20 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     }
     result.mPointsRemoved = static_cast<std::int64_t>(n - num_used);
 
+    // Named regions. The cell map is FirstChild — an input quad/polygon becomes
+    // a contiguous run of triangles, and a fully-collapsed parent maps to -1,
+    // which the run scan steps over. Side regions are dropped: the output is
+    // all-triangle, so an input facet has no counterpart. See
+    // detail/region_remap.hpp.
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &result.mPointMap;
+        rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+        rmap.pCellMaps = &result.mCellMaps;
+        rmap.mOpName = "decimate";
+        detail::remap_regions(rMesh, result.mMesh, rmap);
+    }
+
     return result;
 }
 
@@ -52662,6 +54221,35 @@ const std::string& diff_verdict_name(DiffVerdict verdict) {
     return kDifferent;
 }
 
+// Compare two meshes' named regions. Identity is (name, kind): the same name
+// may legitimately label a node set and an element set. Membership comparison
+// is exact -- canonical entries make two equal groups bitwise equal, so no
+// tolerance is involved.
+void diff_compare_regions(const Mesh& rA, const Mesh& rB, RegionDiff& rOut) {
+    auto label = [](const Region& r) { return r.mName + " (" + region_kind_name(r.mKind) + ")"; };
+    auto find = [](const Mesh& rMesh, const Region& r) -> const Region* {
+        const std::size_t i = rMesh.FindRegion(r.mName, r.mKind);
+        return i == Mesh::npos ? nullptr : &rMesh.Region(i);
+    };
+
+    for (std::size_t i = 0; i < rA.NumRegions(); ++i) {
+        const Region& a = rA.Region(i);
+        const Region* b = find(rB, a);
+        if (b == nullptr)
+            rOut.mOnlyInA.push_back(label(a));
+        else if (!regions_equal(a, *b))
+            rOut.mChanged.push_back(label(a));
+    }
+    for (std::size_t i = 0; i < rB.NumRegions(); ++i) {
+        const Region& b = rB.Region(i);
+        if (find(rA, b) == nullptr)
+            rOut.mOnlyInB.push_back(label(b));
+    }
+    std::sort(rOut.mOnlyInA.begin(), rOut.mOnlyInA.end());
+    std::sort(rOut.mOnlyInB.begin(), rOut.mOnlyInB.end());
+    std::sort(rOut.mChanged.begin(), rOut.mChanged.end());
+}
+
 DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts) {
     DiffReport rep;
     rep.mUnordered = rOpts.unordered;
@@ -52730,6 +54318,8 @@ DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts) {
     diff_compare_data_section(rA.FieldDataNames(), rB.FieldDataNames(), rep.mFieldData, rA, rB,
                               nullptr, /*cell_data=*/false, atol, rtol);
 
+    diff_compare_regions(rA, rB, rep.mRegions);
+
     // --- verdict ---
     DiffVerdict v = DiffVerdict::Identical;
     if (rep.mPointCountMismatch || rep.mBlockCountMismatch)
@@ -52745,6 +54335,11 @@ DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts) {
         for (const ArrayDiff& ad : dd->mShared)
             diff_bump(v, diff_array_verdict(ad));
     }
+    rep.mVerdictIgnoringRegions = v;
+    // A named group differing is a structural difference, not a numerical one,
+    // so it goes straight to Different rather than through diff_bump.
+    if (rep.mRegions.Differs())
+        v = DiffVerdict::Different;
     rep.mVerdict = v;
     return rep;
 }
@@ -52753,7 +54348,7 @@ bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol, double rtol) {
     DiffOptions opts;
     opts.atol = atol;
     opts.rtol = rtol;
-    return diff(rA, rB, opts).mVerdict != DiffVerdict::Different;
+    return diff(rA, rB, opts).mVerdictIgnoringRegions != DiffVerdict::Different;
 }
 
 }  // namespace meshioplusplus
@@ -53788,6 +55383,10 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
         contours.push_back(IsoContour{std::move(section), iso, static_cast<std::int64_t>(k)});
     }
 
+    // A level set is newly created geometry: no input point, cell or facet has
+    // a counterpart in it, so no named region can be carried across.
+    detail::warn_regions_dropped(rMesh, "isosurface");
+
     if (contours.empty())
         return have_empty_like ? std::move(empty_like) : Mesh{};
 
@@ -54468,6 +56067,37 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         }
     }
 
+    // --- named regions: remap per input, namespacing on collision -----------
+    // Same rule as field_data above: a name carried by more than one input is
+    // prefixed with its source index, so "0:wall" and "1:wall" stay distinct
+    // groups instead of the second silently replacing the first (they would
+    // share a `(kind, name, dim, tag)` region key). Renaming has to happen
+    // between remapping and storing, which is why this uses the per-region
+    // `remap_region` rather than the whole-mesh `remap_regions`. The map is
+    // Global: merge numbers cells across each whole input mesh, not per block.
+    {
+        std::map<std::string, int> region_counts;
+        for (std::size_t m = 0; m < nm; ++m)
+            for (const std::string& name : rMeshes[m]->RegionNames())
+                region_counts[name] += 1;
+        for (std::size_t m = 0; m < nm; ++m) {
+            detail::RegionRemap rmap;
+            rmap.pPointMap = &res.mPointMaps[m];
+            rmap.mCellMapKind = detail::CellMapKind::Global;
+            rmap.pGlobalCellMap = &res.mCellMaps[m];
+            rmap.mOpName = "merge";
+            for (std::size_t i = 0; i < rMeshes[m]->NumRegions(); ++i) {
+                const Region& r_src = rMeshes[m]->Region(i);
+                Region carried;
+                if (!detail::remap_region(*rMeshes[m], out, r_src, rmap, carried))
+                    continue;
+                if (region_counts[r_src.mName] > 1)
+                    carried.mName = std::to_string(m) + ":" + r_src.mName;
+                out.AddRegion(std::move(carried));
+            }
+        }
+    }
+
     return res;
 }
 
@@ -55062,7 +56692,7 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
         detail::SubsetResult sub = detail::build_cell_subset(
             rMesh, kept[p], rOptions.mRecordIds ? "partition:original_point_id" : "",
             rOptions.mRecordIds ? "partition:original_cell_id" : "",
-            /*drop_empty_blocks=*/false);
+            /*drop_empty_blocks=*/false, "partition");
         PartitionPiece piece;
         piece.mPartId = static_cast<int>(p);
         piece.mMesh = std::move(sub.mMesh);
@@ -55617,6 +57247,10 @@ Mesh quality_clone_mesh(const Mesh& rMesh) {
     }
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, quality_owned_copy(rMesh.FieldData(name)));
+    // Named regions pass through verbatim: attaching quality metrics adds
+    // cell_data and renumbers nothing.
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
     return out;
 }
 
@@ -56283,6 +57917,23 @@ std::size_t refine_projected_cells(const Mesh& rMesh) {
 
 // --- public API --------------------------------------------------------------
 
+namespace {
+
+// Carry the input's named regions onto the output. The cell map is FirstChild:
+// a parent's children occupy a contiguous run. Side regions are dropped — a
+// child cell is a new cell of a subdivided topology, so its facets have no
+// correspondence with the parent's. See detail/region_remap.hpp.
+void refine_carry_regions(const Mesh& rIn, RefineResult& rRes) {
+    detail::RegionRemap rmap;
+    rmap.pPointMap = &rRes.mPointMap;
+    rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+    rmap.pCellMaps = &rRes.mCellMaps;
+    rmap.mOpName = "refine";
+    detail::remap_regions(rIn, rRes.mMesh, rmap);
+}
+
+}  // namespace
+
 RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     if (rOptions.mLevels <= 0) {
         RefineResult res;
@@ -56293,6 +57944,7 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
             res.mCellMaps.push_back(refine_identity_map(cb.NumCells()));
         if (rOptions.mRecordParentIds)
             refine_attach_parent_ids(res);
+        refine_carry_regions(rMesh, res);
         return res;
     }
 
@@ -56311,6 +57963,7 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     }
     if (rOptions.mRecordParentIds)
         refine_attach_parent_ids(acc);
+    refine_carry_regions(rMesh, acc);
     return acc;
 }
 
@@ -56690,6 +58343,19 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, reorder_owned_copy(rMesh.FieldData(name)));
 
+    // named regions: a pure permutation, so every entry survives — and because
+    // the cell type of each block is unchanged, side-set facets survive too.
+    // The maps are Direct (permutations are not monotone, so the FirstChild
+    // "next entry" rule would be wrong here).
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &res.mNodePermutation;
+        rmap.mCellMapKind = detail::CellMapKind::Direct;
+        rmap.pCellMaps = &res.mCellPermutations;
+        rmap.mOpName = "reorder";
+        detail::remap_regions(rMesh, out, rmap);
+    }
+
     return res;
 }
 
@@ -56752,8 +58418,7 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
     const std::size_t n = rMesh.NumPoints();
     std::vector<std::int64_t> perm;
     if (method == ReorderMethod::RCM) {
-        ReorderCsr csr =
-            detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Clique);
+        ReorderCsr csr = detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Clique);
         perm = reorder_rcm(csr, n);
     } else {
         std::vector<std::uint64_t> keys =
@@ -56809,6 +58474,7 @@ Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
     options.mOrientation = detail::MarchingOrientation::FixedDirection;
     options.mDirection = rOptions.mNormal;
 
+    detail::warn_regions_dropped(rMesh, "slice");
     return detail::marching_cut(input, dist, options);
 }
 
@@ -56861,8 +58527,8 @@ SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
     if (p.mLambda < 0.0)
         p.mLambda = p.mTaubin ? 0.33 : 0.5;  // the sentinel: each method's own default
     if (!(p.mLambda > 0.0 && p.mLambda < 1.0))
-        throw std::invalid_argument(
-            "meshio++: smooth: lambda must lie in (0, 1); got " + std::to_string(p.mLambda));
+        throw std::invalid_argument("meshio++: smooth: lambda must lie in (0, 1); got " +
+                                    std::to_string(p.mLambda));
 
     if (p.mTaubin) {
         p.mMu = rOptions.mMu;
@@ -56898,8 +58564,8 @@ std::vector<double> smooth_read_coords(const Mesh& rMesh, std::size_t n, std::si
 
 // Write the leading `dim` columns back out, preserving the source dtype.
 // Mirrors transform.cpp's transform_apply_points.
-NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& rXyz,
-                            std::size_t n, std::size_t dim) {
+NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& rXyz, std::size_t n,
+                            std::size_t dim) {
     NDArray out = NDArray::Uninit(rPoints.Dtype(), {n, dim});
     if (n == 0 || dim == 0)
         return out;
@@ -56975,7 +58641,8 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
             bool ok = true;
             const std::size_t first = t.mCornerNodes.size();
             for (int k = 0; k < corners; ++k) {
-                const std::int64_t id = detail::read_int(conn, c * npc + static_cast<std::size_t>(k));
+                const std::int64_t id =
+                    detail::read_int(conn, c * npc + static_cast<std::size_t>(k));
                 if (id < 0 || static_cast<std::size_t>(id) >= n) {
                     ok = false;
                     break;
@@ -57361,8 +59028,8 @@ void smooth_mark_features(const std::vector<SmoothBoundaryFacet>& rFacets, std::
         const std::int64_t b = inc.mXadj[i];
         const std::int64_t e = inc.mXadj[i + 1];
         for (std::int64_t p = b; p < e; ++p) {
-            const Vec3& na = rFacets[static_cast<std::size_t>(inc.mAdj[static_cast<std::size_t>(p)])]
-                                 .mNormal;
+            const Vec3& na =
+                rFacets[static_cast<std::size_t>(inc.mAdj[static_cast<std::size_t>(p)])].mNormal;
             for (std::int64_t q = p + 1; q < e; ++q) {
                 const Vec3& nb =
                     rFacets[static_cast<std::size_t>(inc.mAdj[static_cast<std::size_t>(q)])]
@@ -57428,9 +59095,9 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     const std::size_t dim = rMesh.PointDim();
 
     if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument(
-            "meshio++: smooth: frozen mask has " + std::to_string(rOptions.mFrozen.size()) +
-            " entries but the mesh has " + std::to_string(n) + " points");
+        throw std::invalid_argument("meshio++: smooth: frozen mask has " +
+                                    std::to_string(rOptions.mFrozen.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
 
     // --- phase 0: coordinates as a flat double buffer ---
     const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
@@ -57458,8 +59125,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             if (boundary[i])
                 frozen[i] = 1;
         if (rOptions.mPreserveFeatures) {
-            const double cos_thr = std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 /
-                                            180.0);
+            const double cos_thr =
+                std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 / 180.0);
             smooth_mark_features(facets, n, cos_thr, frozen);
         }
     } else if (rOptions.mPreserveFeatures) {
@@ -57485,8 +59152,7 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     std::int64_t num_skipped = 0;
     for (int pass = 0; pass < params.mNumPasses; ++pass) {
         // Taubin alternates the shrinking (+lambda) and un-shrinking (mu) pass.
-        const double factor =
-            (!params.mTaubin || (pass % 2 == 0)) ? params.mLambda : params.mMu;
+        const double factor = (!params.mTaubin || (pass % 2 == 0)) ? params.mLambda : params.mMu;
 
         std::fill(skipped.begin(), skipped.end(), 0);
         parallel_for(n, [&](std::size_t i) {
@@ -57504,7 +59170,8 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             // thread counts.
             Vec3 sum = {0.0, 0.0, 0.0};
             for (std::int64_t k = b; k < e; ++k) {
-                const std::size_t p = static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
+                const std::size_t p =
+                    static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
                 sum[0] += prev[p];
                 sum[1] += prev[p + 1];
                 sum[2] += prev[p + 2];
@@ -57609,6 +59276,11 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     }
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, smooth_owned_copy(rMesh.FieldData(name)));
+
+    // Named regions pass through verbatim: smoothing is a pure coordinate move,
+    // so no point, cell or facet is renumbered.
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
 
     return result;
 }
@@ -57954,7 +59626,7 @@ SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
     res.mPieces.reserve(groups.size());
     for (SplitGroup& g : groups) {
         detail::SubsetResult sub =
-            detail::build_cell_subset(rMesh, g.kept, "", "", /*drop_empty_blocks=*/true);
+            detail::build_cell_subset(rMesh, g.kept, "", "", /*drop_empty_blocks=*/true, "split");
         SplitPiece piece;
         piece.mKey = std::move(g.key);
         piece.mMesh = std::move(sub.mMesh);
@@ -58513,6 +60185,12 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         surface.AddPointData(name, std::move(b));
     }
 
+    // The extracted facets are newly created cells one dimension below the
+    // input's, so no named region can be carried across. Say so rather than
+    // dropping them silently; `record_parent_ids` is the escape hatch for a
+    // caller that wants to rebuild a group itself.
+    detail::warn_regions_dropped(rMesh, pOpName ? pOpName : "extract_surface");
+
     return surface;
 }
 
@@ -58856,6 +60534,12 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, transform_owned_copy(rMesh.FieldData(name)));
 
+    // Named regions pass through verbatim: a transform moves coordinates and
+    // renumbers nothing, so every point, cell and facet index still names the
+    // same entity.
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
+
     return out;
 }
 
@@ -58923,6 +60607,100 @@ MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/read_options.cpp =====
+// ===== begin src/cpp/src/region.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+const char* region_kind_name(RegionKind Kind) {
+    switch (Kind) {
+        case RegionKind::Point:
+            return "point";
+        case RegionKind::Cell:
+            return "cell";
+        case RegionKind::Side:
+            return "side";
+    }
+    return "point";
+}
+
+RegionKind region_kind_from_name(const std::string& rName) {
+    if (rName == "point")
+        return RegionKind::Point;
+    if (rName == "cell")
+        return RegionKind::Cell;
+    if (rName == "side")
+        return RegionKind::Side;
+    throw std::invalid_argument("meshio++: unknown region kind '" + rName +
+                                "' (expected 'point', 'cell' or 'side')");
+}
+
+void Region::Canonicalize() {
+    const std::size_t stride = Stride();
+
+    // Widen whatever integer dtype arrived (and tolerate a view over
+    // Python-owned memory) into an owned Int64 buffer we may sort in place.
+    const std::size_t n_values = mEntries.Size();
+    std::vector<std::int64_t> flat(n_values);
+    for (std::size_t i = 0; i < n_values; ++i)
+        flat[i] = detail::read_int(mEntries, i);
+
+    // A trailing partial row cannot be interpreted; drop it rather than read
+    // past the end. (Only reachable through a hand-built malformed region.)
+    const std::size_t n_rows = stride == 0 ? 0 : flat.size() / stride;
+
+    if (stride == 1) {
+        flat.resize(n_rows);
+        std::sort(flat.begin(), flat.end());
+        flat.erase(std::unique(flat.begin(), flat.end()), flat.end());
+    } else {
+        std::vector<std::pair<std::int64_t, std::int64_t>> rows(n_rows);
+        for (std::size_t r = 0; r < n_rows; ++r)
+            rows[r] = {flat[r * 2], flat[r * 2 + 1]};
+        std::sort(rows.begin(), rows.end());
+        rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+        flat.resize(rows.size() * 2);
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            flat[r * 2] = rows[r].first;
+            flat[r * 2 + 1] = rows[r].second;
+        }
+    }
+
+    const std::size_t out_rows = stride == 0 ? 0 : flat.size() / stride;
+    std::vector<std::size_t> shape;
+    if (stride == 1)
+        shape = {out_rows};
+    else
+        shape = {out_rows, stride};
+
+    NDArray out = NDArray::Uninit(DType::Int64, std::move(shape));
+    if (!flat.empty())
+        std::copy(flat.begin(), flat.end(), out.As<std::int64_t>());
+    mEntries = std::move(out);
+}
+
+bool regions_equal(const Region& rA, const Region& rB) {
+    if (rA.mName != rB.mName || rA.mKind != rB.mKind || rA.mDim != rB.mDim || rA.mTag != rB.mTag)
+        return false;
+    if (rA.mEntries.Size() != rB.mEntries.Size())
+        return false;
+    const std::size_t n = rA.mEntries.Size();
+    for (std::size_t i = 0; i < n; ++i)
+        if (detail::read_int(rA.mEntries, i) != detail::read_int(rB.mEntries, i))
+            return false;
+    return true;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/region.cpp =====
 // ===== begin src/cpp/src/registry.cpp =====
 /**
  * @file registry.cpp

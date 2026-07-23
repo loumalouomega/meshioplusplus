@@ -110,12 +110,17 @@ def merge(
         raise
     except Exception:
         out = None
+    used_cpp = out is not None
     if out is None:
         out, point_maps, cell_maps = _merge_py(
             meshes, weld, atol, source_tag, data_policy, drop_duplicate_cells
         )
 
-    _merge_sets(meshes, out, point_maps, cell_maps)
+    # The C++ core remaps and namespaces regions itself (and therefore
+    # `point_sets`/`cell_sets`, which are views over them); doing it again here
+    # would apply the maps twice. Only the numpy fallback needs it.
+    if not used_cpp:
+        _merge_sets(meshes, out, point_maps, cell_maps)
     return out
 
 

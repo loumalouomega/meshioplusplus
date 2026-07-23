@@ -276,7 +276,7 @@ SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
     res.mPieces.reserve(groups.size());
     for (SplitGroup& g : groups) {
         detail::SubsetResult sub =
-            detail::build_cell_subset(rMesh, g.kept, "", "", /*drop_empty_blocks=*/true);
+            detail::build_cell_subset(rMesh, g.kept, "", "", /*drop_empty_blocks=*/true, "split");
         SplitPiece piece;
         piece.mKey = std::move(g.key);
         piece.mMesh = std::move(sub.mMesh);

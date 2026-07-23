@@ -158,15 +158,22 @@ def test_cell_data_follows_cells():
 
 
 def test_sets_remapped():
+    # Membership, compared as a set: a region's entries are stored ascending and
+    # de-duplicated (see doc/regions.md), so the remapped set is sorted rather
+    # than left in the permutation's own order. Set semantics are what a named
+    # group means; the old element-order assertion tested storage, not meaning.
     mesh = helpers.add_cell_sets(helpers.add_point_sets(grid_mesh(4, 3)))
     out, node_perm, cell_perms = reorder(mesh, method="rcm", return_permutation=True)
     node_perm = np.asarray(node_perm)
     for name, idx in mesh.point_sets.items():
-        np.testing.assert_array_equal(out.point_sets[name], node_perm[np.asarray(idx)])
+        np.testing.assert_array_equal(
+            out.point_sets[name], np.sort(node_perm[np.asarray(idx)])
+        )
     for name, blocks in mesh.cell_sets.items():
         for b, idx in enumerate(blocks):
             np.testing.assert_array_equal(
-                out.cell_sets[name][b], np.asarray(cell_perms[b])[np.asarray(idx)]
+                out.cell_sets[name][b],
+                np.sort(np.asarray(cell_perms[b])[np.asarray(idx)]),
             )
 
 

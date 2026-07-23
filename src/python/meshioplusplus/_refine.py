@@ -403,8 +403,13 @@ def refine(mesh, levels: int = 1, record_parent_ids: bool = False) -> Mesh:
         raise
     except Exception:
         out = None
+    used_cpp = out is not None
     if out is None:
         out, point_map, cell_maps = _refine_py(mesh, levels, record_parent_ids)
 
-    _remap_sets(mesh, out, point_map, cell_maps)
+    # The C++ core carries named regions across itself (and therefore
+    # `point_sets`/`cell_sets`, which are views over them), so remapping again
+    # here would apply the maps twice. Only the numpy fallback needs it.
+    if not used_cpp:
+        _remap_sets(mesh, out, point_map, cell_maps)
     return out

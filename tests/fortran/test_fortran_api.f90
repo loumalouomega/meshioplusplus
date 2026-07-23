@@ -553,6 +553,34 @@ program test_fortran_api
         call check(st /= 0, 'isosurface rejects a cell_data field')
     end block
 
+    ! --- named regions (doc/regions.md) ---------------------------------------
+    ! The first named groups this API can carry at all; before meshio++ 8.1 they
+    ! never left the Python layer.
+    block
+        type(mio_region_info), allocatable :: regs(:)
+        character(len=STRBUF_LEN), allocatable :: rkeys(:)
+        integer(int64), allocatable :: rentries(:)
+        integer :: st
+
+        call m%add_region('fixed', MIO_REGION_POINT, [1_int64, 4_int64], stat=st)
+        call check(st == 0, 'add_region point')
+        call m%add_region('solid', MIO_REGION_CELL, [1_int64], dim=3, tag=42_int64, stat=st)
+        call check(st == 0, 'add_region cell')
+
+        regs = m%regions(keys=rkeys, entries=rentries, stat=st)
+        call check(st == 0, 'regions status')
+        call check(size(regs) == 2, 'two regions')
+        ! Order is (kind, name, dim, tag): point before cell.
+        call check(trim(rkeys(1)) == 'fixed', 'first region name')
+        call check(regs(1)%kind == MIO_REGION_POINT, 'first region kind')
+        call check(regs(1)%stride == 1, 'point region stride')
+        call check(regs(2)%tag == 42_int64, 'cell region tag survives')
+        call check(regs(2)%dim == 3, 'cell region dim survives')
+        ! Point/cell indices come back 1-based, as everywhere else in this API.
+        call check(size(rentries) == 3, 'entry buffer length')
+        call check(rentries(1) == 1_int64 .and. rentries(2) == 4_int64, 'point entries 1-based')
+    end block
+
     call m%free()
     call r%free()
     call c%free()

@@ -8,8 +8,11 @@ from ._abaqus import write as _py_write
 def read(filename):
     """Read an Abaqus .inp file.
 
-    Uses the C++ core for files limited to *NODE and *ELEMENT; falls back to the
-    Python reader for *NSET / *ELSET / *INCLUDE and anything else.
+    The C++ core handles the whole format the Python reference does — ``*NODE``,
+    ``*ELEMENT`` (including a trailing ``ELSET=``), ``*NSET``/``*ELSET`` (with
+    ``GENERATE`` and set-of-set references) and ``*INCLUDE`` — plus ``*SURFACE``,
+    which becomes a ``side`` region. The Python reader stays as the fallback for
+    anything the C++ path raises on.
     """
     if not is_buffer(filename, "r"):
         try:
@@ -22,16 +25,10 @@ def read(filename):
 def write(filename, mesh, float_fmt=".16e", translate_cell_names=True):
     """Write an Abaqus .inp file.
 
-    Uses the C++ core for meshes without point_sets/cell_sets; otherwise falls
-    back to the Python writer.
+    Named regions are written as ``*NSET`` / ``*ELSET`` / ``*SURFACE``, so a mesh
+    carrying sets no longer needs the Python writer.
     """
-    if (
-        float_fmt == ".16e"
-        and translate_cell_names
-        and not is_buffer(filename, "w")
-        and not mesh.point_sets
-        and not mesh.cell_sets
-    ):
+    if float_fmt == ".16e" and translate_cell_names and not is_buffer(filename, "w"):
         try:
             _core.abaqus_write(str(filename), mesh)
             return

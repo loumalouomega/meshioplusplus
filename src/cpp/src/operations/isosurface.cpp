@@ -36,6 +36,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/marching.hpp"
@@ -352,6 +353,10 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
         }
         contours.push_back(IsoContour{std::move(section), iso, static_cast<std::int64_t>(k)});
     }
+
+    // A level set is newly created geometry: no input point, cell or facet has
+    // a counterpart in it, so no named region can be carried across.
+    detail::warn_regions_dropped(rMesh, "isosurface");
 
     if (contours.empty())
         return have_empty_like ? std::move(empty_like) : Mesh{};

@@ -48,6 +48,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -1100,6 +1101,20 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
         result.mPointMap = std::move(pm);
     }
     result.mPointsRemoved = static_cast<std::int64_t>(n - num_used);
+
+    // Named regions. The cell map is FirstChild — an input quad/polygon becomes
+    // a contiguous run of triangles, and a fully-collapsed parent maps to -1,
+    // which the run scan steps over. Side regions are dropped: the output is
+    // all-triangle, so an input facet has no counterpart. See
+    // detail/region_remap.hpp.
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &result.mPointMap;
+        rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+        rmap.pCellMaps = &result.mCellMaps;
+        rmap.mOpName = "decimate";
+        detail::remap_regions(rMesh, result.mMesh, rmap);
+    }
 
     return result;
 }

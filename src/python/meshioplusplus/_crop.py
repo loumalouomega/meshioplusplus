@@ -211,6 +211,7 @@ def crop(
         cell_maps = [np.asarray(a) for a in res["cell_maps"]]
     except Exception:
         out = None
+    used_cpp = out is not None
     if out is None:
         p3 = _points_3d(mesh)
         if bbox is not None:
@@ -221,5 +222,9 @@ def crop(
             mask = (p3 - np.asarray(point)) @ np.asarray(normal) >= 0.0
         out, point_map, cell_maps = _crop_py(mesh, mask, mode, record_ids)
 
-    _remap_sets(mesh, out, point_map, cell_maps)
+    # The C++ core carries named regions across itself (and therefore
+    # `point_sets`/`cell_sets`, which are views over them), so remapping again
+    # here would apply the maps twice. Only the numpy fallback needs it.
+    if not used_cpp:
+        _remap_sets(mesh, out, point_map, cell_maps)
     return out

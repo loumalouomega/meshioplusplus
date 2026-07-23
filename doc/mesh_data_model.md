@@ -11,8 +11,9 @@ class Mesh:
     point_data: dict[str, np.ndarray]         # shape (num_points, ...)
     cell_data: dict[str, list[np.ndarray]]    # one array per CellBlock
     field_data: dict[str, np.ndarray]         # scalar metadata (e.g. material ids)
-    point_sets: dict[str, np.ndarray]         # named groups of point indices
-    cell_sets: dict[str, list[np.ndarray]]    # named groups of cell indices per block
+    regions: list[Region]                     # named groups (see /regions)
+    point_sets: dict[str, np.ndarray]         # compat view: the point regions
+    cell_sets: dict[str, list[np.ndarray]]    # compat view: the cell regions
     gmsh_periodic: list | None                # Gmsh periodic section data
     info: any                                 # format-specific extra data
 ```
@@ -90,6 +91,16 @@ mesh2 = mesh.copy()
 mesh = meshioplusplus.Mesh.read("file.msh")   # deprecated; use meshioplusplus.read()
 mesh.write("out.vtk")
 ```
+
+## Named regions
+
+Since v8.1.0 the named groups live in `mesh.regions` as
+[`Region`](/regions) objects, which the C++ core carries, every binding surface
+sees, and every operation either remaps or explicitly drops. `point_sets` and
+`cell_sets` are unchanged compat **views** over them, so existing code keeps
+working; a third kind, **side sets** (groups of cell *facets*), has no view
+equivalent and is reachable only through `mesh.regions`. See
+[Named regions](/regions).
 
 ## Converting sets ↔ data
 

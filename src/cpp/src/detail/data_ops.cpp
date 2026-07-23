@@ -59,6 +59,13 @@ Mesh clone_geometry(const Mesh& rMesh) {
             out.AddCellBlock(std::string(cb.Type()), data_owned_copy(cb.Conn()));
         }
     }
+    // Named regions ride through verbatim. Every caller of this function leaves
+    // the point and cell numbering untouched (the data operations, `transform`,
+    // `smooth`, `interpolate`'s target clone, `attach_quality`), so there is
+    // nothing to remap — see doc/regions.md's table of which operations remap
+    // and which pass through.
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
     return out;
 }
 

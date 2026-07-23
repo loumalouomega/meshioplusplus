@@ -97,7 +97,8 @@ CropResult crop_finish(const Mesh& rMesh, const std::vector<std::vector<std::int
                        bool record_ids) {
     detail::SubsetResult sub =
         detail::build_cell_subset(rMesh, rKept, record_ids ? "crop:original_point_id" : "",
-                                  record_ids ? "crop:original_cell_id" : "");
+                                  record_ids ? "crop:original_cell_id" : "",
+                                  /*drop_empty_blocks=*/false, "crop");
     CropResult res;
     res.mMesh = std::move(sub.mMesh);
     res.mPointMap = std::move(sub.mPointMap);

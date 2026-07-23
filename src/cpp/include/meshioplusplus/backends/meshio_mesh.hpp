@@ -36,12 +36,12 @@
  * backing a writeable numpy array (read path, no output copy).
  *
  * The conversion layer carries `points`, `cells`, `point_data`, `cell_data`,
- * and `field_data` — but deliberately **not** `mesh.info`, `cell_sets`, or
- * `point_sets`, which are custom attributes that live only on the Python
- * `Mesh`. Formats that need those either defer entirely to the Python
- * fallback or carry the extra data out-of-band via a side-channel struct
- * that the binding `setattr`s onto the Python `Mesh` object after
- * conversion (e.g. `MedInfo`/`AnsysInfo` for `point_sets`/`cell_sets`,
+ * `field_data` **and `regions`** (`region.hpp` — named groups of points, cells
+ * or cell facets, which the Python `Mesh` exposes both as `.regions` and,
+ * compatibly, as `point_sets`/`cell_sets`). It deliberately does **not** carry
+ * `mesh.info` or `gmsh_periodic`, which remain Python-only attributes; the
+ * formats that still need other out-of-band data carry it via a side-channel
+ * struct the binding `setattr`s onto the Python `Mesh` after conversion (e.g.
  * `OpenFoamInfo` for `cell_tags`).
  */
 
@@ -56,6 +56,7 @@
 #include "meshioplusplus/detail/map_order.hpp"
 #include "meshioplusplus/mesh_api.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
 
@@ -130,9 +131,9 @@ struct CellBlock {
  * Produced by every C++ format reader and consumed by every C++ format
  * writer; see the file-level comment for how this maps to/from the
  * pure-Python `meshio.Mesh` at the pybind11 boundary. Note what is
- * deliberately absent from this struct: `mesh.info`, `point_sets`, and
- * `cell_sets` are Python-only attributes not represented here (they travel,
- * when needed, through a per-format side-channel struct instead).
+ * deliberately absent from this struct: `mesh.info` and `gmsh_periodic` are
+ * Python-only attributes not represented here. Named groups of entities are
+ * *not* in that list any more — they live in `mRegions` (see `region.hpp`).
  */
 struct Mesh {
     NDArray mPoints;  // (num_points, dim)
@@ -145,6 +146,11 @@ struct Mesh {
     std::unordered_map<std::string, NDArray> mPointData;
     std::unordered_map<std::string, std::vector<NDArray>> mCellData;
     std::unordered_map<std::string, NDArray> mFieldData;
+
+    // Named groups of points / cells / cell facets (region.hpp). Kept sorted by
+    // Region::Key() with canonical (sorted, de-duplicated) entries, so region
+    // order and content are identical on every backend.
+    detail::RegionList mRegions;
 
     /**
      * @brief Number of points in the mesh.
@@ -288,6 +294,32 @@ struct Mesh {
     bool HasFieldData(const std::string& rName) const { return mFieldData.count(rName) > 0; }
     /** @brief The field-data array named @p rName (throws if absent). */
     const NDArray& FieldData(const std::string& rName) const { return mFieldData.at(rName); }
+
+    // --- named regions (region.hpp) ---
+    // NOTE: `Region(i)` hides the type name `meshioplusplus::Region` for the
+    // rest of this class body — every declaration below must qualify it.
+
+    /// Sentinel returned by `FindRegion` when no region matches.
+    static constexpr std::size_t npos = detail::RegionList::npos;
+
+    /** @brief Adds a region, replacing one with the same (kind, name, dim, tag). */
+    void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+    /** @brief Number of named regions. */
+    std::size_t NumRegions() const { return mRegions.Size(); }
+    /** @brief Region @p i in `(kind, name, dim, tag)` order. */
+    const meshioplusplus::Region& Region(std::size_t i) const { return mRegions.At(i); }
+    /** @brief Region names in sorted order, de-duplicated across kinds. */
+    std::vector<std::string> RegionNames() const { return mRegions.Names(); }
+    /** @brief Whether any region carries this name, regardless of kind. */
+    bool HasRegion(const std::string& rName) const { return mRegions.Has(rName); }
+    /** @brief Whether a region of this name and kind exists. */
+    bool HasRegion(const std::string& rName, RegionKind kind) const {
+        return mRegions.Has(rName, kind);
+    }
+    /** @brief Index of the region with this name and kind, or `npos`. */
+    std::size_t FindRegion(const std::string& rName, RegionKind kind) const {
+        return mRegions.Find(rName, kind);
+    }
 };
 
 }  // namespace meshioplusplus

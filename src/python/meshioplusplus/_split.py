@@ -323,11 +323,16 @@ def split(mesh, by: str = "type", tag: str | None = None) -> dict:
         raise
     except Exception:
         pieces = None
+    used_cpp = pieces is not None
     if pieces is None:
         pieces = _split_py(mesh, by_core, tag or "")
 
     result = {}
     for key, out, pm, cm in pieces:
-        _remap_piece_sets(mesh, out, pm, cm)
+        # The C++ core carries named regions onto each piece itself (and
+        # therefore `point_sets`/`cell_sets`, which are views over them);
+        # remapping again here would apply the maps twice.
+        if not used_cpp:
+            _remap_piece_sets(mesh, out, pm, cm)
         result[key] = out
     return result

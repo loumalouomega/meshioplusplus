@@ -39,6 +39,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/convert_cells.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
@@ -803,16 +804,41 @@ ConvertCellsMode convert_cells_mode_from_name(const std::string& rName) {
                                 "' (expected 'linearize', 'simplexify', or 'elevate')");
 }
 
+namespace {
+
+// Carry the input's named regions onto the output. The cell map is FirstChild:
+// a parent's children occupy a contiguous run, which is also correct for the
+// 1:1 modes (their maps are the monotone identity). Side regions are dropped —
+// a child cell is a new cell of a subdivided or different topology, so its
+// facets have no correspondence with the parent's. See detail/region_remap.hpp.
+void ccells_carry_regions(const Mesh& rIn, ConvertCellsResult& rRes) {
+    detail::RegionRemap rmap;
+    rmap.pPointMap = &rRes.mPointMap;
+    rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+    rmap.pCellMaps = &rRes.mCellMaps;
+    rmap.mOpName = "convert_cells";
+    detail::remap_regions(rIn, rRes.mMesh, rmap);
+}
+
+}  // namespace
+
 ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions) {
+    ConvertCellsResult res;
     switch (rOptions.mMode) {
         case ConvertCellsMode::Linearize:
-            return ccells_linearize(rMesh, rOptions.mRecordParentIds);
+            res = ccells_linearize(rMesh, rOptions.mRecordParentIds);
+            break;
         case ConvertCellsMode::Simplexify:
-            return ccells_simplexify(rMesh, rOptions.mRecordParentIds);
+            res = ccells_simplexify(rMesh, rOptions.mRecordParentIds);
+            break;
         case ConvertCellsMode::Elevate:
-            return ccells_elevate(rMesh, rOptions.mRecordParentIds);
+            res = ccells_elevate(rMesh, rOptions.mRecordParentIds);
+            break;
+        default:
+            throw std::invalid_argument("convert_cells: unhandled mode");
     }
-    throw std::invalid_argument("convert_cells: unhandled mode");
+    ccells_carry_regions(rMesh, res);
+    return res;
 }
 
 }  // namespace meshioplusplus

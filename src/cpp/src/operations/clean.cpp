@@ -32,6 +32,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
@@ -408,6 +409,18 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
     std::int64_t* pm = res.mPointMap.As<std::int64_t>();
     for (std::size_t g = 0; g < n; ++g)
         pm[g] = new_point[static_cast<std::size_t>(weld_rep[g])];
+
+    // --- named regions ------------------------------------------------------
+    // Block structure is 1:1 and cell types are unchanged, so this is a Direct
+    // map and side-set facets survive along with their cells.
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &res.mPointMap;
+        rmap.mCellMapKind = detail::CellMapKind::Direct;
+        rmap.pCellMaps = &res.mCellMaps;
+        rmap.mOpName = "clean";
+        detail::remap_regions(rMesh, out, rmap);
+    }
 
     return res;
 }
