@@ -463,16 +463,21 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
  * @param points_only skip every data array.
  * @param rArrays JS array of names to keep; `null`/`undefined` keeps every
  *   array, an empty array keeps none. That distinction is deliberate.
+ * @param time_step which step of a multi-step file to materialize: 0 (the
+ *   default) is the first, negative counts from the end. Out of range throws
+ *   naming the available count. Honoured by formats carrying a time series
+ *   (currently exodus); ignored by the rest.
  *
  * Formats without a native selective path are read whole and filtered, so the
  * result is the same either way -- only the cost differs.
  */
 val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bool points_only,
-                        const val& rArrays) {
+                        const val& rArrays, int time_step) {
     return with_js_errors([&]() -> val {
         const std::string fmt = js_resolve_read_format(rPath, rFormat);
         meshioplusplus::ReadOptions opts;
         opts.mPointsOnly = points_only;
+        opts.mTimeStep = time_step;
         if (!rArrays.isNull() && !rArrays.isUndefined())
             opts.mDataArrays = emscripten::vecFromJSArray<std::string>(rArrays);
         return mesh_to_val(meshioplusplus::registry_read(rPath, fmt, opts));
@@ -515,6 +520,10 @@ val read_metadata_js(const std::string& rPath, const std::string& rFormat) {
         out.set("fieldDataNames", js_array_of(meta.mFieldDataNames));
         out.set("format", meta.mFormat);
         out.set("fellBackToFullRead", meta.mFellBackToFullRead);
+        // Always present (empty for a format with no time concept), so a caller
+        // can read `.timeValues.length` without first testing for the key. This
+        // is the count `readMeshSelective`'s `timeStep` may name.
+        out.set("timeValues", js_array_of(meta.mTimeValues));
         if (meta.mHasBBox) {
             out.set("bboxMin", js_array_of(std::vector<double>{meta.mBBoxMin[0], meta.mBBoxMin[1],
                                                                meta.mBBoxMin[2]}));
