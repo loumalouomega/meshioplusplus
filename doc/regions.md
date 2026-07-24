@@ -110,14 +110,20 @@ inserting, removing or reordering one invalidates them.
 | **abaqus** | ✅ | ✅ | ✅ | ❌ | `*NSET` / `*ELSET` / `*SURFACE`. Abaqus names its groups but has no integer id for them. |
 | **gmsh 2.2** | ❌ | ✅ | ❌ | ✅ | A physical group is a named, tagged, per-dimension group of *elements*. No node-set and no side-set concept. |
 | **gmsh 4.1** | ❌ | names only | ❌ | ✅ | The writer emits `$PhysicalNames` but no `$Entities`, so membership has nowhere to go. Write 2.2 for a full round-trip. |
+| **exodus** | 📖 | 📖 | 📖 | ✅ | **Read only** (v8.6.0): element blocks → `cell`, node sets → `point`, side sets → `side`, each tagged with its `eb_prop1`/`ns_prop1`/`ss_prop1` id. The writer emits neither `eb_names` nor side sets, so nothing written comes back. See [`doc/formats/exodus.md`](./formats/exodus.md#named-regions). |
+
+📖 = read only. Exodus is a region *source* rather than a round-trip target, so
+it is recorded in `tests/python/test_region_roundtrip.py`'s `READ_ONLY_REGIONS`
+rather than as a row in the round-trip matrix — that matrix writes and reads
+back, and a format that cannot write cannot round-trip.
 
 Deferred to Phase 2, and listed in `tests/python/test_region_roundtrip.py` so
-the gap stays on the record: **Exodus** (blocks + node sets + side sets),
-**MED** (families and groups, absorbing the `MedInfo` side channel), **UNV** and
-**Ansys** (absorbing `UnvInfo`/`AnsysInfo`), **OpenFOAM** (boundary patches,
-which are face groups and therefore side regions), **XDMF** (Sets), and
-**VTU/VTP** — which have no native set concept at all, so a convention has to be
-chosen and documented rather than invented silently.
+the gap stays on the record: **MED** (families and groups, absorbing the
+`MedInfo` side channel), **UNV** and **Ansys** (absorbing `UnvInfo`/`AnsysInfo`),
+**OpenFOAM** (boundary patches, which are face groups and therefore side
+regions), **XDMF** (Sets), and **VTU/VTP** — which have no native set concept at
+all, so a convention has to be chosen and documented rather than invented
+silently. Exodus's **writer** belongs on this list too.
 
 ### Gmsh precedence
 

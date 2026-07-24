@@ -129,6 +129,25 @@ for (r in mio_regions(m)) {
 
 `.Call` with R's own C API keeps the dependency footprint at exactly zero — the package has no `Imports` and needs no C++ toolchain during `R CMD check` — and it matches the flat C ABI the rest of meshio++'s bindings sit on. The whole surface is scalars, vectors and matrices, where `Rf_allocVector` / `Rf_allocMatrix` plus a `memcpy` is all that is required; Rcpp would buy convenience this surface does not need.
 
+## Selective reads and time steps
+
+`mio_read()` narrows what it materializes, and since v8.6.0 also picks which time step of a
+multi-step file to decode:
+
+```r
+m <- mio_read("big.vtu", points_only = TRUE)
+
+# 0 (the default) is the first step; negative counts from the end.
+last <- mio_read("run.exo", time_step = -1)
+
+meta <- mio_read_metadata("run.exo")
+meta$time_values   # c(0, 0.5, 1) -- how many steps `time_step` may name
+```
+
+Out of range is an error naming the available count, never a silent clamp.
+`meta$time_values` has length 0 for a format with no time concept. Honoured by `exodus`; see
+[Selective reads](/selective_read).
+
 ## Documented gaps
 
 These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [Julia](/julia) bindings; the R package invents no workaround for any of them:
@@ -137,7 +156,8 @@ These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [Julia]
 - the **`frozen` pin mask** of `mio_smooth()` and `mio_decimate()`;
 - **per-cell-type counts** in `mio_stats()` — use `mio_cell_block_types()` with `mio_cell_block_info()`;
 - **ragged block connectivity**: `mio_cell_block_info()$is_ragged` reports such a block, and `mio_connectivity()` then raises an error rather than returning something wrong;
-- the combined **`data_manage`** — `mio_data_drop()` / `mio_data_keep()` / `mio_data_rename()` compose to the same effect.
+- the combined **`data_manage`** — `mio_data_drop()` / `mio_data_keep()` / `mio_data_rename()` compose to the same effect;
+- **Exodus provenance strings** (`qa_records` / `info_records`): they ride the `ExodusInfo` side channel, which like `MedInfo` does not cross the flat ABI, so `mesh$info` has no counterpart here. Geometry, data, regions and time steps are unaffected.
 
 As on the Julia page: **gmsh does not currently round-trip named regions** (the `$PhysicalNames` entry is written, but no physical tag is attached to an entity in `$Elements`, so a reader cannot rebuild the group). This is pre-existing meshio++ behaviour, reproducible from Python; `abaqus` round-trips regions correctly.
 

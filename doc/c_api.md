@@ -168,13 +168,26 @@ and `mio_read_metadata_create` returns an opaque summary handle in the style of
 mio_read_opts opts;
 mio_read_opts_init(&opts);      /* always -- never zero-fill by hand */
 opts.points_only = 1;
+opts.time_step = -1;            /* the last step; 0 (the default) is the first */
 mio_mesh* mesh = mio_read_ex("big.vtu", "vtu", &opts);
 
-mio_read_metadata* meta = mio_read_metadata_create("big.vtu", NULL);
+mio_read_metadata* meta = mio_read_metadata_create("run.exo", NULL);
 int64_t np = mio_read_metadata_num_points(meta);
 int fell_back = mio_read_metadata_fell_back(meta);   /* 1 => the file was read in full */
+
+/* How many time steps may `opts.time_step` name? */
+int64_t nsteps = mio_read_metadata_num_time_values(meta);
+double* times = malloc((size_t)nsteps * sizeof(double));
+mio_read_metadata_time_values(meta, times, nsteps);
 mio_read_metadata_free(meta);
 ```
+
+`opts.time_step` selects a step of a multi-step file (0 = the first, negative counts from
+the end); out of range fails the call rather than clamping. It was added in v8.6.0 by
+consuming one of the struct's six `reserved` `int64_t` slots, so **`sizeof(mio_read_opts)`
+and every preceding field's offset are unchanged** — a caller compiled against the older
+header still passes a correctly-sized object. This is the only sanctioned way to grow the
+struct; a gtest pins the tail's width.
 
 A `NULL` `opts.arrays` means *every* array; a non-`NULL` pointer with `num_arrays == 0` means
 *none*. That distinction is load-bearing and is preserved throughout.

@@ -265,13 +265,17 @@ Both libraries are built static, `-Oz`, against Emscripten's own zlib port, with
 
 ## Selective reads, metadata, and codecs
 
-`readMeshSelective(path, { format, pointsOnly, arrays })` and `readMetadata(path, format)`
+`readMeshSelective(path, { format, pointsOnly, arrays, timeStep })` and `readMetadata(path, format)`
 mirror the Python API; `readerSupportsOptions(format)` reports whether a format has a native
 selective path. `arrays: null` reads every data array, `arrays: []` reads none.
 
 ```javascript
 const mesh = m.readMeshSelective('big.vtu', { arrays: ['u'] });
 const meta = m.readMetadata('big.vtu');   // meta.fellBackToFullRead
+
+// A multi-step file: 0 (default) is the first step, negative counts from the end.
+const last = m.readMeshSelective('run.exo', { format: 'exodus', timeStep: -1 });
+m.readMetadata('run.exo', 'exodus').timeValues;  // [0, 0.5, 1] -- always present
 ```
 
 **Memory mapping is unavailable** here — the Emscripten virtual filesystem has nothing to map,

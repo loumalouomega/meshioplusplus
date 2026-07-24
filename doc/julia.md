@@ -136,6 +136,27 @@ end
 
 Entries are 1-based, with one exception documented in [`doc/regions.md`](/regions): for a `:side` region the second row is a **facet ordinal within the cell type**, not a mesh index, so it is passed through unshifted — the same rule Fortran's `partition_labels` follows.
 
+## Selective reads and time steps
+
+`ReadOptions` narrows what a read materializes, and since v8.6.0 also picks which time step
+of a multi-step file to decode:
+
+```julia
+using MeshioPlusPlus
+
+m = MeshioPlusPlus.read("big.vtu"; options = ReadOptions(points_only = true))
+
+# 0 (the default) is the first step; negative counts from the end.
+last = MeshioPlusPlus.read("run.exo"; options = ReadOptions(time_step = -1))
+
+meta = read_metadata("run.exo")
+meta.time_values          # [0.0, 0.5, 1.0] -- how many steps `time_step` may name
+```
+
+Out of range is an error naming the available count, never a silent clamp.
+`meta.time_values` is empty for a format with no time concept, so `length(...)` is always
+safe. Honoured by `exodus`; see [Selective reads](/selective_read).
+
 ## Documented gaps
 
 These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [R](/r) bindings; the Julia package invents no workaround for any of them:
@@ -144,7 +165,8 @@ These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [R](/r)
 - the **`frozen` pin mask** of `smooth` and `decimate`;
 - **per-cell-type counts** in `stats` — use `cell_block_types` with `cell_block_info`;
 - **ragged block connectivity** (polygons and polyhedra of varying size): `cell_block_info(m, i).is_ragged` reports them, and `connectivity` then throws rather than returning something wrong;
-- the combined **`data_manage`** — `data_drop` / `data_keep` / `data_rename` compose to the same effect.
+- the combined **`data_manage`** — `data_drop` / `data_keep` / `data_rename` compose to the same effect;
+- **Exodus provenance strings** (`qa_records` / `info_records`): they ride the `ExodusInfo` side channel, which like `MedInfo` does not cross the flat ABI, so `mesh.info` has no counterpart here. Geometry, data, regions and time steps are unaffected.
 
 One further limitation is a *format* one rather than an ABI one, and easy to trip over: **gmsh does not currently round-trip named regions.** The writer emits the `$PhysicalNames` entry but does not attach the physical tag to an entity in `$Elements`, so a reader finds nothing to rebuild the group from. This is pre-existing meshio++ behaviour, reproducible from Python; `abaqus` round-trips regions correctly.
 

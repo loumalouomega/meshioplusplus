@@ -864,10 +864,18 @@ narrow what it reads:
 meshioplusplus info --fast big.vtu
 meshioplusplus convert --points-only in.vtu out.vtu     # geometry, no data arrays
 meshioplusplus convert --arrays u,p in.vtu out.vtu      # only these data arrays
+meshioplusplus convert --time-step=-1 run.exo last.vtu  # the last step of a time series
 ```
 
 `--points-only` keeps connectivity — it narrows data, not topology. `arrays` with an empty
 list keeps no arrays; omitting the flag keeps every array.
+
+`--time-step=N` picks one step of a multi-step file: `0` (the default) is the first,
+negative counts from the end. A negative value needs the `--time-step=-1` form, as with the
+other negative-valued options. Out of range is an error naming the available count, never a
+silent clamp; `info --fast` prints `Time steps: N [...]` when a file records more than one.
+Honoured by formats carrying a time series (currently `exodus`); a format whose reader has
+no time concept refuses rather than quietly returning the first step.
 
 Formats without a header-only path are read in full and `info --fast` says so explicitly
 (`no header-only path for this format; the file was read in full`) rather than implying a
