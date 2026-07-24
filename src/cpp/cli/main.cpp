@@ -418,7 +418,11 @@ void print_usage(std::ostream& os) {
           "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
-          "  split                   Partition into multiple files (type/region/component)\n"
+          "  split                   Partition into multiple files "
+          "(type/region/regions/component)\n"
+          "                            --by regions is one piece per named Cell region\n"
+          "                            (not a partition -- overlapping regions overlap)\n"
+          "  regions                 List a mesh's named regions (name/kind/dim/tag/entries)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
           "  refine                  Uniformly subdivide every cell (same-type children)\n"
           "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"
@@ -592,6 +596,16 @@ void print_metadata_summary(const meshioplusplus::MeshMetadata& rMeta) {
             std::cout << ", ...";
         std::cout << "]\n";
     }
+    if (!rMeta.mRegions.empty()) {
+        std::cout << "  Regions (" << rMeta.mRegions.size() << "):\n";
+        for (const auto& r : rMeta.mRegions) {
+            std::cout << "    " << r.mName << " (" << meshioplusplus::region_kind_name(r.mKind)
+                      << ", " << r.mNumEntries << " entries";
+            if (r.mTag >= 0)
+                std::cout << ", tag=" << r.mTag;
+            std::cout << ")\n";
+        }
+    }
     if (rMeta.mHasBBox) {
         std::cout << "  Bounding box: [" << rMeta.mBBoxMin[0] << ", " << rMeta.mBBoxMin[1] << ", "
                   << rMeta.mBBoxMin[2] << "] - [" << rMeta.mBBoxMax[0] << ", " << rMeta.mBBoxMax[1]
@@ -698,6 +712,57 @@ int cmd_info(const std::vector<std::string>& rArgs) {
             }
         if (any_unused)
             std::cerr << "Warning: Some points are not part of any cell.\n";
+    }
+    return 0;
+}
+
+int cmd_regions(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}, {"json", {}, false}});
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("regions requires exactly INFILE");
+
+    // Goes through registry_read_metadata rather than a full read: a native
+    // metadata path costs nothing extra to report regions from an
+    // already-read mesh (Exodus, and every fallback path), and this stays
+    // cheap on any format -- nothing here needs the connectivity.
+    std::string fmt;
+    try {
+        fmt = meshioplusplus::resolve_format(p.positionals[0], opt_value(p, "input-format"));
+    } catch (const ReadError&) {
+        fmt = meshioplusplus::sniff_format(p.positionals[0]);
+        if (fmt.empty())
+            throw;
+    }
+    const meshioplusplus::MeshMetadata meta =
+        meshioplusplus::registry_read_metadata(p.positionals[0], fmt, {});
+
+    if (has_flag(p, "json")) {
+        std::cout << "[";
+        for (std::size_t i = 0; i < meta.mRegions.size(); ++i) {
+            const auto& r = meta.mRegions[i];
+            std::cout << (i ? ", " : "") << "{\"name\": \"" << r.mName << "\", \"kind\": \""
+                      << meshioplusplus::region_kind_name(r.mKind) << "\", \"dim\": " << r.mDim
+                      << ", \"tag\": " << r.mTag << ", \"num_entries\": " << r.mNumEntries << "}";
+        }
+        std::cout << "]\n";
+        return 0;
+    }
+
+    if (meta.mRegions.empty()) {
+        std::cout << "<meshio++ mesh regions>\n  No regions.\n";
+        if (meta.mFellBackToFullRead)
+            std::cout << "  (the full mesh was read; this format may simply carry none)\n";
+        return 0;
+    }
+    std::cout << "<meshio++ mesh regions> (" << meta.mRegions.size() << ")\n";
+    for (const auto& r : meta.mRegions) {
+        std::cout << "  " << r.mName << " (" << meshioplusplus::region_kind_name(r.mKind) << ", "
+                  << r.mNumEntries << " entries";
+        if (r.mDim >= 0)
+            std::cout << ", dim=" << r.mDim;
+        if (r.mTag >= 0)
+            std::cout << ", tag=" << r.mTag;
+        std::cout << ")\n";
     }
     return 0;
 }
@@ -2192,6 +2257,8 @@ int main(int argc, char** argv) {
             return cmd_isosurface(rest);
         if (cmd == "split")
             return cmd_split(rest);
+        if (cmd == "regions")
+            return cmd_regions(rest);
         if (cmd == "convert-cells")
             return cmd_convert_cells(rest);
         if (cmd == "refine")
