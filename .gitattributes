@@ -31,6 +31,8 @@ src/python/meshioplusplus/_viewer_assets/viewer.html -diff linguist-generated=tr
 # drowns out the actual C++/Python source in the repo's Languages graph).
 example/python/*.ipynb linguist-generated=true
 example/cpp/*.ipynb linguist-generated=true
+example/julia/*.ipynb linguist-generated=true
+example/r/*.ipynb linguist-generated=true
 benchmark/*.ipynb linguist-generated=true
 
 # Icon/logo build tooling: TikZ sources plus their compiled SVG/PNG/PDF
