@@ -650,6 +650,46 @@ int64_t mio_read_metadata_time_values(const mio_read_metadata* meta, double* out
     });
 }
 
+int64_t mio_read_metadata_num_regions(const mio_read_metadata* meta) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(meta->mMeta.mRegions.size());
+    });
+}
+
+int64_t mio_read_metadata_region_name(const mio_read_metadata* meta, int64_t index, char* buf,
+                                      int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        const std::vector<meshioplusplus::RegionSummary>& regions = meta->mMeta.mRegions;
+        if (index < 0 || static_cast<std::size_t>(index) >= regions.size())
+            throw meshioplusplus::ReadError("meshio++: region index " + std::to_string(index) +
+                                            " out of range");
+        return copy_string(regions[static_cast<std::size_t>(index)].mName, buf, buflen);
+    });
+}
+
+mio_status mio_read_metadata_region_info(const mio_read_metadata* meta, int64_t index,
+                                         mio_region_info* out) {
+    return guarded([&]() -> mio_status {
+        if (!meta || !out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: metadata/out is NULL");
+        const std::vector<meshioplusplus::RegionSummary>& regions = meta->mMeta.mRegions;
+        if (index < 0 || static_cast<std::size_t>(index) >= regions.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: region index " + std::to_string(index) + " out of range");
+        const meshioplusplus::RegionSummary& r = regions[static_cast<std::size_t>(index)];
+        out->kind = static_cast<int32_t>(r.mKind);
+        out->dim = static_cast<int32_t>(r.mDim);
+        out->tag = r.mTag;
+        out->num_entries = static_cast<int64_t>(r.mNumEntries);
+        out->stride = 0;  // no entries are carried by a summary
+        return MIO_OK;
+    });
+}
+
 int64_t mio_read_metadata_num_names(const mio_read_metadata* meta, int location) {
     return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
         if (!meta)

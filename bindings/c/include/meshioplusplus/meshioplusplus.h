@@ -167,6 +167,27 @@ typedef enum mio_cell_type {
         MIO_CELL_Custom
 } mio_cell_type;
 
+/**
+ * What kind of entity a region groups. Mirrors meshioplusplus::RegionKind.
+ * Declared here (rather than down with the rest of the Named regions section)
+ * so mio_read_metadata's region accessors can use it too.
+ */
+typedef enum mio_region_kind {
+    MIO_REGION_POINT = 0,
+    MIO_REGION_CELL = 1,
+    MIO_REGION_SIDE = 2
+} mio_region_kind;
+
+/** Fixed-size description of one region (see mio_regions_info). */
+typedef struct mio_region_info {
+    int32_t kind;         /**< a mio_region_kind */
+    int32_t dim;          /**< topological dimension, or -1 if unspecified */
+    int64_t tag;          /**< format-native integer id, or -1 if none */
+    int64_t num_entries;  /**< number of grouped entities (rows) */
+    int64_t stride;       /**< values per entry: 2 for SIDE, else 1 (0 where entries aren't
+                            *   carried at all, as in mio_read_metadata_region_info) */
+} mio_region_info;
+
 /* ---------------------------------------------------------------------
  * Version / build introspection
  * --------------------------------------------------------------------- */
@@ -317,6 +338,32 @@ MIO_API int64_t mio_read_metadata_num_time_values(const mio_read_metadata* meta)
  */
 MIO_API int64_t mio_read_metadata_time_values(const mio_read_metadata* meta, double* out,
                                               int64_t count);
+
+/**
+ * @return number of named regions the file carries, or -1 on error.
+ *
+ * Populated whenever the summary came from an already-read mesh (every
+ * fallback path, and any format -- like exodus -- that always falls back); 0
+ * on a native metadata path that declined a full read, since none of the
+ * formats with such a path (VTU/VTP/XDMF/Gmsh 4.1) currently map regions at
+ * all, so this is never a wrong answer.
+ */
+MIO_API int64_t mio_read_metadata_num_regions(const mio_read_metadata* meta);
+
+/**
+ * Copy the `index`-th region's name into `buf`.
+ * @return the required length excluding the NUL, or -1 on error.
+ */
+MIO_API int64_t mio_read_metadata_region_name(const mio_read_metadata* meta, int64_t index,
+                                              char* buf, int64_t buflen);
+
+/**
+ * The `index`-th region's kind/dim/tag/entry count. Reuses `mio_region_info`'s
+ * shape (see the Named regions section below); `stride` is meaningless here
+ * (no entries are carried) and is always 0.
+ */
+MIO_API mio_status mio_read_metadata_region_info(const mio_read_metadata* meta, int64_t index,
+                                                 mio_region_info* out);
 
 /** @return number of data-array names at `location` (a mio_data_location), or -1. */
 MIO_API int64_t mio_read_metadata_num_names(const mio_read_metadata* meta, int location);
@@ -1510,24 +1557,8 @@ MIO_API mio_status mio_mesh_get_field_data(const mio_mesh* mesh, const char* nam
  * of a 2-D one. Entries are stored ascending and de-duplicated.
  * --------------------------------------------------------------------- */
 
-/** What kind of entity a region groups. Mirrors meshioplusplus::RegionKind. */
-typedef enum mio_region_kind {
-    MIO_REGION_POINT = 0,
-    MIO_REGION_CELL = 1,
-    MIO_REGION_SIDE = 2
-} mio_region_kind;
-
 /** Opaque snapshot of a mesh's regions. Destroy with mio_regions_free(). */
 typedef struct mio_regions mio_regions;
-
-/** Fixed-size description of one region (see mio_regions_info). */
-typedef struct mio_region_info {
-    int32_t kind;         /**< a mio_region_kind */
-    int32_t dim;          /**< topological dimension, or -1 if unspecified */
-    int64_t tag;          /**< format-native integer id, or -1 if none */
-    int64_t num_entries;  /**< number of grouped entities (rows) */
-    int64_t stride;       /**< values per entry: 2 for SIDE, else 1 */
-} mio_region_info;
 
 /**
  * Snapshot every named region a mesh carries (read-only).
