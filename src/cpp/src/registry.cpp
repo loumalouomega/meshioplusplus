@@ -133,7 +133,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
          }},
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        {"exodus", meshioplusplus::read_exodus},
+        // Explicit lambda, not `&read_exodus`: the overload set now also holds
+        // the ExodusInfo form, and taking its address would be ambiguous. The
+        // provenance strings are dropped here, as MedInfo's are below.
+        {"exodus", [](const std::string& path) { return meshioplusplus::read_exodus(path); }},
 #endif
     };
     return m;
@@ -330,6 +333,13 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
     // Sparse by design -- populated per format as native selective-read support
     // lands. An absent format falls back to a full read in registry_read().
     static const std::unordered_map<std::string, ReadExFn> m = {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        // Exodus honours mTimeStep rather than the narrowing options -- being
+        // "options-aware" is not one capability but several, and a time series
+        // is the one this format has. IWYU pragma: keep
+        {"exodus", [](const std::string& path,
+                      const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); }},
+#endif
         {"gmsh", meshioplusplus::read_gmsh},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
@@ -340,6 +350,9 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
 
 const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
     static const std::unordered_map<std::string, MetadataFn> m = {
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+        {"exodus", meshioplusplus::read_exodus_metadata},
+#endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
