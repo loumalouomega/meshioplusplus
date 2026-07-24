@@ -9,6 +9,10 @@
 [![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.9%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![Julia](https://img.shields.io/badge/Julia-1.9%2B-9558b2.svg?style=flat-square&logo=julia&logoColor=white)](doc/julia.md) [![R](https://img.shields.io/badge/R-4.0%2B-276dc3.svg?style=flat-square&logo=r&logoColor=white)](doc/r.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](src/viewer/)
 
 [![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus) [![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
+<!-- TODO: Flat format -->
+<!-- <a href="https://github.com/loumalouomega/meshioplusplus/releases/latest"><img src="https://img.shields.io/github/release-date/loumalouomega/meshioplusplus?label="></a>
+<a href="https://github.com/loumalouomega/meshioplusplus/compare/Release-10.4.0...master"><img src="https://img.shields.io/github/commits-since/loumalouomega/meshioplusplus/latest?label=commits%20since"></a>
+<a href="https://github.com/loumalouomega/meshioplusplus/commit/master"><img src="https://img.shields.io/github/last-commit/loumalouomega/meshioplusplus?label=latest%20commit"></a> -->
 
 [![gh-actions](https://img.shields.io/github/actions/workflow/status/loumalouomega/meshioplusplus/ci.yml?branch=master&style=flat-square)](https://github.com/loumalouomega/meshioplusplus/actions?query=workflow%3Aci) [![codecov](https://img.shields.io/codecov/c/github/loumalouomega/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/loumalouomega/meshioplusplus) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black)
 
@@ -277,7 +281,7 @@ A bundle of dependency-free mesh-editing utilities:
 - **`meshioplusplus.transform`** — apply an affine transform (translate / scale / rotate / 4×4 matrix / unit-scale) to the points; connectivity and data are carried through. See `doc/transform.md`.
 - **`meshioplusplus.clean`** — weld coincident points (spatial hash), drop degenerate and duplicate cells, and remove orphaned points, in one toggleable pass. See `doc/clean.md`.
 - **`meshioplusplus.crop`** — extract the part of a mesh inside a bounding box or half-space, pruning unused points (`mode="all"`/`"any"`). See `doc/crop.md`.
-- **`meshioplusplus.split`** — partition a mesh into several by cell type, connected component (flood-fill), or region (`cell_sets` / integer tag). See `doc/split.md`.
+- **`meshioplusplus.split`** — partition a mesh into several by cell type, connected component (flood-fill), region (`cell_sets` / integer tag), or one piece per named Cell region (`by="regions"`, cross-binding, not a partition — overlapping regions overlap). See `doc/split.md`. `meshioplusplus regions` (CLI) / `read_metadata(...)["regions"]` lists a mesh's regions cheaply, without a full read where possible.
 - **`meshioplusplus.compute_stats`** — geometric statistics (bounding box, centroid, per-type counts, area, signed/unsigned volume, inverted cells) — the geometric complement to `info`. See `doc/stats.md`.
 
 <!--pytest-codeblocks:skip-->
