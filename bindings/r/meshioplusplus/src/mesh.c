@@ -137,6 +137,44 @@ static int64_t meta_name_getter(void *c, char *buf, int64_t buflen) {
     return mio_read_metadata_name(x->meta, x->location, x->index, buf, buflen);
 }
 
+static int64_t meta_region_name_getter(void *c, char *buf, int64_t buflen) {
+    meta_ctx *x = (meta_ctx *)c;
+    return mio_read_metadata_region_name(x->meta, x->index, buf, buflen);
+}
+
+/* The mesh.c-local region_kind_name() (defined further down, near R_mio_regions)
+ * is reused here rather than duplicated -- forward-declared since this function
+ * is defined earlier in the file. */
+static const char *region_kind_name(int32_t kind);
+
+/* One named region's shape, without its entries -- the read_metadata
+ * counterpart of R_mio_regions(). */
+static SEXP meta_regions(const mio_read_metadata *meta) {
+    int64_t n = mio_read_metadata_num_regions(meta);
+    if (n < 0) n = 0;
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        meta_ctx ctx = {meta, i, 0};
+        SEXP name = PROTECT(mio_r_getstring(meta_region_name_getter, &ctx, "region name"));
+        mio_region_info info;
+        if (mio_read_metadata_region_info(meta, i, &info) != MIO_OK) {
+            UNPROTECT(1); /* name */
+            continue;     /* skip a region the core could not describe */
+        }
+        SEXP kind = PROTECT(Rf_mkString(region_kind_name(info.kind)));
+        SEXP dim = PROTECT(Rf_ScalarInteger(info.dim));
+        SEXP tag = PROTECT(Rf_ScalarReal((double)info.tag));
+        SEXP num_entries = PROTECT(Rf_ScalarReal((double)info.num_entries));
+        const char *item_names[] = {"name", "kind", "dim", "tag", "num_entries"};
+        SEXP item_values[] = {name, kind, dim, tag, num_entries};
+        SEXP item = PROTECT(mio_r_named_list(5, item_names, item_values));
+        SET_VECTOR_ELT(out, (R_xlen_t)i, item);
+        UNPROTECT(6);
+    }
+    UNPROTECT(1);
+    return out;
+}
+
 static SEXP meta_names(const mio_read_metadata *meta, int location) {
     int64_t n = mio_read_metadata_num_names(meta, location);
     if (n < 0) n = 0;
@@ -210,17 +248,22 @@ SEXP R_mio_read_metadata(SEXP path, SEXP format) {
     SEXP times = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)nsteps));
     if (nsteps > 0) mio_read_metadata_time_values(meta, REAL(times), nsteps);
 
+    /* The file's named regions, without their entries. Empty on a native
+     * metadata path (none of those formats currently map regions); cheap
+     * whenever the summary came from an already-read mesh. */
+    SEXP regions = PROTECT(meta_regions(meta));
+
     mio_read_metadata_free(meta);
 
     const char *names[] = {"num_points",      "point_dim",       "num_cells",
                            "num_cell_blocks", "cell_block_types", "cell_block_num_cells",
                            "cell_block_nodes_per_cell", "cell_block_is_ragged",
                            "point_data_names", "cell_data_names", "field_data_names",
-                           "bbox",            "fell_back",       "time_values"};
+                           "bbox",            "fell_back",       "time_values", "regions"};
     SEXP values[] = {npoints, pdim, ncells, nblk, types, counts, npcs,
-                     ragged,  pn,   cn,     fn,   bbox,  fell,   times};
-    out = PROTECT(mio_r_named_list(14, names, values));
-    UNPROTECT(15); /* the 14 values + out */
+                     ragged,  pn,   cn,     fn,   bbox,  fell,   times, regions};
+    out = PROTECT(mio_r_named_list(15, names, values));
+    UNPROTECT(16); /* the 15 values + out */
     return out;
 }
 

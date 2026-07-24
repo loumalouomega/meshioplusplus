@@ -224,9 +224,12 @@ mio_convert <- function(in_path, out_path, in_format = NULL, out_format = NULL) 
 #'   or `NULL` -- absent is the normal case for a native summary, since
 #'   computing it would mean decoding the coordinates), `fell_back`
 #'   (`TRUE` when the whole file had to be read because the format has no
-#'   header-only path), and `time_values` (the file's recorded time-series
+#'   header-only path), `time_values` (the file's recorded time-series
 #'   values; length 0 for a format with no time concept -- this is the count
-#'   `mio_read(time_step = ...)` may name).
+#'   `mio_read(time_step = ...)` may name), and `regions` (a list of
+#'   `name`/`kind`/`dim`/`tag`/`num_entries` -- the `mio_regions()` shape minus
+#'   the entries themselves; empty on a native metadata path, since none of
+#'   those formats currently map regions).
 #' @export
 mio_read_metadata <- function(path, format = NULL) {
   .Call(R_mio_read_metadata, as.character(path), format)
