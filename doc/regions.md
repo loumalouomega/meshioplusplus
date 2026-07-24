@@ -216,3 +216,35 @@ mesh.regions; // [{ name, kind, dim, tag, entries }]
 `Side sets:`, and `meshioplusplus diff` reports regions added, removed and
 changed, folding them into its nonzero exit code. (`meshes_equal` deliberately
 does **not** consider them: it is documented to compare geometry and data.)
+
+## Enumerating and splitting by region
+
+Two things build directly on the model above, both added in v8.7.0:
+
+- **`read_metadata(...)["regions"]`** (Python; `readMetadata(...).regions` in
+  WASM; `mio_read_metadata_num_regions`/`_region_name`/`_region_info` in the C
+  API; `mio_metadata%regions` in Fortran; the equivalent shape in Julia/R) —
+  each region's `name`/`kind`/`dim`/`tag`/`num_entries`, **without the entries
+  themselves**. Populated from whatever's already on an in-memory mesh, so it
+  costs nothing extra whenever the summary came from a fallback read (every
+  format lacking a native metadata path, plus Exodus, which always falls
+  back); empty on a native metadata path (VTU/VTP/XDMF/Gmsh 4.1), since none
+  of those currently map regions at all. This is what lets a caller build a
+  SubModelPart tree — or just decide whether it's worth reading the mesh at
+  all — without paying for a full read first.
+- **`meshioplusplus regions FILE`** (both CLIs) lists the same summary
+  directly (`--json` for machine consumption):
+
+  ```bash
+  meshioplusplus regions bracket.inp
+  # <meshio++ mesh regions> (2)
+  #   fixed (point, 12 entries, tag=1)
+  #   solid (cell, 340 entries, dim=3, tag=2)
+  ```
+
+- **`split(mesh, by="regions")`** (see [`doc/split.md`](split.md)) turns each
+  named `Cell` region into its own submesh — the natural next step after
+  listing them. Unlike every other `split` criterion this is not a partition:
+  regions may overlap, so a cell can land in zero, one, or several output
+  pieces; `Point`/`Side` regions produce no piece, since there is no sound
+  default for "these facets alone".

@@ -384,7 +384,7 @@ meshioplusplus split shells.vtu 'contour_{key}.vtu' --by region --tag iso:index
 
 ## meshioplusplus split
 
-Partition a mesh into several files by type, region, or connected component (see [split](/split)).
+Partition a mesh into several files by type, region, named Cell regions, or connected component (see [split](/split)).
 
 ```
 meshioplusplus split [options] INFILE OUTPATTERN
@@ -394,17 +394,53 @@ meshioplusplus split [options] INFILE OUTPATTERN
 
 | Option | Description |
 |--------|-------------|
-| `--by type\|region\|component` | Split criterion (default `type`) |
-| `--tag NAME` | For `--by region`: the integer `cell_data` name to split on |
+| `--by type\|region\|regions\|component` | Split criterion (default `type`) |
+| `--tag NAME` | For `--by region`: the integer `cell_data` name to split on (unused by `regions`) |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Prints how many pieces were produced and their sizes.
+Prints how many pieces were produced and their sizes. `--by regions` (plural)
+is one piece per named **Cell** [region](/regions) and is **not a partition**
+— a cell in several regions lands in several pieces, and `Point`/`Side`
+regions produce no piece at all. Run [`meshioplusplus regions`](#meshioplusplus-regions)
+first to see what a mesh's regions are.
 
 **Examples:**
 
 ```sh
 meshioplusplus split in.vtu 'out_{key}.vtu' --by type
 meshioplusplus split in.vtu 'out_{key}.vtu' --by component
+meshioplusplus split in.inp 'part_{key}.vtu' --by regions
+```
+
+---
+
+## meshioplusplus regions
+
+List a mesh's named [regions](/regions) — name, kind, dimension, tag, and
+entry count (not the entries themselves).
+
+```
+meshioplusplus regions [options] INFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--input-format` (`-i`) | Force input format |
+| `--json` | Emit the regions as JSON |
+
+Goes through the same cheap path `info --fast`/`read_metadata` use rather than
+a full read: whenever the summary already comes from an in-memory mesh (every
+format lacking a native metadata path, plus Exodus, which always falls back),
+regions cost nothing extra to report; a native metadata path (VTU/VTP/XDMF/
+Gmsh 4.1) reports none, since none of those currently map regions at all.
+
+**Example:**
+
+```sh
+meshioplusplus regions bracket.inp
+# <meshio++ mesh regions> (2)
+#   fixed (point, 12 entries, tag=1)
+#   solid (cell, 340 entries, dim=3, tag=2)
 ```
 
 ---
