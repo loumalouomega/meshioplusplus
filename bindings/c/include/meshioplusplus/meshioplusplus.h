@@ -247,7 +247,14 @@ typedef struct mio_read_opts {
     const char* const* arrays;
     int64_t num_arrays;
     int mmap_mode;      /**< 0 = auto, 1 = on, 2 = off */
-    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    /** Which step of a multi-step file to materialize: 0 (the default) is the
+     *  first, preserving the historical behaviour; negative counts from the end.
+     *  Out of range fails the call rather than clamping. Honoured by formats
+     *  carrying a time series (currently exodus); ignored by the rest.
+     *  Takes one of the former `reserved` slots, keeping the struct's size and
+     *  every preceding field's offset unchanged. */
+    int64_t time_step;
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
 } mio_read_opts;
 
 /** Initialize `opts` to the defaults (read everything). Always use this. */
@@ -295,6 +302,21 @@ MIO_API mio_status mio_read_metadata_cell_block(const mio_read_metadata* meta, i
  */
 MIO_API int64_t mio_read_metadata_cell_block_type(const mio_read_metadata* meta, int64_t index,
                                                   char* buf, int64_t buflen);
+
+/**
+ * @return number of time steps the file records, or -1 on error.
+ *
+ * 0 for a format with no time concept. This is the count `mio_read_opts.time_step`
+ * may name, so it is what makes a step request checkable before issuing it.
+ */
+MIO_API int64_t mio_read_metadata_num_time_values(const mio_read_metadata* meta);
+
+/**
+ * Copy the recorded time values into `out` (at most `count` of them).
+ * @return the number written, or -1 on error.
+ */
+MIO_API int64_t mio_read_metadata_time_values(const mio_read_metadata* meta, double* out,
+                                              int64_t count);
 
 /** @return number of data-array names at `location` (a mio_data_location), or -1. */
 MIO_API int64_t mio_read_metadata_num_names(const mio_read_metadata* meta, int location);

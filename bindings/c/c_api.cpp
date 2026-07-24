@@ -42,6 +42,7 @@
 
 // System includes
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -509,6 +510,12 @@ meshioplusplus::ReadOptions capi_read_options(const mio_read_opts* pOpts) {
             out.mMmap = meshioplusplus::MmapMode::Auto;
             break;
     }
+    // int64 on the ABI (the reserved slots are int64) but int in the core: a
+    // step index beyond int range cannot name a real step, so reject it here
+    // rather than let the narrowing wrap into a valid-looking one.
+    if (pOpts->time_step > INT_MAX || pOpts->time_step < INT_MIN)
+        throw meshioplusplus::ReadError("meshio++: time_step is out of range");
+    out.mTimeStep = static_cast<int>(pOpts->time_step);
     return out;
 }
 
@@ -618,6 +625,28 @@ int64_t mio_read_metadata_cell_block_type(const mio_read_metadata* meta, int64_t
             throw meshioplusplus::ReadError("meshio++: cell block index out of range");
         return copy_string(meta->mMeta.mCellBlocks[static_cast<std::size_t>(index)].mType, buf,
                            buflen);
+    });
+}
+
+int64_t mio_read_metadata_num_time_values(const mio_read_metadata* meta) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(meta->mMeta.mTimeValues.size());
+    });
+}
+
+int64_t mio_read_metadata_time_values(const mio_read_metadata* meta, double* out, int64_t count) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        const std::vector<double>& values = meta->mMeta.mTimeValues;
+        const std::int64_t n =
+            std::min<std::int64_t>(count < 0 ? 0 : count, static_cast<std::int64_t>(values.size()));
+        if (out)
+            for (std::int64_t i = 0; i < n; ++i)
+                out[i] = values[static_cast<std::size_t>(i)];
+        return n;
     });
 }
 
