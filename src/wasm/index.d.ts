@@ -103,6 +103,12 @@ export interface MeshMetadata {
    * whole. The summary is still correct, just not cheap.
    */
   fellBackToFullRead: boolean;
+  /**
+   * The file's recorded time-series values, empty for a format with no time
+   * concept. This is the count `readMeshSelective`'s `timeStep` may name, so it
+   * is what makes a step request checkable before issuing it.
+   */
+  timeValues: number[];
   bboxMin?: number[];
   bboxMax?: number[];
 }
@@ -297,10 +303,23 @@ export interface MeshioPlusPlusModule {
    * with a native selective path (vtu/vtp/xdmf/gmsh) skip the unwanted arrays
    * outright; the rest are read whole and filtered, so the result is identical
    * either way and only the cost differs.
+   *
+   * `timeStep` selects a step of a multi-step file: 0 (the default) is the
+   * first, preserving the historical behaviour; negative counts from the end.
+   * Out of range throws naming the available count rather than clamping.
+   * Honoured by formats carrying a time series (currently exodus); see
+   * `readMetadata(...).timeValues` for how many there are.
+   *
+   * @throws {Error} on an out-of-range `timeStep`.
    */
   readMeshSelective(
     path: string,
-    options?: { format?: string; pointsOnly?: boolean; arrays?: string[] | null }
+    options?: {
+      format?: string;
+      pointsOnly?: boolean;
+      arrays?: string[] | null;
+      timeStep?: number;
+    }
   ): Mesh;
 
   /**

@@ -43,7 +43,7 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
- *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[]}) => Mesh,
+ *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number}) => Mesh,
  *   readMetadata: (path: string, format?: string) => object,
  *   readerSupportsOptions: (format: string) => boolean,
  *   writeMesh: (path: string, mesh: Mesh, format?: string) => void,
@@ -94,8 +94,12 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
         // every data array, `arrays: []` reads none -- the distinction is
         // deliberate. Formats without a native selective path are read whole
         // and filtered, so the result is the same either way.
-        readMeshSelective: (path, { format = '', pointsOnly = false, arrays = null } = {}) =>
-            Module.readMeshSelective(path, format, pointsOnly, arrays),
+        // `timeStep` picks a step of a multi-step file: 0 (default) is the
+        // first, negative counts from the end, out of range throws.
+        readMeshSelective: (
+            path,
+            { format = '', pointsOnly = false, arrays = null, timeStep = 0 } = {},
+        ) => Module.readMeshSelective(path, format, pointsOnly, arrays, timeStep),
         // Summarize a file without loading its heavy arrays. The returned
         // object's `fellBackToFullRead` says whether that was actually cheap.
         readMetadata: (path, format = '') => Module.readMetadata(path, format),
