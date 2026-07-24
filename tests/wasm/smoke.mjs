@@ -360,6 +360,9 @@ step('readMetadata summarizes without loading the arrays', () => {
     assert.equal(meta.format, 'vtu');
     // vtu has a native metadata path, so this really was cheap...
     assert.equal(meta.fellBackToFullRead, false);
+    // Always present, so a caller can read .length without testing the key;
+    // empty for a format with no time concept.
+    assert.deepEqual(meta.timeValues, []);
     // ...and a native summary never decodes the coordinates, so it reports no
     // bbox rather than a fabricated one at the origin.
     assert.ok(!('bboxMin' in meta));
@@ -375,6 +378,38 @@ step('readMetadata flags a full-read fallback and can then afford a bbox', () =>
 step('readerSupportsOptions reports the native paths', () => {
     assert.equal(m.readerSupportsOptions('vtu'), true);
     assert.equal(m.readerSupportsOptions('stl'), false);
+    // Exodus became options-aware in v8.6.0 so `timeStep` has somewhere to go.
+    // Before that this was false and the format was not readable here at all.
+    assert.equal(m.readerSupportsOptions('exodus'), true);
+});
+
+step('exodus reads here at all, and reports its time steps', () => {
+    // The regression this guards: the reader used to throw on `qa_records`,
+    // which every file SEACAS/Cubit/Sierra writes carries -- and there is no
+    // Python fallback in this build to defer to. A file written by meshio++'s
+    // own writer carries no qa_records, so this cannot prove that part (the
+    // pytest suite's hand-authored fixture does); what it does prove is that
+    // the format is reachable and the new time plumbing is wired end to end.
+    m.writeMesh('/smoke.e', seltri, 'exodus');
+    const mesh = m.readMesh('/smoke.e', 'exodus');
+    assert.equal(mesh.cells.length, 1);
+    assert.equal(mesh.cells[0].type, 'triangle');
+
+    const meta = m.readMetadata('/smoke.e', 'exodus');
+    assert.equal(meta.format, 'exodus');
+    // meshio++'s writer emits exactly one (dummy) step.
+    assert.equal(meta.timeValues.length, 1);
+
+    // Step 0 and -1 both name that single step; anything else is out of range,
+    // and must say so rather than silently handing back step 0.
+    for (const timeStep of [0, -1]) {
+        const one = m.readMeshSelective('/smoke.e', { format: 'exodus', timeStep });
+        assert.equal(one.cells[0].type, 'triangle');
+    }
+    assert.throws(
+        () => m.readMeshSelective('/smoke.e', { format: 'exodus', timeStep: 5 }),
+        /out of range/,
+    );
 });
 
 step('zstd/lz4 are compiled out of the WASM build', () => {
