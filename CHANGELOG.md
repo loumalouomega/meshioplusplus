@@ -8,6 +8,63 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.6.0 (2026-07-24)
+
+**Exodus II is usable on real files.** Three defects made the format unusable
+for anything a mesher actually produces; each is fixed with its own test against
+a hand-authored SEACAS/Cubit-shaped fixture (`tests/python/exodus_fixture.py` —
+meshio++'s own writer emits no `qa_records`, no `eb_names` and no side sets, so a
+round-trip test could never have caught the first of these).
+
+1. **Ordinary metadata no longer fails the read.** The reader used to throw
+   `ReadError("Exodus: <key> handled by Python fallback")` on `qa_records`,
+   `info_records`, `ns_names` and any `node_ns*` variable. Every file SEACAS,
+   Cubit or Sierra writes carries `qa_records`, so this made Exodus **entirely
+   unreadable from WASM**, where there is no Python fallback to defer to
+   (`readMesh(..., 'exodus')` threw on any real file; verified against the built
+   artifact before and after). On the Python path the throw was invisible — the
+   shim silently swallowed it — which is why it survived this long.
+   `qa_records`/`info_records` are **preserved, not dropped**: they travel in a
+   new `ExodusInfo` side-channel struct (the established `MedInfo`/`OpenFoamInfo`
+   pattern) that the pybind binding attaches to the Python `Mesh` as `info`, so
+   `mesh.info` is byte-identical to what the Python reference produced. `NDArray`
+   has no string dtype, so they cannot ride on the mesh itself; as with `MedInfo`,
+   the flat bindings (C, Fortran, Julia, R, WASM) construct one and drop it — a
+   documented gap, not a silent loss.
+2. **Element blocks, node sets and side sets become named `Region`s**, closing
+   Exodus's share of the v8.1.0 "Deferred to Phase 2" list. One
+   `RegionKind::Cell` per `connect{k}` named from `eb_names` (falling back to
+   `"Block <id>"`) and tagged with its `eb_prop1` id — so two blocks of the
+   **same** element type stay distinguishable rather than collapsing together;
+   one `RegionKind::Point` per `node_ns{k}` from `ns_names`/`ns_prop1`; and one
+   `RegionKind::Side` per `elem_ss{k}`/`side_ss{k}` from `ss_names`, as
+   `(global cell, local facet)` pairs. Exodus numbers an element's sides in its
+   own order, which is *not* `detail/cell_faces.hpp`'s, so the facet column is
+   remapped through a new `exo_face_index` (mirroring `abq_face_index`); a gtest
+   pins every entry against `cell_faces` by node set rather than trusting the
+   transcription. Reading only — the **writer still emits no regions**, so Exodus
+   is recorded as a read-only region source (`READ_ONLY_REGIONS` in
+   `tests/python/test_region_roundtrip.py`) rather than a round-trip row.
+3. **Time steps are selectable.** New `ReadOptions::mTimeStep` (0 = the first
+   step, preserving today's behaviour exactly; negative counts from the end) and
+   `MeshMetadata::mTimeValues` (from `time_whole`). Previously every reader
+   meeting a multi-step file silently took the first step and warned "Skipping
+   some time data"; now an out-of-range request is an error naming the available
+   count, never a silent clamp. Exodus is registered as a `ReadExFn` +
+   `MetadataFn` in `registry.cpp`, so `registry_reader_supports_options("exodus")`
+   flips **false → true**.
+
+Threaded through every binding surface the way `mPointsOnly` was: pybind
+(`exodus_read(path, time_step=)`, `read(..., time_step=)`, `time_values` in
+`read_metadata`), the C API (`mio_read_opts.time_step`, taking one of the six
+former `reserved` slots so **the struct's size and every preceding field's offset
+are unchanged**; plus `mio_read_metadata_num_time_values`/`_time_values`),
+Fortran (`m%read(..., time_step=)`, `metadata%time_values`), Julia
+(`ReadOptions(time_step=)`, `MeshMetadata.time_values`), R
+(`mio_read(time_step=)`, `mio_read_metadata()$time_values`), WASM
+(`readMeshSelective(path, {timeStep})`, `readMetadata(...).timeValues`) and both
+CLIs (`convert --time-step=N`; `info --fast` now prints the available steps).
+
 ## v8.5.0 (2026-07-23)
 
 **Parallelization pass over the newer operations** — an audit of every
