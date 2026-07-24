@@ -31,8 +31,10 @@
 
 // Project includes
 #include "meshioplusplus/operations/split.hpp"
+#include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
 
@@ -172,6 +174,40 @@ std::vector<SplitGroup> split_by_component(const Mesh& rMesh) {
     return groups;
 }
 
+// One piece per named Cell region. Unlike every other criterion, this is not a
+// partition: a cell belonging to two regions appears in two pieces, and a cell
+// in none appears in none -- each named region is processed independently, so
+// "split by region" means exactly what it says rather than reinterpreting
+// overlapping groups as a forced partition.
+//
+// Point/Side regions produce no piece: split's contract is whole submeshes,
+// and there is no sound way to turn "these facets" or "these points" into one
+// without first deciding which surrounding cells to pull in -- a policy
+// decision this operation does not make silently.
+std::vector<SplitGroup> split_by_region(const Mesh& rMesh) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    std::vector<SplitGroup> groups;
+    for (const std::string& name : rMesh.RegionNames()) {
+        const std::size_t idx = rMesh.FindRegion(name, RegionKind::Cell);
+        if (idx == Mesh::npos)
+            continue;
+        const Region& region = rMesh.Region(idx);
+        SplitGroup group;
+        group.key = name;
+        split_init_group(group, nblocks);
+        const std::int64_t* entries = region.Entries();
+        const std::size_t n = region.NumEntries();
+        for (std::size_t e = 0; e < n; ++e) {
+            const auto [b, row] = detail::global_to_block_row(bases, entries[e]);
+            if (b != static_cast<std::size_t>(-1))
+                group.kept[b].push_back(row);
+        }
+        groups.push_back(std::move(group));
+    }
+    return groups;
+}
+
 bool split_is_integer(DType dt) {
     switch (dt) {
         case DType::Int8:
@@ -254,8 +290,10 @@ SplitBy split_by_from_name(const std::string& rName) {
         return SplitBy::Component;
     if (rName == "region" || rName == "tag")
         return SplitBy::Tag;
+    if (rName == "regions")
+        return SplitBy::Region;
     throw std::invalid_argument("split: unknown criterion '" + rName +
-                                "' (expected 'type', 'region'/'tag', or 'component')");
+                                "' (expected 'type', 'region'/'tag', 'regions', or 'component')");
 }
 
 SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
@@ -269,6 +307,9 @@ SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
             break;
         case SplitBy::Tag:
             groups = split_by_tag(rMesh, rTagName);
+            break;
+        case SplitBy::Region:
+            groups = split_by_region(rMesh);
             break;
     }
 

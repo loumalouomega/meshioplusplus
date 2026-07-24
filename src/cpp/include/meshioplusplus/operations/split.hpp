@@ -51,6 +51,14 @@ enum class SplitBy {
     Type,       ///< One piece per cell type.
     Component,  ///< One piece per connected component (node-sharing).
     Tag,        ///< One piece per distinct integer cell_data value.
+    /**
+     * One piece per named `Cell` region (`"regions"`, plural -- distinct from
+     * the pre-existing singular `"region"` name, which remains an alias for
+     * `Tag` for backward compatibility; see `split_by_from_name`). Unlike
+     * every other criterion this is not a partition: regions may overlap, so
+     * a cell can appear in zero, one, or several pieces.
+     */
+    Region,
 };
 
 /// One output piece of a `split`.
@@ -72,7 +80,8 @@ struct SplitResult {
 
 /**
  * @brief Parse a criterion name into a `SplitBy`.
- * @param rName one of `"type"`, `"component"`, `"region"`/`"tag"`
+ * @param rName one of `"type"`, `"component"`, `"region"`/`"tag"`, or
+ *        `"regions"` (plural -- named `Cell` regions, `SplitBy::Region`)
  * @throws std::invalid_argument on an unknown name
  */
 SplitBy split_by_from_name(const std::string& rName);
