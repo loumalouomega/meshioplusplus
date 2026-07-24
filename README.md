@@ -591,9 +591,12 @@ import meshioplusplus
 mesh = meshioplusplus.read("big.vtu", points_only=True)   # geometry, no data arrays
 mesh = meshioplusplus.read("big.vtu", arrays=["u", "p"])  # only these arrays
 meta = meshioplusplus.read_metadata("big.vtu")            # counts/names, no heavy arrays
+
+mesh = meshioplusplus.read("run.exo", time_step=-1)       # the last step of a time series
+meta["time_values"]                                       # how many steps there are
 ```
 
-VTU, VTP, XDMF and Gmsh skip the unwanted array bodies outright; other formats are read in full and filtered, and `meta["fell_back_to_full_read"]` says which happened. Large files can also be memory-mapped (automatic above 16 MiB), which roughly halves peak memory during a read. See [selective reads](doc/selective_read.md) and [memory-mapped reading](doc/mmap.md).
+VTU, VTP, XDMF and Gmsh skip the unwanted array bodies outright; other formats are read in full and filtered, and `meta["fell_back_to_full_read"]` says which happened. `time_step` picks one step of a multi-step file (`0` = the first, negative counts from the end); out of range is an error naming the available count rather than a silent fallback to step 0. Currently honoured by Exodus. Large files can also be memory-mapped (automatic above 16 MiB), which roughly halves peak memory during a read. See [selective reads](doc/selective_read.md) and [memory-mapped reading](doc/mmap.md).
 
 VTK XML output can additionally use **lz4** (ParaView-readable) or **zstd** (a meshio++ extension) instead of zlib, when built with `-DMESHIOPLUSPLUS_WITH_LZ4=ON` / `-DMESHIOPLUSPLUS_WITH_ZSTD=ON`. zlib remains the default. See [compression codecs](doc/codecs.md).
 
