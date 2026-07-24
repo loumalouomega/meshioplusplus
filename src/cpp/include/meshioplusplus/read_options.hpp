@@ -51,6 +51,7 @@
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
 
@@ -161,6 +162,21 @@ struct CellBlockInfo {
 };
 
 /**
+ * @brief One named region's shape, without its entries.
+ *
+ * The region complement to `CellBlockInfo`: enough to enumerate and identify a
+ * mesh's regions (build a SubModelPart tree, say) without the cost of a full
+ * read just to learn how many there are and what they're called.
+ */
+struct RegionSummary {
+    std::string mName;                     ///< The region's name.
+    RegionKind mKind = RegionKind::Point;  ///< Point / Cell / Side.
+    int mDim = -1;                         ///< Topological dimension, or -1 if unspecified.
+    std::int64_t mTag = -1;                ///< Format-native integer id, or -1 if none.
+    std::size_t mNumEntries = 0;  ///< Number of grouped entities (not the entries themselves).
+};
+
+/**
  * @brief A mesh summary: what a file contains, without its contents.
  *
  * The topological complement to `compute_stats` (geometry) and `data_info`
@@ -214,6 +230,21 @@ struct MeshMetadata {
      * distinguishing, since neither leaves a caller anything to choose between.
      */
     std::vector<double> mTimeValues;
+
+    /**
+     * @brief The file's named regions, without their entries.
+     *
+     * Populated whenever the mesh producing this summary was already fully in
+     * memory (i.e. whenever `metadata_from_mesh` ran) -- regions are read
+     * alongside geometry by every region-capable reader, so there is nothing
+     * left to save by skipping them once a read has happened anyway. A native
+     * metadata path that declines a full read (VTU/VTP/XDMF/Gmsh 4.1) reports
+     * no regions rather than guessing; none of those formats map regions yet
+     * regardless (see `doc/regions.md`), so this is never a wrong answer, only
+     * an incomplete one on formats already known to fall back for other
+     * reasons.
+     */
+    std::vector<RegionSummary> mRegions;
 
     /** @brief Total cells across every block. */
     std::size_t NumCells() const {
