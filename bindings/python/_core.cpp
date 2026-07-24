@@ -109,9 +109,11 @@ namespace {
  * through as `std::optional` keeps that distinction intact -- collapsing it
  * would make `arrays=[]` silently mean "everything".
  */
-meshioplusplus::ReadOptions core_read_options(bool points_only, const py::object& rArrays) {
+meshioplusplus::ReadOptions core_read_options(bool points_only, const py::object& rArrays,
+                                              int time_step = 0) {
     meshioplusplus::ReadOptions opts;
     opts.mPointsOnly = points_only;
+    opts.mTimeStep = time_step;
     if (!rArrays.is_none())
         opts.mDataArrays = rArrays.cast<std::vector<std::string>>();
     return opts;
@@ -156,6 +158,9 @@ py::dict core_metadata_to_py(const meshioplusplus::MeshMetadata& rMeta) {
     out["field_data_names"] = rMeta.mFieldDataNames;
     out["fell_back_to_full_read"] = rMeta.mFellBackToFullRead;
     out["format"] = rMeta.mFormat;
+    // Always present (empty for a format with no time concept), so a caller can
+    // write `len(meta["time_values"])` without first testing for the key.
+    out["time_values"] = rMeta.mTimeValues;
     // Absent rather than None-valued when not computed, so callers must ask
     // for it explicitly instead of accidentally treating "not computed" as a
     // real box at the origin.
@@ -1496,9 +1501,21 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_exodus(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("exodus_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_exodus(path));
-    });
+    m.def(
+        "exodus_read",
+        [](const std::string& path, int time_step) {
+            meshioplusplus::ReadOptions opts;
+            opts.mTimeStep = time_step;
+            meshioplusplus::ExodusInfo info;
+            py::object pymesh =
+                meshioplusplus_py::mesh_to_py(meshioplusplus::read_exodus(path, info, opts));
+            // qa_records/info_records are strings, which NDArray cannot hold --
+            // they ride the ExodusInfo side channel and land here, so the C++
+            // path produces the same `mesh.info` the Python reference does.
+            pymesh.attr("info") = py::cast(info.mInfoRecords);
+            return pymesh;
+        },
+        py::arg("path"), py::arg("time_step") = 0);
 #endif
 
     // DOLFIN XML writer / reader (.xml).
