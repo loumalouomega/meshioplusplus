@@ -397,6 +397,7 @@ void print_usage(std::ostream& os) {
           "commands:\n"
           "  convert (c)             Convert between mesh formats\n"
           "                            --points-only / --arrays a,b narrow what is read\n"
+          "                            --time-step=N picks a step of a multi-step file\n"
           "                            --color-by NAME colours svg/tikz output by a data\n"
           "                            array (--component --cmap --vmin --vmax\n"
           "                            --nan-color --colorbar)\n"
@@ -470,6 +471,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"int-data-to-sets", {"-d"}, false},
                                   {"points-only", {}, false},
                                   {"arrays", {}, true},
+                                  {"time-step", {}, true},
                                   {"color-by", {}, true},
                                   {"component", {}, true},
                                   {"cmap", {}, true},
@@ -503,6 +505,10 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
             throw std::runtime_error("--points-only and --arrays are mutually exclusive");
         opts.mDataArrays = data_split_names(opt_value(p, "arrays"));
     }
+    // --time-step is not a narrowing option: no post-filter can recover a step
+    // that was never read, so it goes to the reader or nowhere.
+    if (has_opt(p, "time-step"))
+        opts.mTimeStep = std::stoi(opt_value(p, "time-step"));
 
     // Data-driven colouring (svg/tikz only). Validated before the read so a bad
     // flag combination fails immediately rather than after loading a big mesh.
@@ -574,6 +580,17 @@ void print_metadata_summary(const meshioplusplus::MeshMetadata& rMeta) {
         for (std::size_t i = 0; i < section.second->size(); ++i)
             std::cout << (i ? ", " : "") << (*section.second)[i];
         std::cout << "\n";
+    }
+    // Only worth printing when there is a choice to make: a single-step file
+    // gives a caller nothing to pass to --time-step.
+    if (rMeta.mTimeValues.size() > 1) {
+        std::cout << "  Time steps: " << rMeta.mTimeValues.size() << " [";
+        const std::size_t shown = std::min<std::size_t>(rMeta.mTimeValues.size(), 8);
+        for (std::size_t i = 0; i < shown; ++i)
+            std::cout << (i ? ", " : "") << rMeta.mTimeValues[i];
+        if (rMeta.mTimeValues.size() > shown)
+            std::cout << ", ...";
+        std::cout << "]\n";
     }
     if (rMeta.mHasBBox) {
         std::cout << "  Bounding box: [" << rMeta.mBBoxMin[0] << ", " << rMeta.mBBoxMin[1] << ", "
