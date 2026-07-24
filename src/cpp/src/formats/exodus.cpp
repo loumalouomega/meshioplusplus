@@ -24,6 +24,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
@@ -32,8 +33,11 @@
 
 // Project includes
 #include "meshioplusplus/formats/exodus.hpp"
+#include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/region.hpp"
+#include "meshioplusplus/types.hpp"
 
 namespace meshioplusplus {
 
@@ -159,21 +163,139 @@ std::vector<std::size_t> var_dims(int ncid, int varid) {
     return out;
 }
 
-// (n, len_string) char variable -> list of strings.
+// A char variable whose LAST dimension is the string width -> list of strings.
+//
+// Covers both shapes Exodus uses: the 2-D `(n, len_string)` name arrays
+// (`eb_names`, `ns_names`, `ss_names`, `name_nod_var`, ...) and the 3-D
+// `(num_qa_rec, four, len_string)` QA records, which flatten to 4 strings per
+// record -- the same order the Python reference reader appends them in.
 std::vector<std::string> read_names(int ncid, int varid) {
     std::vector<std::size_t> dims = var_dims(ncid, varid);
-    std::size_t n = dims.size() >= 1 ? dims[0] : 0;
-    std::size_t w = dims.size() >= 2 ? dims[1] : 0;
+    if (dims.empty())
+        return {};
+    const std::size_t w = dims.back();
+    std::size_t n = 1;
+    for (std::size_t k = 0; k + 1 < dims.size(); ++k)
+        n *= dims[k];
     std::vector<char> buf(n * w, '\0');
     if (n * w > 0)
         check(nc_get_var_text(ncid, varid, buf.data()), "get names");
     std::vector<std::string> out;
-    for (std::size_t i = 0; i < n; ++i) {
-        std::string s(buf.data() + i * w, strnlen(buf.data() + i * w, w));
-        out.push_back(std::move(s));
-    }
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+        out.emplace_back(buf.data() + i * w, strnlen(buf.data() + i * w, w));
     return out;
 }
+
+// Read a 1-D integer variable as int64 (ids, set members, side numbers).
+std::vector<std::int64_t> read_ints(int ncid, int varid) {
+    std::vector<std::size_t> dims = var_dims(ncid, varid);
+    const std::size_t n = dims.empty() ? 0 : dims[0];
+    std::vector<std::int64_t> out(n, 0);
+    if (n > 0)
+        check(nc_get_var_longlong(ncid, varid, reinterpret_cast<long long*>(out.data())),
+              "get ints");
+    return out;
+}
+
+// The numeric suffix of a variable name, e.g. "connect12" -> 12, "connect" -> 1.
+int exo_suffix(const std::string& rKey, std::size_t Prefix) {
+    return rKey.size() > Prefix ? std::atoi(rKey.c_str() + Prefix) : 1;
+}
+
+// The file's `time_whole` values, or empty when it records none.
+//
+// Read in its own pass rather than inside the main variable loop: the step must
+// be resolved (and an out-of-range request rejected) *before* any data array is
+// sliced, and netCDF gives no ordering guarantee that would put `time_whole`
+// ahead of `vals_nod_var1`.
+// The start offset for a data variable's time dimension.
+//
+// `time_whole` and a `vals_*` variable can legitimately disagree on length (a
+// writer that crashed mid-step leaves a short data array), so the step resolved
+// against `time_whole` is re-checked against the variable actually being
+// sliced. Naming the variable matters: "step 4 of 3" is far easier to act on
+// when it says which array came up short.
+std::size_t exo_step_offset(std::size_t Step, std::size_t Available, const std::string& rKey) {
+    if (Step >= Available)
+        throw ReadError("Exodus: time step " + std::to_string(Step) + " is out of range for '" +
+                        rKey + "', which has " + std::to_string(Available) +
+                        (Available == 1 ? " step" : " steps"));
+    return Step;
+}
+
+std::vector<double> exo_time_values(int ncid) {
+    int varid;
+    if (nc_inq_varid(ncid, "time_whole", &varid) != NC_NOERR)
+        return {};
+    std::vector<std::size_t> dims = var_dims(ncid, varid);
+    const std::size_t n = dims.empty() ? 0 : dims[0];
+    std::vector<double> out(n, 0.0);
+    if (n > 0)
+        check(nc_get_var_double(ncid, varid, out.data()), "time_whole");
+    return out;
+}
+
+}  // namespace
+
+int exo_face_index(const std::string& rCellType, int ExodusSide) {
+    if (ExodusSide < 1)
+        return -1;
+    const int s = ExodusSide - 1;  // 0-based Exodus side number
+
+    // Exodus side->node lists are from the Exodus II spec's side-set numbering
+    // tables; the meshio++ rows are detail/cell_faces.cpp. Each entry is the
+    // meshio++ facet index whose corner-node SET equals that Exodus side's.
+    //
+    // tetra: Exodus S1={1,2,4} S2={2,3,4} S3={1,4,3} S4={1,3,2}
+    //        meshio++ 0={0,1,3} 1={1,2,3} 2={2,0,3} 3={0,2,1}
+    static const int tetra[4] = {0, 1, 2, 3};
+    // hexahedron: Exodus S1={1,2,6,5} S2={2,3,7,6} S3={3,4,8,7}
+    //                    S4={4,1,5,8} S5={1,4,3,2} S6={5,6,7,8}
+    //             meshio++ 0={0,4,7,3} 1={1,2,6,5} 2={0,1,5,4}
+    //                      3={3,7,6,2} 4={0,3,2,1} 5={4,5,6,7}
+    static const int hexa[6] = {2, 1, 3, 0, 4, 5};
+    // wedge: Exodus S1={1,2,5,4} S2={2,3,6,5} S3={1,4,6,3} S4={1,3,2} S5={4,5,6}
+    //        meshio++ 0={0,2,1} 1={3,4,5} 2={0,1,4,3} 3={1,2,5,4} 4={2,0,3,5}
+    static const int wedge[5] = {2, 3, 4, 0, 1};
+    // pyramid: Exodus S1={1,2,5} S2={2,3,5} S3={3,4,5} S4={4,1,5} S5={1,4,3,2}
+    //          meshio++ 0={0,3,2,1} 1={0,1,4} 2={1,2,4} 3={2,3,4} 4={3,0,4}
+    static const int pyramid[5] = {1, 2, 3, 4, 0};
+    // 2-D elements: Exodus numbers the edges 1-2, 2-3, ... in the same order
+    // detail/cell_edges.hpp walks them, so the mapping is the identity.
+    static const int tri[3] = {0, 1, 2};
+    static const int quad[4] = {0, 1, 2, 3};
+
+    const int* table = nullptr;
+    int count = 0;
+    // Higher-order variants share their linear base's facet ordering.
+    if (rCellType == "tetra" || rCellType == "tetra4" || rCellType == "tetra10" ||
+        rCellType == "tetra14") {
+        table = tetra;
+        count = 4;
+    } else if (rCellType == "hexahedron" || rCellType == "hexahedron20" ||
+               rCellType == "hexahedron27") {
+        table = hexa;
+        count = 6;
+    } else if (rCellType == "wedge" || rCellType == "wedge15" || rCellType == "wedge18") {
+        table = wedge;
+        count = 5;
+    } else if (rCellType == "pyramid" || rCellType == "pyramid13" || rCellType == "pyramid14") {
+        table = pyramid;
+        count = 5;
+    } else if (rCellType == "triangle" || rCellType == "triangle6" || rCellType == "triangle7") {
+        table = tri;
+        count = 3;
+    } else if (rCellType == "quad" || rCellType == "quad8" || rCellType == "quad9") {
+        table = quad;
+        count = 4;
+    }
+    if (!table || s >= count)
+        return -1;
+    return table[s];
+}
+
+namespace {
 
 // categorize() from _exodus.py: recombine <name>X/Y/Z triplets and
 // <name>_R/_Z doubles.
@@ -232,6 +354,117 @@ Categorized categorize(const std::vector<std::string>& rNames) {
     return out;
 }
 
+// Build an Int64 NDArray of shape (n,) or (n, 2) from a flat vector.
+NDArray exo_entries(const std::vector<std::int64_t>& rValues, std::size_t Stride) {
+    const std::size_t n = Stride == 0 ? 0 : rValues.size() / Stride;
+    NDArray out = Stride == 1 ? NDArray::Uninit(DType::Int64, {n})
+                              : NDArray::Uninit(DType::Int64, {n, Stride});
+    for (std::size_t k = 0; k < rValues.size(); ++k)
+        out.As<std::int64_t>()[k] = rValues[k];
+    return out;
+}
+
+// The name for set/block index `k`, or a stable synthetic one.
+//
+// `eb_names`/`ns_names`/`ss_names` are optional, and SEACAS writes them blank
+// for unnamed groups -- but a group with no name is still a group, and dropping
+// it would lose the only handle a consumer has on it. `"<Prefix> <id>"` keys off
+// the id rather than the index so it stays meaningful.
+std::string exo_group_name(const std::vector<std::string>& rNames,
+                           const std::vector<std::int64_t>& rIds, std::size_t Index,
+                           const char* pPrefix) {
+    if (Index < rNames.size() && !rNames[Index].empty())
+        return rNames[Index];
+    const std::int64_t id =
+        Index < rIds.size() ? rIds[Index] : static_cast<std::int64_t>(Index) + 1;
+    return std::string(pPrefix) + " " + std::to_string(id);
+}
+
+// Turn Exodus's element blocks, node sets and side sets into named regions.
+//
+// Runs after the cell blocks are in the mesh, because Cell/Side entries are
+// GLOBAL block-major cell indices and those only exist once the blocks are
+// ordered. The bases come from detail::block_bases -- the single owner of that
+// numbering -- rather than being re-derived here.
+void exo_add_regions(Mesh& rMesh, const std::vector<std::string>& rBlockTypes,
+                     const std::vector<std::string>& rEbNames,
+                     const std::vector<std::int64_t>& rEbIds,
+                     const std::vector<std::string>& rNsNames,
+                     const std::vector<std::int64_t>& rNsIds,
+                     const std::map<int, std::vector<std::int64_t>>& rNodeSets,
+                     const std::vector<std::string>& rSsNames,
+                     const std::vector<std::int64_t>& rSsIds,
+                     const std::map<int, std::vector<std::int64_t>>& rSideElems,
+                     const std::map<int, std::vector<std::int64_t>>& rSideSides) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::int64_t total_cells = bases.empty() ? 0 : bases.back();
+
+    // --- element blocks -> Cell regions -----------------------------------
+    // One per connect{k}. The name and tag come from per-block arrays, which is
+    // what keeps two blocks of the SAME element type distinguishable -- exactly
+    // the case a materials assignment depends on.
+    for (std::size_t k = 0; k < rBlockTypes.size() && k + 1 < bases.size(); ++k) {
+        std::vector<std::int64_t> entries;
+        entries.reserve(static_cast<std::size_t>(bases[k + 1] - bases[k]));
+        for (std::int64_t g = bases[k]; g < bases[k + 1]; ++g)
+            entries.push_back(g);
+        const std::int64_t tag = k < rEbIds.size() ? rEbIds[k] : -1;
+        const auto td = topological_dimension().find(rBlockTypes[k]);
+        const int dim = td == topological_dimension().end() ? -1 : td->second;
+        rMesh.AddRegion(Region(exo_group_name(rEbNames, rEbIds, k, "Block"), RegionKind::Cell, dim,
+                               tag, exo_entries(entries, 1)));
+    }
+
+    // --- node sets -> Point regions ---------------------------------------
+    const std::size_t npts = rMesh.NumPoints();
+    std::size_t ns_index = 0;
+    for (const auto& [k, nodes] : rNodeSets) {
+        (void)k;
+        std::vector<std::int64_t> entries;
+        entries.reserve(nodes.size());
+        for (std::int64_t id : nodes) {
+            const std::int64_t p = id - 1;  // Exodus is 1-based
+            if (p >= 0 && static_cast<std::size_t>(p) < npts)
+                entries.push_back(p);
+        }
+        const std::int64_t tag = ns_index < rNsIds.size() ? rNsIds[ns_index] : -1;
+        rMesh.AddRegion(Region(exo_group_name(rNsNames, rNsIds, ns_index, "Nodeset"),
+                               RegionKind::Point, -1, tag, exo_entries(entries, 1)));
+        ++ns_index;
+    }
+
+    // --- side sets -> Side regions ----------------------------------------
+    // (global cell, local facet) pairs. Exodus numbers an element's sides its
+    // own way, so the facet goes through exo_face_index; an unmappable pair is
+    // skipped rather than stored pointing at the wrong face.
+    std::size_t ss_index = 0;
+    for (const auto& [k, elems] : rSideElems) {
+        auto sit = rSideSides.find(k);
+        const std::vector<std::int64_t> empty;
+        const std::vector<std::int64_t>& sides = sit == rSideSides.end() ? empty : sit->second;
+        std::vector<std::int64_t> pairs;
+        pairs.reserve(elems.size() * 2);
+        for (std::size_t i = 0; i < elems.size() && i < sides.size(); ++i) {
+            const std::int64_t g = elems[i] - 1;  // Exodus is 1-based
+            if (g < 0 || g >= total_cells)
+                continue;
+            const auto [b, row] = detail::global_to_block_row(bases, g);
+            (void)row;
+            if (b == static_cast<std::size_t>(-1) || b >= rBlockTypes.size())
+                continue;
+            const int facet = exo_face_index(rBlockTypes[b], static_cast<int>(sides[i]));
+            if (facet < 0)
+                continue;
+            pairs.push_back(g);
+            pairs.push_back(facet);
+        }
+        const std::int64_t tag = ss_index < rSsIds.size() ? rSsIds[ss_index] : -1;
+        rMesh.AddRegion(Region(exo_group_name(rSsNames, rSsIds, ss_index, "Sideset"),
+                               RegionKind::Side, -1, tag, exo_entries(pairs, 2)));
+        ++ss_index;
+    }
+}
+
 NDArray column_stack(const std::vector<const NDArray*>& rCols) {
     std::size_t n = rCols.empty() || rCols[0]->Shape().empty() ? 0 : rCols[0]->Shape()[0];
     NDArray out(rCols[0]->Dtype(), {n, rCols.size()});
@@ -248,7 +481,7 @@ NDArray column_stack(const std::vector<const NDArray*>& rCols) {
 
 }  // namespace
 
-Mesh read_exodus(const std::string& rPath) {
+Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions) {
     int ncid;
     check(nc_open(rPath.c_str(), NC_NOWRITE, &ncid), "open");
     struct Closer {
@@ -271,7 +504,7 @@ Mesh read_exodus(const std::string& rPath) {
     points_xyz = NDArray(DType::Float64, {num_nodes, 3});
 
     std::vector<std::string> point_data_names, cell_data_names;
-    std::map<int, NDArray> pd;                 // idx -> values (first step)
+    std::map<int, NDArray> pd;                 // idx -> values (selected step)
     std::map<int, std::map<int, NDArray>> cd;  // idx -> block -> values
     struct Block {
         std::string mType;
@@ -279,16 +512,51 @@ Mesh read_exodus(const std::string& rPath) {
     };
     std::vector<std::pair<int, Block>> blocks;  // connect{k} in numeric order
 
+    // Region raw material, collected here and turned into regions after the
+    // cell blocks are in the mesh -- a Cell/Side region needs global block-major
+    // indices, which only exist once the blocks are ordered and added.
+    std::vector<std::string> eb_names, ns_names, ss_names;
+    std::vector<std::int64_t> eb_ids, ns_ids, ss_ids;
+    std::map<int, std::vector<std::int64_t>> node_sets;   // set k -> node ids (1-based)
+    std::map<int, std::vector<std::int64_t>> side_elems;  // set k -> element ids (1-based)
+    std::map<int, std::vector<std::int64_t>> side_sides;  // set k -> Exodus side numbers
+
+    // Resolve the requested time step up front, so an out-of-range request
+    // fails before any heavy array is decoded rather than midway through.
+    const std::vector<double> time_values = exo_time_values(ncid);
+    const std::size_t step = rOptions.ResolveTimeStep(time_values.size());
+
     for (int varid = 0; varid < nvars; ++varid) {
         char namebuf[NC_MAX_NAME + 1] = {0};
         check(nc_inq_varname(ncid, varid, namebuf), "inq_varname");
         std::string key(namebuf);
         std::vector<std::size_t> dims = var_dims(ncid, varid);
 
-        if (key == "info_records" || key == "qa_records" || key == "ns_names" ||
-            key.rfind("node_ns", 0) == 0) {
-            // info + node sets live outside the conversion layer
-            throw ReadError("Exodus: " + key + " handled by Python fallback");
+        if (key == "info_records" || key == "qa_records") {
+            // Provenance strings. NDArray has no string dtype, so these ride the
+            // ExodusInfo side channel (MedInfo's pattern) rather than the mesh.
+            // Reading them used to throw, which made every file SEACAS/Cubit/
+            // Sierra writes unreadable wherever no Python fallback exists.
+            std::vector<std::string> recs = read_names(ncid, varid);
+            rInfo.mInfoRecords.insert(rInfo.mInfoRecords.end(), recs.begin(), recs.end());
+        } else if (key == "eb_names") {
+            eb_names = read_names(ncid, varid);
+        } else if (key == "ns_names") {
+            ns_names = read_names(ncid, varid);
+        } else if (key == "ss_names") {
+            ss_names = read_names(ncid, varid);
+        } else if (key == "eb_prop1") {
+            eb_ids = read_ints(ncid, varid);
+        } else if (key == "ns_prop1") {
+            ns_ids = read_ints(ncid, varid);
+        } else if (key == "ss_prop1") {
+            ss_ids = read_ints(ncid, varid);
+        } else if (key.rfind("node_ns", 0) == 0) {
+            node_sets[exo_suffix(key, 7)] = read_ints(ncid, varid);
+        } else if (key.rfind("elem_ss", 0) == 0) {
+            side_elems[exo_suffix(key, 7)] = read_ints(ncid, varid);
+        } else if (key.rfind("side_ss", 0) == 0) {
+            side_sides[exo_suffix(key, 7)] = read_ints(ncid, varid);
         } else if (key.rfind("connect", 0) == 0) {
             char et[NC_MAX_NAME + 1] = {0};
             std::size_t attlen = 0;
@@ -338,10 +606,12 @@ Mesh read_exodus(const std::string& rPath) {
             point_data_names = read_names(ncid, varid);
         } else if (key.rfind("vals_nod_var", 0) == 0) {
             int idx = key.size() == 12 ? 0 : std::atoi(key.c_str() + 12) - 1;
-            // dims: (time_step, ...) -> first step only
+            // dims: (time_step, ...) -> the one requested step
             std::vector<std::size_t> start(dims.size(), 0), count = dims;
-            if (!count.empty())
+            if (!count.empty()) {
                 count[0] = 1;
+                start[0] = exo_step_offset(step, dims[0], key);
+            }
             NDArray v = read_var(ncid, varid, start, count);
             std::vector<std::size_t> shape(dims.begin() + 1, dims.end());
             v.Reshape(shape);
@@ -359,8 +629,10 @@ Mesh read_exodus(const std::string& rPath) {
             if (eb != std::string::npos)
                 block = std::atoi(rest.c_str() + eb + 2) - 1;
             std::vector<std::size_t> start(dims.size(), 0), count = dims;
-            if (!count.empty())
+            if (!count.empty()) {
                 count[0] = 1;
+                start[0] = exo_step_offset(step, dims[0], key);
+            }
             NDArray v = read_var(ncid, varid, start, count);
             std::vector<std::size_t> shape(dims.begin() + 1, dims.end());
             v.Reshape(shape);
@@ -374,8 +646,15 @@ Mesh read_exodus(const std::string& rPath) {
 
     std::sort(blocks.begin(), blocks.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
-    for (auto& b : blocks)
+    std::vector<std::string> block_types;
+    block_types.reserve(blocks.size());
+    for (auto& b : blocks) {
+        block_types.push_back(b.second.mType);
         mesh.AddCellBlock(b.second.mType, std::move(b.second.mData));
+    }
+
+    exo_add_regions(mesh, block_types, eb_names, eb_ids, ns_names, ns_ids, node_sets, ss_names,
+                    ss_ids, side_elems, side_sides);
 
     // Point data with X/Y/Z + _R/_Z recombination.
     if (!point_data_names.empty()) {
@@ -426,6 +705,34 @@ Mesh read_exodus(const std::string& rPath) {
     }
 
     return mesh;
+}
+
+Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions) {
+    // The provenance strings have nowhere to go on this path -- the flat
+    // bindings have no `info` slot. Dropping them is what `registry.cpp` already
+    // does for MedInfo, and is not a reason to fail the read.
+    ExodusInfo info;
+    return read_exodus(rPath, info, rOptions);
+}
+
+MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    // No native cheap path yet: Exodus's counts live in dimensions that would be
+    // cheap to walk, but the cell-block *types* come from per-variable
+    // `elem_type` attributes, so a summary still has to visit every connect{k}.
+    // What this override does buy is `mTimeValues`, which a full read discards
+    // and which is the only way to discover how many steps `mTimeStep` may name.
+    ExodusInfo info;
+    MeshMetadata meta = metadata_from_mesh(read_exodus(rPath, info, rOptions));
+    meta.mFellBackToFullRead = true;
+
+    int ncid;
+    check(nc_open(rPath.c_str(), NC_NOWRITE, &ncid), "open");
+    struct Closer {
+        int mId;
+        ~Closer() { nc_close(mId); }
+    } closer{ncid};
+    meta.mTimeValues = exo_time_values(ncid);
+    return meta;
 }
 
 void write_exodus(const std::string& rPath, const Mesh& rMesh) {

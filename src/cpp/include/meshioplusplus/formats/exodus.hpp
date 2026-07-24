@@ -37,11 +37,40 @@
 
 // System includes
 #include <string>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
+
+/**
+ * @brief Exodus provenance strings, which the conversion layer cannot carry.
+ *
+ * `qa_records` (who wrote the file, with what version, when) and `info_records`
+ * (free-form notes) are text, and `NDArray` has no string dtype -- so unlike
+ * every other thing a reader produces, these cannot ride on the `Mesh`. They
+ * travel in this side-channel struct instead, the same shape `MedInfo` and
+ * `OpenFoamInfo` already use: the pybind binding `setattr`s the result onto the
+ * Python `Mesh` as `info`, and the flat bindings (C, Fortran, WASM) construct a
+ * local and drop it, exactly as `registry.cpp` already does for `MedInfo`.
+ *
+ * This is why reading no longer throws on these variables. Every file SEACAS,
+ * Cubit or Sierra writes carries `qa_records`, so treating them as an
+ * unsupported construct made the format unreadable wherever there is no Python
+ * fallback to defer to -- which is to say, all of WASM.
+ */
+struct ExodusInfo {
+    /**
+     * @brief `info_records` followed by `qa_records`, flattened.
+     *
+     * The order reproduces the Python reference reader's exactly (it appends to
+     * one `info` list in netCDF variable order, four strings per QA record), so
+     * `mesh.info` is identical whichever path produced it.
+     */
+    std::vector<std::string> mInfoRecords;
+};
 
 /**
  * @brief Write `mesh` as an Exodus II (netCDF classic) file.
@@ -75,24 +104,76 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh);
  * the "sibling found" check uses Python truthiness on the found variable
  * index, so index `0` is treated the same as "not found" — a latent
  * reference-implementation edge case deliberately preserved rather than
- * fixed, so the two implementations agree. Only the first timestep is ever
- * read (a warning is emitted if more exist, matching a known ParaView writer
- * limitation).
+ * fixed, so the two implementations agree.
+ *
+ * ## Named regions
+ *
+ * Element blocks, node sets and side sets all become #Region s -- the three
+ * things Exodus spells separately that meshio++ spells one way:
+ *  - `connect{k}` -> `RegionKind::Cell`, named from `eb_names` (falling back to
+ *    `"Block <id>"`), tagged with its `eb_prop1` id. Two blocks of the *same*
+ *    element type stay distinguishable, which is the whole point of the id.
+ *  - `node_ns{k}` -> `RegionKind::Point`, named from `ns_names`, tagged from
+ *    `ns_prop1`.
+ *  - `elem_ss{k}`/`side_ss{k}` -> `RegionKind::Side`, named from `ss_names`, as
+ *    `(global cell, local facet)` pairs. Exodus numbers an element's sides its
+ *    own way, so the facet column is remapped through `exo_face_index` rather
+ *    than stored raw -- see that function for the per-type tables.
+ *
+ * ## Time steps
+ *
+ * `ReadOptions::mTimeStep` selects which step of `time_whole` the data arrays
+ * come from (0 = first, the historical behaviour; negative counts from the
+ * end). An out-of-range request throws naming the available count.
  *
  * @param rPath filesystem path to read
- * @return the read Mesh, with `mesh.point_sets` from node sets (1-based in
- *         file) and `mesh.info` from `info_records`/`qa_records`
+ * @param rInfo receives the `qa_records`/`info_records` provenance strings
+ * @param rOptions per-call reader options; defaulted, so the historical
+ *        behaviour is what a plain `read_exodus(path)` still does
+ * @return the read Mesh, with regions as above
  * @throws ReadError if a variable has an unsupported netCDF type, point-data
  *         names are inconsistent, a `connect{k}` names an unknown Exodus
- *         element type, the connectivity dtype is unsupported, or the file
- *         contains `info_records`/`qa_records`/`ns_names`/`node_ns*` — any
- *         of the latter always defers the whole file to the Python fallback
- *         since node sets/info strings aren't carried by the conversion
- *         layer
+ *         element type, the connectivity dtype is unsupported, or the
+ *         requested time step is out of range
  * @note point_data keys ending X/Y/Z or _R/_Z may be recombined into vector
  *       arrays; cell_data is split per cell block by node count
  */
-Mesh read_exodus(const std::string& rPath);
+Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions = {});
+
+/**
+ * @brief Read an Exodus II file, discarding the provenance side channel.
+ *
+ * The `ReadFn`-shaped overload the registry and the flat bindings use.
+ */
+Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions = {});
+
+/**
+ * @brief Summarize an Exodus II file without materializing its data arrays.
+ *
+ * Fills `MeshMetadata::mTimeValues` from `time_whole`, which is what makes the
+ * available step count discoverable before committing to a read.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions per-call reader options
+ * @return the summary
+ */
+MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions = {});
+
+/**
+ * @brief Map an Exodus 1-based side number to a meshio++ local facet index.
+ *
+ * Exodus numbers an element's sides in its own order, which is *not*
+ * `detail::cell_faces`' order -- storing the raw number would silently point a
+ * `Side` region at the wrong face. The per-type tables live in the definition,
+ * with the node lists they were derived from, mirroring `abq_face_index` in
+ * `abaqus.cpp`; a gtest pins each entry against `cell_faces` so a transcription
+ * slip cannot survive.
+ *
+ * @param rCellType meshio++ cell type name of the owning element
+ * @param ExodusSide 1-based Exodus side number
+ * @return the local facet index, or -1 when the pair has no mapping
+ */
+int exo_face_index(const std::string& rCellType, int ExodusSide);
 
 }  // namespace meshioplusplus
 
