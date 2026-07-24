@@ -71,6 +71,20 @@ MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
     meta.mCellDataNames = rMesh.CellDataNames();
     meta.mFieldDataNames = rMesh.FieldDataNames();
 
+    // The mesh is already in memory, so this is nearly free -- every
+    // region-capable reader builds regions alongside geometry, not lazily.
+    meta.mRegions.reserve(rMesh.NumRegions());
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        RegionSummary summary;
+        summary.mName = r.mName;
+        summary.mKind = r.mKind;
+        summary.mDim = r.mDim;
+        summary.mTag = r.mTag;
+        summary.mNumEntries = r.NumEntries();
+        meta.mRegions.push_back(std::move(summary));
+    }
+
     // The mesh is already in memory, so the bounding box is nearly free here --
     // unlike on a native metadata path, where it would force decoding the point
     // coordinates and defeat the whole point.
