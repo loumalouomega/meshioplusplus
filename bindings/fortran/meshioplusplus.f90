@@ -152,6 +152,15 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(5) = 0
     end type
 
+    !> One named region's shape, without its entries (see `mio_metadata%regions`).
+    type :: mio_region_summary
+        character(len=STRBUF_LEN) :: name = ''
+        integer(c_int) :: kind = MIO_REGION_POINT
+        integer(c_int) :: dim = -1
+        integer(c_int64_t) :: tag = -1
+        integer(c_int64_t) :: num_entries = 0
+    end type
+
     !> One cell block's shape, without its connectivity.
     type :: mio_cell_block_info
         character(len=STRBUF_LEN) :: cell_type = ''
@@ -176,6 +185,10 @@ module meshioplusplus
         !> The file's recorded time-series values; size 0 for a format with no
         !> time concept. This is the count `time_step` may name.
         real(c_double), allocatable :: time_values(:)
+        !> The file's named regions, without their entries. Populated whenever
+        !> the summary came from an already-read mesh; size 0 on a native
+        !> metadata path, since none of those formats currently map regions.
+        type(mio_region_summary), allocatable :: regions(:)
     end type
 
     type :: mio_mesh
@@ -396,6 +409,32 @@ module meshioplusplus
             real(c_double), intent(out) :: out(*)
             integer(c_int64_t), value :: count
             integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_num_regions(h) &
+                bind(c, name="mio_read_metadata_num_regions") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_region_name(h, index, buf, buflen) &
+                bind(c, name="mio_read_metadata_region_name") result(n)
+            import :: c_ptr, c_int64_t, c_char
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: index
+            character(kind=c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_region_info(h, index, out) &
+                bind(c, name="mio_read_metadata_region_info") result(s)
+            import :: c_ptr, c_int64_t, c_int, mio_region_info
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: index
+            type(mio_region_info), intent(out) :: out
+            integer(c_int) :: s
         end function
 
         function c_mio_read_metadata_name(h, location, index, buf, buflen) &
@@ -1502,8 +1541,9 @@ contains
         character(:), allocatable :: fmt
         type(c_ptr) :: h
         character(kind=c_char) :: buf(STRBUF_LEN)
-        integer(c_int64_t) :: nblocks, i, n, ncells, npc, nsteps
+        integer(c_int64_t) :: nblocks, i, n, ncells, npc, nsteps, nregions
         integer(c_int) :: ragged, s
+        type(mio_region_info) :: rinfo
 
         fmt = ''; if (present(format)) fmt = format
         h = c_mio_read_metadata_create(c_str(path), c_str(fmt))
@@ -1538,6 +1578,21 @@ contains
         if (nsteps < 0) nsteps = 0
         allocate (meta%time_values(nsteps))
         if (nsteps > 0) n = c_mio_read_metadata_time_values(h, meta%time_values, nsteps)
+
+        nregions = c_mio_read_metadata_num_regions(h)
+        if (nregions < 0) nregions = 0
+        allocate (meta%regions(nregions))
+        do i = 1, nregions
+            s = c_mio_read_metadata_region_info(h, i - 1_c_int64_t, rinfo)
+            if (s /= 0) cycle
+            meta%regions(i)%kind = rinfo%kind
+            meta%regions(i)%dim = rinfo%dim
+            meta%regions(i)%tag = rinfo%tag
+            meta%regions(i)%num_entries = rinfo%num_entries
+            n = c_mio_read_metadata_region_name(h, i - 1_c_int64_t, buf, &
+                                                int(STRBUF_LEN, c_int64_t))
+            if (n > 0) meta%regions(i)%name = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+        end do
 
         call c_mio_read_metadata_free(h)
         call clear_status(stat, errmsg)
