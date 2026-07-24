@@ -8,6 +8,83 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.7.0 (2026-07-24)
+
+Five improvements identified by an audit of the project's own documented gaps
+and a direct check of the WASM artifact's behavior, all verified end to end
+(not from source inspection alone):
+
+1. **`read_metadata` reports a mesh's named regions**, closing the "enumerating
+   regions costs a full read" gap. New `MeshMetadata::mRegions`
+   (`RegionSummary{name, kind, dim, tag, num_entries}`, no entries) is
+   populated from an already-in-memory mesh at essentially no extra cost
+   (every fallback metadata path, and Exodus, which always falls back); a
+   native metadata path (VTU/VTP/XDMF/Gmsh 4.1) reports none, since none of
+   those formats currently map regions at all. Exposed identically on every
+   binding: Python `read_metadata(...)["regions"]`, C API
+   `mio_read_metadata_num_regions`/`_region_name`/`_region_info` (reusing
+   `mio_region_info`'s shape), Fortran `mio_metadata%regions`, Julia/R the
+   equivalent, WASM `readMetadata(...).regions`, and both CLIs' `info`.
+2. **`split(mesh, by="regions")`** (plural — a new, additive criterion,
+   distinct from the pre-existing singular `"region"`, which is unchanged) is
+   one submesh per named **Cell** region, running in the C++ core and so
+   reaching every binding through the existing shared `split_by_from_name`
+   string dispatch with no further plumbing. Unlike every other criterion it
+   is **not** a partition: a cell in several regions lands in several output
+   pieces, a cell in none lands in none, and `Point`/`Side` regions produce no
+   piece at all. A companion **`meshioplusplus regions FILE`** CLI verb (both
+   CLIs) lists a mesh's regions using the `read_metadata` work above.
+3. **`gmsh22` is now a selectable write format on every binding** (WASM, C
+   API, Fortran, and both CLIs — Python already had it). `write_gmsh22`
+   already synthesized `gmsh:physical` from named Cell regions when writing a
+   mesh built from another format, so it was already the only Gmsh writer that
+   round-trips region **membership**, not just the group name (which is all
+   the registry-default 4.1 writer keeps) — it just wasn't reachable outside
+   Python until now, since only `"gmsh"` → the 4.1 writer was registered in
+   the shared dispatch tables. Read-side needs no new key: reading
+   auto-detects a file's own `$MeshFormat` version.
+4. **MED writes and reads ordinary fields (`point_data`/`cell_data`) for the
+   single-timestep common case.** Previously any data-carrying mesh threw
+   unconditionally ("fields handled by Python fallback") — fatal in WASM,
+   which has no Python to fall back to, and the reason a MED export could not
+   carry data out of a WASM-hosted tool at all. The new C++ path writes one
+   `NOE`/`MAI.<type>` support subgroup per field with fixed `ndt=1`/`nor=-1`,
+   blank units/component-names, and **no MED-4.1 optimization bitmask** — a
+   deliberate scope cut, not an oversight: this project's own reader never
+   reads the bitmask, so its absence costs nothing for a meshio++ round-trip,
+   only for interoperability with external tools (Salome/MEDCoupling) that use
+   it. The reader **declines** (defers the whole file to Python) rather than
+   silently drop information whenever a field declares real units or
+   non-default timestep metadata. Multi-timestep name-encoded arrays
+   (`"Name[idx] - pdt"`) and the `med:field_units`/`med:step_meta` Python-only
+   `field_data` conventions still defer to Python — the guard for the latter
+   two necessarily lives in the Python shim rather than the C++ core, since
+   those dict-valued conventions cannot survive the Python→C++ mesh conversion
+   at all and so can never be observed on the C++ side by any binding.
+5. **Ragged (polygon/polyhedron) cell blocks now cross the WASM/JS boundary**,
+   on both read and write — previously rejected outright with "not supported
+   by the JS API yet". Represented as flat CSR arrays instead of a nested
+   array of arrays (which embind cannot represent efficiently):
+   `{type, data, rowOffsets}` for 1-level ragged (jagged polygon rows) and
+   `{type, data, faceOffsets, cellOffsets}` for 2-level ragged (polyhedron,
+   cell → faces → node ids). MED is the ragged-**polygon**-capable writer
+   (`POG`/`POG2`) this closes a real gap for; polyhedron blocks now cross the
+   boundary correctly too (verified via `clean`, since geometry operations
+   accept them), but **no C++ format writer accepts a polyhedron block yet** —
+   a separate, pre-existing, documented gap this work does not (and could not)
+   close, so writing one still throws naming the format rather than silently
+   dropping data.
+
+**Breaking:** none. `split`'s pre-existing `by="region"` (singular) keeps its
+exact prior behavior; `mio_read_opts`'s and the Julia `_CReadOpts`'s ABI are
+unaffected by this release (unlike v8.6.0, no new trailing field was added
+here). The C++-side guard that used to check `HasFieldData("med:field_units")`
+before writing MED fields is removed — it was structurally dead code (the
+Python→C++ mesh conversion this project's own `med_write` binding uses always
+drops non-numeric `field_data` entries before the C++ core ever sees them), so
+its removal changes no observable behavior; the actual (now correctly enforced
+in the Python shim) deferral rule is documented above.
+
 ## v8.6.0 (2026-07-24)
 
 **Exodus II is usable on real files.** Three defects made the format unusable
