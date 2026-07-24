@@ -146,10 +146,18 @@ def read_metadata(filename, file_format: Union[str, None] = None) -> dict:
     """Summarize a mesh file without loading its heavy arrays.
 
     Returns a dict with ``num_points``, ``point_dim``, ``num_cells``,
-    ``cell_blocks``, the ``*_data_names`` lists, ``format``, and
+    ``cell_blocks``, the ``*_data_names`` lists, ``format``, ``time_values`` and
     ``fell_back_to_full_read``. ``bbox_min``/``bbox_max`` are present only when
     a bounding box was computed -- absent rather than ``None``, so "not
     computed" cannot be mistaken for a real box at the origin.
+
+    ``regions`` lists each named region's ``name``/``kind``/``dim``/``tag``/
+    ``num_entries`` (not the entries themselves) -- always present, empty for a
+    format that maps no regions or on a native metadata path that declined a
+    full read (VTU/VTP/XDMF/Gmsh 4.1 today; none of those currently map regions
+    at all, so this is never a wrong answer). Cheap whenever the summary was
+    produced from an already-read mesh (every fallback path, and Exodus, which
+    always falls back).
 
     ``fell_back_to_full_read`` is the honest part: formats without a native
     metadata path are read in full and summarized. The answer is always
@@ -215,6 +223,18 @@ def _metadata_from_mesh(mesh, file_format: Union[str, None]) -> dict:
         # Mesh, which holds one step and no record of how many there were), so a
         # caller can write `len(meta["time_values"])` without testing the key.
         "time_values": [],
+        # The mesh is already in memory (this path always fully reads), so
+        # regions cost nothing extra to report -- mirrors metadata_from_mesh.
+        "regions": [
+            {
+                "name": r.name,
+                "kind": r.kind,
+                "dim": r.dim,
+                "tag": r.tag,
+                "num_entries": len(r),
+            }
+            for r in getattr(mesh, "regions", [])
+        ],
     }
     if len(mesh.points):
         pts = np.asarray(mesh.points, dtype=float)

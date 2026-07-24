@@ -172,6 +172,29 @@ def _groups_by_tag(mesh, tag):
     return [(str(v), groups[v]) for v in order]
 
 
+def _groups_by_region(mesh):
+    """Pure-Python twin of the C++ ``split_by_region``: one group per named
+    Cell region, independent of the others (a cell may land in several).
+
+    Fallback only -- the C++ path (criterion ``"regions"``) is tried first;
+    this runs when ``_core`` is unavailable.
+    """
+    from ._regions import block_bases
+
+    bases = block_bases(mesh.cells)
+    out = []
+    for r in getattr(mesh, "regions", []):
+        if r.kind != "cell":
+            continue
+        kept = [[] for _ in mesh.cells]
+        for g in np.asarray(r.entries).reshape(-1):
+            b = int(np.searchsorted(bases, g, side="right")) - 1
+            if 0 <= b < len(mesh.cells):
+                kept[b].append(int(g - bases[b]))
+        out.append((r.name, kept))
+    return out
+
+
 def _split_py(mesh, by, tag):
     if by == "type":
         grouped = _groups_by_type(mesh)
@@ -179,6 +202,8 @@ def _split_py(mesh, by, tag):
         grouped = _groups_by_component(mesh)
     elif by in ("region", "tag"):
         grouped = _groups_by_tag(mesh, tag)
+    elif by == "regions":
+        grouped = _groups_by_region(mesh)
     else:
         raise ValueError(f"split: unknown criterion '{by}'")
     pieces = []
@@ -278,18 +303,23 @@ def split(mesh, by: str = "type", tag: str | None = None) -> dict:
         the mesh to split.
     by :
         ``"type"`` (one piece per cell type), ``"component"`` (one per connected
-        component), or ``"region"`` (by named ``cell_sets`` if present, else by
-        the integer ``cell_data`` tag ``tag``).
+        component), ``"region"`` (by named ``cell_sets`` if present, else by the
+        integer ``cell_data`` tag ``tag``), or ``"regions"`` (plural -- one piece
+        per named **Cell** region, cross-binding-capable since it runs in the
+        C++ core rather than this shim; unlike every other criterion it is not
+        a partition, since regions may overlap: a cell can land in zero, one or
+        several pieces).
     tag :
         for ``by="region"`` without ``cell_sets``, the integer ``cell_data`` name
-        to split on (default: the first integer cell_data).
+        to split on (default: the first integer cell_data). Unused by
+        ``by="regions"``.
 
     Returns
     -------
     dict
         an ordered ``{key: Mesh}`` mapping. Keys are type names / component
-        indices / set names / tag values. ``point_sets``/``cell_sets`` are
-        remapped into each piece.
+        indices / set names / tag values / region names. ``point_sets``/
+        ``cell_sets`` are remapped into each piece.
 
     Raises
     ------
@@ -300,9 +330,10 @@ def split(mesh, by: str = "type", tag: str | None = None) -> dict:
         return _split_by_cell_sets(mesh)
 
     by_core = "tag" if by == "region" else by
-    if by_core not in ("type", "component", "tag"):
+    if by_core not in ("type", "component", "tag", "regions"):
         raise ValueError(
-            f"split: unknown criterion '{by}' (expected 'type', 'region', or 'component')"
+            f"split: unknown criterion '{by}' "
+            "(expected 'type', 'region', 'regions', or 'component')"
         )
 
     pieces = None

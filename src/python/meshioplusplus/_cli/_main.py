@@ -22,6 +22,7 @@ from . import (
     _partition,
     _quality,
     _refine,
+    _regions,
     _reorder,
     _slice,
     _smooth,
@@ -145,10 +146,17 @@ def main(argv=None):
 
     parser = subparsers.add_parser(
         "split",
-        help="Partition a mesh into multiple files (type / region / component)",
+        help="Partition a mesh into multiple files (type / region / regions / component)",
     )
     _split.add_args(parser)
     parser.set_defaults(func=_split.split_cmd)
+
+    parser = subparsers.add_parser(
+        "regions",
+        help="List a mesh's named regions (name/kind/dim/tag/entry count)",
+    )
+    _regions.add_args(parser)
+    parser.set_defaults(func=_regions.regions_cmd)
 
     parser = subparsers.add_parser(
         "convert-cells",

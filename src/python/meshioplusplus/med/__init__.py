@@ -42,9 +42,56 @@ def read(filename):
     return _py_read(filename)
 
 
+def _names_encode_a_timestep(mesh):
+    """Whether any array name uses the ``"Name[idx] - pdt"`` multi-timestep
+    convention ``_med._parse_med_field_name`` recognizes.
+
+    The C++ writer has no notion of this encoding at all -- it would write
+    "Temperature[0] - 0.0" and "Temperature[1] - 1.0" as two unrelated
+    fields instead of two timesteps of one field named "Temperature". A mesh
+    using this convention must defer to the Python writer, which groups them
+    correctly.
+    """
+    from ._med import _parse_med_field_name
+
+    for name in list(mesh.point_data):
+        if _parse_med_field_name(name)[1] is not None:
+            return True
+    for name in list(mesh.cell_data):
+        if _parse_med_field_name(name)[1] is not None:
+            return True
+    return False
+
+
 def write(filename, mesh, med_version="4.1.0", **kwargs):
-    """Write a MED file (C++ core when built with HDF5, Python/h5py fallback)."""
-    if _HAS_HDF5 and not kwargs and not is_buffer(filename, "w"):
+    """Write a MED file (C++ core when built with HDF5, Python/h5py fallback).
+
+    The C++ path handles a single-timestep field (CHA) write directly --
+    ordinary ``point_data``/``cell_data`` arrays, no units, no component
+    names, no multiple timesteps. Three signals mean the caller wants more
+    than that, and must go to Python instead:
+
+    - ``med:field_units``/``med:step_meta`` in ``field_data`` -- Python-only
+      conventions (dicts, not arrays), so this check has to happen *here*
+      rather than in the C++ core: they cannot survive the Python->C++ mesh
+      conversion at all (it silently drops any non-numeric ``field_data``
+      entry), so a check made there would never see them and could not defer
+      correctly. ``med:nom`` is unaffected -- it is passed through explicitly
+      below and always was.
+    - an array name using the ``"Name[idx] - pdt"`` multi-timestep encoding
+      (see ``_names_encode_a_timestep``).
+    """
+    wants_enhanced_fields = (
+        "med:field_units" in mesh.field_data
+        or "med:step_meta" in mesh.field_data
+        or _names_encode_a_timestep(mesh)
+    )
+    if (
+        _HAS_HDF5
+        and not kwargs
+        and not wants_enhanced_fields
+        and not is_buffer(filename, "w")
+    ):
         point_tags = getattr(mesh, "point_tags", None) or {}
         cell_tags = getattr(mesh, "cell_tags", None) or {}
         med_nom = mesh.field_data.get("med:nom", [])

@@ -56,6 +56,13 @@ def _print_metadata(meta):
             shown += ", ..."
         print(f"  Time steps: {len(times)} [{shown}]")
 
+    regions = meta.get("regions") or []
+    if regions:
+        print(f"  Regions ({len(regions)}):")
+        for r in regions:
+            tag = "" if r["tag"] < 0 else f" tag={r['tag']}"
+            print(f"    {r['name']} ({r['kind']}, {r['num_entries']} entries{tag})")
+
     if "bbox_min" in meta:
         lo = ", ".join(f"{v:g}" for v in meta["bbox_min"])
         hi = ", ".join(f"{v:g}" for v in meta["bbox_max"])
