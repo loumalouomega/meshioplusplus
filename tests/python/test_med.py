@@ -1,5 +1,6 @@
 import copy
 import pathlib
+import tempfile
 
 import numpy as np
 import pytest
@@ -571,11 +572,24 @@ def test_bitmask_writer_flush(tmp_path):
 
 
 def test_bitmask_written_in_real_med_file(tmp_path):
-    """After a full meshio write, bitmask attributes must exist in CHA fields."""
+    """After a full Python meshio write, bitmask attributes must exist in CHA
+    fields.
+
+    Calls the pure-Python writer directly: bitmask (LEN/LGN/LNA/LAA) is a
+    documented, deliberate gap of the C++ writer's single-timestep common
+    case (see doc/formats/med.md) -- our own reader never reads it, so its
+    absence costs nothing for a meshio++ round-trip, only for interop with
+    tools (Salome/MEDCoupling) that use it. A plain single-array mesh like
+    this one is exactly what the C++ path now handles directly, so reaching
+    it via ``meshioplusplus.med.write`` would no longer exercise what this
+    test is about.
+    """
+    from meshioplusplus.med._med import write as _py_write
+
     filename = tmp_path / "test_bitmask_full.med"
 
     mesh = helpers.add_point_data(helpers.tri_mesh, 1)
-    meshioplusplus.med.write(filename, mesh)
+    _py_write(filename, mesh)
 
     with h5py.File(filename, "r") as f:
         assert "CHA" in f
@@ -1596,3 +1610,96 @@ def test_gmsh_physical_and_cell_sets_both_preserved(tmp_path):
     assert "group_7" not in back.cell_sets
     np.testing.assert_array_equal(back.cell_sets["surf"][0], [0])
     np.testing.assert_array_equal(back.cell_sets["group_9"][0], [1, 2])
+
+
+# --------------------------------------------------------------------------- #
+# The C++ writer's single-timestep CHA field support (point_data/cell_data)   #
+# -- previously ANY point_data/cell_data beyond point_tags/cell_tags threw    #
+# and deferred the whole write to Python.                                    #
+# --------------------------------------------------------------------------- #
+
+
+def test_cpp_writes_plain_point_and_cell_data():
+    """A plain data-carrying mesh must go through the C++ writer (no bitmask
+    attrs -- that is the Python-only writer's signature)."""
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_hdf5__", False):
+        pytest.skip("core built without HDF5")
+
+    mesh = helpers.add_point_data(helpers.tri_mesh, 1)
+    mesh = copy.deepcopy(mesh)
+    mesh.cell_data["stress"] = [np.array([42.0, 43.0])]
+
+    with tempfile.TemporaryDirectory() as d:
+        path = pathlib.Path(d) / "plain.med"
+        meshioplusplus.med.write(path, mesh)
+        with h5py.File(path, "r") as f:
+            field = next(iter(f["CHA"].values()))
+            assert "LEN" not in field.attrs, (
+                "a plain data-carrying mesh should use the C++ writer, "
+                "which never writes the bitmask"
+            )
+
+        back = meshioplusplus.med.read(path)
+        assert "stress" in back.cell_data
+        np.testing.assert_allclose(back.cell_data["stress"][0], [42.0, 43.0])
+
+
+def test_cpp_matches_python_for_plain_fields():
+    """The C++ and Python writers must agree on plain field values (though not
+    on the bitmask, units, or component-name metadata the Python writer alone
+    carries)."""
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_hdf5__", False):
+        pytest.skip("core built without HDF5")
+    from meshioplusplus.med._med import write as _py_write
+
+    mesh = helpers.add_point_data(helpers.tri_mesh, 1)
+    mesh = copy.deepcopy(mesh)
+    mesh.cell_data["stress"] = [np.array([42.0, 43.0])]
+
+    with tempfile.TemporaryDirectory() as d:
+        cpp_path = pathlib.Path(d) / "cpp.med"
+        py_path = pathlib.Path(d) / "py.med"
+        meshioplusplus.med.write(cpp_path, mesh)  # C++ path (no bitmask)
+        _py_write(py_path, mesh)  # Python path (bitmask, forced explicitly)
+
+        cpp_back = meshioplusplus.med.read(cpp_path)
+        py_back = meshioplusplus.med.read(py_path)
+        for name, value in mesh.point_data.items():
+            np.testing.assert_allclose(cpp_back.point_data[name], value)
+            np.testing.assert_allclose(py_back.point_data[name], value)
+        np.testing.assert_allclose(cpp_back.cell_data["stress"][0], [42.0, 43.0])
+        np.testing.assert_allclose(py_back.cell_data["stress"][0], [42.0, 43.0])
+
+
+def test_names_encoding_a_timestep_defer_to_python():
+    """ "Name[idx] - pdt"-encoded array names must go through the Python
+    writer, which groups them under one field -- the C++ writer has no
+    notion of this convention and would write two unrelated fields."""
+    from meshioplusplus._mesh import CellBlock, Mesh
+    from meshioplusplus.med import _names_encode_a_timestep
+
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    cells = [CellBlock("triangle", np.array([[0, 1, 2]]))]
+
+    plain = Mesh(points, cells, point_data={"temperature": np.array([1.0, 2.0, 3.0])})
+    assert not _names_encode_a_timestep(plain)
+
+    encoded = Mesh(
+        points,
+        cells,
+        point_data={
+            "Temperature[0] - 0.0": np.array([1.0, 2.0, 3.0]),
+            "Temperature[1] - 1.0": np.array([4.0, 5.0, 6.0]),
+        },
+    )
+    assert _names_encode_a_timestep(encoded)
+
+    with tempfile.TemporaryDirectory() as d:
+        path = pathlib.Path(d) / "encoded.med"
+        meshioplusplus.med.write(path, encoded)
+        with h5py.File(path, "r") as f:
+            # Grouped under one field -- the signature of the Python writer
+            # actually having handled this, not the C++ one.
+            assert list(f["CHA"].keys()) == ["Temperature"]
