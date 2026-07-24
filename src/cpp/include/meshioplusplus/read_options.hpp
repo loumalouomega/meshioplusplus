@@ -103,6 +103,37 @@ struct ReadOptions {
     /** @brief Memory-mapping preference; honoured where the reader supports it. */
     MmapMode mMmap = MmapMode::Auto;
 
+    /**
+     * @brief Which time step to materialize from a multi-step file.
+     *
+     * Formats carrying a time series (Exodus `time_whole`, XDMF temporal
+     * collections, CGNS, MED) hold one value per array *per step*, but a `Mesh`
+     * holds exactly one. Before this option every such reader silently took the
+     * first step, which is correct for the overwhelmingly common single-step
+     * file and quietly wrong for the rest.
+     *
+     * `0` (the default) is that historical behaviour -- the first step -- so a
+     * default-constructed `ReadOptions` still reproduces it exactly. Negative
+     * values count from the end, `-1` being the last step, which is what a
+     * caller wanting "the final state of the simulation" actually means and
+     * cannot express without knowing the step count up front. Out of range is an
+     * error naming the available count, never a silent clamp: quietly handing
+     * back step 0 when step 7 was requested is the failure mode this option
+     * exists to remove.
+     *
+     * A reader for a format with no time concept ignores this field.
+     */
+    int mTimeStep = 0;
+
+    /**
+     * @brief Resolve `mTimeStep` against an actual step count.
+     *
+     * @param NumSteps Number of steps the file carries.
+     * @return The 0-based step index.
+     * @throws ReadError when the request is out of range.
+     */
+    std::size_t ResolveTimeStep(std::size_t NumSteps) const;
+
     /** @brief Whether @p rName survives the `mDataArrays` filter. */
     bool WantsArray(const std::string& rName) const {
         if (!mDataArrays.has_value())
@@ -172,6 +203,17 @@ struct MeshMetadata {
 
     /** @brief The resolved format name the summary was read as. */
     std::string mFormat;
+
+    /**
+     * @brief The file's time-series values, or empty when it carries none.
+     *
+     * The companion to `ReadOptions::mTimeStep`: `mTimeValues.size()` is the
+     * number of steps a caller may ask for, and the values themselves are the
+     * simulation times. Empty means either "this format has no time concept" or
+     * "this file is single-step with no recorded time" -- the two are not worth
+     * distinguishing, since neither leaves a caller anything to choose between.
+     */
+    std::vector<double> mTimeValues;
 
     /** @brief Total cells across every block. */
     std::size_t NumCells() const {
