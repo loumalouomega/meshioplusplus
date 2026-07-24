@@ -6,9 +6,11 @@ declares what each format keeps and what it loses. The table is the point: it
 makes the lossiness executable documentation rather than prose that drifts, and
 a format that silently starts or stops carrying a kind fails here.
 
-Phase 1 maps Gmsh and Abaqus. Exodus, MED, UNV, Ansys, OpenFOAM and XDMF are
-deferred to Phase 2 and are listed at the bottom so the gap is on the record.
-See ``doc/regions.md``.
+Phase 1 maps Gmsh and Abaqus. Exodus reads regions (element blocks, node sets
+and side sets) but does not yet write them, so it is a **read-only** entry
+recorded below rather than a row here -- this matrix is a round-trip table, and
+a format that cannot write cannot round-trip. MED, UNV, Ansys, OpenFOAM and XDMF
+are deferred entirely. See ``doc/regions.md``.
 """
 
 import numpy as np
@@ -156,7 +158,6 @@ def test_side_regions_are_the_new_capability():
 # Deferred to Phase 2 — recorded so the gap is explicit, not forgotten.        #
 # --------------------------------------------------------------------------- #
 PHASE_2 = {
-    "exodus": "element blocks + node sets + side sets",
     "med": "families and groups (absorbing the MedInfo side channel)",
     "unv": "groups (absorbing UnvInfo)",
     "ansysInp": "components (absorbing AnsysInfo)",
@@ -177,3 +178,30 @@ def test_phase_2_formats_do_not_carry_regions_yet(fmt, tmp_path):
     assert fmt not in {
         p.values[0] for p in MATRIX
     }, f"{fmt} now carries regions: move it from PHASE_2 into MATRIX"
+
+
+# --------------------------------------------------------------------------- #
+# Read-only region support: the reader maps regions but the writer does not     #
+# emit them yet, so these formats can be a *source* of regions but not a        #
+# round-trip target. Recorded here so the half-finished state is explicit.      #
+# --------------------------------------------------------------------------- #
+READ_ONLY_REGIONS = {
+    "exodus": (
+        "reads element blocks -> Cell, node sets -> Point and side sets -> Side "
+        "(see tests/python/test_exodus.py); the writer still emits neither "
+        "eb_names nor side sets, so a region written here would not come back"
+    ),
+}
+
+
+@pytest.mark.parametrize("fmt", sorted(READ_ONLY_REGIONS))
+def test_read_only_region_formats_are_not_round_trip_rows(fmt):
+    """Pins the asymmetry rather than letting it be mistaken for full support.
+
+    When such a format's writer learns to emit regions, move it into MATRIX and
+    delete its entry here.
+    """
+    assert fmt not in {
+        p.values[0] for p in MATRIX
+    }, f"{fmt} now round-trips regions: move it from READ_ONLY_REGIONS into MATRIX"
+    assert fmt not in PHASE_2, f"{fmt} is read-capable: it is no longer a Phase-2 gap"
