@@ -5216,6 +5216,21 @@ struct CellBlockInfo {
 };
 
 /**
+ * @brief One named region's shape, without its entries.
+ *
+ * The region complement to `CellBlockInfo`: enough to enumerate and identify a
+ * mesh's regions (build a SubModelPart tree, say) without the cost of a full
+ * read just to learn how many there are and what they're called.
+ */
+struct RegionSummary {
+    std::string mName;                     ///< The region's name.
+    RegionKind mKind = RegionKind::Point;  ///< Point / Cell / Side.
+    int mDim = -1;                         ///< Topological dimension, or -1 if unspecified.
+    std::int64_t mTag = -1;                ///< Format-native integer id, or -1 if none.
+    std::size_t mNumEntries = 0;  ///< Number of grouped entities (not the entries themselves).
+};
+
+/**
  * @brief A mesh summary: what a file contains, without its contents.
  *
  * The topological complement to `compute_stats` (geometry) and `data_info`
@@ -5269,6 +5284,21 @@ struct MeshMetadata {
      * distinguishing, since neither leaves a caller anything to choose between.
      */
     std::vector<double> mTimeValues;
+
+    /**
+     * @brief The file's named regions, without their entries.
+     *
+     * Populated whenever the mesh producing this summary was already fully in
+     * memory (i.e. whenever `metadata_from_mesh` ran) -- regions are read
+     * alongside geometry by every region-capable reader, so there is nothing
+     * left to save by skipping them once a read has happened anyway. A native
+     * metadata path that declines a full read (VTU/VTP/XDMF/Gmsh 4.1) reports
+     * no regions rather than guessing; none of those formats map regions yet
+     * regardless (see `doc/regions.md`), so this is never a wrong answer, only
+     * an incomplete one on formats already known to fall back for other
+     * reasons.
+     */
+    std::vector<RegionSummary> mRegions;
 
     /** @brief Total cells across every block. */
     std::size_t NumCells() const {
@@ -13291,6 +13321,14 @@ enum class SplitBy {
     Type,       ///< One piece per cell type.
     Component,  ///< One piece per connected component (node-sharing).
     Tag,        ///< One piece per distinct integer cell_data value.
+    /**
+     * One piece per named `Cell` region (`"regions"`, plural -- distinct from
+     * the pre-existing singular `"region"` name, which remains an alias for
+     * `Tag` for backward compatibility; see `split_by_from_name`). Unlike
+     * every other criterion this is not a partition: regions may overlap, so
+     * a cell can appear in zero, one, or several pieces.
+     */
+    Region,
 };
 
 /// One output piece of a `split`.
@@ -13312,7 +13350,8 @@ struct SplitResult {
 
 /**
  * @brief Parse a criterion name into a `SplitBy`.
- * @param rName one of `"type"`, `"component"`, `"region"`/`"tag"`
+ * @param rName one of `"type"`, `"component"`, `"region"`/`"tag"`, or
+ *        `"regions"` (plural -- named `Cell` regions, `SplitBy::Region`)
  * @throws std::invalid_argument on an unknown name
  */
 SplitBy split_by_from_name(const std::string& rName);
@@ -40101,6 +40140,16 @@ void write_attr_double(hid_t loc, const std::string& rName, double v) {
     H5Awrite(a, H5T_NATIVE_DOUBLE, &v);
 }
 
+// Read a scalar double attribute, defaulting to 0.0 when absent.
+double read_attr_double(hid_t loc, const std::string& rName) {
+    if (!h5::has_attr(loc, rName))
+        return 0.0;
+    h5::Hid a(H5Aopen(loc, rName.c_str(), H5P_DEFAULT), H5Aclose);
+    double v = 0.0;
+    H5Aread(a, H5T_NATIVE_DOUBLE, &v);
+    return v;
+}
+
 // Fortran-order (n, k) -> flat column-major buffer, applying `shift` to
 // integer dtypes and (fused, same pass) an optional column permutation `perm`
 // (the meshio->MED node reorder). Pure index transpose (memory-bandwidth bound).
@@ -40168,6 +40217,129 @@ NDArray unflatten_f(const NDArray& rFlat, std::size_t n, std::size_t k, std::int
 }
 
 constexpr const char* kProfile = "MED_NO_PROFILE_INTERNAL";
+
+// --- CHA (field) writing: the single-timestep common case only -------------
+//
+// Deferred to the Python writer (see the guard in write_med): multi-timestep
+// metadata (med:step_meta), units (med:field_units), component names
+// (med:nom), and the MED-4.1 optimization bitmask (LEN/LGC/LNA/... -- our own
+// reader never reads these attributes, so their absence costs nothing for a
+// meshio++ round-trip; it is a narrower interoperability gap with tools that
+// use them, e.g. Salome/MEDCoupling). ELNO/ELGA (element-nodal/Gauss-point
+// data) needs no guard at all: the uniform mesh API's cell_data is always
+// (n,) or (n, k), so a 3-D "per-node-within-cell" shape cannot even be
+// constructed here.
+
+int med_field_type_code(DType dt) {
+    switch (dt) {
+        case DType::Float32:
+            return 4;  // MED_FLOAT32
+        case DType::Float64:
+            return 6;  // MED_FLOAT64
+        case DType::Int32:
+            return 24;  // MED_INT32
+        default:
+            // Every other dtype (Int8/16, UInt8/16/32/64) is widened to Int64
+            // by med_field_widen() before the data is written, so 26
+            // (MED_INT64) is the correct code for all of them too.
+            return 26;  // MED_INT64
+    }
+}
+
+// Widen any dtype MED's field TYP does not have a code for (Int8/16,
+// UInt8/16/32/64) to Int64, element by element -- fields are not a hot path,
+// so a fallback copy costs nothing worth optimizing away.
+NDArray med_field_widen(const NDArray& rArr) {
+    switch (rArr.Dtype()) {
+        case DType::Float32:
+        case DType::Float64:
+        case DType::Int32:
+        case DType::Int64:
+            return rArr;
+        default:
+            break;
+    }
+    NDArray out(DType::Int64, rArr.Shape());
+    for (std::size_t i = 0; i < rArr.Size(); ++i)
+        out.As<std::int64_t>()[i] = detail::read_int(rArr, i);
+    return out;
+}
+
+// The field group's shared attrs (name, type, component count, blank
+// units/component-names -- the deferred metadata) and its one timestep
+// subgroup (fixed ndt=1, nor=-1, pdt=0.0 -- the single-timestep case this
+// path is scoped to). Returns the timestep group to write the actual support
+// (NOE / MAI.<type>) subgroup into.
+h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const std::string& rName,
+                               DType dt, std::size_t ncomponents) {
+    h5::Hid field = h5::create_group(cha, rName);
+    write_attr_bytes(field, "MAI", rMeshName);
+    h5::write_attr_int(field, "TYP", med_field_type_code(dt));
+    h5::write_attr_int(field, "NCO", static_cast<std::int64_t>(ncomponents));
+    write_attr_bytes(field, "UNI", "");
+    write_attr_bytes(field, "UNT", "");
+    write_attr_bytes(field, "NOM", std::string(16, ' '));
+
+    char step_name[64];
+    std::snprintf(step_name, sizeof(step_name), "%020lld%020lld", 1LL, -1LL);
+    h5::Hid ts = h5::create_group(field, step_name);
+    h5::write_attr_int(ts, "NDT", 1);
+    h5::write_attr_int(ts, "NOR", -1);
+    write_attr_double(ts, "PDT", 0.0);
+    h5::write_attr_int(ts, "RDT", -1);
+    h5::write_attr_int(ts, "ROR", -1);
+    return ts;
+}
+
+// One "support" subgroup (NOE for nodal, MAI.<type> for a cell block):
+// GAU/PFL attrs, the default-profile subgroup with NBR/NGA/GAU/CO.
+void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray& rData) {
+    h5::Hid typ = h5::create_group(ts, rSupportName);
+    write_attr_bytes(typ, "GAU", "");
+    write_attr_bytes(typ, "PFL", kProfile);
+    h5::Hid profile = h5::create_group(typ, kProfile);
+    h5::write_attr_int(profile, "NBR", static_cast<std::int64_t>(detail::rows(rData)));
+    h5::write_attr_int(profile, "NGA", 1);
+    write_attr_bytes(profile, "GAU", "");
+    NDArray widened = med_field_widen(rData);
+    NDArray flat = flatten_f(widened, 0);
+    h5::write_dataset(profile, "CO", flat);
+}
+
+void write_cha_nodal_field(hid_t cha, const std::string& rMeshName, const std::string& rName,
+                           const NDArray& rData) {
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, rData.Dtype(), detail::cols(rData));
+    write_cha_support(ts, "NOE", rData);
+}
+
+void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::string& rName,
+                          const Mesh& rMesh) {
+    // The type/component count come from the first block that actually has
+    // rows -- an empty mesh's block still has a dtype/shape, so this never
+    // has nothing to report.
+    DType dt = DType::Float64;
+    std::size_t ncomponents = 1;
+    bool found = false;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks() && !found; ++b) {
+        const NDArray& d = rMesh.CellData(rName, b);
+        if (detail::rows(d) > 0) {
+            dt = d.Dtype();
+            ncomponents = detail::cols(d);
+            found = true;
+        }
+    }
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, dt, ncomponents);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const NDArray& d = rMesh.CellData(rName, b);
+        if (detail::rows(d) == 0)
+            continue;  // an empty block contributes no support subgroup
+        auto it = meshio_to_med().find(rMesh.Cells(b).Type());
+        if (it == meshio_to_med().end())
+            continue;  // unsupported cell type; already reported by the
+                       // connectivity-writing loop, which runs first
+        write_cha_support(ts, "MAI." + it->second, d);
+    }
+}
 
 // ---- families (point/cell tags) ----
 
@@ -40260,6 +40432,123 @@ void write_families(hid_t fm_group, const std::map<std::int64_t, std::vector<std
     }
 }
 
+// --- CHA (field) reading: the mirror image of write_cha_*, same scope -----
+//
+// Accepts only the exact shape write_med's CHA writer produces: one timestep
+// group (the fixed ndt=1/nor=-1 key), the default profile, and either a
+// single "NOE" (nodal) support or one-or-more "MAI.<type>" (cell) supports --
+// never a mix of the two, since the writer never produces one. Anything else
+// (multi-timestep, a named profile, an ELNO/ELGA support name) declines by
+// throwing, exactly like the pre-existing unconditional CHA guard did, so a
+// file the enhanced Python reader is needed for still gets it.
+
+// Read one support subgroup's data ("CO" under its default-profile child),
+// reshaped to `(rows,)` for a scalar field or `(rows, ncomponents)` otherwise
+// -- the "1-D scalars stay 1-D" convention the rest of the core keeps.
+NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size_t rows) {
+    const std::string pfl = read_attr_bytes(support, "PFL");
+    if (!pfl.empty() && pfl != kProfile)
+        throw ReadError("MED: a field on a named profile is handled by Python fallback");
+    h5::Hid profile = h5::open_group(support, kProfile);
+    NDArray flat = h5::read_dataset(profile, "CO");
+    const std::size_t k = ncomponents > 0 ? static_cast<std::size_t>(ncomponents) : 1;
+    if (flat.Size() != rows * k)
+        throw ReadError("MED: field data size does not match its declared shape");
+    NDArray out = unflatten_f(flat, rows, k, 0);
+    if (k == 1)
+        out.Reshape({rows});
+    return out;
+}
+
+void read_cha_fields(hid_t cha, Mesh& rMesh) {
+    std::unordered_map<std::string, std::size_t> med_to_block;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        auto it = meshio_to_med().find(rMesh.Cells(b).Type());
+        if (it != meshio_to_med().end())
+            med_to_block.emplace(it->second, b);
+    }
+
+    for (const std::string& field_name : h5::group_links(cha)) {
+        h5::Hid field = h5::open_group(cha, field_name);
+        const std::int64_t ncomponents =
+            h5::has_attr(field, "NCO") ? h5::read_attr_int(field, "NCO") : 1;
+
+        // Units are a real piece of information this reader does not carry
+        // (med:field_units is Python-only) -- declining rather than silently
+        // reading the file without them is what keeps this an honest gap
+        // instead of a silent loss on a round-trip through this reader.
+        if (!read_attr_bytes(field, "UNI").empty() || !read_attr_bytes(field, "UNT").empty())
+            throw ReadError("MED: field '" + field_name +
+                            "' declares units, handled by Python fallback");
+
+        std::vector<std::string> steps = h5::group_links(field);
+        if (steps.size() != 1)
+            throw ReadError("MED: multi-timestep field '" + field_name +
+                            "' is handled by Python fallback");
+        h5::Hid ts = h5::open_group(field, steps[0]);
+
+        // Likewise: this reader has no med:step_meta side channel, so a
+        // timestep whose NDT/NOR/PDT are not the write-side default (1/-1/0)
+        // carries real information it cannot represent. Declining is
+        // deliberate -- silently reporting ndt=1 for a genuinely-tagged
+        // step 7 would be a wrong answer, not just an incomplete one.
+        if (h5::read_attr_int(ts, "NDT") != 1 || h5::read_attr_int(ts, "NOR") != -1 ||
+            read_attr_double(ts, "PDT") != 0.0)
+            throw ReadError("MED: field '" + field_name +
+                            "' has non-default timestep metadata, handled by Python fallback");
+
+        std::vector<std::string> supports = h5::group_links(ts);
+        const bool is_nodal = std::find(supports.begin(), supports.end(), "NOE") != supports.end();
+
+        if (is_nodal) {
+            if (supports.size() != 1)
+                throw ReadError("MED: field '" + field_name +
+                                "' mixes nodal and cell support (Python fallback)");
+            h5::Hid noe = h5::open_group(ts, "NOE");
+            rMesh.AddPointData(field_name,
+                               read_cha_support_data(noe, ncomponents, rMesh.NumPoints()));
+            continue;
+        }
+
+        std::vector<NDArray> per_block;
+        per_block.reserve(rMesh.NumCellBlocks());
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            per_block.emplace_back(DType::Float64, std::vector<std::size_t>{0});
+        std::vector<bool> filled(rMesh.NumCellBlocks(), false);
+        for (const std::string& supp : supports) {
+            if (supp.rfind("MAI.", 0) != 0)
+                throw ReadError("MED: field '" + field_name + "' support '" + supp +
+                                "' is handled by Python fallback");
+            const std::string med_type = supp.substr(4);
+            auto bit = med_to_block.find(med_type);
+            if (bit == med_to_block.end())
+                throw ReadError("MED: field '" + field_name +
+                                "' names a cell type with no "
+                                "matching block");
+            const std::size_t b = bit->second;
+            h5::Hid grp = h5::open_group(ts, supp);
+            per_block[b] = read_cha_support_data(grp, ncomponents, rMesh.Cells(b).NumCells());
+            filled[b] = true;
+        }
+        // A block with no support subgroup carries no data for this field --
+        // AddCellData still needs exactly one array per block, so it gets an
+        // appropriately-shaped empty/zero one (a documented gap: the reader
+        // cannot tell "genuinely zero cells' worth of data" apart from "this
+        // block's rows were simply never written", so it reports zeros).
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            if (filled[b])
+                continue;
+            const std::size_t ncells = rMesh.Cells(b).NumCells();
+            std::vector<std::size_t> shape =
+                ncomponents > 1
+                    ? std::vector<std::size_t>{ncells, static_cast<std::size_t>(ncomponents)}
+                    : std::vector<std::size_t>{ncells};
+            per_block[b] = NDArray(DType::Float64, shape);
+        }
+        rMesh.AddCellData(field_name, std::move(per_block));
+    }
+}
+
 }  // namespace
 
 Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
@@ -40269,7 +40558,8 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
     h5::Hid ens = h5::open_group(f, "ENS_MAA");
     std::vector<std::string> meshes = h5::group_links(ens);
     if (meshes.size() != 1)
-        throw ReadError(detail::format_compat("Must only contain exactly 1 mesh, found {}.", meshes.size()));
+        throw ReadError(
+            detail::format_compat("Must only contain exactly 1 mesh, found {}.", meshes.size()));
     const std::string mesh_name = meshes[0];
     h5::Hid mesh_grp = h5::open_group(ens, mesh_name);
 
@@ -40288,8 +40578,8 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
     } else {
         std::vector<std::string> steps = h5::group_links(mesh_grp);
         if (steps.size() != 1)
-            throw ReadError(
-                detail::format_compat("Must only contain exactly 1 time-step, found {}.", steps.size()));
+            throw ReadError(detail::format_compat(
+                "Must only contain exactly 1 time-step, found {}.", steps.size()));
         data_grp = h5::open_group(mesh_grp, steps[0]);
     }
 
@@ -40385,11 +40675,16 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
         read_families(eleme, rInfo.mCellTags, rInfo.mCellTagGroups);
     }
 
-    // Fields (CHA): the enhanced Python reader attaches med:field_units /
-    // med:step_meta and multi-timestep metadata that the C++ path does not
-    // replicate byte-for-byte; defer any field-carrying file to Python.
-    if (h5::exists(f, "CHA"))
-        throw ReadError("MED: fields (CHA) handled by Python fallback");
+    // Fields (CHA): the single-timestep, default-profile common case is read
+    // directly (see read_cha_fields); anything past that scope -- the
+    // enhanced Python reader's med:field_units/med:step_meta multi-timestep
+    // metadata, a named profile, ELNO/ELGA support -- throws from inside it
+    // and defers the whole file to Python, exactly as the unconditional guard
+    // this replaced always did.
+    if (h5::exists(f, "CHA")) {
+        h5::Hid cha = h5::open_group(f, "CHA");
+        read_cha_fields(cha, mesh);
+    }
 
     return mesh;
 }
@@ -40398,15 +40693,18 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
                const std::string& rMedVersion) {
     h5::SilenceErrors silence;
 
-    // Fields (CHA) with the MED-4.1 bitmask / units / step metadata and the
-    // gmsh:physical family bridging are produced by the enhanced Python writer
-    // and inspected byte-for-byte by tests; defer any such mesh to Python.
-    for (const auto& name : rMesh.PointDataNames())
-        if (name != "point_tags")
-            throw WriteError("MED: fields handled by Python fallback");
-    for (const auto& name : rMesh.CellDataNames())
-        if (name != "cell_tags")
-            throw WriteError("MED: fields handled by Python fallback");
+    // Fields (CHA): the single-timestep, no-profile, no-units common case is
+    // written directly (see write_cha_nodal_field/write_cha_cell_field
+    // below). The enhanced Python writer's multi-timestep metadata, units and
+    // component names (med:step_meta/med:field_units/med:nom) are Python-only
+    // conventions -- they are ordinary dicts/lists of strings, which cannot
+    // become an NDArray, so they can never reach this Mesh through ANY
+    // binding's field_data conversion (Python's own `med_write` pybind
+    // wrapper uses `lenient_field_data=true` specifically because of this:
+    // a non-numeric field_data entry is silently dropped before it gets
+    // here, never thrown). The guard therefore has to live where those
+    // conventions actually exist -- the Python shim (`med/__init__.py`),
+    // which checks `mesh.field_data` itself before ever calling in here.
     if (rMesh.HasCellData("gmsh:physical"))
         throw WriteError("MED: gmsh physical groups handled by Python fallback");
 
@@ -40569,6 +40867,30 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     if (!rInfo.mCellTags.empty()) {
         h5::Hid element = h5::create_group(families, "ELEME");
         write_families(element, rInfo.mCellTags, rInfo.mCellTagGroups);
+    }
+
+    // Fields (CHA) -- single-timestep common case only; see the guard above
+    // and write_cha_nodal_field/write_cha_cell_field's own doc comments.
+    bool has_point_fields = false;
+    for (const auto& name : rMesh.PointDataNames())
+        if (name != "point_tags") {
+            has_point_fields = true;
+            break;
+        }
+    bool has_cell_fields = false;
+    for (const auto& name : rMesh.CellDataNames())
+        if (name != "cell_tags") {
+            has_cell_fields = true;
+            break;
+        }
+    if (has_point_fields || has_cell_fields) {
+        h5::Hid cha = h5::create_group(f, "CHA");
+        for (const auto& name : rMesh.PointDataNames())
+            if (name != "point_tags")
+                write_cha_nodal_field(cha, mesh_name, name, rMesh.PointData(name));
+        for (const auto& name : rMesh.CellDataNames())
+            if (name != "cell_tags")
+                write_cha_cell_field(cha, mesh_name, name, rMesh);
     }
 }
 
@@ -60162,6 +60484,40 @@ std::vector<SplitGroup> split_by_component(const Mesh& rMesh) {
     return groups;
 }
 
+// One piece per named Cell region. Unlike every other criterion, this is not a
+// partition: a cell belonging to two regions appears in two pieces, and a cell
+// in none appears in none -- each named region is processed independently, so
+// "split by region" means exactly what it says rather than reinterpreting
+// overlapping groups as a forced partition.
+//
+// Point/Side regions produce no piece: split's contract is whole submeshes,
+// and there is no sound way to turn "these facets" or "these points" into one
+// without first deciding which surrounding cells to pull in -- a policy
+// decision this operation does not make silently.
+std::vector<SplitGroup> split_by_region(const Mesh& rMesh) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    std::vector<SplitGroup> groups;
+    for (const std::string& name : rMesh.RegionNames()) {
+        const std::size_t idx = rMesh.FindRegion(name, RegionKind::Cell);
+        if (idx == Mesh::npos)
+            continue;
+        const Region& region = rMesh.Region(idx);
+        SplitGroup group;
+        group.key = name;
+        split_init_group(group, nblocks);
+        const std::int64_t* entries = region.Entries();
+        const std::size_t n = region.NumEntries();
+        for (std::size_t e = 0; e < n; ++e) {
+            const auto [b, row] = detail::global_to_block_row(bases, entries[e]);
+            if (b != static_cast<std::size_t>(-1))
+                group.kept[b].push_back(row);
+        }
+        groups.push_back(std::move(group));
+    }
+    return groups;
+}
+
 bool split_is_integer(DType dt) {
     switch (dt) {
         case DType::Int8:
@@ -60244,8 +60600,10 @@ SplitBy split_by_from_name(const std::string& rName) {
         return SplitBy::Component;
     if (rName == "region" || rName == "tag")
         return SplitBy::Tag;
+    if (rName == "regions")
+        return SplitBy::Region;
     throw std::invalid_argument("split: unknown criterion '" + rName +
-                                "' (expected 'type', 'region'/'tag', or 'component')");
+                                "' (expected 'type', 'region'/'tag', 'regions', or 'component')");
 }
 
 SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
@@ -60259,6 +60617,9 @@ SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName) {
             break;
         case SplitBy::Tag:
             groups = split_by_tag(rMesh, rTagName);
+            break;
+        case SplitBy::Region:
+            groups = split_by_region(rMesh);
             break;
     }
 
@@ -61238,6 +61599,20 @@ MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
     meta.mCellDataNames = rMesh.CellDataNames();
     meta.mFieldDataNames = rMesh.FieldDataNames();
 
+    // The mesh is already in memory, so this is nearly free -- every
+    // region-capable reader builds regions alongside geometry, not lazily.
+    meta.mRegions.reserve(rMesh.NumRegions());
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        RegionSummary summary;
+        summary.mName = r.mName;
+        summary.mKind = r.mKind;
+        summary.mDim = r.mDim;
+        summary.mTag = r.mTag;
+        summary.mNumEntries = r.NumEntries();
+        meta.mRegions.push_back(std::move(summary));
+    }
+
     // The mesh is already in memory, so the bounding box is nearly free here --
     // unlike on a native metadata path, where it would force decoding the point
     // coordinates and defeat the whole point.
@@ -61467,6 +61842,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"freefem", meshioplusplus::write_freefem},
         {"gmsh", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
+        // Distinct from "gmsh" (4.1): 2.2 stores each element's physical tag
+        // directly, so it is the version that round-trips named Cell region
+        // MEMBERSHIP, not just names -- write_gmsh22 already synthesizes
+        // gmsh:physical from Cell regions when the mesh has none of its own.
+        // Was reachable only from Python (gmsh22_write) until this entry; the
+        // flat bindings (WASM/C API/Fortran) had no way to select it at all.
+        {"gmsh22", [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
         {"medit", meshioplusplus::write_medit_ascii},
         {"mff", meshioplusplus::write_mff},
