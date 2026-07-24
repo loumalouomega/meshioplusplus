@@ -67,6 +67,59 @@ def test_split_by_region_cell_sets():
     assert sum(len(cb.data) for cb in pieces["grp"].cells) == 1
 
 
+def test_split_by_regions_plural_cross_binding_criterion():
+    """by="regions" (plural) is the new cross-binding criterion, distinct from
+    the legacy singular "region" alias tested above."""
+    mesh = _mixed_tri_quad()
+    mesh.regions = [
+        meshioplusplus.Region("tri_group", "cell", [0], dim=2, tag=1),
+        meshioplusplus.Region("quad_group", "cell", [1], dim=2, tag=2),
+    ]
+    pieces = split(mesh, by="regions")
+    assert set(pieces) == {"tri_group", "quad_group"}
+    assert [cb.type for cb in pieces["tri_group"].cells] == ["triangle"]
+    assert [cb.type for cb in pieces["quad_group"].cells] == ["quad"]
+
+
+def test_split_by_regions_overlapping_is_not_a_partition():
+    mesh = _mixed_tri_quad()
+    mesh.regions = [
+        meshioplusplus.Region("a", "cell", [0], dim=2),
+        meshioplusplus.Region("b", "cell", [0, 1], dim=2),
+    ]
+    pieces = split(mesh, by="regions")
+    assert sum(len(cb.data) for cb in pieces["a"].cells) == 1
+    assert sum(len(cb.data) for cb in pieces["b"].cells) == 2
+
+
+def test_split_by_regions_ignores_point_regions():
+    mesh = _mixed_tri_quad()
+    mesh.regions = [meshioplusplus.Region("fixed", "point", [0])]
+    pieces = split(mesh, by="regions")
+    assert pieces == {}
+
+
+def test_split_by_regions_cpp_matches_python_fallback():
+    """The C++ ``"regions"`` criterion and its pure-Python fallback
+    (``_groups_by_region``, used when ``_core`` is unavailable) must agree on
+    which cells land in which named piece."""
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus._split import _groups_by_region
+
+    mesh = _mixed_tri_quad()
+    mesh.regions = [
+        meshioplusplus.Region("tri_group", "cell", [0], dim=2, tag=1),
+        meshioplusplus.Region("quad_group", "cell", [1], dim=2, tag=2),
+    ]
+    got = {p["key"]: p["mesh"] for p in core.split(mesh, "regions", "")}
+    ref = dict(_groups_by_region(mesh))
+    assert set(got) == set(ref) == {"tri_group", "quad_group"}
+    for key in got:
+        got_cells = sum(len(cb.data) for cb in got[key].cells)
+        ref_cells = sum(len(kept) for kept in ref[key])
+        assert got_cells == ref_cells
+
+
 def test_cpp_matches_python():
     core = pytest.importorskip("meshioplusplus._core")
     from meshioplusplus._split import _split_py
