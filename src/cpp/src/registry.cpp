@@ -160,6 +160,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"freefem", meshioplusplus::write_freefem},
         {"gmsh", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
+        // Distinct from "gmsh" (4.1): 2.2 stores each element's physical tag
+        // directly, so it is the version that round-trips named Cell region
+        // MEMBERSHIP, not just names -- write_gmsh22 already synthesizes
+        // gmsh:physical from Cell regions when the mesh has none of its own.
+        // Was reachable only from Python (gmsh22_write) until this entry; the
+        // flat bindings (WASM/C API/Fortran) had no way to select it at all.
+        {"gmsh22", [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
         {"medit", meshioplusplus::write_medit_ascii},
         {"mff", meshioplusplus::write_mff},
