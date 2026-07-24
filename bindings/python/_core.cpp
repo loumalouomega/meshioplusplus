@@ -161,6 +161,19 @@ py::dict core_metadata_to_py(const meshioplusplus::MeshMetadata& rMeta) {
     // Always present (empty for a format with no time concept), so a caller can
     // write `len(meta["time_values"])` without first testing for the key.
     out["time_values"] = rMeta.mTimeValues;
+    // Always present too (empty on a native metadata path, or for a format
+    // with no regions), so a caller can iterate without testing the key.
+    py::list regions;
+    for (const meshioplusplus::RegionSummary& r : rMeta.mRegions) {
+        py::dict entry;
+        entry["name"] = r.mName;
+        entry["kind"] = std::string(meshioplusplus::region_kind_name(r.mKind));
+        entry["dim"] = r.mDim;
+        entry["tag"] = r.mTag;
+        entry["num_entries"] = r.mNumEntries;
+        regions.append(std::move(entry));
+    }
+    out["regions"] = std::move(regions);
     // Absent rather than None-valued when not computed, so callers must ask
     // for it explicitly instead of accidentally treating "not computed" as a
     // real box at the origin.
