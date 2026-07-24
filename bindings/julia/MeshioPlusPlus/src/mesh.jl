@@ -232,13 +232,15 @@ struct ReadOptions
     metadata_only::Bool
     arrays::Union{Nothing,Vector{String}}
     mmap::Symbol
+    time_step::Int
 
     function ReadOptions(; points_only::Bool=false, metadata_only::Bool=false,
-                         arrays=nothing, mmap::Symbol=:auto)
+                         arrays=nothing, mmap::Symbol=:auto, time_step::Integer=0)
         mmap in (:auto, :on, :off) ||
             throw(ArgumentError("mmap must be :auto, :on or :off, got :$mmap"))
         new(points_only, metadata_only,
-            arrays === nothing ? nothing : String[String(a) for a in arrays], mmap)
+            arrays === nothing ? nothing : String[String(a) for a in arrays], mmap,
+            Int(time_step))
     end
 end
 
@@ -327,17 +329,12 @@ function reader_supports_options(format::AbstractString)
 end
 
 """
-    MeshMetadata
+    RegionSummary
 
-Summary of a mesh file produced by [`read_metadata`](@ref) without loading its
-heavy arrays. `bbox` is `nothing` for a native summary, which is the normal
-case: computing it would mean decoding the coordinates and defeating the
-purpose. `fell_back` is `true` when the format had no header-only path, so the
-whole file was read (the summary is still correct, just not cheap).
-"""
-"""One named region's shape, without its entries -- the `read_metadata`
+One named region's shape, without its entries -- the `read_metadata`
 counterpart of [`Region`](@ref). Cheap to enumerate without the cost of
-loading every entry."""
+loading every entry.
+"""
 struct RegionSummary
     name::String
     kind::Symbol
@@ -346,6 +343,15 @@ struct RegionSummary
     num_entries::Int
 end
 
+"""
+    MeshMetadata
+
+Summary of a mesh file produced by [`read_metadata`](@ref) without loading its
+heavy arrays. `bbox` is `nothing` for a native summary, which is the normal
+case: computing it would mean decoding the coordinates and defeating the
+purpose. `fell_back` is `true` when the format had no header-only path, so the
+whole file was read (the summary is still correct, just not cheap).
+"""
 struct MeshMetadata
     num_points::Int
     point_dim::Int

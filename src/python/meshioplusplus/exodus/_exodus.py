@@ -314,6 +314,11 @@ def read(filename, time_step=0):  # noqa: C901
         side_sides,
         len(mesh.points),
     )
+    # Side channel like `.regions`/`.info`: `read_metadata`'s generic
+    # (no-native-core) fallback builds its summary from an already-read Mesh
+    # and has nowhere else to learn the file's full time-series -- the
+    # returned mesh itself only ever holds the one requested step.
+    mesh.time_values = [float(v) for v in time_values]
     return mesh
 
 

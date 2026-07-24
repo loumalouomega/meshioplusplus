@@ -219,10 +219,11 @@ def _metadata_from_mesh(mesh, file_format: Union[str, None]) -> dict:
         "field_data_names": sorted(mesh.field_data),
         "fell_back_to_full_read": True,
         "format": file_format or "",
-        # Always present (empty on this path -- a pure-Python read hands back a
-        # Mesh, which holds one step and no record of how many there were), so a
-        # caller can write `len(meta["time_values"])` without testing the key.
-        "time_values": [],
+        # Always present. A pure-Python read hands back a Mesh, which holds one
+        # step and no record of how many there were -- empty unless the format's
+        # reader attached the full series as a `.time_values` side channel on
+        # the mesh itself (the Exodus reader does this; see `_exodus.py`).
+        "time_values": [float(v) for v in getattr(mesh, "time_values", []) or []],
         # The mesh is already in memory (this path always fully reads), so
         # regions cost nothing extra to report -- mirrors metadata_from_mesh.
         "regions": [
