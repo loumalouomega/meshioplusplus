@@ -191,14 +191,52 @@ val mesh_to_val(const Mesh& rMesh) {
 
     val cells = val::array();
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged())
-            throw meshioplusplus::ReadError("meshio++ (wasm): ragged cell blocks ('" + cb.Type() +
-                                            "') are not supported by the JS API yet");
-        const NDArray& conn = cb.Conn();
         val block = val::object();
         block.set("type", cb.Type());
-        block.set("data", ndarray_to_int32_array(conn));
-        block.set("nodesPerCell", static_cast<int>(cols_of(conn)));
+        if (cb.IsPolyhedron()) {
+            // 2-level ragged (cell -> faces -> node ids), flattened to three
+            // CSR arrays: `data` is every face's node ids concatenated,
+            // `faceOffsets` is each face's start index into `data` (length
+            // totalFaces + 1), and `cellOffsets` is each cell's start index
+            // into the face list (length numCells + 1). This shape crosses
+            // the embind boundary as three flat typed arrays rather than a
+            // nested JS array of arrays, which embind has no efficient
+            // representation for.
+            std::vector<std::int32_t> data;
+            std::vector<std::int32_t> face_offsets = {0};
+            std::vector<std::int32_t> cell_offsets = {0};
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    const auto face = cb.Face(c, f);
+                    for (std::size_t k = 0; k < face.second; ++k)
+                        data.push_back(static_cast<std::int32_t>(face.first[k]));
+                    face_offsets.push_back(static_cast<std::int32_t>(data.size()));
+                }
+                cell_offsets.push_back(static_cast<std::int32_t>(face_offsets.size() - 1));
+            }
+            block.set("data", int32_array_from(data.data(), data.size()));
+            block.set("faceOffsets", int32_array_from(face_offsets.data(), face_offsets.size()));
+            block.set("cellOffsets", int32_array_from(cell_offsets.data(), cell_offsets.size()));
+        } else if (cb.IsRagged()) {
+            // 1-level ragged (jagged polygon rows), as two CSR arrays: `data`
+            // is every row's node ids concatenated, `rowOffsets` is each
+            // cell's start index into `data` (length numCells + 1).
+            std::vector<std::int32_t> data;
+            std::vector<std::int32_t> row_offsets = {0};
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                const std::int64_t* row = cb.Row(c);
+                const std::size_t row_size = cb.RowSize(c);
+                for (std::size_t k = 0; k < row_size; ++k)
+                    data.push_back(static_cast<std::int32_t>(row[k]));
+                row_offsets.push_back(static_cast<std::int32_t>(data.size()));
+            }
+            block.set("data", int32_array_from(data.data(), data.size()));
+            block.set("rowOffsets", int32_array_from(row_offsets.data(), row_offsets.size()));
+        } else {
+            const NDArray& conn = cb.Conn();
+            block.set("data", ndarray_to_int32_array(conn));
+            block.set("nodesPerCell", static_cast<int>(cols_of(conn)));
+        }
         cells.call<void>("push", block);
     }
     out.set("cells", cells);
@@ -289,14 +327,60 @@ Mesh val_to_mesh(const val& rObj) {
     for (unsigned i = 0; i < ncells; ++i) {
         val block = cells[i];
         std::string type = block["type"].as<std::string>();
-        auto nodes_per_cell = block["nodesPerCell"].as<std::size_t>();
         val data_val = block["data"];
-        auto data_len = data_val["length"].as<std::size_t>();
-        if (nodes_per_cell == 0 || data_len % nodes_per_cell != 0)
-            throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
-                                             "' data length is not a multiple of nodesPerCell");
-        mesh.AddCellBlock(
-            type, int64_ndarray_from_val(data_val, {data_len / nodes_per_cell, nodes_per_cell}));
+        if (block.hasOwnProperty("cellOffsets")) {
+            // Polyhedron: three flat CSR arrays (see mesh_to_val) -> the
+            // nested vectors AddPolyhedronBlock wants.
+            std::vector<std::int64_t> flat = emscripten::vecFromJSArray<std::int64_t>(data_val);
+            std::vector<std::int64_t> face_offsets =
+                emscripten::vecFromJSArray<std::int64_t>(block["faceOffsets"]);
+            std::vector<std::int64_t> cell_offsets =
+                emscripten::vecFromJSArray<std::int64_t>(block["cellOffsets"]);
+            if (cell_offsets.empty())
+                throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
+                                                 "' has an empty cellOffsets");
+            std::vector<std::vector<std::vector<std::int64_t>>> cells_of_faces;
+            cells_of_faces.reserve(cell_offsets.size() - 1);
+            for (std::size_t c = 0; c + 1 < cell_offsets.size(); ++c) {
+                std::vector<std::vector<std::int64_t>> faces;
+                for (std::int64_t f = cell_offsets[c]; f < cell_offsets[c + 1]; ++f) {
+                    if (f < 0 || static_cast<std::size_t>(f) + 1 >= face_offsets.size())
+                        throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
+                                                         "' cellOffsets out of range");
+                    faces.emplace_back(
+                        flat.begin() + face_offsets[static_cast<std::size_t>(f)],
+                        flat.begin() + face_offsets[static_cast<std::size_t>(f) + 1]);
+                }
+                cells_of_faces.push_back(std::move(faces));
+            }
+            mesh.AddPolyhedronBlock(type, std::move(cells_of_faces));
+        } else if (block.hasOwnProperty("rowOffsets")) {
+            // Polygon: two flat CSR arrays -> jagged rows.
+            std::vector<std::int64_t> flat = emscripten::vecFromJSArray<std::int64_t>(data_val);
+            std::vector<std::int64_t> row_offsets =
+                emscripten::vecFromJSArray<std::int64_t>(block["rowOffsets"]);
+            if (row_offsets.empty())
+                throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
+                                                 "' has an empty rowOffsets");
+            std::vector<std::vector<std::int64_t>> rows;
+            rows.reserve(row_offsets.size() - 1);
+            for (std::size_t c = 0; c + 1 < row_offsets.size(); ++c) {
+                const std::int64_t start = row_offsets[c], end = row_offsets[c + 1];
+                if (start < 0 || end < start || static_cast<std::size_t>(end) > flat.size())
+                    throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
+                                                     "' rowOffsets out of range");
+                rows.emplace_back(flat.begin() + start, flat.begin() + end);
+            }
+            mesh.AddPolygonBlock(type, std::move(rows));
+        } else {
+            auto nodes_per_cell = block["nodesPerCell"].as<std::size_t>();
+            auto data_len = data_val["length"].as<std::size_t>();
+            if (nodes_per_cell == 0 || data_len % nodes_per_cell != 0)
+                throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
+                                                 "' data length is not a multiple of nodesPerCell");
+            mesh.AddCellBlock(type, int64_ndarray_from_val(
+                                        data_val, {data_len / nodes_per_cell, nodes_per_cell}));
+        }
     }
 
     if (rObj.hasOwnProperty("point_data")) {
@@ -524,6 +608,20 @@ val read_metadata_js(const std::string& rPath, const std::string& rFormat) {
         // can read `.timeValues.length` without first testing for the key. This
         // is the count `readMeshSelective`'s `timeStep` may name.
         out.set("timeValues", js_array_of(meta.mTimeValues));
+        // Always present too (empty on a native metadata path, or for a format
+        // with no regions), so a caller can iterate without testing the key.
+        val regions = val::array();
+        for (std::size_t i = 0; i < meta.mRegions.size(); ++i) {
+            const meshioplusplus::RegionSummary& r = meta.mRegions[i];
+            val entry = val::object();
+            entry.set("name", r.mName);
+            entry.set("kind", std::string(meshioplusplus::region_kind_name(r.mKind)));
+            entry.set("dim", r.mDim);
+            entry.set("tag", static_cast<double>(r.mTag));
+            entry.set("numEntries", static_cast<double>(r.mNumEntries));
+            regions.set(i, entry);
+        }
+        out.set("regions", regions);
         if (meta.mHasBBox) {
             out.set("bboxMin", js_array_of(std::vector<double>{meta.mBBoxMin[0], meta.mBBoxMin[1],
                                                                meta.mBBoxMin[2]}));
