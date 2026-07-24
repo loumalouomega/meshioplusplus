@@ -73,6 +73,19 @@ def add_args(parser):
             "file are ignored."
         ),
     )
+    parser.add_argument(
+        "--time-step",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "which step of a multi-step file to read: 0 (default) is the "
+            "first, negative counts from the end (-1 = last). Out of range is "
+            "an error naming the available count. Honoured by formats "
+            "carrying a time series (currently exodus); a negative value "
+            "needs the --time-step=-1 form."
+        ),
+    )
     color = parser.add_argument_group(
         "data-driven colouring (svg/tikz output only)",
         "Colour the drawn faces by a data array instead of a flat fill.",
@@ -191,6 +204,7 @@ def convert(args):
         file_format=args.input_format,
         points_only=args.points_only,
         arrays=arrays,
+        time_step=args.time_step,
     )
 
     # Some converters (like VTK) require `points` to be contiguous.

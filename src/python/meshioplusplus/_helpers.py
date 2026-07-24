@@ -79,25 +79,46 @@ def _apply_read_filter(mesh, points_only: bool, arrays):
     return mesh
 
 
-def _call_reader(reader, arg, points_only: bool, arrays):
+def _call_reader(reader, arg, points_only: bool, arrays, time_step: int = 0):
     """Invoke `reader`, passing the selective-read options when it accepts them.
 
     Readers are plain callables registered by each format, and only some take
     the options. Rather than maintaining a second registry of which do, ask
     directly -- and note that `_apply_read_filter` guarantees correct semantics
     either way, so this is purely an optimization.
+
+    `time_step` is handled separately from the narrowing options, because it is
+    not one: no caller-side filter can recover a step that was never read, so a
+    non-default request must reach a reader that understands it or fail loudly
+    rather than silently returning the first step.
     """
-    if not points_only and arrays is None:
+    kwargs = {}
+    if points_only or arrays is not None:
+        kwargs.update(points_only=points_only, arrays=arrays)
+    if time_step:
+        kwargs.update(time_step=time_step)
+    if not kwargs:
         return reader(arg)
     try:
-        return reader(arg, points_only=points_only, arrays=arrays)
+        return reader(arg, **kwargs)
     except TypeError:
+        if time_step:
+            # Unlike the narrowing options, this one cannot be emulated after
+            # the fact -- say so instead of handing back the wrong step.
+            raise ReadError(
+                f"meshio++: this format's reader does not support time_step "
+                f"(requested {time_step})"
+            ) from None
         # Reader has no selective support; the caller-side filter handles it.
         return reader(arg)
 
 
 def read(
-    filename, file_format: Union[str, None] = None, points_only=False, arrays=None
+    filename,
+    file_format: Union[str, None] = None,
+    points_only=False,
+    arrays=None,
+    time_step=0,
 ):
     """Reads an unstructured mesh with added data.
 
@@ -106,13 +127,18 @@ def read(
     :param points_only: Read geometry only, skipping every data array.
     :param arrays: Restrict data to these names. ``None`` (default) reads every
         array; an empty list reads none. Names absent from the file are ignored.
+    :param time_step: Which step of a multi-step file to materialize. ``0``
+        (default) is the first, preserving the historical behaviour; negative
+        counts from the end. Out of range is an error naming the available
+        count, and a format whose reader has no time concept raises rather than
+        silently returning the first step. Currently honoured by ``exodus``.
 
     :returns mesh{2,3}d: The mesh data.
     """
     if is_buffer(filename, "r"):
-        mesh = _read_buffer(filename, file_format, points_only, arrays)
+        mesh = _read_buffer(filename, file_format, points_only, arrays, time_step)
     else:
-        mesh = _read_file(Path(filename), file_format, points_only, arrays)
+        mesh = _read_file(Path(filename), file_format, points_only, arrays, time_step)
     return _apply_read_filter(mesh, points_only, arrays)
 
 
@@ -185,6 +211,10 @@ def _metadata_from_mesh(mesh, file_format: Union[str, None]) -> dict:
         "field_data_names": sorted(mesh.field_data),
         "fell_back_to_full_read": True,
         "format": file_format or "",
+        # Always present (empty on this path -- a pure-Python read hands back a
+        # Mesh, which holds one step and no record of how many there were), so a
+        # caller can write `len(meta["time_values"])` without testing the key.
+        "time_values": [],
     }
     if len(mesh.points):
         pts = np.asarray(mesh.points, dtype=float)
@@ -194,7 +224,7 @@ def _metadata_from_mesh(mesh, file_format: Union[str, None]) -> dict:
 
 
 def _read_buffer(
-    filename, file_format: Union[str, None], points_only=False, arrays=None
+    filename, file_format: Union[str, None], points_only=False, arrays=None, time_step=0
 ):
     if file_format is None:
         raise ReadError("File format must be given if buffer is used")
@@ -206,11 +236,17 @@ def _read_buffer(
     if file_format not in reader_map:
         raise ReadError(f"Unknown file format '{file_format}'")
 
-    return _call_reader(reader_map[file_format], filename, points_only, arrays)
+    return _call_reader(
+        reader_map[file_format], filename, points_only, arrays, time_step
+    )
 
 
 def _read_file(
-    path: Path, file_format: Union[str, None], points_only=False, arrays=None
+    path: Path,
+    file_format: Union[str, None],
+    points_only=False,
+    arrays=None,
+    time_step=0,
 ):
     if not path.exists():
         raise ReadError(f"File {path} not found.")
@@ -235,7 +271,9 @@ def _read_file(
             raise ReadError(f"Unknown file format '{file_format}' of '{path}'.")
 
         try:
-            return _call_reader(reader_map[file_format], str(path), points_only, arrays)
+            return _call_reader(
+                reader_map[file_format], str(path), points_only, arrays, time_step
+            )
         except ReadError as e:
             print(e)
 

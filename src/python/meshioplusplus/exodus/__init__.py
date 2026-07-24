@@ -7,14 +7,23 @@ from ._exodus import write as _py_write
 _HAS_NETCDF = getattr(_core, "__has_netcdf__", False)
 
 
-def read(filename):
-    """Read an Exodus II file (C++ core when built with netCDF, Python fallback)."""
+def read(filename, time_step=0):
+    """Read an Exodus II file (C++ core when built with netCDF, Python fallback).
+
+    :param time_step: which step of a multi-step file to materialize; 0 (the
+        default) is the first, negative counts from the end. Out of range is an
+        error naming the available count.
+    """
     if _HAS_NETCDF and not is_buffer(filename, "r"):
         try:
-            return _core.exodus_read(str(filename))
+            return _core.exodus_read(str(filename), time_step=time_step)
         except Exception:
+            # The standard shim contract: any refusal from the core retries on
+            # the Python twin. A genuine user error (an out-of-range time step)
+            # is not lost -- the twin implements the same rule and raises the
+            # same way, so declining costs a slower answer, not a wrong one.
             pass
-    return _py_read(filename)
+    return _py_read(filename, time_step=time_step)
 
 
 def write(filename, mesh):

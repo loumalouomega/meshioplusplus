@@ -12,9 +12,8 @@ import re
 import numpy as np
 
 from ..__about__ import __version__
-from .._common import warn
 from .._exceptions import ReadError
-from .._mesh import Mesh
+from .._mesh import Mesh, topological_dimension
 
 exodus_to_meshio_type = {
     "SPHERE": "vertex",
@@ -65,7 +64,91 @@ exodus_to_meshio_type = {
 meshio_to_exodus_type = {v: k for k, v in exodus_to_meshio_type.items()}
 
 
-def read(filename):  # noqa: C901
+# Exodus numbers an element's sides in its own order, which is NOT
+# ``detail/cell_faces.hpp``'s. This is the Python twin of ``exo_face_index`` in
+# ``src/cpp/src/formats/exodus.cpp`` — KEEP THE TWO IN SYNC. Each entry is the
+# meshio++ facet index whose corner-node set equals that Exodus side's; the
+# derivations are spelled out on the C++ side.
+_EXODUS_SIDE_TO_FACET = {
+    "tetra": (0, 1, 2, 3),
+    "hexahedron": (2, 1, 3, 0, 4, 5),
+    "wedge": (2, 3, 4, 0, 1),
+    "pyramid": (1, 2, 3, 4, 0),
+    # 2-D elements: Exodus walks the edges 1-2, 2-3, ... in the same order
+    # ``detail/cell_edges.hpp`` does, so the mapping is the identity.
+    "triangle": (0, 1, 2),
+    "quad": (0, 1, 2, 3),
+}
+
+# Higher-order variants share their linear base's facet ordering.
+_EXODUS_FACET_BASE = {
+    "tetra4": "tetra",
+    "tetra10": "tetra",
+    "tetra14": "tetra",
+    "hexahedron20": "hexahedron",
+    "hexahedron27": "hexahedron",
+    "wedge15": "wedge",
+    "wedge18": "wedge",
+    "pyramid13": "pyramid",
+    "pyramid14": "pyramid",
+    "triangle6": "triangle",
+    "triangle7": "triangle",
+    "quad8": "quad",
+    "quad9": "quad",
+}
+
+
+def exodus_face_index(cell_type, exodus_side):
+    """Map a 1-based Exodus side number to a meshio++ local facet index.
+
+    Returns ``-1`` when the pair has no mapping, which the caller skips rather
+    than storing a facet pointing at the wrong face.
+    """
+    base = _EXODUS_FACET_BASE.get(cell_type, cell_type)
+    table = _EXODUS_SIDE_TO_FACET.get(base)
+    if table is None or exodus_side < 1 or exodus_side > len(table):
+        return -1
+    return table[exodus_side - 1]
+
+
+def _group_name(names, ids, index, prefix):
+    """The name for set/block ``index``, or a stable synthetic one.
+
+    SEACAS writes blank names for unnamed groups, but a group with no name is
+    still a group — dropping it would lose the only handle a consumer has on it.
+    """
+    if index < len(names) and names[index]:
+        return names[index]
+    gid = ids[index] if index < len(ids) else index + 1
+    return f"{prefix} {int(gid)}"
+
+
+def _resolve_time_step(time_step, num_steps):
+    """Resolve ``time_step`` against an actual step count.
+
+    ``0`` is the first step (the historical behaviour); negative counts from the
+    end. Out of range is an error naming the available count, never a silent
+    clamp — quietly returning step 0 when step 7 was asked for is exactly the
+    failure this option exists to remove. Twin of
+    ``ReadOptions::ResolveTimeStep``.
+    """
+    if num_steps == 0:
+        if time_step in (0, -1):
+            return 0
+        raise ReadError(
+            f"meshio++: time step {time_step} requested, "
+            "but this file carries no time steps"
+        )
+    resolved = num_steps + time_step if time_step < 0 else time_step
+    if resolved < 0 or resolved >= num_steps:
+        raise ReadError(
+            f"meshio++: time step {time_step} is out of range: this file has "
+            f"{num_steps} step{'' if num_steps == 1 else 's'}"
+        )
+    return resolved
+
+
+def read(filename, time_step=0):  # noqa: C901
     import netCDF4
 
     with netCDF4.Dataset(filename) as nc:
@@ -84,10 +167,35 @@ def read(filename):  # noqa: C901
         cd = {}
         cells = []
         ns_names = []
-        # eb_names = []
+        eb_names = []
+        ss_names = []
+        eb_ids = []
+        ns_ids = []
+        ss_ids = []
         ns = []
-        point_sets = {}
+        side_elems = {}
+        side_sides = {}
         info = []
+
+        # Resolve the requested step up front, so an out-of-range request fails
+        # before any heavy array is sliced rather than midway through.
+        time_values = (
+            np.asarray(nc.variables["time_whole"][:]).ravel()
+            if "time_whole" in nc.variables
+            else np.zeros(0)
+        )
+        step = _resolve_time_step(time_step, len(time_values))
+
+        def _slice_step(value, key):
+            # `time_whole` and a `vals_*` array can legitimately disagree on
+            # length (a writer that died mid-step leaves a short array), so the
+            # resolved step is re-checked against the array actually sliced.
+            if step >= len(value):
+                raise ReadError(
+                    f"Exodus: time step {step} is out of range for '{key}', "
+                    f"which has {len(value)} step{'' if len(value) == 1 else 's'}"
+                )
+            return value[step]
 
         for key, value in nc.variables.items():
             if key == "info_records":
@@ -119,10 +227,7 @@ def read(filename):  # noqa: C901
             elif key[:12] == "vals_nod_var":
                 idx = 0 if len(key) == 12 else int(key[12:]) - 1
                 value.set_auto_mask(False)
-                # For now only take the first value
-                pd[idx] = value[0]
-                if len(value) > 1:
-                    warn("Skipping some time data")
+                pd[idx] = _slice_step(value, key)
             elif key == "name_elem_var":
                 value.set_auto_mask(False)
                 cell_data_names = [b"".join(c).decode("UTF-8") for c in value[:]]
@@ -133,21 +238,30 @@ def read(filename):  # noqa: C901
                 block = 0 if m.group(2) is None else int(m.group(2)) - 1
 
                 value.set_auto_mask(False)
-                # For now only take the first value
                 if idx not in cd:
                     cd[idx] = {}
-                cd[idx][block] = value[0]
-
-                if len(value) > 1:
-                    warn("Skipping some time data")
+                cd[idx][block] = _slice_step(value, key)
             elif key == "ns_names":
                 value.set_auto_mask(False)
                 ns_names = [b"".join(c).decode("UTF-8") for c in value[:]]
-            # elif key == "eb_names":
-            #     value.set_auto_mask(False)
-            #     eb_names = [b"".join(c).decode("UTF-8") for c in value[:]]
+            elif key == "eb_names":
+                value.set_auto_mask(False)
+                eb_names = [b"".join(c).decode("UTF-8") for c in value[:]]
+            elif key == "ss_names":
+                value.set_auto_mask(False)
+                ss_names = [b"".join(c).decode("UTF-8") for c in value[:]]
+            elif key == "eb_prop1":
+                eb_ids = np.asarray(value[:]).ravel().tolist()
+            elif key == "ns_prop1":
+                ns_ids = np.asarray(value[:]).ravel().tolist()
+            elif key == "ss_prop1":
+                ss_ids = np.asarray(value[:]).ravel().tolist()
             elif key.startswith("node_ns"):  # Expected keys: node_ns1, node_ns2
-                ns.append(value[:] - 1)  # Exodus is 1-based
+                ns.append(np.asarray(value[:]) - 1)  # Exodus is 1-based
+            elif key.startswith("elem_ss"):  # side set: owning element ids
+                side_elems[int(key[7:] or 1)] = np.asarray(value[:])
+            elif key.startswith("side_ss"):  # side set: Exodus side numbers
+                side_sides[int(key[7:] or 1)] = np.asarray(value[:])
 
         # merge element block data; can't handle blocks yet
         for k, value in cd.items():
@@ -175,16 +289,114 @@ def read(filename):  # noqa: C901
                 cell_data[name].append(data[k : k + n])
             k += n
 
-        point_sets = {name: dat for name, dat in zip(ns_names, ns)}
-
-    return Mesh(
+    mesh = Mesh(
         points,
         cells,
         point_data=point_data,
         cell_data=cell_data,
-        point_sets=point_sets,
         info=info,
     )
+    # Attached after construction rather than passed as `regions=`, so
+    # `block_bases` sees real CellBlocks and the global block-major numbering
+    # comes from its one owner instead of being re-derived from raw tuples.
+    # `point_sets` is a write-through view over these, so it needs no separate
+    # argument -- and passing both would have the set setter wipe the regions.
+    mesh.regions = _build_regions(
+        mesh.cells,
+        eb_names,
+        eb_ids,
+        ns_names,
+        ns_ids,
+        ns,
+        ss_names,
+        ss_ids,
+        side_elems,
+        side_sides,
+        len(mesh.points),
+    )
+    return mesh
+
+
+def _build_regions(  # noqa: C901
+    cells,
+    eb_names,
+    eb_ids,
+    ns_names,
+    ns_ids,
+    ns,
+    ss_names,
+    ss_ids,
+    side_elems,
+    side_sides,
+    num_points,
+):
+    """Turn Exodus element blocks, node sets and side sets into Regions.
+
+    Twin of ``exo_add_regions`` in ``src/cpp/src/formats/exodus.cpp``. Cell/Side
+    entries are global block-major cell indices, taken from ``block_bases`` —
+    the Python owner of ``detail/cell_index.hpp`` — rather than re-derived.
+    """
+    from .._regions import Region, block_bases
+
+    bases = block_bases(cells)
+    total_cells = int(bases[-1]) if len(bases) else 0
+    regions = []
+
+    # Element blocks -> Cell regions. The name and tag come from per-block
+    # arrays, which is what keeps two blocks of the SAME element type
+    # distinguishable — exactly what a materials assignment depends on.
+    for b, cb in enumerate(cells):
+        tag = eb_ids[b] if b < len(eb_ids) else -1
+        regions.append(
+            Region(
+                _group_name(eb_names, eb_ids, b, "Block"),
+                "cell",
+                np.arange(bases[b], bases[b + 1], dtype=np.int64),
+                dim=topological_dimension.get(cb.type, -1),
+                tag=tag,
+            )
+        )
+
+    # Node sets -> Point regions.
+    for k, nodes in enumerate(ns):
+        nodes = np.asarray(nodes, dtype=np.int64).ravel()
+        nodes = nodes[(nodes >= 0) & (nodes < num_points)]
+        regions.append(
+            Region(
+                _group_name(ns_names, ns_ids, k, "Nodeset"),
+                "point",
+                nodes,
+                tag=ns_ids[k] if k < len(ns_ids) else -1,
+            )
+        )
+
+    # Side sets -> Side regions: (global cell, local facet) pairs. The facet goes
+    # through exodus_face_index; an unmappable pair is skipped rather than stored
+    # pointing at the wrong face.
+    for k, set_id in enumerate(sorted(side_elems)):
+        elems = np.asarray(side_elems[set_id], dtype=np.int64).ravel() - 1
+        sides = np.asarray(side_sides.get(set_id, []), dtype=np.int64).ravel()
+        pairs = []
+        for g, side in zip(elems, sides):
+            if g < 0 or g >= total_cells:
+                continue
+            b = int(np.searchsorted(bases, g, side="right")) - 1
+            if b < 0 or b >= len(cells):
+                continue
+            facet = exodus_face_index(cells[b].type, int(side))
+            if facet < 0:
+                continue
+            pairs.append((int(g), facet))
+        regions.append(
+            Region(
+                _group_name(ss_names, ss_ids, k, "Sideset"),
+                "side",
+                np.asarray(pairs, dtype=np.int64).reshape(-1, 2),
+                tag=ss_ids[k] if k < len(ss_ids) else -1,
+            )
+        )
+
+    return regions
 
 
 def categorize(names):
