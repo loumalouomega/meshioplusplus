@@ -212,7 +212,8 @@ end
 # --- file I/O ----------------------------------------------------------------
 
 """
-    ReadOptions(; points_only=false, metadata_only=false, arrays=nothing, mmap=:auto)
+    ReadOptions(; points_only=false, metadata_only=false, arrays=nothing, mmap=:auto,
+                  time_step=0)
 
 Narrow what a read materializes (see `doc/selective_read.md`).
 
@@ -259,7 +260,7 @@ function _with_read_opts(f, opts::ReadOptions)
         cfg = _CReadOpts(opts.points_only ? Cint(1) : Cint(0),
                          opts.metadata_only ? Cint(1) : Cint(0),
                          arrays_ptr, Int64(length(names)), _mmap_mode(opts.mmap),
-                         Cint(0), base[].reserved)
+                         Cint(0), Int64(opts.time_step), base[].reserved)
         ref = Ref(cfg)
         GC.@preserve ref f(ref)
     end
@@ -346,6 +347,9 @@ struct MeshMetadata
     field_data_names::Vector{String}
     bbox::Union{Nothing,Tuple{NTuple{3,Float64},NTuple{3,Float64}}}
     fell_back::Bool
+    """The file's recorded time-series values; empty for a format with no time
+    concept. This is the count `ReadOptions(time_step=...)` may name."""
+    time_values::Vector{Float64}
 end
 
 """
@@ -384,12 +388,18 @@ function read_metadata(path::AbstractString; format::AbstractString="")
         st = ccall(_sym(:mio_read_metadata_bbox), Cint,
                    (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}), h, lo, hi)
         bbox = st == MIO_OK ? ((lo[1], lo[2], lo[3]), (hi[1], hi[2], hi[3])) : nothing
+        nsteps = ccall(_sym(:mio_read_metadata_num_time_values), Int64, (Ptr{Cvoid},), h)
+        nsteps < 0 && (nsteps = 0)
+        times = Vector{Float64}(undef, nsteps)
+        nsteps > 0 && ccall(_sym(:mio_read_metadata_time_values), Int64,
+                            (Ptr{Cvoid}, Ptr{Float64}, Int64), h, times, nsteps)
         MeshMetadata(
             Int(ccall(_sym(:mio_read_metadata_num_points), Int64, (Ptr{Cvoid},), h)),
             Int(ccall(_sym(:mio_read_metadata_point_dim), Int64, (Ptr{Cvoid},), h)),
             Int(ccall(_sym(:mio_read_metadata_num_cells), Int64, (Ptr{Cvoid},), h)),
             Int(nblocks), blocks, names[1], names[2], names[3], bbox,
-            ccall(_sym(:mio_read_metadata_fell_back), Cint, (Ptr{Cvoid},), h) == 1)
+            ccall(_sym(:mio_read_metadata_fell_back), Cint, (Ptr{Cvoid},), h) == 1,
+            times)
     finally
         ccall(_sym(:mio_read_metadata_free), Cvoid, (Ptr{Cvoid},), h)
     end
