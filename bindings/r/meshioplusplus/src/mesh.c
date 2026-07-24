@@ -74,7 +74,7 @@ SEXP R_mio_mesh_is_open(SEXP x) {
 }
 
 SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SEXP arrays,
-                SEXP mmap_mode) {
+                SEXP mmap_mode, SEXP time_step) {
     const char *p = mio_r_string(path, "path");
     const char *f = mio_r_opt_string(format);
 
@@ -83,6 +83,7 @@ SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SE
     opts.points_only = mio_r_bool(points_only, "points_only");
     opts.metadata_only = mio_r_bool(metadata_only, "metadata_only");
     opts.mmap_mode = mio_r_int(mmap_mode, "mmap_mode");
+    opts.time_step = mio_r_int(time_step, "time_step");
 
     /* NULL means "every array"; a valid pointer with count 0 means "no arrays
      * at all". The distinction is load-bearing at the ABI, so an R NULL and an
@@ -202,17 +203,24 @@ SEXP R_mio_read_metadata(SEXP path, SEXP format) {
     SEXP nblk = PROTECT(Rf_ScalarReal((double)nblocks));
     SEXP fell = PROTECT(Rf_ScalarLogical(mio_read_metadata_fell_back(meta) == 1));
 
+    /* The file's recorded time-series values; length 0 for a format with no
+     * time concept. This is the count `time_step` may name. */
+    int64_t nsteps = mio_read_metadata_num_time_values(meta);
+    if (nsteps < 0) nsteps = 0;
+    SEXP times = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)nsteps));
+    if (nsteps > 0) mio_read_metadata_time_values(meta, REAL(times), nsteps);
+
     mio_read_metadata_free(meta);
 
     const char *names[] = {"num_points",      "point_dim",       "num_cells",
                            "num_cell_blocks", "cell_block_types", "cell_block_num_cells",
                            "cell_block_nodes_per_cell", "cell_block_is_ragged",
                            "point_data_names", "cell_data_names", "field_data_names",
-                           "bbox",            "fell_back"};
+                           "bbox",            "fell_back",       "time_values"};
     SEXP values[] = {npoints, pdim, ncells, nblk, types, counts, npcs,
-                     ragged,  pn,   cn,     fn,   bbox,  fell};
-    out = PROTECT(mio_r_named_list(13, names, values));
-    UNPROTECT(14); /* the 13 values + out */
+                     ragged,  pn,   cn,     fn,   bbox,  fell,   times};
+    out = PROTECT(mio_r_named_list(14, names, values));
+    UNPROTECT(15); /* the 14 values + out */
     return out;
 }
 

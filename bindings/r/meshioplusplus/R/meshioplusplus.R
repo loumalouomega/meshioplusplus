@@ -165,19 +165,25 @@ print.mio_mesh <- function(x, ...) {
 #'   the named ones. `character(0)` means *no* arrays, which is deliberately a
 #'   different request from `NULL`.
 #' @param mmap One of `"auto"`, `"on"`, `"off"`.
+#' @param time_step Which step of a multi-step file to materialize. `0` (the
+#'   default) is the first, preserving the historical behaviour; negative counts
+#'   from the end. Out of range is an error naming the available count, never a
+#'   silent clamp. Honoured by formats carrying a time series (currently
+#'   `exodus`); `mio_read_metadata()$time_values` reports how many there are.
 #' @return A `mio_mesh` object.
 #' @examples
 #' \dontrun{
 #' m <- mio_read("bracket.msh")
 #' m <- mio_read("bracket.vtu", points_only = TRUE)
+#' m <- mio_read("run.exo", time_step = -1) # the last step
 #' }
 #' @export
 mio_read <- function(path, format = NULL, points_only = FALSE, metadata_only = FALSE,
-                     arrays = NULL, mmap = "auto") {
+                     arrays = NULL, mmap = "auto", time_step = 0) {
   .Call(
     R_mio_read, as.character(path), format, isTRUE(points_only),
     isTRUE(metadata_only), if (is.null(arrays)) NULL else as.character(arrays),
-    .mio_mmap(mmap)
+    .mio_mmap(mmap), as.integer(time_step)
   )
 }
 
@@ -216,9 +222,11 @@ mio_convert <- function(in_path, out_path, in_format = NULL, out_format = NULL) 
 #'   `cell_block_num_cells`, `cell_block_nodes_per_cell`,
 #'   `cell_block_is_ragged`, the three data-name vectors, `bbox` (a 3x2 matrix,
 #'   or `NULL` -- absent is the normal case for a native summary, since
-#'   computing it would mean decoding the coordinates), and `fell_back`
+#'   computing it would mean decoding the coordinates), `fell_back`
 #'   (`TRUE` when the whole file had to be read because the format has no
-#'   header-only path).
+#'   header-only path), and `time_values` (the file's recorded time-series
+#'   values; length 0 for a format with no time concept -- this is the count
+#'   `mio_read(time_step = ...)` may name).
 #' @export
 mio_read_metadata <- function(path, format = NULL) {
   .Call(R_mio_read_metadata, as.character(path), format)
