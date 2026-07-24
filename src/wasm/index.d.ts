@@ -3,8 +3,11 @@
 // by bindings/wasm/js_bindings.cpp's meshToVal/valToMesh (see doc/wasm.md for
 // the full format-support table and known v1 limitations).
 
-/** A single homogeneous group of cells, all the same meshio++ cell type. */
-export interface CellBlock {
+/**
+ * A rectangular (uniform node count) group of cells, all the same meshio++
+ * cell type.
+ */
+export interface RectangularCellBlock {
   /** meshio++ cell type name, e.g. "triangle", "tetra10", "hexahedron". */
   type: string;
   /** Flat, row-major connectivity: length === numCells * nodesPerCell. */
@@ -13,13 +16,48 @@ export interface CellBlock {
 }
 
 /**
+ * A 1-level ragged (jagged polygon) group of cells: rows of varying node
+ * count, so there is no single `nodesPerCell`. Two flat CSR arrays instead
+ * of a nested array of arrays, which embind has no efficient representation
+ * for: `data` is every row's node ids concatenated, and `rowOffsets` is each
+ * cell's start index into `data` (length numCells + 1, so cell `c`'s row is
+ * `data.slice(rowOffsets[c], rowOffsets[c + 1])`).
+ */
+export interface PolygonCellBlock {
+  type: 'polygon' | 'polygon2';
+  data: Int32Array;
+  rowOffsets: Int32Array;
+}
+
+/**
+ * A 2-level ragged (polyhedron) group of cells: each cell is a list of
+ * faces, each face a list of node ids. Three flat CSR arrays: `data` is
+ * every face's node ids concatenated; `faceOffsets` is each face's start
+ * index into `data` (length totalFaces + 1); `cellOffsets` is each cell's
+ * start index into the face list (length numCells + 1, so cell `c`'s faces
+ * are `faceOffsets[cellOffsets[c]] .. faceOffsets[cellOffsets[c + 1]]`).
+ *
+ * No C++ format writer accepts a polyhedron block yet (a documented,
+ * pre-existing gap) -- this shape crosses the JS boundary correctly (e.g.
+ * through {@link MeshioPlusPlusModule.clean} or any other operation) but
+ * `writeMesh` will throw naming the format when asked to write one.
+ */
+export interface PolyhedronCellBlock {
+  type: string;
+  data: Int32Array;
+  faceOffsets: Int32Array;
+  cellOffsets: Int32Array;
+}
+
+/** A single homogeneous group of cells, all the same meshio++ cell type. */
+export type CellBlock = RectangularCellBlock | PolygonCellBlock | PolyhedronCellBlock;
+
+/**
  * A mesh as exchanged with the WASM boundary: every array is copied (there
  * is no zero-copy path across the JS/WASM memory boundary, unlike the
  * Python bindings' numpy views) and cell connectivity is always Int32Array
  * (down-cast from the C++ core's Int64, which is safe for any mesh size a
- * browser can reasonably hold). Ragged cell blocks (polygon/polyhedron with
- * varying node counts) are not representable in this shape and are rejected
- * by both readMesh (throws) and writeMesh (cannot be constructed).
+ * browser can reasonably hold).
  */
 export interface Mesh {
   /** Flat, row-major point coordinates: length === numPoints * dim. */
@@ -64,6 +102,22 @@ export interface Region {
   entries: Int32Array;
 }
 
+/**
+ * One region's shape, without its entries -- the `readMetadata` counterpart of
+ * {@link Region}. Cheap to enumerate (build a SubModelPart tree, say) without
+ * the cost of loading every entry.
+ */
+export interface RegionSummary {
+  name: string;
+  kind: 'point' | 'cell' | 'side';
+  /** Topological dimension the group was declared for, or -1 if unspecified. */
+  dim: number;
+  /** Format-native integer id (gmsh physical tag, MED family id), or -1. */
+  tag: number;
+  /** Number of grouped entities (not the entries themselves). */
+  numEntries: number;
+}
+
 export interface ConvertOptions {
   /** Explicit input format key, or omit to infer from inPath's extension. */
   inFormat?: string;
@@ -103,6 +157,20 @@ export interface MeshMetadata {
    * whole. The summary is still correct, just not cheap.
    */
   fellBackToFullRead: boolean;
+  /**
+   * The file's recorded time-series values, empty for a format with no time
+   * concept. This is the count `readMeshSelective`'s `timeStep` may name, so it
+   * is what makes a step request checkable before issuing it.
+   */
+  timeValues: number[];
+  /**
+   * The file's named regions, without their entries. Always present -- empty
+   * on a native metadata path (VTU/VTP/XDMF/Gmsh 4.1 today), since none of
+   * those formats currently map regions at all, so this is never a wrong
+   * answer, only cheap where a full read already happened anyway (every
+   * fallback path, and Exodus, which always falls back).
+   */
+  regions: RegionSummary[];
   bboxMin?: number[];
   bboxMax?: number[];
 }
@@ -297,10 +365,23 @@ export interface MeshioPlusPlusModule {
    * with a native selective path (vtu/vtp/xdmf/gmsh) skip the unwanted arrays
    * outright; the rest are read whole and filtered, so the result is identical
    * either way and only the cost differs.
+   *
+   * `timeStep` selects a step of a multi-step file: 0 (the default) is the
+   * first, preserving the historical behaviour; negative counts from the end.
+   * Out of range throws naming the available count rather than clamping.
+   * Honoured by formats carrying a time series (currently exodus); see
+   * `readMetadata(...).timeValues` for how many there are.
+   *
+   * @throws {Error} on an out-of-range `timeStep`.
    */
   readMeshSelective(
     path: string,
-    options?: { format?: string; pointsOnly?: boolean; arrays?: string[] | null }
+    options?: {
+      format?: string;
+      pointsOnly?: boolean;
+      arrays?: string[] | null;
+      timeStep?: number;
+    }
   ): Mesh;
 
   /**

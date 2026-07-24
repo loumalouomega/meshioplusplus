@@ -47,6 +47,22 @@ def _print_metadata(meta):
         if meta[key]:
             print(f"  {label}: {', '.join(meta[key])}")
 
+    # Only worth printing when there is a choice to make: a single-step file
+    # gives a caller nothing to pass to --time-step.
+    times = meta.get("time_values") or []
+    if len(times) > 1:
+        shown = ", ".join(f"{v:g}" for v in times[:8])
+        if len(times) > 8:
+            shown += ", ..."
+        print(f"  Time steps: {len(times)} [{shown}]")
+
+    regions = meta.get("regions") or []
+    if regions:
+        print(f"  Regions ({len(regions)}):")
+        for r in regions:
+            tag = "" if r["tag"] < 0 else f" tag={r['tag']}"
+            print(f"    {r['name']} ({r['kind']}, {r['num_entries']} entries{tag})")
+
     if "bbox_min" in meta:
         lo = ", ".join(f"{v:g}" for v in meta["bbox_min"])
         hi = ", ".join(f"{v:g}" for v in meta["bbox_max"])

@@ -22,7 +22,7 @@ extern SEXP R_mio_reader_supports_options(SEXP);
 extern SEXP R_mio_mesh_create(void);
 extern SEXP R_mio_mesh_release(SEXP);
 extern SEXP R_mio_mesh_is_open(SEXP);
-extern SEXP R_mio_read(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_read(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_write(SEXP, SEXP, SEXP);
 extern SEXP R_mio_convert(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_read_metadata(SEXP, SEXP);
@@ -98,7 +98,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_mesh_create, 0),
     CALLDEF(R_mio_mesh_release, 1),
     CALLDEF(R_mio_mesh_is_open, 1),
-    CALLDEF(R_mio_read, 6),
+    CALLDEF(R_mio_read, 7),
     CALLDEF(R_mio_write, 3),
     CALLDEF(R_mio_convert, 4),
     CALLDEF(R_mio_read_metadata, 2),

@@ -135,6 +135,49 @@ TEST(MetadataFromMesh, EmptyMeshHasNoBBox) {
     EXPECT_FALSE(meta.mHasBBox);
 }
 
+TEST(MetadataFromMesh, ReportsRegionsWithoutEntries) {
+    // The mesh is already in memory, so regions cost nothing extra to report:
+    // metadata_from_mesh must summarize every region already on the mesh.
+    Mesh mesh = mt::tri_quad_mesh();
+
+    NDArray cell_entries = NDArray::Uninit(DType::Int64, {2});
+    cell_entries.As<std::int64_t>()[0] = 0;
+    cell_entries.As<std::int64_t>()[1] = 1;
+    mesh.AddRegion(Region("solid", RegionKind::Cell, 2, 7, std::move(cell_entries)));
+
+    NDArray point_entries = NDArray::Uninit(DType::Int64, {1});
+    point_entries.As<std::int64_t>()[0] = 0;
+    mesh.AddRegion(Region("fixed", RegionKind::Point, std::move(point_entries)));
+
+    const MeshMetadata meta = metadata_from_mesh(mesh);
+    ASSERT_EQ(meta.mRegions.size(), 2u);
+
+    const RegionSummary* solid = nullptr;
+    const RegionSummary* fixed = nullptr;
+    for (const auto& r : meta.mRegions) {
+        if (r.mName == "solid")
+            solid = &r;
+        else if (r.mName == "fixed")
+            fixed = &r;
+    }
+    ASSERT_NE(solid, nullptr);
+    ASSERT_NE(fixed, nullptr);
+    EXPECT_EQ(solid->mKind, RegionKind::Cell);
+    EXPECT_EQ(solid->mDim, 2);
+    EXPECT_EQ(solid->mTag, 7);
+    EXPECT_EQ(solid->mNumEntries, 2u);
+    EXPECT_EQ(fixed->mKind, RegionKind::Point);
+    EXPECT_EQ(fixed->mDim, -1);
+    EXPECT_EQ(fixed->mTag, -1);
+    EXPECT_EQ(fixed->mNumEntries, 1u);
+}
+
+TEST(MetadataFromMesh, NoRegionsIsEmptyNotMissing) {
+    const Mesh mesh = mt::tri_quad_mesh();
+    const MeshMetadata meta = metadata_from_mesh(mesh);
+    EXPECT_TRUE(meta.mRegions.empty());
+}
+
 TEST(RegistryReadMetadata, MatchesAFullReadSummary) {
     const Mesh source = mt::data_mesh();
     const std::string path = selread_write_temp(source);

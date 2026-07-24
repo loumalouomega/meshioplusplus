@@ -51,6 +51,7 @@
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
 
@@ -103,6 +104,37 @@ struct ReadOptions {
     /** @brief Memory-mapping preference; honoured where the reader supports it. */
     MmapMode mMmap = MmapMode::Auto;
 
+    /**
+     * @brief Which time step to materialize from a multi-step file.
+     *
+     * Formats carrying a time series (Exodus `time_whole`, XDMF temporal
+     * collections, CGNS, MED) hold one value per array *per step*, but a `Mesh`
+     * holds exactly one. Before this option every such reader silently took the
+     * first step, which is correct for the overwhelmingly common single-step
+     * file and quietly wrong for the rest.
+     *
+     * `0` (the default) is that historical behaviour -- the first step -- so a
+     * default-constructed `ReadOptions` still reproduces it exactly. Negative
+     * values count from the end, `-1` being the last step, which is what a
+     * caller wanting "the final state of the simulation" actually means and
+     * cannot express without knowing the step count up front. Out of range is an
+     * error naming the available count, never a silent clamp: quietly handing
+     * back step 0 when step 7 was requested is the failure mode this option
+     * exists to remove.
+     *
+     * A reader for a format with no time concept ignores this field.
+     */
+    int mTimeStep = 0;
+
+    /**
+     * @brief Resolve `mTimeStep` against an actual step count.
+     *
+     * @param NumSteps Number of steps the file carries.
+     * @return The 0-based step index.
+     * @throws ReadError when the request is out of range.
+     */
+    std::size_t ResolveTimeStep(std::size_t NumSteps) const;
+
     /** @brief Whether @p rName survives the `mDataArrays` filter. */
     bool WantsArray(const std::string& rName) const {
         if (!mDataArrays.has_value())
@@ -127,6 +159,21 @@ struct CellBlockInfo {
     std::size_t mNumCells = 0;      ///< Number of cells in the block.
     std::size_t mNodesPerCell = 0;  ///< Nodes per cell; 0 when ragged.
     bool mRagged = false;           ///< Whether the block is a polygon/polyhedron block.
+};
+
+/**
+ * @brief One named region's shape, without its entries.
+ *
+ * The region complement to `CellBlockInfo`: enough to enumerate and identify a
+ * mesh's regions (build a SubModelPart tree, say) without the cost of a full
+ * read just to learn how many there are and what they're called.
+ */
+struct RegionSummary {
+    std::string mName;                     ///< The region's name.
+    RegionKind mKind = RegionKind::Point;  ///< Point / Cell / Side.
+    int mDim = -1;                         ///< Topological dimension, or -1 if unspecified.
+    std::int64_t mTag = -1;                ///< Format-native integer id, or -1 if none.
+    std::size_t mNumEntries = 0;  ///< Number of grouped entities (not the entries themselves).
 };
 
 /**
@@ -172,6 +219,32 @@ struct MeshMetadata {
 
     /** @brief The resolved format name the summary was read as. */
     std::string mFormat;
+
+    /**
+     * @brief The file's time-series values, or empty when it carries none.
+     *
+     * The companion to `ReadOptions::mTimeStep`: `mTimeValues.size()` is the
+     * number of steps a caller may ask for, and the values themselves are the
+     * simulation times. Empty means either "this format has no time concept" or
+     * "this file is single-step with no recorded time" -- the two are not worth
+     * distinguishing, since neither leaves a caller anything to choose between.
+     */
+    std::vector<double> mTimeValues;
+
+    /**
+     * @brief The file's named regions, without their entries.
+     *
+     * Populated whenever the mesh producing this summary was already fully in
+     * memory (i.e. whenever `metadata_from_mesh` ran) -- regions are read
+     * alongside geometry by every region-capable reader, so there is nothing
+     * left to save by skipping them once a read has happened anyway. A native
+     * metadata path that declines a full read (VTU/VTP/XDMF/Gmsh 4.1) reports
+     * no regions rather than guessing; none of those formats map regions yet
+     * regardless (see `doc/regions.md`), so this is never a wrong answer, only
+     * an incomplete one on formats already known to fall back for other
+     * reasons.
+     */
+    std::vector<RegionSummary> mRegions;
 
     /** @brief Total cells across every block. */
     std::size_t NumCells() const {

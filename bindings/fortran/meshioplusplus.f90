@@ -144,7 +144,21 @@ module meshioplusplus
         type(c_ptr) :: arrays = c_null_ptr
         integer(c_int64_t) :: num_arrays = 0
         integer(c_int) :: mmap_mode = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        !> Which step of a multi-step file to materialize: 0 (default) is the
+        !> first, negative counts from the end. Takes one of the former
+        !> `reserved` slots, so the struct size and every preceding field's
+        !> offset are unchanged.
+        integer(c_int64_t) :: time_step = 0
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> One named region's shape, without its entries (see `mio_metadata%regions`).
+    type :: mio_region_summary
+        character(len=STRBUF_LEN) :: name = ''
+        integer(c_int) :: kind = MIO_REGION_POINT
+        integer(c_int) :: dim = -1
+        integer(c_int64_t) :: tag = -1
+        integer(c_int64_t) :: num_entries = 0
     end type
 
     !> One cell block's shape, without its connectivity.
@@ -168,6 +182,13 @@ module meshioplusplus
         character(len=STRBUF_LEN), allocatable :: field_data_names(:)
         logical :: has_bbox = .false.
         logical :: fell_back_to_full_read = .false.
+        !> The file's recorded time-series values; size 0 for a format with no
+        !> time concept. This is the count `time_step` may name.
+        real(c_double), allocatable :: time_values(:)
+        !> The file's named regions, without their entries. Populated whenever
+        !> the summary came from an already-read mesh; size 0 on a native
+        !> metadata path, since none of those formats currently map regions.
+        type(mio_region_summary), allocatable :: regions(:)
     end type
 
     type :: mio_mesh
@@ -372,6 +393,48 @@ module meshioplusplus
             type(c_ptr), value :: h
             integer(c_int), value :: location
             integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_num_time_values(h) &
+                bind(c, name="mio_read_metadata_num_time_values") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_time_values(h, out, count) &
+                bind(c, name="mio_read_metadata_time_values") result(n)
+            import :: c_ptr, c_int64_t, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(out) :: out(*)
+            integer(c_int64_t), value :: count
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_num_regions(h) &
+                bind(c, name="mio_read_metadata_num_regions") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_region_name(h, index, buf, buflen) &
+                bind(c, name="mio_read_metadata_region_name") result(n)
+            import :: c_ptr, c_int64_t, c_char
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: index
+            character(kind=c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_read_metadata_region_info(h, index, out) &
+                bind(c, name="mio_read_metadata_region_info") result(s)
+            import :: c_ptr, c_int64_t, c_int, mio_region_info
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: index
+            type(mio_region_info), intent(out) :: out
+            integer(c_int) :: s
         end function
 
         function c_mio_read_metadata_name(h, location, index, buf, buflen) &
@@ -1412,12 +1475,15 @@ contains
     !> argument entirely -- that reads everything). Formats without a native
     !> selective path are read whole and filtered, so the result is the same
     !> either way; only the cost differs.
-    subroutine mesh_read(self, path, format, points_only, arrays, stat, errmsg)
+    subroutine mesh_read(self, path, format, points_only, arrays, time_step, stat, errmsg)
         class(mio_mesh), intent(inout) :: self
         character(*), intent(in) :: path
         character(*), intent(in), optional :: format
         logical, intent(in), optional :: points_only
         character(*), intent(in), optional :: arrays(:)
+        !> Which step of a multi-step file to read: 0 (default) is the first,
+        !> negative counts from the end. Out of range fails, never clamps.
+        integer, intent(in), optional :: time_step
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
         character(:), allocatable :: fmt
@@ -1431,13 +1497,15 @@ contains
 
         fmt = ''; if (present(format)) fmt = format
 
-        if (.not. present(points_only) .and. .not. present(arrays)) then
+        if (.not. present(points_only) .and. .not. present(arrays) &
+            .and. .not. present(time_step)) then
             h = c_mio_read(c_str(path), c_str(fmt))
         else
             call c_mio_read_opts_init(opts)
             if (present(points_only)) then
                 if (points_only) opts%points_only = 1
             end if
+            if (present(time_step)) opts%time_step = int(time_step, c_int64_t)
             if (present(arrays)) then
                 n = size(arrays)
                 allocate (bufs(max(n, 1)))
@@ -1473,8 +1541,9 @@ contains
         character(:), allocatable :: fmt
         type(c_ptr) :: h
         character(kind=c_char) :: buf(STRBUF_LEN)
-        integer(c_int64_t) :: nblocks, i, n, ncells, npc
+        integer(c_int64_t) :: nblocks, i, n, ncells, npc, nsteps, nregions
         integer(c_int) :: ragged, s
+        type(mio_region_info) :: rinfo
 
         fmt = ''; if (present(format)) fmt = format
         h = c_mio_read_metadata_create(c_str(path), c_str(fmt))
@@ -1504,6 +1573,26 @@ contains
         call metadata_read_names(h, MIO_DATA_POINT, meta%point_data_names)
         call metadata_read_names(h, MIO_DATA_CELL, meta%cell_data_names)
         call metadata_read_names(h, MIO_DATA_FIELD, meta%field_data_names)
+
+        nsteps = c_mio_read_metadata_num_time_values(h)
+        if (nsteps < 0) nsteps = 0
+        allocate (meta%time_values(nsteps))
+        if (nsteps > 0) n = c_mio_read_metadata_time_values(h, meta%time_values, nsteps)
+
+        nregions = c_mio_read_metadata_num_regions(h)
+        if (nregions < 0) nregions = 0
+        allocate (meta%regions(nregions))
+        do i = 1, nregions
+            s = c_mio_read_metadata_region_info(h, i - 1_c_int64_t, rinfo)
+            if (s /= 0) cycle
+            meta%regions(i)%kind = rinfo%kind
+            meta%regions(i)%dim = rinfo%dim
+            meta%regions(i)%tag = rinfo%tag
+            meta%regions(i)%num_entries = rinfo%num_entries
+            n = c_mio_read_metadata_region_name(h, i - 1_c_int64_t, buf, &
+                                                int(STRBUF_LEN, c_int64_t))
+            if (n > 0) meta%regions(i)%name = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+        end do
 
         call c_mio_read_metadata_free(h)
         call clear_status(stat, errmsg)

@@ -110,14 +110,20 @@ inserting, removing or reordering one invalidates them.
 | **abaqus** | ✅ | ✅ | ✅ | ❌ | `*NSET` / `*ELSET` / `*SURFACE`. Abaqus names its groups but has no integer id for them. |
 | **gmsh 2.2** | ❌ | ✅ | ❌ | ✅ | A physical group is a named, tagged, per-dimension group of *elements*. No node-set and no side-set concept. |
 | **gmsh 4.1** | ❌ | names only | ❌ | ✅ | The writer emits `$PhysicalNames` but no `$Entities`, so membership has nowhere to go. Write 2.2 for a full round-trip. |
+| **exodus** | 📖 | 📖 | 📖 | ✅ | **Read only** (v8.6.0): element blocks → `cell`, node sets → `point`, side sets → `side`, each tagged with its `eb_prop1`/`ns_prop1`/`ss_prop1` id. The writer emits neither `eb_names` nor side sets, so nothing written comes back. See [`doc/formats/exodus.md`](./formats/exodus.md#named-regions). |
+
+📖 = read only. Exodus is a region *source* rather than a round-trip target, so
+it is recorded in `tests/python/test_region_roundtrip.py`'s `READ_ONLY_REGIONS`
+rather than as a row in the round-trip matrix — that matrix writes and reads
+back, and a format that cannot write cannot round-trip.
 
 Deferred to Phase 2, and listed in `tests/python/test_region_roundtrip.py` so
-the gap stays on the record: **Exodus** (blocks + node sets + side sets),
-**MED** (families and groups, absorbing the `MedInfo` side channel), **UNV** and
-**Ansys** (absorbing `UnvInfo`/`AnsysInfo`), **OpenFOAM** (boundary patches,
-which are face groups and therefore side regions), **XDMF** (Sets), and
-**VTU/VTP** — which have no native set concept at all, so a convention has to be
-chosen and documented rather than invented silently.
+the gap stays on the record: **MED** (families and groups, absorbing the
+`MedInfo` side channel), **UNV** and **Ansys** (absorbing `UnvInfo`/`AnsysInfo`),
+**OpenFOAM** (boundary patches, which are face groups and therefore side
+regions), **XDMF** (Sets), and **VTU/VTP** — which have no native set concept at
+all, so a convention has to be chosen and documented rather than invented
+silently. Exodus's **writer** belongs on this list too.
 
 ### Gmsh precedence
 
@@ -210,3 +216,35 @@ mesh.regions; // [{ name, kind, dim, tag, entries }]
 `Side sets:`, and `meshioplusplus diff` reports regions added, removed and
 changed, folding them into its nonzero exit code. (`meshes_equal` deliberately
 does **not** consider them: it is documented to compare geometry and data.)
+
+## Enumerating and splitting by region
+
+Two things build directly on the model above, both added in v8.7.0:
+
+- **`read_metadata(...)["regions"]`** (Python; `readMetadata(...).regions` in
+  WASM; `mio_read_metadata_num_regions`/`_region_name`/`_region_info` in the C
+  API; `mio_metadata%regions` in Fortran; the equivalent shape in Julia/R) —
+  each region's `name`/`kind`/`dim`/`tag`/`num_entries`, **without the entries
+  themselves**. Populated from whatever's already on an in-memory mesh, so it
+  costs nothing extra whenever the summary came from a fallback read (every
+  format lacking a native metadata path, plus Exodus, which always falls
+  back); empty on a native metadata path (VTU/VTP/XDMF/Gmsh 4.1), since none
+  of those currently map regions at all. This is what lets a caller build a
+  SubModelPart tree — or just decide whether it's worth reading the mesh at
+  all — without paying for a full read first.
+- **`meshioplusplus regions FILE`** (both CLIs) lists the same summary
+  directly (`--json` for machine consumption):
+
+  ```bash
+  meshioplusplus regions bracket.inp
+  # <meshio++ mesh regions> (2)
+  #   fixed (point, 12 entries, tag=1)
+  #   solid (cell, 340 entries, dim=3, tag=2)
+  ```
+
+- **`split(mesh, by="regions")`** (see [`doc/split.md`](split.md)) turns each
+  named `Cell` region into its own submesh — the natural next step after
+  listing them. Unlike every other `split` criterion this is not a partition:
+  regions may overlap, so a cell can land in zero, one, or several output
+  pieces; `Point`/`Side` regions produce no piece, since there is no sound
+  default for "these facets alone".

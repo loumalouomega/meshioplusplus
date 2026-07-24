@@ -8,6 +8,140 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.7.0 (2026-07-24)
+
+Five improvements identified by an audit of the project's own documented gaps
+and a direct check of the WASM artifact's behavior, all verified end to end
+(not from source inspection alone):
+
+1. **`read_metadata` reports a mesh's named regions**, closing the "enumerating
+   regions costs a full read" gap. New `MeshMetadata::mRegions`
+   (`RegionSummary{name, kind, dim, tag, num_entries}`, no entries) is
+   populated from an already-in-memory mesh at essentially no extra cost
+   (every fallback metadata path, and Exodus, which always falls back); a
+   native metadata path (VTU/VTP/XDMF/Gmsh 4.1) reports none, since none of
+   those formats currently map regions at all. Exposed identically on every
+   binding: Python `read_metadata(...)["regions"]`, C API
+   `mio_read_metadata_num_regions`/`_region_name`/`_region_info` (reusing
+   `mio_region_info`'s shape), Fortran `mio_metadata%regions`, Julia/R the
+   equivalent, WASM `readMetadata(...).regions`, and both CLIs' `info`.
+2. **`split(mesh, by="regions")`** (plural — a new, additive criterion,
+   distinct from the pre-existing singular `"region"`, which is unchanged) is
+   one submesh per named **Cell** region, running in the C++ core and so
+   reaching every binding through the existing shared `split_by_from_name`
+   string dispatch with no further plumbing. Unlike every other criterion it
+   is **not** a partition: a cell in several regions lands in several output
+   pieces, a cell in none lands in none, and `Point`/`Side` regions produce no
+   piece at all. A companion **`meshioplusplus regions FILE`** CLI verb (both
+   CLIs) lists a mesh's regions using the `read_metadata` work above.
+3. **`gmsh22` is now a selectable write format on every binding** (WASM, C
+   API, Fortran, and both CLIs — Python already had it). `write_gmsh22`
+   already synthesized `gmsh:physical` from named Cell regions when writing a
+   mesh built from another format, so it was already the only Gmsh writer that
+   round-trips region **membership**, not just the group name (which is all
+   the registry-default 4.1 writer keeps) — it just wasn't reachable outside
+   Python until now, since only `"gmsh"` → the 4.1 writer was registered in
+   the shared dispatch tables. Read-side needs no new key: reading
+   auto-detects a file's own `$MeshFormat` version.
+4. **MED writes and reads ordinary fields (`point_data`/`cell_data`) for the
+   single-timestep common case.** Previously any data-carrying mesh threw
+   unconditionally ("fields handled by Python fallback") — fatal in WASM,
+   which has no Python to fall back to, and the reason a MED export could not
+   carry data out of a WASM-hosted tool at all. The new C++ path writes one
+   `NOE`/`MAI.<type>` support subgroup per field with fixed `ndt=1`/`nor=-1`,
+   blank units/component-names, and **no MED-4.1 optimization bitmask** — a
+   deliberate scope cut, not an oversight: this project's own reader never
+   reads the bitmask, so its absence costs nothing for a meshio++ round-trip,
+   only for interoperability with external tools (Salome/MEDCoupling) that use
+   it. The reader **declines** (defers the whole file to Python) rather than
+   silently drop information whenever a field declares real units or
+   non-default timestep metadata. Multi-timestep name-encoded arrays
+   (`"Name[idx] - pdt"`) and the `med:field_units`/`med:step_meta` Python-only
+   `field_data` conventions still defer to Python — the guard for the latter
+   two necessarily lives in the Python shim rather than the C++ core, since
+   those dict-valued conventions cannot survive the Python→C++ mesh conversion
+   at all and so can never be observed on the C++ side by any binding.
+5. **Ragged (polygon/polyhedron) cell blocks now cross the WASM/JS boundary**,
+   on both read and write — previously rejected outright with "not supported
+   by the JS API yet". Represented as flat CSR arrays instead of a nested
+   array of arrays (which embind cannot represent efficiently):
+   `{type, data, rowOffsets}` for 1-level ragged (jagged polygon rows) and
+   `{type, data, faceOffsets, cellOffsets}` for 2-level ragged (polyhedron,
+   cell → faces → node ids). MED is the ragged-**polygon**-capable writer
+   (`POG`/`POG2`) this closes a real gap for; polyhedron blocks now cross the
+   boundary correctly too (verified via `clean`, since geometry operations
+   accept them), but **no C++ format writer accepts a polyhedron block yet** —
+   a separate, pre-existing, documented gap this work does not (and could not)
+   close, so writing one still throws naming the format rather than silently
+   dropping data.
+
+**Breaking:** none. `split`'s pre-existing `by="region"` (singular) keeps its
+exact prior behavior; `mio_read_opts`'s and the Julia `_CReadOpts`'s ABI are
+unaffected by this release (unlike v8.6.0, no new trailing field was added
+here). The C++-side guard that used to check `HasFieldData("med:field_units")`
+before writing MED fields is removed — it was structurally dead code (the
+Python→C++ mesh conversion this project's own `med_write` binding uses always
+drops non-numeric `field_data` entries before the C++ core ever sees them), so
+its removal changes no observable behavior; the actual (now correctly enforced
+in the Python shim) deferral rule is documented above.
+
+## v8.6.0 (2026-07-24)
+
+**Exodus II is usable on real files.** Three defects made the format unusable
+for anything a mesher actually produces; each is fixed with its own test against
+a hand-authored SEACAS/Cubit-shaped fixture (`tests/python/exodus_fixture.py` —
+meshio++'s own writer emits no `qa_records`, no `eb_names` and no side sets, so a
+round-trip test could never have caught the first of these).
+
+1. **Ordinary metadata no longer fails the read.** The reader used to throw
+   `ReadError("Exodus: <key> handled by Python fallback")` on `qa_records`,
+   `info_records`, `ns_names` and any `node_ns*` variable. Every file SEACAS,
+   Cubit or Sierra writes carries `qa_records`, so this made Exodus **entirely
+   unreadable from WASM**, where there is no Python fallback to defer to
+   (`readMesh(..., 'exodus')` threw on any real file; verified against the built
+   artifact before and after). On the Python path the throw was invisible — the
+   shim silently swallowed it — which is why it survived this long.
+   `qa_records`/`info_records` are **preserved, not dropped**: they travel in a
+   new `ExodusInfo` side-channel struct (the established `MedInfo`/`OpenFoamInfo`
+   pattern) that the pybind binding attaches to the Python `Mesh` as `info`, so
+   `mesh.info` is byte-identical to what the Python reference produced. `NDArray`
+   has no string dtype, so they cannot ride on the mesh itself; as with `MedInfo`,
+   the flat bindings (C, Fortran, Julia, R, WASM) construct one and drop it — a
+   documented gap, not a silent loss.
+2. **Element blocks, node sets and side sets become named `Region`s**, closing
+   Exodus's share of the v8.1.0 "Deferred to Phase 2" list. One
+   `RegionKind::Cell` per `connect{k}` named from `eb_names` (falling back to
+   `"Block <id>"`) and tagged with its `eb_prop1` id — so two blocks of the
+   **same** element type stay distinguishable rather than collapsing together;
+   one `RegionKind::Point` per `node_ns{k}` from `ns_names`/`ns_prop1`; and one
+   `RegionKind::Side` per `elem_ss{k}`/`side_ss{k}` from `ss_names`, as
+   `(global cell, local facet)` pairs. Exodus numbers an element's sides in its
+   own order, which is *not* `detail/cell_faces.hpp`'s, so the facet column is
+   remapped through a new `exo_face_index` (mirroring `abq_face_index`); a gtest
+   pins every entry against `cell_faces` by node set rather than trusting the
+   transcription. Reading only — the **writer still emits no regions**, so Exodus
+   is recorded as a read-only region source (`READ_ONLY_REGIONS` in
+   `tests/python/test_region_roundtrip.py`) rather than a round-trip row.
+3. **Time steps are selectable.** New `ReadOptions::mTimeStep` (0 = the first
+   step, preserving today's behaviour exactly; negative counts from the end) and
+   `MeshMetadata::mTimeValues` (from `time_whole`). Previously every reader
+   meeting a multi-step file silently took the first step and warned "Skipping
+   some time data"; now an out-of-range request is an error naming the available
+   count, never a silent clamp. Exodus is registered as a `ReadExFn` +
+   `MetadataFn` in `registry.cpp`, so `registry_reader_supports_options("exodus")`
+   flips **false → true**.
+
+Threaded through every binding surface the way `mPointsOnly` was: pybind
+(`exodus_read(path, time_step=)`, `read(..., time_step=)`, `time_values` in
+`read_metadata`), the C API (`mio_read_opts.time_step`, taking one of the six
+former `reserved` slots so **the struct's size and every preceding field's offset
+are unchanged**; plus `mio_read_metadata_num_time_values`/`_time_values`),
+Fortran (`m%read(..., time_step=)`, `metadata%time_values`), Julia
+(`ReadOptions(time_step=)`, `MeshMetadata.time_values`), R
+(`mio_read(time_step=)`, `mio_read_metadata()$time_values`), WASM
+(`readMeshSelective(path, {timeStep})`, `readMetadata(...).timeValues`) and both
+CLIs (`convert --time-step=N`; `info --fast` now prints the available steps).
+
 ## v8.5.0 (2026-07-23)
 
 **Parallelization pass over the newer operations** — an audit of every

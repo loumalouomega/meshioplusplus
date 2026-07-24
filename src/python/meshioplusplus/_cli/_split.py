@@ -28,9 +28,14 @@ def add_args(parser):
     parser.add_argument(
         "--by",
         type=str,
-        choices=["type", "region", "component"],
+        choices=["type", "region", "regions", "component"],
         default="type",
-        help="split criterion (default: type)",
+        help=(
+            "split criterion (default: type). 'regions' (plural) is one piece "
+            "per named Cell region and is NOT a partition -- a cell in "
+            "several regions lands in several pieces. See 'meshioplusplus "
+            "regions' to list a mesh's regions first."
+        ),
     )
     parser.add_argument(
         "--tag",

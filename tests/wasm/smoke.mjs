@@ -192,9 +192,19 @@ step('an ASCII read still works after netCDF/HDF5 has run (stack-size guard)', (
     assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2]);
 });
 
-step('MED rejects named fields by name rather than corrupting the file', () => {
-    // The Python fallback that normally serves this case does not exist here.
-    assert.throws(() => m.writeMesh('/fields.med', tet, 'med'), /Python fallback/);
+step('MED writes plain point_data/cell_data directly (the single-timestep common case)', () => {
+    // Previously this threw unconditionally ("fields handled by Python
+    // fallback") on ANY data-carrying mesh -- fatal here, since there is no
+    // Python fallback in this build to defer to. Now the C++ writer handles
+    // ordinary arrays directly; only the enhanced Python-only conventions
+    // (multi-timestep name encoding, units, component names) still defer --
+    // and none of those are even expressible through this flat JS API's
+    // field_data (Record<string, Float64Array>, numeric only), so a WASM
+    // caller can never hit that path at all.
+    m.writeMesh('/fields.med', tet, 'med');
+    const back = m.readMesh('/fields.med', 'med');
+    assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+    assert.deepEqual(Array.from(back.cell_data.material[0]), [7]);
 });
 
 step('xdmf writes an HDF companion file when HDF5 is available', () => {
@@ -360,6 +370,9 @@ step('readMetadata summarizes without loading the arrays', () => {
     assert.equal(meta.format, 'vtu');
     // vtu has a native metadata path, so this really was cheap...
     assert.equal(meta.fellBackToFullRead, false);
+    // Always present, so a caller can read .length without testing the key;
+    // empty for a format with no time concept.
+    assert.deepEqual(meta.timeValues, []);
     // ...and a native summary never decodes the coordinates, so it reports no
     // bbox rather than a fabricated one at the origin.
     assert.ok(!('bboxMin' in meta));
@@ -375,6 +388,38 @@ step('readMetadata flags a full-read fallback and can then afford a bbox', () =>
 step('readerSupportsOptions reports the native paths', () => {
     assert.equal(m.readerSupportsOptions('vtu'), true);
     assert.equal(m.readerSupportsOptions('stl'), false);
+    // Exodus became options-aware in v8.6.0 so `timeStep` has somewhere to go.
+    // Before that this was false and the format was not readable here at all.
+    assert.equal(m.readerSupportsOptions('exodus'), true);
+});
+
+step('exodus reads here at all, and reports its time steps', () => {
+    // The regression this guards: the reader used to throw on `qa_records`,
+    // which every file SEACAS/Cubit/Sierra writes carries -- and there is no
+    // Python fallback in this build to defer to. A file written by meshio++'s
+    // own writer carries no qa_records, so this cannot prove that part (the
+    // pytest suite's hand-authored fixture does); what it does prove is that
+    // the format is reachable and the new time plumbing is wired end to end.
+    m.writeMesh('/smoke.e', seltri, 'exodus');
+    const mesh = m.readMesh('/smoke.e', 'exodus');
+    assert.equal(mesh.cells.length, 1);
+    assert.equal(mesh.cells[0].type, 'triangle');
+
+    const meta = m.readMetadata('/smoke.e', 'exodus');
+    assert.equal(meta.format, 'exodus');
+    // meshio++'s writer emits exactly one (dummy) step.
+    assert.equal(meta.timeValues.length, 1);
+
+    // Step 0 and -1 both name that single step; anything else is out of range,
+    // and must say so rather than silently handing back step 0.
+    for (const timeStep of [0, -1]) {
+        const one = m.readMeshSelective('/smoke.e', { format: 'exodus', timeStep });
+        assert.equal(one.cells[0].type, 'triangle');
+    }
+    assert.throws(
+        () => m.readMeshSelective('/smoke.e', { format: 'exodus', timeStep: 5 }),
+        /out of range/,
+    );
 });
 
 step('zstd/lz4 are compiled out of the WASM build', () => {
@@ -776,6 +821,30 @@ step('availableFormats reports what this build can read and write', () => {
     // Sorted, so a UI can render them without sorting again.
     assert.deepEqual(readers, [...readers].sort());
     assert.deepEqual(writers, [...writers].sort());
+    // gmsh22 is a WRITE-ONLY registry key (reading auto-detects the version
+    // from the file itself, so there is no separate "gmsh22" reader) --
+    // before this entry, WASM could select only the lossy 4.1 writer and had
+    // no way to reach the one that round-trips region MEMBERSHIP.
+    assert.ok(writers.includes('gmsh22') && !readers.includes('gmsh22'));
+});
+
+step('gmsh22 round-trips named Cell region membership; gmsh (4.1) does not', () => {
+    const tagged = {
+        ...tet,
+        regions: [{ name: 'solid', kind: 'cell', dim: 3, tag: 7, entries: Int32Array.from([0]) }],
+    };
+    m.writeMesh('/regions22.msh', tagged, 'gmsh22');
+    const back22 = m.readMesh('/regions22.msh', 'gmsh');
+    assert.equal(back22.regions.length, 1);
+    assert.equal(back22.regions[0].name, 'solid');
+    assert.deepEqual(Array.from(back22.regions[0].entries), [0]);
+
+    // The default "gmsh" (4.1) writer only carries the physical NAME, not
+    // per-element membership -- the documented format gap this entry works
+    // around by making the round-trip-capable writer selectable at all.
+    m.writeMesh('/regions41.msh', tagged, 'gmsh');
+    const back41 = m.readMesh('/regions41.msh', 'gmsh');
+    assert.equal(back41.regions.length, 0);
 });
 
 step('convertSurface turns a volume mesh into its renderable boundary', () => {
@@ -1005,6 +1074,67 @@ step('sniffFormat identifies a file by its leading bytes', () => {
     // Only a confident signature match is claimed; anything else returns "".
     m.FS.writeFile('/ambiguous.dat', 'nothing recognizable here\n');
     assert.equal(m.sniffFormat('/ambiguous.dat'), '');
+});
+
+step('ragged (polygon) cell blocks cross the JS boundary as CSR arrays', () => {
+    // Previously any ragged block threw unconditionally ("not supported by
+    // the JS API yet") on BOTH read and write. Represented as two flat CSR
+    // arrays -- `data` (every row's node ids concatenated) and `rowOffsets`
+    // (each cell's start index into `data`, length numCells + 1) -- since
+    // embind has no efficient representation for a nested array of arrays.
+    const poly = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 2, 0, 0, 2, 1, 0]),
+        dim: 3,
+        cells: [
+            {
+                type: 'polygon',
+                data: new Int32Array([0, 1, 2, 1, 3, 4, 2]), // a triangle then a 4-gon
+                rowOffsets: new Int32Array([0, 3, 7]),
+            },
+        ],
+    };
+    // MED is the C++ core's ragged-polygon-capable writer (POG/POG2).
+    m.writeMesh('/ragged.med', poly, 'med');
+    const back = m.readMesh('/ragged.med', 'med');
+    assert.equal(back.cells.length, 1);
+    assert.equal(back.cells[0].type, 'polygon');
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 1, 3, 4, 2]);
+    assert.deepEqual(Array.from(back.cells[0].rowOffsets), [0, 3, 7]);
+});
+
+step('ragged (polyhedron) cell blocks cross the JS boundary as CSR arrays', () => {
+    // 2-level ragged (cell -> faces -> node ids), as three flat CSR arrays:
+    // `data`, `faceOffsets` (per-face start into `data`), `cellOffsets`
+    // (per-cell start into the face list). No C++ format writer accepts a
+    // polyhedron block yet (a documented, pre-existing gap, not new), so this
+    // exercises the boundary itself via an operation instead of a file:
+    // val_to_mesh -> clean() (a no-op with every flag off) -> mesh_to_val
+    // must reproduce the exact input.
+    const tetra = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        dim: 3,
+        cells: [
+            {
+                type: 'polyhedron',
+                data: new Int32Array([0, 1, 2, 0, 3, 1, 1, 3, 2, 2, 3, 0]), // 4 triangular faces
+                faceOffsets: new Int32Array([0, 3, 6, 9, 12]),
+                cellOffsets: new Int32Array([0, 4]),
+            },
+        ],
+    };
+    const result = m.clean(tetra, false, 0.0, false, false, false);
+    const cb = result.mesh.cells[0];
+    assert.equal(cb.type, 'polyhedron');
+    assert.deepEqual(Array.from(cb.data), Array.from(tetra.cells[0].data));
+    assert.deepEqual(Array.from(cb.faceOffsets), Array.from(tetra.cells[0].faceOffsets));
+    assert.deepEqual(Array.from(cb.cellOffsets), Array.from(tetra.cells[0].cellOffsets));
+
+    // A format with no polyhedron support must still fail cleanly (a
+    // catchable Error naming the reason), never a WASM abort.
+    assert.throws(
+        () => m.writeMesh('/polyhedron.med', tetra, 'med'),
+        (err) => err instanceof Error && /polyhedron/.test(err.message),
+    );
 });
 
 if (failed) {

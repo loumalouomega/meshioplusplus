@@ -141,6 +141,35 @@ def test_metadata_bbox_absent_rather_than_none(tmp_path):
     assert meta.get("bbox_min") is None  # only via .get, never a stored None
 
 
+def test_metadata_regions_always_present_key(tmp_path):
+    path = _write(tmp_path, "vtu")
+    meta = meshioplusplus.read_metadata(path)
+    # Always a key, even for a format (VTU) that carries no regions at all.
+    assert meta["regions"] == []
+
+
+def test_metadata_reports_regions_when_the_mesh_carries_them(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 1.0],
+        ],
+        [("tetra", [[0, 1, 2, 4], [0, 2, 3, 4]])],
+        regions=[meshioplusplus.Region("solid", "cell", [0, 1], dim=3, tag=7)],
+    )
+    path = str(tmp_path / "regions.msh")
+    meshioplusplus.write(path, mesh, file_format="gmsh22")
+
+    meta = meshioplusplus.read_metadata(path, file_format="gmsh")
+    assert meta["fell_back_to_full_read"] is True  # gmsh 4.1/2.2 always does
+    assert meta["regions"] == [
+        {"name": "solid", "kind": "cell", "dim": 3, "tag": 7, "num_entries": 2}
+    ]
+
+
 def test_cli_convert_points_only(tmp_path):
     from meshioplusplus._cli import main
 

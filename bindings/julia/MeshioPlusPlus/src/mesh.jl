@@ -212,7 +212,8 @@ end
 # --- file I/O ----------------------------------------------------------------
 
 """
-    ReadOptions(; points_only=false, metadata_only=false, arrays=nothing, mmap=:auto)
+    ReadOptions(; points_only=false, metadata_only=false, arrays=nothing, mmap=:auto,
+                  time_step=0)
 
 Narrow what a read materializes (see `doc/selective_read.md`).
 
@@ -231,13 +232,15 @@ struct ReadOptions
     metadata_only::Bool
     arrays::Union{Nothing,Vector{String}}
     mmap::Symbol
+    time_step::Int
 
     function ReadOptions(; points_only::Bool=false, metadata_only::Bool=false,
-                         arrays=nothing, mmap::Symbol=:auto)
+                         arrays=nothing, mmap::Symbol=:auto, time_step::Integer=0)
         mmap in (:auto, :on, :off) ||
             throw(ArgumentError("mmap must be :auto, :on or :off, got :$mmap"))
         new(points_only, metadata_only,
-            arrays === nothing ? nothing : String[String(a) for a in arrays], mmap)
+            arrays === nothing ? nothing : String[String(a) for a in arrays], mmap,
+            Int(time_step))
     end
 end
 
@@ -259,7 +262,7 @@ function _with_read_opts(f, opts::ReadOptions)
         cfg = _CReadOpts(opts.points_only ? Cint(1) : Cint(0),
                          opts.metadata_only ? Cint(1) : Cint(0),
                          arrays_ptr, Int64(length(names)), _mmap_mode(opts.mmap),
-                         Cint(0), base[].reserved)
+                         Cint(0), Int64(opts.time_step), base[].reserved)
         ref = Ref(cfg)
         GC.@preserve ref f(ref)
     end
@@ -326,6 +329,21 @@ function reader_supports_options(format::AbstractString)
 end
 
 """
+    RegionSummary
+
+One named region's shape, without its entries -- the `read_metadata`
+counterpart of [`Region`](@ref). Cheap to enumerate without the cost of
+loading every entry.
+"""
+struct RegionSummary
+    name::String
+    kind::Symbol
+    dim::Int
+    tag::Int
+    num_entries::Int
+end
+
+"""
     MeshMetadata
 
 Summary of a mesh file produced by [`read_metadata`](@ref) without loading its
@@ -346,6 +364,13 @@ struct MeshMetadata
     field_data_names::Vector{String}
     bbox::Union{Nothing,Tuple{NTuple{3,Float64},NTuple{3,Float64}}}
     fell_back::Bool
+    """The file's recorded time-series values; empty for a format with no time
+    concept. This is the count `ReadOptions(time_step=...)` may name."""
+    time_values::Vector{Float64}
+    """The file's named regions, without their entries. Empty on a native
+    metadata path (none of those formats currently map regions); cheap
+    whenever the summary came from an already-read mesh."""
+    regions::Vector{RegionSummary}
 end
 
 """
@@ -384,12 +409,34 @@ function read_metadata(path::AbstractString; format::AbstractString="")
         st = ccall(_sym(:mio_read_metadata_bbox), Cint,
                    (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}), h, lo, hi)
         bbox = st == MIO_OK ? ((lo[1], lo[2], lo[3]), (hi[1], hi[2], hi[3])) : nothing
+        nsteps = ccall(_sym(:mio_read_metadata_num_time_values), Int64, (Ptr{Cvoid},), h)
+        nsteps < 0 && (nsteps = 0)
+        times = Vector{Float64}(undef, nsteps)
+        nsteps > 0 && ccall(_sym(:mio_read_metadata_time_values), Int64,
+                            (Ptr{Cvoid}, Ptr{Float64}, Int64), h, times, nsteps)
+        nregions = ccall(_sym(:mio_read_metadata_num_regions), Int64, (Ptr{Cvoid},), h)
+        nregions < 0 && (nregions = 0)
+        rsummaries = RegionSummary[]
+        for i in 0:(nregions-1)
+            rname = _getstring() do buf, len
+                ccall(_sym(:mio_read_metadata_region_name), Int64,
+                      (Ptr{Cvoid}, Int64, Ptr{UInt8}, Int64), h, i, buf, len)
+            end
+            info = Ref{_CRegionInfo}()
+            _check(ccall(_sym(:mio_read_metadata_region_info), Cint,
+                         (Ptr{Cvoid}, Int64, Ptr{_CRegionInfo}), h, i, info))
+            ci = info[]
+            push!(rsummaries,
+                  RegionSummary(rname, _kind_sym(ci.kind), Int(ci.dim), Int(ci.tag),
+                               Int(ci.num_entries)))
+        end
         MeshMetadata(
             Int(ccall(_sym(:mio_read_metadata_num_points), Int64, (Ptr{Cvoid},), h)),
             Int(ccall(_sym(:mio_read_metadata_point_dim), Int64, (Ptr{Cvoid},), h)),
             Int(ccall(_sym(:mio_read_metadata_num_cells), Int64, (Ptr{Cvoid},), h)),
             Int(nblocks), blocks, names[1], names[2], names[3], bbox,
-            ccall(_sym(:mio_read_metadata_fell_back), Cint, (Ptr{Cvoid},), h) == 1)
+            ccall(_sym(:mio_read_metadata_fell_back), Cint, (Ptr{Cvoid},), h) == 1,
+            times, rsummaries)
     finally
         ccall(_sym(:mio_read_metadata_free), Cvoid, (Ptr{Cvoid},), h)
     end

@@ -19,12 +19,36 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <string>
 
 // Project includes
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
+
+std::size_t ReadOptions::ResolveTimeStep(std::size_t NumSteps) const {
+    // A file with no recorded steps still has "the data", conceptually step 0 --
+    // asking for it must not become an error just because the format omitted a
+    // time array. Anything else on such a file is genuinely unanswerable.
+    if (NumSteps == 0) {
+        if (mTimeStep == 0 || mTimeStep == -1)
+            return 0;
+        throw ReadError("meshio++: time step " + std::to_string(mTimeStep) +
+                        " requested, but this file carries no time steps");
+    }
+
+    const long long n = static_cast<long long>(NumSteps);
+    // Negative counts from the end (-1 = last), which is the only way to say
+    // "the final state" without knowing the count up front.
+    const long long resolved = mTimeStep < 0 ? n + mTimeStep : mTimeStep;
+    if (resolved < 0 || resolved >= n)
+        throw ReadError("meshio++: time step " + std::to_string(mTimeStep) +
+                        " is out of range: this file has " + std::to_string(NumSteps) +
+                        (NumSteps == 1 ? " step" : " steps"));
+    return static_cast<std::size_t>(resolved);
+}
 
 MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
     MeshMetadata meta;
@@ -46,6 +70,20 @@ MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
     meta.mPointDataNames = rMesh.PointDataNames();
     meta.mCellDataNames = rMesh.CellDataNames();
     meta.mFieldDataNames = rMesh.FieldDataNames();
+
+    // The mesh is already in memory, so this is nearly free -- every
+    // region-capable reader builds regions alongside geometry, not lazily.
+    meta.mRegions.reserve(rMesh.NumRegions());
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        RegionSummary summary;
+        summary.mName = r.mName;
+        summary.mKind = r.mKind;
+        summary.mDim = r.mDim;
+        summary.mTag = r.mTag;
+        summary.mNumEntries = r.NumEntries();
+        meta.mRegions.push_back(std::move(summary));
+    }
 
     // The mesh is already in memory, so the bounding box is nearly free here --
     // unlike on a native metadata path, where it would force decoding the point

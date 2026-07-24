@@ -90,8 +90,8 @@ The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](htt
 
 ## Selective reads and file summaries
 
-`read` takes optional `points_only` and `arrays`, and the module-level `mio_read_metadata`
-returns a `type(mio_metadata)`:
+`read` takes optional `points_only`, `arrays` and `time_step`, and the module-level
+`mio_read_metadata` returns a `type(mio_metadata)`:
 
 ```fortran
 type(mio_mesh) :: m
@@ -99,11 +99,17 @@ type(mio_metadata) :: meta
 
 call m%read('big.msh', points_only=.true.)
 call m%read('big.msh', arrays=['u   ', 'p   '])   ! fixed-length, as Fortran requires
+call m%read('run.exo', time_step=-1)              ! the last step; 0 (default) is the first
 
-meta = mio_read_metadata('big.vtu')
+meta = mio_read_metadata('run.exo')
 print *, meta%num_points, meta%num_cells
 print *, meta%fell_back_to_full_read      ! .true. => the file was read in full
+print *, size(meta%time_values)           ! how many steps `time_step` may name
 ```
+
+`time_step` picks a step of a multi-step file (0 = the first, negative counts from the end).
+Out of range is an error naming the available count, never a silent clamp;
+`meta%time_values` is allocated to size 0 for a format with no time concept.
 
 A zero-sized `arrays` means *no* arrays, which is distinct from omitting the argument (every
 array). Names are trimmed and NUL-terminated internally; the copies outlive the call.

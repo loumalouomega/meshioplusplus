@@ -97,7 +97,22 @@ Unlike the Python bindings (which hand numpy a zero-copy view straight into the 
 
 This deliberately mirrors the Python `Mesh`'s structure (points, a list of cell blocks, `cell_data` as one array per block). Cell connectivity is always `Int32Array` — the C++ core's connectivity dtype is Int64, but node/point counts for any mesh a browser can reasonably hold fit comfortably in 32 bits, and `Int32Array` is far more ergonomic in JS than `BigInt64Array`.
 
-**Ragged cell blocks** (polygon/polyhedron blocks with a varying node count per cell, e.g. MED Voronoi polygons or OpenFOAM general polyhedra) are not representable in this flat shape and are rejected: `readMesh` throws if the file contains one, and there is no way to construct one for `writeMesh`.
+**Ragged cell blocks** (polygon/polyhedron blocks with a varying node count per cell, e.g. MED Voronoi polygons or OpenFOAM general polyhedra) cross the boundary as flat CSR arrays instead of a single rectangular `data`/`nodesPerCell` pair, since embind has no efficient representation for a nested array of arrays:
+
+- **Polygon** (1-level ragged, jagged rows): `{type, data, rowOffsets}` — `data` is every row's node ids concatenated, `rowOffsets` is each cell's start index into `data` (length `numCells + 1`).
+- **Polyhedron** (2-level ragged, cell → faces → node ids): `{type, data, faceOffsets, cellOffsets}` — `data` is every face's node ids concatenated, `faceOffsets` is each face's start index into `data` (length `totalFaces + 1`), `cellOffsets` is each cell's start index into the face list (length `numCells + 1`).
+
+```js
+// A triangle and a 4-gon in one polygon block.
+const poly = {
+  points: new Float64Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 2, 0, 0, 2, 1, 0]),
+  dim: 3,
+  cells: [{ type: 'polygon', data: new Int32Array([0, 1, 2, 1, 3, 4, 2]), rowOffsets: new Int32Array([0, 3, 7]) }],
+};
+m.writeMesh('/ragged.med', poly, 'med'); // MED is the ragged-polygon-capable writer (POG/POG2)
+```
+
+`readMesh` reports whichever shape the source held; `writeMesh` accepts either, and the target format's own writer decides what it can represent — MED writes ragged polygons directly, but no C++ format writer accepts a polyhedron block yet (a documented, pre-existing gap distinct from the JS boundary itself, which does carry polyhedron blocks correctly through operations like `clean`/`merge`/`convert_cells`), so writing one throws naming the format rather than silently dropping data.
 
 ## Mesh operations
 
@@ -265,13 +280,17 @@ Both libraries are built static, `-Oz`, against Emscripten's own zlib port, with
 
 ## Selective reads, metadata, and codecs
 
-`readMeshSelective(path, { format, pointsOnly, arrays })` and `readMetadata(path, format)`
+`readMeshSelective(path, { format, pointsOnly, arrays, timeStep })` and `readMetadata(path, format)`
 mirror the Python API; `readerSupportsOptions(format)` reports whether a format has a native
 selective path. `arrays: null` reads every data array, `arrays: []` reads none.
 
 ```javascript
 const mesh = m.readMeshSelective('big.vtu', { arrays: ['u'] });
 const meta = m.readMetadata('big.vtu');   // meta.fellBackToFullRead
+
+// A multi-step file: 0 (default) is the first step, negative counts from the end.
+const last = m.readMeshSelective('run.exo', { format: 'exodus', timeStep: -1 });
+m.readMetadata('run.exo', 'exodus').timeValues;  // [0, 0.5, 1] -- always present
 ```
 
 **Memory mapping is unavailable** here — the Emscripten virtual filesystem has nothing to map,
