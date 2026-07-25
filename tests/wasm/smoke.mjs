@@ -6,8 +6,15 @@
 // (src/index.mjs) -- not the raw embind glue -- so this is exactly what a
 // real consumer would call.
 //
+// The package ships two native artifacts: the sequential meshioplusplus_wasm
+// and the threaded (OpenMP/pthreads) meshioplusplus_wasm_mt. The full suite
+// below runs against the THREADED build (forced with { variant: 'mt' }) so the
+// parallel code paths are what CI exercises -- Wasm threads work under Node
+// with no cross-origin-isolation headers. A compact sanity block at the very
+// end loads the sequential build too, so both artifacts are proven loadable.
+//
 // Usage: node tests/wasm/smoke.mjs   (after `build/configure-wasm.sh --build`
-// has populated src/wasm/dist/meshioplusplus_wasm.{mjs,wasm})
+// has populated src/wasm/dist/meshioplusplus_wasm{,_mt}.{mjs,wasm})
 
 import assert from 'node:assert/strict';
 import { loadMeshioPlusPlus } from '../../src/wasm/src/index.mjs';
@@ -24,7 +31,14 @@ function step(name, fn) {
     }
 }
 
-const m = await loadMeshioPlusPlus();
+const m = await loadMeshioPlusPlus({}, { variant: 'mt' });
+step('threaded (mt) build reports the openmp parallel backend', () => {
+    // The whole point of the mt artifact: it must actually be the OpenMP build,
+    // not a mislabelled sequential one. parallelBackend() is exposed by the
+    // embind binding; a build configured with SEQ would report "seq" here.
+    assert.equal(typeof m.parallelBackend, 'function');
+    assert.equal(m.parallelBackend(), 'openmp');
+});
 
 // A small synthetic tetrahedron + a point/cell data field, built directly as
 // a JS mesh object (bypassing file I/O) to test the writeMesh(object) path.
@@ -781,6 +795,7 @@ step('every binding is reachable through the wrapper', () => {
         'partitionLabels',
         'stats',
         'meshBackend',
+        'parallelBackend',
     ]) {
         assert.equal(typeof m[name], 'function', `${name} is not forwarded by the wrapper`);
     }
@@ -1135,6 +1150,31 @@ step('ragged (polyhedron) cell blocks cross the JS boundary as CSR arrays', () =
         () => m.writeMesh('/polyhedron.med', tetra, 'med'),
         (err) => err instanceof Error && /polyhedron/.test(err.message),
     );
+});
+
+// ---------------------------------------------------------------------------
+// The sequential artifact. The suite above ran on the threaded build; this
+// block proves the *other* shipped artifact also loads and round-trips, and
+// that it really is the sequential one (not a second copy of the mt build).
+// Both must be present, since the loader auto-selects between them at runtime.
+// ---------------------------------------------------------------------------
+const mSeq = await loadMeshioPlusPlus({}, { variant: 'seq' });
+
+step('sequential (seq) build loads and reports the seq parallel backend', () => {
+    assert.equal(mSeq.parallelBackend(), 'seq');
+});
+
+step('sequential build round-trips a mesh (VTU) and runs an operation', () => {
+    mSeq.writeMesh('/seq.vtu', tet);
+    const back = mSeq.readMesh('/seq.vtu');
+    assert.equal(back.cells[0].type, 'tetra');
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
+    assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+
+    // An operation, so the sequential parallel_for paths are exercised too.
+    const surf = mSeq.extractSurface(cube);
+    assert.equal(surf.cells[0].type, 'quad');
+    assert.equal(surf.cells[0].data.length, 6 * 4);
 });
 
 if (failed) {

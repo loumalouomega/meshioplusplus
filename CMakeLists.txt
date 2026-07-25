@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 8.7.0
+  VERSION 8.8.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -29,6 +29,17 @@ endif()
 # of _core / meshioplusplus_cli is actually being built.
 option(MESHIOPLUSPLUS_STATIC_RUNTIME
   "Statically link the C++ runtime (libgcc/libstdc++ on GNU, static CRT on MSVC)" OFF)
+
+# Threaded WebAssembly variant. Only meaningful under Emscripten: it turns on
+# Wasm threads (pthreads = Web Workers + SharedArrayBuffer) so the OpenMP
+# parallel backend actually runs multi-threaded in the browser/Node, and names
+# the artifact meshioplusplus_wasm_mt to sit beside the sequential one. It is
+# consumed only when the serving document is cross-origin isolated (COOP/COEP);
+# the loader (src/wasm/src/index.mjs) auto-selects it, else falls back to the
+# sequential build -- so the two artifacts ship together. build/configure-wasm.sh
+# pairs it with -DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP in its own build tree.
+option(MESHIOPLUSPLUS_WASM_THREADS
+  "Emscripten only: build the threaded (pthreads/OpenMP) wasm variant" OFF)
 
 # The pybind11 extension is the default consumer of meshioplusplus_core_obj,
 # but non-Python consumers (the GoogleTest suite, the Emscripten/WASM target
@@ -394,9 +405,27 @@ if(_meshioplusplus_parallel STREQUAL "STL")
     endif()
   endif()
 elseif(_meshioplusplus_parallel STREQUAL "OPENMP")
-  find_package(OpenMP REQUIRED COMPONENTS CXX)
   target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_OPENMP)
-  target_link_libraries(meshioplusplus_core_obj PUBLIC OpenMP::OpenMP_CXX)
+  if(EMSCRIPTEN)
+    # The Emscripten toolchain ships no OpenMP CMake package to find_package();
+    # its OpenMP is enabled by -fopenmp on top of Wasm threads, which -pthread
+    # turns on (Web Workers + SharedArrayBuffer + a shared-memory build). Both
+    # flags are whole-translation-unit properties, so they go PUBLIC on the core
+    # object library (every format/operation TU) and on whatever links it (the
+    # wasm binding). This branch is only reached in the dedicated threaded wasm
+    # tree (MESHIOPLUSPLUS_WASM_THREADS=ON); the Python/gtest/C-API trees
+    # configure with SEQ or a native backend, so -pthread never leaks into them.
+    if(NOT MESHIOPLUSPLUS_WASM_THREADS)
+      message(FATAL_ERROR
+        "meshio++: the OPENMP parallel backend under Emscripten requires "
+        "-DMESHIOPLUSPLUS_WASM_THREADS=ON (it needs Wasm threads/pthreads).")
+    endif()
+    target_compile_options(meshioplusplus_core_obj PUBLIC "-fopenmp" "-pthread")
+    target_link_options(meshioplusplus_core_obj PUBLIC "-fopenmp" "-pthread")
+  else()
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
+    target_link_libraries(meshioplusplus_core_obj PUBLIC OpenMP::OpenMP_CXX)
+  endif()
 elseif(_meshioplusplus_parallel STREQUAL "TBB")
   find_package(TBB CONFIG REQUIRED)
   target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_TBB)
@@ -525,8 +554,31 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
     "-sSTACK_OVERFLOW_CHECK=1"
     "-sFORCE_FILESYSTEM=1"
     "-sEXPORTED_RUNTIME_METHODS=['FS']")
-  set_target_properties(meshioplusplus_wasm PROPERTIES OUTPUT_NAME "meshioplusplus_wasm"
-                                                        SUFFIX ".mjs")
+  # Threaded variant: a distinct artifact (meshioplusplus_wasm_mt) built in its
+  # own tree with the OpenMP backend (which added -pthread PUBLIC on the core
+  # object library above). A pool of one worker per logical core is pre-spawned
+  # so an `omp parallel` region on the module's main thread has threads ready
+  # (pthread_create cannot synchronously spin up a worker on the browser main
+  # thread); POOL_SIZE_STRICT=0 still lets the pool grow on demand for deeper
+  # nesting. The pool size is a runtime JS expression: `navigator` exists in
+  # browsers and Web Workers but only in Node >= 21, and this package supports
+  # Node >= 18 -- so guard with globalThis.navigator (undefined -> falsy ->
+  # fall back to 8; Node then grows the pool on demand anyway because STRICT=0).
+  # Written without spaces/quotes so it survives CMake -> Ninja -> em++ as one
+  # argument. Consumed only when the page is cross-origin isolated; the JS
+  # loader auto-falls-back to the sequential build otherwise.
+  if(MESHIOPLUSPLUS_WASM_THREADS)
+    target_link_options(
+      meshioplusplus_wasm PRIVATE
+      "-pthread"
+      "-sPTHREAD_POOL_SIZE=globalThis.navigator?navigator.hardwareConcurrency:8"
+      "-sPTHREAD_POOL_SIZE_STRICT=0")
+    set_target_properties(meshioplusplus_wasm PROPERTIES OUTPUT_NAME "meshioplusplus_wasm_mt"
+                                                          SUFFIX ".mjs")
+  else()
+    set_target_properties(meshioplusplus_wasm PROPERTIES OUTPUT_NAME "meshioplusplus_wasm"
+                                                          SUFFIX ".mjs")
+  endif()
 endif()
 
 # --------------------------------------------------------------------------

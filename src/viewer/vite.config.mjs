@@ -61,26 +61,34 @@ function checkWasmPackage() {
                 );
             }
 
-            const binary = 'dist/meshioplusplus_wasm.wasm';
-            const installed = fileURLToPath(
-                new URL(`./node_modules/@meshioplusplus/wasm/${binary}`, import.meta.url)
-            );
-            const built = fileURLToPath(new URL(`../wasm/${binary}`, import.meta.url));
-            const [a, b] = await Promise.all([
-                fs.readFile(installed).catch(() => null),
-                fs.readFile(built).catch(() => null),
-            ]);
-            if (!b) {
-                this.error(
-                    `${built} does not exist -- src/wasm/dist/ is gitignored, so the package must ` +
-                        `be built before the viewer.\n${REFRESH_INSTRUCTIONS}`
+            // Both artifacts must be present and current: the sequential
+            // meshioplusplus_wasm and the threaded meshioplusplus_wasm_mt (the
+            // loader auto-selects between them, and the worker imports both).
+            for (const binary of [
+                'dist/meshioplusplus_wasm.wasm',
+                'dist/meshioplusplus_wasm_mt.wasm',
+            ]) {
+                const installed = fileURLToPath(
+                    new URL(`./node_modules/@meshioplusplus/wasm/${binary}`, import.meta.url)
                 );
-            }
-            if (!a || !a.equals(b)) {
-                this.error(
-                    'the installed @meshioplusplus/wasm binary differs from the one in ' +
-                        `src/wasm/dist/.\n${REFRESH_INSTRUCTIONS}`
-                );
+                const built = fileURLToPath(new URL(`../wasm/${binary}`, import.meta.url));
+                const [a, b] = await Promise.all([
+                    fs.readFile(installed).catch(() => null),
+                    fs.readFile(built).catch(() => null),
+                ]);
+                if (!b) {
+                    this.error(
+                        `${built} does not exist -- src/wasm/dist/ is gitignored, so the package ` +
+                            `must be built before the viewer (build both variants; do not pass ` +
+                            `--seq-only).\n${REFRESH_INSTRUCTIONS}`
+                    );
+                }
+                if (!a || !a.equals(b)) {
+                    this.error(
+                        `the installed @meshioplusplus/wasm ${binary} differs from the one in ` +
+                            `src/wasm/dist/.\n${REFRESH_INSTRUCTIONS}`
+                    );
+                }
             }
         },
     };
@@ -99,11 +107,39 @@ function checkWasmPackage() {
 //                what makes it work over file:// with no local HTTP server.
 const embedded = !!process.env.VITE_VIEWER_EMBEDDED;
 
+/**
+ * Inject the COOP/COEP service worker (public/coi-serviceworker.js) into the
+ * web build's index.html only. It makes GitHub Pages cross-origin isolated so
+ * the worker can load the THREADED wasm artifact; without it the loader
+ * auto-falls-back to the sequential one, so this is a speed enhancement, never
+ * a correctness requirement. It must NOT reach the embed build: that build is a
+ * single self-contained file with no wasm and no `public/`, and an external
+ * <script src> would break the one-file guarantee. The tag is injected here
+ * rather than written into index.html precisely so the embed build never sees
+ * it. The relative src resolves against the document URL (i.e. under `base`),
+ * so the service worker's scope covers the whole viewer on Pages.
+ */
+function injectCoiServiceWorker() {
+    return {
+        name: 'meshioplusplus:coi-serviceworker',
+        transformIndexHtml() {
+            if (embedded) return;
+            return [
+                {
+                    tag: 'script',
+                    attrs: { src: 'coi-serviceworker.js' },
+                    injectTo: 'head-prepend',
+                },
+            ];
+        },
+    };
+}
+
 export default defineConfig({
     base: process.env.VITE_BASE ?? '/meshioplusplus/viewer/',
     plugins: embedded
         ? [viteSingleFile({ removeViteModuleLoader: true })]
-        : [checkWasmPackage()],
+        : [checkWasmPackage(), injectCoiServiceWorker()],
     define: { __VIEWER_EMBEDDED__: JSON.stringify(embedded) },
     resolve: {
         alias: embedded

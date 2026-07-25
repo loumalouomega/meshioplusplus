@@ -556,6 +556,17 @@ The host→device move is always a bus transfer — what this removes is the fil
 
 See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch, and [the GPU docs](https://loumalouomega.github.io/meshioplusplus/gpu.html) for the device handoff.
 
+### MCP server
+
+Every operation in this README is also exposed to AI agents as a tool over the [Model Context Protocol](https://modelcontextprotocol.io/) — reading/writing all the formats, conversion, and the full mesh- and data-operation suite:
+
+```sh
+pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
+claude mcp add meshioplusplus -- meshioplusplus-mcp
+```
+
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 33 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+
 ### ParaView plugin
 
 <img alt="gmsh paraview" src="https://nschloe.github.io/meshio/gmsh-paraview.png" width="60%">
@@ -750,6 +761,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [trimesh](https://trimesh.org/) | `[trimesh]` / `[interop]` | `to_trimesh()` / `from_trimesh()` | MIT |
 | [pyarrow](https://arrow.apache.org/) | `[arrow]` / `[interop]` | the Arrow/Parquet data export | Apache-2.0 |
 | [CuPy](https://cupy.dev/) | — (wheels are CUDA-version-specific, e.g. `cupy-cuda13x` — see the GPU docs) | `to_cupy()` / `from_cupy()` | MIT |
+| [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) | `[mcp]` | the `meshioplusplus-mcp` server exposing every operation to AI agents | MIT |
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |
 | [netCDF4](https://unidata.github.io/netcdf4-python/) | `[all]` | the Python fallback for Exodus | MIT |
 | [KaHIP](https://kahip.github.io/) | `[kahip]` / CMake | the quality graph-partitioning backend | MIT |

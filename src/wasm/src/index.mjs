@@ -15,7 +15,33 @@
 //
 // Each call to loadMeshioPlusPlus() instantiates a fresh, independent WASM
 // module instance (safe to call more than once, e.g. one per Web Worker).
-import createRawModule from '../dist/meshioplusplus_wasm.mjs';
+//
+// The package ships TWO native artifacts and picks one at load time:
+//   - meshioplusplus_wasm      the sequential build (always loadable);
+//   - meshioplusplus_wasm_mt   the threaded build (OpenMP over Wasm threads =
+//                              pthreads/SharedArrayBuffer), which is faster for
+//                              the mesh operations but only loads where the page
+//                              is *cross-origin isolated* (COOP `same-origin` +
+//                              COEP `require-corp`); it aborts on instantiation
+//                              otherwise, with no in-artifact fallback.
+// resolveVariant() below chooses: the threaded build under Node (where
+// SharedArrayBuffer is always available) and in a cross-origin-isolated browser
+// context, else the sequential one. The dynamic import()s are literal so
+// bundlers (Vite) emit both chunks. Callers can force a build with the
+// `{ variant }` option.
+
+/**
+ * Decide which native artifact to load.
+ * @param {'auto'|'mt'|'seq'} variant
+ * @returns {'mt'|'seq'}
+ */
+function resolveVariant(variant) {
+    if (variant === 'mt' || variant === 'seq') return variant;
+    // `crossOriginIsolated` is a browser global; it is `undefined` under Node,
+    // where Wasm threads (worker_threads + SharedArrayBuffer) always work.
+    if (typeof crossOriginIsolated === 'undefined') return 'mt';
+    return crossOriginIsolated ? 'mt' : 'seq';
+}
 
 /**
  * @typedef {Object} CellBlock
@@ -40,6 +66,13 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  * @param {object} [moduleOverrides] - forwarded to the Emscripten module
  *   factory as-is (e.g. `{ locateFile: (p) => new URL(p, import.meta.url) }`
  *   if you need to relocate the `.wasm` binary for a bundler/CDN setup).
+ *   `locateFile` receives the requested filename, so return the URL matching
+ *   the loaded variant (`meshioplusplus_wasm.wasm` or `_wasm_mt.wasm`).
+ * @param {object} [options]
+ * @param {'auto'|'mt'|'seq'} [options.variant='auto'] - which native artifact to
+ *   load. `auto` picks the threaded (`mt`) build under Node and in a
+ *   cross-origin-isolated browser, else the sequential (`seq`) build; `mt`/`seq`
+ *   force one (`mt` aborts if the environment cannot host Wasm threads).
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
@@ -53,6 +86,7 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   numNodesPerCell: () => Object<string, number>,
  *   topologicalDimension: () => Object<string, number>,
  *   meshBackend: () => string,
+ *   parallelBackend: () => string,
  *   availableFormats: () => {readers: string[], writers: string[]},
  *   extractSurface: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
  *   extractSkin: (mesh: Mesh, linearize?: boolean) => Mesh,
@@ -85,7 +119,14 @@ import createRawModule from '../dist/meshioplusplus_wasm.mjs';
  *   dataInfo: (mesh: Mesh) => object[],
  * }>}
  */
-export async function loadMeshioPlusPlus(moduleOverrides = {}) {
+export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto' } = {}) {
+    const chosen = resolveVariant(variant);
+    // Literal specifiers so bundlers emit both chunks; the sequential one is
+    // the fallback whenever threads are unavailable.
+    const { default: createRawModule } =
+        chosen === 'mt'
+            ? await import('../dist/meshioplusplus_wasm_mt.mjs')
+            : await import('../dist/meshioplusplus_wasm.mjs');
     const Module = await createRawModule(moduleOverrides);
     return {
         FS: Module.FS,
@@ -129,6 +170,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}) {
         numNodesPerCell: () => Module.numNodesPerCell(),
         topologicalDimension: () => Module.topologicalDimension(),
         meshBackend: () => Module.meshBackend(),
+        // "seq" for the sequential artifact, "openmp" for the threaded
+        // meshioplusplus_wasm_mt one -- which of the two this instance loaded.
+        parallelBackend: () => Module.parallelBackend(),
         // What this build can actually read/write, both sorted. Prefer this
         // over a hardcoded table: a few formats are read-only (openfoam) or
         // write-only (svg/tikz), and the HDF5/netCDF-backed ones are present

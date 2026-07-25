@@ -465,6 +465,13 @@ export interface MeshioPlusPlusModule {
   meshBackend(): string;
 
   /**
+   * The parallel backend this artifact was compiled with: "seq" for the
+   * sequential `meshioplusplus_wasm`, "openmp" for the threaded
+   * `meshioplusplus_wasm_mt` -- i.e. which of the two variants loaded.
+   */
+  parallelBackend(): string;
+
+  /**
    * The format names this build can actually read and write, both sorted.
    *
    * Prefer this over a hardcoded table when building a file-picker filter or a
@@ -777,9 +784,24 @@ export interface MeshioPlusPlusModule {
 /**
  * Instantiate a fresh, independent meshio++ WASM module instance. Safe to
  * call more than once (e.g. one instance per Web Worker).
+ *
+ * The package ships two native artifacts: the sequential `meshioplusplus_wasm`
+ * and the threaded (OpenMP over Wasm threads) `meshioplusplus_wasm_mt`. The
+ * threaded build is faster for mesh operations but only loads where the page is
+ * cross-origin isolated (COOP `same-origin` + COEP `require-corp`); it aborts on
+ * instantiation otherwise. `variant: 'auto'` (default) picks the threaded build
+ * under Node and in a cross-origin-isolated browser, else the sequential one.
+ *
  * @param moduleOverrides forwarded as-is to the Emscripten module factory
  *   (e.g. `{ locateFile }` to relocate the `.wasm` binary for a bundler/CDN).
+ *   `locateFile` receives the requested filename, so return the URL matching the
+ *   loaded variant (`meshioplusplus_wasm.wasm` or `meshioplusplus_wasm_mt.wasm`).
+ * @param options.variant which native artifact to load: `'auto'` (default),
+ *   `'mt'` (force threaded), or `'seq'` (force sequential).
  */
-export function loadMeshioPlusPlus(moduleOverrides?: object): Promise<MeshioPlusPlusModule>;
+export function loadMeshioPlusPlus(
+    moduleOverrides?: object,
+    options?: { variant?: 'auto' | 'mt' | 'seq' },
+): Promise<MeshioPlusPlusModule>;
 
 export default loadMeshioPlusPlus;

@@ -8,6 +8,48 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v8.8.0 (2026-07-25)
+
+**Threaded (OpenMP) WebAssembly build.** The `@meshioplusplus/wasm` package now
+ships **two** native artifacts: the sequential `meshioplusplus_wasm` (unchanged)
+and a new threaded `meshioplusplus_wasm_mt`, compiled with the OpenMP parallel
+backend over Emscripten's Wasm threads (pthreads/SharedArrayBuffer). The core's
+`parallel_for` loops — every mesh operation the browser viewer runs through
+`convertSurfaceOps` (quality/smooth/refine/decimate/partition/merge/slice/
+isosurface) and VTU zlib compression — run multi-threaded when the threaded
+build is loaded.
+
+- The loader `loadMeshioPlusPlus()` **auto-selects** at runtime: the threaded
+  build under Node and in a **cross-origin-isolated** browser context (COOP
+  `same-origin` + COEP `require-corp`), the sequential build otherwise. A
+  threaded module cannot instantiate without cross-origin isolation, and there
+  is no in-artifact fallback, which is why both are shipped. Force one with the
+  new `{ variant: 'mt' | 'seq' }` option.
+- New `parallelBackend()` binding (JS/WASM) reports `"openmp"` or `"seq"` — the
+  loaded artifact's parallel backend, alongside `meshBackend()`.
+- The browser viewer picks the threaded build wherever it can: the Pages demo
+  vendors a COOP/COEP service worker (`src/viewer/public/coi-serviceworker.js`)
+  to become cross-origin isolated; the `file://` wheel-embedded viewer is
+  unaffected (it uses no WASM at all).
+- `build/configure-wasm.sh --build` now builds **both** variants by default
+  (`--seq-only` skips the threaded one); new CMake option
+  `MESHIOPLUSPLUS_WASM_THREADS`. Nothing outside the wasm build changes — the
+  Python/native/C-API/Fortran builds are untouched.
+
+**MCP server** (`meshioplusplus[mcp]`, `meshioplusplus-mcp`). Every operation
+is now exposed to AI agents over the Model Context Protocol: 33 stateless,
+file-path-based tools (inspection incl. `info`/`stats`/`quality`/`diff`/
+`regions`/`data_preview`; `convert` subsuming the CLI's ascii/binary/compress/
+decompress variants; all 16 path-based mesh operations; the data operations;
+gated `data_export` → Parquet and `screenshot` → PNG image content) plus
+`meshioplusplus://formats` and `://version` resources, all returning strict
+JSON with truncation caps. New optional extra `mcp` (the official MCP Python
+SDK, which itself needs Python ≥ 3.10) and console script `meshioplusplus-mcp`
+(stdio; `--root DIR` / `MESHIOPLUSPLUS_MCP_ROOT` sandboxes every path). The
+pure tool layer (`meshioplusplus/mcp/_tools.py`) works without the extra, and
+a parity-guard test fails CI whenever a new public operation lacks a tool.
+Docs: `doc/mcp.md`.
+
 ## v8.7.0 (2026-07-24)
 
 Five improvements identified by an audit of the project's own documented gaps
