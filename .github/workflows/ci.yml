@@ -473,7 +473,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
-            pyvista trimesh pyarrow
+            pyvista trimesh pyarrow mcp
 
       # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
       # so re-runs reuse objects. compiler-check=content keeps hits valid across
@@ -664,6 +664,33 @@ jobs:
 
       - name: Interop tests
         run: python -m pytest tests/python/test_interop.py tests/python/test_gpu.py -v
+
+  # --------------------------------------------------------------------------
+  # The MCP server with its extra installed. The default `test` matrix keeps
+  # exercising test_mcp.py's pure half (the payload layer, the sandbox, the
+  # parity guard) with the `mcp` SDK absent -- that split is the point; this
+  # job adds the gated half: FastMCP registration, tool calls, resources.
+  # --------------------------------------------------------------------------
+  mcp:
+    name: MCP server
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive  # vendored Eigen (MED transpose)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install meshio++ with the mcp extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[mcp]" pytest
+
+      - name: MCP tests
+        run: python -m pytest tests/python/test_mcp.py -v
 
   # --------------------------------------------------------------------------
   # The browser viewer. Lives here rather than in wasm.yml because that

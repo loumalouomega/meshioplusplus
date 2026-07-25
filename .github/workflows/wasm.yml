@@ -65,18 +65,28 @@ jobs:
         run: ./build/build-wasm-deps.sh
 
       - name: Configure + build (WASM)
+        # Builds BOTH artifacts: the sequential meshioplusplus_wasm and the
+        # threaded (OpenMP/pthreads) meshioplusplus_wasm_mt. Both ship in the
+        # npm package; the loader auto-selects between them at runtime.
         run: ./build/configure-wasm.sh --build
 
       - name: Report artifact size
         # This build links two static C libraries; size regressions are the
-        # thing most likely to go unnoticed, since nothing else fails.
+        # thing most likely to go unnoticed, since nothing else fails. Four
+        # files now (two variants x .mjs/.wasm).
         run: ls -l src/wasm/dist/
 
       - uses: actions/setup-node@v4
         with:
+          # Node 18 is the package's floor (`engines`), and the threaded build's
+          # PTHREAD_POOL_SIZE expression is written to work there (navigator is
+          # Node >= 21 only). Keeping CI on 20 exercises that fallback path.
           node-version: "20"
 
       - name: Smoke test
+        # Exercises both artifacts: the full suite on the threaded build (Wasm
+        # threads work under Node with no cross-origin-isolation headers) plus a
+        # sequential-build sanity block.
         run: node tests/wasm/smoke.mjs
 
       - name: Package sanity check (npm pack --dry-run)
