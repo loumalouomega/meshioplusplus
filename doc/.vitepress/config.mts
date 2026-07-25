@@ -69,6 +69,7 @@ export default defineConfig({
           { text: "Interactive viewer", link: "/viewer" },
           { text: "Interoperability", link: "/interop" },
           { text: "GPU handoff (DLPack / CuPy)", link: "/gpu" },
+          { text: "MCP server", link: "/mcp" },
           { text: "Cell conversion", link: "/convert_cells" },
           { text: "Uniform refinement", link: "/refine" },
           { text: "Decimation (QEM edge collapse)", link: "/decimate" },
