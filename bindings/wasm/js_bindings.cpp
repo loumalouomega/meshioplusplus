@@ -78,6 +78,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -983,6 +984,15 @@ std::string mesh_backend_js() {
 }
 
 /**
+ * @brief The compile-time parallel backend ("seq" for the sequential wasm
+ * artifact, "openmp" for the threaded meshioplusplus_wasm_mt one). Lets a
+ * consumer -- and the smoke test -- confirm which of the two artifacts loaded.
+ */
+std::string parallel_backend_js() {
+    return meshioplusplus::parallel_backend_name();
+}
+
+/**
  * @brief The format names this build can actually read and write.
  *
  * `{readers: [...], writers: [...]}`, both sorted (the registry tables are
@@ -1704,6 +1714,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
     emscripten::function("topologicalDimension", &topological_dimension_js);
     emscripten::function("meshBackend", &mesh_backend_js);
+    emscripten::function("parallelBackend", &parallel_backend_js);
     emscripten::function("availableFormats", &available_formats_js);
     emscripten::function("extractSurface", &extract_surface_js);
     emscripten::function("extractSkin", &extract_skin_js);
