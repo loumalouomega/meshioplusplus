@@ -45,6 +45,7 @@ WITH_HDF5="ON"
 WITH_NETCDF="ON"
 DEPS_PREFIX=""
 DO_BUILD="no"
+SEQ_ONLY="no"
 
 usage() {
     cat <<EOF
@@ -57,6 +58,9 @@ Usage: $0 [options]
                                  Exodus (default: on; needs HDF5)
   --deps-prefix <dir>            prefix holding the wasm32 HDF5/netCDF build
                                   (default: build-wasm-deps.sh --print-prefix)
+  --seq-only                     build only the sequential variant (skip the
+                                  threaded meshioplusplus_wasm_mt); default is
+                                  to build both, since the npm package ships both
   --build                        run the build after configuring
   -h, --help                     this help
 EOF
@@ -72,6 +76,7 @@ while [ $# -gt 0 ]; do
         --with-netcdf) WITH_NETCDF="ON"; shift ;;
         --without-netcdf) WITH_NETCDF="OFF"; shift ;;
         --deps-prefix) DEPS_PREFIX="$2"; shift 2 ;;
+        --seq-only) SEQ_ONLY="yes"; shift ;;
         --build) DO_BUILD="yes"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -99,7 +104,7 @@ if ! command -v emcmake >/dev/null 2>&1; then
     exit 1
 fi
 
-BUILD_DIR="$SCRIPT_DIR/wasm-$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')"
+BUILD_TYPE_LC=$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')
 
 GENERATOR=""
 if command -v ninja >/dev/null 2>&1; then
@@ -108,7 +113,8 @@ fi
 
 # Locate (and if necessary produce) the wasm32 HDF5/netCDF prefix. Asking the
 # deps script for the default path rather than recomputing it here keeps the
-# version pins in exactly one place.
+# version pins in exactly one place. The prefix is shared by both variants
+# (HDF5/netCDF are not affected by the pthreads/OpenMP switch).
 FIND_ROOT_ARG=""
 if [ "$WITH_HDF5" = "ON" ]; then
     [ -n "$DEPS_PREFIX" ] || DEPS_PREFIX=$("$SCRIPT_DIR/build-wasm-deps.sh" --print-prefix)
@@ -124,61 +130,102 @@ if [ "$WITH_HDF5" = "ON" ]; then
     FIND_ROOT_ARG="-DCMAKE_FIND_ROOT_PATH=$DEPS_PREFIX"
 fi
 
-echo "== meshio++ WASM configure =="
-echo "  source:    $SOURCE_DIR"
-echo "  build:     $BUILD_DIR"
-echo "  type:      $BUILD_TYPE"
-echo "  zlib:      $WITH_ZLIB"
-echo "  hdf5:      $WITH_HDF5"
-echo "  netcdf:    $WITH_NETCDF"
-[ "$WITH_HDF5" = "OFF" ] || echo "  deps:      $DEPS_PREFIX"
-echo "  emcc:      $(command -v emcc)"
-echo
+# Two artifacts ship in the npm package: the sequential build
+# (meshioplusplus_wasm) and the threaded OpenMP/pthreads build
+# (meshioplusplus_wasm_mt). The loader (src/wasm/src/index.mjs) auto-selects
+# the threaded one where the page is cross-origin isolated and falls back to the
+# sequential one otherwise, so both must be present. --seq-only skips the
+# threaded one for a fast, small, header-free build.
+VARIANTS="seq mt"
+[ "$SEQ_ONLY" = "yes" ] && VARIANTS="seq"
 
-# CMAKE_FIND_ROOT_PATH rather than CMAKE_PREFIX_PATH: the Emscripten toolchain
-# re-roots every find_package/find_library/find_path at the sysroot
-# (CMAKE_FIND_ROOT_PATH_MODE_* = ONLY), and appends the sysroot to whatever
-# CMAKE_FIND_ROOT_PATH already holds -- so passing our prefix here adds it as
-# a second root instead of replacing the toolchain's.
-# shellcheck disable=SC2086
-emcmake cmake $GENERATOR \
-    -S "$SOURCE_DIR" -B "$BUILD_DIR" \
-    -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    $FIND_ROOT_ARG \
-    -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
-    -DMESHIOPLUSPLUS_BUILD_WASM=ON \
-    -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ \
-    -DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE \
-    -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
-    -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
-    -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB"
+# configure_variant <seq|mt>: configure (and, with --build, build + copy) one
+# variant into its own tree. The two variants MUST be separate trees: -pthread
+# and the OpenMP macro are whole-translation-unit compile-time properties of the
+# shared core object library, so a single tree cannot hold both.
+configure_variant() {
+    variant="$1"
+    if [ "$variant" = "mt" ]; then
+        build_dir="$SCRIPT_DIR/wasm-${BUILD_TYPE_LC}-mt"
+        backend_args="-DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP -DMESHIOPLUSPLUS_WASM_THREADS=ON"
+        out_base="meshioplusplus_wasm_mt"
+        zlib_cflags="-pthread"
+    else
+        build_dir="$SCRIPT_DIR/wasm-${BUILD_TYPE_LC}"
+        backend_args="-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ"
+        out_base="meshioplusplus_wasm"
+        zlib_cflags=""
+    fi
 
-if [ "$WITH_ZLIB" = "ON" ]; then
+    echo "== meshio++ WASM configure ($variant) =="
+    echo "  source:    $SOURCE_DIR"
+    echo "  build:     $build_dir"
+    echo "  type:      $BUILD_TYPE"
+    echo "  variant:   $variant ($out_base)"
+    echo "  zlib:      $WITH_ZLIB"
+    echo "  hdf5:      $WITH_HDF5"
+    echo "  netcdf:    $WITH_NETCDF"
+    [ "$WITH_HDF5" = "OFF" ] || echo "  deps:      $DEPS_PREFIX"
+    echo "  emcc:      $(command -v emcc)"
     echo
-    echo "== warming Emscripten zlib port cache =="
-    # -sUSE_ZLIB=1 makes every translation unit trigger a build of the
-    # bundled zlib port on first use. Left to a parallel `-j` build, Ninja's
-    # dependency-scan step (emscan-deps) launches many em++ invocations at
-    # once, and on a cold cache they race to build/lock that same port,
-    # aborting with "attempt to lock the cache while a parent process is
-    # holding the lock (sanity)". Building it once, single-threaded, up
-    # front avoids the race entirely.
-    embuilder build zlib
-fi
 
-echo
-echo "== next steps =="
-echo "  emmake cmake --build \"$BUILD_DIR\" -j"
-echo "  cp \"$BUILD_DIR\"/meshioplusplus_wasm.{mjs,wasm} \"$SOURCE_DIR/src/wasm/dist/\""
-echo "  node \"$SOURCE_DIR/tests/wasm/smoke.mjs\""
-echo "  (cd \"$SOURCE_DIR/src/wasm\" && npm pack)"
+    # CMAKE_FIND_ROOT_PATH rather than CMAKE_PREFIX_PATH: the Emscripten
+    # toolchain re-roots every find_package/find_library/find_path at the
+    # sysroot (CMAKE_FIND_ROOT_PATH_MODE_* = ONLY), and appends the sysroot to
+    # whatever CMAKE_FIND_ROOT_PATH already holds -- so passing our prefix here
+    # adds it as a second root instead of replacing the toolchain's.
+    # shellcheck disable=SC2086
+    emcmake cmake $GENERATOR \
+        -S "$SOURCE_DIR" -B "$build_dir" \
+        -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+        $FIND_ROOT_ARG \
+        $backend_args \
+        -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+        -DMESHIOPLUSPLUS_BUILD_WASM=ON \
+        -DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE \
+        -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
+        -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
+        -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB"
 
-if [ "$DO_BUILD" = "yes" ]; then
+    if [ "$WITH_ZLIB" = "ON" ]; then
+        echo
+        echo "== warming Emscripten zlib port cache ($variant) =="
+        # -sUSE_ZLIB=1 makes every translation unit trigger a build of the
+        # bundled zlib port on first use. Left to a parallel `-j` build, Ninja's
+        # dependency-scan step (emscan-deps) launches many em++ invocations at
+        # once, and on a cold cache they race to build/lock that same port,
+        # aborting with "attempt to lock the cache while a parent process is
+        # holding the lock (sanity)". Building it once, single-threaded, up
+        # front avoids the race entirely. The threaded variant needs the
+        # -pthread port variant, which is a distinct cache entry, so it is
+        # warmed with EMCC_CFLAGS=-pthread.
+        EMCC_CFLAGS="$zlib_cflags" embuilder build zlib
+    fi
+
     echo
-    echo "== building =="
-    emmake cmake --build "$BUILD_DIR" -j
-    mkdir -p "$SOURCE_DIR/src/wasm/dist"
-    cp "$BUILD_DIR"/meshioplusplus_wasm.mjs "$SOURCE_DIR/src/wasm/dist/"
-    cp "$BUILD_DIR"/meshioplusplus_wasm.wasm "$SOURCE_DIR/src/wasm/dist/"
-    echo "copied build artifacts to $SOURCE_DIR/src/wasm/dist/"
+    echo "== next steps ($variant) =="
+    echo "  emmake cmake --build \"$build_dir\" -j"
+    echo "  cp \"$build_dir\"/$out_base.{mjs,wasm} \"$SOURCE_DIR/src/wasm/dist/\""
+
+    if [ "$DO_BUILD" = "yes" ]; then
+        echo
+        echo "== building ($variant) =="
+        emmake cmake --build "$build_dir" -j
+        mkdir -p "$SOURCE_DIR/src/wasm/dist"
+        cp "$build_dir/$out_base.mjs" "$SOURCE_DIR/src/wasm/dist/"
+        cp "$build_dir/$out_base.wasm" "$SOURCE_DIR/src/wasm/dist/"
+        echo "copied $out_base.{mjs,wasm} to $SOURCE_DIR/src/wasm/dist/"
+    fi
+    echo
+}
+
+for v in $VARIANTS; do
+    configure_variant "$v"
+done
+
+if [ "$DO_BUILD" != "yes" ]; then
+    echo "== next steps (both variants) =="
+    echo "  re-run with --build, then:"
+    echo "  node \"$SOURCE_DIR/tests/wasm/smoke.mjs\""
+    echo "  (cd \"$SOURCE_DIR/src/wasm\" && npm pack)"
 fi
