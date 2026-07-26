@@ -8,7 +8,14 @@ Use the [C API](/c_api) if you are writing C or Fortran, want a stable ABI, or w
 
 ## Building and installing
 
-Off by default, so `pip install .` and the wheels pay nothing for it. Enable it with `MESHIOPLUSPLUS_INSTALL_CPP=ON`:
+Off by default, so `pip install .` and the wheels pay nothing for it. From the repo, the configure helper is the short spelling:
+
+```sh
+build/configure.sh --install-cpp --c-api --build    # --c-api optional: both APIs in one prefix
+cmake --install build/cpp-release --prefix /opt/meshioplusplus
+```
+
+(`--cpp-backends MESHIO,KRATOS` trims the backend set; `configure.bat` takes the same flags on Windows, with a multi-entry list quoted). Or drive CMake directly:
 
 ```sh
 cmake -S . -B build \
