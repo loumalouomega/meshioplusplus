@@ -358,7 +358,7 @@ labels = meshioplusplus.partition_labels(mesh, 4)             # per-block Int64 
 quality = meshioplusplus.partition(mesh, 16, method="kahip", mode="strong")
 ```
 
-Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece (`ghost_layers` is reserved for halo growth and raises for now).
+Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece. `ghost_layers=N` instead grows each piece by N shared-node layers of its neighbours' cells (an MPI-style halo), tagged `partition:ghost`.
 
 #### Smoothing
 
@@ -636,6 +636,30 @@ npm install @meshioplusplus/wasm
 
 See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
 
+### C++ API
+
+The full C++ core installs as a normal CMake package — the real `Mesh`, the format registry, every mesh/data operation, and the header-only Kratos bridge, none of which fit through a C ABI:
+
+```
+cmake -S . -B build -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF -DMESHIOPLUSPLUS_INSTALL_CPP=ON
+cmake --build build && cmake --install build --prefix /opt/meshioplusplus
+```
+
+```cmake
+find_package(meshioplusplus 8.9 CONFIG REQUIRED COMPONENTS CXX)
+target_link_libraries(my_solver PRIVATE meshioplusplus::core)
+```
+
+```cpp
+#include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/operations/partition.hpp"
+
+auto mesh  = meshioplusplus::registry_read("bracket.msh", "", {});
+auto parts = meshioplusplus::partition(mesh, {.mNParts = 8});
+```
+
+All three [mesh backends](#c-mesh-backends) install side by side (`meshioplusplus::core_meshio`, `::core_native`, `::core_kratos`), so one prefix serves consumers that disagree about the backend; each carries its own backend macro, making a mismatch a compile or link error rather than silent UB. See the [C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api) doc page.
+
 ### C / Fortran API
 
 For HPC codes written in C or Fortran, the C++ core also builds as an installable shared library (`libmeshioplusplus`, pure-C99 header, pkg-config + `find_package` support) with a modern OO Fortran 2008 module on top:
@@ -723,7 +747,7 @@ Standalone C++ builds (no Python) can swap the in-memory mesh structure at compi
 ./build/configure.sh --mesh-backend NATIVE --tests --build
 ```
 
-See the [C++ mesh backends](https://loumalouomega.github.io/meshioplusplus/cpp_backends) doc page.
+All three also install side by side from a single prefix (`MESHIOPLUSPLUS_INSTALL_CPP=ON`), as `meshioplusplus::core_meshio` / `::core_native` / `::core_kratos` — see the [C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api) page. See the [C++ mesh backends](https://loumalouomega.github.io/meshioplusplus/cpp_backends) doc page.
 
 ### Testing
 
