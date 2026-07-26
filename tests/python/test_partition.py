@@ -153,10 +153,49 @@ def test_invalid_nparts_raises():
         meshioplusplus.partition_labels(mesh, -1)
 
 
-def test_ghost_layers_is_a_stub():
+def test_negative_ghost_layers_raises():
     mesh = _quad_grid(2, 2)
     with pytest.raises(ValueError, match="ghost_layers"):
-        meshioplusplus.partition(mesh, 2, ghost_layers=1)
+        meshioplusplus.partition(mesh, 2, ghost_layers=-1)
+
+
+def test_ghost_layers_grow_pieces_and_tag_the_halo():
+    mesh = _quad_grid(4, 4)
+    plain = meshioplusplus.partition(mesh, 2)
+    ghosted = meshioplusplus.partition(mesh, 2, ghost_layers=1)
+    assert len(ghosted) == len(plain)
+
+    for owned_piece, halo_piece in zip(plain, ghosted):
+        owned = sum(len(cb.data) for cb in owned_piece.cells)
+        with_halo = sum(len(cb.data) for cb in halo_piece.cells)
+        assert with_halo > owned, "a halo must add cells on a connected grid"
+
+        tag = halo_piece.cell_data["partition:ghost"]
+        assert len(tag) == len(halo_piece.cells)
+        flat = np.concatenate([np.asarray(a).ravel() for a in tag])
+        assert flat.min() >= 0 and flat.max() <= 1  # one layer requested
+        assert int((flat == 0).sum()) == owned  # depth 0 is exactly the owned set
+        assert len(flat) == with_halo
+
+
+def test_ghost_layers_are_monotone():
+    mesh = _quad_grid(5, 5)
+    prev = 0
+    for layers in range(4):
+        piece = meshioplusplus.partition(mesh, 2, ghost_layers=layers)[0]
+        n = sum(len(cb.data) for cb in piece.cells)
+        assert n >= prev
+        assert n <= 25
+        prev = n
+
+
+def test_labels_take_no_ghost_layers():
+    # A flat per-cell label array is the ownership map; a cell can be a ghost of
+    # several parts at once, so there is nowhere to put that. The Python API
+    # simply does not expose the parameter (the C++ one validates it instead).
+    mesh = _quad_grid(2, 2)
+    with pytest.raises(TypeError):
+        meshioplusplus.partition_labels(mesh, 2, ghost_layers=1)
 
 
 def test_unknown_method_and_mode_raise():
