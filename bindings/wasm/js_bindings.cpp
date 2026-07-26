@@ -65,8 +65,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 // External includes
@@ -77,6 +80,7 @@
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
@@ -1700,6 +1704,114 @@ val interpolate_js(const val& rSourceObj, const val& rTargetObj, const std::stri
     });
 }
 
+// ---------------------------------------------------------------------
+// Transient (time-series) XDMF -- the one *stateful* binding in this file.
+//
+// Every other export here is a pure function over plain JS values: read a
+// path, get an object; hand back an object, get a file. A series is not that
+// shape at all -- the mesh is written once and each solve appends a step, and
+// the `.xdmf` light data only lands at `Finalize()` -- so it needs an object
+// that survives between calls.
+//
+// Shape chosen: an **opaque integer handle plus free functions**, not an
+// embind `class_`. Three reasons, in order of weight:
+//
+//   1. This file's stated contract is that `NDArray`/`CellBlock`/`Mesh` stay
+//      entirely internal and "JS only ever sees plain objects of typed
+//      arrays". An embind `class_` hands JS a live C++ object whose lifetime
+//      the caller manages with Emscripten's `.delete()` -- exactly the kind of
+//      leaked C++ handle the rest of the API avoids, and a concept that has no
+//      counterpart anywhere else in `@meshioplusplus/wasm`.
+//   2. Free functions keep every export uniform: `src/wasm/src/index.mjs` can
+//      wrap them the same way it wraps everything else (defaults + an
+//      ergonomic object), and each one goes through `with_js_errors`, so a
+//      `WriteError` is a readable JS `Error` here as it is everywhere else.
+//      A bound member function would surface as a bare, message-less
+//      `WebAssembly.Exception`.
+//   3. It matches the C API (`mio_xdmf_series*`), so the two flat bindings
+//      describe the same object the same way.
+//
+// The handle is an index into a module-local table rather than a
+// `reinterpret_cast` pointer: JS numbers are trivially forgeable and a series
+// is explicitly closed, so a stale handle must be a thrown `Error`, never a
+// use-after-free inside linear memory.
+
+std::unordered_map<int, std::unique_ptr<meshioplusplus::XdmfTimeSeriesWriter>>&
+xdmf_series_table() {
+    static std::unordered_map<int, std::unique_ptr<meshioplusplus::XdmfTimeSeriesWriter>> table;
+    return table;
+}
+
+/// Resolve a handle or throw. Never returns null.
+meshioplusplus::XdmfTimeSeriesWriter& xdmf_series_lookup(int handle) {
+    auto it = xdmf_series_table().find(handle);
+    if (it == xdmf_series_table().end())
+        throw meshioplusplus::WriteError(
+            "meshio++ (wasm): invalid or already-closed XDMF time-series handle " +
+            std::to_string(handle));
+    return *it->second;
+}
+
+/**
+ * @brief Open a transient XDMF series on the virtual filesystem.
+ * @param rPath virtual FS path of the `.xdmf` light-data file.
+ * @param rDataFormat "HDF" (companion `<base>.h5`; this build has HDF5),
+ *   "XML" (numbers inline, one file) or "Binary" (sibling `<base><n>.bin`).
+ * @param gzipLevel gzip level for "HDF" datasets; negative = uncompressed.
+ * @return an opaque handle to pass to the other `xdmfSeries*` functions.
+ * @throws meshioplusplus::WriteError on an unknown data format.
+ */
+int xdmf_series_create_js(const std::string& rPath, const std::string& rDataFormat, int gzipLevel) {
+    return with_js_errors([&]() -> int {
+        static int next_handle = 1;
+        auto writer =
+            std::make_unique<meshioplusplus::XdmfTimeSeriesWriter>(rPath, rDataFormat, gzipLevel);
+        const int handle = next_handle++;
+        xdmf_series_table().emplace(handle, std::move(writer));
+        return handle;
+    });
+}
+
+/** @brief Write the static grid (points + cells) every step shares. Once. */
+void xdmf_series_write_points_cells_js(int handle, const val& rMeshObj) {
+    with_js_errors([&]() { xdmf_series_lookup(handle).WritePointsCells(val_to_mesh(rMeshObj)); });
+}
+
+/** @brief Append one step's `point_data`/`cell_data` at simulation time `time`. */
+void xdmf_series_write_data_js(int handle, double time, const val& rMeshObj) {
+    with_js_errors([&]() { xdmf_series_lookup(handle).WriteData(time, val_to_mesh(rMeshObj)); });
+}
+
+/** @brief Write the `.xdmf` light data and close the heavy-data container.
+ *  Idempotent; the handle stays valid (and queryable) afterwards. */
+void xdmf_series_finalize_js(int handle) {
+    with_js_errors([&]() { xdmf_series_lookup(handle).Finalize(); });
+}
+
+/** @brief How many steps have been written so far. */
+double xdmf_series_num_steps_js(int handle) {
+    return with_js_errors(
+        [&]() -> double { return static_cast<double>(xdmf_series_lookup(handle).NumSteps()); });
+}
+
+/** @brief Whether `Finalize()` has already run for this handle. */
+bool xdmf_series_finalized_js(int handle) {
+    return with_js_errors([&]() -> bool { return xdmf_series_lookup(handle).Finalized(); });
+}
+
+/**
+ * @brief Destroy the writer, finalizing it first if it has not been.
+ *
+ * Deliberately tolerant of an unknown handle (double-close is a no-op) --
+ * a JS wrapper's `close()` runs in `finally` blocks, where throwing on the
+ * second call would mask the original error. Note the destructor swallows a
+ * finalize failure (it must not throw); call `xdmfSeriesFinalize` first to
+ * see one.
+ */
+void xdmf_series_free_js(int handle) {
+    xdmf_series_table().erase(handle);
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
@@ -1748,4 +1860,14 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("dataCalc", &data_calc_js);
     emscripten::function("dataCondition", &data_condition_js);
     emscripten::function("dataInfo", &data_info_js);
+    // Transient XDMF: the one stateful surface -- an opaque handle plus these
+    // seven calls (see the block comment above their definitions for why it is
+    // not an embind class_).
+    emscripten::function("xdmfSeriesCreate", &xdmf_series_create_js);
+    emscripten::function("xdmfSeriesWritePointsCells", &xdmf_series_write_points_cells_js);
+    emscripten::function("xdmfSeriesWriteData", &xdmf_series_write_data_js);
+    emscripten::function("xdmfSeriesFinalize", &xdmf_series_finalize_js);
+    emscripten::function("xdmfSeriesNumSteps", &xdmf_series_num_steps_js);
+    emscripten::function("xdmfSeriesFinalized", &xdmf_series_finalized_js);
+    emscripten::function("xdmfSeriesFree", &xdmf_series_free_js);
 }
