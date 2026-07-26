@@ -210,3 +210,13 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 ```
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
+
+## v9.1.0 additions
+
+- `mio_read(..., lenient = TRUE)` — see [`doc/selective_read.md`](selective_read.md).
+- XDMF series: `mio_xdmf_series_flush()`, `mio_xdmf_series_finalized()`, and
+  `mio_xdmf_series(..., mode = "append", auto_flush = FALSE)`.
+
+As elsewhere in this binding, remember to release a series *before* its tempdir
+is removed: a write failure during the implicit finalize in a GC finalizer cannot
+be reported. `MdpaInfo` is not exposed (as for every flat binding).

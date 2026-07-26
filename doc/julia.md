@@ -225,3 +225,16 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 ```
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
+
+## v9.1.0 additions
+
+- `ReadOptions(; lenient=true)` — see [`doc/selective_read.md`](selective_read.md).
+- XDMF series: `flush!(s)`, `finalized(s)`, `XdmfSeries(path; mode=:append,
+  auto_flush=false)`, and `write_data!(s, t, Dict("u" => values))` for writing a
+  step from raw arrays with no `Mesh` in between. An `n x k` matrix is
+  transposed on the way out, since Julia is column-major and the C ABI expects
+  `k` components per entity row-major.
+
+`flush!` is named with a bang for the same reason `finalize!` is: `Base.flush`
+means "flush this IO stream". `MdpaInfo` is not exposed (as for every flat
+binding).

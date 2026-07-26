@@ -395,3 +395,15 @@ so `FileSource` always uses buffered reads. The option is accepted and ignored.
 has an Emscripten port and neither is worth a from-source dependency for an optional VTK block
 codec. zlib (`-sUSE_ZLIB=1`) is unchanged and remains the default codec, so every file the WASM
 build wrote before it still round-trips.
+
+## v9.1.0 additions
+
+- `readMeshSelective(path, { lenient: true })` — see
+  [`doc/selective_read.md`](selective_read.md).
+- XDMF series: `w.flush()`, `w.writeDataArrays(time, pointData, cellData,
+  components)`, and `createXdmfTimeSeriesWriter(path, { mode: 'append',
+  autoFlush: true })`. With `flush()` the `.xdmf` appears in MEMFS before
+  `finalize()`, so a partially-written series can be copied out.
+
+`MdpaInfo` (MDPA properties bodies and entity names) is not exposed, as for every
+flat binding.

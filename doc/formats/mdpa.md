@@ -108,3 +108,77 @@ Everything the C++ `Mesh` cannot hold makes the reader **throw `ReadError` namin
 - `tests/python/meshes/mdpa/test_submodelpart.mdpa` — a 2D quad mesh with a nested `SubModelPart` containing Nodes/Elements/Conditions/empty-Geometries/ empty-Constraints sub-blocks.
 - Additional `tests/python/input/mdpa/test_*.mdpa` fixtures target node-order permutation edge cases, minimal/degenerate geometries, hierarchical SubModelParts, and varied Table layouts.
 - `tests/python/test_mdpa.py` also builds many MDPA snippets **inline** (not as files) covering nearly every block type, including a `test_roundtrip_all_blocks` exercising almost all of them at once with a NaN-aware comparison helper.
+
+## Properties, entity names and lenient reads (v9.1.0)
+
+The C++ reader used to throw on a non-empty `Begin Properties` body — which
+essentially every production deck has — so the C++ path handled geometry-only
+files. Three changes fix that.
+
+### `MdpaInfo`: the side channel
+
+Properties bodies and per-block Kratos entity names have no place on the `Mesh`:
+`NDArray` has ten numeric dtypes and no string one, so `CONSTITUTIVE_LAW
+LinearElastic3DLaw` has no `field_data` representation at all. They travel in a
+typed side-channel struct instead — the `MedInfo`/`ExodusInfo` pattern:
+
+```cpp
+meshioplusplus::MdpaInfo info;
+meshioplusplus::Mesh mesh = meshioplusplus::read_mdpa("model.mdpa", info);
+// ... operate on mesh ...
+meshioplusplus::write_mdpa("out.mdpa", mesh, info);   // properties and names restored
+```
+
+`read_mdpa(path)` and `write_mdpa(path, mesh)` are unchanged. Without an
+`MdpaInfo` the properties body is parsed and dropped with a warning, which is
+what the registry — and therefore the C API, Fortran, Julia, R, WASM and the
+native CLI — does. That is a documented flat-ABI gap, not a silent loss.
+
+Values are typed where they can be and verbatim where they cannot:
+
+| In the file | In `PropertyValue` |
+|---|---|
+| `DENSITY 7850.0` | `mValues`, Float64 `{1}` |
+| `Begin Table 4 T E ... End Table` | `mValues`, Float64 `(n, k)`, `mIsTable`, `mKey` = the header arguments |
+| `CONSTITUTIVE_LAW LinearElastic3DLaw` | `mText`, verbatim |
+| `LOCAL_AXES [3] (1.0, 0.0, 0.0)` | `mText`, verbatim |
+
+The text fallback is not a gap to close later: it is what makes an unrecognized
+value **lossless**, since it is re-emitted byte for byte, and it is what the
+pure-Python reference does (`float()` fails, keep the raw string).
+
+### Entity names
+
+`MdpaInfo::mEntityNames` holds one `{mName, mIsCondition}` per cell block. It
+matters because the derivation is lossy in one direction only:
+`SmallDisplacementElement3D4N` resolves to `tetra` through the longest-suffix
+fallback, but `tetra` only ever derives back to the canonical `Element3D4N`.
+Without the info, a round trip renames every application element.
+
+The reader's block-splitting key includes the entity name, so two adjacent
+`SmallDisplacementElement3D4N` and `TotalLagrangianElement3D4N` blocks — both
+`tetra` — stay separate rather than collapsing onto one name.
+
+### `Properties` declarations on write
+
+The writer emitted a single hard-coded `Begin Properties 0` while the entity rows
+wrote their `gmsh:physical` value as the property id, so a tagged mesh produced a
+file referencing undeclared properties, which Kratos's own `ModelPartIO` rejects.
+Without an `MdpaInfo` the writer now emits one **empty** block per distinct id
+the rows actually reference, ascending. A mesh whose ids are all 0 — every mesh
+with no `gmsh:physical` — still emits exactly the same two lines as before.
+
+### `--lenient`
+
+`ReadOptions::mLenient` (`--lenient` on the native CLI) downgrades the remaining
+rejections — `Table`, `Geometries`, `Mesh`, `Constraints`, non-empty
+`SubModelPartData`/`Tables`/`Geometries`/`Constraints`, a non-numeric
+`ModelPartData` value — to a warning plus a skip, recorded in
+`MdpaInfo::mSkippedConstructs`. What still throws, even under `mLenient`:
+non-sequential node ids, a malformed row, an unknown entity name, and
+connectivity naming a node that does not exist — skipping any of those would
+return a mesh that is quietly wrong rather than merely incomplete.
+
+`meshioplusplus.mdpa.read` remains the pure-Python reference reader and is
+unaffected by all of the above; it already carries this content in
+`mesh.misc_data` and `field_data["properties_<id>"]`.

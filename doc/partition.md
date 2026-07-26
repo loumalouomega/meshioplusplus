@@ -209,3 +209,11 @@ The operation exists on every binding surface: C
 (`partition`/`partitionLabels`, SFC only — KaHIP is never part of the WASM
 build, see [WASM](/wasm)), and the `partition` verb in both
 [CLIs](/cli).
+
+## meshio++ is serial
+
+`partition` computes a decomposition; it does not run one. There is no MPI in
+the library, no distributed reader or writer and no communicator anywhere in the
+API. The intended workflow is to partition on one rank (or in a pre-step) and
+have each rank read or receive its own piece; `ghost_layers > 0` produces the
+shared-node halo an MPI assembly needs. See `doc/cpp_api.md`.
