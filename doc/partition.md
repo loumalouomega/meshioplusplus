@@ -186,6 +186,13 @@ limited to `int32` by the `kaffpa` interface in both builds.
   builds disjoint pieces only and raises `NotImplementedError` rather than
   silently returning unghosted ones.
 
+  The [pure-Python KaHIP route](#kahip-optional-the-quality-path) (the `kahip`
+  PyPI wheel against a KaHIP-less `_core`) cannot ghost either: with
+  `ghost_layers > 0`, `method="auto"` routes to the C++ core instead (auto is
+  a preference order, and the core is the one ghost-capable path), while an
+  explicit `method="kahip"` raises naming
+  `-DMESHIOPLUSPLUS_WITH_KAHIP=ON` — never a silent SFC downgrade.
+
   ```python
   pieces = mp.partition(mesh, 4, ghost_layers=1)
   owned = pieces[0].cell_data["partition:ghost"][0] == 0
