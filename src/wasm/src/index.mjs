@@ -51,6 +51,16 @@ function resolveVariant(variant) {
  */
 
 /**
+ * @typedef {Object} XdmfTimeSeriesWriter
+ * @property {(mesh: Mesh) => void} writePointsCells - the static grid, once.
+ * @property {(time: number, mesh: Mesh) => void} writeData - one step's data.
+ * @property {() => void} finalize - write the `.xdmf`; idempotent.
+ * @property {() => number} numSteps
+ * @property {() => boolean} finalized
+ * @property {() => void} close - finalize (if needed) and release the handle.
+ */
+
+/**
  * @typedef {Object} Mesh
  * @property {Float64Array} points - flat, row-major (numPoints * dim).
  * @property {number} dim - 2 or 3.
@@ -117,6 +127,7 @@ function resolveVariant(variant) {
  *   dataCalc: (mesh: Mesh, expression: string, location: string, outputName: string, overwrite?: boolean) => Mesh,
  *   dataCondition: (mesh: Mesh, location: string, names?: string[], mode?: string, lo?: number, hi?: number, scope?: string, nanPolicy?: string, nanReplacement?: number, suffix?: string) => Mesh,
  *   dataInfo: (mesh: Mesh) => object[],
+ *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number}) => XdmfTimeSeriesWriter,
  * }>}
  */
 export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto' } = {}) {
@@ -358,6 +369,39 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 mesh, location, names, mode, lo, hi, scope, nanPolicy, nanReplacement, suffix,
             ),
         dataInfo: (mesh) => Module.dataInfo(mesh),
+        // Transient (time-series) XDMF -- the one *stateful* thing in this API.
+        // The raw binding is an opaque integer handle plus seven free
+        // functions (see bindings/wasm/js_bindings.cpp for why it is not an
+        // embind class_); this wrapper is the ergonomic face of it, so callers
+        // never see the handle and never call an Emscripten `.delete()`.
+        //
+        // The `.xdmf` only appears at close()/finalize() -- the collection
+        // element has to enclose every step -- and with dataFormat 'HDF' the
+        // series is TWO files in the virtual FS: `<path>` and its sibling
+        // `<path minus extension>.h5`. Copy BOTH out of Module.FS.
+        createXdmfTimeSeriesWriter: (path, { dataFormat = 'HDF', gzipLevel = -1 } = {}) => {
+            const handle = Module.xdmfSeriesCreate(path, dataFormat, gzipLevel);
+            let open = true;
+            return {
+                writePointsCells: (mesh) => Module.xdmfSeriesWritePointsCells(handle, mesh),
+                writeData: (time, mesh) => Module.xdmfSeriesWriteData(handle, time, mesh),
+                finalize: () => Module.xdmfSeriesFinalize(handle),
+                numSteps: () => Module.xdmfSeriesNumSteps(handle),
+                finalized: () => Module.xdmfSeriesFinalized(handle),
+                // Safe to call twice; safe to call in a `finally`. Finalizes
+                // explicitly first so a write failure is thrown rather than
+                // swallowed by the C++ destructor (which must not throw).
+                close: () => {
+                    if (!open) return;
+                    open = false;
+                    try {
+                        Module.xdmfSeriesFinalize(handle);
+                    } finally {
+                        Module.xdmfSeriesFree(handle);
+                    }
+                },
+            };
+        },
     };
 }
 
