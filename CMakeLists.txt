@@ -9,13 +9,18 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 8.8.0
+  VERSION 8.10.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Hoisted to the top (it used to be included inside the C API block): the C++
+# core's usage requirements are collected with an $<INSTALL_INTERFACE:> pointing
+# at CMAKE_INSTALL_INCLUDEDIR long before that block is reached. Idempotent.
+include(GNUInstallDirs)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -172,7 +177,38 @@ file(GLOB_RECURSE MESHIOPLUSPLUS_CORE_SOURCES
 
 add_library(meshioplusplus_core_obj OBJECT ${MESHIOPLUSPLUS_CORE_SOURCES})
 set_target_properties(meshioplusplus_core_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_features(meshioplusplus_core_obj PUBLIC cxx_std_20)
+
+# --------------------------------------------------------------------------
+# Usage-requirement accumulators for the C++ core.
+#
+# Every optional-dependency probe below appends here instead of calling
+# target_*(meshioplusplus_core_obj PUBLIC ...) directly, so the identical set can
+# be applied to more than one target by meshioplusplus_configure_core_target():
+# the in-tree meshioplusplus_core_obj (Python `_core`, WASM, CLI, gtest -- exactly
+# as before) and, when MESHIOPLUSPLUS_INSTALL_CPP=ON, one installable
+# meshioplusplus_core_<backend> library per mesh backend.
+#
+# This indirection is what makes the C++ install work at all. The C API
+# deliberately keeps the core's usage requirements OUT of its exported interface
+# (its installed surface is the C header alone -- see the PRIVATE link comment
+# further down), but a find_package(... COMPONENTS CXX) consumer compiles against
+# the real headers and therefore needs the include dirs, the backend/parallel
+# macros and the HDF5/netCDF/... link deps to reach it. Re-declaring them on the
+# exported library is the only way to get them there: install(EXPORT) refuses a
+# target whose INTERFACE_LINK_LIBRARIES names an unexported target, so the object
+# library can be neither exported nor PUBLIC-linked.
+#
+# _mio_core_priv_incs is the exception that must NEVER reach an exported target:
+# the vendored pugixml/Eigen include dirs are build-only (no installed header
+# includes either) and Eigen's is a git-submodule path that does not exist on a
+# consumer's machine at all.
+# --------------------------------------------------------------------------
+set(_mio_core_defs "")
+set(_mio_core_incs "")
+set(_mio_core_priv_incs "")
+set(_mio_core_libs "")
+set(_mio_core_copts "")
+set(_mio_core_lopts "")
 
 # Several operations (interpolate's barycentric weighted sum, merge/partition's
 # weighted accumulations, ...) are pinned byte-identical against a pure-Python/
@@ -188,7 +224,7 @@ target_compile_features(meshioplusplus_core_obj PUBLIC cxx_std_20)
 # target; there is no MSVC equivalent needed since /fp:precise (the default)
 # never contracts.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(meshioplusplus_core_obj PUBLIC -ffp-contract=off)
+  list(APPEND _mio_core_copts -ffp-contract=off)
 endif()
 
 # On MSVC, /MT vs /MD is a *compile*-time flag baked into each .obj (unlike
@@ -203,9 +239,17 @@ if(MESHIOPLUSPLUS_STATIC_RUNTIME AND MSVC AND NOT MESHIOPLUSPLUS_BUILD_PYTHON)
   set_property(TARGET meshioplusplus_core_obj PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
-target_include_directories(
-  meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-                         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/pugixml)
+list(APPEND _mio_core_incs
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include>
+     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+# pugixml is vendored and reached by four format .cpp files only -- no installed
+# header names a pugi:: type (`grep -r 'pugi::' src/cpp/include` is empty), so
+# this is PRIVATE. A PUBLIC entry would put the vendored copy on every consumer's
+# include path once the C++ API is installed, colliding with a consumer that
+# vendors its own pugixml (Kratos does).
+list(APPEND _mio_core_priv_incs
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/pugixml)
 
 if(EMSCRIPTEN)
   # Emscripten disables JS-catchable C++ exceptions by default (an uncaught
@@ -217,8 +261,8 @@ if(EMSCRIPTEN)
   # which is faster than the legacy JS-longjmp emulation and needs no
   # separate -sDISABLE_EXCEPTION_CATCHING= linker flag. Applied PUBLIC so both
   # the compile step (here) and whatever links these objects inherit it.
-  target_compile_options(meshioplusplus_core_obj PUBLIC "-fwasm-exceptions")
-  target_link_options(meshioplusplus_core_obj PUBLIC "-fwasm-exceptions")
+  list(APPEND _mio_core_copts "-fwasm-exceptions")
+  list(APPEND _mio_core_lopts "-fwasm-exceptions")
 endif()
 
 # --------------------------------------------------------------------------
@@ -237,32 +281,31 @@ if(MESHIOPLUSPLUS_COVERAGE)
     message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_COVERAGE needs GCC or Clang, got ${CMAKE_CXX_COMPILER_ID}")
   endif()
   message(STATUS "meshio++: coverage instrumentation ON (--coverage, -O0)")
-  target_compile_options(meshioplusplus_core_obj PUBLIC
-                         --coverage -O0 -g -fprofile-update=atomic)
-  target_link_options(meshioplusplus_core_obj PUBLIC --coverage)
+  list(APPEND _mio_core_copts --coverage -O0 -g -fprofile-update=atomic)
+  list(APPEND _mio_core_lopts --coverage)
 endif()
 
 if(MESHIOPLUSPLUS_WITH_ZLIB AND EMSCRIPTEN)
   message(STATUS "meshio++: VTU zlib compression enabled (Emscripten -sUSE_ZLIB=1 port)")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_ZLIB)
-  target_compile_options(meshioplusplus_core_obj PUBLIC "-sUSE_ZLIB=1")
-  target_link_options(meshioplusplus_core_obj PUBLIC "-sUSE_ZLIB=1")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_ZLIB)
+  list(APPEND _mio_core_copts "-sUSE_ZLIB=1")
+  list(APPEND _mio_core_lopts "-sUSE_ZLIB=1")
 elseif(MESHIOPLUSPLUS_WITH_ZLIB AND ZLIB_FOUND)
   message(STATUS "meshio++: VTU zlib compression enabled")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_ZLIB)
-  target_link_libraries(meshioplusplus_core_obj PUBLIC ZLIB::ZLIB)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_ZLIB)
+  list(APPEND _mio_core_libs ZLIB::ZLIB)
 else()
   message(STATUS "meshio++: zlib not found/disabled - VTU zlib falls back to Python")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_ZSTD AND (zstd_FOUND OR ZSTD_LIBRARY))
   message(STATUS "meshio++: VTK XML zstd compression enabled")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_ZSTD)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_ZSTD)
   if(zstd_FOUND)
-    target_link_libraries(meshioplusplus_core_obj PUBLIC zstd::libzstd_shared)
+    list(APPEND _mio_core_libs zstd::libzstd_shared)
   else()
-    target_include_directories(meshioplusplus_core_obj PUBLIC ${ZSTD_INCLUDE_DIR})
-    target_link_libraries(meshioplusplus_core_obj PUBLIC ${ZSTD_LIBRARY})
+    list(APPEND _mio_core_incs ${ZSTD_INCLUDE_DIR})
+    list(APPEND _mio_core_libs ${ZSTD_LIBRARY})
   endif()
 elseif(MESHIOPLUSPLUS_WITH_ZSTD)
   message(STATUS "meshio++: zstd requested but not found - zstd files fall back to Python")
@@ -270,12 +313,12 @@ endif()
 
 if(MESHIOPLUSPLUS_WITH_LZ4 AND (lz4_FOUND OR LZ4_LIBRARY))
   message(STATUS "meshio++: VTK XML lz4 compression enabled")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_LZ4)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_LZ4)
   if(lz4_FOUND)
-    target_link_libraries(meshioplusplus_core_obj PUBLIC LZ4::lz4_shared)
+    list(APPEND _mio_core_libs LZ4::lz4_shared)
   else()
-    target_include_directories(meshioplusplus_core_obj PUBLIC ${LZ4_INCLUDE_DIR})
-    target_link_libraries(meshioplusplus_core_obj PUBLIC ${LZ4_LIBRARY})
+    list(APPEND _mio_core_incs ${LZ4_INCLUDE_DIR})
+    list(APPEND _mio_core_libs ${LZ4_LIBRARY})
   endif()
 elseif(MESHIOPLUSPLUS_WITH_LZ4)
   message(STATUS "meshio++: lz4 requested but not found - lz4 files fall back to Python")
@@ -283,8 +326,8 @@ endif()
 
 if(MESHIOPLUSPLUS_WITH_KAHIP AND KAHIP_FOUND)
   message(STATUS "meshio++: KaHIP partition backend enabled (${KAHIP_LIBRARIES})")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_KAHIP)
-  target_link_libraries(meshioplusplus_core_obj PUBLIC kahip::kahip)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_KAHIP)
+  list(APPEND _mio_core_libs kahip::kahip)
 elseif(MESHIOPLUSPLUS_WITH_KAHIP)
   message(STATUS "meshio++: KaHIP requested but not found (set KAHIP_ROOT) - "
                  "partition method 'kahip' will raise")
@@ -292,12 +335,25 @@ endif()
 
 if(MESHIOPLUSPLUS_WITH_HDF5 AND HDF5_FOUND)
   message(STATUS "meshio++: HDF5 formats enabled (HDF5 ${HDF5_VERSION})")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_HDF5)
-  target_include_directories(meshioplusplus_core_obj PUBLIC ${HDF5_INCLUDE_DIRS})
-  target_link_libraries(meshioplusplus_core_obj PUBLIC ${HDF5_C_LIBRARIES})
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_HDF5)
+  # Prefer the imported target: it makes the exported package RELOCATABLE.
+  # Linking ${HDF5_C_LIBRARIES} writes absolute library paths straight into
+  # meshioplusplusTargets.cmake, which then only resolves on a machine whose
+  # HDF5 sits exactly where this build's did. HDF5::HDF5 instead records a
+  # dependency the consumer re-finds locally (see the find_dependency in
+  # meshioplusplusConfig.cmake.in). FindHDF5 has provided it since CMake 3.19;
+  # older CMake falls back to the historical raw-path behaviour.
+  if(TARGET HDF5::HDF5)
+    list(APPEND _mio_core_libs HDF5::HDF5)
+    set(_mio_hdf5_imported TRUE)
+  else()
+    list(APPEND _mio_core_incs ${HDF5_INCLUDE_DIRS})
+    list(APPEND _mio_core_libs ${HDF5_C_LIBRARIES})
+  endif()
   if(HDF5_IS_PARALLEL AND MPI_C_FOUND)
-    target_include_directories(meshioplusplus_core_obj PUBLIC ${MPI_C_INCLUDE_DIRS})
-    target_link_libraries(meshioplusplus_core_obj PUBLIC MPI::MPI_C)
+    list(APPEND _mio_core_incs ${MPI_C_INCLUDE_DIRS})
+    list(APPEND _mio_core_libs MPI::MPI_C)
+    set(_mio_hdf5_needs_mpi TRUE)
   endif()
 else()
   message(STATUS "meshio++: HDF5 not found/disabled - HDF5 formats fall back to Python")
@@ -305,12 +361,12 @@ endif()
 
 if(MESHIOPLUSPLUS_WITH_NETCDF AND (netCDF_FOUND OR NETCDF_LIBRARY))
   message(STATUS "meshio++: netCDF formats enabled")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_NETCDF)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_NETCDF)
   if(netCDF_FOUND)
-    target_link_libraries(meshioplusplus_core_obj PUBLIC netCDF::netcdf)
+    list(APPEND _mio_core_libs netCDF::netcdf)
   else()
-    target_include_directories(meshioplusplus_core_obj PUBLIC ${NETCDF_INCLUDE_DIR})
-    target_link_libraries(meshioplusplus_core_obj PUBLIC ${NETCDF_LIBRARY})
+    list(APPEND _mio_core_incs ${NETCDF_INCLUDE_DIR})
+    list(APPEND _mio_core_libs ${NETCDF_LIBRARY})
   endif()
 else()
   message(STATUS "meshio++: netCDF not found/disabled - Exodus falls back to Python")
@@ -324,9 +380,14 @@ option(MESHIOPLUSPLUS_WITH_EIGEN "Use vendored Eigen for the MED transpose" ON)
 if(MESHIOPLUSPLUS_WITH_EIGEN AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/eigen/Eigen/Dense")
   message(STATUS "meshio++: Eigen enabled (MED transpose)")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_HAS_EIGEN)
-  target_include_directories(
-    meshioplusplus_core_obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/eigen)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_EIGEN)
+  # PRIVATE, like pugixml: Eigen is reached only by src/cpp/src/formats/med.cpp
+  # and no installed header names an Eigen type. It matters more here than for
+  # pugixml -- this is a git-submodule path inside the source tree, so exporting
+  # it would bake a directory that simply does not exist on a consumer's machine
+  # into meshioplusplusTargets.cmake and break find_package() outright.
+  list(APPEND _mio_core_priv_incs
+       ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/eigen)
 else()
   message(STATUS "meshio++: Eigen not found/disabled - MED transpose uses the plain loop")
 endif()
@@ -370,7 +431,7 @@ endif()
 
 if(_meshioplusplus_parallel STREQUAL "STL")
   if(MSVC)
-    target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_STL)
+    list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_STL)
   else()
     find_package(TBB CONFIG QUIET)
     include(CheckCXXSourceCompiles)
@@ -390,9 +451,10 @@ if(_meshioplusplus_parallel STREQUAL "STL")
       MESHIOPLUSPLUS_HAS_PSTL)
     unset(CMAKE_REQUIRED_LIBRARIES)
     if(MESHIOPLUSPLUS_HAS_PSTL)
-      target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_STL)
+      list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_STL)
       if(TBB_FOUND)
-        target_link_libraries(meshioplusplus_core_obj PUBLIC TBB::tbb)
+        list(APPEND _mio_core_libs TBB::tbb)
+        set(_mio_parallel_needs_tbb TRUE)
       endif()
     else()
       message(WARNING
@@ -401,11 +463,11 @@ if(_meshioplusplus_parallel STREQUAL "STL")
         "falling back to the sequential backend. Install TBB or configure with "
         "-DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP.")
       set(_meshioplusplus_parallel "SEQ")
-      target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_SEQ)
+      list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_SEQ)
     endif()
   endif()
 elseif(_meshioplusplus_parallel STREQUAL "OPENMP")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_OPENMP)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_OPENMP)
   if(EMSCRIPTEN)
     # The Emscripten toolchain ships no OpenMP CMake package to find_package();
     # its OpenMP is enabled by -fopenmp on top of Wasm threads, which -pthread
@@ -420,26 +482,27 @@ elseif(_meshioplusplus_parallel STREQUAL "OPENMP")
         "meshio++: the OPENMP parallel backend under Emscripten requires "
         "-DMESHIOPLUSPLUS_WASM_THREADS=ON (it needs Wasm threads/pthreads).")
     endif()
-    target_compile_options(meshioplusplus_core_obj PUBLIC "-fopenmp" "-pthread")
-    target_link_options(meshioplusplus_core_obj PUBLIC "-fopenmp" "-pthread")
+    list(APPEND _mio_core_copts "-fopenmp" "-pthread")
+    list(APPEND _mio_core_lopts "-fopenmp" "-pthread")
   else()
     find_package(OpenMP REQUIRED COMPONENTS CXX)
-    target_link_libraries(meshioplusplus_core_obj PUBLIC OpenMP::OpenMP_CXX)
+    list(APPEND _mio_core_libs OpenMP::OpenMP_CXX)
   endif()
 elseif(_meshioplusplus_parallel STREQUAL "TBB")
   find_package(TBB CONFIG REQUIRED)
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_TBB)
-  target_link_libraries(meshioplusplus_core_obj PUBLIC TBB::tbb)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_TBB)
+  list(APPEND _mio_core_libs TBB::tbb)
+  set(_mio_parallel_needs_tbb TRUE)
 elseif(_meshioplusplus_parallel STREQUAL "KOKKOS")
   if(EMSCRIPTEN)
     message(FATAL_ERROR
       "meshio++: the KOKKOS parallel backend is not supported under Emscripten (use SEQ)")
   endif()
   find_package(Kokkos REQUIRED CONFIG)
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_KOKKOS)
-  target_link_libraries(meshioplusplus_core_obj PUBLIC Kokkos::kokkos)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+  list(APPEND _mio_core_libs Kokkos::kokkos)
 elseif(_meshioplusplus_parallel STREQUAL "SEQ")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_PARALLEL_SEQ)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_SEQ)
 else()
   message(FATAL_ERROR
     "meshio++: unknown MESHIOPLUSPLUS_PARALLEL_BACKEND '${MESHIOPLUSPLUS_PARALLEL_BACKEND}' "
@@ -474,18 +537,240 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON AND NOT _meshioplusplus_mesh_backend STREQUAL "ME
     "Configure with -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF to use the NATIVE/KRATOS backends.")
 endif()
 
-if(_meshioplusplus_mesh_backend STREQUAL "MESHIO")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_MESH_BACKEND_MESHIO)
-elseif(_meshioplusplus_mesh_backend STREQUAL "NATIVE")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
-elseif(_meshioplusplus_mesh_backend STREQUAL "KRATOS")
-  target_compile_definitions(meshioplusplus_core_obj PUBLIC MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
-else()
+if(NOT _meshioplusplus_mesh_backend MATCHES "^(MESHIO|NATIVE|KRATOS)$")
   message(FATAL_ERROR
     "meshio++: unknown MESHIOPLUSPLUS_MESH_BACKEND '${MESHIOPLUSPLUS_MESH_BACKEND}' "
     "(use MESHIO, NATIVE or KRATOS)")
 endif()
 message(STATUS "meshio++: mesh backend: ${_meshioplusplus_mesh_backend}")
+
+# Deliberately NOT in _mio_core_defs: the backend macro is the one usage
+# requirement that differs per target. meshioplusplus_core_obj gets the single
+# backend this configure selected (as it always has); each installable
+# meshioplusplus_core_<backend> variant gets its own.
+option(MESHIOPLUSPLUS_NO_STD_SPAN
+       "Omit NativeMesh::ConnSpan()/<span> (set when the consumer's Boost uBLAS \
+collides with <span>, e.g. Kratos)" OFF)
+if(MESHIOPLUSPLUS_NO_STD_SPAN)
+  message(STATUS "meshio++: <span>/ConnSpan() omitted (MESHIOPLUSPLUS_NO_STD_SPAN)")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_NO_STD_SPAN)
+endif()
+
+# --------------------------------------------------------------------------
+# Applies the accumulated usage requirements above to one or more targets.
+# ARGV0 is the mesh backend (MESHIO|NATIVE|KRATOS) to bake in; the remaining
+# arguments are target names. Everything is attached PUBLIC, which for the
+# installable variants is what lands it in INTERFACE_* and therefore in
+# meshioplusplusTargets.cmake -- a consumer then compiles its own translation
+# units with the same backend/parallel macros and the same include dirs the
+# library was built with, which is what makes the ABI agree by construction.
+# --------------------------------------------------------------------------
+function(meshioplusplus_configure_core_target backend)
+  foreach(_t IN LISTS ARGN)
+    target_compile_features(${_t} PUBLIC cxx_std_20)
+    target_compile_definitions(${_t} PUBLIC
+                               MESHIOPLUSPLUS_MESH_BACKEND_${backend} ${_mio_core_defs})
+    if(_mio_core_incs)
+      target_include_directories(${_t} PUBLIC ${_mio_core_incs})
+    endif()
+    if(_mio_core_priv_incs)
+      target_include_directories(${_t} PRIVATE ${_mio_core_priv_incs})
+    endif()
+    if(_mio_core_libs)
+      target_link_libraries(${_t} PUBLIC ${_mio_core_libs})
+    endif()
+    if(_mio_core_copts)
+      target_compile_options(${_t} PUBLIC ${_mio_core_copts})
+    endif()
+    if(_mio_core_lopts)
+      target_link_options(${_t} PUBLIC ${_mio_core_lopts})
+    endif()
+  endforeach()
+endfunction()
+
+# The in-tree core, unchanged in behaviour: same single backend, same PUBLIC
+# usage requirements every existing consumer (_core, wasm, CLI, gtest) inherits.
+meshioplusplus_configure_core_target(${_meshioplusplus_mesh_backend} meshioplusplus_core_obj)
+
+# ---------------------------------------------------------------------------
+# MESHIOPLUSPLUS_INSTALL_CPP: the installable, find_package()-able C++ API.
+#
+# OFF by default, so `pip install .`, cibuildwheel and every existing CI leg pay
+# nothing for it. When ON, one library per entry of
+# MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS is built and installed side by side:
+#
+#     meshioplusplus::core_meshio   meshioplusplus::core_native   meshioplusplus::core_kratos
+#
+# plus `meshioplusplus::core`, an alias for whichever one matches
+# MESHIOPLUSPLUS_MESH_BACKEND. Building all three from a single prefix is what
+# lets one installed meshio++ serve consumers that disagree about the backend --
+# a Kratos application wants core_kratos, a plain C++ tool wants core_native --
+# instead of forcing each of them to build and install their own copy.
+#
+# The headers are backend-agnostic source (the backend is a compile-time macro),
+# so they install exactly once no matter how many variants are built. The cost is
+# compile time: each variant is a full, independent compile of the core.
+#
+# meshioplusplus_core_obj -- what the Python extension, the wasm module, the CLI,
+# the gtest binary and the C API all link -- is deliberately NOT one of these. It
+# keeps its single backend and its default visibility, so none of those consumers
+# are perturbed by this option at all.
+# ---------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_INSTALL_CPP
+       "Install the full C++ API (meshioplusplus::core*) for find_package(... COMPONENTS CXX)"
+       OFF)
+set(MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS "MESHIO;NATIVE;KRATOS" CACHE STRING
+    "Mesh backends built+installed as meshioplusplus::core_<backend> when MESHIOPLUSPLUS_INSTALL_CPP=ON")
+
+function(meshioplusplus_add_core_variant backend)
+  string(TOLOWER "${backend}" _lc)
+  set(_lib meshioplusplus_core_${_lc})
+
+  # Sources compiled straight into the library rather than through an OBJECT
+  # library. The core OBJECT library exists so the Python extension and the gtest
+  # binary can share one compile; a variant has exactly one consumer, so there is
+  # nothing to share -- and a STATIC library records even PRIVATE dependencies in
+  # INTERFACE_LINK_LIBRARIES as $<LINK_ONLY:...> (a static archive does not link
+  # them itself), which would drag the object library into the export set and
+  # make install(EXPORT) fail.
+  #
+  # STATIC or SHARED per BUILD_SHARED_LIBS.
+  add_library(${_lib} ${MESHIOPLUSPLUS_CORE_SOURCES})
+  meshioplusplus_configure_core_target(${backend} ${_lib})
+  set_target_properties(${_lib} PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 0  # C++ ABI declared unstable pre-1.0, as for the C API
+    POSITION_INDEPENDENT_CODE ON
+    # Hidden by default: MESHIOPLUSPLUS_API (export.hpp) is what opts a symbol
+    # back in, and a missing annotation then fails a shared consumer's link
+    # loudly rather than silently exporting the entire core.
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    EXPORT_NAME core_${_lc})
+  if(MESHIOPLUSPLUS_STATIC_RUNTIME AND MSVC)
+    set_property(TARGET ${_lib} PROPERTY
+                 MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
+
+  get_target_property(_type ${_lib} TYPE)
+  if(_type STREQUAL "SHARED_LIBRARY")
+    # PUBLIC so the library's own TUs see it (dllexport, together with the
+    # PRIVATE _BUILDING below) and consumers see it too (dllimport).
+    target_compile_definitions(${_lib} PUBLIC MESHIOPLUSPLUS_CORE_SHARED)
+    target_compile_definitions(${_lib} PRIVATE MESHIOPLUSPLUS_CORE_BUILDING)
+  endif()
+
+  add_library(meshioplusplus::core_${_lc} ALIAS ${_lib})
+  install(TARGETS ${_lib} EXPORT meshioplusplusTargets
+          LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endfunction()
+
+if(MESHIOPLUSPLUS_INSTALL_CPP)
+  include(CMakePackageConfigHelpers)
+
+  # All 112 headers, subdirectory structure preserved. detail/ is included
+  # deliberately: the public headers include it transitively, so an install
+  # without it does not compile.
+  install(DIRECTORY src/cpp/include/meshioplusplus/
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/meshioplusplus
+          FILES_MATCHING PATTERN "*.hpp")
+
+  foreach(_backend IN LISTS MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS)
+    string(TOUPPER "${_backend}" _backend)
+    if(NOT _backend MATCHES "^(MESHIO|NATIVE|KRATOS)$")
+      message(FATAL_ERROR
+        "meshio++: unknown backend '${_backend}' in MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS "
+        "(use MESHIO, NATIVE and/or KRATOS)")
+    endif()
+    meshioplusplus_add_core_variant(${_backend})
+  endforeach()
+
+  # meshioplusplus::core is "the default backend's variant". The installed
+  # config re-creates it the same way (an INTERFACE target forwarding to the
+  # variant), so `find_package(... COMPONENTS CXX)` + link meshioplusplus::core
+  # means the same thing in-tree and out.
+  string(TOLOWER "${_meshioplusplus_mesh_backend}" _mio_default_backend_lc)
+  if(_meshioplusplus_mesh_backend IN_LIST MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS)
+    add_library(meshioplusplus::core ALIAS meshioplusplus_core_${_mio_default_backend_lc})
+  else()
+    message(WARNING
+      "meshio++: MESHIOPLUSPLUS_MESH_BACKEND=${_meshioplusplus_mesh_backend} is not in "
+      "MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS=${MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS}; "
+      "meshioplusplus::core will not be defined -- link an explicit "
+      "meshioplusplus::core_<backend> target instead.")
+    set(_mio_default_backend_lc "")
+  endif()
+
+  # Shipped so a consumer with no FindKaHIP.cmake of its own can still resolve
+  # the find_dependency(KaHIP) the generated config emits for a KaHIP build.
+  install(FILES cmake/FindKaHIP.cmake
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/meshioplusplus)
+  message(STATUS
+    "meshio++: installing the C++ API (backends: ${MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS})")
+endif()
+
+# ---------------------------------------------------------------------------
+# Packaging metadata shared by both installable surfaces (the C API and the C++
+# API). Derived from _mio_core_defs rather than from the raw *_FOUND variables so
+# it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
+# on a machine that happens to have HDF5 now correctly reports "no HDF5".
+# ---------------------------------------------------------------------------
+foreach(_f ZLIB ZSTD LZ4 KAHIP HDF5 NETCDF EIGEN)
+  if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
+    set(_mio_has_${_f} TRUE)
+  else()
+    set(_mio_has_${_f} FALSE)
+  endif()
+endforeach()
+
+# Normalized to literal TRUE/FALSE because these are substituted into if()
+# conditions in the generated config: an unset variable would expand to nothing
+# and make `if(X AND )` a hard CMake error at the consumer's find_package().
+foreach(_v _mio_hdf5_needs_mpi _mio_parallel_needs_tbb _mio_hdf5_imported)
+  if(${_v})
+    set(${_v} TRUE)
+  else()
+    set(${_v} FALSE)
+  endif()
+endforeach()
+# Which discovery mode each dep was found through -- the generated config must
+# only find_dependency() a package that genuinely has a config/module to find
+# (the manual find_library() fallbacks below have none).
+foreach(_pair "zstd_FOUND:_mio_zstd_config" "lz4_FOUND:_mio_lz4_config"
+              "netCDF_FOUND:_mio_netcdf_config" "HDF5_IS_PARALLEL:_mio_hdf5_parallel")
+  string(REPLACE ":" ";" _pair "${_pair}")
+  list(GET _pair 0 _src)
+  list(GET _pair 1 _dst)
+  if(${_src})
+    set(${_dst} TRUE)
+  else()
+    set(${_dst} FALSE)
+  endif()
+endforeach()
+
+# Libs.private for both .pc files: whatever optional deps this configure linked
+# (a static-link aid -- `pkg-config --static --libs`).
+set(MIO_PC_LIBS_PRIVATE "")
+if(_mio_has_HDF5)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -lhdf5")
+endif()
+if(_mio_has_NETCDF)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -lnetcdf")
+endif()
+if(_mio_has_ZLIB)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -lz")
+endif()
+if(_mio_has_ZSTD)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -lzstd")
+endif()
+if(_mio_has_LZ4)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -llz4")
+endif()
+if(_mio_has_KAHIP)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -lkahip")
+endif()
 
 if(MESHIOPLUSPLUS_BUILD_PYTHON)
   # The pybind11 extension: bindings + the shared core object library.
@@ -634,6 +919,28 @@ if(MESHIOPLUSPLUS_BUILD_C_API)
           RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   install(FILES bindings/c/include/meshioplusplus/meshioplusplus.h
           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/meshioplusplus)
+  # NOTE: the export set, the package config and the version file are written
+  # once, after this block, because MESHIOPLUSPLUS_INSTALL_CPP feeds the same
+  # meshioplusplusTargets export -- either option alone must still produce a
+  # complete, usable find_package().
+
+  # pkg-config, the lingua franca of HPC build systems. MIO_PC_LIBS_PRIVATE is
+  # computed once above and shared with the C++ .pc file.
+  configure_file(cmake/meshioplusplus.pc.in
+                 ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus.pc @ONLY)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus.pc
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+endif()
+
+# ---------------------------------------------------------------------------
+# The export set + package config, written once for whichever of the two
+# installable surfaces was enabled. Both feed the same `meshioplusplusTargets`
+# export, so one find_package(meshioplusplus) serves both APIs and
+# `COMPONENTS C` / `COMPONENTS CXX` select between them.
+# ---------------------------------------------------------------------------
+if(MESHIOPLUSPLUS_BUILD_C_API OR MESHIOPLUSPLUS_INSTALL_CPP)
+  include(CMakePackageConfigHelpers)
+
   install(EXPORT meshioplusplusTargets NAMESPACE meshioplusplus::
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/meshioplusplus)
   configure_package_config_file(cmake/meshioplusplusConfig.cmake.in
@@ -645,25 +952,22 @@ if(MESHIOPLUSPLUS_BUILD_C_API)
   install(FILES ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplusConfig.cmake
                 ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplusConfigVersion.cmake
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/meshioplusplus)
+endif()
 
-  # pkg-config, the lingua franca of HPC build systems. Libs.private carries
-  # whatever optional deps this configure actually linked (static-link aid).
-  set(MIO_PC_LIBS_PRIVATE "")
-  if(HDF5_FOUND)
-    string(APPEND MIO_PC_LIBS_PRIVATE " -lhdf5")
+# A second pkg-config file for the C++ API, deliberately NOT an extension of the
+# C one: `pkg-config --cflags meshioplusplus` must keep working for a plain-C
+# consumer compiling with -std=c99 (doc/examples/c_api_example.c does exactly
+# that in CI), so it can never grow -std=c++20 or the backend macro.
+if(MESHIOPLUSPLUS_INSTALL_CPP AND _mio_default_backend_lc)
+  set(MIO_CXX_PC_BACKEND "${_meshioplusplus_mesh_backend}")
+  set(MIO_CXX_PC_LIB "meshioplusplus_core_${_mio_default_backend_lc}")
+  set(MIO_CXX_PC_CFLAGS_EXTRA "")
+  if(MESHIOPLUSPLUS_NO_STD_SPAN)
+    string(APPEND MIO_CXX_PC_CFLAGS_EXTRA " -DMESHIOPLUSPLUS_NO_STD_SPAN")
   endif()
-  if(netCDF_FOUND OR NETCDF_LIBRARY)
-    string(APPEND MIO_PC_LIBS_PRIVATE " -lnetcdf")
-  endif()
-  if(ZLIB_FOUND)
-    string(APPEND MIO_PC_LIBS_PRIVATE " -lz")
-  endif()
-  if(MESHIOPLUSPLUS_WITH_KAHIP AND KAHIP_FOUND)
-    string(APPEND MIO_PC_LIBS_PRIVATE " -lkahip")
-  endif()
-  configure_file(cmake/meshioplusplus.pc.in
-                 ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus.pc @ONLY)
-  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus.pc
+  configure_file(cmake/meshioplusplus-cxx.pc.in
+                 ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus-cxx.pc @ONLY)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/meshioplusplus-cxx.pc
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 endif()
 
