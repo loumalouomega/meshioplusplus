@@ -394,9 +394,7 @@ def _validate(mesh, nparts, method, mode, ghost_layers):
             f"partition: unknown mode '{mode}' (expected 'fast', 'eco', or 'strong')"
         )
     if int(ghost_layers) < 0:
-        raise ValueError(
-            f"partition: ghost_layers must be >= 0, got {ghost_layers}"
-        )
+        raise ValueError(f"partition: ghost_layers must be >= 0, got {ghost_layers}")
 
 
 def _weights_vector(mesh, weights, total):
