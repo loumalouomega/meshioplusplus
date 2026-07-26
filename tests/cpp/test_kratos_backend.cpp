@@ -172,6 +172,82 @@ TEST(KratosBackend, InvalidateBlocksRebuildsFromModelPart) {
     EXPECT_EQ(conn.As<std::int64_t>()[2 * 4 + 3], 5);
 }
 
+TEST(KratosBackend, GetModelPartIsReachableThroughAConstMesh) {
+    // The whole point: a wrapper whose API takes `const Mesh&` must be able to
+    // reach the ModelPart. Before v8.10.0 there was no const overload at all.
+    const Mesh m = mt::tet_mesh();
+    const ModelPart& r_mp = m.GetModelPart();
+    EXPECT_EQ(r_mp.NumberOfNodes(), 5u);
+    EXPECT_EQ(r_mp.NumberOfElements(), 2u);
+    // Materialization is lazy, so the const call had to do the work itself.
+    EXPECT_TRUE(m.IsMaterialized());
+}
+
+TEST(KratosBackend, InvalidateBlocksKeepsRaggedBlocksInPlace) {
+    // A ragged block never becomes an entity, so a ModelPart edit cannot have
+    // touched it -- and the rebuild must not drop it (it used to).
+    Mesh m;
+    m.AssignPoints(mt::points_from(
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}, {0, 0, 1}}));
+    m.AddPolygonBlock("polygon", {{0, 1, 2, 3}, {1, 4, 5, 2, 0}});
+    m.AddCellBlock("tetra", mt::conn_from({{0, 1, 3, 6}}));
+    m.AppendCellData("mark", mt::data_array({7.0, 8.0}));  // ragged block's slice
+    m.AppendCellData("mark", mt::data_array({9.0}));       // tetra block's slice
+
+    ModelPart& r_mp = m.GetModelPart();
+    r_mp.CreateNewNode(8, 3.0, 0.0, 0.0);
+    m.InvalidateBlocks();
+
+    ASSERT_EQ(m.NumCellBlocks(), 2u);
+    // Position preserved: the ragged block was block 0 and still is.
+    EXPECT_TRUE(m.Cells(0).IsRagged());
+    EXPECT_EQ(m.Cells(0).NumCells(), 2u);
+    EXPECT_EQ(m.Cells(0).RowSize(0), 4u);
+    EXPECT_EQ(m.Cells(0).RowSize(1), 5u);
+    EXPECT_EQ(m.Cells(0).Row(1)[2], 5);
+    EXPECT_EQ(m.Cells(1).Type(), "tetra");
+    // ...and its cell_data slice came back with it, still block-aligned.
+    ASSERT_EQ(m.CellDataNumBlocks("mark"), 2u);
+    EXPECT_EQ(m.CellData("mark", 0).As<double>()[1], 8.0);
+    EXPECT_EQ(m.CellData("mark", 1).As<double>()[0], 9.0);
+}
+
+TEST(KratosBackend, InvalidateBlocksReadsSubModelPartsBackAsRegions) {
+    Mesh m = mt::tet_mesh();
+    ModelPart& r_mp = m.GetModelPart();
+    ModelPart& r_smp = r_mp.CreateSubModelPart("loaded_face");
+    r_smp.AddElements({1});
+    m.InvalidateBlocks();
+
+    ASSERT_TRUE(m.HasRegion("loaded_face", meshioplusplus::RegionKind::Cell));
+    const meshioplusplus::Region& r_region =
+        m.Region(m.FindRegion("loaded_face", meshioplusplus::RegionKind::Cell));
+    ASSERT_EQ(r_region.mEntries.Size(), 1u);
+    EXPECT_EQ(r_region.mEntries.As<std::int64_t>()[0], 0);  // element 1 -> global cell 0
+    // A SubModelPart carries no dim/tag, and no staged region supplied one.
+    EXPECT_EQ(r_region.mDim, -1);
+    EXPECT_EQ(r_region.mTag, -1);
+}
+
+TEST(KratosBackend, InvalidateBlocksKeepsRegionsWithNoSubModelPart) {
+    // Side regions are deliberately never materialized as SubModelParts, so the
+    // rebuild has to carry them through from staging rather than lose them.
+    Mesh m = mt::tet_mesh();
+    meshioplusplus::Region side;
+    side.mName = "wall";
+    side.mKind = meshioplusplus::RegionKind::Side;
+    side.mEntries = NDArray(DType::Int64, {1, 2});
+    side.mEntries.As<std::int64_t>()[0] = 0;
+    side.mEntries.As<std::int64_t>()[1] = 2;
+    m.AddRegion(std::move(side));
+
+    ModelPart& r_mp = m.GetModelPart();
+    r_mp.CreateNewNode(9, 5.0, 0.0, 0.0);
+    m.InvalidateBlocks();
+
+    EXPECT_TRUE(m.HasRegion("wall", meshioplusplus::RegionKind::Side));
+}
+
 TEST(KratosBackend, RoundTripThroughFormatStillWorks) {
     // A full write -> read through a real format under the KRATOS backend.
     mt::roundtrip([](const std::string& rPath,

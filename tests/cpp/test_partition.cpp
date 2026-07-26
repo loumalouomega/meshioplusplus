@@ -362,12 +362,89 @@ TEST(Partition, InvalidNPartsThrows) {
     EXPECT_THROW(partition_labels(m, opts(-2)), std::invalid_argument);
 }
 
-TEST(Partition, GhostLayersAreAStub) {
+TEST(Partition, GhostLayersZeroIsAPartitionOfUnity) {
+    // The v8.10.0 contract for the unghosted case is unchanged: every cell
+    // lands in exactly one piece and nothing carries a partition:ghost tag.
+    const Mesh m = quad_grid(4, 4);
+    PartitionOptions o = opts(3);
+    o.mGhostLayers = 0;
+    const PartitionResult r = partition(m, o);
+    std::size_t total = 0;
+    for (const auto& r_piece : r.mPieces) {
+        total += total_cells(r_piece.mMesh);
+        EXPECT_FALSE(r_piece.mMesh.HasCellData("partition:ghost"));
+    }
+    EXPECT_EQ(total, 16u);
+}
+
+TEST(Partition, GhostLayersGrowEachPieceAndTagTheHalo) {
+    const Mesh m = quad_grid(4, 4);  // 16 quads, 2 parts along the Hilbert curve
+    PartitionOptions base = opts(2);
+    const PartitionResult plain = partition(m, base);
+
+    PartitionOptions o = opts(2);
+    o.mGhostLayers = 1;
+    const PartitionResult ghosted = partition(m, o);
+
+    ASSERT_EQ(ghosted.mPieces.size(), plain.mPieces.size());
+    std::size_t ghost_total = 0;
+    for (std::size_t p = 0; p < ghosted.mPieces.size(); ++p) {
+        const Mesh& r_g = ghosted.mPieces[p].mMesh;
+        const std::size_t owned = total_cells(plain.mPieces[p].mMesh);
+        const std::size_t with_halo = total_cells(r_g);
+        // A halo can only add cells, and on a connected grid cut in two it
+        // genuinely must add some.
+        EXPECT_GT(with_halo, owned) << "part " << p << " gained no ghosts";
+
+        ASSERT_TRUE(r_g.HasCellData("partition:ghost"));
+        ASSERT_EQ(r_g.CellDataNumBlocks("partition:ghost"), r_g.NumCellBlocks());
+        std::size_t owned_tagged = 0, ghost_tagged = 0;
+        for (std::size_t b = 0; b < r_g.NumCellBlocks(); ++b) {
+            const NDArray& a = r_g.CellData("partition:ghost", b);
+            for (std::size_t i = 0; i < a.Size(); ++i) {
+                const std::int64_t d = a.As<std::int64_t>()[i];
+                EXPECT_GE(d, 0);
+                EXPECT_LE(d, 1) << "one layer requested, so depth cannot exceed 1";
+                (d == 0 ? owned_tagged : ghost_tagged)++;
+            }
+        }
+        // The tag partitions the piece into exactly the owned set plus the halo.
+        EXPECT_EQ(owned_tagged, owned);
+        EXPECT_EQ(owned_tagged + ghost_tagged, with_halo);
+        ghost_total += ghost_tagged;
+    }
+    EXPECT_GT(ghost_total, 0u);
+}
+
+TEST(Partition, MoreGhostLayersNeverShrinkAPiece) {
+    const Mesh m = quad_grid(5, 5);
+    std::size_t prev = 0;
+    for (int layers = 0; layers <= 3; ++layers) {
+        PartitionOptions o = opts(2);
+        o.mGhostLayers = layers;
+        const PartitionResult r = partition(m, o);
+        const std::size_t n = total_cells(r.mPieces[0].mMesh);
+        EXPECT_GE(n, prev) << "layer " << layers << " shrank the piece";
+        EXPECT_LE(n, 25u) << "a halo cannot exceed the whole mesh";
+        prev = n;
+    }
+}
+
+TEST(Partition, NegativeGhostLayersThrow) {
+    const Mesh m = mt::tet_mesh();
+    PartitionOptions o = opts(2);
+    o.mGhostLayers = -1;
+    EXPECT_THROW(partition(m, o), std::invalid_argument);
+}
+
+TEST(Partition, LabelsRejectGhostLayers) {
+    // A flat per-cell label array is the ownership map; a cell can be a ghost
+    // of several parts at once, so ghosting has no representation there.
     const Mesh m = mt::tet_mesh();
     PartitionOptions o = opts(2);
     o.mGhostLayers = 1;
     try {
-        partition(m, o);
+        partition_labels(m, o);
         FAIL() << "expected std::invalid_argument";
     } catch (const std::invalid_argument& e) {
         EXPECT_NE(std::string(e.what()).find("ghost_layers"), std::string::npos);

@@ -834,6 +834,73 @@ TEST(CApi, DataNullArgumentsAreRejected) {
 // Selective reads (mio_read_ex) and the opaque file summary (mio_read_metadata)
 // ---------------------------------------------------------------------------
 
+TEST(CApi, WriteOptsInitMatchesPlainWrite) {
+    mio_write_opts opts;
+    mio_write_opts_init(&opts);
+    EXPECT_EQ(opts.encoding, MIO_ENCODING_DEFAULT);
+    EXPECT_EQ(opts.codec, MIO_CODEC_DEFAULT);
+    EXPECT_EQ(opts.float_format, nullptr);
+    for (int i = 0; i < 5; ++i)
+        EXPECT_EQ(opts.reserved[i], 0) << "reserved must stay zero for ABI growth";
+    // Same discipline as mio_read_opts: the tail is the growth budget, so its
+    // width is part of the ABI and a field added later must come out of it.
+    static_assert(sizeof(mio_write_opts::reserved) == 5 * sizeof(int64_t),
+                  "mio_write_opts.reserved width is ABI");
+}
+
+TEST(CApi, WriteExHonoursEncodingAndCodec) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    const std::string ascii_path = mt::temp_path("_wex_ascii.vtu");
+    const std::string binary_path = mt::temp_path("_wex_binary.vtu");
+
+    mio_write_opts opts;
+    mio_write_opts_init(&opts);
+    opts.encoding = MIO_ENCODING_ASCII;
+    ASSERT_EQ(mio_write_ex(ascii_path.c_str(), m, "vtu", &opts), MIO_OK) << mio_last_error();
+
+    mio_write_opts_init(&opts);
+    opts.encoding = MIO_ENCODING_BINARY;
+    opts.codec = MIO_CODEC_NONE;
+    ASSERT_EQ(mio_write_ex(binary_path.c_str(), m, "vtu", &opts), MIO_OK) << mio_last_error();
+
+    // The two encodings really produced different files, and both read back.
+    mio_mesh* a = mio_read(ascii_path.c_str(), "vtu");
+    mio_mesh* b = mio_read(binary_path.c_str(), "vtu");
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(a), mio_mesh_num_points(m));
+    EXPECT_EQ(mio_mesh_num_points(b), mio_mesh_num_points(m));
+    mio_mesh_free(a);
+    mio_mesh_free(b);
+    std::remove(ascii_path.c_str());
+    std::remove(binary_path.c_str());
+    mio_mesh_free(m);
+}
+
+TEST(CApi, WriteExRejectsAnOptionTheFormatCannotHonour) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    const std::string path = mt::temp_path("_wex_bad.msh");
+    mio_write_opts opts;
+    mio_write_opts_init(&opts);
+    opts.codec = MIO_CODEC_ZSTD;  // gmsh has no block codec
+    // Failing beats silently ignoring: asking for zstd here is a mistake.
+    EXPECT_NE(mio_write_ex(path.c_str(), m, "gmsh", &opts), MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("codec"), std::string::npos);
+    std::remove(path.c_str());
+    mio_mesh_free(m);
+}
+
+TEST(CApi, WriteExWithNullOptsIsPlainWrite) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    const std::string path = mt::temp_path("_wex_null.vtu");
+    EXPECT_EQ(mio_write_ex(path.c_str(), m, "vtu", nullptr), MIO_OK) << mio_last_error();
+    std::remove(path.c_str());
+    mio_mesh_free(m);
+}
+
 TEST(CApi, ReadOptsInitIsReadEverything) {
     mio_read_opts opts;
     mio_read_opts_init(&opts);
@@ -1287,13 +1354,42 @@ TEST(CApi, PartitionLabelsFillsTheCallerBuffer) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, PartitionGhostLayers) {
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_NE(m, nullptr);
+    mio_partition_result* plain = mio_partition(m, 2, "sfc", 0.03, "eco", 0, 0, 0, "");
+    mio_partition_result* halo = mio_partition(m, 2, "sfc", 0.03, "eco", 0, 0, 1, "");
+    ASSERT_NE(plain, nullptr) << mio_last_error();
+    ASSERT_NE(halo, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_partition_result_num_pieces(halo), mio_partition_result_num_pieces(plain));
+
+    // With only two tetras sharing a face, one ghost layer makes each piece the
+    // whole mesh -- and the tag must come along to say which cell is owned.
+    const mio_mesh* piece = mio_partition_result_mesh(halo, 0);
+    ASSERT_NE(piece, nullptr);
+    EXPECT_GE(mio_mesh_num_cell_blocks(piece), 1);
+    const void* data = nullptr;
+    mio_dtype dt{};
+    int32_t ndim = 0;
+    int64_t shape[8]{};
+    ASSERT_EQ(mio_mesh_get_cell_data(piece, "partition:ghost", 0, &data, &dt, &ndim, shape), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(dt, MIO_INT64);
+
+    mio_partition_result_free(plain);
+    mio_partition_result_free(halo);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, PartitionErrorsAreGuardedNotThrown) {
     mio_mesh* m = build_tet_mesh();
-    // Bad method name, bad nparts, ghost stub: NULL + last_error, no throw.
+    // Bad method name, bad nparts, negative ghost layers: NULL + last_error,
+    // no throw. (A POSITIVE ghost_layers is a supported request since v8.10.0
+    // and is exercised in PartitionGhostLayers below.)
     EXPECT_EQ(mio_partition(m, 2, "metis", 0.03, "eco", 0, 0, 0, ""), nullptr);
     EXPECT_NE(std::string(mio_last_error()), "");
     EXPECT_EQ(mio_partition(m, 0, "sfc", 0.03, "eco", 0, 0, 0, ""), nullptr);
-    EXPECT_EQ(mio_partition(m, 2, "sfc", 0.03, "eco", 0, 0, /*ghost_layers=*/1, ""), nullptr);
+    EXPECT_EQ(mio_partition(m, 2, "sfc", 0.03, "eco", 0, 0, /*ghost_layers=*/-1, ""), nullptr);
     EXPECT_NE(std::string(mio_last_error()).find("ghost_layers"), std::string::npos);
     EXPECT_EQ(mio_partition(nullptr, 2, "sfc", 0.03, "eco", 0, 0, 0, ""), nullptr);
     EXPECT_EQ(mio_partition_result_num_pieces(nullptr), -1);
@@ -1521,4 +1617,77 @@ TEST(CApi, RegionsSurviveAnOperation) {
 
     mio_mesh_free(out);
     mio_mesh_free(m);
+}
+
+// ---- transient XDMF ------------------------------------------------------
+//
+// The one writer the flat API exposes as a handle rather than a (path, mesh)
+// call. Written here, then read back through the C reader one step at a time.
+
+TEST(CApi, XdmfTimeSeries) {
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_NE(m, nullptr);
+    const double pts[15] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0.5, 0.5};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts), MIO_OK) << mio_last_error();
+    const int64_t conn[8] = {0, 1, 2, 4, 0, 2, 3, 4};
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 2, 4, MIO_INT64, conn), MIO_OK)
+        << mio_last_error();
+
+    const std::string path = mt::temp_path(".xdmf");
+
+    mio_xdmf_series* s = mio_xdmf_series_create(path.c_str(), "XML", -1);
+    ASSERT_NE(s, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_xdmf_series_write_points_cells(s, m), MIO_OK) << mio_last_error();
+    const int64_t shape[1] = {5};
+    for (int k = 0; k < 3; ++k) {
+        const double t[5] = {100.0 * k, 100.0 * k + 1, 100.0 * k + 2, 100.0 * k + 3, 100.0 * k + 4};
+        ASSERT_EQ(mio_mesh_add_point_data(m, "T", MIO_FLOAT64, 1, shape, t), MIO_OK)
+            << mio_last_error();
+        ASSERT_EQ(mio_xdmf_series_write_data(s, 0.25 * k, m), MIO_OK) << mio_last_error();
+    }
+    EXPECT_EQ(mio_xdmf_series_num_steps(s), 3);
+    ASSERT_EQ(mio_xdmf_series_finalize(s), MIO_OK) << mio_last_error();
+    mio_xdmf_series_free(s);
+
+    // Every step's time value is reachable without decoding a payload.
+    mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), nullptr);
+    ASSERT_NE(meta, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_read_metadata_num_time_values(meta), 3);
+    double times[3] = {0, 0, 0};
+    ASSERT_EQ(mio_read_metadata_time_values(meta, times, 3), 3);
+    for (int k = 0; k < 3; ++k)
+        EXPECT_DOUBLE_EQ(times[k], 0.25 * k);
+    mio_read_metadata_free(meta);
+
+    // ... and each step reads back with its own values.
+    for (int k = 0; k < 3; ++k) {
+        mio_read_opts opts;
+        mio_read_opts_init(&opts);
+        opts.time_step = k;
+        mio_mesh* out = mio_read_ex(path.c_str(), nullptr, &opts);
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(out), 5);
+        const void* data = nullptr;
+        mio_dtype dt = MIO_FLOAT64;
+        int32_t ndim = 0;
+        int64_t got_shape[MIO_MAX_NDIM] = {0};
+        ASSERT_EQ(mio_mesh_get_point_data(out, "T", &data, &dt, &ndim, got_shape), MIO_OK)
+            << mio_last_error();
+        ASSERT_EQ(dt, MIO_FLOAT64);
+        ASSERT_EQ(got_shape[0], 5);
+        const double* values = static_cast<const double*>(data);
+        for (int i = 0; i < 5; ++i)
+            EXPECT_DOUBLE_EQ(values[i], 100.0 * k + i) << "step " << k << " entry " << i;
+        mio_mesh_free(out);
+    }
+
+    mio_mesh_free(m);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(CApi, XdmfTimeSeriesUnknownFormat) {
+    const std::string path = mt::temp_path(".xdmf");
+    EXPECT_EQ(mio_xdmf_series_create(path.c_str(), "Zarr", -1), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("Zarr"), std::string::npos);
 }
