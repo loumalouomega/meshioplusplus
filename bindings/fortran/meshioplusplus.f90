@@ -150,7 +150,24 @@ module meshioplusplus
         !> `reserved` slots, so the struct size and every preceding field's
         !> offset are unchanged.
         integer(c_int64_t) :: time_step = 0
-        integer(c_int64_t) :: reserved(5) = 0
+        !> Nonzero downgrades "this reader cannot represent construct X" errors
+        !> to a warning plus a skip (currently mdpa's Table/Geometries/Mesh/
+        !> Constraints blocks). Not "ignore all errors": a malformed file still
+        !> fails. Takes a second former `reserved` slot; size unchanged.
+        integer(c_int64_t) :: lenient = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_xdmf_series_opts`. Field order and types are ABI
+    !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h exactly;
+    !> `reserved` is padding for additive growth and must stay zero.
+    type, bind(c) :: mio_xdmf_series_opts_t
+        type(c_ptr) :: data_format = c_null_ptr
+        integer(c_int32_t) :: gzip_level = -1
+        integer(c_int32_t) :: mode = 0
+        integer(c_int32_t) :: auto_flush = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(6) = 0
     end type
 
     !> One named region's shape, without its entries (see `mio_metadata%regions`).
@@ -289,9 +306,15 @@ module meshioplusplus
     !>     call series%finalize()                       ! free() would do it too
     !>     call series%free()
     !>
-    !> The `.xdmf` light data is buffered and written once, at finalize, so a
-    !> series is only readable after `finalize()` (or `free()`, which finalizes
-    !> first). Heavy data for `"HDF"` goes to a `<path minus extension>.h5`
+    !> The `.xdmf` light data is buffered and written at finalize, so by default
+    !> a series is only readable after `finalize()` (or `free()`, which finalizes
+    !> first). Call `flush()` to make it readable *now* -- what keeps a run that
+    !> is killed or still going from leaving nothing openable -- or pass
+    !> `auto_flush=.true.` to `create()` to do that after every `write_data`.
+    !> `mode='append'` continues a series already at the path instead of
+    !> overwriting it; a path with no file yet is simply a fresh series, so a
+    !> restartable solver can pass it unconditionally.
+    !> Heavy data for `"HDF"` goes to a `<path minus extension>.h5`
     !> SIBLING of the `.xdmf`. Handles are freed explicitly, exactly like
     !> `mio_mesh` -- there is no finalizer.
     type :: mio_xdmf_series
@@ -303,7 +326,9 @@ module meshioplusplus
         procedure :: is_valid => xdmf_series_is_valid
         procedure :: write_points_cells => xdmf_series_write_points_cells
         procedure :: write_data => xdmf_series_write_data
+        procedure :: flush => xdmf_series_flush
         procedure :: finalize => xdmf_series_finalize
+        procedure :: finalized => xdmf_series_finalized
         procedure :: num_steps => xdmf_series_num_steps
     end type mio_xdmf_series
 
@@ -1317,6 +1342,28 @@ module meshioplusplus
             integer(c_int) :: st
         end function
 
+        function c_mio_xdmf_series_flush(s) &
+                bind(c, name="mio_xdmf_series_flush") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s
+            integer(c_int) :: st
+        end function
+
+        function c_mio_xdmf_series_finalized(s) &
+                bind(c, name="mio_xdmf_series_finalized") result(f)
+            import :: c_ptr, c_int32_t
+            type(c_ptr), value :: s
+            integer(c_int32_t) :: f
+        end function
+
+        function c_mio_xdmf_series_create_ex(path, opts) &
+                bind(c, name="mio_xdmf_series_create_ex") result(h)
+            import :: c_ptr, c_char, mio_xdmf_series_opts_t
+            character(kind=c_char), dimension(*), intent(in) :: path
+            type(mio_xdmf_series_opts_t), intent(in) :: opts
+            type(c_ptr) :: h
+        end function
+
         function c_mio_xdmf_series_num_steps(s) &
                 bind(c, name="mio_xdmf_series_num_steps") result(n)
             import :: c_ptr, c_int64_t
@@ -1554,7 +1601,8 @@ contains
     !> argument entirely -- that reads everything). Formats without a native
     !> selective path are read whole and filtered, so the result is the same
     !> either way; only the cost differs.
-    subroutine mesh_read(self, path, format, points_only, arrays, time_step, stat, errmsg)
+    subroutine mesh_read(self, path, format, points_only, arrays, time_step, lenient, &
+                         stat, errmsg)
         class(mio_mesh), intent(inout) :: self
         character(*), intent(in) :: path
         character(*), intent(in), optional :: format
@@ -1563,6 +1611,9 @@ contains
         !> Which step of a multi-step file to read: 0 (default) is the first,
         !> negative counts from the end. Out of range fails, never clamps.
         integer, intent(in), optional :: time_step
+        !> Downgrade "this reader cannot represent construct X" to a warning and
+        !> a skip. Not "ignore all errors": a malformed file still fails.
+        logical, intent(in), optional :: lenient
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
         character(:), allocatable :: fmt
@@ -1577,7 +1628,7 @@ contains
         fmt = ''; if (present(format)) fmt = format
 
         if (.not. present(points_only) .and. .not. present(arrays) &
-            .and. .not. present(time_step)) then
+            .and. .not. present(time_step) .and. .not. present(lenient)) then
             h = c_mio_read(c_str(path), c_str(fmt))
         else
             call c_mio_read_opts_init(opts)
@@ -1585,6 +1636,9 @@ contains
                 if (points_only) opts%points_only = 1
             end if
             if (present(time_step)) opts%time_step = int(time_step, c_int64_t)
+            if (present(lenient)) then
+                if (lenient) opts%lenient = 1
+            end if
             if (present(arrays)) then
                 n = size(arrays)
                 allocate (bufs(max(n, 1)))
@@ -3548,26 +3602,77 @@ contains
     !> `"XML"` (inline) or `"Binary"`. `gzip_level` applies to `"HDF"` datasets
     !> only; negative (the default) means no compression. An unknown format, or
     !> `"HDF"` without HDF5 support, fails through `stat`/`errmsg`.
-    subroutine xdmf_series_create(self, path, data_format, gzip_level, stat, errmsg)
+    subroutine xdmf_series_create(self, path, data_format, gzip_level, mode, auto_flush, &
+                                  stat, errmsg)
         class(mio_xdmf_series), intent(inout) :: self
         character(*), intent(in) :: path
         character(*), intent(in), optional :: data_format
         integer, intent(in), optional :: gzip_level
+        !> 'truncate' (default) or 'append'.
+        character(*), intent(in), optional :: mode
+        !> Flush the light data after every write_data (default .false.).
+        logical, intent(in), optional :: auto_flush
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
-        character(:), allocatable :: fmt
+        character(:), allocatable :: fmt, md
+        character(len=:, kind=c_char), allocatable, target :: fmt_buf
+        type(mio_xdmf_series_opts_t) :: opts
         integer(c_int32_t) :: level
         call xdmf_series_free(self)
         fmt = 'HDF'; if (present(data_format)) fmt = data_format
+        md = 'truncate'; if (present(mode)) md = mode
         level = -1_c_int32_t
         if (present(gzip_level)) level = int(gzip_level, c_int32_t)
-        self%handle = c_mio_xdmf_series_create(c_str(path), c_str(fmt), level)
+
+        if (md /= 'truncate' .and. md /= 'append') then
+            call handle_failure('xdmf_series create', &
+                                "mode must be 'truncate' or 'append', got '"//md//"'", stat, errmsg)
+            return
+        end if
+
+        if (.not. present(mode) .and. .not. present(auto_flush)) then
+            self%handle = c_mio_xdmf_series_create(c_str(path), c_str(fmt), level)
+        else
+            ! The NUL-terminated format string must outlive the call, so it is
+            ! held in a TARGET local rather than built inline.
+            fmt_buf = fmt//c_null_char
+            opts%data_format = c_loc(fmt_buf(1:1))
+            opts%gzip_level = level
+            if (md == 'append') opts%mode = 1_c_int32_t
+            if (present(auto_flush)) then
+                if (auto_flush) opts%auto_flush = 1_c_int32_t
+            end if
+            self%handle = c_mio_xdmf_series_create_ex(c_str(path), opts)
+        end if
         if (.not. c_associated(self%handle)) then
             call handle_failure('xdmf_series create', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)
     end subroutine
+
+    !> Write the `.xdmf` as it currently stands, without finalizing, so a run
+    !> that is killed or still going leaves a readable file covering every
+    !> flushed step. Safe to call repeatedly; a no-op once finalized.
+    subroutine xdmf_series_flush(self, stat, errmsg)
+        class(mio_xdmf_series), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('xdmf_series flush', 'series handle is not open', stat, errmsg)
+            return
+        end if
+        call handle_status(c_mio_xdmf_series_flush(self%handle), 'xdmf_series flush', stat, errmsg)
+    end subroutine
+
+    !> .true. once finalize() has run for this series (also on a closed handle).
+    function xdmf_series_finalized(self) result(f)
+        class(mio_xdmf_series), intent(in) :: self
+        logical :: f
+        f = .true.
+        if (.not. c_associated(self%handle)) return
+        f = c_mio_xdmf_series_finalized(self%handle) == 1_c_int32_t
+    end function
 
     !> Finalize (if it has not happened yet) and release the series. Idempotent.
     !> A write failure during the implicit finalize is swallowed here -- call
