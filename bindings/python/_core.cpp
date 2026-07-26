@@ -42,6 +42,7 @@
 #include "meshioplusplus/formats/freefem.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/ip.hpp"
+#include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/medit.hpp"
 #include "meshioplusplus/formats/mff.hpp"
 #include "meshioplusplus/formats/mfm.hpp"
@@ -66,6 +67,7 @@
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -1284,6 +1286,15 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_medit_ascii(path));
     });
 
+    // Kratos MDPA writer / reader (.mdpa).
+    m.def("mdpa_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_mdpa(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("mdpa_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mdpa(path));
+    });
+
     // Abaqus writer / reader (.inp).
     m.def("abaqus_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
@@ -1422,6 +1433,88 @@ PYBIND11_MODULE(_core, m) {
                 meshioplusplus::read_xdmf(path, core_read_options(points_only, arrays)));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+
+    // Transient (time-series) XDMF — the C++ `XdmfTimeSeriesWriter`, exposed
+    // ADDITIONALLY and EXPLICITLY rather than swapped in under the pure-Python
+    // `meshioplusplus.xdmf.TimeSeriesWriter`.
+    //
+    // This is deliberately NOT the try-C++/fall-back-to-Python shim pattern
+    // every *format* module uses, for the same reason `.mdpa` is not: the two
+    // writers are not byte-for-byte interchangeable, and the Python one has a
+    // documented, tested API (`write_points_cells(points, cells)` /
+    // `write_data(t, point_data=, cell_data=)`, i.e. raw arrays) that this one
+    // does not share (it takes whole `Mesh` objects). Quietly changing what a
+    // tested public API writes is the failure mode to avoid; a caller who wants
+    // the C++ writer asks for it by name.
+    //
+    // Two behavioural differences that make the swap unsafe, both intentional
+    // on the C++ side: the `"HDF"` companion is a sibling of the `.xdmf`
+    // (`<path minus extension>.h5`) rather than `<stem>.h5` in the process CWD,
+    // and arrays are emitted in the uniform API's sorted-name order.
+    //
+    // No `#ifdef` guard: the class is always built (XML/Binary need no HDF5),
+    // and `"HDF"` on a build without HDF5 throws `WriteError` from the
+    // constructor, which the translator above turns into a clean
+    // `meshioplusplus.WriteError` rather than a missing symbol or a crash.
+    py::class_<meshioplusplus::XdmfTimeSeriesWriter>(m, "XdmfTimeSeriesWriter",
+                                                     R"doc(
+Transient XDMF3 writer: one static grid plus one <Grid> per time step.
+
+The C++ core's writer, reachable explicitly. It is *not* what
+``meshioplusplus.xdmf.TimeSeriesWriter`` uses — that one is the pure-Python
+reference writer and keeps its own behaviour untouched.
+
+Unlike the Python writer, both methods take a whole ``Mesh``:
+``write_points_cells`` uses its points/cells, ``write_data`` its
+``point_data``/``cell_data``. Usable as a context manager; ``__exit__``
+finalizes.
+
+>>> with _core.XdmfTimeSeriesWriter("out.xdmf") as w:
+...     w.write_points_cells(mesh)
+...     for k in range(3):
+...         w.write_data(k * 0.5, mesh)
+)doc")
+        .def(py::init<const std::string&, const std::string&, int>(), py::arg("path"),
+             py::arg("data_format") = "HDF", py::arg("gzip_level") = -1)
+        .def(
+            "write_points_cells",
+            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+                rSelf.WritePointsCells(cpp);
+            },
+            py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
+        .def(
+            "write_data",
+            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+                rSelf.WriteData(time, cpp);
+            },
+            py::arg("time"), py::arg("mesh"),
+            "Append one step's point_data/cell_data at simulation time `time`.")
+        .def(
+            "finalize", [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) { rSelf.Finalize(); },
+            "Write the .xdmf light data and close the heavy-data container. "
+            "Idempotent; the destructor would do this too, but only an explicit "
+            "call can raise on failure.")
+        .def_property_readonly(
+            "num_steps",
+            [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.NumSteps(); },
+            "How many steps have been written so far.")
+        .def_property_readonly(
+            "finalized",
+            [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.Finalized(); },
+            "Whether finalize() has already run.")
+        .def("__enter__", [](py::object self) { return self; })
+        // Finalizes unconditionally, mirroring the Python writer's __exit__
+        // (which always writes the XML). Returning False never suppresses the
+        // body's exception; if Finalize() also fails, Python chains the two.
+        .def("__exit__", [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, const py::object&,
+                            const py::object&, const py::object&) {
+            rSelf.Finalize();
+            return false;
+        });
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     // CGNS writer / reader (.cgns).
