@@ -74,7 +74,7 @@ SEXP R_mio_mesh_is_open(SEXP x) {
 }
 
 SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SEXP arrays,
-                SEXP mmap_mode, SEXP time_step) {
+                SEXP mmap_mode, SEXP time_step, SEXP lenient) {
     const char *p = mio_r_string(path, "path");
     const char *f = mio_r_opt_string(format);
 
@@ -84,6 +84,7 @@ SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SE
     opts.metadata_only = mio_r_bool(metadata_only, "metadata_only");
     opts.mmap_mode = mio_r_int(mmap_mode, "mmap_mode");
     opts.time_step = mio_r_int(time_step, "time_step");
+    opts.lenient = mio_r_bool(lenient, "lenient");
 
     /* NULL means "every array"; a valid pointer with count 0 means "no arrays
      * at all". The distinction is load-bearing at the ABI, so an R NULL and an

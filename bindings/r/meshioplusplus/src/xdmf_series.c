@@ -41,10 +41,21 @@ static mio_xdmf_series *series_of(SEXP x) {
     return series;
 }
 
-SEXP R_mio_xdmf_series_create(SEXP path, SEXP data_format, SEXP gzip_level) {
+SEXP R_mio_xdmf_series_create(SEXP path, SEXP data_format, SEXP gzip_level, SEXP mode,
+                              SEXP auto_flush) {
     const char *fmt = mio_r_opt_string(data_format); /* NULL means "HDF" */
-    mio_xdmf_series *series = mio_xdmf_series_create(
-        mio_r_string(path, "path"), fmt, (int32_t)mio_r_int(gzip_level, "gzip_level"));
+    const char *md = mio_r_string(mode, "mode");
+    mio_xdmf_series_opts opts;
+    mio_xdmf_series_opts_init(&opts);
+    opts.data_format = fmt;
+    opts.gzip_level = (int32_t)mio_r_int(gzip_level, "gzip_level");
+    if (strcmp(md, "append") == 0) {
+        opts.mode = MIO_XDMF_SERIES_APPEND;
+    } else if (strcmp(md, "truncate") != 0) {
+        Rf_error("mode must be \"truncate\" or \"append\"");
+    }
+    opts.auto_flush = mio_r_bool(auto_flush, "auto_flush");
+    mio_xdmf_series *series = mio_xdmf_series_create_ex(mio_r_string(path, "path"), &opts);
     if (series == NULL) mio_r_fail("xdmf_series");
     return wrap_series(series);
 }
@@ -65,6 +76,17 @@ SEXP R_mio_xdmf_series_write_data(SEXP series, SEXP time, SEXP mesh) {
 SEXP R_mio_xdmf_series_finalize(SEXP series) {
     mio_r_check(mio_xdmf_series_finalize(series_of(series)), "xdmf_series_finalize");
     return R_NilValue;
+}
+
+SEXP R_mio_xdmf_series_flush(SEXP series) {
+    mio_r_check(mio_xdmf_series_flush(series_of(series)), "xdmf_series_flush");
+    return R_NilValue;
+}
+
+SEXP R_mio_xdmf_series_finalized(SEXP series) {
+    int32_t f = mio_xdmf_series_finalized(series_of(series));
+    if (f < 0) mio_r_fail("xdmf_series_finalized");
+    return Rf_ScalarLogical(f == 1);
 }
 
 SEXP R_mio_xdmf_series_num_steps(SEXP series) {
