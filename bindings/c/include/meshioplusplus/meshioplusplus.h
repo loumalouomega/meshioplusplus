@@ -275,7 +275,15 @@ typedef struct mio_read_opts {
      *  Takes one of the former `reserved` slots, keeping the struct's size and
      *  every preceding field's offset unchanged. */
     int64_t time_step;
-    int64_t reserved[5]; /**< must be zero; room for additive growth */
+    /** Nonzero downgrades "this reader cannot represent construct X" errors to
+     *  a warning plus a skip, where the reader can do that and still return a
+     *  correct mesh (currently mdpa's Table/Geometries/Mesh/Constraints blocks).
+     *  It is NOT "ignore all errors": a malformed file, a truncated block or a
+     *  bad node reference still fails the call. 0 (the default) preserves the
+     *  historical behaviour. Takes one of the former `reserved` slots, keeping
+     *  the struct's size and every preceding field's offset unchanged. */
+    int64_t lenient;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_read_opts;
 
 /** Initialize `opts` to the defaults (read everything). Always use this. */
@@ -1688,6 +1696,45 @@ typedef struct mio_xdmf_series mio_xdmf_series;
 MIO_API mio_xdmf_series* mio_xdmf_series_create(const char* path, const char* data_format,
                                                 int32_t gzip_level);
 
+/** How a series relates to a file already at its path (see mio_xdmf_series_opts). */
+typedef enum mio_xdmf_series_mode {
+    MIO_XDMF_SERIES_TRUNCATE = 0, /**< start a fresh series (the default) */
+    MIO_XDMF_SERIES_APPEND = 1    /**< continue the existing one, if any */
+} mio_xdmf_series_mode;
+
+/**
+ * Options for mio_xdmf_series_create_ex().
+ *
+ * ABI NOTE: as for mio_read_opts/mio_write_opts, new fields may only be
+ * appended, replacing `reserved` capacity; never reorder, resize or repurpose
+ * an existing field. Always zero-initialize through mio_xdmf_series_opts_init().
+ */
+typedef struct mio_xdmf_series_opts {
+    /** "HDF" (NULL means "HDF"), "XML" or "Binary". */
+    const char* data_format;
+    int32_t gzip_level; /**< gzip level for "HDF" datasets, negative for none */
+    int32_t mode;       /**< a mio_xdmf_series_mode */
+    /** Nonzero flushes the light data after every write_data. Off by default:
+     *  a flush re-serializes the whole document, so per-step flushing is
+     *  quadratic in the step count. Drive mio_xdmf_series_flush() yourself for
+     *  any other cadence. */
+    int32_t auto_flush;
+    int32_t reserved_pad; /**< must be zero; keeps the int64 tail aligned */
+    int64_t reserved[6];  /**< must be zero; room for additive growth */
+} mio_xdmf_series_opts;
+
+/** Initialize `opts` to the defaults (HDF, no gzip, truncate, no auto-flush). */
+MIO_API void mio_xdmf_series_opts_init(mio_xdmf_series_opts* opts);
+
+/**
+ * Open a transient XDMF series honouring `opts`. mio_xdmf_series_create() is
+ * exactly mio_xdmf_series_create_ex(path, <defaults with that data_format and
+ * gzip_level>) and is unchanged.
+ * @return a handle (free with mio_xdmf_series_free), or NULL on failure.
+ */
+MIO_API mio_xdmf_series* mio_xdmf_series_create_ex(const char* path,
+                                                   const mio_xdmf_series_opts* opts);
+
 /**
  * Write the static grid every step shares. Call once, before the first
  * mio_xdmf_series_write_data(). Only the mesh's points and cells are used.
@@ -1708,8 +1755,43 @@ MIO_API mio_status mio_xdmf_series_write_data(mio_xdmf_series* series, double ti
  */
 MIO_API mio_status mio_xdmf_series_finalize(mio_xdmf_series* series);
 
+/** One solver array for mio_xdmf_series_write_data_arrays(). Nothing is owned:
+ *  `values` is read during the call and may be freed afterwards. */
+typedef struct mio_named_array {
+    const char* name;
+    int64_t num_components; /**< values per entity; 1 for a scalar field */
+    const double* values;   /**< row-major, entities * num_components doubles */
+    int64_t num_values;     /**< length of `values`, validated against the grid */
+} mio_named_array;
+
+/**
+ * Write one step from raw solver arrays instead of a whole mesh -- the
+ * granularity a solver has once mio_xdmf_series_write_points_cells() has fixed
+ * the geometry. Arrays are emitted in the order given.
+ * @param point_arrays nodal arrays (may be NULL when num_point_arrays is 0).
+ * @param cell_arrays  cell arrays (may be NULL when num_cell_arrays is 0).
+ * @return MIO_OK, or an error if an array's length does not match the grid.
+ */
+MIO_API mio_status mio_xdmf_series_write_data_arrays(mio_xdmf_series* series, double time,
+                                                     const mio_named_array* point_arrays,
+                                                     int64_t num_point_arrays,
+                                                     const mio_named_array* cell_arrays,
+                                                     int64_t num_cell_arrays);
+
+/**
+ * Write the .xdmf as it currently stands, without finalizing, so a run that is
+ * killed or still going leaves a readable file covering every flushed step.
+ * The document is written to a temp file and renamed, so a crash during a flush
+ * cannot truncate the previous one. Safe to call repeatedly; a no-op once
+ * finalized.
+ */
+MIO_API mio_status mio_xdmf_series_flush(mio_xdmf_series* series);
+
 /** @return the number of steps written so far, or -1 on error. */
 MIO_API int64_t mio_xdmf_series_num_steps(const mio_xdmf_series* series);
+
+/** @return 1 if the series has been finalized, 0 if not, -1 on error. */
+MIO_API int32_t mio_xdmf_series_finalized(const mio_xdmf_series* series);
 
 /** Finalize (if needed) and destroy a series handle. Safe to call with NULL. */
 MIO_API void mio_xdmf_series_free(mio_xdmf_series* series);
