@@ -27,7 +27,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "8.8.0"
+    version = "8.10.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -47,6 +47,12 @@ class MeshioplusplusConan(ConanFile):
         "with_kahip": [True, False],
         "with_eigen": [True, False],
         "fortran": [True, False],
+        # The full C++ API (meshioplusplus::core*) alongside the C API. Off by
+        # default so the package stays the small C-API-only artifact it was.
+        "with_cxx_api": [True, False],
+        # Which mesh backends to build+install as meshioplusplus::core_<backend>
+        # when with_cxx_api is on. Comma-separated; translated to a CMake list.
+        "cxx_api_backends": ["ANY"],
     }
     default_options = {
         "fPIC": True,
@@ -63,6 +69,11 @@ class MeshioplusplusConan(ConanFile):
         "with_kahip": False,
         "with_eigen": False,  # submodule not in a source export -> fallback transpose
         "fortran": False,
+        "with_cxx_api": False,
+        # All three, so one package serves consumers that disagree about the
+        # backend (a Kratos app wants kratos, a plain C++ tool wants native).
+        # Trim it to cut build time: -o cxx_api_backends=KRATOS.
+        "cxx_api_backends": "MESHIO,NATIVE,KRATOS",
     }
 
     # Everything the C API build needs. pugixml is inside src/cpp/third_party; the
@@ -127,6 +138,14 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_LZ4"] = bool(self.options.with_lz4)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_KAHIP"] = bool(self.options.with_kahip)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_EIGEN"] = bool(self.options.with_eigen)
+        tc.cache_variables["MESHIOPLUSPLUS_INSTALL_CPP"] = bool(
+            self.options.with_cxx_api
+        )
+        if self.options.with_cxx_api:
+            # CMake wants a ;-list; the option is comma-separated so it survives
+            # a Conan command line without quoting games.
+            backends = str(self.options.cxx_api_backends).replace(",", ";")
+            tc.cache_variables["MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS"] = backends
         tc.generate()
 
     def build(self):
@@ -145,13 +164,73 @@ class MeshioplusplusConan(ConanFile):
         )
 
     def package_info(self):
-        self.cpp_info.libs = ["meshioplusplus"]
         # Match the installed find_package config so downstream
         # find_package(meshioplusplus) + meshioplusplus::meshioplusplus resolve.
         self.cpp_info.set_property("cmake_file_name", "meshioplusplus")
-        self.cpp_info.set_property(
-            "cmake_target_name", "meshioplusplus::meshioplusplus"
-        )
         self.cpp_info.set_property("pkg_config_name", "meshioplusplus")
+
+        if not self.options.with_cxx_api:
+            # C-API-only package: the flat, pre-existing shape. Components would
+            # be a gratuitous break for every current consumer.
+            self.cpp_info.libs = ["meshioplusplus"]
+            self.cpp_info.set_property(
+                "cmake_target_name", "meshioplusplus::meshioplusplus"
+            )
+            if self.options.fortran:
+                self.cpp_info.libs.insert(0, "meshioplusplus_fortran")
+            return
+
+        # With the C++ API there is more than one library in the package, so
+        # Conan needs components (cpp_info.libs and components are mutually
+        # exclusive). Names mirror the CMake targets exactly.
+        c = self.cpp_info.components["c_api"]
+        c.libs = ["meshioplusplus"]
+        c.set_property("cmake_target_name", "meshioplusplus::meshioplusplus")
+        c.set_property("pkg_config_name", "meshioplusplus")
+
         if self.options.fortran:
-            self.cpp_info.libs.insert(0, "meshioplusplus_fortran")
+            f = self.cpp_info.components["fortran"]
+            f.libs = ["meshioplusplus_fortran"]
+            f.requires = ["c_api"]
+            f.set_property(
+                "cmake_target_name", "meshioplusplus::meshioplusplus_fortran"
+            )
+
+        # Unlike the C API -- whose heavy deps are PRIVATE to its shared object --
+        # the C++ libraries propagate theirs, because a consumer compiles the real
+        # headers and (statically) links the real dependency graph.
+        cxx_requires = []
+        if self.options.with_zlib:
+            cxx_requires.append("zlib::zlib")
+        if self.options.with_zstd:
+            cxx_requires.append("zstd::zstd")
+        if self.options.with_lz4:
+            cxx_requires.append("lz4::lz4")
+        if self.options.with_hdf5:
+            cxx_requires.append("hdf5::hdf5")
+        if self.options.with_netcdf:
+            cxx_requires.append("netcdf::netcdf")
+
+        backends = [
+            b.strip().upper()
+            for b in str(self.options.cxx_api_backends).split(",")
+            if b.strip()
+        ]
+        for backend in backends:
+            lc = backend.lower()
+            comp = self.cpp_info.components[f"core_{lc}"]
+            comp.libs = [f"meshioplusplus_core_{lc}"]
+            comp.requires = list(cxx_requires)
+            comp.set_property("cmake_target_name", f"meshioplusplus::core_{lc}")
+            # The backend macro is part of the ABI: a consumer compiled without
+            # it disagrees with this library about what meshioplusplus::Mesh is.
+            comp.defines = [f"MESHIOPLUSPLUS_MESH_BACKEND_{backend}"]
+
+        # meshioplusplus::core == the default backend, carrying no library of its
+        # own (it forwards), which is how the CMake install expresses it too.
+        default_backend = "MESHIO"
+        if default_backend in backends:
+            core = self.cpp_info.components["core"]
+            core.requires = [f"core_{default_backend.lower()}"]
+            core.set_property("cmake_target_name", "meshioplusplus::core")
+            core.set_property("pkg_config_name", "meshioplusplus-cxx")
