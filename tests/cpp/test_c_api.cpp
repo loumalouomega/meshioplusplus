@@ -912,14 +912,18 @@ TEST(CApi, ReadOptsInitIsReadEverything) {
     // 0 = the first step, which is the historical behaviour -- so a
     // default-initialized options struct still reads exactly what it always did.
     EXPECT_EQ(opts.time_step, 0);
-    for (int i = 0; i < 5; ++i)
+    // 0 = throw on a construct the reader cannot represent, the historical
+    // behaviour, so the defaults still read exactly what they always did.
+    EXPECT_EQ(opts.lenient, 0);
+    for (int i = 0; i < 4; ++i)
         EXPECT_EQ(opts.reserved[i], 0) << "reserved must stay zero for ABI growth";
-    // `time_step` took one of the six former reserved int64 slots rather than
-    // growing the struct, so the tail is still exactly six int64s wide and a
-    // caller compiled against the older header passes a correctly-sized object.
-    // Stated as the tail's width rather than sizeof(the whole struct), which
-    // would be a padding assertion rather than an ABI one.
-    static_assert(sizeof(mio_read_opts::time_step) + sizeof(mio_read_opts::reserved) ==
+    // `time_step` and `lenient` each took one of the six former reserved int64
+    // slots rather than growing the struct, so the tail is still exactly six
+    // int64s wide and a caller compiled against an older header passes a
+    // correctly-sized object. Stated as the tail's width rather than sizeof(the
+    // whole struct), which would be a padding assertion rather than an ABI one.
+    static_assert(sizeof(mio_read_opts::time_step) + sizeof(mio_read_opts::lenient) +
+                          sizeof(mio_read_opts::reserved) ==
                       6 * sizeof(std::int64_t),
                   "mio_read_opts grew: that is an ABI break, not additive growth");
 }

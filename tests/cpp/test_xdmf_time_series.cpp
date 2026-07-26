@@ -23,6 +23,10 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 // Project includes
 #include "mesh_fixtures.hpp"
@@ -301,3 +305,161 @@ TEST(XdmfTimeSeries, HdfThrowsWithoutHdf5) {
     EXPECT_THROW(XdmfTimeSeriesWriter(mt::temp_path(".xdmf"), "HDF"), meshioplusplus::WriteError);
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// v9.1.0: Flush, append, and the NamedArray overload
+// ---------------------------------------------------------------------------
+
+TEST(XdmfTimeSeries, FlushMakesAPartialSeriesReadable) {
+    for (const char* p_format : {"XML", "Binary", "HDF"}) {
+        const std::string path = mt::temp_path(".xdmf");
+        {
+            meshioplusplus::XdmfTimeSeriesWriter w(path, p_format);
+            w.WritePointsCells(mt::tri_mesh());
+            for (int k = 0; k < 3; ++k) {
+                w.WriteData(0.5 * k, xts_step_mesh(mt::tri_mesh(), k));
+                w.Flush();
+                // The file must be readable after EVERY step, not only at the end.
+                const meshioplusplus::MeshMetadata meta = meshioplusplus::read_xdmf_metadata(path);
+                EXPECT_EQ(meta.mTimeValues.size(), static_cast<std::size_t>(k + 1))
+                    << "format " << p_format << " after step " << k;
+            }
+            w.Finalize();
+        }
+        xts_cleanup(path);
+    }
+}
+
+TEST(XdmfTimeSeries, AutoFlushIsOffByDefaultAndCanBeEnabled) {
+    const std::string path = mt::temp_path(".xdmf");
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+        EXPECT_FALSE(w.AutoFlush());
+        w.WritePointsCells(mt::tri_mesh());
+        w.WriteData(0.0, xts_step_mesh(mt::tri_mesh(), 0));
+        // Default: nothing on disk yet -- the historical behaviour.
+        EXPECT_FALSE(std::filesystem::exists(path));
+        w.SetAutoFlush(true);
+        EXPECT_TRUE(w.AutoFlush());
+        w.WriteData(1.0, xts_step_mesh(mt::tri_mesh(), 1));
+        EXPECT_TRUE(std::filesystem::exists(path));
+        w.Finalize();
+    }
+    xts_cleanup(path);
+}
+
+#ifndef _WIN32
+TEST(XdmfTimeSeries, KilledRunLeavesAReadableSeriesAndAppendContinuesIt) {
+    // The headline case: a solve that dies mid-series must still leave an
+    // openable .xdmf, and a restart must continue that same collection rather
+    // than overwrite it.
+    for (const char* p_format : {"XML", "Binary", "HDF"}) {
+        const std::string path = mt::temp_path(".xdmf");
+        const pid_t pid = fork();
+        ASSERT_NE(pid, -1) << "fork failed";
+        if (pid == 0) {
+            // Child: write three steps, flushing each, then die hard. _exit and
+            // SIGKILL both skip every destructor, so nothing is finalized.
+            meshioplusplus::XdmfTimeSeriesWriter* p_w =
+                new meshioplusplus::XdmfTimeSeriesWriter(path, p_format);
+            p_w->WritePointsCells(mt::tri_mesh());
+            for (int k = 0; k < 3; ++k) {
+                p_w->WriteData(0.5 * k, xts_step_mesh(mt::tri_mesh(), k));
+                p_w->Flush();
+            }
+            std::_Exit(9);  // no unwinding, no Finalize()
+        }
+        int status = 0;
+        ASSERT_EQ(waitpid(pid, &status, 0), pid);
+        ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 9)
+            << "child did not die as expected (format " << p_format << ")";
+
+        // The killed run's output is readable and complete up to the last flush.
+        const meshioplusplus::MeshMetadata meta = meshioplusplus::read_xdmf_metadata(path);
+        ASSERT_EQ(meta.mTimeValues.size(), 3u) << "format " << p_format;
+        EXPECT_DOUBLE_EQ(meta.mTimeValues[2], 1.0);
+        const Mesh recovered = meshioplusplus::read_xdmf(path);
+        EXPECT_EQ(recovered.NumPoints(), mt::tri_mesh().NumPoints());
+
+        // Restart: append two more steps to the same file.
+        {
+            meshioplusplus::XdmfTimeSeriesWriter w(path, p_format, -1,
+                                                   meshioplusplus::XdmfSeriesMode::Append);
+            EXPECT_EQ(w.NumSteps(), 3u);
+            for (int k = 3; k < 5; ++k)
+                w.WriteData(0.5 * k, xts_step_mesh(mt::tri_mesh(), k));
+            w.Finalize();
+            EXPECT_EQ(w.NumSteps(), 5u);
+        }
+        const meshioplusplus::MeshMetadata after = meshioplusplus::read_xdmf_metadata(path);
+        ASSERT_EQ(after.mTimeValues.size(), 5u) << "format " << p_format;
+        EXPECT_DOUBLE_EQ(after.mTimeValues[4], 2.0);
+        // Nothing the first run wrote was overwritten: every step still reads,
+        // which is what a mis-resumed heavy-data counter would break.
+        for (int k = 0; k < 5; ++k) {
+            meshioplusplus::ReadOptions opts;
+            opts.mTimeStep = k;
+            const Mesh step = meshioplusplus::read_xdmf(path, opts);
+            ASSERT_TRUE(step.HasPointData("T")) << "step " << k;
+            EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(step.PointData("T"), 0), 100.0 * k)
+                << "format " << p_format << " step " << k;
+        }
+        xts_cleanup(path);
+    }
+}
+#endif  // _WIN32
+
+TEST(XdmfTimeSeries, AppendToAMissingPathIsJustAFreshSeries) {
+    // So a restartable solver can pass Append unconditionally.
+    const std::string path = mt::temp_path(".xdmf");
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML", -1,
+                                               meshioplusplus::XdmfSeriesMode::Append);
+        EXPECT_EQ(w.NumSteps(), 0u);
+        w.WritePointsCells(mt::tri_mesh());
+        w.WriteData(0.0, xts_step_mesh(mt::tri_mesh(), 0));
+        w.Finalize();
+    }
+    EXPECT_EQ(meshioplusplus::read_xdmf_metadata(path).mTimeValues.size(), 1u);
+    xts_cleanup(path);
+}
+
+TEST(XdmfTimeSeries, NamedArrayOverloadWritesTheSameShapeAsTheMeshOne) {
+    const std::string path = mt::temp_path(".xdmf");
+    const Mesh base = mt::tri_mesh();
+    const std::size_t np = base.NumPoints();
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+        w.WritePointsCells(base);
+        for (int k = 0; k < 2; ++k) {
+            meshioplusplus::XdmfTimeSeriesWriter::NamedArray t;
+            t.mName = "T";
+            t.mNumComponents = 1;
+            t.mValues.assign(np, static_cast<double>(k));
+            w.WriteData(0.5 * k, {t});
+        }
+        w.Finalize();
+    }
+    const meshioplusplus::MeshMetadata meta = meshioplusplus::read_xdmf_metadata(path);
+    EXPECT_EQ(meta.mTimeValues.size(), 2u);
+    meshioplusplus::ReadOptions opts;
+    opts.mTimeStep = 1;
+    const Mesh back = meshioplusplus::read_xdmf(path, opts);
+    ASSERT_TRUE(back.HasPointData("T"));
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(back.PointData("T"), 0), 1.0);
+    xts_cleanup(path);
+}
+
+TEST(XdmfTimeSeries, NamedArrayOverloadRejectsAMisSizedArray) {
+    const std::string path = mt::temp_path(".xdmf");
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+        w.WritePointsCells(mt::tri_mesh());
+        meshioplusplus::XdmfTimeSeriesWriter::NamedArray bad;
+        bad.mName = "u";
+        bad.mNumComponents = 3;
+        bad.mValues.assign(7, 0.0);  // not NumPoints * 3
+        EXPECT_THROW(w.WriteData(0.0, {bad}), meshioplusplus::WriteError);
+    }
+    xts_cleanup(path);
+}
