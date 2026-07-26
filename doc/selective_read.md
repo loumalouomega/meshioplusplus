@@ -51,8 +51,12 @@ meshioplusplus.read_metadata("run.exo")["time_values"]   # [0.0, 0.5, 1.0]
   checkable before it is issued. It is always present — empty for a format with no time
   concept — so `len(meta["time_values"])` needs no key test.
 
-Currently honoured by **`exodus`**. XDMF temporal collections, CGNS and MED also have a
-time concept and are the natural next adopters; they still take the first step today.
+Currently honoured by **`exodus`** and **`xdmf`** (temporal collections — the counterpart
+to `XdmfTimeSeriesWriter`, see [XDMF time series](xdmf_time_series.md); the C++ reader
+resolves the collection structurally rather than running an XInclude/XPointer pass, and
+`read_metadata`'s `time_values` come off each step's `<Time Value>` attribute without
+touching a payload). CGNS and MED also have a time concept and are the natural next
+adopters; they still take the first step today.
 
 ## Summarizing without loading
 

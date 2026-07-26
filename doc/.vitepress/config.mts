@@ -89,6 +89,7 @@ export default defineConfig({
           { text: "ParaView plugin", link: "/paraview_plugin" },
           { text: "WebAssembly / JavaScript", link: "/wasm" },
           { text: "Single-header C++", link: "/single_header" },
+          { text: "C++ API", link: "/cpp_api" },
           { text: "C API", link: "/c_api" },
           { text: "Fortran", link: "/fortran" },
           { text: "Julia", link: "/julia" },

@@ -87,6 +87,8 @@ meshio++ ships a C++ core (`meshioplusplus._core`, built with pybind11 + scikit-
 - **netCDF** (`exodus`) — C++ when built with `MESHIOPLUSPLUS_WITH_NETCDF`, otherwise `netCDF4`.
 - **zlib** (VTU zlib compression) — C++ when built with `MESHIOPLUSPLUS_WITH_ZLIB`, otherwise the Python stdlib.
 
+`mdpa` is the one format where the Python API deliberately does **not** prefer the C++ core for reading: only the pure-Python reference produces MDPA's `mesh.misc_data`, `mesh.geometries_block` and nested-by-cell-type `cell_data`. The C++ reader/writer exists (and is what the C API / Fortran / Julia / R / WebAssembly / native CLI use), and `mdpa.write` does use it for meshes carrying none of those extras — see [MDPA](./formats/mdpa.md#c-core).
+
 Behaviour and file compatibility are identical either way; the native paths are only faster. Install the optional runtime deps with `pip install meshioplusplus[all]`.
 
 ---

@@ -116,3 +116,50 @@ array). Names are trimmed and NUL-terminated internally; the copies outlive the 
 
 `meta%cell_blocks` is an array of `type(mio_cell_block_info)`, and the name lists use the
 exported `STRBUF_LEN` convention, as `split` and `data_info` do.
+
+## Transient (time-series) XDMF writing
+
+`type(mio_xdmf_series)` is the write half of what `time_step` and
+`meta%time_values` expose above, and the one writer `m%write()` cannot express:
+a series is a **stateful** multi-call object, so it gets its own handle rather
+than a `write` argument. The grid goes out once and each solve appends a cheap
+step. See [XDMF time series](/xdmf_time_series).
+
+```fortran
+type(mio_mesh) :: m
+type(mio_xdmf_series) :: series
+integer :: k
+
+call series%create('simulation.xdmf')          ! "HDF" by default
+call series%write_points_cells(m)              ! the static grid, once
+do k = 0, nsteps - 1
+    call solve(m)
+    call series%write_data(k*dt, m)            ! point_data/cell_data only
+end do
+print *, series%num_steps()
+call series%finalize()                         ! free() would do this too
+call series%free()
+```
+
+| | |
+| --- | --- |
+| Lifecycle | `series%create(path [, data_format, gzip_level])`, `series%free()`, `series%is_valid()` |
+| Writing | `series%write_points_cells(mesh)`, `series%write_data(time, mesh)`, `series%finalize()`, `series%num_steps()` |
+
+`data_format` is `'HDF'` (the default; needs an HDF5-enabled build), `'XML'`
+(everything inline in the `.xdmf`) or `'Binary'`; `gzip_level` applies to
+`'HDF'` datasets only and is negative (no compression) by default. An unknown
+format, or `'HDF'` against a library built without HDF5, fails through
+`stat`/`errmsg` like every other fallible procedure.
+
+Two things worth knowing before reading the result back:
+
+- the `.xdmf` light data is **buffered until the series is finalized**, so the
+  file is only readable after `series%finalize()` (or `series%free()`, which
+  finalizes first);
+- `free()` swallows a write failure during that implicit finalize — call
+  `finalize()` explicitly, with `stat`, to see one.
+
+Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no
+finalizer. Reading a finished series back is the ordinary `m%read(path,
+time_step=k)`, with `mio_read_metadata(path)%time_values` reporting the steps.

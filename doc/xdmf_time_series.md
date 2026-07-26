@@ -63,6 +63,223 @@ Returns `(t, point_data, cell_data)` for time step index `k`.
 
 ---
 
+## C++ (`XdmfTimeSeriesWriter`)
+
+The write side also exists natively, in
+[`meshioplusplus/formats/xdmf_time_series.hpp`](https://github.com/loumalouomega/meshioplusplus/blob/main/src/cpp/include/meshioplusplus/formats/xdmf_time_series.hpp).
+This is the one writer that is **not** in the shared format registry
+(`registry.cpp`): a series is a stateful multi-call object, so there is no
+`(path, mesh)` call for the registry to name.
+
+```cpp
+#include "meshioplusplus/formats/xdmf_time_series.hpp"
+
+meshioplusplus::XdmfTimeSeriesWriter w("simulation.xdmf");  // "HDF" by default
+w.WritePointsCells(mesh);            // the static grid, once
+for (int k = 0; k < nsteps; ++k) {
+    solve(mesh);
+    w.WriteData(k * dt, mesh);       // only point_data/cell_data are consumed
+}
+w.Finalize();                        // the destructor would do this too
+```
+
+`WritePointsCells` takes the whole `Mesh` and uses its points and cells;
+`WriteData` takes a `Mesh` and uses its `point_data`/`cell_data`, so a solver
+can pass the same object it is updating in place. Arrays are written in the
+uniform API's sorted-name order, which makes a series byte-deterministic across
+mesh backends. `Finalize()` is idempotent and is called by the destructor; an
+explicit call exists so a write failure surfaces as an exception rather than
+being swallowed during unwinding.
+
+Two differences from the Python writer, both deliberate:
+
+- the `"HDF"` companion is a **sibling of the `.xdmf`** (`<path minus
+  extension>.h5`), not `<stem>.h5` in the process's working directory — the
+  Python spelling breaks the moment the output path has a directory component;
+- `"HDF"` on a build without HDF5 support throws by name from the constructor
+  (naming `-DMESHIOPLUSPLUS_WITH_HDF5=ON`) rather than the symbol being absent.
+
+Reading is the ordinary `read_xdmf`: it resolves a temporal collection
+structurally (it never runs an XInclude/XPointer pass), takes the geometry from
+the static grid and the attributes from the step
+[`ReadOptions::mTimeStep`](selective_read.md) selects — `0` first, `-1` last,
+out of range an error naming the count. `read_metadata` reports every step's
+`<Time Value>` in `mTimeValues` from the XML alone, without touching a payload.
+
+## C API
+
+The same handle, flat:
+
+```c
+mio_xdmf_series* s = mio_xdmf_series_create("simulation.xdmf", "HDF", -1);
+mio_xdmf_series_write_points_cells(s, mesh);
+for (k = 0; k < nsteps; ++k)
+    mio_xdmf_series_write_data(s, k * dt, mesh);
+mio_xdmf_series_free(s);   /* finalizes if mio_xdmf_series_finalize wasn't called */
+```
+
+`mio_xdmf_series_num_steps` reports the count written so far.
+`mio_xdmf_series_create` returns `NULL` (with `mio_last_error()` set) for an
+unknown data format or for `"HDF"` without HDF5 support. The three languages
+riding this C API — Fortran, Julia and R — each expose the same handle in their
+own idiom, below.
+
+One rule is shared by all three, and is why `finalize` exists as a call of its
+own rather than only as part of the free: **a write failure during the implicit
+finalize cannot be reported** — from a Fortran `free()`, a Julia `close`, or an
+R garbage-collection finalizer alike. Call `finalize` explicitly when you want
+to see one. The other shared rule is that the `.xdmf` light data is buffered
+until then, so a series is only readable once it has been finalized.
+
+## Fortran
+
+`type(mio_xdmf_series)`, with the module's usual conventions: type-bound
+procedures, optional `stat`/`errmsg` on every fallible one, and handles freed
+explicitly (no finalizer) exactly like `type(mio_mesh)`. See
+[Fortran](./fortran.md#transient-time-series-xdmf-writing).
+
+```fortran
+type(mio_xdmf_series) :: series
+
+call series%create('simulation.xdmf')      ! "HDF" by default
+call series%write_points_cells(m)          ! the static grid, once
+do k = 0, nsteps - 1
+    call solve(m)
+    call series%write_data(k*dt, m)        ! point_data/cell_data only
+end do
+print *, series%num_steps()
+call series%finalize()                     ! free() would do this too
+call series%free()
+```
+
+`create` takes optional `data_format` and `gzip_level`. An unknown format, or
+`'HDF'` on a build without HDF5, fails through `stat`/`errmsg` rather than
+aborting.
+
+## Julia
+
+`XdmfSeries`, released by a GC finalizer with a deterministic, idempotent
+`close` — the [`Mesh`](./julia.md#memory-management) rule. See
+[Julia](./julia.md#transient-time-series-xdmf-writing).
+
+```julia
+s = XdmfSeries("simulation.xdmf")          # "HDF" by default
+write_points_cells!(s, mesh)
+for k in 0:nsteps-1
+    solve!(mesh)
+    write_data!(s, k * dt, mesh)
+end
+num_steps(s)
+finalize!(s)                               # close(s) would do this too
+close(s)
+```
+
+There is also a `do`-block form, `XdmfSeries(path) do s ... end`, which closes
+the series even if the body throws. The exported name is `finalize!`, not
+`finalize`: `Base.finalize` runs an object's GC finalizer and means something
+quite different.
+
+## R
+
+`mio_xdmf_series()`, an external pointer with its **own** tag — so a `mio_mesh`
+and a series are never accepted for one another — and a registered finalizer.
+See [R](./r.md#transient-time-series-xdmf-writing).
+
+```r
+s <- mio_xdmf_series("simulation.xdmf")        # "HDF" by default
+mio_xdmf_series_write_points_cells(s, mesh)
+for (k in 0:9) {
+  mio_xdmf_series_write_data(s, k * 0.1, mesh)
+}
+mio_xdmf_series_num_steps(s)
+mio_xdmf_series_finalize(s)                    # release() would do this too
+mio_xdmf_series_release(s)
+```
+
+`mio_xdmf_series_release()` is the idempotent deterministic free and
+`mio_xdmf_series_is_open()` the predicate. Release the handle before the
+directory it writes into goes away: a finalizer running later would try to
+write the `.xdmf` into a path that no longer exists, and cannot report it.
+
+## Python (the C++ writer, explicitly)
+
+The C++ writer is reachable from Python as `_core.XdmfTimeSeriesWriter`. It is
+**not** wired underneath `meshioplusplus.xdmf.TimeSeriesWriter`, which keeps its
+own documented behaviour untouched — the two are not drop-in equivalents, so the
+C++ one is exposed *additionally* and by name (the same choice made for
+[`.mdpa`](./formats/mdpa.md#c-core)).
+
+```python
+from meshioplusplus import _core
+
+with _core.XdmfTimeSeriesWriter("simulation.xdmf") as w:   # "HDF" by default
+    w.write_points_cells(mesh)                             # the static grid, once
+    for k in range(nsteps):
+        solve(mesh)
+        w.write_data(k * dt, mesh)      # only point_data/cell_data are used
+# the .xdmf is written on __exit__
+```
+
+`XdmfTimeSeriesWriter(path, data_format="HDF", gzip_level=-1)` has
+`write_points_cells(mesh)`, `write_data(time, mesh)`, `finalize()`, the
+read-only properties `num_steps` and `finalized`, and `__enter__`/`__exit__`
+(which finalizes, as the Python writer's does — it never suppresses the body's
+exception).
+
+Which one to reach for:
+
+| | `meshioplusplus.xdmf.TimeSeriesWriter` | `_core.XdmfTimeSeriesWriter` |
+|---|---|---|
+| Arguments | raw `points, cells` / `point_data=`, `cell_data=` | whole `Mesh` objects |
+| `"HDF"` companion | `<stem>.h5` **relative to the CWD** | `<path minus extension>.h5`, a **sibling** of the `.xdmf` |
+| Array order | dict insertion order | the uniform API's sorted-name order |
+| Needs `h5py` | yes, for `"HDF"` | no — the core's own HDF5 |
+| Available without a compiled core | yes | no |
+
+Use the C++ one when you already hold a `Mesh` (a solver updating one in place
+is the motivating case), when the output path has a directory component, or
+when you want the write to cost no Python per step. Use the Python one when you
+have loose numpy arrays, want `h5py` interop, or are running against a build
+with no compiled core.
+
+Reading is unchanged either way: `meshioplusplus.xdmf.TimeSeriesReader`, or the
+ordinary `meshioplusplus.read` (which resolves the temporal collection
+structurally and materializes one step), with
+`meshioplusplus.read_metadata(...)["time_values"]` to enumerate the steps.
+
+`"HDF"` on a build without HDF5 raises `meshioplusplus.WriteError` from the
+constructor, naming `-DMESHIOPLUSPLUS_WITH_HDF5=ON` — a clean Python exception,
+not a missing symbol.
+
+## WASM
+
+The same handle, in JavaScript — the **one stateful** binding in
+[`@meshioplusplus/wasm`](./wasm.md), since every other one is a pure function
+over a mesh object:
+
+```javascript
+const w = m.createXdmfTimeSeriesWriter('/series.xdmf');  // 'HDF' by default
+w.writePointsCells(mesh);
+for (let k = 0; k < nsteps; ++k) w.writeData(k * dt, stepMesh(k));
+w.close();                                  // the files appear HERE
+
+const xdmf = m.FS.readFile('/series.xdmf');
+const h5 = m.FS.readFile('/series.h5');     // 'HDF' writes TWO files
+```
+
+The object has `writePointsCells(mesh)`, `writeData(time, mesh)`, `finalize()`,
+`numSteps()`, `finalized()` and `close()`. **`'HDF'` puts two files in the
+virtual filesystem** — the `.xdmf` and its sibling `.h5` — and nothing at all
+until `finalize()`/`close()` runs; copy both out of `FS`. `'HDF'` works in the
+shipped artifact, which links a wasm32 HDF5.
+
+Under the ergonomic wrapper the raw binding is an opaque integer handle plus
+seven free functions rather than an embind `class_`, so that no live C++ object
+(and no Emscripten `.delete()`) reaches JS and every error arrives as a readable
+`Error`; see [WASM § Transient XDMF](./wasm.md#transient-time-series-xdmf).
+
+---
+
 ## Notes
 
 - The mesh topology is stored once in the XDMF file and referenced by each time step using XInclude.

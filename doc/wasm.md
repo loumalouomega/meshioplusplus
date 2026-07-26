@@ -211,11 +211,73 @@ catchable `Error`. See [data operations](./data_operations.md),
 [expressions](./data_calc.md), [conditioning](./data_condition.md) and
 [data summary](./data_info.md).
 
+## Transient (time-series) XDMF
+
+`createXdmfTimeSeriesWriter(path, { dataFormat, gzipLevel })` is the **one
+stateful** thing in this API: every other binding is a pure function over a
+mesh object, but a time series writes the mesh **once** and then appends one
+cheap step per solve, and its `.xdmf` light data can only be written when the
+collection is complete. See [XDMF time series](./xdmf_time_series.md).
+
+```javascript
+const w = m.createXdmfTimeSeriesWriter('/series.xdmf');   // 'HDF' by default
+w.writePointsCells(mesh);                                 // the static grid, once
+for (let k = 0; k < nsteps; ++k) {
+    w.writeData(k * dt, stepMesh(k));   // only point_data/cell_data are used
+}
+w.close();                              // the files appear HERE
+
+const xdmf = m.FS.readFile('/series.xdmf');
+const h5 = m.FS.readFile('/series.h5'); // 'HDF' writes TWO files — see below
+```
+
+The returned object has `writePointsCells(mesh)`, `writeData(time, mesh)`,
+`finalize()`, `numSteps()`, `finalized()` and `close()`. `close()` finalizes if
+needed and releases the handle; it is safe to call twice and safe to call from a
+`finally`. After it, every method throws a catchable `Error` — the underlying
+handle is an index into a module-local table, not a pointer, so a stale handle
+can never be a use-after-free.
+
+::: warning `'HDF'` writes TWO files into the virtual filesystem
+The `.xdmf` at the path you gave **and** its sibling heavy-data file
+`<path minus extension>.h5` (a sibling of the `.xdmf`, not a file in the
+current directory — this differs from the pure-Python `TimeSeriesWriter`).
+Copy both out of `FS`; an `.xdmf` without its `.h5` is unreadable. `'XML'`
+writes one self-contained file; `'Binary'` writes the `.xdmf` plus one
+`<path minus extension><n>.bin` per array. Nothing is on the filesystem until
+`finalize()`/`close()` runs.
+:::
+
+`'HDF'` works here: the shipped artifact links a wasm32 HDF5 (v8.0.0+). Read a
+series back with the ordinary `readMesh` (which resolves the temporal
+collection structurally and gives you the first step), `readMeshSelective(path,
+{ timeStep: k })` for a particular one (negative counts from the end), or
+`readMetadata(path).timeValues` to see the steps without loading any payload.
+
+::: tip Why a handle and not a class
+The raw embind surface is an opaque integer handle plus seven free functions
+(`xdmfSeriesCreate`, `xdmfSeriesWritePointsCells`, `xdmfSeriesWriteData`,
+`xdmfSeriesFinalize`, `xdmfSeriesNumSteps`, `xdmfSeriesFinalized`,
+`xdmfSeriesFree`), deliberately **not** an embind `class_`, and the object
+above is the wrapper's ergonomic face of it. `@meshioplusplus/wasm` never hands
+JS a live C++ object — `NDArray`, `CellBlock` and `Mesh` are all internal — so
+an embind class instance, with the Emscripten-specific `.delete()` it comes
+with, would be the API's one exception. Free functions also all go through the
+same C++ error wrapper, so a `WriteError` arrives as a readable JS `Error`;
+a bound *member* function surfaces as a bare, message-less
+`WebAssembly.Exception`. It matches the [C API](/c_api)'s `mio_xdmf_series*`
+too, so the two flat bindings describe the same object the same way.
+:::
+
+This is not a registry format (there is no single `(path, mesh)` call for the
+registry to name), so it does **not** change the format counts below and does
+not appear in `availableFormats()`.
+
 ## Format support
 
-**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 41 formats: 40 readable, 41 writable (`openfoam` is read-only; `svg` and `tikz` are write-only).
+**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 41 readable and 43 writable format keys (`openfoam` is read-only; `svg`, `tikz` and `gmsh22` are write-only).
 
-`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
+`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `mdpa` (Kratos; mesh-level blocks only — see [MDPA](./formats/mdpa.md#c-core)), `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
 
 Ask the loaded module rather than trusting this list — it is generated from the same registry the build actually links:
 

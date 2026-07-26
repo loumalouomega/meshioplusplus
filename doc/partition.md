@@ -172,8 +172,24 @@ limited to `int32` by the `kaffpa` interface in both builds.
   indices.
 - `partition_labels` returns one Int64 array per cell block (block-aligned,
   ready to attach as `cell_data`), values in `[0, nparts)`.
-- `ghost_layers` is **reserved** (shared-node BFS halo growth tagged
-  `partition:ghost`); any value other than 0 raises in this version.
+- `ghost_layers=N` grows each piece by `N` **shared-node BFS layers** of cells
+  owned by other parts — the halo an MPI-style domain decomposition needs.
+  Each ghosted piece carries an Int64 `partition:ghost` `cell_data`: `0` for a
+  cell this part owns, `L` for one reached at layer `L`. Shared-node (rather
+  than shared-facet) adjacency is the conservative choice: it is what a
+  node-based assembly actually needs.
+
+  The pieces then **overlap**, so the partition-of-unity property above holds
+  only for `ghost_layers=0` (the default). `partition_labels` therefore does
+  not accept it at all — a flat per-cell label array is the *ownership* map,
+  and a cell can be a ghost of several parts at once. The numpy fallback
+  builds disjoint pieces only and raises `NotImplementedError` rather than
+  silently returning unghosted ones.
+
+  ```python
+  pieces = mp.partition(mesh, 4, ghost_layers=1)
+  owned = pieces[0].cell_data["partition:ghost"][0] == 0
+  ```
 - v3.25's `--connected_blocks` (force each part to be a connected subgraph) is
   not reachable through the `kaffpa` C interface, so it is not exposed —
   a documented TODO should a later KaHIP add it to the API.

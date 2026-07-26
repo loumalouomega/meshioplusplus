@@ -157,6 +157,53 @@ Out of range is an error naming the available count, never a silent clamp.
 `meta.time_values` is empty for a format with no time concept, so `length(...)` is always
 safe. Honoured by `exodus`; see [Selective reads](/selective_read).
 
+## Transient (time-series) XDMF writing
+
+`XdmfSeries` is the write half of the above, and the one writer `write` cannot express: a
+series is a **stateful** multi-call object, so it gets its own handle rather than a keyword.
+The grid goes out once and each solve appends a cheap step. See
+[XDMF time series](/xdmf_time_series).
+
+```julia
+using MeshioPlusPlus
+
+s = XdmfSeries("simulation.xdmf")          # "HDF" by default
+write_points_cells!(s, mesh)               # the static grid, once
+for k in 0:nsteps-1
+    solve!(mesh)
+    write_data!(s, k * dt, mesh)           # point_data/cell_data only
+end
+num_steps(s)                               # 10
+finalize!(s)                               # close(s) would do this too
+close(s)
+```
+
+The function form closes the series afterwards even if the body throws:
+
+```julia
+XdmfSeries("simulation.xdmf"; data_format = "XML") do s
+    write_points_cells!(s, mesh)
+    write_data!(s, 0.0, mesh)
+end
+```
+
+`data_format` is `"HDF"` (the default; needs an HDF5-enabled library), `"XML"` (everything
+inline in the `.xdmf`) or `"Binary"`; `gzip_level` applies to `"HDF"` datasets only and is
+negative (no compression) by default. An unknown format, or `"HDF"` against a library built
+without HDF5, throws a `MeshioError` from the constructor.
+
+Two things worth knowing before reading the result back:
+
+- the `.xdmf` light data is **buffered until the series is finalized**, so the file is only
+  readable after `finalize!(s)` (or `close(s)`, which finalizes first);
+- `close` swallows a write failure during that implicit finalize — call `finalize!`
+  explicitly to see one.
+
+Like `Mesh`, the handle is released by a GC finalizer and `close` is the deterministic,
+idempotent form. The name is `finalize!` rather than `finalize` because `Base.finalize`
+runs an object's GC finalizer and means something quite different. Reading a finished
+series back is the ordinary `MeshioPlusPlus.read(path; options = ReadOptions(time_step = k))`.
+
 ## Documented gaps
 
 These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [R](/r) bindings; the Julia package invents no workaround for any of them:
