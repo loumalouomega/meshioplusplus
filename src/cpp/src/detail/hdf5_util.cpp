@@ -41,6 +41,38 @@ Hid create_file(const std::string& rPath) {
     return f;
 }
 
+Hid open_file_rw(const std::string& rPath) {
+    Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+    if (!f.Valid())
+        throw WriteError("HDF5: could not open file for writing " + rPath);
+    return f;
+}
+
+void flush_file(Hid& rFile) {
+    if (!rFile.Valid())
+        return;
+    if (H5Fflush(rFile, H5F_SCOPE_GLOBAL) < 0)
+        throw WriteError("HDF5: could not flush file");
+}
+
+std::vector<std::string> link_names(hid_t loc) {
+    H5G_info_t info{};
+    std::vector<std::string> out;
+    if (H5Gget_info(loc, &info) < 0)
+        return out;
+    for (hsize_t i = 0; i < info.nlinks; ++i) {
+        const ssize_t len =
+            H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
+        if (len <= 0)
+            continue;
+        std::string name(static_cast<std::size_t>(len), '\0');
+        H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
+                           static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
+        out.push_back(std::move(name));
+    }
+    return out;
+}
+
 bool exists(hid_t loc, const std::string& rName) {
     return H5Lexists(loc, rName.c_str(), H5P_DEFAULT) > 0;
 }

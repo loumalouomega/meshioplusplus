@@ -394,6 +394,7 @@ void print_usage(std::ostream& os) {
           "  convert (c)             Convert between mesh formats\n"
           "                            --points-only / --arrays a,b narrow what is read\n"
           "                            --time-step=N picks a step of a multi-step file\n"
+          "                            --lenient skips constructs the reader cannot represent\n"
           "                            --color-by NAME colours svg/tikz output by a data\n"
           "                            array (--component --cmap --vmin --vmax\n"
           "                            --nan-color --colorbar)\n"
@@ -472,6 +473,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"points-only", {}, false},
                                   {"arrays", {}, true},
                                   {"time-step", {}, true},
+                                  {"lenient", {}, false},
                                   {"color-by", {}, true},
                                   {"component", {}, true},
                                   {"cmap", {}, true},
@@ -509,6 +511,11 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     // that was never read, so it goes to the reader or nowhere.
     if (has_opt(p, "time-step"))
         opts.mTimeStep = std::stoi(opt_value(p, "time-step"));
+    // --lenient downgrades "this reader cannot represent construct X" to a
+    // warning plus a skip. Not "ignore all errors": a malformed file still
+    // fails. There is no Python fallback here, so this is what makes a
+    // production .mdpa readable at all from the native CLI.
+    opts.mLenient = has_flag(p, "lenient");
 
     // Data-driven colouring (svg/tikz only). Validated before the read so a bad
     // flag combination fails immediately rather than after loading a big mesh.

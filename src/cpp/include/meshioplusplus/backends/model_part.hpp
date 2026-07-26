@@ -68,8 +68,34 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/named_arrays.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/properties.hpp"
 
 namespace meshioplusplus {
+
+namespace detail {
+
+/**
+ * @brief Interning pool for Kratos entity names, owned by the root ModelPart.
+ *
+ * `std::unordered_set` is node-based, so an interned string's address survives
+ * both rehashing and a move of the owning ModelPart -- which is what lets
+ * `GeometricalEntity` hold an 8-byte pointer instead of a 32-byte string it
+ * would duplicate once per cell.
+ */
+class NamePool {
+public:
+    /** @brief Intern @p rName; an empty name interns to null ("derive it"). */
+    const std::string* Intern(const std::string& rName) {
+        if (rName.empty())
+            return nullptr;
+        return &*mNames.insert(rName).first;
+    }
+
+private:
+    std::unordered_set<std::string> mNames;
+};
+
+}  // namespace detail
 
 /** @brief Entity id type; ids are 1-based (0 is never a valid id). */
 using IndexType = std::size_t;
@@ -100,8 +126,12 @@ private:
 class GeometricalEntity {
 public:
     GeometricalEntity(IndexType id, CellType type, std::vector<IndexType> nodeIds,
-                      IndexType propertiesId)
-        : mId(id), mType(type), mPropertiesId(propertiesId), mNodeIds(std::move(nodeIds)) {
+                      IndexType propertiesId, const std::string* pName = nullptr)
+        : mId(id),
+          mType(type),
+          mPropertiesId(propertiesId),
+          mpName(pName),
+          mNodeIds(std::move(nodeIds)) {
         if (id < 1)
             throw std::invalid_argument("meshio++ ModelPart: entity Id must be >= 1");
         if (mNodeIds.empty())
@@ -115,6 +145,27 @@ public:
     IndexType Id() const { return mId; }
     CellType Type() const { return mType; }
     IndexType PropertiesId() const { return mPropertiesId; }
+
+    /**
+     * @brief The Kratos registration name this entity was created with.
+     *
+     * Empty when it was created from a `CellType` alone, which means "derive it
+     * from the type" -- `kratos_element_name`/`kratos_condition_name`, the
+     * behaviour every caller had before names existed.
+     *
+     * The point of storing it is that the derivation is lossy in one direction
+     * only: `SmallDisplacementElement3D4N` resolves to `Tetrahedra4`, but
+     * `Tetrahedra4` only ever derives back to the canonical `Element3D4N`, so a
+     * Kratos -> meshio++ -> Kratos round trip silently downgraded every
+     * application-specific element before this.
+     */
+    const std::string& Name() const {
+        static const std::string empty;
+        return mpName ? *mpName : empty;
+    }
+    /** @brief Whether a name was supplied (as opposed to deriving it). */
+    bool HasName() const { return mpName != nullptr; }
+
     const std::vector<IndexType>& NodeIds() const { return mNodeIds; }
     std::size_t NumberOfNodes() const { return mNodeIds.size(); }
 
@@ -122,6 +173,14 @@ private:
     IndexType mId;
     CellType mType;
     IndexType mPropertiesId;
+    /**
+     * A pointer into the root's `NamePool`, not a `std::string`: there is one
+     * distinct name per *block*, but one entity per *cell*, so an owned string
+     * would add ~32 bytes to every entity -- ~320 MB on a 10 M-element model
+     * part -- to store a handful of distinct values. The pool is node-based, so
+     * the pointer stays valid across rehashing and across a ModelPart move.
+     */
+    const std::string* mpName;
     std::vector<IndexType> mNodeIds;
 };
 
@@ -225,6 +284,10 @@ public:
           mNodes(std::move(rOther.mNodes)),
           mElements(std::move(rOther.mElements)),
           mConditions(std::move(rOther.mConditions)),
+          mProperties(std::move(rOther.mProperties)),
+          // Moving the pool transfers its nodes, so every entity's interned
+          // name pointer stays valid; leaving it behind would dangle them all.
+          mNamePool(std::move(rOther.mNamePool)),
           mLocalNodeIds(std::move(rOther.mLocalNodeIds)),
           mLocalElementIds(std::move(rOther.mLocalElementIds)),
           mLocalConditionIds(std::move(rOther.mLocalConditionIds)),
@@ -263,15 +326,19 @@ public:
     }
     Element& CreateNewElement(const std::string& rKratosName, IndexType id,
                               std::vector<IndexType> nodeIds, IndexType propertiesId = 0) {
-        Element& r_elem = GetRootModelPart().mElements.Create(
-            id, ResolveEntityType(rKratosName), ValidatedNodeIds(std::move(nodeIds)), propertiesId);
+        ModelPart& r_root = GetRootModelPart();
+        Element& r_elem = r_root.mElements.Create(
+            id, ResolveEntityType(rKratosName), ValidatedNodeIds(std::move(nodeIds)), propertiesId,
+            r_root.mNamePool.Intern(rKratosName));
         RecordMembership(&ModelPart::mLocalElementIds, id);
         return r_elem;
     }
     Condition& CreateNewCondition(const std::string& rKratosName, IndexType id,
                                   std::vector<IndexType> nodeIds, IndexType propertiesId = 0) {
-        Condition& r_cond = GetRootModelPart().mConditions.Create(
-            id, ResolveEntityType(rKratosName), ValidatedNodeIds(std::move(nodeIds)), propertiesId);
+        ModelPart& r_root = GetRootModelPart();
+        Condition& r_cond = r_root.mConditions.Create(
+            id, ResolveEntityType(rKratosName), ValidatedNodeIds(std::move(nodeIds)), propertiesId,
+            r_root.mNamePool.Intern(rKratosName));
         RecordMembership(&ModelPart::mLocalConditionIds, id);
         return r_cond;
     }
@@ -291,6 +358,72 @@ public:
         RecordMembership(&ModelPart::mLocalConditionIds, id);
         return r_cond;
     }
+    // CellType-plus-name overloads: the bulk-ingest fast path (no per-entity
+    // name *resolution*, no connectivity validation) while still carrying the
+    // application's own spelling. A distinct arity from the four-argument
+    // CellType overloads above, so no existing call is affected.
+    Element& CreateNewElement(CellType type, IndexType id, std::vector<IndexType> nodeIds,
+                              IndexType propertiesId, const std::string& rKratosName) {
+        ModelPart& r_root = GetRootModelPart();
+        Element& r_elem = r_root.mElements.Create(id, type, std::move(nodeIds), propertiesId,
+                                                  r_root.mNamePool.Intern(rKratosName));
+        RecordMembership(&ModelPart::mLocalElementIds, id);
+        return r_elem;
+    }
+    Condition& CreateNewCondition(CellType type, IndexType id, std::vector<IndexType> nodeIds,
+                                  IndexType propertiesId, const std::string& rKratosName) {
+        ModelPart& r_root = GetRootModelPart();
+        Condition& r_cond = r_root.mConditions.Create(id, type, std::move(nodeIds), propertiesId,
+                                                      r_root.mNamePool.Intern(rKratosName));
+        RecordMembership(&ModelPart::mLocalConditionIds, id);
+        return r_cond;
+    }
+
+    // --- properties (material data; see properties.hpp) --------------------
+
+    /**
+     * @brief Create (or return) the root's properties block with this id.
+     *
+     * Properties live in the root beside the entities, as in Kratos. The values
+     * are `PropertyValue` key/value pairs rather than typed `Variable<T>`s:
+     * resolving a Kratos variable needs Kratos's own component registry, which
+     * is deliberately not linked here -- see `to_model_part`'s "apply property"
+     * overload in `kratos_bridge.hpp` for how a real consumer bridges the two.
+     */
+    PropertySet& CreateNewProperties(IndexType id) {
+        ModelPart& r_root = GetRootModelPart();
+        for (PropertySet& r_p : r_root.mProperties)
+            if (static_cast<IndexType>(r_p.mId) == id)
+                return r_p;
+        PropertySet p;
+        p.mId = static_cast<std::int64_t>(id);
+        r_root.mProperties.push_back(std::move(p));
+        return r_root.mProperties.back();
+    }
+    bool HasProperties(IndexType id) const {
+        const ModelPart& r_root = GetRootModelPart();
+        for (const PropertySet& r_p : r_root.mProperties)
+            if (static_cast<IndexType>(r_p.mId) == id)
+                return true;
+        return false;
+    }
+    PropertySet& GetProperties(IndexType id) {
+        for (PropertySet& r_p : GetRootModelPart().mProperties)
+            if (static_cast<IndexType>(r_p.mId) == id)
+                return r_p;
+        throw std::invalid_argument("meshio++ ModelPart: no properties with Id " +
+                                    std::to_string(id));
+    }
+    const PropertySet& GetProperties(IndexType id) const {
+        for (const PropertySet& r_p : GetRootModelPart().mProperties)
+            if (static_cast<IndexType>(r_p.mId) == id)
+                return r_p;
+        throw std::invalid_argument("meshio++ ModelPart: no properties with Id " +
+                                    std::to_string(id));
+    }
+    std::size_t NumberOfProperties() const { return GetRootModelPart().mProperties.size(); }
+    /** @brief Every properties block, in creation order. */
+    const std::vector<PropertySet>& Properties() const { return GetRootModelPart().mProperties; }
 
     // --- membership (add existing root entities to a sub part) -------------
 
@@ -432,7 +565,11 @@ public:
 private:
     /** @brief Resolve a Kratos entity/geometry name or meshio name to a CellType. */
     static CellType ResolveEntityType(const std::string& rKratosName) {
-        const CellType type = cell_type_from_kratos_name(rKratosName);
+        // The suffix-tolerant resolver, so an application-specific name such as
+        // SmallDisplacementElement3D4N works through its canonical Element3D4N
+        // tail -- without it only the handful of canonical names resolve, which
+        // no real Kratos application restricts itself to.
+        const CellType type = cell_type_from_kratos_name_or_suffix(rKratosName);
         // Custom is only acceptable when the spelling itself carries meaning
         // (variable-node-count meshio names like "polyhedron12"); a name
         // neither table knows and that is not a meshio spelling is an error.
@@ -487,6 +624,11 @@ private:
     detail::EntityContainer<Node> mNodes;
     detail::EntityContainer<Element> mElements;
     detail::EntityContainer<Condition> mConditions;
+
+    // Root-only material data and the entity-name interning pool. The pool must
+    // outlive every entity pointing into it, which the root does by owning them.
+    std::vector<PropertySet> mProperties;
+    detail::NamePool mNamePool;
 
     // Sub-part membership (unused on the root).
     detail::IdList mLocalNodeIds, mLocalElementIds, mLocalConditionIds;

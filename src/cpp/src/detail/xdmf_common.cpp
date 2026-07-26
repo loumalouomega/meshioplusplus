@@ -16,11 +16,14 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 
 // Project includes
@@ -255,6 +258,50 @@ const std::string& DataItemStore::DataFormat() const {
 void DataItemStore::Close() {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     mImpl->mH5File.Reset();
+#endif
+}
+
+void DataItemStore::Flush() {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    h5::flush_file(mImpl->mH5File);
+#endif
+    // "Binary" opens, writes and closes one file per array, and "XML" keeps its
+    // numbers in the caller's document -- neither has anything buffered here.
+}
+
+int DataItemStore::Counter() const {
+    return mImpl->mCounter;
+}
+
+void DataItemStore::SetCounter(int Value) {
+    mImpl->mCounter = Value;
+}
+
+void DataItemStore::OpenExisting() {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (mImpl->mDataFormat != "HDF")
+        return;
+    const std::string h5_path = mImpl->mBase + ".h5";
+    std::error_code ec;
+    if (!std::filesystem::exists(h5_path, ec))
+        return;  // nothing to continue; Store() will create it as usual
+    mImpl->mH5File = h5::open_file_rw(h5_path);
+    const std::size_t slash = h5_path.find_last_of("/\\");
+    mImpl->mH5Basename = slash == std::string::npos ? h5_path : h5_path.substr(slash + 1);
+    // Resume past every dataN already there. Scanning the container rather than
+    // trusting the document is deliberate: a mis-resumed counter would silently
+    // overwrite data0 rather than fail, and the file is the authority on what
+    // it holds.
+    int next = 0;
+    for (const std::string& r_name : h5::link_names(mImpl->mH5File)) {
+        if (r_name.rfind("data", 0) != 0)
+            continue;
+        const std::string digits = r_name.substr(4);
+        if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        next = std::max(next, std::stoi(digits) + 1);
+    }
+    mImpl->mCounter = std::max(mImpl->mCounter, next);
 #endif
 }
 
