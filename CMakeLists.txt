@@ -785,8 +785,15 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
     target_link_options(_core PRIVATE -static-libgcc -static-libstdc++)
   endif()
 
-  # Land the extension next to the pure-Python package inside the wheel.
-  install(TARGETS _core DESTINATION meshioplusplus)
+  # Land the extension next to the pure-Python package inside the wheel. The
+  # destination is relative to the wheel's platlib, so it only makes sense when
+  # scikit-build-core is driving the install (it defines SKBUILD); on a plain
+  # `cmake --install` -- normal since MESHIOPLUSPLUS_INSTALL_CPP made installing
+  # a Python-enabled tree a reasonable thing to do -- the unguarded rule dumped
+  # a stray <prefix>/meshioplusplus/_core*.so at the prefix root.
+  if(DEFINED SKBUILD)
+    install(TARGETS _core DESTINATION meshioplusplus)
+  endif()
 endif()
 
 # --------------------------------------------------------------------------
