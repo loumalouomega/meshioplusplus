@@ -3072,7 +3072,7 @@ inline const std::unordered_map<std::string, int>& topological_dimension() {
  * bytes match the NATIVE backend exactly. After mutating the ModelPart
  * directly, call `InvalidateBlocks()`: the staging is then rebuilt from the
  * ModelPart on the next accessor use (consecutive same-type Elements are
- * grouped into blocks, then Conditions). Since v8.10.0 the rebuild is
+ * grouped into blocks, then Conditions). Since v9.0.0 the rebuild is
  * lossless for everything the ModelPart can express — ragged pass-through
  * blocks are carried through at their original positions (they never became
  * entities, so a ModelPart edit cannot have touched them) and SubModelParts
@@ -3234,7 +3234,7 @@ public:
      * block layout. Ragged pass-through blocks (which never became entities and
      * so cannot have been edited) are carried through at their original
      * positions, and SubModelParts are read back as named `Cell`/`Point`
-     * regions -- neither is lost, as they were before v8.10.0.
+     * regions -- neither is lost, as they were before v9.0.0.
      *
      * What still cannot survive: a SubModelPart's *nesting* (regions are flat),
      * and a region's `mDim`/`mTag`, which a SubModelPart has nowhere to store
