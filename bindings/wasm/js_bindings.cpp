@@ -556,17 +556,21 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
  *   default) is the first, negative counts from the end. Out of range throws
  *   naming the available count. Honoured by formats carrying a time series
  *   (currently exodus); ignored by the rest.
+ * @param lenient downgrade "this reader cannot represent construct X" errors to
+ *   a warning plus a skip (currently mdpa's Table/Geometries/Mesh/Constraints
+ *   blocks). Not "ignore all errors": a malformed file still throws.
  *
  * Formats without a native selective path are read whole and filtered, so the
  * result is the same either way -- only the cost differs.
  */
 val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bool points_only,
-                        const val& rArrays, int time_step) {
+                        const val& rArrays, int time_step, bool lenient) {
     return with_js_errors([&]() -> val {
         const std::string fmt = js_resolve_read_format(rPath, rFormat);
         meshioplusplus::ReadOptions opts;
         opts.mPointsOnly = points_only;
         opts.mTimeStep = time_step;
+        opts.mLenient = lenient;
         if (!rArrays.isNull() && !rArrays.isUndefined())
             opts.mDataArrays = emscripten::vecFromJSArray<std::string>(rArrays);
         return mesh_to_val(meshioplusplus::registry_read(rPath, fmt, opts));
@@ -1761,11 +1765,20 @@ meshioplusplus::XdmfTimeSeriesWriter& xdmf_series_lookup(int handle) {
  * @return an opaque handle to pass to the other `xdmfSeries*` functions.
  * @throws meshioplusplus::WriteError on an unknown data format.
  */
-int xdmf_series_create_js(const std::string& rPath, const std::string& rDataFormat, int gzipLevel) {
+int xdmf_series_create_js(const std::string& rPath, const std::string& rDataFormat, int gzipLevel,
+                          const std::string& rMode, bool autoFlush) {
     return with_js_errors([&]() -> int {
         static int next_handle = 1;
-        auto writer =
-            std::make_unique<meshioplusplus::XdmfTimeSeriesWriter>(rPath, rDataFormat, gzipLevel);
+        if (rMode != "truncate" && rMode != "append")
+            throw meshioplusplus::WriteError(
+                "meshio++ (wasm): mode must be 'truncate' or "
+                "'append', got '" +
+                rMode + "'");
+        auto writer = std::make_unique<meshioplusplus::XdmfTimeSeriesWriter>(
+            rPath, rDataFormat, gzipLevel,
+            rMode == "append" ? meshioplusplus::XdmfSeriesMode::Append
+                              : meshioplusplus::XdmfSeriesMode::Truncate);
+        writer->SetAutoFlush(autoFlush);
         const int handle = next_handle++;
         xdmf_series_table().emplace(handle, std::move(writer));
         return handle;
@@ -1780,6 +1793,51 @@ void xdmf_series_write_points_cells_js(int handle, const val& rMeshObj) {
 /** @brief Append one step's `point_data`/`cell_data` at simulation time `time`. */
 void xdmf_series_write_data_js(int handle, double time, const val& rMeshObj) {
     with_js_errors([&]() { xdmf_series_lookup(handle).WriteData(time, val_to_mesh(rMeshObj)); });
+}
+
+/**
+ * @brief Append one step from `{name: Float64Array}` objects, with no mesh.
+ *
+ * The granularity a solver has once `xdmfSeriesWritePointsCells` has fixed the
+ * geometry. Components come from an optional parallel `{name: n}` object,
+ * defaulting to 1, since a flat typed array carries no shape of its own.
+ */
+void xdmf_series_write_data_arrays_js(int handle, double time, const val& rPointData,
+                                      const val& rCellData, const val& rComponents) {
+    with_js_errors([&]() {
+        const auto convert = [&](const val& rSrc) {
+            std::vector<meshioplusplus::XdmfTimeSeriesWriter::NamedArray> out;
+            if (rSrc.isNull() || rSrc.isUndefined())
+                return out;
+            const val keys = val::global("Object").call<val>("keys", rSrc);
+            const unsigned n = keys["length"].as<unsigned>();
+            for (unsigned i = 0; i < n; ++i) {
+                const std::string name = keys[i].as<std::string>();
+                meshioplusplus::XdmfTimeSeriesWriter::NamedArray a;
+                a.mName = name;
+                a.mNumComponents = 1;
+                if (!rComponents.isNull() && !rComponents.isUndefined()) {
+                    const val nc = rComponents[name];
+                    if (!nc.isUndefined() && !nc.isNull())
+                        a.mNumComponents = static_cast<std::size_t>(nc.as<double>());
+                }
+                a.mValues = emscripten::convertJSArrayToNumberVector<double>(rSrc[name]);
+                out.push_back(std::move(a));
+            }
+            return out;
+        };
+        xdmf_series_lookup(handle).WriteData(time, convert(rPointData), convert(rCellData));
+    });
+}
+
+/**
+ * @brief Write the `.xdmf` as it stands, without finalizing.
+ *
+ * So a run that is killed or still going leaves a readable file covering every
+ * flushed step. Safe to call repeatedly; a no-op once finalized.
+ */
+void xdmf_series_flush_js(int handle) {
+    with_js_errors([&]() { xdmf_series_lookup(handle).Flush(); });
 }
 
 /** @brief Write the `.xdmf` light data and close the heavy-data container.
@@ -1866,6 +1924,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("xdmfSeriesCreate", &xdmf_series_create_js);
     emscripten::function("xdmfSeriesWritePointsCells", &xdmf_series_write_points_cells_js);
     emscripten::function("xdmfSeriesWriteData", &xdmf_series_write_data_js);
+    emscripten::function("xdmfSeriesWriteDataArrays", &xdmf_series_write_data_arrays_js);
+    emscripten::function("xdmfSeriesFlush", &xdmf_series_flush_js);
     emscripten::function("xdmfSeriesFinalize", &xdmf_series_finalize_js);
     emscripten::function("xdmfSeriesNumSteps", &xdmf_series_num_steps_js);
     emscripten::function("xdmfSeriesFinalized", &xdmf_series_finalized_js);
