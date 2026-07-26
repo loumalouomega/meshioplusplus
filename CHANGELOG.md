@@ -14,6 +14,13 @@ Closes the limitations and follow-ups recorded against v8.9.0's installable C++
 API — the gaps a simulation-code consumer (the motivating one being a Kratos
 Multiphysics application) actually hits.
 
+The major-version bump marks that C++-consumer milestone; it is **not** a breaking
+change — everything below is additive, and every existing surface (Python, C API,
+Fortran, Julia, R, WASM, both CLIs) behaves as before. One practical consequence of
+the number itself: the CMake package's compatibility mode is `SameMajorVersion`, so a
+`find_package(meshioplusplus 8.x ...)` minimum-version request rejects a 9.x install —
+consumers pinning a minimum should ask for `9.0`.
+
 ### Kratos consumers
 
 - **`KratosMesh::GetModelPart()` gained a `const` overload.** It was non-`const`
