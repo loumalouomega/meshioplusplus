@@ -1384,7 +1384,7 @@ TEST(CApi, PartitionGhostLayers) {
 TEST(CApi, PartitionErrorsAreGuardedNotThrown) {
     mio_mesh* m = build_tet_mesh();
     // Bad method name, bad nparts, negative ghost layers: NULL + last_error,
-    // no throw. (A POSITIVE ghost_layers is a supported request since v8.10.0
+    // no throw. (A POSITIVE ghost_layers is a supported request since v9.0.0
     // and is exercised in PartitionGhostLayers below.)
     EXPECT_EQ(mio_partition(m, 2, "metis", 0.03, "eco", 0, 0, 0, ""), nullptr);
     EXPECT_NE(std::string(mio_last_error()), "");

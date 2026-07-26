@@ -174,7 +174,7 @@ TEST(KratosBackend, InvalidateBlocksRebuildsFromModelPart) {
 
 TEST(KratosBackend, GetModelPartIsReachableThroughAConstMesh) {
     // The whole point: a wrapper whose API takes `const Mesh&` must be able to
-    // reach the ModelPart. Before v8.10.0 there was no const overload at all.
+    // reach the ModelPart. Before v9.0.0 there was no const overload at all.
     const Mesh m = mt::tet_mesh();
     const ModelPart& r_mp = m.GetModelPart();
     EXPECT_EQ(r_mp.NumberOfNodes(), 5u);

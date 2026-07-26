@@ -47,7 +47,7 @@ bin/meshioplusplus                # the CLI, when BUILD_CLI=ON
 ## Consuming it
 
 ```cmake
-find_package(meshioplusplus 8.9 CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.0 CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

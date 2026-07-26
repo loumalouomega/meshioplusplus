@@ -524,7 +524,7 @@ program test_fortran_api
             call pieces(i)%free()
         end do
 
-        ! A positive one is a supported request since v8.10.0: it grows each
+        ! A positive one is a supported request since v9.0.0: it grows each
         ! piece by a shared-node halo, so no piece can shrink.
         pieces = m%partition(2, ghost_layers=1, stat=st)
         call check(st == 0, 'partition accepts a positive ghost_layers')

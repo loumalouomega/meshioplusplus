@@ -8,7 +8,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
-## v8.10.0 (2026-07-25)
+## v9.0.0 (2026-07-25)
 
 Closes the limitations and follow-ups recorded against v8.9.0's installable C++
 API — the gaps a simulation-code consumer (the motivating one being a Kratos
@@ -156,6 +156,9 @@ Multiphysics application) actually hits.
   backend in both a static and a shared configuration.
 - Conan gains `with_cxx_api` / `cxx_api_backends` options (and Conan components when the
   C++ API is on); vcpkg gains `cxx-api`, `cxx-api-native` and `cxx-api-kratos` features.
+- `build/configure.sh` / `configure.bat` gain `--install-cpp` and `--cpp-backends <LIST>`,
+  and print the matching `cmake --install` line, so the documented convenience path can
+  produce the C++ install without hand-writing the CMake invocation.
 
 ### Fixes
 
@@ -166,6 +169,11 @@ Multiphysics application) actually hits.
   tree, breaking `find_package` outright on any machine without that tree.
 - `meshioplusplus.pc`'s `Libs.private` was missing `-lzstd` / `-llz4` despite the build
   options existing, so a static link against a zstd- or lz4-enabled build under-linked.
+- The pybind11 `_core` module's wheel install rule is now gated on scikit-build-core's
+  `SKBUILD` variable. Its `DESTINATION meshioplusplus` is relative to the wheel platlib,
+  so a plain `cmake --install` of a Python-enabled tree — a normal thing to do now that
+  the C++ API installs — used to dump a stray `<prefix>/meshioplusplus/_core*.so` at the
+  prefix root. Wheels and editable installs are unaffected.
 
 ## v8.8.0 (2026-07-25)
 

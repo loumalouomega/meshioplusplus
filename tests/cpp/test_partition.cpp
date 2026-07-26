@@ -363,7 +363,7 @@ TEST(Partition, InvalidNPartsThrows) {
 }
 
 TEST(Partition, GhostLayersZeroIsAPartitionOfUnity) {
-    // The v8.10.0 contract for the unghosted case is unchanged: every cell
+    // The v9.0.0 contract for the unghosted case is unchanged: every cell
     // lands in exactly one piece and nothing carries a partition:ghost tag.
     const Mesh m = quad_grid(4, 4);
     PartitionOptions o = opts(3);

@@ -128,7 +128,7 @@ TEST(MeshApi, RaggedBlocks) {
 }
 
 TEST(MeshApi, DataNamesStaySortedAfterLaterInserts) {
-    // The name lists are memoized (v8.10.0). Reading them BEFORE each insert is
+    // The name lists are memoized (v9.0.0). Reading them BEFORE each insert is
     // the point: a cache that failed to invalidate would keep returning the
     // earlier answer, silently changing on-disk field order rather than
     // crashing. Every backend must pass this identically.
