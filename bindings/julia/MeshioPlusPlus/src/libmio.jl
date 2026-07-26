@@ -122,10 +122,13 @@ struct _CReadOpts
     num_arrays::Int64
     mmap_mode::Cint
     _pad::Cint
-    # Which step of a multi-step file to read; took one of the six former
-    # reserved slots, so the struct is still 80 bytes (see _check_abi_layout).
+    # `time_step` (which step of a multi-step file to read) and `lenient`
+    # (downgrade unrepresentable-construct errors to a warning) each took one of
+    # the six former reserved slots, so the struct is still 80 bytes -- see
+    # _check_abi_layout, which is what would catch a mismatch.
     time_step::Int64
-    reserved::NTuple{5,Int64}
+    lenient::Int64
+    reserved::NTuple{4,Int64}
 end
 
 """Mirror of C `mio_stats_report`."""
