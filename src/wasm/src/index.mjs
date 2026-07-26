@@ -54,6 +54,8 @@ function resolveVariant(variant) {
  * @typedef {Object} XdmfTimeSeriesWriter
  * @property {(mesh: Mesh) => void} writePointsCells - the static grid, once.
  * @property {(time: number, mesh: Mesh) => void} writeData - one step's data.
+ * @property {(time: number, pointData: Object<string, Float64Array>, cellData?: Object<string, Float64Array>, components?: Object<string, number>) => void} writeDataArrays - one step from raw arrays.
+ * @property {() => void} flush - write the `.xdmf` as it stands, without finalizing.
  * @property {() => void} finalize - write the `.xdmf`; idempotent.
  * @property {() => number} numSteps
  * @property {() => boolean} finalized
@@ -86,7 +88,7 @@ function resolveVariant(variant) {
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
- *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number}) => Mesh,
+ *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean}) => Mesh,
  *   readMetadata: (path: string, format?: string) => object,
  *   readerSupportsOptions: (format: string) => boolean,
  *   writeMesh: (path: string, mesh: Mesh, format?: string) => void,
@@ -127,7 +129,7 @@ function resolveVariant(variant) {
  *   dataCalc: (mesh: Mesh, expression: string, location: string, outputName: string, overwrite?: boolean) => Mesh,
  *   dataCondition: (mesh: Mesh, location: string, names?: string[], mode?: string, lo?: number, hi?: number, scope?: string, nanPolicy?: string, nanReplacement?: number, suffix?: string) => Mesh,
  *   dataInfo: (mesh: Mesh) => object[],
- *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number}) => XdmfTimeSeriesWriter,
+ *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
  * }>}
  */
 export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto' } = {}) {
@@ -148,10 +150,18 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // and filtered, so the result is the same either way.
         // `timeStep` picks a step of a multi-step file: 0 (default) is the
         // first, negative counts from the end, out of range throws.
+        // `lenient` downgrades "this reader cannot represent construct X" to a
+        // warning plus a skip; a malformed file still throws.
         readMeshSelective: (
             path,
-            { format = '', pointsOnly = false, arrays = null, timeStep = 0 } = {},
-        ) => Module.readMeshSelective(path, format, pointsOnly, arrays, timeStep),
+            {
+                format = '',
+                pointsOnly = false,
+                arrays = null,
+                timeStep = 0,
+                lenient = false,
+            } = {},
+        ) => Module.readMeshSelective(path, format, pointsOnly, arrays, timeStep, lenient),
         // Summarize a file without loading its heavy arrays. The returned
         // object's `fellBackToFullRead` says whether that was actually cheap.
         readMetadata: (path, format = '') => Module.readMetadata(path, format),
@@ -375,16 +385,26 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // embind class_); this wrapper is the ergonomic face of it, so callers
         // never see the handle and never call an Emscripten `.delete()`.
         //
-        // The `.xdmf` only appears at close()/finalize() -- the collection
-        // element has to enclose every step -- and with dataFormat 'HDF' the
-        // series is TWO files in the virtual FS: `<path>` and its sibling
-        // `<path minus extension>.h5`. Copy BOTH out of Module.FS.
-        createXdmfTimeSeriesWriter: (path, { dataFormat = 'HDF', gzipLevel = -1 } = {}) => {
-            const handle = Module.xdmfSeriesCreate(path, dataFormat, gzipLevel);
+        // The `.xdmf` appears at close()/finalize(), or earlier at a flush() --
+        // the collection element has to enclose every step -- and with
+        // dataFormat 'HDF' the series is TWO files in the virtual FS: `<path>`
+        // and its sibling `<path minus extension>.h5`. Copy BOTH out of
+        // Module.FS. `mode: 'append'` continues a series already at `path`.
+        createXdmfTimeSeriesWriter: (
+            path,
+            { dataFormat = 'HDF', gzipLevel = -1, mode = 'truncate', autoFlush = false } = {},
+        ) => {
+            const handle = Module.xdmfSeriesCreate(path, dataFormat, gzipLevel, mode, autoFlush);
             let open = true;
             return {
                 writePointsCells: (mesh) => Module.xdmfSeriesWritePointsCells(handle, mesh),
                 writeData: (time, mesh) => Module.xdmfSeriesWriteData(handle, time, mesh),
+                // Raw solver arrays instead of a mesh; `components` gives the
+                // per-entity width of any array that is not a scalar.
+                writeDataArrays: (time, pointData, cellData = {}, components = {}) =>
+                    Module.xdmfSeriesWriteDataArrays(handle, time, pointData, cellData, components),
+                // Make the `.xdmf` readable now, without finalizing.
+                flush: () => Module.xdmfSeriesFlush(handle),
                 finalize: () => Module.xdmfSeriesFinalize(handle),
                 numSteps: () => Module.xdmfSeriesNumSteps(handle),
                 finalized: () => Module.xdmfSeriesFinalized(handle),
