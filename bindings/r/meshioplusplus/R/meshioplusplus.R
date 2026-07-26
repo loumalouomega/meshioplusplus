@@ -528,7 +528,8 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #' @param imbalance KaHIP only: allowed imbalance fraction in (0, 1).
 #' @param partition_mode KaHIP only: `"fast"`, `"eco"` or `"strong"`.
 #' @param seed KaHIP only: random seed.
-#' @param ghost_layers Reserved; must be 0.
+#' @param ghost_layers Grow each piece by this many shared-node BFS layers of
+#'   other parts' cells (a halo), tagged `partition:ghost` (0 = owned).
 #' @param weights Name of a scalar numeric cell-data array of per-cell weights.
 #' @return A `mio_mesh`, or a named list containing one plus the operation's
 #'   maps and counters. `mio_quality_counts()`, `mio_stats()` and `mio_diff()`
@@ -856,3 +857,105 @@ mio_data_condition <- function(mesh, location, names = NULL, cond_mode = "clamp"
 #' @rdname mio_data_drop
 #' @export
 mio_data_info <- function(mesh) .Call(R_mio_data_info, mesh)
+
+# --- transient (time-series) XDMF writing -------------------------------------
+
+#' Write a transient (time-series) XDMF file
+#'
+#' The write half of what `mio_read(time_step = )` and
+#' `mio_read_metadata()$time_values` expose on the read side, and the one writer
+#' `mio_write()` cannot express: a series is a **stateful** multi-call object.
+#' The grid is written once with `mio_xdmf_series_write_points_cells()` and each
+#' solve appends a cheap step with `mio_xdmf_series_write_data()`.
+#'
+#' The `.xdmf` light data is **buffered until the series is finalized**, so the
+#' file is only readable after `mio_xdmf_series_finalize()` or
+#' `mio_xdmf_series_release()`. Heavy data for `data_format = "HDF"` goes to a
+#' `<path minus extension>.h5` *sibling* of the `.xdmf`.
+#'
+#' The handle is an external pointer with a registered finalizer, exactly like
+#' [mio_mesh()], so it is released (and finalized) on garbage collection;
+#' `mio_xdmf_series_release()` does it immediately and is idempotent. A write
+#' failure during that implicit finalize cannot be reported from a finalizer,
+#' which is why `mio_xdmf_series_finalize()` exists as an explicit call.
+#'
+#' @param path Path of the `.xdmf`/`.xmf` light-data file to write.
+#' @param data_format `"HDF"` (the default; needs an HDF5-enabled library),
+#'   `"XML"` (everything inline in the `.xdmf`) or `"Binary"`. An unknown
+#'   format, or `"HDF"` against a library built without HDF5, is an error.
+#' @param gzip_level Gzip level for `"HDF"` datasets; negative (the default)
+#'   means no compression. Ignored by the other formats.
+#' @param series A `mio_xdmf_series` object.
+#' @param mesh A `mio_mesh`. `mio_xdmf_series_write_points_cells()` uses only
+#'   its points and cells; `mio_xdmf_series_write_data()` uses only its
+#'   `point_data`/`cell_data`, so a solver can pass the very object it updates
+#'   in place. Its cell blocks must match those of the static grid.
+#' @param time The step's time value.
+#' @param x A `mio_xdmf_series` object.
+#' @param ... Ignored.
+#' @return `mio_xdmf_series()` returns a new `mio_xdmf_series`.
+#'   `mio_xdmf_series_num_steps()` returns the number of steps written so far
+#'   (a `double`; R has no native 64-bit integer). The write, finalize and
+#'   release functions return `NULL` invisibly.
+#'   `mio_xdmf_series_is_open()` returns a single logical.
+#' @examples
+#' \dontrun{
+#' s <- mio_xdmf_series("simulation.xdmf", data_format = "XML")
+#' mio_xdmf_series_write_points_cells(s, mesh)
+#' for (k in 0:9) {
+#'   mio_xdmf_series_write_data(s, k * 0.1, mesh)
+#' }
+#' mio_xdmf_series_finalize(s)
+#' mio_xdmf_series_release(s)
+#' }
+#' @export
+mio_xdmf_series <- function(path, data_format = "HDF", gzip_level = -1L) {
+  .Call(
+    R_mio_xdmf_series_create, as.character(path),
+    if (is.null(data_format)) NULL else as.character(data_format),
+    as.integer(gzip_level)
+  )
+}
+
+#' @rdname mio_xdmf_series
+#' @export
+mio_xdmf_series_write_points_cells <- function(series, mesh) {
+  invisible(.Call(R_mio_xdmf_series_write_points_cells, series, mesh))
+}
+
+#' @rdname mio_xdmf_series
+#' @export
+mio_xdmf_series_write_data <- function(series, time, mesh) {
+  invisible(.Call(R_mio_xdmf_series_write_data, series, as.numeric(time), mesh))
+}
+
+#' @rdname mio_xdmf_series
+#' @export
+mio_xdmf_series_finalize <- function(series) {
+  invisible(.Call(R_mio_xdmf_series_finalize, series))
+}
+
+#' @rdname mio_xdmf_series
+#' @export
+mio_xdmf_series_num_steps <- function(series) .Call(R_mio_xdmf_series_num_steps, series)
+
+#' @rdname mio_xdmf_series
+#' @export
+mio_xdmf_series_release <- function(series) {
+  invisible(.Call(R_mio_xdmf_series_release, series))
+}
+
+#' @rdname mio_xdmf_series
+#' @export
+mio_xdmf_series_is_open <- function(series) .Call(R_mio_xdmf_series_is_open, series)
+
+#' @rdname mio_xdmf_series
+#' @export
+print.mio_xdmf_series <- function(x, ...) {
+  if (!mio_xdmf_series_is_open(x)) {
+    cat("<mio_xdmf_series: released>\n")
+  } else {
+    cat(sprintf("<mio_xdmf_series: %g step(s) written>\n", mio_xdmf_series_num_steps(x)))
+  }
+  invisible(x)
+}
