@@ -27,6 +27,8 @@ set "WITH_ZLIB=OFF"
 set "TESTS=OFF"
 set "C_API=OFF"
 set "FORTRAN=OFF"
+set "INSTALL_CPP=OFF"
+set "CPP_BACKENDS="
 set "CLI=OFF"
 set "DO_BUILD=no"
 set "PYTHON_EXE="
@@ -46,6 +48,8 @@ if /I "%~1"=="--without-zlib"   set "WITH_ZLIB=OFF" & shift & goto parse
 if /I "%~1"=="--tests"          set "TESTS=ON" & shift & goto parse
 if /I "%~1"=="--c-api"          set "C_API=ON" & shift & goto parse
 if /I "%~1"=="--fortran"        set "FORTRAN=ON" & set "C_API=ON" & shift & goto parse
+if /I "%~1"=="--install-cpp"    set "INSTALL_CPP=ON" & shift & goto parse
+if /I "%~1"=="--cpp-backends"   set "CPP_BACKENDS=%~2" & set "INSTALL_CPP=ON" & shift & shift & goto parse
 if /I "%~1"=="--cli"            set "CLI=ON" & shift & goto parse
 if /I "%~1"=="--build"          set "DO_BUILD=yes" & shift & goto parse
 if /I "%~1"=="--python"         set "PYTHON_EXE=%~2" & shift & shift & goto parse
@@ -79,6 +83,11 @@ set "BUILD_DIR=%SCRIPT_DIR%cpp-%BUILD_TYPE%%TREE_SUFFIX%"
 set "EXTRA="
 for /f "delims=" %%P in ('"%PYTHON_EXE%" -c "import pybind11; print(pybind11.get_cmake_dir())" 2^>nul') do set "EXTRA=-Dpybind11_DIR=%%P"
 if not "%TBB_DIR%"=="" set "EXTRA=%EXTRA% -DTBB_DIR=%TBB_DIR%"
+rem Commas become the semicolons CMake lists want. cmd splits UNQUOTED batch
+rem parameters on both , and ; so a multi-backend list must be quoted either
+rem way: --cpp-backends "MESHIO,KRATOS". Only passed when given, so the CMake
+rem cache default stays authoritative.
+if not "%CPP_BACKENDS%"=="" set "EXTRA=%EXTRA% -DMESHIOPLUSPLUS_INSTALL_CPP_BACKENDS=%CPP_BACKENDS:,=;%"
 
 echo == meshio++ configure ==
 echo   source:    %SOURCE_DIR%
@@ -89,6 +98,7 @@ echo   mesh:      %MESH_BACKEND% (Python extension: %BUILD_PYTHON%)
 echo   HDF5:      %WITH_HDF5%   netCDF: %WITH_NETCDF%   zlib: %WITH_ZLIB%
 echo   tests:     %TESTS%
 echo   C API:     %C_API%   Fortran: %FORTRAN%
+echo   C++ API:   %INSTALL_CPP%
 echo   CLI:       %CLI%
 echo   python:    %PYTHON_EXE%
 echo.
@@ -102,6 +112,7 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DMESHIOPLUSPLUS_WITH_ZLIB=%WITH_ZLIB% ^
     -DMESHIOPLUSPLUS_BUILD_TESTS=%TESTS% ^
     -DMESHIOPLUSPLUS_BUILD_C_API=%C_API% ^
+    -DMESHIOPLUSPLUS_INSTALL_CPP=%INSTALL_CPP% ^
     -DMESHIOPLUSPLUS_BUILD_CLI=%CLI% ^
     -DMESHIOPLUSPLUS_BUILD_FORTRAN=%FORTRAN% ^
     -DPython_EXECUTABLE="%PYTHON_EXE%" ^
@@ -112,6 +123,7 @@ echo.
 echo == next steps ==
 echo   cmake --build "%BUILD_DIR%" --config %BUILD_TYPE%
 if "%TESTS%"=="ON" echo   ctest --test-dir "%BUILD_DIR%" -C %BUILD_TYPE% --output-on-failure
+if "%INSTALL_CPP%"=="ON" echo   cmake --install "%BUILD_DIR%" --config %BUILD_TYPE% --prefix ^<prefix^>   ^(C++ API, see doc/cpp_api.md^)
 if "%CLI%"=="ON" echo   "%BUILD_DIR%\%BUILD_TYPE%\meshioplusplus.exe" --help   ^(native CLI, no Python^)
 echo.
 echo Python package (editable) with the same options:
@@ -138,6 +150,10 @@ echo   --tests                          also build the GoogleTest suite (CTest)
 echo   --c-api                          build the installable libmeshioplusplus C API
 echo   --fortran                        build the Fortran module (implies --c-api;
 echo                                    needs a Fortran compiler, untested on MSVC)
+echo   --install-cpp                    build the installable C++ API (see doc/cpp_api.md)
+echo   --cpp-backends ^<LIST^>            backends built as meshioplusplus::core_^<backend^>
+echo                                    (quote a multi-entry list: "MESHIO,KRATOS";
+echo                                    default MESHIO;NATIVE;KRATOS; implies --install-cpp)
 echo   --cli                            build the native command-line binary (meshioplusplus)
 echo   --build                          run the build after configuring
 echo   --python ^<exe^>                  Python executable (default: auto)
