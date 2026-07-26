@@ -1239,9 +1239,48 @@ step('XDMF time series (XML): one self-contained file, no companion', () => {
     assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
 });
 
+step('XDMF time series: flush makes a partial series readable', () => {
+    // Without this the light data appears only at finalize, so a run that is
+    // killed leaves heavy data and nothing readable.
+    const w = m.createXdmfTimeSeriesWriter('/flushed.xdmf', { dataFormat: 'XML' });
+    w.writePointsCells(tet);
+    w.writeData(0.0, seriesStep(0));
+    w.flush();
+    assert.deepEqual(Array.from(m.readMetadata('/flushed.xdmf').timeValues), [0]);
+    w.writeData(1.0, seriesStep(1));
+    w.flush();
+    assert.deepEqual(Array.from(m.readMetadata('/flushed.xdmf').timeValues), [0, 1]);
+    w.close();
+});
+
+step('XDMF time series: append continues an existing collection', () => {
+    const w2 = m.createXdmfTimeSeriesWriter('/flushed.xdmf', {
+        dataFormat: 'XML',
+        mode: 'append',
+    });
+    assert.equal(w2.numSteps(), 2, 'existing steps are counted');
+    w2.writeData(2.0, seriesStep(2));
+    w2.close();
+    assert.deepEqual(Array.from(m.readMetadata('/flushed.xdmf').timeValues), [0, 1, 2]);
+    // Nothing earlier was overwritten.
+    assert.deepEqual(
+        Array.from(m.readMeshSelective('/flushed.xdmf', { timeStep: 0 }).point_data.temperature),
+        [0, 1, 2, 3],
+    );
+});
+
+step('XDMF time series: writeDataArrays takes raw solver arrays', () => {
+    const w = m.createXdmfTimeSeriesWriter('/arrays.xdmf', { dataFormat: 'XML' });
+    w.writePointsCells(tet);
+    w.writeDataArrays(0.0, { temperature: new Float64Array([1, 2, 3, 4]) });
+    w.close();
+    const back = m.readMeshSelective('/arrays.xdmf', { timeStep: 0 });
+    assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+});
+
 step('XDMF time series: nothing is on the FS until the series is finalized', () => {
-    // Inherent to the format: the collection element has to enclose every
-    // step, so the light data can only be written at the end.
+    // Still true without an explicit flush: the collection element has to
+    // enclose every step, so the light data is written at the end by default.
     const w = m.createXdmfTimeSeriesWriter('/pending.xdmf', { dataFormat: 'XML' });
     w.writePointsCells(tet);
     w.writeData(0.0, seriesStep(0));
