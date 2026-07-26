@@ -16,8 +16,7 @@
 //
 // System includes
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
@@ -47,23 +46,14 @@ namespace {
 
 // ---- type maps (shared with HMF via detail/xdmf_common.hpp) ----
 
+using xdmfcommon::attribute_type;
 using xdmfcommon::concat_cell_data;
+using xdmfcommon::dims_string;
 using xdmfcommon::meshio_to_xdmf;
+using xdmfcommon::numpy_to_xdmf_dtype;
+using xdmfcommon::pack_mixed_topology;
 using xdmfcommon::split_raw_cell_data;
 using xdmfcommon::xdmf_to_meshio;
-
-int meshio_to_xdmf_index(const std::string& rT) {
-    static const std::unordered_map<std::string, int> m = {
-        {"vertex", 0x1},        {"line", 0x2},          {"triangle", 0x4},     {"quad", 0x5},
-        {"tetra", 0x6},         {"pyramid", 0x7},       {"wedge", 0x8},        {"hexahedron", 0x9},
-        {"line3", 0x22},        {"quad9", 0x23},        {"triangle6", 0x24},   {"quad8", 0x25},
-        {"tetra10", 0x26},      {"pyramid13", 0x27},    {"wedge15", 0x28},     {"wedge18", 0x29},
-        {"hexahedron20", 0x30}, {"hexahedron24", 0x31}, {"hexahedron27", 0x32}};
-    auto it = m.find(rT);
-    if (it == m.end())
-        throw WriteError("XDMF: cannot mix cell type " + rT);
-    return it->second;
-}
 
 std::string xdmf_idx_to_meshio(int idx) {
     static const std::unordered_map<int, std::string> m = {
@@ -89,32 +79,6 @@ int xdmf_idx_num_nodes(int idx) {
     return it->second;
 }
 
-std::pair<const char*, const char*> numpy_to_xdmf_dtype(DType dt) {
-    switch (dt) {
-        case DType::Int8:
-            return {"Int", "1"};
-        case DType::Int16:
-            return {"Int", "2"};
-        case DType::Int32:
-            return {"Int", "4"};
-        case DType::Int64:
-            return {"Int", "8"};
-        case DType::UInt8:
-            return {"UInt", "1"};
-        case DType::UInt16:
-            return {"UInt", "2"};
-        case DType::UInt32:
-            return {"UInt", "4"};
-        case DType::UInt64:
-            return {"UInt", "8"};
-        case DType::Float32:
-            return {"Float", "4"};
-        case DType::Float64:
-            return {"Float", "8"};
-    }
-    return {"Float", "8"};
-}
-
 DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision) {
     int p = std::atoi(rPrecision.c_str());
     if (rDataType == "Int")
@@ -125,19 +89,6 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
                : p == 4 ? DType::UInt32
                         : DType::UInt64;
     return p == 4 ? DType::Float32 : DType::Float64;
-}
-
-std::string attribute_type(const std::vector<std::size_t>& rShape) {
-    if (rShape.size() == 1 || (rShape.size() == 2 && rShape[1] == 1))
-        return "Scalar";
-    if (rShape.size() == 2 && (rShape[1] == 2 || rShape[1] == 3))
-        return "Vector";
-    if ((rShape.size() == 2 && rShape[1] == 9) ||
-        (rShape.size() == 3 && rShape[1] == 3 && rShape[2] == 3))
-        return "Tensor";
-    if (rShape.size() == 2 && rShape[1] == 6)
-        return "Tensor6";
-    return "Matrix";
 }
 
 std::vector<std::size_t> parse_dims(const std::string& rS) {
@@ -298,12 +249,30 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
 }
 
 /**
- * @brief Validate the document and return its `<Grid>`.
+ * @brief What a parsed XDMF document holds: the grid carrying the geometry, and
+ * the steps of a temporal collection if it has one.
+ *
+ * `mSteps` empty means "a plain single-grid file", which is the historical case
+ * and takes the historical code path unchanged.
+ */
+struct XdmfDoc {
+    pugi::xml_node mMeshGrid;            ///< Grid holding `<Topology>`/`<Geometry>`.
+    std::vector<pugi::xml_node> mSteps;  ///< Temporal-collection children, in file order.
+};
+
+/**
+ * @brief Validate the document and locate its mesh grid (and time steps).
  *
  * Shared by the mesh and metadata readers so a summary can never accept a file
- * `read_xdmf` would reject.
+ * `read_xdmf` would reject. A temporal collection (`GridType="Collection"
+ * CollectionType="Temporal"`, what `XdmfTimeSeriesWriter` emits) stores the
+ * static geometry once in a sibling `Uniform` grid and one `<Grid>` per step
+ * inside the collection; the step grids reference the geometry through an
+ * `xi:include` this reader ignores, resolving it structurally instead -- the
+ * same thing the Python `TimeSeriesReader` does, and for the same reason: a
+ * generic XInclude pass would have to implement XPointer.
  */
-pugi::xml_node xdmf_find_grid(const pugi::xml_document& rDoc) {
+XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
     pugi::xml_node root = rDoc.child("Xdmf");
     if (!root)
         throw ReadError("XDMF: missing <Xdmf> root");
@@ -311,10 +280,82 @@ pugi::xml_node xdmf_find_grid(const pugi::xml_document& rDoc) {
     if (!version.empty() && version[0] != '3')
         throw ReadError("XDMF: only version 3 handled by the C++ core");
 
-    pugi::xml_node grid = root.child("Domain").child("Grid");
-    if (!grid)
+    pugi::xml_node domain = root.child("Domain");
+    pugi::xml_node first, uniform, collection;
+    for (pugi::xml_node g : domain.children("Grid")) {
+        if (!first)
+            first = g;
+        const std::string gtype = g.attribute("GridType").value();
+        if (gtype == "Collection" &&
+            std::string(g.attribute("CollectionType").value()) == "Temporal") {
+            if (!collection)
+                collection = g;
+        } else if (gtype == "Uniform" && !uniform) {
+            uniform = g;
+        }
+    }
+    if (!first)
         throw ReadError("XDMF: missing <Grid>");
-    return grid;
+
+    XdmfDoc out;
+    if (!collection) {
+        out.mMeshGrid = first;
+        return out;
+    }
+    for (pugi::xml_node s : collection.children("Grid"))
+        out.mSteps.push_back(s);
+    out.mMeshGrid = uniform;
+    if (!out.mMeshGrid) {
+        // No sibling mesh grid: take the first uniform grid inside the
+        // collection, which is where a writer that repeats the geometry per
+        // step puts it.
+        for (pugi::xml_node s : out.mSteps) {
+            if (std::string(s.attribute("GridType").value()) == "Uniform") {
+                out.mMeshGrid = s;
+                break;
+            }
+        }
+    }
+    if (!out.mMeshGrid)
+        throw ReadError("XDMF: temporal collection carries no mesh grid");
+    return out;
+}
+
+/** @brief Read a grid's `<Topology>`/`<Geometry>` into @p rMesh, ignoring the rest. */
+void xdmf_read_geometry(const pugi::xml_node& rGrid, const fs::path& rBaseDir, Mesh& rMesh) {
+    for (pugi::xml_node c : rGrid.children()) {
+        const std::string tag = c.name();
+        if (tag == "Topology") {
+            std::string ctype = c.attribute("Type") ? c.attribute("Type").value()
+                                                    : c.attribute("TopologyType").value();
+            NDArray data = read_data_item(c.child("DataItem"), rBaseDir);
+            if (ctype == "Mixed")
+                translate_mixed(data, rMesh);
+            else
+                rMesh.AddCellBlock(xdmf_to_meshio(ctype), std::move(data));
+        } else if (tag == "Geometry") {
+            rMesh.AssignPoints(read_data_item(c.child("DataItem"), rBaseDir));
+        }
+    }
+}
+
+/** @brief Attach staged point data and split staged raw cell data onto @p rMesh. */
+void xdmf_attach_data(Mesh& rMesh, std::vector<std::pair<std::string, NDArray>>& rPointData,
+                      std::vector<std::pair<std::string, NDArray>>& rCellDataRaw) {
+    for (auto& kv : rPointData)
+        rMesh.AddPointData(kv.first, std::move(kv.second));
+
+    std::vector<std::size_t> sizes;
+    for (const auto cb : rMesh.CellRange())
+        sizes.push_back(cb.NumCells());
+    for (auto& kv : rCellDataRaw)
+        rMesh.AddCellData(kv.first, split_raw_cell_data(kv.second, sizes));
+}
+
+/** @brief The `<Time Value=...>` of a step grid, or 0 when it carries none. */
+double xdmf_step_time(const pugi::xml_node& rStep) {
+    pugi::xml_node t = rStep.child("Time");
+    return t ? t.attribute("Value").as_double(0.0) : 0.0;
 }
 
 }  // namespace
@@ -323,7 +364,7 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
     if (!doc.load_file(rPath.c_str()))
         throw ReadError("XDMF: could not parse " + rPath);
-    pugi::xml_node grid = xdmf_find_grid(doc);
+    XdmfDoc parsed = xdmf_resolve(doc);
     const bool want_data = rOpts.WantsAnyData();
 
     fs::path base_dir =
@@ -333,6 +374,31 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
     std::vector<std::pair<std::string, NDArray>> point_data;  // preserve order
     std::vector<std::pair<std::string, NDArray>> cell_data_raw;
 
+    if (!parsed.mSteps.empty()) {
+        // Temporal collection: the geometry lives once in the mesh grid and the
+        // requested step's <Grid> carries that step's attributes.
+        xdmf_read_geometry(parsed.mMeshGrid, base_dir, mesh);
+        const std::size_t k = rOpts.ResolveTimeStep(parsed.mSteps.size());
+        for (pugi::xml_node c : parsed.mSteps[k].children()) {
+            if (std::string(c.name()) != "Attribute")
+                continue;  // <Time>, the xi:include placeholder, ...
+            const std::string name = c.attribute("Name").value();
+            const std::string center = c.attribute("Center").value();
+            if (!want_data || !rOpts.WantsArray(name))
+                continue;
+            NDArray data = read_data_item(c.child("DataItem"), base_dir);
+            if (center == "Node")
+                point_data.emplace_back(name, std::move(data));
+            else if (center == "Cell")
+                cell_data_raw.emplace_back(name, std::move(data));
+            else
+                throw ReadError("XDMF: unknown attribute center " + center);
+        }
+        xdmf_attach_data(mesh, point_data, cell_data_raw);
+        return mesh;
+    }
+
+    pugi::xml_node grid = parsed.mMeshGrid;
     for (pugi::xml_node c : grid.children()) {
         std::string tag = c.name();
         if (tag == "Topology") {
@@ -372,15 +438,8 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
-    for (auto& kv : point_data)
-        mesh.AddPointData(kv.first, std::move(kv.second));
-
     // Split raw cell data into per-block arrays (cell_data_from_raw).
-    std::vector<std::size_t> sizes;
-    for (const auto cb : mesh.CellRange())
-        sizes.push_back(cb.NumCells());
-    for (auto& kv : cell_data_raw)
-        mesh.AddCellData(kv.first, split_raw_cell_data(kv.second, sizes));
+    xdmf_attach_data(mesh, point_data, cell_data_raw);
 
     return mesh;
 }
@@ -389,13 +448,35 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
     pugi::xml_document doc;
     if (!doc.load_file(rPath.c_str(), pugi::parse_minimal))
         throw ReadError("XDMF: could not parse " + rPath);
-    pugi::xml_node grid = xdmf_find_grid(doc);
+    XdmfDoc parsed = xdmf_resolve(doc);
 
     MeshMetadata meta;
     // XDMF is the best case for a summary: every <DataItem> declares its shape
     // in a `Dimensions` attribute, so counts are exact without reading any
     // payload -- and for the HDF path, without opening the .h5 file at all.
-    for (pugi::xml_node c : grid.children()) {
+    if (!parsed.mSteps.empty()) {
+        // A temporal collection's step count and time values are the whole point
+        // of summarizing one, and both are XML attributes -- no payload at all.
+        for (const pugi::xml_node& step : parsed.mSteps)
+            meta.mTimeValues.push_back(xdmf_step_time(step));
+        // Array names come from the first step: every step of a series carries
+        // the same attributes, and reporting names that only exist at some other
+        // step would be a worse answer than reporting the file's own shape.
+        for (pugi::xml_node c : parsed.mSteps.front().children()) {
+            if (std::string(c.name()) != "Attribute")
+                continue;
+            const std::string name = c.attribute("Name").value();
+            const std::string center = c.attribute("Center").value();
+            if (center == "Node")
+                meta.mPointDataNames.push_back(name);
+            else if (center == "Cell")
+                meta.mCellDataNames.push_back(name);
+            else
+                throw ReadError("XDMF: unknown attribute center " + center);
+        }
+    }
+
+    for (pugi::xml_node c : parsed.mMeshGrid.children()) {
         const std::string tag = c.name();
         if (tag == "Topology") {
             const std::string ctype = c.attribute("Type") ? c.attribute("Type").value()
@@ -414,6 +495,11 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
                 parse_dims(c.child("DataItem").attribute("Dimensions").value());
             meta.mNumPoints = dims.empty() ? 0 : dims[0];
             meta.mPointDim = dims.size() >= 2 ? dims[1] : 3;
+        } else if (!parsed.mSteps.empty()) {
+            // In a temporal file the mesh grid contributes geometry only; its
+            // attributes (if it doubles as step 0) were already taken above, and
+            // <Time>/xi:include are not sections this reader has to understand.
+            continue;
         } else if (tag == "Attribute") {
             const std::string name = c.attribute("Name").value();
             const std::string center = c.attribute("Center").value();
@@ -439,82 +525,21 @@ MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions&) {
 
 namespace {
 
-struct XmlWriter {
-    const std::string& mDataFormat;
-    std::string mBase;  // path without extension (for .bin / .h5 files)
-    int mCounter = 0;
-    int mGzipLevel = -1;  // HDF only
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-    meshioplusplus::h5::Hid mH5File;  // lazily created sibling <base>.h5
-    std::string mH5Basename;
-#endif
-
-    // Append a <DataItem> under `parent` carrying `rArr` in the chosen format.
-    void AddDataItem(pugi::xml_node parent, const NDArray& rArr) {
-        auto [dtype_s, prec] = numpy_to_xdmf_dtype(rArr.Dtype());
-        std::string dims;
-        for (std::size_t i = 0; i < rArr.Shape().size(); ++i) {
-            if (i)
-                dims += " ";
-            dims += std::to_string(rArr.Shape()[i]);
-        }
-        pugi::xml_node di = parent.append_child("DataItem");
-        di.append_attribute("DataType") = dtype_s;
-        di.append_attribute("Dimensions") = dims.c_str();
-        di.append_attribute("Format") = mDataFormat.c_str();
-        di.append_attribute("Precision") = prec;
-
-        std::size_t rows = rArr.Shape().empty() ? 0 : rArr.Shape()[0];
-        std::size_t cols = rows ? rArr.Size() / rows : 0;
-
-        if (mDataFormat == "Binary") {
-            std::string fn = mBase + std::to_string(mCounter++) + ".bin";
-            std::ofstream bf(fn, std::ios::binary);
-            bf.write(reinterpret_cast<const char*>(rArr.Data()),
-                     static_cast<std::streamsize>(rArr.Nbytes()));
-            di.text().set(fn.c_str());
-            return;
-        }
-        if (mDataFormat == "HDF") {
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-            if (!mH5File.Valid()) {
-                std::string h5_path = mBase + ".h5";
-                mH5File = meshioplusplus::h5::create_file(h5_path);
-                std::size_t slash = h5_path.find_last_of("/\\");
-                mH5Basename = slash == std::string::npos ? h5_path : h5_path.substr(slash + 1);
-            }
-            std::string name = "data" + std::to_string(mCounter++);
-            meshioplusplus::h5::write_dataset(mH5File, name, rArr, mGzipLevel);
-            di.text().set((mH5Basename + ":/" + name).c_str());
-            return;
-#else
-            throw WriteError("XDMF: HDF data format requires an HDF5-enabled build");
-#endif
-        }
-        // XML inline
-        std::string text = "\n";
-        char buf[40];
-        bool is_float = detail::is_float_dtype(rArr.Dtype());
-        bool f32 = rArr.Dtype() == DType::Float32;
-        for (std::size_t r = 0; r < rows; ++r) {
-            for (std::size_t cc = 0; cc < cols; ++cc) {
-                std::size_t i = r * cols + cc;
-                if (is_float) {
-                    std::snprintf(buf, sizeof(buf), f32 ? "%.7e" : "%.16e",
-                                  detail::read_double(rArr, i));
-                } else {
-                    std::snprintf(buf, sizeof(buf), "%lld",
-                                  static_cast<long long>(detail::read_int(rArr, i)));
-                }
-                if (cc)
-                    text += " ";
-                text += buf;
-            }
-            text += "\n";
-        }
-        di.text().set(text.c_str());
-    }
-};
+// Append a <DataItem> under `parent` carrying `rArr`, storing the heavy data
+// through `rStore`. The element side lives here (pugixml is build-only and no
+// installed header may name it); the payload side is shared with the transient
+// writer via xdmfcommon::DataItemStore.
+void xdmf_add_data_item(pugi::xml_node parent, xdmfcommon::DataItemStore& rStore,
+                        const NDArray& rArr) {
+    auto [dtype_s, prec] = numpy_to_xdmf_dtype(rArr.Dtype());
+    const std::string dims = dims_string(rArr);
+    pugi::xml_node di = parent.append_child("DataItem");
+    di.append_attribute("DataType") = dtype_s;
+    di.append_attribute("Dimensions") = dims.c_str();
+    di.append_attribute("Format") = rStore.DataFormat().c_str();
+    di.append_attribute("Precision") = prec;
+    di.text().set(rStore.Store(rArr).c_str());
+}
 
 }  // namespace
 
@@ -533,7 +558,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     if (dot != std::string::npos)
         base = base.substr(0, dot);
 
-    XmlWriter w{rDataFormat, base, 0, gzip_level};
+    xdmfcommon::DataItemStore store(rDataFormat, base, gzip_level);
 
     pugi::xml_document doc;
     pugi::xml_node xdmf = doc.append_child("Xdmf");
@@ -550,7 +575,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     const char* geo_type = (pdim == 1) ? "X" : (pdim == 2) ? "XY" : "XYZ";
     pugi::xml_node geo = grid.append_child("Geometry");
     geo.append_attribute("GeometryType") = geo_type;
-    w.AddDataItem(geo, points);
+    xdmf_add_data_item(geo, store, points);
 
     // Topology
     if (rMesh.NumCellBlocks() == 1) {
@@ -560,36 +585,14 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
         topo.append_attribute("TopologyType") = meshio_to_xdmf(cb.Type());
         topo.append_attribute("NumberOfElements") = std::to_string(cb.NumCells()).c_str();
         topo.append_attribute("NodesPerElement") = std::to_string(detail::cols(conn)).c_str();
-        w.AddDataItem(topo, conn);
+        xdmf_add_data_item(topo, store, conn);
     } else if (rMesh.NumCellBlocks() > 1) {
-        std::size_t total_cells = 0, total_len = 0;
-        for (const auto cb : rMesh.CellRange()) {
-            std::size_t nc = cb.NumCells();
-            std::size_t npc = detail::cols(cb.Conn());
-            std::size_t prefix = (cb.Type() == "vertex" || cb.Type() == "line") ? 2 : 1;
-            total_cells += nc;
-            total_len += nc * (prefix + npc);
-        }
-        NDArray cd(DType::Int64, {total_len});
-        std::int64_t* cp = cd.As<std::int64_t>();
-        std::size_t pos = 0;
-        for (const auto cb : rMesh.CellRange()) {
-            std::size_t nc = cb.NumCells();
-            const NDArray& conn = cb.Conn();
-            std::size_t npc = detail::cols(conn);
-            int idx = meshio_to_xdmf_index(cb.Type());
-            std::size_t prefix = (cb.Type() == "vertex" || cb.Type() == "line") ? 2 : 1;
-            for (std::size_t r = 0; r < nc; ++r) {
-                for (std::size_t pq = 0; pq < prefix; ++pq)
-                    cp[pos++] = idx;
-                for (std::size_t j = 0; j < npc; ++j)
-                    cp[pos++] = detail::read_int(conn, r * npc + j);
-            }
-        }
+        std::size_t total_cells = 0;
+        NDArray cd = pack_mixed_topology(rMesh, total_cells);
         pugi::xml_node topo = grid.append_child("Topology");
         topo.append_attribute("TopologyType") = "Mixed";
         topo.append_attribute("NumberOfElements") = std::to_string(total_cells).c_str();
-        w.AddDataItem(topo, cd);
+        xdmf_add_data_item(topo, store, cd);
     }
 
     // Point data (sorted key order for deterministic output)
@@ -599,7 +602,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
         att.append_attribute("Name") = name.c_str();
         att.append_attribute("AttributeType") = attribute_type(d.Shape()).c_str();
         att.append_attribute("Center") = "Node";
-        w.AddDataItem(att, d);
+        xdmf_add_data_item(att, store, d);
     }
 
     // Cell data (concatenated across blocks: raw_from_cell_data)
@@ -611,7 +614,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
         att.append_attribute("Name") = name.c_str();
         att.append_attribute("AttributeType") = attribute_type(raw.Shape()).c_str();
         att.append_attribute("Center") = "Cell";
-        w.AddDataItem(att, raw);
+        xdmf_add_data_item(att, store, raw);
     }
 
     if (!doc.save_file(rPath.c_str(), "  "))

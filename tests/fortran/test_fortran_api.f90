@@ -517,10 +517,20 @@ program test_fortran_api
         end do
         deallocate (pieces)
 
-        ! ghost_layers is a v1 stub and must fail through stat, not abort.
-        pieces = m%partition(2, ghost_layers=1, stat=st)
-        call check(st /= 0, 'partition rejects ghost_layers /= 0')
+        ! A NEGATIVE ghost_layers must fail through stat, not abort.
+        pieces = m%partition(2, ghost_layers=-1, stat=st)
+        call check(st /= 0, 'partition rejects a negative ghost_layers')
         do i = 1, size(pieces)
+            call pieces(i)%free()
+        end do
+
+        ! A positive one is a supported request since v9.0.0: it grows each
+        ! piece by a shared-node halo, so no piece can shrink.
+        pieces = m%partition(2, ghost_layers=1, stat=st)
+        call check(st == 0, 'partition accepts a positive ghost_layers')
+        call check(size(pieces) == 2, 'ghosted partition still returns nparts pieces')
+        do i = 1, size(pieces)
+            call check(pieces(i)%num_points() > 0, 'ghosted piece is non-empty')
             call pieces(i)%free()
         end do
     end block
@@ -579,6 +589,99 @@ program test_fortran_api
         ! Point/cell indices come back 1-based, as everywhere else in this API.
         call check(size(rentries) == 3, 'entry buffer length')
         call check(rentries(1) == 1_int64 .and. rentries(2) == 4_int64, 'point entries 1-based')
+    end block
+
+    ! ---- transient (time-series) XDMF writing ---------------------------
+    ! The one writer m%write() cannot express: the grid goes out once and each
+    ! solve appends a cheap step. "XML" keeps the whole series in the single
+    ! .xdmf file, so this runs in a build without HDF5 too.
+    block
+        type(mio_xdmf_series) :: series
+        type(mio_mesh) :: step, back
+        type(mio_metadata) :: meta
+        real(real64) :: t, values(5)
+        real(real64), allocatable :: got(:)
+        character(:), allocatable :: series_path
+        integer :: st, k
+
+        series_path = prefix//'_series.xdmf'
+
+        call series%create(series_path, data_format='XML', stat=st)
+        call check(st == 0, 'xdmf series create')
+        call check(series%is_valid(), 'xdmf series handle is valid')
+        call check(series%num_steps() == 0_int64, 'a fresh series has no steps')
+
+        call series%write_points_cells(m, stat=st)
+        call check(st == 0, 'xdmf series write_points_cells')
+
+        ! Three steps at t = 0.0, 0.5, 1.0, whose 'temperature' is t + node id
+        ! so a step mix-up cannot pass: every step's values differ.
+        call step%create()
+        call step%set_points(points)
+        call step%add_cell_block('tetra', conn)
+        do k = 0, 2
+            t = 0.5_real64*real(k, real64)
+            do i = 1, 5
+                values(i) = t + real(i, real64)
+            end do
+            call step%add_point_data('temperature', values, stat=st)
+            call check(st == 0, 'step point_data set')
+            call series%write_data(t, step, stat=st)
+            call check(st == 0, 'xdmf series write_data')
+        end do
+        call check(series%num_steps() == 3_int64, 'three steps written')
+
+        ! The .xdmf light data is buffered until finalize, so nothing is
+        ! readable before this call.
+        call series%finalize(stat=st)
+        call check(st == 0, 'xdmf series finalize')
+        call series%finalize(stat=st)
+        call check(st == 0, 'xdmf series finalize is idempotent')
+        call series%free()
+        call check(.not. series%is_valid(), 'series handle invalid after free')
+        call step%free()
+
+        ! Read the series back through the ordinary reader: metadata reports
+        ! every step's <Time Value> without touching a payload, and time_step
+        ! selects which step's attributes are materialized.
+        meta = mio_read_metadata(series_path, stat=st)
+        call check(st == 0, 'series metadata read')
+        call check(allocated(meta%time_values), 'metadata carries time values')
+        if (allocated(meta%time_values)) then
+            call check(size(meta%time_values) == 3, 'three recorded time values')
+            if (size(meta%time_values) == 3) then
+                write (*, '(a,3(1x,f6.3))') 'fortran xdmf series time values:', &
+                    meta%time_values(1), meta%time_values(2), meta%time_values(3)
+                call check(abs(meta%time_values(1) - 0.0_real64) < 1.0e-12_real64, &
+                           'time value 0')
+                call check(abs(meta%time_values(2) - 0.5_real64) < 1.0e-12_real64, &
+                           'time value 1')
+                call check(abs(meta%time_values(3) - 1.0_real64) < 1.0e-12_real64, &
+                           'time value 2')
+            end if
+        end if
+
+        do k = 0, 2
+            call back%read(series_path, time_step=k, stat=st)
+            call check(st == 0, 'read series step')
+            if (st /= 0) cycle
+            call check(back%num_points() == 5_int64, 'series step has the shared grid')
+            call back%get_point_data('temperature', got, stat=st)
+            call check(st == 0, 'series step point_data')
+            if (st /= 0) cycle
+            write (*, '(a,i0,a,5(1x,f6.3))') 'fortran xdmf series step ', k, &
+                ' temperature:', got(1), got(2), got(3), got(4), got(5)
+            do i = 1, 5
+                call check(abs(got(i) - (0.5_real64*real(k, real64) + real(i, real64))) &
+                           < 1.0e-9_real64, 'series step values')
+            end do
+        end do
+        call back%free()
+
+        ! An unknown data format fails through stat rather than aborting.
+        call series%create(prefix//'_bad.xdmf', data_format='NoSuchFormat', stat=st)
+        call check(st /= 0, 'xdmf series rejects an unknown data format')
+        call check(.not. series%is_valid(), 'a failed create leaves no handle')
     end block
 
     call m%free()

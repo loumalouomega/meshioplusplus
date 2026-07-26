@@ -54,6 +54,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -112,6 +113,6 @@ struct OpenFoamInfo {
  *         callers (the Python shim) catch this and retry with the
  *         pure-Python reader
  */
-Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
+MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
 
 }  // namespace meshioplusplus

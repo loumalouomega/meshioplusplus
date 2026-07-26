@@ -51,6 +51,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -75,7 +76,7 @@ namespace meshioplusplus {
  *       which also hardcodes group slots (`SLOT 1` ASCII / `"Default"`
  *       binary) rather than preserving an original slot name
  */
-void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
+MESHIOPLUSPLUS_API void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
                   bool binary);
 
 /**
@@ -102,6 +103,6 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
  * @note point_data/field_data are never produced; `cell_data["cell_ids"]` is
  *       the only key this reader sets
  */
-Mesh read_flac3d(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_flac3d(const std::string& rPath);
 
 }  // namespace meshioplusplus

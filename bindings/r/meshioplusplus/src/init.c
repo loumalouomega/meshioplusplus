@@ -83,6 +83,15 @@ extern SEXP R_mio_data_calc(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_condition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_info(SEXP);
 
+/* xdmf_series.c */
+extern SEXP R_mio_xdmf_series_create(SEXP, SEXP, SEXP);
+extern SEXP R_mio_xdmf_series_write_points_cells(SEXP, SEXP);
+extern SEXP R_mio_xdmf_series_write_data(SEXP, SEXP, SEXP);
+extern SEXP R_mio_xdmf_series_finalize(SEXP);
+extern SEXP R_mio_xdmf_series_num_steps(SEXP);
+extern SEXP R_mio_xdmf_series_release(SEXP);
+extern SEXP R_mio_xdmf_series_is_open(SEXP);
+
 #define CALLDEF(name, n) {#name, (DL_FUNC)&name, n}
 
 static const R_CallMethodDef CallEntries[] = {
@@ -156,6 +165,13 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_data_calc, 5),
     CALLDEF(R_mio_data_condition, 10),
     CALLDEF(R_mio_data_info, 1),
+    CALLDEF(R_mio_xdmf_series_create, 3),
+    CALLDEF(R_mio_xdmf_series_write_points_cells, 2),
+    CALLDEF(R_mio_xdmf_series_write_data, 3),
+    CALLDEF(R_mio_xdmf_series_finalize, 1),
+    CALLDEF(R_mio_xdmf_series_num_steps, 1),
+    CALLDEF(R_mio_xdmf_series_release, 1),
+    CALLDEF(R_mio_xdmf_series_is_open, 1),
     {NULL, NULL, 0}};
 
 void attribute_visible R_init_meshioplusplus(DllInfo *dll) {
@@ -163,6 +179,7 @@ void attribute_visible R_init_meshioplusplus(DllInfo *dll) {
      * needs no further protection. It tags our external pointers, which is
      * what makes a foreign pointer an error rather than a crash. */
     mio_r_mesh_tag = Rf_install("mio_mesh_handle");
+    mio_r_series_tag = Rf_install("mio_xdmf_series_handle");
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
     R_forceSymbols(dll, TRUE);

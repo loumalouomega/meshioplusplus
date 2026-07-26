@@ -45,6 +45,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -66,7 +67,7 @@ namespace meshioplusplus {
  * @throws WriteError on an unopenable output path or an unwritable geometry
  * @note reads `cell_data["su2:tag"]` to build boundary markers.
  */
-void write_su2(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_su2(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read an SU2 mesh file.
@@ -81,6 +82,6 @@ void write_su2(const std::string& rPath, const Mesh& rMesh);
  *         match a known VTK-style type code)
  * @note cell_data key produced: `"su2:tag"`.
  */
-Mesh read_su2(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_su2(const std::string& rPath);
 
 }  // namespace meshioplusplus

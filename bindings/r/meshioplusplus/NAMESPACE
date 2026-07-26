@@ -1,6 +1,7 @@
 useDynLib(meshioplusplus, .registration = TRUE, .fixes = "")
 
 S3method(print, mio_mesh)
+S3method(print, mio_xdmf_series)
 
 export(mio_add_cell_block)
 export(mio_add_field_data)
@@ -74,3 +75,10 @@ export(mio_stats)
 export(mio_transform)
 export(mio_version)
 export(mio_write)
+export(mio_xdmf_series)
+export(mio_xdmf_series_finalize)
+export(mio_xdmf_series_is_open)
+export(mio_xdmf_series_num_steps)
+export(mio_xdmf_series_release)
+export(mio_xdmf_series_write_data)
+export(mio_xdmf_series_write_points_cells)

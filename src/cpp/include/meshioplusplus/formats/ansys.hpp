@@ -45,6 +45,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -68,7 +69,7 @@ namespace meshioplusplus {
  *         has no entry in the meshio++ -> Ansys type-code map ("illegal
  *         cell type")
  */
-void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary);
+MESHIOPLUSPLUS_API void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Read a Fluent .msh file.
@@ -95,6 +96,6 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary);
  *       carries no per-node/per-cell field values, only geometry and zone
  *       structure
  */
-Mesh read_ansys(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_ansys(const std::string& rPath);
 
 }  // namespace meshioplusplus

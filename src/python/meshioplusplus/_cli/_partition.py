@@ -76,7 +76,8 @@ def add_args(parser):
         "--ghost-layers",
         type=int,
         default=0,
-        help="reserved (BFS ghost growth); only 0 is supported in v1",
+        help="grow each piece by N shared-node BFS layers of other parts' "
+        "cells (a halo), tagged partition:ghost (0 = owned)",
     )
     parser.add_argument(
         "--record-ids",

@@ -39,6 +39,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -85,7 +86,7 @@ namespace meshioplusplus {
  * @throws std::invalid_argument for an unknown array name or colormap, an
  *         out-of-range component, or `vmin > vmax`
  */
-void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".3f",
+MESHIOPLUSPLUS_API void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".3f",
                const std::optional<std::string>& rStrokeWidth = std::nullopt,
                const std::optional<double>& rImageWidth = 100.0,
                const std::string& rFill = "#c8c5bd", const std::string& rStroke = "#000080",

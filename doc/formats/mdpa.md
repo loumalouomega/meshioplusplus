@@ -1,6 +1,6 @@
 # Kratos / MDPA (`.mdpa`)
 
-The [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) model-part data format: block-structured ASCII (`Begin ... / End ...`). This is the largest and most feature-rich format meshio++ supports — it has no C++ implementation.
+The [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) model-part data format: block-structured ASCII (`Begin ... / End ...`). This is the largest and most feature-rich format meshio++ supports. There are **two implementations**: the pure-Python reference below — which the Python API always uses for reading — and a C++ core reader/writer covering the mesh-level blocks, which is what makes `.mdpa` reachable from the C API, Fortran, Julia, R, WebAssembly and the native CLI (see [C++ core](#c-core) below).
 
 | | |
 |---|---|
@@ -82,7 +82,25 @@ MDPA has an unusually rich set of data keys, several structured differently from
 - `SubModelPartElements`/`Conditions` and `MeshElements`/`Conditions` store **raw, unconverted 1-based ids** rather than remapped local indices — this assumes element/condition ids are stable across a read→write cycle (true unless entities are reordered in between).
 - Malformed rows in almost every block type (bad `Table` headers, data-row/variable-count mismatches, out-of-range `SubModelPartNodes` entries) are warned-and-skipped rather than raising — MDPA parsing is deliberately lenient/best-effort given how varied real Kratos input decks are.
 - Writing `ElementalData`/`ConditionalData` omits any entity that was entirely `NaN` (never had data) rather than writing `NaN` literally.
-- No C++ implementation exists for this format at all.
+
+## C++ core
+
+`meshioplusplus::read_mdpa` / `write_mdpa` (`src/cpp/src/formats/mdpa.cpp`) implement the mesh-level part of the format against the uniform mesh API, and are registered in the shared dispatch registry — so `.mdpa` now works from the [C API](../c_api.md), [Fortran](../fortran.md), [Julia](../julia.md), [R](../r.md), [WebAssembly](../wasm.md) and the native CLI. The Kratos entity-name tables are the ones already shared with the [KRATOS mesh backend](../cpp_backends.md) (`backends/kratos_names.hpp`), extended with a longest-suffix fallback so application-specific names such as `SmallDisplacementElement3D4N` resolve through their `Element3D4N` suffix.
+
+What the C++ core maps:
+
+| MDPA | C++ `Mesh` |
+|---|---|
+| `Nodes` | `points` (always 3 columns) |
+| `Elements` / `Conditions` | cell blocks, in file order, plus Int64 `cell_data["gmsh:physical"]` (the property id) |
+| `ModelPartData` | one-element Float64 `field_data` entries (numeric values only) |
+| `NodalData` | `point_data` (+ `"<VAR>_fixed_status"`) |
+| `ElementalData` / `ConditionalData` | `cell_data`, **one array per cell block** — the repo-wide convention, *not* the reference reader's nested-by-cell-type layout |
+| `SubModelPart` | a `Point` and/or `Cell` [named region](../regions.md); nested parts flatten to a `parent/child` name |
+
+Everything the C++ `Mesh` cannot hold makes the reader **throw `ReadError` naming the construct** rather than dropping it silently: `Table`, `Geometries`, `Mesh <id>` and `Constraints` blocks, a non-empty `Properties` body, a non-numeric `ModelPartData` value, non-empty `SubModelPartData`/`SubModelPartTables`, node ids that are not `1..n` in order, and any unrecognized block. The writer emits `ModelPartData`, an empty `Properties 0`, `Nodes`, `Elements`/`Conditions`, the `*Data` blocks and one `SubModelPart` per named region; `Side` regions are dropped with a warning (MDPA has no facet-set concept).
+
+**The Python `meshioplusplus.mdpa.read` deliberately does not use it.** Only the reference reader produces `mesh.misc_data`, `mesh.geometries_block` and the nested-by-cell-type `cell_data` this page documents, so preferring the C++ reader would silently change the Python API's output; reach it explicitly with `meshioplusplus._core.mdpa_read(path)` when you want the standard layout. `meshioplusplus.mdpa.write` *does* use the C++ writer, for real file paths and meshes that carry none of the MDPA extras (`misc_data`, `geometries_block`, `field_data`), falling back to the reference writer otherwise.
 
 ## Notes
 

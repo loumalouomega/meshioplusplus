@@ -33,14 +33,15 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
 
 /** @brief Read an ANSYS Fluent interpolation file (.ip) into a Mesh. */
-Mesh read_ip(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_ip(const std::string& rPath);
 
 /** @brief Write a mesh's nodal fields as a version-3 interpolation file (.ip). */
-void write_ip(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus

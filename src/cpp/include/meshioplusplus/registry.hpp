@@ -50,6 +50,7 @@
 #include <unordered_map>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -65,11 +66,11 @@ using ReadExFn = std::function<Mesh(const std::string&, const ReadOptions&)>;
 using MetadataFn = std::function<MeshMetadata(const std::string&, const ReadOptions&)>;
 
 /** @brief `format name -> reader` for every format readable in this build. */
-const std::map<std::string, ReadFn>& registry_readers();
+MESHIOPLUSPLUS_API const std::map<std::string, ReadFn>& registry_readers();
 
 /** @brief `format name -> writer` for every format writable in this build
  *         (read-only formats like `openfoam` have no entry). */
-const std::map<std::string, WriteFn>& registry_writers();
+MESHIOPLUSPLUS_API const std::map<std::string, WriteFn>& registry_writers();
 
 /**
  * @brief `extension (with leading dot) -> default format name`.
@@ -79,14 +80,14 @@ const std::map<std::string, WriteFn>& registry_writers();
  * (.msh) or ansysinp (.inp) instead. Extensions of optional-dependency
  * formats are present even when the format itself is compiled out.
  */
-const std::map<std::string, std::string>& registry_extension_defaults();
+MESHIOPLUSPLUS_API const std::map<std::string, std::string>& registry_extension_defaults();
 
 /**
  * @brief Resolve the effective format: `rFormat` if non-empty, else the
  *        extension default for `rPath`.
  * @throws ReadError if `rFormat` is empty and the extension is unknown.
  */
-std::string resolve_format(const std::string& rPath, const std::string& rFormat);
+MESHIOPLUSPLUS_API std::string resolve_format(const std::string& rPath, const std::string& rFormat);
 
 /**
  * @brief The optional dependency a known-but-absent format was compiled out
@@ -97,7 +98,7 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
  *         not available in this build (requires HDF5)" instead of "unknown
  *         format".
  */
-const char* registry_compiled_out(const std::string& rFormat);
+MESHIOPLUSPLUS_API const char* registry_compiled_out(const std::string& rFormat);
 
 /**
  * @name Selective reads and metadata
@@ -120,16 +121,16 @@ const char* registry_compiled_out(const std::string& rFormat);
  * follow the repo default rather than the `std::map` of the older tables above
  * (whose type is kept only because it is baked into the flat bindings).
  */
-const std::unordered_map<std::string, ReadExFn>& registry_readers_ex();
+MESHIOPLUSPLUS_API const std::unordered_map<std::string, ReadExFn>& registry_readers_ex();
 
 /** @brief `format name -> metadata reader`, for the formats that have one. */
-const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers();
+MESHIOPLUSPLUS_API const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers();
 
 /**
  * @brief Whether @p rFormat can act on `ReadOptions` rather than being read
  *        whole and filtered afterwards.
  */
-bool registry_reader_supports_options(const std::string& rFormat);
+MESHIOPLUSPLUS_API bool registry_reader_supports_options(const std::string& rFormat);
 
 /**
  * @brief Read @p rPath honouring @p rOptions, falling back to a full read.
@@ -138,7 +139,7 @@ bool registry_reader_supports_options(const std::string& rFormat);
  * correct either way, just not faster. Prefer this over indexing the tables.
  * @throws ReadError if the format is unknown or compiled out.
  */
-Mesh registry_read(const std::string& rPath, const std::string& rFormat,
+MESHIOPLUSPLUS_API Mesh registry_read(const std::string& rPath, const std::string& rFormat,
                    const ReadOptions& rOptions);
 
 /**
@@ -149,7 +150,7 @@ Mesh registry_read(const std::string& rPath, const std::string& rFormat,
  * caller can tell "fast" from merely "worked".
  * @throws ReadError if the format is unknown or compiled out.
  */
-MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
+MESHIOPLUSPLUS_API MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
                                     const ReadOptions& rOptions);
 /** @} */
 

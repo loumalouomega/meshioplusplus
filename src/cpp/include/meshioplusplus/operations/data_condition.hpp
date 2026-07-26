@@ -54,6 +54,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 
@@ -107,7 +108,7 @@ struct DataConditionOptions {
  *         whose block count disagrees with the mesh, on `lo > hi`, or under
  *         `NanPolicy::Fail`.
  */
-Mesh data_condition(const Mesh& rMesh, const DataConditionOptions& rOpts);
+MESHIOPLUSPLUS_API Mesh data_condition(const Mesh& rMesh, const DataConditionOptions& rOpts);
 
 /**
  * @brief Parses a conditioning-mode name.
@@ -115,7 +116,7 @@ Mesh data_condition(const Mesh& rMesh, const DataConditionOptions& rOpts);
  * @return the matching `ConditionMode`.
  * @throws std::invalid_argument on an unknown name.
  */
-ConditionMode condition_mode_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API ConditionMode condition_mode_from_name(const std::string& rName);
 
 /**
  * @brief Parses a conditioning-scope name.
@@ -123,6 +124,6 @@ ConditionMode condition_mode_from_name(const std::string& rName);
  * @return the matching `ConditionScope`.
  * @throws std::invalid_argument on an unknown name.
  */
-ConditionScope condition_scope_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API ConditionScope condition_scope_from_name(const std::string& rName);
 
 }  // namespace meshioplusplus

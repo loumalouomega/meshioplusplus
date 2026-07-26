@@ -43,6 +43,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -65,7 +66,7 @@ namespace meshioplusplus {
  *        used to write
  * @throws WriteError if the connectivity array's dtype is unsupported
  */
-void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level);
+MESHIOPLUSPLUS_API void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level);
 
 /**
  * @brief Read a CGNS/HDF5 file written by @ref write_cgns (or a compatible
@@ -82,7 +83,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level);
  *         connectivity doesn't reshape to exactly 4 columns per cell ("Can
  *         only read tetrahedra."), or the connectivity dtype is unsupported
  */
-Mesh read_cgns(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
 
 }  // namespace meshioplusplus
 

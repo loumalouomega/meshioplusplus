@@ -52,6 +52,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -78,14 +79,14 @@ enum class NanPolicy {
  * @return the matching `DataLocation`.
  * @throws std::invalid_argument on an unknown name.
  */
-DataLocation data_location_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API DataLocation data_location_from_name(const std::string& rName);
 
 /**
  * @brief The canonical name of a location, as used in diagnostics.
  * @param Location the location to name.
  * @return `"point_data"`, `"cell_data"` or `"field_data"`.
  */
-const char* data_location_name(DataLocation Location);
+MESHIOPLUSPLUS_API const char* data_location_name(DataLocation Location);
 
 /**
  * @brief Parses a NaN-policy name.
@@ -93,7 +94,7 @@ const char* data_location_name(DataLocation Location);
  * @return the matching `NanPolicy`.
  * @throws std::invalid_argument on an unknown name.
  */
-NanPolicy nan_policy_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API NanPolicy nan_policy_from_name(const std::string& rName);
 
 /**
  * @brief The names present at @p Location, sorted.
@@ -104,7 +105,7 @@ NanPolicy nan_policy_from_name(const std::string& rName);
  * @param Location which data map to list.
  * @return the sorted array names.
  */
-std::vector<std::string> data_names(const Mesh& rMesh, DataLocation Location);
+MESHIOPLUSPLUS_API std::vector<std::string> data_names(const Mesh& rMesh, DataLocation Location);
 
 /**
  * @brief Whether @p rName exists at @p Location in @p rMesh.
@@ -113,7 +114,7 @@ std::vector<std::string> data_names(const Mesh& rMesh, DataLocation Location);
  * @param rName the array name.
  * @return `true` if present.
  */
-bool data_has(const Mesh& rMesh, DataLocation Location, const std::string& rName);
+MESHIOPLUSPLUS_API bool data_has(const Mesh& rMesh, DataLocation Location, const std::string& rName);
 
 /**
  * @brief Builds the standard "unknown key" diagnostic, listing what *is* there.
@@ -125,7 +126,7 @@ bool data_has(const Mesh& rMesh, DataLocation Location, const std::string& rName
  * @param rName the key that was not found.
  * @return the formatted message.
  */
-std::string data_unknown_key_message(const Mesh& rMesh, DataLocation Location,
+MESHIOPLUSPLUS_API std::string data_unknown_key_message(const Mesh& rMesh, DataLocation Location,
                                      const std::string& rName);
 
 /**
@@ -134,6 +135,6 @@ std::string data_unknown_key_message(const Mesh& rMesh, DataLocation Location,
  * @param rArray the array to measure.
  * @return the component count (at least 1).
  */
-std::size_t data_num_components(const NDArray& rArray);
+MESHIOPLUSPLUS_API std::size_t data_num_components(const NDArray& rArray);
 
 }  // namespace meshioplusplus

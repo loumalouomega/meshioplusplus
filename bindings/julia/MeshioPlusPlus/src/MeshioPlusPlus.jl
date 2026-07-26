@@ -57,6 +57,7 @@ include("errors.jl")
 include("mesh.jl")
 include("regions.jl")
 include("operations.jl")
+include("xdmf_series.jl")
 
 function __init__()
     _load_library()
@@ -93,5 +94,8 @@ export interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, refine, decimate, partition, partition_labels
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export data_calc, data_condition, data_info
+
+# Transient (time-series) XDMF writing
+export XdmfSeries, write_points_cells!, write_data!, finalize!, num_steps
 
 end # module

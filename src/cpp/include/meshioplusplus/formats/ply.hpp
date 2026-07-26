@@ -51,6 +51,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -81,7 +82,7 @@ namespace meshioplusplus {
  *        present (default true); false keeps the legacy behavior
  * @throws WriteError on an unopenable output path
  */
-void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin = true);
+MESHIOPLUSPLUS_API void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin = true);
 
 /**
  * @brief Read a PLY file (ascii or binary, either endianness).
@@ -99,6 +100,6 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
  *         then falls back to the Python reader, which does support those.
  * @note point_data keys are the raw PLY property names (no `ply:` prefix).
  */
-Mesh read_ply(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_ply(const std::string& rPath);
 
 }  // namespace meshioplusplus

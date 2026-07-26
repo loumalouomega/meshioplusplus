@@ -1976,3 +1976,221 @@ def test_mdpa_unterminated_nodes_block_raises(tmp_path):
     p.write_text("Begin Nodes\n1 0.0 0.0 0.0\n")
     with pytest.raises(meshioplusplus.ReadError):
         _mdpa_py_read(str(p))
+
+
+# --- C++ core path (meshioplusplus._core.mdpa_read / mdpa_write) -------------
+#
+# `meshioplusplus.mdpa.read` deliberately stays on the pure-Python reference
+# (see the shim's docstring: only it carries `misc_data`/`geometries_block` and
+# the per-cell-type `cell_data` layout), so the C++ reader is exercised here
+# directly. `meshioplusplus.mdpa.write` *does* use the C++ writer for meshes
+# with no MDPA extras, which is what the cross-compatibility tests below pin.
+
+import copy  # noqa: E402
+
+from meshioplusplus import _core  # noqa: E402
+from meshioplusplus.mdpa._mdpa import write as _mdpa_py_write  # noqa: E402
+
+_CPP_MESHES = [
+    helpers.line_mesh,
+    helpers.tri_mesh,
+    helpers.triangle6_mesh,
+    helpers.quad_mesh,
+    helpers.quad8_mesh,
+    helpers.tri_quad_mesh,
+    helpers.tet_mesh,
+    helpers.tet10_mesh,
+    helpers.hex_mesh,
+    helpers.hex20_mesh,
+]
+
+
+def _assert_same_geometry(a, b):
+    np.testing.assert_allclose(a.points, b.points[:, : a.points.shape[1]], atol=1e-14)
+    assert len(a.cells) == len(b.cells)
+    for ca, cb in zip(a.cells, b.cells):
+        assert ca.type == cb.type
+        np.testing.assert_array_equal(ca.data, cb.data)
+
+
+@pytest.mark.parametrize("mesh", _CPP_MESHES)
+def test_cpp_roundtrip(mesh, tmp_path):
+    """C++ writer -> C++ reader."""
+    p = tmp_path / "cpp.mdpa"
+    _core.mdpa_write(str(p), copy.deepcopy(mesh))
+    _assert_same_geometry(mesh, _core.mdpa_read(str(p)))
+
+
+@pytest.mark.parametrize("mesh", _CPP_MESHES)
+def test_cpp_write_python_read(mesh, tmp_path):
+    """C++ writer -> pure-Python reference reader."""
+    p = tmp_path / "cpp_written.mdpa"
+    _core.mdpa_write(str(p), copy.deepcopy(mesh))
+    _assert_same_geometry(mesh, _mdpa_py_read(str(p)))
+
+
+@pytest.mark.parametrize("mesh", _CPP_MESHES)
+def test_python_write_cpp_read(mesh, tmp_path):
+    """Pure-Python reference writer -> C++ reader."""
+    p = tmp_path / "py_written.mdpa"
+    _mdpa_py_write(str(p), copy.deepcopy(mesh))
+    _assert_same_geometry(mesh, _core.mdpa_read(str(p)))
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "test_small_cube.mdpa",
+        "test_submodelpart.mdpa",
+        "test_elements_and_conditions.mdpa",
+    ],
+)
+def test_cpp_reads_reference_files(filename):
+    """The C++ reader agrees with the reference reader on the shipped files."""
+    path = pathlib.Path(__file__).resolve().parent / "meshes" / "mdpa" / filename
+    py_mesh = _mdpa_py_read(str(path))
+    cpp_mesh = _core.mdpa_read(str(path))
+    _assert_same_geometry(py_mesh, cpp_mesh)
+    # The Kratos property id lands in `gmsh:physical` on both paths -- keyed by
+    # cell type in the reference, one array per block in the C++ core.
+    for i, block in enumerate(py_mesh.cells):
+        np.testing.assert_array_equal(
+            py_mesh.cell_data[block.type]["gmsh:physical"],
+            cpp_mesh.cell_data["gmsh:physical"][i],
+        )
+
+
+def test_cpp_submodelparts_become_regions():
+    """SubModelParts become Point/Cell regions with the same members."""
+    path = (
+        pathlib.Path(__file__).resolve().parent
+        / "meshes"
+        / "mdpa"
+        / "test_elements_and_conditions.mdpa"
+    )
+    mesh = _core.mdpa_read(str(path))
+    names = {r.name for r in mesh.regions}
+    assert {"Main_domain", "Left_side", "Main_subdomain"} <= names
+
+    # Elements are block 0 (18 triangles), conditions block 1 (12 lines), so a
+    # condition id `c` is global cell index 18 + (c - 1).
+    left = [r for r in mesh.regions if r.name == "Left_side" and r.kind == "cell"][0]
+    np.testing.assert_array_equal(left.entries, np.array([18 + 9, 18 + 10, 18 + 11]))
+
+    sub_nodes = [
+        r for r in mesh.regions if r.name == "Main_subdomain" and r.kind == "point"
+    ][0]
+    assert len(sub_nodes.entries) == 9
+    sub_cells = [
+        r for r in mesh.regions if r.name == "Main_subdomain" and r.kind == "cell"
+    ][0]
+    assert len(sub_cells.entries) == 12  # 8 elements + 4 conditions
+
+    # And they survive a C++ write/read round trip.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        out = pathlib.Path(d) / "regions.mdpa"
+        _core.mdpa_write(str(out), mesh)
+        back = _core.mdpa_read(str(out))
+    assert {r.name for r in back.regions} == names
+    left_back = [r for r in back.regions if r.name == "Left_side" and r.kind == "cell"][
+        0
+    ]
+    np.testing.assert_array_equal(left.entries, left_back.entries)
+
+
+def test_cpp_kratos_node_permutations_match_python(tmp_path):
+    """hexahedron20/27 read back in meshio (VTK) order, exactly as Python does."""
+    text = ELEMENTS_PERMUTATIONS_FILE.read_text()
+    # The C++ reader declines a non-numeric ModelPartData value (it has nowhere
+    # to keep a string), so drop that one line for this comparison.
+    text = "\n".join(ln for ln in text.splitlines() if "INFO" not in ln)
+    p = tmp_path / "perm.mdpa"
+    p.write_text(text)
+
+    py_mesh = _mdpa_py_read(str(p))
+    cpp_mesh = _core.mdpa_read(str(p))
+    _assert_same_geometry(py_mesh, cpp_mesh)
+    for block in cpp_mesh.cells:
+        # The fixture stores the identity permutation in Kratos order, so the
+        # VTK-ordered result must be 0..n-1.
+        np.testing.assert_array_equal(block.data[0], np.arange(block.data.shape[1]))
+
+    # ... and the C++ writer puts them back in Kratos order (the Python
+    # reference reader agrees on the result).
+    out = tmp_path / "perm_out.mdpa"
+    _core.mdpa_write(str(out), cpp_mesh)
+    _assert_same_geometry(cpp_mesh, _mdpa_py_read(str(out)))
+
+
+def test_cpp_data_blocks(tmp_path):
+    """NodalData/ElementalData/ConditionalData -> point_data/cell_data."""
+    p = tmp_path / "data.mdpa"
+    p.write_text(
+        "Begin Nodes\n"
+        "1 0.0 0.0 0.0\n2 1.0 0.0 0.0\n3 1.0 1.0 0.0\nEnd Nodes\n"
+        "Begin Elements Element3D3N\n1 0 1 2 3\nEnd Elements\n"
+        "Begin Conditions LineCondition3D2N\n5 0 1 2\nEnd Conditions\n"
+        "Begin NodalData TEMPERATURE\n  1 25.5\n  2 0 30.5\nEnd NodalData\n"
+        "Begin ElementalData STRESS\n  1 10.5\nEnd ElementalData\n"
+        "Begin ConditionalData PRESSURE\n  5 -5.5\nEnd ConditionalData\n"
+    )
+    mesh = _core.mdpa_read(str(p))
+    np.testing.assert_allclose(
+        mesh.point_data["TEMPERATURE"], np.array([25.5, 30.5, np.nan])
+    )
+    np.testing.assert_array_equal(
+        mesh.point_data["TEMPERATURE_fixed_status"], np.array([-1, 0, -1])
+    )
+    assert mesh.cell_data["STRESS"][0][0] == 10.5
+    assert np.isnan(mesh.cell_data["STRESS"][1][0])
+    assert mesh.cell_data["PRESSURE"][1][0] == -5.5
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "test_geometries.mdpa",  # Geometries block
+    ],
+)
+def test_cpp_declines_unsupported_files(filename):
+    """Unsupported constructs raise by name, so the Python fallback stays live."""
+    path = pathlib.Path(__file__).resolve().parent / "meshes" / "mdpa" / filename
+    with pytest.raises(meshioplusplus.ReadError):
+        _core.mdpa_read(str(path))
+    # ... and the public reader still handles the file.
+    mesh = meshioplusplus.read(path)
+    assert len(mesh.points) > 0
+
+
+def test_cpp_declines_by_name(tmp_path):
+    cases = [
+        ("Begin Table 1 T V\n 0.0 1.0\nEnd Table\n", "Table"),
+        ("Begin Mesh 1\nEnd Mesh\n", "Mesh"),
+        ("Begin Properties 3\n DENSITY 1.0\nEnd Properties\n", "Properties"),
+        ('Begin ModelPartData\n NAME "x"\nEnd ModelPartData\n', "ModelPartData"),
+        ("Begin Nodes\n1 0 0 0\n5 1 1 1\nEnd Nodes\n", "node ids"),
+    ]
+    for i, (text, needle) in enumerate(cases):
+        p = tmp_path / f"bad{i}.mdpa"
+        p.write_text(text)
+        with pytest.raises(meshioplusplus.ReadError, match=needle):
+            _core.mdpa_read(str(p))
+
+
+def test_write_shim_falls_back_for_misc_data(tmp_path):
+    """A mesh carrying `misc_data` keeps the pure-Python writer."""
+    mesh = _mdpa_py_read(
+        str(
+            pathlib.Path(__file__).resolve().parent
+            / "meshes"
+            / "mdpa"
+            / "test_submodelpart.mdpa"
+        )
+    )
+    assert mesh.misc_data["submodelpart_info"]
+    out = tmp_path / "kept.mdpa"
+    meshioplusplus.mdpa.write(out, mesh)
+    # Only the reference writer reproduces the SubModelPart from `misc_data`.
+    assert "Begin SubModelPart Parts_Parts_Auto1" in out.read_text()

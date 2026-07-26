@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "8.7.0",
+  "version": "9.0.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
@@ -59,6 +59,33 @@
     },
     "kahip": {
       "description": "KaHIP partition backend (no vcpkg port exists: supply an install and set KAHIP_ROOT)"
+    },
+    "cxx-api": {
+      "description": "The full C++ API (meshioplusplus::core) alongside the flat C API"
+    },
+    "cxx-api-native": {
+      "description": "Also build meshioplusplus::core_native (implies cxx-api)",
+      "dependencies": [
+        {
+          "name": "meshioplusplus",
+          "default-features": false,
+          "features": [
+            "cxx-api"
+          ]
+        }
+      ]
+    },
+    "cxx-api-kratos": {
+      "description": "Also build meshioplusplus::core_kratos, for Kratos Multiphysics consumers (implies cxx-api)",
+      "dependencies": [
+        {
+          "name": "meshioplusplus",
+          "default-features": false,
+          "features": [
+            "cxx-api"
+          ]
+        }
+      ]
     }
   }
 }

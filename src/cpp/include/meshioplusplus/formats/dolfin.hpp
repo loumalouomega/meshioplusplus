@@ -40,6 +40,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -61,7 +62,7 @@ namespace meshioplusplus {
  * @note writes one `<stem>_<key>.xml` file per `cell_data` key; no
  *       point_data or field_data is ever written
  */
-void write_dolfin(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_dolfin(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a DOLFIN XML mesh file (plus any sibling cell_data files).
@@ -77,6 +78,6 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh);
  *         `<mesh>`, names an unsupported cell type, or if a sibling
  *         cell-data file contains more than one `<mesh_function>`
  */
-Mesh read_dolfin(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_dolfin(const std::string& rPath);
 
 }  // namespace meshioplusplus

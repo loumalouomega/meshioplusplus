@@ -17,7 +17,10 @@ Public API:
 
 Pieces keep the input block structure 1:1 (empty blocks included, unlike
 ``split``), so concatenating them reproduces the input mesh: every cell lands
-in exactly one piece. ``ghost_layers != 0`` is reserved and raises in v1.
+in exactly one piece when ``ghost_layers == 0``; a positive ``ghost_layers``
+grows each piece by that many shared-node BFS layers of other parts' cells,
+tagged ``partition:ghost`` (0 = owned, L = reached at layer L), so the pieces
+then overlap.
 """
 
 from __future__ import annotations
@@ -390,10 +393,8 @@ def _validate(mesh, nparts, method, mode, ghost_layers):
         raise ValueError(
             f"partition: unknown mode '{mode}' (expected 'fast', 'eco', or 'strong')"
         )
-    if int(ghost_layers) != 0:
-        raise ValueError(
-            "partition: ghost_layers is not implemented yet (only 0 is supported)"
-        )
+    if int(ghost_layers) < 0:
+        raise ValueError(f"partition: ghost_layers must be >= 0, got {ghost_layers}")
 
 
 def _weights_vector(mesh, weights, total):
@@ -576,7 +577,8 @@ def partition(
         ``partition:original_cell_id`` ``cell_data`` (original input indices)
         to every piece.
     ghost_layers :
-        reserved (shared-node BFS ghost growth); any value != 0 raises in v1.
+        grow each piece by this many shared-node BFS layers of other parts'
+        cells (a halo), tagged ``partition:ghost``. Needs the C++ core.
 
     Returns
     -------
@@ -590,7 +592,7 @@ def partition(
     Raises
     ------
     ValueError
-        on ``nparts < 1``, ``ghost_layers != 0``, a bad weights array, an
+        on ``nparts < 1``, ``ghost_layers < 0``, a bad weights array, an
         out-of-range imbalance, or ``method="kahip"`` when no KaHIP backend
         exists (the error names the build option).
     """
@@ -625,6 +627,16 @@ def partition(
             pieces = None
     used_cpp = pieces is not None
     if pieces is None:
+        # The numpy fallback builds disjoint pieces only. Ghost growth is a
+        # second, different traversal (shared-node BFS over the whole mesh), and
+        # silently returning unghosted pieces would be a wrong answer rather
+        # than a slower one -- so say so instead, as _smooth.py does for its
+        # inversion guard.
+        if int(ghost_layers) != 0:
+            raise NotImplementedError(
+                "partition: ghost_layers needs the C++ core (the numpy fallback "
+                "builds disjoint pieces only)"
+            )
         flat = _labels_py(mesh, int(nparts), method, imbalance, mode, seed, weights)
         pieces = []
         for part in range(int(nparts)):

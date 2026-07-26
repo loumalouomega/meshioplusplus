@@ -26,6 +26,8 @@ WITH_POLYSCOPE="OFF"
 TESTS="OFF"
 C_API="OFF"
 FORTRAN="OFF"
+INSTALL_CPP="OFF"
+CPP_BACKENDS=""
 CLI="OFF"
 DO_BUILD="no"
 PYTHON_EXE=""
@@ -49,6 +51,12 @@ Usage: $0 [options]
   --tests                         also build the GoogleTest suite (CTest)
   --c-api                         build the installable libmeshioplusplus C API
   --fortran                       build the Fortran module (implies --c-api)
+  --install-cpp                   build the installable C++ API
+                                  (meshioplusplus::core*, see doc/cpp_api.md)
+  --cpp-backends <LIST>           mesh backends to build as
+                                  meshioplusplus::core_<backend> (comma- or
+                                  semicolon-separated; default MESHIO,NATIVE,KRATOS;
+                                  implies --install-cpp)
   --cli                           build the native command-line binary (meshioplusplus)
   --build                         run the build after configuring
   --python <exe>                  Python executable (default: auto)
@@ -73,6 +81,8 @@ while [ $# -gt 0 ]; do
         --tests) TESTS="ON"; shift ;;
         --c-api) C_API="ON"; shift ;;
         --fortran) FORTRAN="ON"; C_API="ON"; shift ;;
+        --install-cpp) INSTALL_CPP="ON"; shift ;;
+        --cpp-backends) CPP_BACKENDS=$(echo "$2" | tr '[:lower:],' '[:upper:];'); INSTALL_CPP="ON"; shift 2 ;;
         --cli) CLI="ON"; shift ;;
         --build) DO_BUILD="yes"; shift ;;
         --python) PYTHON_EXE="$2"; shift 2 ;;
@@ -118,9 +128,16 @@ set -- \
         -DMESHIOPLUSPLUS_WITH_POLYSCOPE="$WITH_POLYSCOPE" \
     -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
     -DMESHIOPLUSPLUS_BUILD_C_API="$C_API" \
+    -DMESHIOPLUSPLUS_INSTALL_CPP="$INSTALL_CPP" \
     -DMESHIOPLUSPLUS_BUILD_CLI="$CLI" \
     -DMESHIOPLUSPLUS_BUILD_FORTRAN="$FORTRAN" \
     -DPython_EXECUTABLE="$PYTHON_EXE"
+
+# Only pass the backend list when the user gave one, so the CMake cache
+# default (MESHIO;NATIVE;KRATOS) stays the single source of truth.
+if [ -n "$CPP_BACKENDS" ]; then
+    set -- "$@" -DMESHIOPLUSPLUS_INSTALL_CPP_BACKENDS="$CPP_BACKENDS"
+fi
 
 # pybind11 from the chosen Python, when available.
 PYBIND11_DIR=$("$PYTHON_EXE" -c "import pybind11; print(pybind11.get_cmake_dir())" 2>/dev/null || true)
@@ -141,6 +158,7 @@ echo "  HDF5:      $WITH_HDF5   netCDF: $WITH_NETCDF   zlib: $WITH_ZLIB"
 echo "  Polyscope: $WITH_POLYSCOPE  (CLI viewer)"
 echo "  tests:     $TESTS"
 echo "  C API:     $C_API   Fortran: $FORTRAN"
+echo "  C++ API:   $INSTALL_CPP${CPP_BACKENDS:+  (backends: $CPP_BACKENDS)}"
 echo "  CLI:       $CLI"
 echo "  python:    $PYTHON_EXE"
 echo
@@ -154,8 +172,12 @@ echo "  cmake --build \"$BUILD_DIR\" -j"
 if [ "$TESTS" = "ON" ]; then
     echo "  ctest --test-dir \"$BUILD_DIR\" --output-on-failure"
 fi
-if [ "$C_API" = "ON" ]; then
+if [ "$C_API" = "ON" ] && [ "$INSTALL_CPP" = "ON" ]; then
+    echo "  cmake --install \"$BUILD_DIR\" --prefix <prefix>   # C + C++ APIs (see doc/c_api.md, doc/cpp_api.md)"
+elif [ "$C_API" = "ON" ]; then
     echo "  cmake --install \"$BUILD_DIR\" --prefix <prefix>   # libmeshioplusplus + headers (see doc/c_api.md)"
+elif [ "$INSTALL_CPP" = "ON" ]; then
+    echo "  cmake --install \"$BUILD_DIR\" --prefix <prefix>   # C++ API: include/ lib/ cmake config (see doc/cpp_api.md)"
 fi
 if [ "$CLI" = "ON" ]; then
     echo "  \"$BUILD_DIR/meshioplusplus\" --help   # native CLI (no Python)"

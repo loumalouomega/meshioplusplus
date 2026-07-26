@@ -109,6 +109,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -126,7 +127,7 @@ enum class SmoothMethod {
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
-SmoothMethod smooth_method_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API SmoothMethod smooth_method_from_name(const std::string& rName);
 
 /// Options for `smooth`.
 struct SmoothOptions {
@@ -215,6 +216,6 @@ struct SmoothResult {
  *         `mMu < -mLambda < 0` (which would make the pass pair amplify rather
  *         than filter).
  */
-SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions = {});
+MESHIOPLUSPLUS_API SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions = {});
 
 }  // namespace meshioplusplus

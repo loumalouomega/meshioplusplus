@@ -47,6 +47,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -66,7 +67,7 @@ namespace meshioplusplus {
  * @throws WriteError if a file cannot be opened, points are not 2D, or
  *         `triangle` and `triangle6` blocks are mixed
  */
-void write_triangle(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_triangle(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read Triangle files (`.node`/`.ele` pair or `.poly`).
@@ -77,6 +78,6 @@ void write_triangle(const std::string& rPath, const Mesh& rMesh);
  * @throws ReadError on malformed input, `dim != 2`, non-consecutive node
  *         indices, or an unsupported nodes-per-triangle count
  */
-Mesh read_triangle(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_triangle(const std::string& rPath);
 
 }  // namespace meshioplusplus

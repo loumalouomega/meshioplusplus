@@ -42,6 +42,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -84,7 +85,7 @@ struct SplitResult {
  *        `"regions"` (plural -- named `Cell` regions, `SplitBy::Region`)
  * @throws std::invalid_argument on an unknown name
  */
-SplitBy split_by_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API SplitBy split_by_from_name(const std::string& rName);
 
 /**
  * @brief Split a mesh into pieces by the given criterion.
@@ -96,6 +97,6 @@ SplitBy split_by_from_name(const std::string& rName);
  * @throws std::invalid_argument for `SplitBy::Tag` when no suitable cell_data
  *         tag is found.
  */
-SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName = "");
+MESHIOPLUSPLUS_API SplitResult split(const Mesh& rMesh, SplitBy by, const std::string& rTagName = "");
 
 }  // namespace meshioplusplus

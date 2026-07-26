@@ -40,6 +40,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -85,7 +86,7 @@ namespace meshioplusplus {
  * @throws std::invalid_argument for an unknown array name or colormap, an
  *         out-of-range component, or `vmin > vmax`
  */
-void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".6f",
+MESHIOPLUSPLUS_API void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".6f",
                 bool Standalone = true, const std::optional<std::string>& rLineWidth = std::nullopt,
                 const std::string& rFill = "gray!30", const std::string& rDraw = "black",
                 const std::optional<double>& rScale = std::nullopt, double azimuth = 45.0,

@@ -50,9 +50,14 @@
  * bytes match the NATIVE backend exactly. After mutating the ModelPart
  * directly, call `InvalidateBlocks()`: the staging is then rebuilt from the
  * ModelPart on the next accessor use (consecutive same-type Elements are
- * grouped into blocks, then Conditions; ragged pass-through blocks and
- * SubModelPart structure are not representable back and are dropped —
- * a documented sharp edge of the mutation path).
+ * grouped into blocks, then Conditions). Since v9.0.0 the rebuild is
+ * lossless for everything the ModelPart can express — ragged pass-through
+ * blocks are carried through at their original positions (they never became
+ * entities, so a ModelPart edit cannot have touched them) and SubModelParts
+ * are read back as named `Cell`/`Point` regions. Two things still cannot
+ * survive, because a SubModelPart has nowhere to put them: a region's
+ * `mDim`/`mTag` (recovered from a staged region of the same name when there is
+ * one, else `-1`) and SubModelPart *nesting*, regions being flat.
  */
 
 // System includes
@@ -61,6 +66,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -190,20 +196,37 @@ public:
      * @brief The ModelPart view of this mesh, materialized on first call.
      * @return The root `ModelPart` (named "Main").
      */
-    ModelPart& GetModelPart() {
-        EnsureStage();  // a pending user mutation must be folded in first
-        if (!mMaterialized)
-            Materialize();
-        return *mpRoot;
-    }
+    ModelPart& GetModelPart() { return EnsureMaterialized(); }
+
+    /**
+     * @brief `const` overload, for wrappers that take a `const Mesh&`.
+     *
+     * Materialization is lazy, so this DOES do work on first call (and is
+     * therefore not thread-safe against a concurrent first call) -- the
+     * ModelPart is a cache, exactly like the staging `mStage` that every other
+     * const accessor already builds on demand, which is why the members are
+     * `mutable`. Logical constness holds: the mesh's value is unchanged.
+     */
+    const ModelPart& GetModelPart() const { return EnsureMaterialized(); }
+
     /** @brief Whether `GetModelPart()` has materialized the ModelPart yet. */
     bool IsMaterialized() const { return mMaterialized; }
 
     /**
-     * @brief Declare that the ModelPart was mutated directly: the block/
-     * point staging is rebuilt from the ModelPart on the next accessor use
-     * (grouping consecutive same-type Elements, then Conditions; ragged
-     * pass-through blocks and SubModelPart structure are dropped).
+     * @brief Declare that the ModelPart was mutated directly: the block/point
+     * staging is rebuilt from the ModelPart on the next accessor use.
+     *
+     * The rebuild groups consecutive same-type Elements, then Conditions, so a
+     * mesh whose entity structure is unchanged comes back with its original
+     * block layout. Ragged pass-through blocks (which never became entities and
+     * so cannot have been edited) are carried through at their original
+     * positions, and SubModelParts are read back as named `Cell`/`Point`
+     * regions -- neither is lost, as they were before v9.0.0.
+     *
+     * What still cannot survive: a SubModelPart's *nesting* (regions are flat),
+     * and a region's `mDim`/`mTag`, which a SubModelPart has nowhere to store
+     * -- a region reconstructed from one comes back with `-1` for both unless a
+     * staged region of the same name and kind supplied them.
      */
     void InvalidateBlocks() {
         if (mMaterialized)
@@ -241,6 +264,14 @@ private:
         }
     }
 
+    /** @brief Shared body of the two `GetModelPart()` overloads. */
+    ModelPart& EnsureMaterialized() const {
+        EnsureStage();  // a pending user mutation must be folded in first
+        if (!mMaterialized)
+            Materialize();
+        return *mpRoot;
+    }
+
     const NativeMesh& Stage() const {
         EnsureStage();
         return mStage;
@@ -263,7 +294,7 @@ private:
         return 3;
     }
 
-    void Materialize() {
+    void Materialize() const {
         mpRoot = std::make_unique<ModelPart>("Main");
         mRecords.clear();
         ModelPart& r_mp = *mpRoot;
@@ -357,7 +388,7 @@ private:
      * Point regions become node-only SubModelParts. `Side` regions have no
      * ModelPart entity to attach to and are skipped with a warning.
      */
-    void BuildSubModelPartsFromRegions() {
+    void BuildSubModelPartsFromRegions() const {
         const std::size_t nregions = mStage.NumRegions();
         if (nregions == 0)
             return;
@@ -462,7 +493,7 @@ private:
         return out;
     }
 
-    void BuildSubModelPartsFor(const std::string& rKey) {
+    void BuildSubModelPartsFor(const std::string& rKey) const {
         // Only integer-kind scalar-per-cell arrays qualify as tags.
         for (std::size_t b = 0; b < mRecords.size(); ++b) {
             if (mRecords[b].mKind == BlockRecord::Kind::Ragged)
@@ -521,6 +552,14 @@ private:
         }
     }
 
+    /** @brief One block of the rebuilt mesh, before it is added to the stage. */
+    struct PendingBlock {
+        BlockRecord mRecord;
+        std::string mType;                                     // entity blocks
+        NDArray mConn;                                         // entity blocks
+        std::size_t mOldBlock = static_cast<std::size_t>(-1);  // ragged: source block
+    };
+
     void RebuildStageFromModelPart() const {
         const ModelPart& r_mp = *mpRoot;
         NativeMesh fresh;
@@ -540,30 +579,84 @@ private:
 
         // Consecutive same-type runs -> blocks (Elements first, then
         // Conditions), matching the materialization convention.
-        mRecords.clear();
-        AppendEntityBlocks(r_mp, r_mp.Elements(), BlockRecord::Kind::Element, fresh);
-        AppendEntityBlocks(r_mp, r_mp.Conditions(), BlockRecord::Kind::Condition, fresh);
+        std::vector<PendingBlock> entity_blocks;
+        CollectEntityBlocks(r_mp, r_mp.Elements(), BlockRecord::Kind::Element, entity_blocks);
+        CollectEntityBlocks(r_mp, r_mp.Conditions(), BlockRecord::Kind::Condition, entity_blocks);
+
+        // Interleave the preserved ragged blocks back in. They never became
+        // entities, so the user's ModelPart edits cannot have touched them and
+        // carrying them through verbatim is exact. Walking the OLD records puts
+        // each one back where it was, which keeps the block layout (and so the
+        // per-block cell_data alignment) stable for the overwhelmingly common
+        // case of a mesh whose entity structure was not restructured.
+        std::vector<PendingBlock> plan;
+        plan.reserve(entity_blocks.size() + mRecords.size());
+        std::size_t next_entity = 0;
+        for (std::size_t b = 0; b < mRecords.size(); ++b) {
+            if (mRecords[b].mKind == BlockRecord::Kind::Ragged) {
+                PendingBlock pb;
+                pb.mRecord = mRecords[b];
+                pb.mOldBlock = b;
+                plan.push_back(std::move(pb));
+            } else if (next_entity < entity_blocks.size()) {
+                plan.push_back(std::move(entity_blocks[next_entity++]));
+            }
+        }
+        for (; next_entity < entity_blocks.size(); ++next_entity)
+            plan.push_back(std::move(entity_blocks[next_entity]));
+
+        for (const PendingBlock& r_pb : plan) {
+            if (r_pb.mOldBlock != static_cast<std::size_t>(-1))
+                CopyRaggedBlock(mStage.Cells(r_pb.mOldBlock), fresh);
+            else
+                fresh.AddCellBlock(r_pb.mType, r_pb.mConn);
+        }
 
         // Nodal data -> point_data; elemental/conditional -> per-block slices.
         for (const auto& r_name : r_mp.NodalDataNames())
             fresh.AddPointData(r_name, r_mp.GetNodalData(r_name));
-        RestoreCellData(r_mp.ElementalDataNames(), BlockRecord::Kind::Element, r_mp, fresh);
-        RestoreCellData(r_mp.ConditionalDataNames(), BlockRecord::Kind::Condition, r_mp, fresh);
+        RestoreCellData(r_mp.ElementalDataNames(), BlockRecord::Kind::Element, r_mp, plan, fresh);
+        RestoreCellData(r_mp.ConditionalDataNames(), BlockRecord::Kind::Condition, r_mp, plan,
+                        fresh);
         for (const auto& r_name : mStage.FieldDataNames())
             fresh.AddFieldData(r_name, mStage.FieldData(r_name));
-        // Regions are not recoverable from SubModelParts (a SubModelPart cannot
-        // say which kind/dim/tag it came from, and the entity->global-cell map
-        // is gone once blocks are regrouped), so they ride through unchanged
-        // from staging — the same treatment field_data gets just above.
-        for (const auto& r_region : mStage.Regions().All())
-            fresh.AddRegion(r_region);
 
+        RestoreRegions(r_mp, plan, fresh);
+
+        mRecords.clear();
+        for (PendingBlock& r_pb : plan)
+            mRecords.push_back(r_pb.mRecord);
         mStage = std::move(fresh);
     }
 
+    /** @brief Re-add a ragged (polygon/polyhedron) block verbatim. */
+    static void CopyRaggedBlock(const NativeMesh::CellView& rView, NativeMesh& rOut) {
+        const std::string& r_type = rView.Type();
+        const std::size_t nc = rView.NumCells();
+        if (rView.IsPolyhedron()) {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
+            for (std::size_t c = 0; c < nc; ++c) {
+                const std::size_t nf = rView.NumFaces(c);
+                cells[c].resize(nf);
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const auto [p_face, len] = rView.Face(c, f);
+                    cells[c][f].assign(p_face, p_face + len);
+                }
+            }
+            rOut.AddPolyhedronBlock(r_type, std::move(cells));
+        } else {
+            std::vector<std::vector<std::int64_t>> rows(nc);
+            for (std::size_t c = 0; c < nc; ++c) {
+                const std::int64_t* p_row = rView.Row(c);
+                rows[c].assign(p_row, p_row + rView.RowSize(c));
+            }
+            rOut.AddPolygonBlock(r_type, std::move(rows));
+        }
+    }
+
     template <class TContainer>
-    void AppendEntityBlocks(const ModelPart& rMp, const TContainer& rEntities,
-                            BlockRecord::Kind kind, NativeMesh& rOut) const {
+    void CollectEntityBlocks(const ModelPart& rMp, const TContainer& rEntities,
+                             BlockRecord::Kind kind, std::vector<PendingBlock>& rOut) const {
         std::vector<const GeometricalEntity*> run;
         auto flush = [&]() {
             if (run.empty())
@@ -576,13 +669,13 @@ private:
                 for (std::size_t j = 0; j < k; ++j)
                     c[r * k + j] =
                         static_cast<std::int64_t>(rMp.Nodes().IndexOf(run[r]->NodeIds()[j]));
-            const CellType type = run.front()->Type();
-            BlockRecord rec;
-            rec.mKind = kind;
-            rec.mFirstId = run.front()->Id();
-            rec.mCount = nc;
-            mRecords.push_back(rec);
-            rOut.AddCellBlock(cell_type_name(type), std::move(conn));
+            PendingBlock pb;
+            pb.mRecord.mKind = kind;
+            pb.mRecord.mFirstId = run.front()->Id();
+            pb.mRecord.mCount = nc;
+            pb.mType = cell_type_name(run.front()->Type());
+            pb.mConn = std::move(conn);
+            rOut.push_back(std::move(pb));
             run.clear();
         };
         for (const auto& r_e : rEntities) {
@@ -595,33 +688,142 @@ private:
     }
 
     void RestoreCellData(const std::vector<std::string>& rNames, BlockRecord::Kind kind,
-                         const ModelPart& rMp, NativeMesh& rOut) const {
+                         const ModelPart& rMp, const std::vector<PendingBlock>& rPlan,
+                         NativeMesh& rOut) const {
         for (const auto& r_name : rNames) {
             const NDArray& col = kind == BlockRecord::Kind::Element
                                      ? rMp.GetElementalData(r_name)
                                      : rMp.GetConditionalData(r_name);
             const std::size_t ncols = col.Ndim() >= 2 ? col.Shape()[1] : 1;
             const std::size_t isz = dtype_size(col.Dtype());
+            // A ragged block's slice never reached the ModelPart, so it can only
+            // come from the old stage -- and only if that array covered every
+            // block there (AppendCellData demands one slice per block, so a
+            // partially-covered array cannot be reassembled at all).
+            const bool old_has = mStage.HasCellData(r_name) &&
+                                 mStage.CellDataNumBlocks(r_name) == mStage.NumCellBlocks();
             std::size_t row = 0;
-            for (const auto& rec : mRecords) {
-                if (rec.mKind != kind)
+            for (const PendingBlock& r_pb : rPlan) {
+                if (r_pb.mOldBlock != static_cast<std::size_t>(-1)) {
+                    if (old_has)
+                        rOut.AppendCellData(r_name, mStage.CellData(r_name, r_pb.mOldBlock));
+                    continue;
+                }
+                if (r_pb.mRecord.mKind != kind)
                     continue;
                 std::vector<std::size_t> shape = col.Shape();
                 if (shape.empty())
                     shape = {0};
-                shape[0] = rec.mCount;
+                shape[0] = r_pb.mRecord.mCount;
                 NDArray slice = NDArray::Uninit(col.Dtype(), shape);
-                std::memcpy(slice.Data(), col.Data() + row * ncols * isz, rec.mCount * ncols * isz);
-                row += rec.mCount;
+                std::memcpy(slice.Data(), col.Data() + row * ncols * isz,
+                            r_pb.mRecord.mCount * ncols * isz);
+                row += r_pb.mRecord.mCount;
                 rOut.AppendCellData(r_name, std::move(slice));
             }
         }
     }
 
+    /**
+     * @brief Read the SubModelPart structure back as named regions.
+     *
+     * A SubModelPart carries a name and its member entities but nothing else, so
+     * the `mDim`/`mTag` of a reconstructed region are taken from a staged region
+     * of the same name and kind when one exists, and are `-1` otherwise. A
+     * staged region whose name no longer has a SubModelPart rides through
+     * unchanged -- that is what keeps `Side` regions (which `Materialize()`
+     * deliberately never turns into SubModelParts) alive across a rebuild.
+     */
+    void RestoreRegions(const ModelPart& rMp, const std::vector<PendingBlock>& rPlan,
+                        NativeMesh& rOut) const {
+        // Entity Id -> global block-major cell index, over the rebuilt layout.
+        std::unordered_map<IndexType, std::int64_t> elem_to_cell, cond_to_cell;
+        std::int64_t global = 0;
+        for (const PendingBlock& r_pb : rPlan) {
+            const bool ragged = r_pb.mOldBlock != static_cast<std::size_t>(-1);
+            if (!ragged) {
+                auto& r_map =
+                    r_pb.mRecord.mKind == BlockRecord::Kind::Element ? elem_to_cell : cond_to_cell;
+                for (std::size_t c = 0; c < r_pb.mRecord.mCount; ++c)
+                    r_map[static_cast<IndexType>(r_pb.mRecord.mFirstId + c)] =
+                        global + static_cast<std::int64_t>(c);
+            }
+            global += static_cast<std::int64_t>(r_pb.mRecord.mCount);
+        }
+
+        auto staged_meta = [&](const std::string& rName, RegionKind kind, int& rDim, int& rTag) {
+            for (const auto& r_region : mStage.Regions().All())
+                if (r_region.mName == rName && r_region.mKind == kind) {
+                    rDim = r_region.mDim;
+                    rTag = r_region.mTag;
+                    return;
+                }
+            rDim = -1;
+            rTag = -1;
+        };
+
+        std::vector<std::string> rebuilt;
+        for (const auto& r_name : rMp.SubModelPartNames()) {
+            const ModelPart& r_smp = rMp.GetSubModelPart(r_name);
+
+            std::vector<std::int64_t> cells;
+            for (IndexType id : r_smp.ElementIds()) {
+                const auto it = elem_to_cell.find(id);
+                if (it != elem_to_cell.end())
+                    cells.push_back(it->second);
+            }
+            for (IndexType id : r_smp.ConditionIds()) {
+                const auto it = cond_to_cell.find(id);
+                if (it != cond_to_cell.end())
+                    cells.push_back(it->second);
+            }
+            if (!cells.empty()) {
+                int dim = -1, tag = -1;
+                staged_meta(r_name, RegionKind::Cell, dim, tag);
+                rOut.AddRegion(MakeRegion(r_name, RegionKind::Cell, dim, tag, cells));
+                rebuilt.push_back(r_name);
+            }
+
+            // A node-only SubModelPart is a Point region; one that also has
+            // entities carries their nodes implicitly, so emitting a Point
+            // region there too would invent a group the mesh never had.
+            if (cells.empty()) {
+                std::vector<std::int64_t> pts;
+                for (IndexType id : r_smp.NodeIds())
+                    pts.push_back(static_cast<std::int64_t>(rMp.Nodes().IndexOf(id)));
+                if (!pts.empty()) {
+                    int dim = -1, tag = -1;
+                    staged_meta(r_name, RegionKind::Point, dim, tag);
+                    rOut.AddRegion(MakeRegion(r_name, RegionKind::Point, dim, tag, pts));
+                    rebuilt.push_back(r_name);
+                }
+            }
+        }
+
+        for (const auto& r_region : mStage.Regions().All())
+            if (std::find(rebuilt.begin(), rebuilt.end(), r_region.mName) == rebuilt.end())
+                rOut.AddRegion(r_region);
+    }
+
+    static meshioplusplus::Region MakeRegion(const std::string& rName, RegionKind kind, int dim,
+                                             int tag, const std::vector<std::int64_t>& rEntries) {
+        NDArray a = NDArray::Uninit(DType::Int64, {rEntries.size()});
+        std::memcpy(a.Data(), rEntries.data(), rEntries.size() * sizeof(std::int64_t));
+        meshioplusplus::Region region;
+        region.mName = rName;
+        region.mKind = kind;
+        region.mDim = dim;
+        region.mTag = tag;
+        region.mEntries = std::move(a);
+        return region;
+    }
+
     mutable NativeMesh mStage;  // staging + writer-serving storage
-    std::unique_ptr<ModelPart> mpRoot;
+    // mutable: the ModelPart is a lazily-built cache of the staged mesh, so
+    // the const GetModelPart() overload can materialize it on first use.
+    mutable std::unique_ptr<ModelPart> mpRoot;
     mutable std::vector<BlockRecord> mRecords;
-    bool mMaterialized = false;
+    mutable bool mMaterialized = false;
     mutable bool mStale = false;
     bool mTagsToSubModelParts = true;
 };

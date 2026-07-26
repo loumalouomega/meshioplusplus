@@ -232,6 +232,32 @@ class TimeSeriesReader:
 
 
 class TimeSeriesWriter:
+    """Transient XDMF3 writer: one static grid plus one ``<Grid>`` per step.
+
+    The pure-Python reference writer, and the documented public API:
+    ``write_points_cells(points, cells)`` then ``write_data(t, point_data=,
+    cell_data=)``, used as a context manager. Requires ``h5py`` for the default
+    ``data_format="HDF"``.
+
+    There is also a C++ writer, reachable **explicitly** as
+    ``meshioplusplus._core.XdmfTimeSeriesWriter`` (see
+    ``doc/xdmf_time_series.md``). It is deliberately *not* wired underneath
+    this class -- the two are not drop-in equivalents:
+
+    * its two methods take whole ``Mesh`` objects rather than raw arrays;
+    * its ``"HDF"`` companion is a **sibling of the .xdmf**
+      (``<path minus extension>.h5``) rather than ``<stem>.h5`` resolved
+      against the process's working directory, which is what this class does
+      and what breaks as soon as the output path has a directory component;
+    * it emits arrays in the uniform API's sorted-name order.
+
+    Reach for the C++ one when you already hold a ``Mesh`` (a solver loop
+    updating one in place is the motivating case), when the output path has a
+    directory component, or when you want the write to cost no Python per
+    step. Reach for this one when you have loose numpy arrays, need ``h5py``
+    interop, or are running against a build with no compiled core.
+    """
+
     def __init__(self, filename, data_format: str = "HDF") -> None:
         if data_format not in ["XML", "Binary", "HDF"]:
             raise WriteError(

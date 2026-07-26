@@ -65,6 +65,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -110,7 +111,7 @@ struct UnvInfo {
  *       Python writer); reads `cell_data["unv:pid"]` for the per-element
  *       property id (defaults to `1` if absent).
  */
-void write_unv(const std::string& rPath, const Mesh& rMesh, bool code_aster = false,
+MESHIOPLUSPLUS_API void write_unv(const std::string& rPath, const Mesh& rMesh, bool code_aster = false,
                int node_dataset = 2411);
 
 /**
@@ -122,7 +123,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, bool code_aster = fa
  *
  * @param rInfo point/cell sets to emit as dataset-2467 groups
  */
-void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo,
+MESHIOPLUSPLUS_API void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo,
                bool code_aster = false, int node_dataset = 2411);
 
 /**
@@ -144,7 +145,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
  *       2412 record-1 field 2); field datasets add point_data/cell_data keyed
  *       by field name.
  */
-Mesh read_unv(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_unv(const std::string& rPath);
 
 /**
  * @brief Read a UNV file, additionally decoding permanent-group datasets
@@ -153,6 +154,6 @@ Mesh read_unv(const std::string& rPath);
  * @param[out] rInfo receives node groups as `mPointSets` and element groups
  *        as `mCellSets` (0-based indices).
  */
-Mesh read_unv(const std::string& rPath, UnvInfo& rInfo);
+MESHIOPLUSPLUS_API Mesh read_unv(const std::string& rPath, UnvInfo& rInfo);
 
 }  // namespace meshioplusplus

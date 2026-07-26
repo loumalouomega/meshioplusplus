@@ -54,6 +54,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/read_options.hpp"
@@ -81,7 +82,7 @@ namespace meshioplusplus {
  * @note cell_data key handled specially: `cell_sets` become extra
  *       `<CellData>` arrays (VTU has no native set concept).
  */
-void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
+MESHIOPLUSPLUS_API void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
 
 /**
  * @brief Write a `.vtu` choosing the block-compression codec explicitly.
@@ -97,7 +98,7 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
  * @throws WriteError naming the CMake option when the codec was not compiled
  *         into this build.
  */
-void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+MESHIOPLUSPLUS_API void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec);
 
 /**
@@ -122,7 +123,7 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
  * @note `<FieldData>` -> `mesh.field_data`; `<PointData>`/`<CellData>` map
  *       generically to `point_data`/`cell_data`.
  */
-Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts = {});
 
 /**
  * @brief Summarize a `.vtu` without decoding its heavy arrays.
@@ -141,6 +142,6 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts = {});
  * @return the summary; accepts exactly the files `read_vtu` accepts
  * @throws ReadError on the same unsupported constructs as `read_vtu`
  */
-MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

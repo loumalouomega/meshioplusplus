@@ -50,6 +50,7 @@ module meshioplusplus
     private
 
     public :: mio_mesh
+    public :: mio_xdmf_series
     public :: mio_stats_report
     public :: mio_data_array_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
@@ -271,6 +272,40 @@ module meshioplusplus
         procedure :: field_data_name => mesh_field_data_name
         procedure :: get_field_data => mesh_get_field_data_r1
     end type mio_mesh
+
+    !> A transient (time-series) XDMF writer: the write half of what the
+    !> `time_step` read option and `mio_metadata%time_values` expose on the read
+    !> side. A solver writes the mesh ONCE and then one cheap step per solve, so
+    !> this is a stateful handle rather than a `write` call -- the one writer
+    !> here that `m%write()` cannot express.
+    !>
+    !>     type(mio_xdmf_series) :: series
+    !>     call series%create('simulation.xdmf')        ! "HDF" by default
+    !>     call series%write_points_cells(m)            ! the static grid, once
+    !>     do k = 1, nsteps
+    !>         call solve(m)
+    !>         call series%write_data(k*dt, m)          ! point_data/cell_data only
+    !>     end do
+    !>     call series%finalize()                       ! free() would do it too
+    !>     call series%free()
+    !>
+    !> The `.xdmf` light data is buffered and written once, at finalize, so a
+    !> series is only readable after `finalize()` (or `free()`, which finalizes
+    !> first). Heavy data for `"HDF"` goes to a `<path minus extension>.h5`
+    !> SIBLING of the `.xdmf`. Handles are freed explicitly, exactly like
+    !> `mio_mesh` -- there is no finalizer.
+    type :: mio_xdmf_series
+        private
+        type(c_ptr) :: handle = c_null_ptr
+    contains
+        procedure :: create => xdmf_series_create
+        procedure :: free => xdmf_series_free
+        procedure :: is_valid => xdmf_series_is_valid
+        procedure :: write_points_cells => xdmf_series_write_points_cells
+        procedure :: write_data => xdmf_series_write_data
+        procedure :: finalize => xdmf_series_finalize
+        procedure :: num_steps => xdmf_series_num_steps
+    end type mio_xdmf_series
 
     ! ------------------------------------------------------------------
     ! Raw bind(c) interfaces to libmeshioplusplus (private; the OO layer
@@ -1249,6 +1284,50 @@ module meshioplusplus
             integer(c_int64_t), dimension(*), intent(out) :: shape
             integer(c_int) :: s
         end function
+
+        ! -- transient XDMF series --
+
+        function c_mio_xdmf_series_create(path, data_format, gzip_level) &
+                bind(c, name="mio_xdmf_series_create") result(h)
+            import :: c_ptr, c_char, c_int32_t
+            character(kind=c_char), dimension(*), intent(in) :: path, data_format
+            integer(c_int32_t), value :: gzip_level
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_xdmf_series_write_points_cells(s, mesh) &
+                bind(c, name="mio_xdmf_series_write_points_cells") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s, mesh
+            integer(c_int) :: st
+        end function
+
+        function c_mio_xdmf_series_write_data(s, time, mesh) &
+                bind(c, name="mio_xdmf_series_write_data") result(st)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: s, mesh
+            real(c_double), value :: time
+            integer(c_int) :: st
+        end function
+
+        function c_mio_xdmf_series_finalize(s) &
+                bind(c, name="mio_xdmf_series_finalize") result(st)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: s
+            integer(c_int) :: st
+        end function
+
+        function c_mio_xdmf_series_num_steps(s) &
+                bind(c, name="mio_xdmf_series_num_steps") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: s
+            integer(c_int64_t) :: n
+        end function
+
+        subroutine c_mio_xdmf_series_free(s) bind(c, name="mio_xdmf_series_free")
+            import :: c_ptr
+            type(c_ptr), value :: s
+        end subroutine
 
         function c_strlen(s) bind(c, name="strlen") result(n)
             import :: c_ptr, c_size_t
@@ -2327,7 +2406,8 @@ contains
     !> otherwise), or "auto" (default: kahip when built, else sfc). Every piece
     !> keeps the input's cell-block structure 1:1, so the pieces recombine into
     !> the input. `weights_key` names a scalar cell_data array of per-cell
-    !> weights. `ghost_layers` is reserved and must be 0.
+    !> weights. `ghost_layers` > 0 grows each piece by that many shared-node
+    !> BFS layers of other parts' cells (a halo), tagged `partition:ghost`.
     function mesh_partition(self, nparts, method, imbalance, mode, seed, record_ids, &
                             ghost_layers, weights_key, stat, errmsg) result(out)
         class(mio_mesh), intent(in) :: self
@@ -3454,5 +3534,115 @@ contains
         end select
         call clear_status(stat, errmsg)
     end subroutine
+
+    ! ------------------------------------------------------------------
+    ! mio_xdmf_series: transient (time-series) XDMF writing
+    !
+    ! Same lifecycle rules as mio_mesh: create() replaces whatever the handle
+    ! held, free() is idempotent, and nothing is freed implicitly.
+    ! ------------------------------------------------------------------
+
+    !> Open a transient XDMF series for writing. Nothing is written yet.
+    !>
+    !> `data_format` is `"HDF"` (the default; needs an HDF5-enabled build),
+    !> `"XML"` (inline) or `"Binary"`. `gzip_level` applies to `"HDF"` datasets
+    !> only; negative (the default) means no compression. An unknown format, or
+    !> `"HDF"` without HDF5 support, fails through `stat`/`errmsg`.
+    subroutine xdmf_series_create(self, path, data_format, gzip_level, stat, errmsg)
+        class(mio_xdmf_series), intent(inout) :: self
+        character(*), intent(in) :: path
+        character(*), intent(in), optional :: data_format
+        integer, intent(in), optional :: gzip_level
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: fmt
+        integer(c_int32_t) :: level
+        call xdmf_series_free(self)
+        fmt = 'HDF'; if (present(data_format)) fmt = data_format
+        level = -1_c_int32_t
+        if (present(gzip_level)) level = int(gzip_level, c_int32_t)
+        self%handle = c_mio_xdmf_series_create(c_str(path), c_str(fmt), level)
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('xdmf_series create', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Finalize (if it has not happened yet) and release the series. Idempotent.
+    !> A write failure during the implicit finalize is swallowed here -- call
+    !> `finalize()` explicitly to see it.
+    subroutine xdmf_series_free(self)
+        class(mio_xdmf_series), intent(inout) :: self
+        if (c_associated(self%handle)) call c_mio_xdmf_series_free(self%handle)
+        self%handle = c_null_ptr
+    end subroutine
+
+    !> .true. between a successful create() and free().
+    logical function xdmf_series_is_valid(self)
+        class(mio_xdmf_series), intent(in) :: self
+        xdmf_series_is_valid = c_associated(self%handle)
+    end function
+
+    !> Write the static grid every step shares. Call once, before the first
+    !> `write_data`. Only the mesh's points and cells are used.
+    subroutine xdmf_series_write_points_cells(self, mesh, stat, errmsg)
+        class(mio_xdmf_series), intent(in) :: self
+        class(mio_mesh), intent(in) :: mesh
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('xdmf_series write_points_cells', &
+                                'series handle is not open', stat, errmsg)
+            return
+        end if
+        call handle_status(c_mio_xdmf_series_write_points_cells(self%handle, mesh%handle), &
+                           'xdmf_series write_points_cells', stat, errmsg)
+    end subroutine
+
+    !> Write one time step's point_data and cell_data at time `time`. The mesh's
+    !> geometry is ignored, so a solver can pass the same object it updates in
+    !> place; its cell blocks must match those of the static grid.
+    subroutine xdmf_series_write_data(self, time, mesh, stat, errmsg)
+        class(mio_xdmf_series), intent(in) :: self
+        real(real64), intent(in) :: time
+        class(mio_mesh), intent(in) :: mesh
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('xdmf_series write_data', 'series handle is not open', &
+                                stat, errmsg)
+            return
+        end if
+        call handle_status(c_mio_xdmf_series_write_data(self%handle, &
+                                                        real(time, c_double), mesh%handle), &
+                           'xdmf_series write_data', stat, errmsg)
+    end subroutine
+
+    !> Write the `.xdmf` and close the heavy-data container. Idempotent, and
+    !> `free()` does it too -- call this explicitly so a write failure surfaces
+    !> through `stat` instead of being swallowed.
+    subroutine xdmf_series_finalize(self, stat, errmsg)
+        class(mio_xdmf_series), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('xdmf_series finalize', 'series handle is not open', &
+                                stat, errmsg)
+            return
+        end if
+        call handle_status(c_mio_xdmf_series_finalize(self%handle), &
+                           'xdmf_series finalize', stat, errmsg)
+    end subroutine
+
+    !> Number of steps written so far (0 on a closed handle).
+    function xdmf_series_num_steps(self) result(n)
+        class(mio_xdmf_series), intent(in) :: self
+        integer(int64) :: n
+        n = 0_int64
+        if (.not. c_associated(self%handle)) return
+        n = int(c_mio_xdmf_series_num_steps(self%handle), int64)
+        if (n < 0_int64) n = 0_int64
+    end function
 
 end module meshioplusplus

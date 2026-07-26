@@ -59,6 +59,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -86,7 +87,7 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `SCALARS`/`VECTORS`/
  *       `TENSORS`/`FIELD` blocks; no reserved key names.
  */
-void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v51);
+MESHIOPLUSPLUS_API void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v51);
 
 /**
  * @brief Read a VTK legacy file.
@@ -109,6 +110,6 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
  *       `TENSORS`/`FIELD` blocks; `point_sets`/`cell_sets` round-trip as
  *       extra data arrays (5.1 files only), same convention as VTU.
  */
-Mesh read_vtk(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_vtk(const std::string& rPath);
 
 }  // namespace meshioplusplus

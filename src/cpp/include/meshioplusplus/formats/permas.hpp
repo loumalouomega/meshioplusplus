@@ -52,6 +52,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -76,7 +77,7 @@ namespace meshioplusplus {
  * @param rMesh the mesh to write
  * @throws WriteError on an unsupported cell type
  */
-void write_permas(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_permas(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a PERMAS (.post/.dato) file into a Mesh.
@@ -98,6 +99,6 @@ void write_permas(const std::string& rPath, const Mesh& rMesh);
  * @throws ReadError on a malformed file (e.g. an unrecognized element
  *         type, or a continuation line with no terminating non-`!` line)
  */
-Mesh read_permas(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_permas(const std::string& rPath);
 
 }  // namespace meshioplusplus

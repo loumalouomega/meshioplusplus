@@ -6,8 +6,15 @@
 // (src/index.mjs) -- not the raw embind glue -- so this is exactly what a
 // real consumer would call.
 //
+// The package ships two native artifacts: the sequential meshioplusplus_wasm
+// and the threaded (OpenMP/pthreads) meshioplusplus_wasm_mt. The full suite
+// below runs against the THREADED build (forced with { variant: 'mt' }) so the
+// parallel code paths are what CI exercises -- Wasm threads work under Node
+// with no cross-origin-isolation headers. A compact sanity block at the very
+// end loads the sequential build too, so both artifacts are proven loadable.
+//
 // Usage: node tests/wasm/smoke.mjs   (after `build/configure-wasm.sh --build`
-// has populated src/wasm/dist/meshioplusplus_wasm.{mjs,wasm})
+// has populated src/wasm/dist/meshioplusplus_wasm{,_mt}.{mjs,wasm})
 
 import assert from 'node:assert/strict';
 import { loadMeshioPlusPlus } from '../../src/wasm/src/index.mjs';
@@ -24,7 +31,14 @@ function step(name, fn) {
     }
 }
 
-const m = await loadMeshioPlusPlus();
+const m = await loadMeshioPlusPlus({}, { variant: 'mt' });
+step('threaded (mt) build reports the openmp parallel backend', () => {
+    // The whole point of the mt artifact: it must actually be the OpenMP build,
+    // not a mislabelled sequential one. parallelBackend() is exposed by the
+    // embind binding; a build configured with SEQ would report "seq" here.
+    assert.equal(typeof m.parallelBackend, 'function');
+    assert.equal(m.parallelBackend(), 'openmp');
+});
 
 // A small synthetic tetrahedron + a point/cell data field, built directly as
 // a JS mesh object (bypassing file I/O) to test the writeMesh(object) path.
@@ -781,6 +795,12 @@ step('every binding is reachable through the wrapper', () => {
         'partitionLabels',
         'stats',
         'meshBackend',
+        'parallelBackend',
+        // The transient-XDMF surface is a handle, so the wrapper forwards one
+        // factory rather than the seven raw xdmfSeries* bindings; the series
+        // steps below assert the handle's own methods, which is where a
+        // missing raw forward would show up.
+        'createXdmfTimeSeriesWriter',
     ]) {
         assert.equal(typeof m[name], 'function', `${name} is not forwarded by the wrapper`);
     }
@@ -1135,6 +1155,159 @@ step('ragged (polyhedron) cell blocks cross the JS boundary as CSR arrays', () =
         () => m.writeMesh('/polyhedron.med', tetra, 'med'),
         (err) => err instanceof Error && /polyhedron/.test(err.message),
     );
+});
+
+// ---------------------------------------------------------------------------
+// Transient (time-series) XDMF -- the one STATEFUL binding: an opaque handle
+// whose output lands in MEMFS across several calls, rather than a pure
+// function over a mesh object. See src/wasm/index.d.ts's XdmfTimeSeriesWriter
+// doc comment for why the raw binding is a handle + free functions and not an
+// embind class_.
+// ---------------------------------------------------------------------------
+
+// A step's mesh: same geometry every time (the writer ignores it after the
+// first call), only the field changes.
+const seriesStep = (k) => ({
+    ...tet,
+    point_data: { temperature: new Float64Array([k, k + 1, k + 2, k + 3]) },
+    cell_data: { material: [new Float64Array([10 * k])] },
+});
+
+step('XDMF time series (HDF): 3 steps, and the .h5 companion is written too', () => {
+    const w = m.createXdmfTimeSeriesWriter('/series.xdmf'); // 'HDF' by default
+    assert.equal(typeof w.writePointsCells, 'function');
+    assert.equal(typeof w.writeData, 'function');
+    assert.equal(typeof w.finalize, 'function');
+    assert.equal(typeof w.numSteps, 'function');
+    assert.equal(typeof w.finalized, 'function');
+    assert.equal(typeof w.close, 'function');
+
+    w.writePointsCells(tet);
+    assert.equal(w.numSteps(), 0);
+    for (let k = 0; k < 3; ++k) w.writeData(k * 0.5, seriesStep(k));
+    assert.equal(w.numSteps(), 3);
+    assert.equal(w.finalized(), false);
+    w.close();
+
+    // TWO files: the light-data .xdmf and its SIBLING heavy-data .h5 (the C++
+    // writer resolves it next to the .xdmf, not in the CWD). A consumer that
+    // copies only the first one out of MEMFS ships an unreadable series.
+    const xdmf = m.FS.readFile('/series.xdmf');
+    const h5 = m.FS.readFile('/series.h5');
+    assert.ok(xdmf.length > 0, '.xdmf written');
+    assert.ok(h5.length > 0, '.h5 companion written');
+    assert.match(new TextDecoder().decode(xdmf), /CollectionType="Temporal"/);
+
+    // The wasm build links a wasm32 HDF5 (v8.0.0+), so 'HDF' really is the
+    // HDF path -- assert the payload is an actual HDF5 file, not a fallback.
+    assert.deepEqual(Array.from(h5.slice(0, 4)), [0x89, 0x48, 0x44, 0x46], 'HDF5 magic');
+});
+
+step('XDMF time series (HDF): reads back with the right per-step values', () => {
+    // read_xdmf resolves the temporal collection structurally; timeStep picks
+    // the step (0 first, negative from the end).
+    const meta = m.readMetadata('/series.xdmf');
+    assert.deepEqual(Array.from(meta.timeValues), [0, 0.5, 1]);
+
+    for (let k = 0; k < 3; ++k) {
+        const back = m.readMeshSelective('/series.xdmf', { timeStep: k });
+        assert.equal(back.cells[0].type, 'tetra');
+        assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
+        assert.deepEqual(Array.from(back.points), Array.from(tet.points));
+        assert.deepEqual(Array.from(back.point_data.temperature), [k, k + 1, k + 2, k + 3]);
+        assert.deepEqual(Array.from(back.cell_data.material[0]), [10 * k]);
+    }
+    // -1 is the last step.
+    assert.deepEqual(
+        Array.from(m.readMeshSelective('/series.xdmf', { timeStep: -1 }).point_data.temperature),
+        [2, 3, 4, 5],
+    );
+});
+
+step('XDMF time series (XML): one self-contained file, no companion', () => {
+    const w = m.createXdmfTimeSeriesWriter('/series-xml.xdmf', { dataFormat: 'XML' });
+    w.writePointsCells(tet);
+    w.writeData(0.0, seriesStep(0));
+    w.writeData(1.0, seriesStep(1));
+    w.close();
+
+    const text = new TextDecoder().decode(m.FS.readFile('/series-xml.xdmf'));
+    assert.match(text, /Format="XML"/);
+    assert.throws(() => m.FS.readFile('/series-xml.h5'), 'no HDF companion for XML');
+
+    const back = m.readMeshSelective('/series-xml.xdmf', { timeStep: 1 });
+    assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+});
+
+step('XDMF time series: nothing is on the FS until the series is finalized', () => {
+    // Inherent to the format: the collection element has to enclose every
+    // step, so the light data can only be written at the end.
+    const w = m.createXdmfTimeSeriesWriter('/pending.xdmf', { dataFormat: 'XML' });
+    w.writePointsCells(tet);
+    w.writeData(0.0, seriesStep(0));
+    assert.throws(() => m.FS.readFile('/pending.xdmf'), 'not written before finalize');
+    w.finalize();
+    assert.equal(w.finalized(), true);
+    assert.ok(m.FS.readFile('/pending.xdmf').length > 0);
+    w.close(); // finalize() then close() must not double-write or throw
+});
+
+step('XDMF time series: misuse throws readable JS Errors, never a WASM abort', () => {
+    assert.throws(
+        () => m.createXdmfTimeSeriesWriter('/bad.xdmf', { dataFormat: 'Parquet' }),
+        (err) => err instanceof Error && /unknown data format/i.test(err.message),
+    );
+
+    const w = m.createXdmfTimeSeriesWriter('/misuse.xdmf', { dataFormat: 'XML' });
+    assert.throws(
+        () => w.writeData(0.0, seriesStep(0)),
+        (err) => err instanceof Error && /WritePointsCells/.test(err.message),
+        'writeData before writePointsCells',
+    );
+    w.writePointsCells(tet);
+    assert.throws(
+        () => w.writePointsCells(tet),
+        (err) => err instanceof Error && /more than once/.test(err.message),
+    );
+    w.finalize();
+    assert.throws(
+        () => w.writeData(1.0, seriesStep(0)),
+        (err) => err instanceof Error && /finalized/.test(err.message),
+    );
+
+    // The handle is a table index, not a pointer: using a closed series is a
+    // thrown Error, not a use-after-free in linear memory.
+    w.close();
+    assert.throws(
+        () => w.numSteps(),
+        (err) => err instanceof Error && /already-closed|invalid/.test(err.message),
+    );
+    w.close(); // idempotent -- close() belongs in a `finally`
+});
+
+// ---------------------------------------------------------------------------
+// The sequential artifact. The suite above ran on the threaded build; this
+// block proves the *other* shipped artifact also loads and round-trips, and
+// that it really is the sequential one (not a second copy of the mt build).
+// Both must be present, since the loader auto-selects between them at runtime.
+// ---------------------------------------------------------------------------
+const mSeq = await loadMeshioPlusPlus({}, { variant: 'seq' });
+
+step('sequential (seq) build loads and reports the seq parallel backend', () => {
+    assert.equal(mSeq.parallelBackend(), 'seq');
+});
+
+step('sequential build round-trips a mesh (VTU) and runs an operation', () => {
+    mSeq.writeMesh('/seq.vtu', tet);
+    const back = mSeq.readMesh('/seq.vtu');
+    assert.equal(back.cells[0].type, 'tetra');
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
+    assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+
+    // An operation, so the sequential parallel_for paths are exercised too.
+    const surf = mSeq.extractSurface(cube);
+    assert.equal(surf.cells[0].type, 'quad');
+    assert.equal(surf.cells[0].data.length, 6 * 4);
 });
 
 if (failed) {

@@ -56,6 +56,7 @@
 
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -84,6 +85,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/skin.hpp"
 
 struct mio_mesh {
@@ -104,6 +106,12 @@ struct mio_reorder_result {
 
 struct mio_diff_result {
     meshioplusplus::DiffReport mReport;
+};
+
+struct mio_xdmf_series {
+    // Held by value: the writer is already move-only and owns its open
+    // heavy-data container, so the handle is just the C-side name for it.
+    meshioplusplus::XdmfTimeSeriesWriter mWriter;
 };
 
 struct mio_split_result {
@@ -757,6 +765,63 @@ mio_status mio_write(const char* path, const mio_mesh* mesh, const char* format)
         if (it == meshioplusplus::registry_writers().end())
             return fail(MIO_ERR_NOT_FOUND, unknown_format_message(fmt, /*for_write=*/true));
         it->second(path, mesh->mMesh);
+        return MIO_OK;
+    });
+}
+
+void mio_write_opts_init(mio_write_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_write_opts{};  // value-initialized: all zero == mio_write()
+}
+
+mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
+                        const mio_write_opts* opts) {
+    return guarded([&]() -> mio_status {
+        if (!path || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
+        if (!opts)
+            return mio_write(path, mesh, format);
+
+        meshioplusplus::WriteOptions w;
+        switch (opts->encoding) {
+            case MIO_ENCODING_DEFAULT:
+                break;
+            case MIO_ENCODING_ASCII:
+                w.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+                break;
+            case MIO_ENCODING_BINARY:
+                w.mEncoding = meshioplusplus::WriteEncoding::Binary;
+                break;
+            default:
+                return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.encoding");
+        }
+        switch (opts->codec) {
+            case MIO_CODEC_DEFAULT:
+                break;
+            case MIO_CODEC_NONE:
+                w.mCodec = meshioplusplus::detail::VtkCodec::None;
+                w.mCodecSet = true;
+                break;
+            case MIO_CODEC_ZLIB:
+                w.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
+                w.mCodecSet = true;
+                break;
+            case MIO_CODEC_LZ4:
+                w.mCodec = meshioplusplus::detail::VtkCodec::LZ4;
+                w.mCodecSet = true;
+                break;
+            case MIO_CODEC_ZSTD:
+                w.mCodec = meshioplusplus::detail::VtkCodec::ZSTD;
+                w.mCodecSet = true;
+                break;
+            default:
+                return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.codec");
+        }
+        if (opts->float_format)
+            w.mFloatFormat = opts->float_format;
+
+        meshioplusplus::registry_write_ex(path, mesh->mMesh, format_or_empty(format), w);
         return MIO_OK;
     });
 }
@@ -2335,6 +2400,65 @@ mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_region_kind
         mesh->mMesh.AddRegion(meshioplusplus::Region(name, region_kind, dim, tag, std::move(arr)));
         return MIO_OK;
     });
+}
+
+// ---- transient (time-series) XDMF ----------------------------------------
+//
+// The one writer that is a handle rather than a (path, mesh) call: the mesh is
+// written once and each step appended, so there is no single call for mio_write
+// to be. The C++ object is held by value; every entry point stays inside
+// guarded()/guarded_ptr() like the rest of this file.
+
+mio_xdmf_series* mio_xdmf_series_create(const char* path, const char* data_format,
+                                        int32_t gzip_level) {
+    return guarded_ptr(static_cast<mio_xdmf_series*>(nullptr), [&]() -> mio_xdmf_series* {
+        if (!path)
+            throw meshioplusplus::WriteError("meshio++: path is NULL");
+        const std::string fmt = data_format ? data_format : "HDF";
+        return new mio_xdmf_series{
+            meshioplusplus::XdmfTimeSeriesWriter(path, fmt, static_cast<int>(gzip_level))};
+    });
+}
+
+mio_status mio_xdmf_series_write_points_cells(mio_xdmf_series* series, const mio_mesh* mesh) {
+    return guarded([&]() -> mio_status {
+        if (!series || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+        series->mWriter.WritePointsCells(mesh->mMesh);
+        return MIO_OK;
+    });
+}
+
+mio_status mio_xdmf_series_write_data(mio_xdmf_series* series, double time, const mio_mesh* mesh) {
+    return guarded([&]() -> mio_status {
+        if (!series || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+        series->mWriter.WriteData(time, mesh->mMesh);
+        return MIO_OK;
+    });
+}
+
+mio_status mio_xdmf_series_finalize(mio_xdmf_series* series) {
+    return guarded([&]() -> mio_status {
+        if (!series)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        series->mWriter.Finalize();
+        return MIO_OK;
+    });
+}
+
+int64_t mio_xdmf_series_num_steps(const mio_xdmf_series* series) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!series)
+            throw meshioplusplus::ReadError("meshio++: series is NULL");
+        return static_cast<std::int64_t>(series->mWriter.NumSteps());
+    });
+}
+
+void mio_xdmf_series_free(mio_xdmf_series* series) {
+    // ~XdmfTimeSeriesWriter finalizes and swallows any failure (it must not
+    // throw); a caller wanting to see one calls mio_xdmf_series_finalize first.
+    delete series;
 }
 
 }  // extern "C"

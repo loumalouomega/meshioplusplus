@@ -32,14 +32,15 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
 
 /** @brief Read a Modulef Formatted Field (.mff) into a geometry-less Mesh. */
-Mesh read_mff(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_mff(const std::string& rPath);
 
 /** @brief Write a mesh's first field as a Modulef Formatted Field (.mff). */
-void write_mff(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_mff(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus

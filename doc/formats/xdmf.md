@@ -83,7 +83,7 @@ Numeric Mixed-topology type indices (a subset shared with the per-type names): `
 
 ## Time series
 
-Temporal XDMF is written/read with the `TimeSeriesWriter`/`TimeSeriesReader` classes — see [XDMF time series](../xdmf_time_series.md). These remain pure Python (stateful, HDF5-backed) regardless of the C++ core's availability.
+Temporal XDMF is written/read with the `TimeSeriesWriter`/`TimeSeriesReader` classes — see [XDMF time series](../xdmf_time_series.md). The **write** side also exists natively as `meshioplusplus::XdmfTimeSeriesWriter` (C++) and `mio_xdmf_series_*` (C API); it is deliberately absent from the shared format registry, since a series is a stateful multi-call object rather than a `(path, mesh)` call. On the **read** side, `read_xdmf` resolves a temporal collection structurally and honours `ReadOptions::mTimeStep`, and `read_metadata` reports every step's `<Time Value>` in `mTimeValues` — so `meshioplusplus.read()` on a series no longer fails with "only supports one grid", it returns the first step.
 
 ## Notes
 

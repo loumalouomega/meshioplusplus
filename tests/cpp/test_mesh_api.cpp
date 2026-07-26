@@ -127,6 +127,32 @@ TEST(MeshApi, RaggedBlocks) {
     EXPECT_EQ(face.first[1], 2);
 }
 
+TEST(MeshApi, DataNamesStaySortedAfterLaterInserts) {
+    // The name lists are memoized (v9.0.0). Reading them BEFORE each insert is
+    // the point: a cache that failed to invalidate would keep returning the
+    // earlier answer, silently changing on-disk field order rather than
+    // crashing. Every backend must pass this identically.
+    Mesh m = mt::tri_mesh();
+    m.AddPointData("zeta", float64_array({1, 2, 3, 4}));
+    EXPECT_EQ(m.PointDataNames(), (std::vector<std::string>{"zeta"}));
+    m.AddPointData("alpha", float64_array({4, 3, 2, 1}));
+    EXPECT_EQ(m.PointDataNames(), (std::vector<std::string>{"alpha", "zeta"}));
+    // Overwriting an existing name must NOT disturb the order.
+    m.AddPointData("zeta", float64_array({9, 9, 9, 9}));
+    EXPECT_EQ(m.PointDataNames(), (std::vector<std::string>{"alpha", "zeta"}));
+
+    m.AddFieldData("mu", float64_array({7}));
+    EXPECT_EQ(m.FieldDataNames(), (std::vector<std::string>{"mu"}));
+    m.AddFieldData("beta", float64_array({8}));
+    EXPECT_EQ(m.FieldDataNames(), (std::vector<std::string>{"beta", "mu"}));
+
+    m.AddCellData("tags", {int32_array({1, 2})});
+    EXPECT_EQ(m.CellDataNames(), (std::vector<std::string>{"tags"}));
+    // AppendCellData creates a new list too, so it must invalidate as well.
+    m.AppendCellData("area", float64_array({0.5, 0.5}));
+    EXPECT_EQ(m.CellDataNames(), (std::vector<std::string>{"area", "tags"}));
+}
+
 TEST(MeshApi, DataNamesAreSorted) {
     Mesh m = mt::tri_mesh();
     m.AddPointData("zeta", float64_array({1, 2, 3, 4}));

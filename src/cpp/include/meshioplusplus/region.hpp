@@ -80,6 +80,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
 namespace meshioplusplus {
@@ -102,7 +103,7 @@ enum class RegionKind {
  * @param Kind The kind to name.
  * @return `"point"`, `"cell"` or `"side"`.
  */
-const char* region_kind_name(RegionKind Kind);
+MESHIOPLUSPLUS_API const char* region_kind_name(RegionKind Kind);
 
 /**
  * @brief Parse a `RegionKind` from its lower-case spelling.
@@ -110,7 +111,7 @@ const char* region_kind_name(RegionKind Kind);
  * @return The matching enumerator.
  * @throws std::invalid_argument naming the accepted values.
  */
-RegionKind region_kind_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API RegionKind region_kind_from_name(const std::string& rName);
 
 /**
  * @brief A named group of points, cells or cell facets.
@@ -159,7 +160,7 @@ struct Region {
      * and drops duplicate entries. Idempotent. Called by every backend's
      * `AddRegion`, so stored regions are always canonical.
      */
-    void Canonicalize();
+    MESHIOPLUSPLUS_API void Canonicalize();
 
     /**
      * @brief The identity of a region: two regions with the same key describe
@@ -180,7 +181,7 @@ struct Region {
  * @param rB Second region.
  * @return `true` when name, kind, dim, tag and every entry match.
  */
-bool regions_equal(const Region& rA, const Region& rB);
+MESHIOPLUSPLUS_API bool regions_equal(const Region& rA, const Region& rB);
 
 /**
  * @brief Strict-weak ordering on `Region::Key()`, used to keep a mesh's region

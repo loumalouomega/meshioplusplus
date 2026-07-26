@@ -148,6 +148,45 @@ Out of range is an error naming the available count, never a silent clamp.
 `meta$time_values` has length 0 for a format with no time concept. Honoured by `exodus`; see
 [Selective reads](/selective_read).
 
+## Transient (time-series) XDMF writing
+
+`mio_xdmf_series()` is the write half of the above, and the one writer `mio_write()` cannot
+express: a series is a **stateful** multi-call object, so it gets its own handle rather than
+an argument. The grid goes out once and each solve appends a cheap step. See
+[XDMF time series](/xdmf_time_series).
+
+```r
+s <- mio_xdmf_series("simulation.xdmf")        # "HDF" by default
+mio_xdmf_series_write_points_cells(s, mesh)    # the static grid, once
+for (k in 0:9) {
+  solve(mesh)
+  mio_xdmf_series_write_data(s, k * dt, mesh)  # point_data/cell_data only
+}
+mio_xdmf_series_num_steps(s)
+#> [1] 10
+mio_xdmf_series_finalize(s)                    # release() would do this too
+mio_xdmf_series_release(s)
+```
+
+`data_format` is `"HDF"` (the default; needs an HDF5-enabled library), `"XML"` (everything
+inline in the `.xdmf`) or `"Binary"`; `gzip_level` applies to `"HDF"` datasets only and is
+negative (no compression) by default. An unknown format, or `"HDF"` against a library built
+without HDF5, is an error carrying the C API's own message.
+
+Two things worth knowing before reading the result back:
+
+- the `.xdmf` light data is **buffered until the series is finalized**, so the file is only
+  readable after `mio_xdmf_series_finalize()` (or `mio_xdmf_series_release()`, which
+  finalizes first);
+- a write failure during that implicit finalize cannot be reported from a GC finalizer at
+  all, which is exactly why `mio_xdmf_series_finalize()` exists as a separate call. Prefer
+  it, and release the handle before the directory it writes into goes away.
+
+The handle is an external pointer with its **own** tag, so a `mio_mesh` and a
+`mio_xdmf_series` are never accepted for one another; `mio_xdmf_series_release()` is the
+idempotent deterministic free, and `mio_xdmf_series_is_open()` the predicate. Reading a
+finished series back is the ordinary `mio_read(path, time_step = k)`.
+
 ## Documented gaps
 
 These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [Julia](/julia) bindings; the R package invents no workaround for any of them:

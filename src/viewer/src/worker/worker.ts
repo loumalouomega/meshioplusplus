@@ -19,7 +19,14 @@ import { loadMeshioPlusPlus } from '@meshioplusplus/wasm';
 // Emscripten glue resolve its own .wasm, is what makes the module load
 // correctly from inside a module worker *and* through the copied
 // `file:../wasm` dependency.
+//
+// Both variants are imported: the loader auto-selects the threaded build
+// (meshioplusplus_wasm_mt) when this page is cross-origin isolated, else the
+// sequential one, and each `.mjs` requests the matching `.wasm` by name --
+// which locateFile below resolves. Vite tree-shakes neither, so both hashed
+// assets ship; the browser only fetches the one that is actually loaded.
 import wasmUrl from '@meshioplusplus/wasm/dist/meshioplusplus_wasm.wasm?url';
+import wasmMtUrl from '@meshioplusplus/wasm/dist/meshioplusplus_wasm_mt.wasm?url';
 
 import type { Vector3 } from '../types';
 import type {
@@ -49,7 +56,13 @@ let session: Session | null = null;
 
 async function ready(): Promise<Module> {
     if (!mio) {
-        mio = await loadMeshioPlusPlus({ locateFile: () => wasmUrl });
+        // locateFile receives the requested filename; return the URL matching
+        // whichever variant the loader picked (the _mt glue asks for the _mt
+        // binary). Passing a fixed URL would hand the threaded glue the
+        // sequential binary and fail to instantiate.
+        mio = await loadMeshioPlusPlus({
+            locateFile: (path: string) => (path.includes('_mt') ? wasmMtUrl : wasmUrl),
+        });
         try {
             mio.FS.mkdir(IN_DIR);
         } catch {

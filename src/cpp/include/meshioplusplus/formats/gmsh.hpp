@@ -59,6 +59,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -83,7 +84,7 @@ namespace meshioplusplus {
  * @note the shim only attempts this C++ path when `float_fmt == ".16e"` and
  *       `mesh.gmsh_periodic` is unset
  */
-void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary);
+MESHIOPLUSPLUS_API void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Write `mesh` to `path` as a Gmsh 4.1 .msh file (ascii or binary).
@@ -105,7 +106,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary);
  *       write carrying `gmsh:dim_tags` or periodic data always goes through
  *       Python instead
  */
-void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
+MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Read a Gmsh .msh file (versions 2.2 and 4.1 only).
@@ -127,7 +128,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
  * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
  *       Python fallback does, for files containing `$Periodic`
  */
-Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts = {});
 
 /**
  * @brief Summarize a `.msh` without reading its node coordinates or connectivity.
@@ -144,6 +145,6 @@ Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts = {});
  * @throws ReadError for format 2.2, `$Entities`/`$Periodic`, or an unsupported
  *         element type -- exactly what `read_gmsh` rejects
  */
-MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

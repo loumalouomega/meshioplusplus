@@ -39,6 +39,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -62,7 +63,7 @@ namespace meshioplusplus {
  * @note reads/writes `point_data["freefem:ref"]` and
  *       `cell_data["freefem:ref"]`
  */
-void write_freefem(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_freefem(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a FreeFem++ .msh file.
@@ -80,6 +81,6 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh);
  *         integers, the inferred vertex dimension isn't 2 or 3, or a
  *         vertex/element section is truncated
  */
-Mesh read_freefem(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
 
 }  // namespace meshioplusplus

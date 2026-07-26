@@ -164,6 +164,123 @@ jobs:
             -I/tmp/CoSimIO/external_libraries /tmp/bridge_check.cpp
           echo "bridge compile-check OK"
 
+  # The installable C++ API (MESHIOPLUSPLUS_INSTALL_CPP): build it, install it,
+  # then consume it from tests/consumer/ as a genuinely separate CMake project
+  # with the source tree unreachable. Its own job rather than a column on
+  # cpp-tests because the option compiles the core a second time (once per mesh
+  # backend), which would roughly double every existing leg.
+  #
+  # Two legs cover what actually differs:
+  #   * static, all three backends -- proves one prefix serves meshio/native/
+  #     kratos side by side, and that each variant's backend macro reaches the
+  #     consumer's own compile.
+  #   * shared, one backend -- the only configuration where symbol visibility is
+  #     observable. The variants are built -fvisibility=hidden, so a public
+  #     declaration missing MESHIOPLUSPLUS_API fails THIS link and nothing else.
+  cpp-install:
+    name: C++ API install (${{ matrix.name }})
+    needs: [lint]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "static, all backends", backends: "MESHIO;NATIVE;KRATOS", shared: "OFF", cli: "ON" }
+          - { name: "shared, meshio", backends: "MESHIO", shared: "ON", cli: "OFF" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev ninja-build
+      # MESHIOPLUSPLUS_BUILD_CLI on one leg: the CLI links the in-tree core
+      # object library, not the new variants, so this pins that enabling the
+      # install does not disturb (or get disturbed by) it.
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_BUILD_C_API=ON
+          -DMESHIOPLUSPLUS_INSTALL_CPP=ON
+          "-DMESHIOPLUSPLUS_INSTALL_CPP_BACKENDS=${{ matrix.backends }}"
+          -DMESHIOPLUSPLUS_BUILD_CLI=${{ matrix.cli }}
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+      - name: Build + install
+        run: |
+          cmake --build build
+          cmake --install build --prefix "$PWD/inst"
+      - name: Check installed tree shape
+        run: |
+          set -eux
+          test -f inst/include/meshioplusplus/mesh.hpp
+          test -f inst/include/meshioplusplus/registry.hpp
+          test -f inst/include/meshioplusplus/kratos_bridge.hpp
+          test -f inst/include/meshioplusplus/export.hpp
+          # detail/ is included transitively by the public headers: an install
+          # without it does not compile.
+          test -d inst/include/meshioplusplus/detail
+          test -d inst/include/meshioplusplus/formats
+          test -d inst/include/meshioplusplus/operations
+          test -d inst/include/meshioplusplus/backends
+          test -f inst/include/meshioplusplus/meshioplusplus.h      # the C header
+          test -f inst/lib/cmake/meshioplusplus/meshioplusplusConfig.cmake
+          test -f inst/lib/cmake/meshioplusplus/FindKaHIP.cmake
+          test -f inst/lib/pkgconfig/meshioplusplus.pc
+          test -f inst/lib/pkgconfig/meshioplusplus-cxx.pc
+          if [ "${{ matrix.cli }}" = "ON" ]; then test -x inst/bin/meshioplusplus; fi
+          for b in $(echo "${{ matrix.backends }}" | tr ';' ' '); do
+            lc=$(echo "$b" | tr '[:upper:]' '[:lower:]')
+            ls inst/lib/libmeshioplusplus_core_"$lc".* >/dev/null
+          done
+          # Nothing from the build tree, the vendored third-party sources or the
+          # test scaffolding may leak into the prefix.
+          ! find inst \( -iname '*polyscope*' -o -iname '*gtest*' \
+                         -o -iname 'pugixml*' -o -iname 'Eigen' \) | grep .
+      - name: pkg-config
+        run: |
+          set -eux
+          export PKG_CONFIG_PATH="$PWD/inst/lib/pkgconfig"
+          # The C API's .pc must stay valid for a plain-C compile: no -std=c++20,
+          # no backend macro. Compiling the C example with -std=c99 is the check.
+          gcc -std=c99 doc/examples/c_api_example.c \
+            $(pkg-config --cflags --libs meshioplusplus) -o /tmp/ex_c
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/ex_c
+          pkg-config --cflags meshioplusplus-cxx | grep -q -- -std=c++20
+          pkg-config --cflags meshioplusplus-cxx | grep -q -- -DMESHIOPLUSPLUS_MESH_BACKEND_
+      - name: Consume from a separate project
+        run: |
+          set -eux
+          for b in $(echo "${{ matrix.backends }}" | tr ';' ' '); do
+            lc=$(echo "$b" | tr '[:upper:]' '[:lower:]')
+            cmake -S tests/consumer -B "/tmp/consumer-$lc" \
+              -Dmeshioplusplus_DIR="$PWD/inst/lib/cmake/meshioplusplus" \
+              -DMESHIOPLUSPLUS_CONSUMER_BACKEND="$lc"
+            cmake --build "/tmp/consumer-$lc"
+            LD_LIBRARY_PATH="$PWD/inst/lib" "/tmp/consumer-$lc/consumer_smoketest"
+          done
+          # ...and once through meshioplusplus::core, the default-backend alias.
+          cmake -S tests/consumer -B /tmp/consumer-default \
+            -Dmeshioplusplus_DIR="$PWD/inst/lib/cmake/meshioplusplus"
+          cmake --build /tmp/consumer-default
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/consumer-default/consumer_smoketest
+      # COMPONENTS must genuinely gate: this install has no Fortran, so asking
+      # for it has to fail rather than silently succeed and break at link time.
+      - name: COMPONENTS enforcement
+        run: |
+          set -eux
+          mkdir -p /tmp/neg && cd /tmp/neg
+          cat > CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.15)
+          project(neg LANGUAGES CXX C)
+          find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX Fortran)
+          EOF
+          if cmake -S . -B b \
+              -Dmeshioplusplus_DIR="$GITHUB_WORKSPACE/inst/lib/cmake/meshioplusplus" \
+              > out.log 2>&1; then
+            echo "::error::COMPONENTS Fortran should not have been satisfied"; cat out.log; exit 1
+          fi
+          echo "COMPONENTS gating OK"
+
   # The KaHIP partition backend. Its own dedicated job (not a matrix column)
   # so the provisioning stays out of the shared legs: no libkahip-dev package
   # exists in Ubuntu, so KaHIP v3.25 is source-built (pinned tag, PARHIP off --
@@ -473,7 +590,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
-            pyvista trimesh pyarrow
+            pyvista trimesh pyarrow mcp
 
       # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
       # so re-runs reuse objects. compiler-check=content keeps hits valid across
@@ -664,6 +781,33 @@ jobs:
 
       - name: Interop tests
         run: python -m pytest tests/python/test_interop.py tests/python/test_gpu.py -v
+
+  # --------------------------------------------------------------------------
+  # The MCP server with its extra installed. The default `test` matrix keeps
+  # exercising test_mcp.py's pure half (the payload layer, the sandbox, the
+  # parity guard) with the `mcp` SDK absent -- that split is the point; this
+  # job adds the gated half: FastMCP registration, tool calls, resources.
+  # --------------------------------------------------------------------------
+  mcp:
+    name: MCP server
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive  # vendored Eigen (MED transpose)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install meshio++ with the mcp extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[mcp]" pytest
+
+      - name: MCP tests
+        run: python -m pytest tests/python/test_mcp.py -v
 
   # --------------------------------------------------------------------------
   # The browser viewer. Lives here rather than in wasm.yml because that

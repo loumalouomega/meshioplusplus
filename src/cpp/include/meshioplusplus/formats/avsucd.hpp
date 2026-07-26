@@ -44,6 +44,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -65,7 +66,7 @@ namespace meshioplusplus {
  *       cell_data names pass through as-is (post-strip(), spaces replaced
  *       with underscores — not reversible)
  */
-void write_avsucd(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_avsucd(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read an AVS-UCD .avs file.
@@ -82,6 +83,6 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh);
  * @throws ReadError if the file can't be opened or a cell row names an
  *         unknown AVS-UCD type
  */
-Mesh read_avsucd(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_avsucd(const std::string& rPath);
 
 }  // namespace meshioplusplus

@@ -358,7 +358,7 @@ labels = meshioplusplus.partition_labels(mesh, 4)             # per-block Int64 
 quality = meshioplusplus.partition(mesh, 16, method="kahip", mode="strong")
 ```
 
-Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece (`ghost_layers` is reserved for halo growth and raises for now).
+Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece. `ghost_layers=N` instead grows each piece by N shared-node layers of its neighbours' cells (an MPI-style halo), tagged `partition:ghost`.
 
 #### Smoothing
 
@@ -556,6 +556,17 @@ The host→device move is always a bus transfer — what this removes is the fil
 
 See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch, and [the GPU docs](https://loumalouomega.github.io/meshioplusplus/gpu.html) for the device handoff.
 
+### MCP server
+
+Every operation in this README is also exposed to AI agents as a tool over the [Model Context Protocol](https://modelcontextprotocol.io/) — reading/writing all the formats, conversion, and the full mesh- and data-operation suite:
+
+```sh
+pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
+claude mcp add meshioplusplus -- meshioplusplus-mcp
+```
+
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 33 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+
 ### ParaView plugin
 
 <img alt="gmsh paraview" src="https://nschloe.github.io/meshio/gmsh-paraview.png" width="60%">
@@ -624,6 +635,30 @@ npm install @meshioplusplus/wasm
 ```
 
 See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
+
+### C++ API
+
+The full C++ core installs as a normal CMake package — the real `Mesh`, the format registry, every mesh/data operation, and the header-only Kratos bridge, none of which fit through a C ABI:
+
+```
+cmake -S . -B build -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF -DMESHIOPLUSPLUS_INSTALL_CPP=ON
+cmake --build build && cmake --install build --prefix /opt/meshioplusplus
+```
+
+```cmake
+find_package(meshioplusplus 9.0 CONFIG REQUIRED COMPONENTS CXX)
+target_link_libraries(my_solver PRIVATE meshioplusplus::core)
+```
+
+```cpp
+#include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/operations/partition.hpp"
+
+auto mesh  = meshioplusplus::registry_read("bracket.msh", "", {});
+auto parts = meshioplusplus::partition(mesh, {.mNParts = 8});
+```
+
+All three [mesh backends](#c-mesh-backends) install side by side (`meshioplusplus::core_meshio`, `::core_native`, `::core_kratos`), so one prefix serves consumers that disagree about the backend; each carries its own backend macro, making a mismatch a compile or link error rather than silent UB. See the [C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api) doc page.
 
 ### C / Fortran API
 
@@ -712,7 +747,7 @@ Standalone C++ builds (no Python) can swap the in-memory mesh structure at compi
 ./build/configure.sh --mesh-backend NATIVE --tests --build
 ```
 
-See the [C++ mesh backends](https://loumalouomega.github.io/meshioplusplus/cpp_backends) doc page.
+All three also install side by side from a single prefix (`MESHIOPLUSPLUS_INSTALL_CPP=ON`), as `meshioplusplus::core_meshio` / `::core_native` / `::core_kratos` — see the [C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api) page. See the [C++ mesh backends](https://loumalouomega.github.io/meshioplusplus/cpp_backends) doc page.
 
 ### Testing
 
@@ -750,6 +785,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [trimesh](https://trimesh.org/) | `[trimesh]` / `[interop]` | `to_trimesh()` / `from_trimesh()` | MIT |
 | [pyarrow](https://arrow.apache.org/) | `[arrow]` / `[interop]` | the Arrow/Parquet data export | Apache-2.0 |
 | [CuPy](https://cupy.dev/) | — (wheels are CUDA-version-specific, e.g. `cupy-cuda13x` — see the GPU docs) | `to_cupy()` / `from_cupy()` | MIT |
+| [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) | `[mcp]` | the `meshioplusplus-mcp` server exposing every operation to AI agents | MIT |
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |
 | [netCDF4](https://unidata.github.io/netcdf4-python/) | `[all]` | the Python fallback for Exodus | MIT |
 | [KaHIP](https://kahip.github.io/) | `[kahip]` / CMake | the quality graph-partitioning backend | MIT |

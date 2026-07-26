@@ -1,0 +1,26 @@
+# pkg-config for the full C++ API, for HPC build systems that do not use CMake.
+# Kept separate from meshioplusplus.pc (the C API) on purpose: that file's Cflags
+# must stay valid for a plain-C compile, so it can never carry -std=c++20 or the
+# mesh-backend macro.
+#
+# The backend macro in Cflags is load-bearing, not decorative: meshioplusplus::Mesh
+# is a different type per backend, so a translation unit that omits it while
+# linking this library is an ODR violation. Prefer find_package(meshioplusplus
+# CONFIG COMPONENTS CXX), which propagates it (and the parallel-backend macros)
+# automatically; this file only covers the default backend, and a build that
+# installed several exposes the others through CMake alone.
+#
+# Relocatable: resolved relative to this file's installed location
+# (<prefix>/<libdir>/pkgconfig), so `cmake --install --prefix <anywhere>` needs
+# no re-configure.
+prefix=${pcfiledir}/../..
+libdir=${pcfiledir}/..
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: meshioplusplus-cxx
+Description: meshio++ mesh I/O library (C++ API, mesh backend: @MIO_CXX_PC_BACKEND@)
+URL: https://github.com/loumalouomega/meshioplusplus
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -l@MIO_CXX_PC_LIB@
+Libs.private:@MIO_PC_LIBS_PRIVATE@
+Cflags: -I${includedir} -std=c++20 -DMESHIOPLUSPLUS_MESH_BACKEND_@MIO_CXX_PC_BACKEND@@MIO_CXX_PC_CFLAGS_EXTRA@

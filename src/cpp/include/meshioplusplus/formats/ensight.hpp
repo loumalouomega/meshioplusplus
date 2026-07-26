@@ -52,6 +52,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -76,7 +77,7 @@ namespace meshioplusplus {
  *         components, or a binary mesh exceeds 32-bit counts
  * @note point/cell/field data are not written (geometry-only scope).
  */
-void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary);
+MESHIOPLUSPLUS_API void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary);
 
 /**
  * @brief Read an EnSight Gold `.case` file (or a Gold geometry file directly).
@@ -93,6 +94,6 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary);
  * @throws ReadError on malformed input, a non-Gold case file, Fortran-binary
  *         geometry, an unknown element keyword, or out-of-range connectivity
  */
-Mesh read_ensight(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath);
 
 }  // namespace meshioplusplus

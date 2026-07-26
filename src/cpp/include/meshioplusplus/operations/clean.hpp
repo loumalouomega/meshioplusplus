@@ -40,6 +40,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -80,6 +81,6 @@ struct CleanResult {
  * @param rOpts the cleanup options.
  * @return a `CleanResult` with the cleaned mesh, index maps, and removal counts.
  */
-CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts = {});
+MESHIOPLUSPLUS_API CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts = {});
 
 }  // namespace meshioplusplus

@@ -47,6 +47,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -71,7 +72,7 @@ namespace meshioplusplus {
  *        written datasets
  * @throws WriteError on an unsupported layout
  */
-void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids, int gzip_level);
+MESHIOPLUSPLUS_API void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids, int gzip_level);
 
 /**
  * @brief Read a MOAB H5M (.h5m) file into a Mesh.
@@ -89,7 +90,7 @@ void write_h5m(const std::string& rPath, const Mesh& rMesh, bool add_global_ids,
  * @return the read Mesh (points, cells, point_data only — no cell_data)
  * @throws ReadError on a malformed/unsupported HDF5 layout
  */
-Mesh read_h5m(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_h5m(const std::string& rPath);
 
 }  // namespace meshioplusplus
 

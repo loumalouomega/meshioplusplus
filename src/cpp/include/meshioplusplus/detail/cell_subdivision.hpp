@@ -59,6 +59,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/cell_type.hpp"
 
 namespace meshioplusplus {
@@ -76,7 +77,7 @@ using CellQuadFace = std::array<std::uint8_t, 4>;
  * @param Type The cell type to query.
  * @return Reference to the process-wide edge table (empty if unsupported).
  */
-const std::vector<CellEdgePair>& cell_refine_edges(CellType Type);
+MESHIOPLUSPLUS_API const std::vector<CellEdgePair>& cell_refine_edges(CellType Type);
 
 /**
  * @brief The quadrilateral faces of a cell type, ordered to match its
@@ -90,7 +91,7 @@ const std::vector<CellEdgePair>& cell_refine_edges(CellType Type);
  * @param Type The cell type to query.
  * @return Reference to the process-wide quad-face table (empty if none).
  */
-const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type);
+MESHIOPLUSPLUS_API const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type);
 
 }  // namespace detail
 }  // namespace meshioplusplus

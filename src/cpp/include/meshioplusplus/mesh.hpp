@@ -45,8 +45,23 @@
  * `backends/<name>_mesh.hpp` implementing the API.
  */
 
+// Exactly one backend macro may be defined. Two would silently take the first
+// branch below and ignore the rest, giving this TU a different `Mesh` from the
+// library it links against -- see detail/mesh_backend_check.hpp, which also
+// catches the opposite mistake (none defined, so the MESHIO default applies to
+// a TU linking a NATIVE/KRATOS build).
+#if (defined(MESHIOPLUSPLUS_MESH_BACKEND_MESHIO) + defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE) + \
+     defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)) > 1
+#error \
+    "meshio++: more than one MESHIOPLUSPLUS_MESH_BACKEND_* macro is defined. Define exactly the one the library you link was built with (CMake consumers inherit it automatically from meshioplusplus::core*)."
+#endif
+
 // Project includes
 #include "mesh_api.hpp"
+// Referenced by nobody here on purpose: it plants the link-time sentinel in
+// every TU that includes mesh.hpp, which is exactly the set that could get the
+// backend wrong. IWYU pragma: keep
+#include "detail/mesh_backend_check.hpp"
 
 #if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
 #include "backends/native_mesh.hpp"

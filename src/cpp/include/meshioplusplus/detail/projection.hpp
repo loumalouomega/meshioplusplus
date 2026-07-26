@@ -49,6 +49,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -69,7 +70,7 @@ struct CameraBasis {
  * @param roll In-screen rotation in degrees about the view direction.
  * @return The `{u, v, w}` basis described in the file header.
  */
-CameraBasis camera_basis(double azimuth, double elevation, double roll);
+MESHIOPLUSPLUS_API CameraBasis camera_basis(double azimuth, double elevation, double roll);
 
 /** @brief One drawable face of a projected surface: 2-4 corner point ids. */
 struct ProjectedFace {
@@ -113,7 +114,7 @@ struct ProjectedSurface {
  * @param roll In-screen rotation in degrees.
  * @return Projected screen coordinates per point and the sorted face list.
  */
-ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double elevation, double roll);
+MESHIOPLUSPLUS_API ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double elevation, double roll);
 
 }  // namespace detail
 }  // namespace meshioplusplus

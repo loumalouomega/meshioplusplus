@@ -1,16 +1,136 @@
-# find_package(meshioplusplus) config for the installed C API. The imported
-# target is `meshioplusplus::meshioplusplus` (the libmeshioplusplus shared
-# library + the C header's include dir); the Fortran module, when built, is
-# `meshioplusplus::meshioplusplus_fortran`. The optional heavy deps
-# (HDF5/netCDF/zlib) are PRIVATE to the shared library -- consumers need no
-# find_dependency() calls, the dynamic linker resolves them at load time.
+# find_package(meshioplusplus) config. Two independent components, either or
+# both of which a given install may carry:
+#
+#   C    -- `meshioplusplus::meshioplusplus`, the flat libmeshioplusplus shared
+#           library + the pure-C header. Its optional heavy deps (HDF5/netCDF/
+#           zlib/...) are PRIVATE to the shared object, so a C consumer needs no
+#           find_dependency() calls: the dynamic linker resolves them at load
+#           time. `meshioplusplus::meshioplusplus_fortran` rides along when the
+#           Fortran module was built.
+#   CXX  -- `meshioplusplus::core` plus one `meshioplusplus::core_<backend>` per
+#           installed mesh backend (meshio/native/kratos), each the full C++ API:
+#           mesh.hpp, registry.hpp, operations/*, kratos_bridge.hpp. Unlike the C
+#           API these DO propagate their dependencies, because the consumer
+#           compiles the real headers and (for a static build) links the real
+#           dependency graph -- hence the find_dependency() calls below.
+#
+# Selecting a backend: meshioplusplus::core is whichever backend this build
+# treated as the default (MESHIOPLUSPLUS_MESH_BACKEND below). Link
+# meshioplusplus::core_kratos / ::core_native / ::core_meshio to pin one
+# explicitly. Every variant carries its own MESHIOPLUSPLUS_MESH_BACKEND_* macro
+# in INTERFACE_COMPILE_DEFINITIONS, so a consumer cannot accidentally compile
+# against one backend while linking another.
 @PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Introspection: what this build actually compiled in (not merely what was
+# found on the build machine).
+set(MESHIOPLUSPLUS_WITH_HDF5 @_mio_has_HDF5@)
+set(MESHIOPLUSPLUS_WITH_NETCDF @_mio_has_NETCDF@)
+set(MESHIOPLUSPLUS_WITH_ZLIB @_mio_has_ZLIB@)
+set(MESHIOPLUSPLUS_WITH_ZSTD @_mio_has_ZSTD@)
+set(MESHIOPLUSPLUS_WITH_LZ4 @_mio_has_LZ4@)
+set(MESHIOPLUSPLUS_WITH_KAHIP @_mio_has_KAHIP@)
+set(MESHIOPLUSPLUS_WITH_EIGEN @_mio_has_EIGEN@)
+set(MESHIOPLUSPLUS_MESH_BACKEND "@_meshioplusplus_mesh_backend@")
+set(MESHIOPLUSPLUS_PARALLEL_BACKEND "@_meshioplusplus_parallel@")
+set(MESHIOPLUSPLUS_MESH_BACKENDS "@MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS@")
+set(MESHIOPLUSPLUS_NO_STD_SPAN @MESHIOPLUSPLUS_NO_STD_SPAN@)
+
+# Only the C++ targets carry PUBLIC dependencies. Emitting these for a
+# C-API-only install would impose find_package()s on consumers that genuinely do
+# not need them -- the historical, documented behaviour of this file.
+if(@MESHIOPLUSPLUS_INSTALL_CPP@)
+  if(MESHIOPLUSPLUS_WITH_ZLIB)
+    find_dependency(ZLIB)
+  endif()
+  if(MESHIOPLUSPLUS_WITH_ZSTD AND @_mio_zstd_config@)
+    find_dependency(zstd)
+  endif()
+  if(MESHIOPLUSPLUS_WITH_LZ4 AND @_mio_lz4_config@)
+    find_dependency(lz4)
+  endif()
+  if(MESHIOPLUSPLUS_WITH_KAHIP)
+    # FindKaHIP.cmake is installed beside this file precisely so this resolves
+    # for a consumer that has no copy of its own. KaHIP is on neither
+    # ConanCenter nor the vcpkg registry, so it is always bring-your-own:
+    # point KAHIP_ROOT at an install.
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
+    find_dependency(KaHIP)
+  endif()
+  # HDF5 and MPI both reach the consumer as imported targets (HDF5::HDF5,
+  # MPI::MPI_C), which is what makes this install relocatable -- no absolute
+  # library path is baked into meshioplusplusTargets.cmake. The cost is that
+  # both Find modules need the C language enabled, which a CXX-only consumer
+  # has no other reason to enable, so say so by name rather than letting
+  # FindMPI report a bare "missing: MPI_C_FOUND C".
+  if(MESHIOPLUSPLUS_WITH_HDF5 AND (@_mio_hdf5_imported@ OR @_mio_hdf5_needs_mpi@))
+    get_property(_mio_langs GLOBAL PROPERTY ENABLED_LANGUAGES)
+    if(NOT "C" IN_LIST _mio_langs)
+      message(FATAL_ERROR
+        "meshio++'s C++ targets carry the HDF5 (and, for a parallel build, MPI) "
+        "imported targets, whose CMake Find modules require the C language. Add "
+        "C to your project() languages -- project(foo LANGUAGES CXX C) -- or "
+        "call enable_language(C) before find_package(meshioplusplus).")
+    endif()
+    unset(_mio_langs)
+    if(@_mio_hdf5_imported@)
+      set(HDF5_PREFER_PARALLEL @_mio_hdf5_parallel@)
+      find_dependency(HDF5 COMPONENTS C)
+    endif()
+    if(@_mio_hdf5_needs_mpi@)
+      find_dependency(MPI COMPONENTS C)
+    endif()
+  endif()
+  if(MESHIOPLUSPLUS_WITH_NETCDF AND @_mio_netcdf_config@)
+    find_dependency(netCDF)
+  endif()
+  if(MESHIOPLUSPLUS_PARALLEL_BACKEND STREQUAL "OPENMP")
+    find_dependency(OpenMP COMPONENTS CXX)
+  elseif(MESHIOPLUSPLUS_PARALLEL_BACKEND STREQUAL "TBB")
+    find_dependency(TBB CONFIG)
+  elseif(MESHIOPLUSPLUS_PARALLEL_BACKEND STREQUAL "KOKKOS")
+    find_dependency(Kokkos CONFIG)
+  elseif(MESHIOPLUSPLUS_PARALLEL_BACKEND STREQUAL "STL" AND @_mio_parallel_needs_tbb@)
+    find_dependency(TBB CONFIG)
+  endif()
+  # Eigen is deliberately absent: it is a vendored submodule that is never
+  # installed, is used only by src/cpp/src/formats/med.cpp, and is therefore
+  # already baked into the compiled library. A consumer needs no Eigen at all.
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/meshioplusplusTargets.cmake")
 
-# Introspection: which optional format groups this build shipped with.
-set(MESHIOPLUSPLUS_WITH_HDF5 @HDF5_FOUND@)
-set(MESHIOPLUSPLUS_WITH_NETCDF @netCDF_FOUND@)
-set(MESHIOPLUSPLUS_MESH_BACKEND "@_meshioplusplus_mesh_backend@")
+# meshioplusplus::core == the default backend's variant. An INTERFACE target
+# rather than an ALIAS because ALIAS to an IMPORTED target requires it to be
+# GLOBAL, which targets from an export file are not.
+if(@MESHIOPLUSPLUS_INSTALL_CPP@ AND NOT TARGET meshioplusplus::core)
+  set(_mio_default_core "meshioplusplus::core_@_mio_default_backend_lc@")
+  if(TARGET ${_mio_default_core})
+    add_library(meshioplusplus::core INTERFACE IMPORTED)
+    set_target_properties(meshioplusplus::core PROPERTIES
+                          INTERFACE_LINK_LIBRARIES ${_mio_default_core})
+  endif()
+  unset(_mio_default_core)
+endif()
+
+# check_required_components() reads these, so COMPONENTS C / COMPONENTS CXX
+# genuinely fail on an install that lacks the requested half instead of
+# silently succeeding and failing later at the link.
+set(meshioplusplus_C_FOUND @MESHIOPLUSPLUS_BUILD_C_API@)
+if(meshioplusplus_C_FOUND AND NOT TARGET meshioplusplus::meshioplusplus)
+  set(meshioplusplus_C_FOUND FALSE)
+endif()
+
+set(meshioplusplus_CXX_FOUND @MESHIOPLUSPLUS_INSTALL_CPP@)
+if(meshioplusplus_CXX_FOUND AND NOT TARGET meshioplusplus::core)
+  set(meshioplusplus_CXX_FOUND FALSE)
+endif()
+
+set(meshioplusplus_Fortran_FOUND @MESHIOPLUSPLUS_BUILD_FORTRAN@)
+if(meshioplusplus_Fortran_FOUND AND NOT TARGET meshioplusplus::meshioplusplus_fortran)
+  set(meshioplusplus_Fortran_FOUND FALSE)
+endif()
 
 check_required_components(meshioplusplus)

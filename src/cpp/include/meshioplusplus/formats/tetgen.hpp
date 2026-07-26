@@ -47,6 +47,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -68,7 +69,7 @@ namespace meshioplusplus {
  * @note point_data keys produced: `"tetgen:attr{k}"`, `"tetgen:ref"`,
  *       `"tetgen:ref2"`, ...; cell_data keys: `"tetgen:ref"`, `"tetgen:ref2"`, ...
  */
-void write_tetgen(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_tetgen(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a TetGen `.node`/`.ele` file pair.
@@ -87,6 +88,6 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh);
  *       columns); cell_data key: `"tetgen:ref"`/... (region attribute
  *       columns, one array per column since TetGen has one cell block).
  */
-Mesh read_tetgen(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_tetgen(const std::string& rPath);
 
 }  // namespace meshioplusplus

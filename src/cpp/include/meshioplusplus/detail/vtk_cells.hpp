@@ -49,6 +49,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -73,7 +74,7 @@ namespace detail {
  * @param pSrc Source buffer, at least `n` elements.
  * @param n Number of `int64_t` elements to copy.
  */
-void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n);
+MESHIOPLUSPLUS_API void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n);
 
 /**
  * @brief Extracts rows `[r0, r1)` of a 2-D (or column-vector) `NDArray` into
@@ -86,7 +87,7 @@ void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t
  * @param r1 One past the last row to include (exclusive).
  * @return A new owning `NDArray` with `r1 - r0` rows, same dtype/row-width as `rA`.
  */
-NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1);
+MESHIOPLUSPLUS_API NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1);
 
 /**
  * @brief The cell-block *shape* `reconstruct_cells` would produce, without
@@ -111,11 +112,11 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1);
  * @throws ReadError on the same unsupported types `reconstruct_cells` rejects,
  *         so a summary never claims a file is readable when it is not.
  */
-std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
+MESHIOPLUSPLUS_API std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
                                            const std::vector<std::int64_t>& rTypes);
 
 /** @brief Whether any type in @p rTypes needs `offsets` to be summarized. */
-bool cells_need_offsets(const std::vector<std::int64_t>& rTypes);
+MESHIOPLUSPLUS_API bool cells_need_offsets(const std::vector<std::int64_t>& rTypes);
 
 /**
  * @brief Reconstructs meshio cell blocks (and the matching per-block
@@ -158,7 +159,7 @@ bool cells_need_offsets(const std::vector<std::int64_t>& rTypes);
  *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
  *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
  */
-void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+MESHIOPLUSPLUS_API void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
                        const std::vector<std::int64_t>& rTypes,
                        const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh);
 

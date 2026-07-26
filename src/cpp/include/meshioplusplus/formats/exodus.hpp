@@ -40,6 +40,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -90,7 +91,7 @@ struct ExodusInfo {
  * @note the shim only attempts this C++ path when `mesh.point_sets` is
  *       empty — the C++ writer has no support for Exodus node sets at all
  */
-void write_exodus(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_exodus(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read an Exodus II (netCDF classic) file.
@@ -138,14 +139,14 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh);
  * @note point_data keys ending X/Y/Z or _R/_Z may be recombined into vector
  *       arrays; cell_data is split per cell block by node count
  */
-Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions& rOptions = {});
 
 /**
  * @brief Read an Exodus II file, discarding the provenance side channel.
  *
  * The `ReadFn`-shaped overload the registry and the flat bindings use.
  */
-Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions = {});
 
 /**
  * @brief Summarize an Exodus II file without materializing its data arrays.
@@ -157,7 +158,7 @@ Mesh read_exodus(const std::string& rPath, const ReadOptions& rOptions = {});
  * @param rOptions per-call reader options
  * @return the summary
  */
-MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions = {});
+MESHIOPLUSPLUS_API MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& rOptions = {});
 
 /**
  * @brief Map an Exodus 1-based side number to a meshio++ local facet index.
@@ -173,7 +174,7 @@ MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& r
  * @param ExodusSide 1-based Exodus side number
  * @return the local facet index, or -1 when the pair has no mapping
  */
-int exo_face_index(const std::string& rCellType, int ExodusSide);
+MESHIOPLUSPLUS_API int exo_face_index(const std::string& rCellType, int ExodusSide);
 
 }  // namespace meshioplusplus
 

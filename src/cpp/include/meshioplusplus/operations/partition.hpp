@@ -62,9 +62,12 @@
  * concatenating the pieces reproduces the input mesh (partition of unity —
  * every cell lands in exactly one piece while `mGhostLayers == 0`).
  *
- * `mGhostLayers != 0` is reserved (shared-node BFS growth tagged
- * `partition:ghost`) and throws in v1. This is an operation, not a file
- * format — it is not in the format registry.
+ * `mGhostLayers > 0` grows each piece by that many shared-node BFS layers of
+ * cells owned by other parts (a halo, for MPI-style domain decomposition),
+ * tagged with an Int64 `partition:ghost` `cell_data`: 0 for an owned cell, L
+ * for one reached at layer L. The pieces then OVERLAP, so the partition-of-
+ * unity property above holds only for `mGhostLayers == 0`. This is an
+ * operation, not a file format — it is not in the format registry.
  */
 
 // System includes
@@ -72,6 +75,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -93,10 +97,10 @@ enum class PartitionMode {
 };
 
 /// Parse `"sfc"` / `"kahip"` / `"auto"` (throws `std::invalid_argument`).
-PartitionMethod partition_method_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API PartitionMethod partition_method_from_name(const std::string& rName);
 
 /// Parse `"fast"` / `"eco"` / `"strong"` (throws `std::invalid_argument`).
-PartitionMode partition_mode_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API PartitionMode partition_mode_from_name(const std::string& rName);
 
 /// Options for `partition` / `partition_labels`.
 struct PartitionOptions {
@@ -114,8 +118,11 @@ struct PartitionOptions {
     /// `partition:original_cell_id` `cell_data` (original input indices) to
     /// every piece. Only affects `partition`, not `partition_labels`.
     bool mRecordIds = false;
-    /// Reserved: grow each piece by N shared-node BFS layers tagged
-    /// `partition:ghost`. Not implemented in v1 — any value != 0 throws.
+    /// Grow each piece by N shared-node BFS layers of other parts' cells (a
+    /// halo), tagged `partition:ghost` (0 = owned, L = reached at layer L).
+    /// 0 (the default) keeps the pieces disjoint. Negative values throw, and
+    /// `partition_labels` rejects any nonzero value (a flat per-cell label
+    /// array cannot express a cell that is a ghost of several parts).
     int mGhostLayers = 0;
     /// Name of a scalar numeric `cell_data` array of per-cell weights
     /// (`""` = unweighted). SFC cuts the weight prefix sum; KaHIP receives it
@@ -148,29 +155,29 @@ struct PartitionResult {
  * @param rMesh The mesh to partition (unchanged).
  * @param rOptions Part count, method, and method parameters.
  * @return Exactly `nparts` pieces with their point/cell index maps.
- * @throws std::invalid_argument on `nparts < 1`, `ghost_layers != 0`, a bad
+ * @throws std::invalid_argument on `nparts < 1`, `ghost_layers < 0`, a bad
  *   weights array, an out-of-range imbalance, or `method == KaHIP` in a build
  *   without KaHIP (the error names `-DMESHIOPLUSPLUS_WITH_KAHIP=ON`).
  */
-PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions = {});
+MESHIOPLUSPLUS_API PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions = {});
 
 /**
  * @brief Compute the per-cell part assignment without building the pieces.
  * @param rMesh The mesh to partition (unchanged).
- * @param rOptions Same options as `partition` (`mRecordIds`/`mGhostLayers`
- *   have no effect here).
+ * @param rOptions Same options as `partition`; `mRecordIds` has no effect
+ *   here, and a nonzero `mGhostLayers` is rejected (see the field's note).
  * @return Per input block, an Int64 array of shape `(num_cells_in_block,)`
  *   with values in [0, nparts) — block-aligned, ready to attach as the
  *   `partition:part` `cell_data`.
  * @throws std::invalid_argument as `partition`.
  */
-std::vector<NDArray> partition_labels(const Mesh& rMesh, const PartitionOptions& rOptions = {});
+MESHIOPLUSPLUS_API std::vector<NDArray> partition_labels(const Mesh& rMesh, const PartitionOptions& rOptions = {});
 
 /**
  * @brief Whether this build has the KaHIP backend compiled in.
  * @return `true` iff built with `MESHIOPLUSPLUS_WITH_KAHIP=ON` and KaHIP was
  *   found.
  */
-bool partition_has_kahip() noexcept;
+MESHIOPLUSPLUS_API bool partition_has_kahip() noexcept;
 
 }  // namespace meshioplusplus

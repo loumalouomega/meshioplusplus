@@ -8,6 +8,222 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.0.0 (2026-07-25)
+
+Closes the limitations and follow-ups recorded against v8.9.0's installable C++
+API — the gaps a simulation-code consumer (the motivating one being a Kratos
+Multiphysics application) actually hits.
+
+The major-version bump marks that C++-consumer milestone; it is **not** a breaking
+change — everything below is additive, and every existing surface (Python, C API,
+Fortran, Julia, R, WASM, both CLIs) behaves as before. One practical consequence of
+the number itself: the CMake package's compatibility mode is `SameMajorVersion`, so a
+`find_package(meshioplusplus 8.x ...)` minimum-version request rejects a 9.x install —
+consumers pinning a minimum should ask for `9.0`.
+
+### Kratos consumers
+
+- **`KratosMesh::GetModelPart()` gained a `const` overload.** It was non-`const`
+  only because materialization is lazy, so a wrapper whose API takes
+  `const Mesh&` could not reach the ModelPart at all. The ModelPart is a cache
+  of the staged mesh, exactly like the staging every other const accessor
+  already builds on demand, so the members are now `mutable`.
+- **`InvalidateBlocks()`'s rebuild is no longer lossy.** It used to drop ragged
+  pass-through blocks and the entire SubModelPart structure — a documented
+  "sharp edge" that silently lost data for anyone who mutated the ModelPart and
+  wrote the mesh back. Ragged blocks (which never become entities, so a
+  ModelPart edit cannot have touched them) are now carried through **at their
+  original block positions**, cell_data slices included, and SubModelParts are
+  read back as named `Cell`/`Point` regions. Still unrecoverable, because a
+  SubModelPart has nowhere to store them: SubModelPart *nesting* (regions are
+  flat) and a region's `mDim`/`mTag` (taken from a staged region of the same
+  name when one exists, else `-1`).
+- **New `.mdpa` C++ reader/writer** (`formats/mdpa.{hpp,cpp}`, registered in
+  `registry.cpp`), so Kratos's native format is reachable from the C++ core, the
+  C API, Fortran, Julia, R, WASM and the native CLI instead of Python only.
+  Entity names resolve through the existing `backends/kratos_names.hpp` tables
+  plus a longest-suffix fallback (so real decks' `SmallDisplacementElement3D4N`
+  resolves via `Element3D4N`); SubModelParts map to regions; the
+  hexahedron20/27 Kratos↔VTK permutation is applied on read and undone on write.
+  Constructs with no C++ representation (`Table`, `Geometries`, `Mesh <id>`,
+  `Constraints`, non-empty `Properties` bodies, …) throw **by name**.
+  **`meshioplusplus.mdpa.read` deliberately stays on the pure-Python reference**:
+  that reader returns a non-standard mesh (cell_data nested by cell type, plus
+  `mesh.misc_data`/`mesh.geometries_block`) which the C++ `Mesh` cannot carry, so
+  a C++-first shim would silently change the module's documented Python output.
+  `mdpa.write` is a normal try-C++/fallback shim.
+
+### Partitioning
+
+- **`PartitionOptions::mGhostLayers` is implemented** (it was declared and threw).
+  A positive value grows each piece by that many shared-node BFS layers of other
+  parts' cells — the halo an MPI domain decomposition needs — tagged with an
+  Int64 `partition:ghost` cell_data (0 = owned, L = reached at layer L). The
+  pieces then overlap, so partition-of-unity holds only at 0 (the default).
+  **Breaking (narrow):** `partition_labels` now *rejects* a nonzero
+  `ghost_layers` instead of throwing the old "not implemented" error — a flat
+  per-cell label array is the ownership map and a cell can be a ghost of several
+  parts at once. The numpy fallback raises `NotImplementedError` rather than
+  silently returning unghosted pieces.
+
+### Transient output
+
+- **New `XdmfTimeSeriesWriter`** (`formats/xdmf_time_series.{hpp,cpp}`), the C++
+  counterpart of the Python-only `TimeSeriesWriter`; `HDF`/`XML`/`Binary`, pimpl'd
+  so pugixml and `hdf5.h` stay out of the installed header, and exposed on the C
+  API as `mio_xdmf_series_*`. Verified byte-identical `write_xdmf` output before
+  and after the refactor that hoisted the shared payload machinery into
+  `xdmfcommon`.
+- **XDMF temporal *reading* now works at all.** `read_xdmf` resolved
+  `Domain/Grid[0]` — the collection itself — and threw `unknown section Grid` on
+  any time series; it now resolves a temporal collection structurally and
+  honours `ReadOptions::mTimeStep`, and `read_xdmf_metadata` fills `mTimeValues`.
+  XDMF is the second reader after exodus to honour `mTimeStep`.
+
+### C API
+
+- **New `mio_write_ex` / `mio_write_opts`**, the symmetric counterpart of
+  `mio_read_ex`/`mio_read_opts` (same append-only `reserved[5]` ABI discipline):
+  ASCII/binary encoding, the vtu/vtp block codec, and an ASCII float format.
+  `mio_write` is exactly `mio_write_ex(..., <defaults>)` and is unchanged. An
+  option the target format cannot honour **fails the call** rather than being
+  ignored.
+- Backing it, a new `registry_write_ex()` in the core is now the single owner of
+  "write this format with these parameters"; the CLI's private variant table was
+  deleted in favour of it, so the two cannot drift.
+- **`meshioplusplus ascii` now handles text-only formats** in the native CLI.
+  "Write this as ASCII" is a sensible request for a text format — it is just the
+  normal write — but the native CLI rejected it while the Python CLI accepted
+  it, so the two disagreed on which files the verb handled (`.mdpa` was the
+  visible case). `binary` still fails, now by name.
+
+### Performance
+
+- **`PointDataNames()`/`CellDataNames()`/`FieldDataNames()` no longer sort on
+  every call.** Note the discipline this introduces on the MESHIO backend, whose
+  data maps are public struct members that `bindings/python/np_conversions.hpp`
+  writes directly (the sanctioned uniform-API exception): anything bypassing the
+  `Add*` accessors must call the new `Mesh::InvalidateNameCaches()`.
+  `detail::NamedItems` (NATIVE/KRATOS) is sound by construction.
+
+### Packaging
+
+- **The installed prefix is now relocatable.** HDF5 was linked through
+  `${HDF5_C_LIBRARIES}` — absolute paths baked into
+  `meshioplusplusTargets.cmake`, so the package only resolved on a machine whose
+  HDF5 sat exactly where the build's did. It now links the `HDF5::HDF5` imported
+  target with a matching `find_dependency`. **The cost, stated plainly:** an
+  HDF5-enabled install requires `C` among the consumer's `project()` languages
+  (FindHDF5/FindMPI need it), and says so by name if it is missing.
+
+## v8.9.0 (2026-07-25)
+
+### Installable C++ API
+
+- **New `MESHIOPLUSPLUS_INSTALL_CPP` option (default OFF)** installs the full C++ core —
+  the whole `src/cpp/include/meshioplusplus/` header tree, the format registry, every mesh
+  and data operation, and the header-only `kratos_bridge.hpp` — as exported CMake targets.
+  Until now the only installed artifact was the flat C API, which cannot hand out a
+  `Mesh` or a `meshioplusplus::ModelPart`. Default OFF, so `pip install .`, the wheels and
+  every existing CI leg are unaffected. See [`doc/cpp_api.md`](doc/cpp_api.md).
+- **All three mesh backends install side by side** from one prefix, as
+  `meshioplusplus::core_meshio` / `::core_native` / `::core_kratos`, with
+  `meshioplusplus::core` aliasing the build's default backend. One installed meshio++
+  therefore serves consumers that disagree about the backend, instead of each needing a
+  private install. `MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS` trims the set (each backend is a
+  full, independent compile of the core).
+- **`find_package(meshioplusplus CONFIG COMPONENTS CXX|C|Fortran)`** now genuinely enforces
+  its components: asking for one the install does not carry fails at `find_package` time
+  rather than at the link.
+- **Mesh-backend mismatches are now diagnosed, not silently undefined.** Each variant
+  carries its `MESHIOPLUSPLUS_MESH_BACKEND_*` macro in `INTERFACE_COMPILE_DEFINITIONS`, so
+  a CMake consumer cannot disagree by accident; defining two is a compile error
+  (`mesh.hpp`), and defining none while linking a NATIVE/KRATOS build is now a link error
+  naming the expected backend (`detail/mesh_backend_check.hpp`, opt out with
+  `MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK`). Previously this was an ODR violation that
+  usually surfaced as unrelated memory corruption.
+- **New `MESHIOPLUSPLUS_API` export macro** (`export.hpp`) annotating the public C++
+  surface, with the C++ libraries built `-fvisibility=hidden` /
+  `VISIBILITY_INLINES_HIDDEN`. Shared builds export the documented API and nothing else,
+  on every platform including Windows (`__declspec(dllexport/dllimport)`).
+- **New `MESHIOPLUSPLUS_NO_STD_SPAN` option**, propagated to consumers. It already existed
+  as a macro in `native_mesh.hpp` (for the MSVC `<span>` / Boost uBLAS collision that
+  Kratos hits) but there was no way to set it from CMake.
+- The generated config now emits real `find_dependency()` calls (ZLIB, zstd, lz4, netCDF,
+  KaHIP, OpenMP/TBB/Kokkos) for the C++ targets, and **installs `cmake/FindKaHIP.cmake`**
+  beside itself so a KaHIP build resolves for a consumer with no copy of its own. The
+  C-API-only install still emits none, exactly as before. HDF5 is deliberately not
+  re-found (it is linked by absolute path), which also keeps a CXX-only consumer from
+  needing `enable_language(C)`.
+- **New `lib/pkgconfig/meshioplusplus-cxx.pc`** for non-CMake build systems, carrying the
+  C++ include dir, `-std=c++20` and the backend macro. Kept separate from the C API's
+  `meshioplusplus.pc`, whose `Cflags` must stay valid for a plain-C compile.
+- **New `tests/consumer/`**, a standalone CMake project built against an install prefix
+  with the source tree unreachable, plus a `cpp-install` CI job running it for every
+  backend in both a static and a shared configuration.
+- Conan gains `with_cxx_api` / `cxx_api_backends` options (and Conan components when the
+  C++ API is on); vcpkg gains `cxx-api`, `cxx-api-native` and `cxx-api-kratos` features.
+- `build/configure.sh` / `configure.bat` gain `--install-cpp` and `--cpp-backends <LIST>`,
+  and print the matching `cmake --install` line, so the documented convenience path can
+  produce the C++ install without hand-writing the CMake invocation.
+
+### Fixes
+
+- **The vendored pugixml and Eigen include directories are no longer PUBLIC** on the core
+  object library. Neither is referenced by any installed header, and both would otherwise
+  land on every consumer's include path — pugixml colliding with a consumer's own vendored
+  copy (Kratos vendors one), and Eigen's, being a git-submodule path inside the source
+  tree, breaking `find_package` outright on any machine without that tree.
+- `meshioplusplus.pc`'s `Libs.private` was missing `-lzstd` / `-llz4` despite the build
+  options existing, so a static link against a zstd- or lz4-enabled build under-linked.
+- The pybind11 `_core` module's wheel install rule is now gated on scikit-build-core's
+  `SKBUILD` variable. Its `DESTINATION meshioplusplus` is relative to the wheel platlib,
+  so a plain `cmake --install` of a Python-enabled tree — a normal thing to do now that
+  the C++ API installs — used to dump a stray `<prefix>/meshioplusplus/_core*.so` at the
+  prefix root. Wheels and editable installs are unaffected.
+
+## v8.8.0 (2026-07-25)
+
+**Threaded (OpenMP) WebAssembly build.** The `@meshioplusplus/wasm` package now
+ships **two** native artifacts: the sequential `meshioplusplus_wasm` (unchanged)
+and a new threaded `meshioplusplus_wasm_mt`, compiled with the OpenMP parallel
+backend over Emscripten's Wasm threads (pthreads/SharedArrayBuffer). The core's
+`parallel_for` loops — every mesh operation the browser viewer runs through
+`convertSurfaceOps` (quality/smooth/refine/decimate/partition/merge/slice/
+isosurface) and VTU zlib compression — run multi-threaded when the threaded
+build is loaded.
+
+- The loader `loadMeshioPlusPlus()` **auto-selects** at runtime: the threaded
+  build under Node and in a **cross-origin-isolated** browser context (COOP
+  `same-origin` + COEP `require-corp`), the sequential build otherwise. A
+  threaded module cannot instantiate without cross-origin isolation, and there
+  is no in-artifact fallback, which is why both are shipped. Force one with the
+  new `{ variant: 'mt' | 'seq' }` option.
+- New `parallelBackend()` binding (JS/WASM) reports `"openmp"` or `"seq"` — the
+  loaded artifact's parallel backend, alongside `meshBackend()`.
+- The browser viewer picks the threaded build wherever it can: the Pages demo
+  vendors a COOP/COEP service worker (`src/viewer/public/coi-serviceworker.js`)
+  to become cross-origin isolated; the `file://` wheel-embedded viewer is
+  unaffected (it uses no WASM at all).
+- `build/configure-wasm.sh --build` now builds **both** variants by default
+  (`--seq-only` skips the threaded one); new CMake option
+  `MESHIOPLUSPLUS_WASM_THREADS`. Nothing outside the wasm build changes — the
+  Python/native/C-API/Fortran builds are untouched.
+
+**MCP server** (`meshioplusplus[mcp]`, `meshioplusplus-mcp`). Every operation
+is now exposed to AI agents over the Model Context Protocol: 33 stateless,
+file-path-based tools (inspection incl. `info`/`stats`/`quality`/`diff`/
+`regions`/`data_preview`; `convert` subsuming the CLI's ascii/binary/compress/
+decompress variants; all 16 path-based mesh operations; the data operations;
+gated `data_export` → Parquet and `screenshot` → PNG image content) plus
+`meshioplusplus://formats` and `://version` resources, all returning strict
+JSON with truncation caps. New optional extra `mcp` (the official MCP Python
+SDK, which itself needs Python ≥ 3.10) and console script `meshioplusplus-mcp`
+(stdio; `--root DIR` / `MESHIOPLUSPLUS_MCP_ROOT` sandboxes every path). The
+pure tool layer (`meshioplusplus/mcp/_tools.py`) works without the extra, and
+a parity-guard test fails CI whenever a new public operation lacks a tool.
+Docs: `doc/mcp.md`.
+
 ## v8.7.0 (2026-07-24)
 
 Five improvements identified by an audit of the project's own documented gaps

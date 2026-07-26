@@ -71,7 +71,6 @@ import numpy as np
 from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
-from .._helpers import register_format
 from .._mesh import CellBlock, Mesh
 
 
@@ -2438,6 +2437,3 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
                         fh.write(f"        {orig_id}\n".encode())  # Level 3, 8 spaces
                     fh.write(b"    End MeshConditions\n")  # Level 2, 4 spaces
                 fh.write(b"End Mesh\n\n")  # Level 1, 0 spaces
-
-
-register_format("mdpa", [".mdpa"], read, {"mdpa": write})

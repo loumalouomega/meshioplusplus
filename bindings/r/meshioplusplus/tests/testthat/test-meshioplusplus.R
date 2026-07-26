@@ -487,3 +487,65 @@ test_that("errors carry the C API's own message", {
   # A foreign external pointer is rejected rather than dereferenced.
   expect_error(mio_num_points(list()), "mio_mesh")
 })
+
+test_that("a transient XDMF series round-trips", {
+  # The one writer mio_write() cannot express: the grid goes out once and each
+  # step is appended. "XML" keeps everything in the single .xdmf, so this runs
+  # against a library built without HDF5 too.
+  dir <- tempfile("mio_series")
+  dir.create(dir)
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  path <- file.path(dir, "series.xdmf")
+
+  m <- fixture()
+  s <- mio_xdmf_series(path, data_format = "XML")
+  expect_s3_class(s, "mio_xdmf_series")
+  expect_true(mio_xdmf_series_is_open(s))
+  expect_equal(mio_xdmf_series_num_steps(s), 0)
+
+  mio_xdmf_series_write_points_cells(s, m)
+
+  # temperature = t + node id, so no two steps share a value and a step
+  # mix-up cannot pass.
+  times <- c(0, 0.5, 1)
+  step <- mio_mesh()
+  mio_set_points(step, POINTS)
+  mio_add_cell_block(step, "tetra", CONN)
+  for (t in times) {
+    mio_add_point_data(step, "temperature", t + seq_len(5))
+    mio_xdmf_series_write_data(s, t, step)
+  }
+  expect_equal(mio_xdmf_series_num_steps(s), 3)
+  expect_output(print(s), "3 step")
+
+  # The .xdmf is buffered until finalize; nothing is readable before it.
+  mio_xdmf_series_finalize(s)
+  mio_xdmf_series_finalize(s) # idempotent
+  mio_xdmf_series_release(s)
+  expect_false(mio_xdmf_series_is_open(s))
+  mio_xdmf_series_release(s) # idempotent
+  expect_error(mio_xdmf_series_num_steps(s), "released")
+  expect_output(print(s), "released")
+
+  meta <- mio_read_metadata(path)
+  expect_equal(meta$time_values, times)
+
+  for (k in seq_along(times)) {
+    back <- mio_read(path, time_step = k - 1L)
+    expect_equal(mio_num_points(back), 5)
+    expect_equal(as.vector(mio_point_data(back, "temperature")), times[k] + seq_len(5))
+  }
+
+  # An unknown data format is an error carrying the C API's own message.
+  expect_error(mio_xdmf_series(file.path(dir, "bad.xdmf"), data_format = "NoSuchFormat"))
+
+  # A mesh and a series are separately tagged: neither is accepted for the
+  # other, and a foreign pointer is rejected rather than dereferenced.
+  expect_error(mio_xdmf_series_num_steps(m), "mio_xdmf_series")
+  other <- mio_xdmf_series(file.path(dir, "b.xdmf"), data_format = "XML")
+  expect_error(mio_num_points(other), "mio_mesh")
+  expect_error(mio_xdmf_series_num_steps(list()), "mio_xdmf_series")
+  # Released before the tempdir goes away: a finalizer running afterwards
+  # would try to write the .xdmf into a directory that no longer exists.
+  mio_xdmf_series_release(other)
+})

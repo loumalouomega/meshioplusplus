@@ -119,6 +119,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -142,7 +143,7 @@ enum class DecimatePlacement {
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
-DecimatePlacement decimate_placement_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API DecimatePlacement decimate_placement_from_name(const std::string& rName);
 
 /// Options for `decimate`. Exactly one of the three stopping criteria
 /// (`mTargetRatio`, `mTargetFaces`, `mMaxError`) must be set (non-negative).
@@ -231,6 +232,6 @@ struct DecimateResult {
  *         `extract_surface` first), higher-order cells (linearize first),
  *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
  */
-DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions = {});
+MESHIOPLUSPLUS_API DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions = {});
 
 }  // namespace meshioplusplus

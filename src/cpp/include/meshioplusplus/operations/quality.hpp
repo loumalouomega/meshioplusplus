@@ -41,6 +41,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -84,7 +85,7 @@ struct QualityReport {
  * @param rMesh the mesh to evaluate
  * @return the filled `QualityReport`
  */
-QualityReport compute_quality(const Mesh& rMesh);
+MESHIOPLUSPLUS_API QualityReport compute_quality(const Mesh& rMesh);
 
 /**
  * @brief A copy of @p rMesh with every quality metric attached as `cell_data`.
@@ -95,6 +96,6 @@ QualityReport compute_quality(const Mesh& rMesh);
  * @param rMesh the mesh to score
  * @return a copy carrying the metric arrays
  */
-Mesh attach_quality(const Mesh& rMesh);
+MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
 
 }  // namespace meshioplusplus

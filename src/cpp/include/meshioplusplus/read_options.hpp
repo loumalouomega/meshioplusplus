@@ -50,6 +50,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -133,7 +134,7 @@ struct ReadOptions {
      * @return The 0-based step index.
      * @throws ReadError when the request is out of range.
      */
-    std::size_t ResolveTimeStep(std::size_t NumSteps) const;
+    MESHIOPLUSPLUS_API std::size_t ResolveTimeStep(std::size_t NumSteps) const;
 
     /** @brief Whether @p rName survives the `mDataArrays` filter. */
     bool WantsArray(const std::string& rName) const {
@@ -266,6 +267,6 @@ struct MeshMetadata {
  * Does **not** set `mFellBackToFullRead`; that is the caller's business, since
  * this is also useful on a mesh that was going to be read regardless.
  */
-MeshMetadata metadata_from_mesh(const Mesh& rMesh);
+MESHIOPLUSPLUS_API MeshMetadata metadata_from_mesh(const Mesh& rMesh);
 
 }  // namespace meshioplusplus

@@ -333,6 +333,105 @@ export interface DataArrayInfo {
   inconsistentBlocks: boolean;
 }
 
+/** Heavy-data layout of a transient XDMF series. */
+export type XdmfDataFormat = 'HDF' | 'XML' | 'Binary';
+
+/**
+ * A transient (time-series) XDMF writer: one static grid, then one `<Grid>`
+ * per time step inside a temporal collection. Created by
+ * {@link MeshioPlusPlusModule.createXdmfTimeSeriesWriter}.
+ *
+ * ## Why this one is a handle and not a function
+ *
+ * Every other binding in this package is a **stateless function** over a plain
+ * mesh object: hand it values, get values back. A series cannot be that,
+ * because its whole point is that the mesh is written **once** and each solve
+ * appends a cheap step -- and because the `.xdmf` light data can only be
+ * written when the collection is complete, since the collection element has to
+ * enclose every step. So the object has to survive between calls.
+ *
+ * The raw embind surface for it is an **opaque integer handle plus free
+ * functions** (`xdmfSeriesCreate`/`...WritePointsCells`/`...WriteData`/
+ * `...Finalize`/`...NumSteps`/`...Finalized`/`...Free`), deliberately **not**
+ * an embind `class_`, and this object is the wrapper's ergonomic face of it.
+ * The reasons, in order of weight:
+ *
+ * 1. `@meshioplusplus/wasm` never hands JS a live C++ object -- `NDArray`,
+ *    `CellBlock` and `Mesh` are all internal, and JS only ever sees plain
+ *    objects of typed arrays. An embind `class_` instance would be the one
+ *    exception, and would come with an Emscripten-specific `.delete()` that
+ *    has no counterpart anywhere else in this API.
+ * 2. Free functions all go through the same C++ error wrapper, so a
+ *    `WriteError` arrives as a readable JS `Error`; a bound *member* function
+ *    surfaces as a bare, message-less `WebAssembly.Exception`.
+ * 3. It matches the C API (`mio_xdmf_series*`), so the two flat bindings
+ *    describe the same object the same way.
+ *
+ * The handle is an index into a module-local table, not a raw pointer: a
+ * stale or forged handle throws an `Error` instead of corrupting linear
+ * memory.
+ *
+ * ## Getting the files out of MEMFS
+ *
+ * Nothing is on the virtual filesystem until `finalize()`/`close()` runs, and
+ * **`'HDF'` produces TWO files**: the `.xdmf` at the path you gave, plus its
+ * sibling heavy-data file `<path minus extension>.h5`. Copy both out, and read
+ * them back together -- an `.xdmf` without its `.h5` is unreadable.
+ *
+ * ```js
+ * const w = m.createXdmfTimeSeriesWriter('/series.xdmf');  // 'HDF' by default
+ * w.writePointsCells(mesh);
+ * for (let k = 0; k < 3; ++k) w.writeData(k * 0.5, stepMesh(k));
+ * w.close();                                    // the .xdmf appears here
+ * const xdmf = m.FS.readFile('/series.xdmf');   // Uint8Array
+ * const h5   = m.FS.readFile('/series.h5');     // the companion -- do not skip
+ * ```
+ *
+ * `'XML'` writes one self-contained file and needs no companion; `'Binary'`
+ * writes the `.xdmf` plus one `<path minus extension><n>.bin` per array.
+ */
+export interface XdmfTimeSeriesWriter {
+  /**
+   * Write the static grid -- the points and cell blocks every step shares.
+   * Only geometry and connectivity are used; any data on `mesh` is ignored,
+   * because in a series data belongs to a step. Call exactly once, before the
+   * first `writeData`.
+   * @throws {Error} if called twice, on points of dimension > 3, or on a cell
+   *   type with no XDMF spelling.
+   */
+  writePointsCells(mesh: Mesh): void;
+
+  /**
+   * Append one time step's `point_data` and `cell_data`. The mesh's geometry
+   * is ignored, so a solver can pass the same object it updates in place --
+   * but its cell-block structure must match the one given to
+   * `writePointsCells`, since cell data is concatenated across blocks.
+   * @param time emitted as the step's `<Time Value=...>`.
+   * @throws {Error} if `writePointsCells` has not run, or after `finalize()`.
+   */
+  writeData(time: number, mesh: Mesh): void;
+
+  /**
+   * Write the `.xdmf` light data and close the heavy-data container. This is
+   * when the files appear in MEMFS. Idempotent.
+   * @throws {Error} if the `.xdmf` cannot be written.
+   */
+  finalize(): void;
+
+  /** How many steps have been written so far. */
+  numSteps(): number;
+
+  /** Whether `finalize()` has already run. */
+  finalized(): boolean;
+
+  /**
+   * Finalize (if not already) and release the handle. Safe to call twice and
+   * safe to call from a `finally` block. After this the writer is unusable and
+   * every other method throws.
+   */
+  close(): void;
+}
+
 /**
  * The instantiated module returned by `loadMeshioPlusPlus()`. `FS` is
  * Emscripten's virtual filesystem (MEMFS by default) -- write the bytes of a
@@ -463,6 +562,13 @@ export interface MeshioPlusPlusModule {
 
   /** The mesh backend this build was compiled with ("meshio"/"native"/"kratos"). */
   meshBackend(): string;
+
+  /**
+   * The parallel backend this artifact was compiled with: "seq" for the
+   * sequential `meshioplusplus_wasm`, "openmp" for the threaded
+   * `meshioplusplus_wasm_mt` -- i.e. which of the two variants loaded.
+   */
+  parallelBackend(): string;
 
   /**
    * The format names this build can actually read and write, both sorted.
@@ -685,10 +791,11 @@ export interface MeshioPlusPlusModule {
    * carried across the JS boundary — use `recordIds` for the
    * `partition:original_*_id` arrays, or `partitionLabels` for the raw
    * assignment. `weightsKey` names a scalar `cell_data` array of per-cell
-   * weights. `ghostLayers` is reserved and must be 0.
+   * weights. `ghostLayers > 0` grows each piece by that many shared-node BFS
+   * layers of other parts' cells (a halo), tagged `partition:ghost`.
    * @throws {Error} on `method: 'kahip'` (KaHIP is never part of the WASM
    *   build; the message names `MESHIOPLUSPLUS_WITH_KAHIP`), `nparts < 1`,
-   *   `ghostLayers != 0`, or a bad weights array.
+   *   `ghostLayers < 0`, or a bad weights array.
    */
   partition(
     mesh: Mesh,
@@ -772,14 +879,47 @@ export interface MeshioPlusPlusModule {
 
   /** Read-only per-array summary of every data array the mesh carries. */
   dataInfo(mesh: Mesh): DataArrayInfo[];
+
+  /**
+   * Open a transient (time-series) XDMF writer on the virtual filesystem --
+   * the one stateful object in this API. See {@link XdmfTimeSeriesWriter} for
+   * the shape, why it is a handle, and how to get the resulting file(s) out of
+   * MEMFS (`'HDF'` writes **two**: the `.xdmf` and a sibling `.h5`).
+   *
+   * @param path virtual FS path of the `.xdmf`/`.xmf` light-data file.
+   * @param options.dataFormat `'HDF'` (default; the shipped artifact links a
+   *   wasm32 HDF5, so this works here), `'XML'` or `'Binary'`.
+   * @param options.gzipLevel gzip level for `'HDF'` datasets; negative (the
+   *   default) means uncompressed. Ignored by the other formats.
+   * @throws {Error} on an unrecognized `dataFormat`.
+   */
+  createXdmfTimeSeriesWriter(
+    path: string,
+    options?: { dataFormat?: XdmfDataFormat; gzipLevel?: number },
+  ): XdmfTimeSeriesWriter;
 }
 
 /**
  * Instantiate a fresh, independent meshio++ WASM module instance. Safe to
  * call more than once (e.g. one instance per Web Worker).
+ *
+ * The package ships two native artifacts: the sequential `meshioplusplus_wasm`
+ * and the threaded (OpenMP over Wasm threads) `meshioplusplus_wasm_mt`. The
+ * threaded build is faster for mesh operations but only loads where the page is
+ * cross-origin isolated (COOP `same-origin` + COEP `require-corp`); it aborts on
+ * instantiation otherwise. `variant: 'auto'` (default) picks the threaded build
+ * under Node and in a cross-origin-isolated browser, else the sequential one.
+ *
  * @param moduleOverrides forwarded as-is to the Emscripten module factory
  *   (e.g. `{ locateFile }` to relocate the `.wasm` binary for a bundler/CDN).
+ *   `locateFile` receives the requested filename, so return the URL matching the
+ *   loaded variant (`meshioplusplus_wasm.wasm` or `meshioplusplus_wasm_mt.wasm`).
+ * @param options.variant which native artifact to load: `'auto'` (default),
+ *   `'mt'` (force threaded), or `'seq'` (force sequential).
  */
-export function loadMeshioPlusPlus(moduleOverrides?: object): Promise<MeshioPlusPlusModule>;
+export function loadMeshioPlusPlus(
+    moduleOverrides?: object,
+    options?: { variant?: 'auto' | 'mt' | 'seq' },
+): Promise<MeshioPlusPlusModule>;
 
 export default loadMeshioPlusPlus;

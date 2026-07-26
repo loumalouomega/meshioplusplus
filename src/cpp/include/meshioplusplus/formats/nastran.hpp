@@ -51,6 +51,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -73,7 +74,7 @@ namespace meshioplusplus {
  * @param rMesh the mesh to write
  * @throws WriteError on an unsupported cell type
  */
-void write_nastran(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_nastran(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a Nastran bulk-data file into a Mesh — only accepts files
@@ -95,6 +96,6 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh);
  *       the Python reference, which populates `"nastran:ref"` from the
  *       optional GRID/element reference field)
  */
-Mesh read_nastran(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_nastran(const std::string& rPath);
 
 }  // namespace meshioplusplus

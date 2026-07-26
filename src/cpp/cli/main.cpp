@@ -48,6 +48,7 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/write_options.hpp"
 
 #include "polyscope_view.hpp"
 #include "view_payload.hpp"
@@ -255,26 +256,21 @@ void write_mesh_cli(const std::string& rPath, const Mesh& rMesh, const std::stri
 /// the format has no such variant (the caller reports the error).
 bool write_binary_variant(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat,
                           bool binary, const std::string& rFloatFmt) {
-    const std::string& ff = rFloatFmt.empty() ? std::string(".16e") : rFloatFmt;
-    if (rFormat == "ansys") {
-        meshioplusplus::write_ansys(rPath, rMesh, binary);
-    } else if (rFormat == "flac3d") {
-        meshioplusplus::write_flac3d(rPath, rMesh, ff, binary);
-    } else if (rFormat == "gmsh") {
-        meshioplusplus::write_gmsh41(rPath, rMesh, binary);
-    } else if (rFormat == "ply") {
-        meshioplusplus::write_ply(rPath, rMesh, binary, /*skin=*/true);
-    } else if (rFormat == "stl") {
-        meshioplusplus::write_stl(rPath, rMesh, binary, /*skin=*/true);
-    } else if (rFormat == "vtk") {
-        meshioplusplus::write_vtk(rPath, rMesh, binary, /*v51=*/true);
-    } else if (rFormat == "vtu") {
-        meshioplusplus::write_vtu(rPath, rMesh, binary, /*zlib=*/binary);
-    } else if (rFormat == "xdmf") {
-        meshioplusplus::write_xdmf(rPath, rMesh, binary ? "HDF" : "XML");
-    } else {
+    meshioplusplus::WriteOptions opts;
+    opts.mEncoding =
+        binary ? meshioplusplus::WriteEncoding::Binary : meshioplusplus::WriteEncoding::Ascii;
+    // Only pass the float format to a writer that takes one: `--float-format`
+    // on a format without one has always been ignored rather than rejected,
+    // and registry_write_supports() would now turn that into an error.
+    std::string why;
+    meshioplusplus::WriteOptions probe;
+    probe.mFloatFormat = ".16e";
+    if (!rFloatFmt.empty() && meshioplusplus::registry_write_supports(rFormat, probe, why))
+        opts.mFloatFormat = rFloatFmt;
+
+    if (!meshioplusplus::registry_write_supports(rFormat, opts, why))
         return false;
-    }
+    meshioplusplus::registry_write_ex(rPath, rMesh, rFormat, opts);
     return true;
 }
 

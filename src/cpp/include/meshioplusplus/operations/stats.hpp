@@ -38,6 +38,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -65,6 +66,6 @@ struct StatsReport {
  * @param rMesh the mesh to measure (unmodified).
  * @return the populated `StatsReport`.
  */
-StatsReport compute_stats(const Mesh& rMesh);
+MESHIOPLUSPLUS_API StatsReport compute_stats(const Mesh& rMesh);
 
 }  // namespace meshioplusplus

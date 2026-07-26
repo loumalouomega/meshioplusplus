@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "8.7.0"
+version = "9.0.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -64,6 +64,12 @@ pyvista = ["pyvista>=0.44"]
 trimesh = ["trimesh>=4.0"]
 arrow = ["pyarrow>=14"]
 interop = ["pyvista>=0.44", "trimesh>=4.0", "pyarrow>=14"]
+# The MCP server (src/python/meshioplusplus/mcp/): exposes every operation to
+# AI agents over the Model Context Protocol. Python-only, lazy import, and NOT
+# in `all` for the same reason as the interop extras. Note the `mcp` SDK
+# itself requires Python >= 3.10 while the package floor stays 3.8 -- the pure
+# tool layer works everywhere, only running the server needs this extra.
+mcp = ["mcp>=1.2"]
 all = [
     "netCDF4",
     "h5py",  # CGNS, H5M, MED, XDMF formats
@@ -77,6 +83,10 @@ issues = "https://github.com/loumalouomega/meshioplusplus/issues"
 
 [project.scripts]
 meshioplusplus = "meshioplusplus._cli:main"
+# Entry goes through meshioplusplus.mcp (not ._server directly) so a missing
+# [mcp] extra prints the named `pip install meshioplusplus[mcp]` error instead
+# of an ImportError traceback.
+meshioplusplus-mcp = "meshioplusplus.mcp:main"
 
 [tool.scikit-build]
 # scikit-build-core drives the CMake build of the meshioplusplus._core

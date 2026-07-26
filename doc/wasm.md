@@ -211,11 +211,73 @@ catchable `Error`. See [data operations](./data_operations.md),
 [expressions](./data_calc.md), [conditioning](./data_condition.md) and
 [data summary](./data_info.md).
 
+## Transient (time-series) XDMF
+
+`createXdmfTimeSeriesWriter(path, { dataFormat, gzipLevel })` is the **one
+stateful** thing in this API: every other binding is a pure function over a
+mesh object, but a time series writes the mesh **once** and then appends one
+cheap step per solve, and its `.xdmf` light data can only be written when the
+collection is complete. See [XDMF time series](./xdmf_time_series.md).
+
+```javascript
+const w = m.createXdmfTimeSeriesWriter('/series.xdmf');   // 'HDF' by default
+w.writePointsCells(mesh);                                 // the static grid, once
+for (let k = 0; k < nsteps; ++k) {
+    w.writeData(k * dt, stepMesh(k));   // only point_data/cell_data are used
+}
+w.close();                              // the files appear HERE
+
+const xdmf = m.FS.readFile('/series.xdmf');
+const h5 = m.FS.readFile('/series.h5'); // 'HDF' writes TWO files — see below
+```
+
+The returned object has `writePointsCells(mesh)`, `writeData(time, mesh)`,
+`finalize()`, `numSteps()`, `finalized()` and `close()`. `close()` finalizes if
+needed and releases the handle; it is safe to call twice and safe to call from a
+`finally`. After it, every method throws a catchable `Error` — the underlying
+handle is an index into a module-local table, not a pointer, so a stale handle
+can never be a use-after-free.
+
+::: warning `'HDF'` writes TWO files into the virtual filesystem
+The `.xdmf` at the path you gave **and** its sibling heavy-data file
+`<path minus extension>.h5` (a sibling of the `.xdmf`, not a file in the
+current directory — this differs from the pure-Python `TimeSeriesWriter`).
+Copy both out of `FS`; an `.xdmf` without its `.h5` is unreadable. `'XML'`
+writes one self-contained file; `'Binary'` writes the `.xdmf` plus one
+`<path minus extension><n>.bin` per array. Nothing is on the filesystem until
+`finalize()`/`close()` runs.
+:::
+
+`'HDF'` works here: the shipped artifact links a wasm32 HDF5 (v8.0.0+). Read a
+series back with the ordinary `readMesh` (which resolves the temporal
+collection structurally and gives you the first step), `readMeshSelective(path,
+{ timeStep: k })` for a particular one (negative counts from the end), or
+`readMetadata(path).timeValues` to see the steps without loading any payload.
+
+::: tip Why a handle and not a class
+The raw embind surface is an opaque integer handle plus seven free functions
+(`xdmfSeriesCreate`, `xdmfSeriesWritePointsCells`, `xdmfSeriesWriteData`,
+`xdmfSeriesFinalize`, `xdmfSeriesNumSteps`, `xdmfSeriesFinalized`,
+`xdmfSeriesFree`), deliberately **not** an embind `class_`, and the object
+above is the wrapper's ergonomic face of it. `@meshioplusplus/wasm` never hands
+JS a live C++ object — `NDArray`, `CellBlock` and `Mesh` are all internal — so
+an embind class instance, with the Emscripten-specific `.delete()` it comes
+with, would be the API's one exception. Free functions also all go through the
+same C++ error wrapper, so a `WriteError` arrives as a readable JS `Error`;
+a bound *member* function surfaces as a bare, message-less
+`WebAssembly.Exception`. It matches the [C API](/c_api)'s `mio_xdmf_series*`
+too, so the two flat bindings describe the same object the same way.
+:::
+
+This is not a registry format (there is no single `(path, mesh)` call for the
+registry to name), so it does **not** change the format counts below and does
+not appear in `availableFormats()`.
+
 ## Format support
 
-**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 41 formats: 40 readable, 41 writable (`openfoam` is read-only; `svg` and `tikz` are write-only).
+**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 41 readable and 43 writable format keys (`openfoam` is read-only; `svg`, `tikz` and `gmsh22` are write-only).
 
-`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
+`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `mdpa` (Kratos; mesh-level blocks only — see [MDPA](./formats/mdpa.md#c-core)), `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
 
 Ask the loaded module rather than trusting this list — it is generated from the same registry the build actually links:
 
@@ -240,6 +302,39 @@ Some extensions are shared by more than one format. `readMesh`/`writeMesh`/ `con
 | `.inp` | `abaqus` | `"ansysinp"` |
 | `.node` / `.ele` | `tetgen` | `"triangle"` (2D Triangle pairs) |
 
+## Threads (OpenMP)
+
+The package ships **two** native artifacts and picks one at load time:
+
+- `meshioplusplus_wasm` — the **sequential** build. Always loadable, anywhere.
+- `meshioplusplus_wasm_mt` — the **threaded** build, compiled with the OpenMP parallel backend over Emscripten's Wasm threads (pthreads + `SharedArrayBuffer`). The core's parallel loops — every [mesh operation](#mesh-operations) run through `convertSurfaceOps`, and VTU zlib compression — run multi-threaded here.
+
+`loadMeshioPlusPlus()` **auto-selects**: the threaded build under Node (where `SharedArrayBuffer` is always available) and in a **cross-origin-isolated** browser context, the sequential build otherwise. Force one with the `variant` option:
+
+```js
+const meshio = await loadMeshioPlusPlus({}, { variant: "mt" });  // "auto" (default) | "mt" | "seq"
+meshio.parallelBackend();  // "openmp" for the threaded build, "seq" for the sequential one
+```
+
+**A browser page must be [cross-origin isolated](https://developer.mozilla.org/en-US/docs/Web/API/crossOriginIsolated) to load the threaded build.** `SharedArrayBuffer` requires the document to be served with:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+A threaded module **cannot instantiate** without this — and there is no in-artifact fallback — which is exactly why both variants ship and the loader chooses. Where you cannot set those headers (e.g. static hosts like GitHub Pages), a COOP/COEP [service worker](https://github.com/gzuidhof/coi-serviceworker) is the usual workaround; it is what the meshio++ browser viewer's Pages demo uses. If a page is not isolated, `loadMeshioPlusPlus()` transparently loads the sequential build instead, so correctness never depends on the headers — only speed does.
+
+When you pass a `locateFile` override to relocate the `.wasm` (a bundler/CDN setup), return the URL matching the requested filename, since the two variants ask for different binaries:
+
+```js
+const meshio = await loadMeshioPlusPlus({
+    locateFile: (path) => (path.includes("_mt") ? mtWasmUrl : wasmUrl),
+});
+```
+
+Under Node no headers are needed — Wasm threads use `worker_threads`. The threaded artifact pre-spawns a worker pool of `navigator.hardwareConcurrency` (falling back to 8 where `navigator` is absent, e.g. Node < 21, then growing on demand).
+
 ## Known v1 limitations
 
 - **No zero-copy.** Every array is copied once crossing the JS/WASM boundary (see above) — for very large meshes this has a real memory/time cost that the Python bindings' numpy views avoid.
@@ -261,7 +356,7 @@ cd ../meshioplusplus  # this repo
 node tests/wasm/smoke.mjs
 ```
 
-`build/configure-wasm.sh` always configures with `-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` (no Python/pybind11 involved), `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ` (OpenMP/TBB/the parallel STL have no meaningful story on this target yet), and `-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE` (the fastest [in-memory mesh backend](cpp_backends.md) — canonical Float64/Int64 storage, so the embind typed-array boundary needs no dtype dispatch; the JS API shape is unchanged, and `meshBackend()` on the loaded module reports `"native"`). See `--help` for `--without-zlib`, `--without-hdf5`, `--without-netcdf`, `--deps-prefix` and `--build-type`. CI (`.github/workflows/wasm.yml`) builds and smoke-tests on PRs touching the wasm surface, and publishes to npm on `v*` tags.
+`build/configure-wasm.sh --build` builds **both** artifacts by default (`--seq-only` skips the threaded one). Each is configured with `-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` (no Python/pybind11 involved) and `-DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE` (the fastest [in-memory mesh backend](cpp_backends.md) — canonical Float64/Int64 storage, so the embind typed-array boundary needs no dtype dispatch; the JS API shape is unchanged, and `meshBackend()` on the loaded module reports `"native"`). The two differ only in the parallel backend: the sequential variant uses `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ`, the threaded one `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP -DMESHIOPLUSPLUS_WASM_THREADS=ON` (which adds `-pthread` and a pre-spawned worker pool — see [Threads (OpenMP)](#threads-openmp)). They build in separate trees (`build/wasm-<type>` and `build/wasm-<type>-mt`) because `-pthread` is a whole-translation-unit property. See `--help` for `--without-zlib`, `--without-hdf5`, `--without-netcdf`, `--deps-prefix` and `--build-type`. CI (`.github/workflows/wasm.yml`) builds and smoke-tests both on PRs touching the wasm surface, and publishes to npm on `v*` tags.
 
 ### The HDF5 and netCDF dependencies
 
