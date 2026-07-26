@@ -520,6 +520,69 @@ end
     close(m)
 end
 
+@testset "transient XDMF series" begin
+    # The one writer `write` cannot express: the grid goes out once and each
+    # step is appended. "XML" keeps everything in the single .xdmf, so this
+    # runs against a library built without HDF5 too.
+    mktempdir() do dir
+        path = joinpath(dir, "series.xdmf")
+        m = fixture()
+
+        s = XdmfSeries(path; data_format="XML")
+        @test isopen(s)
+        @test num_steps(s) == 0
+        write_points_cells!(s, m)
+
+        # temperature = t + node id, so no two steps share a value and a
+        # step mix-up cannot pass.
+        step = Mesh()
+        set_points!(step, POINTS)
+        add_cell_block!(step, "tetra", CONN)
+        times = [0.0, 0.5, 1.0]
+        for t in times
+            add_point_data!(step, "temperature", Float64[t + i for i in 1:5])
+            write_data!(s, t, step)
+        end
+        @test num_steps(s) == 3
+        @test occursin("3 steps", sprint(show, s))
+
+        # The .xdmf is buffered until finalize; nothing is readable before it.
+        finalize!(s)
+        finalize!(s)                       # idempotent
+        close(s)
+        @test !isopen(s)
+        close(s)                           # idempotent
+        @test_throws MeshioError num_steps(s)
+        close(step)
+
+        meta = read_metadata(path)
+        @test meta.time_values ≈ times
+
+        for (k, t) in enumerate(times)
+            back = mio.read(path; options=ReadOptions(time_step=k - 1))
+            @test num_points(back) == 5
+            @test point_data(back, "temperature") ≈ Float64[t + i for i in 1:5]
+            close(back)
+        end
+
+        # The do-block form closes even when the body throws.
+        outer = nothing
+        @test_throws ErrorException XdmfSeries(joinpath(dir, "boom.xdmf");
+                                               data_format="XML") do inner
+            outer = inner
+            write_points_cells!(inner, m)
+            error("boom")
+        end
+        @test !isopen(outer)
+
+        # An unknown data format throws from the constructor, carrying the C
+        # API's own message.
+        @test_throws MeshioError XdmfSeries(joinpath(dir, "bad.xdmf");
+                                            data_format="NoSuchFormat")
+        close(m)
+    end
+end
+
 @testset "errors carry mio_last_error()" begin
     # Every failure surfaces as a MeshioError carrying the C API's own
     # thread-local message; a status code never reaches the caller.

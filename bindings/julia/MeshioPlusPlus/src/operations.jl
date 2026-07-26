@@ -598,8 +598,10 @@ available), `"kahip"` (only in a build configured with KaHIP; requesting it
 elsewhere fails by name) or `"auto"`.
 
 Every piece keeps the input's cell-block structure 1:1, so the cell maps index
-by input block and the pieces recombine into the input. `ghost_layers` must be
-0 in v1. See `doc/partition.md`.
+by input block and the pieces recombine into the input. `ghost_layers > 0`
+instead grows each piece by that many shared-node BFS layers of other parts'
+cells (a halo), tagged `partition:ghost` (0 = owned, L = reached at layer L),
+in which case the pieces overlap. See `doc/partition.md`.
 """
 function partition(m::Mesh, nparts::Integer; method::AbstractString="auto",
                    imbalance::Real=0.03, mode::AbstractString="eco", seed::Integer=0,
