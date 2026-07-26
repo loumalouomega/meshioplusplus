@@ -400,6 +400,54 @@ MIO_API int mio_reader_supports_options(const char* format);
 /** Write a mesh. `format` as in mio_read(). */
 MIO_API mio_status mio_write(const char* path, const mio_mesh* mesh, const char* format);
 
+/** ASCII/binary selection for mio_write_opts.encoding. */
+typedef enum mio_write_encoding {
+    MIO_ENCODING_DEFAULT = 0, /**< the format's own default (unchanged behaviour) */
+    MIO_ENCODING_ASCII = 1,
+    MIO_ENCODING_BINARY = 2
+} mio_write_encoding;
+
+/** Block compression codec for mio_write_opts.codec (vtu/vtp only). */
+typedef enum mio_write_codec {
+    MIO_CODEC_DEFAULT = 0, /**< leave the format's default in place */
+    MIO_CODEC_NONE = 1,
+    MIO_CODEC_ZLIB = 2,
+    MIO_CODEC_LZ4 = 3,  /**< vtkLZ4DataCompressor; ParaView-readable */
+    MIO_CODEC_ZSTD = 4  /**< a meshio++ extension; ParaView cannot read it */
+} mio_write_codec;
+
+/**
+ * Options for how a mesh is written -- the symmetric counterpart of
+ * mio_read_opts.
+ *
+ * ABI NOTE: identical discipline to mio_read_opts. New fields may only be
+ * appended, replacing `reserved` capacity; never reorder, resize or repurpose
+ * an existing field. Always zero-initialize through mio_write_opts_init().
+ *
+ * An option the target format cannot honour FAILS the call rather than being
+ * ignored -- asking for zstd in a Gmsh file is a mistake worth reporting.
+ */
+typedef struct mio_write_opts {
+    int encoding;      /**< a mio_write_encoding value */
+    int codec;         /**< a mio_write_codec value; vtu/vtp only */
+    /** printf-style float format for the ASCII writers that take one (e.g.
+     *  ".16e"). NULL or empty keeps the writer's own default. Copied during
+     *  the call. Currently honoured by flac3d. */
+    const char* float_format;
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
+} mio_write_opts;
+
+/** Initialize `opts` to the defaults (exactly mio_write's behaviour). */
+MIO_API void mio_write_opts_init(mio_write_opts* opts);
+
+/**
+ * Write a mesh honouring `opts`. `mio_write(path, mesh, format)` is exactly
+ * `mio_write_ex(path, mesh, format, <defaults>)` and is unchanged.
+ * @return MIO_OK, or an error code (see mio_last_error()).
+ */
+MIO_API mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
+                                const mio_write_opts* opts);
+
 /** Read `in_path` and immediately write it to `out_path` (the CLI's
  *  `convert`), without materializing a handle for the caller. */
 MIO_API mio_status mio_convert(const char* in_path, const char* in_format, const char* out_path,
@@ -986,7 +1034,10 @@ MIO_API void mio_decimate_result_free(mio_decimate_result* result);
  * @param record_ids   nonzero to attach Int64 partition:original_point_id
  *                     point_data and partition:original_cell_id cell_data
  *                     (original input indices) to every piece.
- * @param ghost_layers reserved (BFS ghost growth); must be 0 in v1.
+ * @param ghost_layers grow each piece by this many shared-node BFS layers of
+ *        other parts' cells (a halo), tagged with an Int64 `partition:ghost`
+ *        cell_data (0 = owned, L = reached at layer L). 0 keeps the pieces
+ *        disjoint; negative fails the call.
  * @param weights_key  name of a scalar numeric cell_data array of per-cell
  *                     weights, or NULL/"" for the unweighted rule.
  * @return a result handle (free with mio_partition_result_free), or NULL on
@@ -1603,6 +1654,65 @@ MIO_API void mio_regions_free(mio_regions* regions);
 MIO_API mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_region_kind kind,
                                        int32_t dim, int64_t tag, const int64_t* entries,
                                        int64_t count);
+
+/* ---------------------------------------------------------------------
+ * Transient (time-series) XDMF writing
+ *
+ * The write half of what mio_read_opts.time_step / mio_read_metadata_time_value
+ * expose on the read side. A solver writes the mesh ONCE and then one cheap step
+ * per solve, so this is a stateful handle rather than a (path, mesh) call -- the
+ * one writer here that mio_write() cannot express.
+ *
+ *   mio_xdmf_series* s = mio_xdmf_series_create("out.xdmf", "HDF", -1);
+ *   mio_xdmf_series_write_points_cells(s, mesh);
+ *   for (k = 0; k < nsteps; ++k) { solve(); mio_xdmf_series_write_data(s, k*dt, mesh); }
+ *   mio_xdmf_series_free(s);          // finalizes if mio_xdmf_series_finalize wasn't called
+ *
+ * The .xdmf light data is buffered and written once, at finalize; a series is
+ * therefore only readable after the handle is finalized or freed. Heavy data for
+ * "HDF" goes to a <path minus extension>.h5 SIBLING of the .xdmf.
+ * --------------------------------------------------------------------- */
+
+/** Opaque transient XDMF writer. Destroy with mio_xdmf_series_free(). */
+typedef struct mio_xdmf_series mio_xdmf_series;
+
+/**
+ * Open a transient XDMF series for writing. Nothing is written yet.
+ * @param path        the .xdmf/.xmf light-data file to write.
+ * @param data_format "HDF" (NULL means "HDF"; needs an HDF5-enabled build),
+ *                    "XML" or "Binary".
+ * @param gzip_level  gzip level for "HDF" datasets, negative for none.
+ * @return a handle (free with mio_xdmf_series_free), or NULL on failure -- an
+ *         unknown data_format, or "HDF" without HDF5 support.
+ */
+MIO_API mio_xdmf_series* mio_xdmf_series_create(const char* path, const char* data_format,
+                                                int32_t gzip_level);
+
+/**
+ * Write the static grid every step shares. Call once, before the first
+ * mio_xdmf_series_write_data(). Only the mesh's points and cells are used.
+ */
+MIO_API mio_status mio_xdmf_series_write_points_cells(mio_xdmf_series* series,
+                                                      const mio_mesh* mesh);
+
+/**
+ * Write one time step's point_data and cell_data; the mesh's geometry is
+ * ignored, and its cell blocks must match those of the static grid.
+ */
+MIO_API mio_status mio_xdmf_series_write_data(mio_xdmf_series* series, double time,
+                                              const mio_mesh* mesh);
+
+/**
+ * Write the .xdmf and close the heavy-data container. Idempotent, and done by
+ * mio_xdmf_series_free() too -- call it explicitly to see a write failure.
+ */
+MIO_API mio_status mio_xdmf_series_finalize(mio_xdmf_series* series);
+
+/** @return the number of steps written so far, or -1 on error. */
+MIO_API int64_t mio_xdmf_series_num_steps(const mio_xdmf_series* series);
+
+/** Finalize (if needed) and destroy a series handle. Safe to call with NULL. */
+MIO_API void mio_xdmf_series_free(mio_xdmf_series* series);
 
 #ifdef __cplusplus
 }
