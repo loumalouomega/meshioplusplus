@@ -515,15 +515,15 @@ std::vector<int> partition_kahip_parts(const Mesh& rMesh, const PartitionOptions
 // --- ghost (halo) layers -----------------------------------------------------
 
 /// CSR adjacency: rows indexed by `mOffsets`, payload in `mEntries`.
-struct PartitionCsr {
+struct PartitionIncidenceCsr {
     std::vector<std::int64_t> mOffsets;
     std::vector<std::int64_t> mEntries;
 };
 
 /// Global cell -> its (distinct) node ids. Handles ragged blocks; a polyhedron
 /// contributes the distinct nodes across all of its faces.
-PartitionCsr partition_cell_nodes(const Mesh& rMesh, std::size_t total) {
-    PartitionCsr csr;
+PartitionIncidenceCsr partition_cell_nodes(const Mesh& rMesh, std::size_t total) {
+    PartitionIncidenceCsr csr;
     csr.mOffsets.reserve(total + 1);
     csr.mOffsets.push_back(0);
     std::vector<std::int64_t> row;
@@ -555,9 +555,9 @@ PartitionCsr partition_cell_nodes(const Mesh& rMesh, std::size_t total) {
 }
 
 /// Invert cell->nodes into node->cells, by counting (no per-node vector).
-PartitionCsr partition_node_cells(const PartitionCsr& rCellNodes, std::size_t npoints,
-                                  std::size_t total) {
-    PartitionCsr csr;
+PartitionIncidenceCsr partition_node_cells(const PartitionIncidenceCsr& rCellNodes,
+                                           std::size_t npoints, std::size_t total) {
+    PartitionIncidenceCsr csr;
     csr.mOffsets.assign(npoints + 1, 0);
     for (std::int64_t nid : rCellNodes.mEntries)
         if (nid >= 0 && static_cast<std::size_t>(nid) < npoints)
@@ -675,7 +675,7 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
     // choice -- it is what a node-based assembly actually needs, and it is the
     // same neighbour definition the KaHIP dual graph falls back on.
     const int nghost = rOptions.mGhostLayers;
-    PartitionCsr cell_nodes, node_cells;
+    PartitionIncidenceCsr cell_nodes, node_cells;
     if (nghost > 0) {
         cell_nodes = partition_cell_nodes(rMesh, total);
         node_cells = partition_node_cells(cell_nodes, rMesh.NumPoints(), total);
