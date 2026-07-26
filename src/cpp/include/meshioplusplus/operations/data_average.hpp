@@ -44,6 +44,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 
@@ -87,7 +88,7 @@ struct DataAverageOptions {
  * @throws std::invalid_argument on an unknown name, on an output-name collision
  *         when `overwrite` is false, or under `NanPolicy::Fail`.
  */
-Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts = {});
+MESHIOPLUSPLUS_API Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts = {});
 
 /**
  * @brief Averages `cell_data` onto the points: each point's value is the
@@ -105,7 +106,7 @@ Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts 
  *         whose block count disagrees with the mesh, on an output-name
  *         collision when `overwrite` is false, or under `NanPolicy::Fail`.
  */
-Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts = {});
+MESHIOPLUSPLUS_API Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts = {});
 
 /**
  * @brief Parses a weighting name.
@@ -113,6 +114,6 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts 
  * @return the matching `CellPointWeight`.
  * @throws std::invalid_argument on an unknown name.
  */
-CellPointWeight cell_point_weight_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API CellPointWeight cell_point_weight_from_name(const std::string& rName);
 
 }  // namespace meshioplusplus

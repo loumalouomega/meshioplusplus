@@ -52,6 +52,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
@@ -61,7 +62,7 @@ namespace detail {
 
 /// A deep copy of an `NDArray` that always owns its buffer (safe even when the
 /// source is a view over foreign memory, as it is on the Python boundary).
-NDArray data_owned_copy(const NDArray& rArray);
+MESHIOPLUSPLUS_API NDArray data_owned_copy(const NDArray& rArray);
 
 /**
  * @brief Copies only the geometry of @p rMesh — points and every cell block,
@@ -73,7 +74,7 @@ NDArray data_owned_copy(const NDArray& rArray);
  * @param rMesh the mesh whose geometry is copied.
  * @return a new mesh with identical geometry and no data.
  */
-Mesh clone_geometry(const Mesh& rMesh);
+MESHIOPLUSPLUS_API Mesh clone_geometry(const Mesh& rMesh);
 
 /**
  * @brief Clones @p rMesh, letting @p rFilter decide the fate of each data array.
@@ -221,11 +222,11 @@ struct FiniteStats {
  * @param rStats per-component accumulators, resized to @p NumComponents and
  *        *folded into* (not reset), so several arrays can share one reduction.
  */
-void accumulate_stats(const NDArray& rArray, std::size_t NumComponents,
+MESHIOPLUSPLUS_API void accumulate_stats(const NDArray& rArray, std::size_t NumComponents,
                       std::vector<FiniteStats>& rStats);
 
 /// Collapses per-component stats into one whole-array accumulator.
-FiniteStats combine_components(const std::vector<FiniteStats>& rStats);
+MESHIOPLUSPLUS_API FiniteStats combine_components(const std::vector<FiniteStats>& rStats);
 
 /**
  * @brief The |measure| of one cell — length for a 1D cell, area for a 2D cell,
@@ -239,7 +240,7 @@ FiniteStats combine_components(const std::vector<FiniteStats>& rStats);
  * @param Index the cell index within the block.
  * @return the unsigned measure, or NaN.
  */
-double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
+MESHIOPLUSPLUS_API double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
                     std::size_t Index);
 
 }  // namespace detail

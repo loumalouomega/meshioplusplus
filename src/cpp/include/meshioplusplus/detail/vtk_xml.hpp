@@ -48,6 +48,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -59,7 +60,7 @@ namespace detail {
  * @param dt The dtype.
  * @return The VTK type name (e.g. `"Float64"`, `"Int32"`).
  */
-const char* vtu_type_str(DType dt);
+MESHIOPLUSPLUS_API const char* vtu_type_str(DType dt);
 
 /**
  * @brief Map a VTK-XML type-name string to the `NDArray` dtype.
@@ -67,14 +68,14 @@ const char* vtu_type_str(DType dt);
  * @return The matching dtype.
  * @throws ReadError on an unknown type name.
  */
-DType dtype_from_vtu(const std::string& rS);
+MESHIOPLUSPLUS_API DType dtype_from_vtu(const std::string& rS);
 
 /**
  * @brief Emit one float in VTK's `%.11e` ASCII format followed by a newline.
  * @param rOs Output stream.
  * @param v The value.
  */
-void vtu_ascii_double(std::ostream& rOs, double v);
+MESHIOPLUSPLUS_API void vtu_ascii_double(std::ostream& rOs, double v);
 
 /**
  * @brief Emit a whole `NDArray` in ASCII, one value per line (floats via
@@ -82,7 +83,7 @@ void vtu_ascii_double(std::ostream& rOs, double v);
  * @param rOs Output stream.
  * @param rA The array.
  */
-void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA);
+MESHIOPLUSPLUS_API void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA);
 
 /**
  * @brief Store one parsed value into a dtype-erased array slot.
@@ -91,7 +92,7 @@ void vtu_ascii_ndarray(std::ostream& rOs, const NDArray& rA);
  * @param d The value when `rA` is a float dtype.
  * @param v The value when `rA` is an integer dtype.
  */
-void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v);
+MESHIOPLUSPLUS_API void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v);
 
 /**
  * @brief Parse whitespace-separated ASCII DataArray text into a flat array.
@@ -99,14 +100,14 @@ void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v);
  * @param dt Target dtype (drives float vs integer parsing).
  * @return A 1-D owning array of every parsed value.
  */
-NDArray vtu_parse_ascii(const char* pText, DType dt);
+MESHIOPLUSPLUS_API NDArray vtu_parse_ascii(const char* pText, DType dt);
 
 /**
  * @brief Trim leading/trailing whitespace from a C string.
  * @param pS The string (may be null).
  * @return The trimmed copy.
  */
-std::string vtu_strip(const char* pS);
+MESHIOPLUSPLUS_API std::string vtu_strip(const char* pS);
 
 /**
  * @brief Decode a base64 "binary" DataArray payload into a flat array.
@@ -116,14 +117,14 @@ std::string vtu_strip(const char* pS);
  * @param hsz Header integer size in bytes (4 for UInt32, 8 for UInt64).
  * @return A 1-D owning array over the decoded bytes.
  */
-NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std::size_t hsz);
+MESHIOPLUSPLUS_API NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std::size_t hsz);
 
 /**
  * @brief Widen a dtype-erased integer array to a `std::int64_t` vector.
  * @param rA The array.
  * @return The widened values.
  */
-std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
+MESHIOPLUSPLUS_API std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
 
 }  // namespace detail
 }  // namespace meshioplusplus

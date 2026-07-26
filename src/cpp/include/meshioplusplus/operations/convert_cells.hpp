@@ -68,6 +68,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -86,7 +87,7 @@ enum class ConvertCellsMode {
  * @return the matching mode.
  * @throws std::invalid_argument on an unknown name.
  */
-ConvertCellsMode convert_cells_mode_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API ConvertCellsMode convert_cells_mode_from_name(const std::string& rName);
 
 /// Options for `convert_cells`.
 struct ConvertCellsOptions {
@@ -123,6 +124,6 @@ struct ConvertCellsResult {
  *         requested mode (a polyhedron block under `Simplexify`, or a
  *         full-Lagrange target such as `quad9`/`hexahedron27` under `Elevate`).
  */
-ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions = {});
+MESHIOPLUSPLUS_API ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions = {});
 
 }  // namespace meshioplusplus

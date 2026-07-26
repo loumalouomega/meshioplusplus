@@ -47,6 +47,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -76,7 +77,7 @@ namespace meshioplusplus {
  * @throws WriteError on an unopenable output path
  * @note cell_data key produced/consumed: `"facet_normals"`.
  */
-void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin = true);
+MESHIOPLUSPLUS_API void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin = true);
 
 /**
  * @brief Read an STL file, auto-detecting ascii vs. binary.
@@ -94,6 +95,6 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
  *         for binary input
  * @throws ReadError on a malformed/truncated file
  */
-Mesh read_stl(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_stl(const std::string& rPath);
 
 }  // namespace meshioplusplus

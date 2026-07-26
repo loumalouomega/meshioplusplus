@@ -41,6 +41,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 
@@ -94,7 +95,7 @@ struct DataManageResult {
  *         away, on two renames targeting the same name, or on two renames of
  *         the same source.
  */
-DataManageResult data_manage(const Mesh& rMesh, const DataManageOptions& rOpts);
+MESHIOPLUSPLUS_API DataManageResult data_manage(const Mesh& rMesh, const DataManageOptions& rOpts);
 
 /**
  * @brief Drops the named arrays at one location.
@@ -105,7 +106,7 @@ DataManageResult data_manage(const Mesh& rMesh, const DataManageOptions& rOpts);
  * @return the rewritten mesh.
  * @throws std::invalid_argument on an unknown name (unless @p IgnoreMissing).
  */
-Mesh data_drop(const Mesh& rMesh, DataLocation Location, const std::vector<std::string>& rNames,
+MESHIOPLUSPLUS_API Mesh data_drop(const Mesh& rMesh, DataLocation Location, const std::vector<std::string>& rNames,
                bool IgnoreMissing = false);
 
 /**
@@ -119,7 +120,7 @@ Mesh data_drop(const Mesh& rMesh, DataLocation Location, const std::vector<std::
  * @return the rewritten mesh.
  * @throws std::invalid_argument on an unknown name (unless @p IgnoreMissing).
  */
-Mesh data_keep(const Mesh& rMesh, DataLocation Location, const std::vector<std::string>& rNames,
+MESHIOPLUSPLUS_API Mesh data_keep(const Mesh& rMesh, DataLocation Location, const std::vector<std::string>& rNames,
                bool IgnoreMissing = false);
 
 /**
@@ -131,7 +132,7 @@ Mesh data_keep(const Mesh& rMesh, DataLocation Location, const std::vector<std::
  * @return the rewritten mesh.
  * @throws std::invalid_argument if @p rFrom does not exist or @p rTo already does.
  */
-Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rFrom,
+MESHIOPLUSPLUS_API Mesh data_rename(const Mesh& rMesh, DataLocation Location, const std::string& rFrom,
                  const std::string& rTo);
 
 }  // namespace meshioplusplus

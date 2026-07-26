@@ -62,6 +62,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
@@ -106,6 +107,6 @@ struct DataCalcOptions {
  *         `meshio++: data_calc: ` and, where meaningful, carries the 0-based
  *         character position within the expression.
  */
-Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalcOptions& rOpts);
+MESHIOPLUSPLUS_API Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalcOptions& rOpts);
 
 }  // namespace meshioplusplus

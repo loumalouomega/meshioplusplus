@@ -55,14 +55,20 @@
  * `Information`-based `field_data` — all of these throw and fall back to
  * Python. Points are restricted to dimension <=3 on write.
  *
- * Temporal XDMF (`TimeSeriesWriter`/`TimeSeriesReader`) is unrelated to this
- * header and remains pure Python regardless of the C++ core.
+ * Temporal XDMF (a `GridType="Collection" CollectionType="Temporal"` grid) is
+ * *written* by `formats/xdmf_time_series.hpp`, which is a stateful multi-call
+ * object rather than a `(path, mesh)` format. `read_xdmf` here reads one back:
+ * it resolves the collection structurally (never by running an XInclude/XPointer
+ * pass), takes the geometry from the static grid and the attributes from the
+ * step `ReadOptions::mTimeStep` selects, and `read_xdmf_metadata` reports every
+ * step's `<Time Value>` in `MeshMetadata::mTimeValues`.
  */
 
 // System includes
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -90,7 +96,7 @@ namespace meshioplusplus {
  * @note point_data/cell_data map generically to `<Attribute Center="Node"|
  *       "Cell">` elements, keyed by the raw attribute name.
  */
-void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
+MESHIOPLUSPLUS_API void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& rDataFormat,
                 int gzip_level = -1);
 
 /**
@@ -111,7 +117,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
  *         then falls back to the Python/`h5py` reader.
  * @note `<Attribute>` elements map generically to `point_data`/`cell_data`.
  */
-Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts = {});
 
 /**
  * @brief Summarize a `.xdmf` without reading any heavy-data payload.
@@ -126,6 +132,6 @@ Mesh read_xdmf(const std::string& rPath, const ReadOptions& rOpts = {});
  * @throws ReadError on Mixed topology (which needs the full reader to resolve
  *         per-block counts) and on everything `read_xdmf` rejects
  */
-MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_xdmf_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

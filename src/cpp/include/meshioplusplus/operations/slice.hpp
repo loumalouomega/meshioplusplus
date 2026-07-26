@@ -68,6 +68,7 @@
 #include <array>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -97,6 +98,6 @@ struct SliceOptions {
  * @throws std::invalid_argument on a zero-length normal, or when a cell block
  *         cannot be simplexified (a polyhedron block).
  */
-Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions = {});
+MESHIOPLUSPLUS_API Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions = {});
 
 }  // namespace meshioplusplus

@@ -31,6 +31,9 @@
 #include <string>
 #include <vector>
 
+// Project includes
+#include "meshioplusplus/export.hpp"
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -50,10 +53,10 @@ inline constexpr std::size_t kColormapSize = 256;
  * @return Pointer to `kColormapSize * 3` packed RGB bytes.
  * @throws std::invalid_argument if the name is not a built-in colormap.
  */
-const std::uint8_t* colormap_table(const std::string& rName);
+MESHIOPLUSPLUS_API const std::uint8_t* colormap_table(const std::string& rName);
 
 /** @brief The built-in colormap names, in the documented order. */
-std::vector<std::string> colormap_names();
+MESHIOPLUSPLUS_API std::vector<std::string> colormap_names();
 
 /**
  * @brief Map a normalized parameter to a color.
@@ -71,7 +74,7 @@ std::vector<std::string> colormap_names();
  * zero while Python's round() rounds half to even, and `t * 255.0 + 0.5` hits
  * exact ties at t = k/510 for small odd k -- values reachable from real data.
  */
-Rgb colormap_lookup(const std::uint8_t* pTable, double t);
+MESHIOPLUSPLUS_API Rgb colormap_lookup(const std::uint8_t* pTable, double t);
 
 }  // namespace detail
 }  // namespace meshioplusplus

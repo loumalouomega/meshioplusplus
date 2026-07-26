@@ -54,6 +54,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -67,7 +68,7 @@ enum class DiffVerdict {
 
 /// Human-readable name of a verdict (`"identical"` / `"equal within tolerance"`
 /// / `"different"`).
-const std::string& diff_verdict_name(DiffVerdict verdict);
+MESHIOPLUSPLUS_API const std::string& diff_verdict_name(DiffVerdict verdict);
 
 /**
  * @brief Elementwise comparison summary for one array (the points table or one
@@ -219,7 +220,7 @@ struct DiffOptions {
  *              ordered)
  * @return the filled `DiffReport`
  */
-DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts = {});
+MESHIOPLUSPLUS_API DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts = {});
 
 /**
  * @brief Convenience boolean: are two meshes equal within tolerance?
@@ -232,6 +233,6 @@ DiffReport diff(const Mesh& rA, const Mesh& rB, const DiffOptions& rOpts = {});
  * @param rtol relative tolerance (default `1e-9`)
  * @return `true` when the verdict is `Identical` or `EqualWithinTolerance`
  */
-bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol = 1e-12, double rtol = 1e-9);
+MESHIOPLUSPLUS_API bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol = 1e-12, double rtol = 1e-9);
 
 }  // namespace meshioplusplus

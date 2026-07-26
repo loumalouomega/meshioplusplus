@@ -35,6 +35,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/read_options.hpp"
@@ -59,7 +60,7 @@ namespace meshioplusplus {
  *         cell type PolyData cannot hold (volume or quadratic cells,
  *         polyhedra)
  */
-void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
+MESHIOPLUSPLUS_API void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib);
 
 /**
  * @brief Write a `.vtp` choosing the block-compression codec explicitly.
@@ -75,7 +76,7 @@ void write_vtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
  * @throws WriteError naming the CMake option when the codec was not compiled
  *         into this build.
  */
-void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+MESHIOPLUSPLUS_API void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec);
 
 /**
@@ -94,7 +95,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
  *         poly-vertex/poly-line rows, multiple pieces, appended data, or
  *         lzma compression (all deferred to the Python reader)
  */
-Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
 
 /**
  * @brief Summarize a `.vtp` without decoding its heavy arrays.
@@ -107,6 +108,6 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts = {});
  * @return the summary; `mHasBBox` is false (see `read_vtu_metadata`)
  * @throws ReadError on the same unsupported constructs as `read_vtp`
  */
-MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
+MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions& rOpts = {});
 
 }  // namespace meshioplusplus

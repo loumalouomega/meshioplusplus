@@ -89,6 +89,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -106,7 +107,7 @@ enum class InterpolateMethod {
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
-InterpolateMethod interpolate_method_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API InterpolateMethod interpolate_method_from_name(const std::string& rName);
 
 /// What to do when a transferred array name already exists on the target.
 enum class InterpolateConflict {
@@ -121,7 +122,7 @@ enum class InterpolateConflict {
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
-InterpolateConflict interpolate_conflict_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API InterpolateConflict interpolate_conflict_from_name(const std::string& rName);
 
 /// Options for `interpolate`.
 struct InterpolateOptions {
@@ -158,6 +159,6 @@ struct InterpolateOptions {
  *         simplexification, or inconsistent per-block components in a
  *         requested cell_data array.
  */
-Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOptions& rOptions = {});
+MESHIOPLUSPLUS_API Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOptions& rOptions = {});
 
 }  // namespace meshioplusplus

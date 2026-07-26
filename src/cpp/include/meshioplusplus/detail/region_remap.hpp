@@ -70,6 +70,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -122,7 +123,7 @@ inline constexpr std::size_t kBlockDropped = static_cast<std::size_t>(-1);
  * @return The facet count, or 0 for a type with no facet table (which makes
  *         every side entry on it invalid, and so dropped).
  */
-std::size_t region_num_facets(const std::string& rType);
+MESHIOPLUSPLUS_API std::size_t region_num_facets(const std::string& rType);
 
 /**
  * @brief Carry one region across, without adding it to the output mesh.
@@ -140,7 +141,7 @@ std::size_t region_num_facets(const std::string& rType);
  * @return `false` when nothing survived, or when the kind cannot be carried at
  *         all (in which case a `log::warn` has already been emitted).
  */
-bool remap_region(const Mesh& rIn, const Mesh& rOut, const Region& rRegion,
+MESHIOPLUSPLUS_API bool remap_region(const Mesh& rIn, const Mesh& rOut, const Region& rRegion,
                   const RegionRemap& rMaps, Region& rResult);
 
 /**
@@ -155,7 +156,7 @@ bool remap_region(const Mesh& rIn, const Mesh& rOut, const Region& rRegion,
  * @param rOut The operation's output mesh; regions are added to it.
  * @param rMaps The index maps.
  */
-void remap_regions(const Mesh& rIn, Mesh& rOut, const RegionRemap& rMaps);
+MESHIOPLUSPLUS_API void remap_regions(const Mesh& rIn, Mesh& rOut, const RegionRemap& rMaps);
 
 /**
  * @brief Drop every region with one warning, for operations whose output has no
@@ -168,7 +169,7 @@ void remap_regions(const Mesh& rIn, Mesh& rOut, const RegionRemap& rMaps);
  * @param rIn The operation's input mesh.
  * @param rOpName The operation name, for the warning.
  */
-void warn_regions_dropped(const Mesh& rIn, const std::string& rOpName);
+MESHIOPLUSPLUS_API void warn_regions_dropped(const Mesh& rIn, const std::string& rOpName);
 
 }  // namespace detail
 }  // namespace meshioplusplus

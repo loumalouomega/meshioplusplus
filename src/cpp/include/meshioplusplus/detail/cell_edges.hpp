@@ -43,6 +43,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/cell_type.hpp"
 
 namespace meshioplusplus {
@@ -70,7 +71,7 @@ struct CellEdgeDef {
  * @param SurfaceType The surface cell type to query.
  * @return Reference to the process-wide edge table (empty if unsupported).
  */
-const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType);
+MESHIOPLUSPLUS_API const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType);
 
 /**
  * @brief Whether the surface extractor supports a surface cell type's edges.

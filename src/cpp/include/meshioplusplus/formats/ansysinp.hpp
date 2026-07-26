@@ -54,6 +54,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -94,7 +95,7 @@ struct AnsysInfo {
  *         appears before any base value, or an `EBLOCK` row's (family,
  *         node-count) pair has no meshio++ type mapping
  */
-Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo);
+MESHIOPLUSPLUS_API Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo);
 
 /**
  * @brief Write `mesh` (plus `info`'s named sets) as an Ansys MAPDL
@@ -116,6 +117,6 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo);
  * @note point_sets/cell_sets travel via `info`, not via `mesh` — the Python
  *       binding setattrs them onto/from the Mesh object separately
  */
-void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo& rInfo);
+MESHIOPLUSPLUS_API void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo& rInfo);
 
 }  // namespace meshioplusplus

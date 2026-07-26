@@ -56,6 +56,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
 namespace meshioplusplus {
@@ -107,7 +108,7 @@ private:
  * @return Owning `Hid` for the open file.
  * @throws ReadError if the file cannot be opened.
  */
-Hid open_file_read(const std::string& rPath);
+MESHIOPLUSPLUS_API Hid open_file_read(const std::string& rPath);
 
 /**
  * @brief Creates a new HDF5 file, truncating any existing file at `path`.
@@ -115,7 +116,7 @@ Hid open_file_read(const std::string& rPath);
  * @return Owning `Hid` for the new file.
  * @throws WriteError if the file cannot be created.
  */
-Hid create_file(const std::string& rPath);
+MESHIOPLUSPLUS_API Hid create_file(const std::string& rPath);
 
 /**
  * @brief Whether a link named `name` exists directly under group/file `loc`.
@@ -123,7 +124,7 @@ Hid create_file(const std::string& rPath);
  * @param rName Link name to test.
  * @return `true` if the link exists.
  */
-bool exists(hid_t loc, const std::string& rName);
+MESHIOPLUSPLUS_API bool exists(hid_t loc, const std::string& rName);
 
 /**
  * @brief Opens an existing HDF5 group.
@@ -132,7 +133,7 @@ bool exists(hid_t loc, const std::string& rName);
  * @return Owning `Hid` for the opened group.
  * @throws ReadError if the group does not exist.
  */
-Hid open_group(hid_t loc, const std::string& rName);
+MESHIOPLUSPLUS_API Hid open_group(hid_t loc, const std::string& rName);
 
 /**
  * @brief Creates a new HDF5 group.
@@ -141,7 +142,7 @@ Hid open_group(hid_t loc, const std::string& rName);
  * @return Owning `Hid` for the new group.
  * @throws WriteError if the group cannot be created.
  */
-Hid create_group(hid_t loc, const std::string& rName);
+MESHIOPLUSPLUS_API Hid create_group(hid_t loc, const std::string& rName);
 
 /**
  * @brief Maps a `meshioplusplus::DType` to the native in-memory HDF5 type used
@@ -151,7 +152,7 @@ Hid create_group(hid_t loc, const std::string& rName);
  * @return The matching `H5T_NATIVE_*` constant (defaults to
  *         `H5T_NATIVE_DOUBLE` for an unrecognized/invalid `dt`).
  */
-hid_t native_type(DType dt);
+MESHIOPLUSPLUS_API hid_t native_type(DType dt);
 
 /**
  * @brief Maps a `meshioplusplus::DType` to the on-disk (file) HDF5 type to use
@@ -163,7 +164,7 @@ hid_t native_type(DType dt);
  * @param dt The dtype to convert.
  * @return The matching `H5T_*LE` constant (defaults to `H5T_IEEE_F64LE`).
  */
-hid_t file_type(DType dt);
+MESHIOPLUSPLUS_API hid_t file_type(DType dt);
 
 /**
  * @brief Converts a stored HDF5 datatype (of a dataset or attribute) to the
@@ -172,7 +173,7 @@ hid_t file_type(DType dt);
  * @return The matching `DType`.
  * @throws ReadError if `type_id`'s class is neither float nor integer.
  */
-DType dtype_from_h5(hid_t type_id);
+MESHIOPLUSPLUS_API DType dtype_from_h5(hid_t type_id);
 
 /**
  * @brief Reads a full HDF5 dataset into a freshly-allocated, owning `NDArray`.
@@ -189,7 +190,7 @@ DType dtype_from_h5(hid_t type_id);
  * @return A new owning `NDArray` holding the dataset's contents.
  * @throws ReadError if the dataset is missing or the read fails.
  */
-NDArray read_dataset(hid_t loc, const std::string& rName);
+MESHIOPLUSPLUS_API NDArray read_dataset(hid_t loc, const std::string& rName);
 
 /**
  * @brief Writes a full dataset in one call, optionally gzip-compressed.
@@ -207,7 +208,7 @@ NDArray read_dataset(hid_t loc, const std::string& rName);
  *                   compression (the default).
  * @throws WriteError if the dataset cannot be created or the write fails.
  */
-void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int gzip_level = -1);
+MESHIOPLUSPLUS_API void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int gzip_level = -1);
 
 // ---- attribute helpers ----
 
@@ -217,7 +218,7 @@ void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int
  * @param rName Attribute name to test.
  * @return `true` if the attribute exists.
  */
-bool has_attr(hid_t loc, const std::string& rName);
+MESHIOPLUSPLUS_API bool has_attr(hid_t loc, const std::string& rName);
 
 /**
  * @brief Reads a scalar integer attribute.
@@ -226,7 +227,7 @@ bool has_attr(hid_t loc, const std::string& rName);
  * @return The attribute's value as `int64_t`.
  * @throws ReadError if the attribute is missing or unreadable.
  */
-std::int64_t read_attr_int(hid_t loc, const std::string& rName);
+MESHIOPLUSPLUS_API std::int64_t read_attr_int(hid_t loc, const std::string& rName);
 
 /**
  * @brief Writes a scalar integer attribute.
@@ -236,7 +237,7 @@ std::int64_t read_attr_int(hid_t loc, const std::string& rName);
  * @param ftype On-disk integer type to store as (default `H5T_STD_I64LE`).
  * @throws WriteError if the attribute cannot be created.
  */
-void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v,
+MESHIOPLUSPLUS_API void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v,
                     hid_t ftype = H5T_STD_I64LE);
 
 /**
@@ -251,7 +252,7 @@ void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v,
  * @return The attribute's value as a `std::string`.
  * @throws ReadError if the attribute is missing or unreadable.
  */
-std::string read_attr_string(hid_t loc, const std::string& rName);
+MESHIOPLUSPLUS_API std::string read_attr_string(hid_t loc, const std::string& rName);
 
 /**
  * @brief Writes a string attribute the way h5py does by default:
@@ -264,7 +265,7 @@ std::string read_attr_string(hid_t loc, const std::string& rName);
  * @param rValue String value to write.
  * @throws WriteError if the attribute cannot be created.
  */
-void write_attr_string(hid_t loc, const std::string& rName, const std::string& rValue);
+MESHIOPLUSPLUS_API void write_attr_string(hid_t loc, const std::string& rName, const std::string& rValue);
 
 /**
  * @brief Lists the link (child) names directly under a group, in HDF5's
@@ -272,7 +273,7 @@ void write_attr_string(hid_t loc, const std::string& rName, const std::string& r
  * @param loc Group handle to list.
  * @return Child link names, in name order.
  */
-std::vector<std::string> group_links(hid_t loc);
+MESHIOPLUSPLUS_API std::vector<std::string> group_links(hid_t loc);
 
 /**
  * @brief Like `group_links`, but iterates in HDF5 link *creation* order when
@@ -286,7 +287,7 @@ std::vector<std::string> group_links(hid_t loc);
  * @param loc Group handle to list.
  * @return Child link names, in creation order if indexed, else name order.
  */
-std::vector<std::string> group_links_crt(hid_t loc);
+MESHIOPLUSPLUS_API std::vector<std::string> group_links_crt(hid_t loc);
 
 /**
  * @brief RAII guard that silences HDF5's default stderr error-stack printing

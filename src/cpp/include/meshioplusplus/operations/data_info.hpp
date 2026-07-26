@@ -41,6 +41,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
@@ -91,7 +92,7 @@ struct DataInfoReport {
  * @param rMesh the mesh to inspect (unmodified).
  * @return the populated report.
  */
-DataInfoReport data_info(const Mesh& rMesh);
+MESHIOPLUSPLUS_API DataInfoReport data_info(const Mesh& rMesh);
 
 /**
  * @brief Summarizes one named data array.
@@ -101,6 +102,6 @@ DataInfoReport data_info(const Mesh& rMesh);
  * @return the populated summary.
  * @throws std::invalid_argument, listing the available keys, if absent.
  */
-DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation Location, const std::string& rName);
+MESHIOPLUSPLUS_API DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation Location, const std::string& rName);
 
 }  // namespace meshioplusplus

@@ -71,6 +71,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -157,7 +158,7 @@ struct MedInfo {
  *         layout. Callers (the Python shim) catch this and retry with the
  *         pure-Python/h5py reader.
  */
-Mesh read_med(const std::string& rPath, MedInfo& rInfo);
+MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
 
 /**
  * @brief Write a Mesh to a MED (.med) HDF5 file, handling the
@@ -190,7 +191,7 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  * @note point_data/cell_data keys produced/consumed: `"point_tags"`,
  *       `"cell_tags"`.
  */
-void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
+MESHIOPLUSPLUS_API void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion = "4.1.0");
 
 }  // namespace meshioplusplus

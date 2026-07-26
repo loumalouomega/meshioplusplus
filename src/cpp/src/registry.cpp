@@ -44,6 +44,7 @@
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/formats/ip.hpp"
+#include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/medit.hpp"
 #include "meshioplusplus/formats/mff.hpp"
@@ -85,6 +86,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"freefem", meshioplusplus::read_freefem},
         {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
+        {"mdpa", meshioplusplus::read_mdpa},
         {"medit", meshioplusplus::read_medit_ascii},
         {"mff", meshioplusplus::read_mff},
         {"mfm", meshioplusplus::read_mfm},
@@ -169,6 +171,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"gmsh22", [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
+        {"mdpa", meshioplusplus::write_mdpa},
         {"medit", meshioplusplus::write_medit_ascii},
         {"mff", meshioplusplus::write_mff},
         {"mfm",
@@ -273,6 +276,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".ip", "ip"},
         {".mff", "mff"},
         {".pf3", "flux"},
+        {".mdpa", "mdpa"},
         {".mesh", "medit"},
         {".mfm", "mfm"},
         {".mphtxt", "mphtxt"},

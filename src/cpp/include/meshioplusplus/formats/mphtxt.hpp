@@ -45,6 +45,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -66,7 +67,7 @@ namespace meshioplusplus {
  *         Python writer merely warns and skips the type)
  * @note reads `cell_data["mphtxt:geom"]` if present
  */
-void write_mphtxt(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_mphtxt(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a COMSOL text mesh (.mphtxt) file into a Mesh.
@@ -83,6 +84,6 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh);
  *         array per cell block) from each element's geometric entity index
  * @throws ReadError on a malformed file or an unrecognized COMSOL type name
  */
-Mesh read_mphtxt(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_mphtxt(const std::string& rPath);
 
 }  // namespace meshioplusplus

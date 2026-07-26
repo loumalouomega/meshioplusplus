@@ -57,6 +57,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/cell_type.hpp"
 
 namespace meshioplusplus {
@@ -84,7 +85,7 @@ struct CellFaceDef {
  * @param VolumeType The volume cell type to query.
  * @return Reference to the process-wide face table (empty if unsupported).
  */
-const std::vector<CellFaceDef>& cell_faces(CellType VolumeType);
+MESHIOPLUSPLUS_API const std::vector<CellFaceDef>& cell_faces(CellType VolumeType);
 
 /**
  * @brief Whether the skin extractor supports a volume cell type.

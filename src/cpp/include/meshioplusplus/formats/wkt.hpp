@@ -40,6 +40,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -55,7 +56,7 @@ namespace meshioplusplus {
  * @param rMesh the mesh to write (only `triangle` cells contribute)
  * @throws WriteError on an unopenable output path
  */
-void write_wkt(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_wkt(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a WKT TIN file into a single-`triangle`-block Mesh.
@@ -70,6 +71,6 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh);
  * @throws ReadError if a ring's last point does not equal its first (not a
  *         closed linestring), or the file doesn't parse as `TIN (...)`
  */
-Mesh read_wkt(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_wkt(const std::string& rPath);
 
 }  // namespace meshioplusplus

@@ -41,6 +41,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -64,7 +65,7 @@ namespace meshioplusplus {
  * @note reads `point_data`/`cell_data` key `"medit:ref"` if present
  *       (preferred over other int-dtype arrays for the ref column)
  */
-void write_medit_ascii(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_medit_ascii(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read an ASCII Medit (.mesh) file into a Mesh.
@@ -83,6 +84,6 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh);
  *         from each row's trailing reference integer
  * @throws ReadError on a malformed file or unrecognized required section
  */
-Mesh read_medit_ascii(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_medit_ascii(const std::string& rPath);
 
 }  // namespace meshioplusplus

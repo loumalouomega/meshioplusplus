@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/detail/colormap.hpp"
 #include "meshioplusplus/detail/projection.hpp"
 #include "meshioplusplus/mesh.hpp"
@@ -88,10 +89,10 @@ struct FaceColors {
  * A degenerate range (`vMin == vMax`, which an all-constant array produces)
  * maps everything to the middle of the colormap rather than dividing by zero.
  */
-double color_param(double v, double vMin, double vMax);
+MESHIOPLUSPLUS_API double color_param(double v, double vMin, double vMax);
 
 /** @brief The faces a projected surface draws, in emission order. */
-std::vector<ColorFace> color_faces_from_projection(const std::vector<ProjectedFace>& rFaces);
+MESHIOPLUSPLUS_API std::vector<ColorFace> color_faces_from_projection(const std::vector<ProjectedFace>& rFaces);
 
 /**
  * @brief The faces the flat 2D path draws, in its emission order.
@@ -99,7 +100,7 @@ std::vector<ColorFace> color_faces_from_projection(const std::vector<ProjectedFa
  * Enumerates `line`/`triangle`/`quad` blocks block-major then cell-major --
  * the same rule, and the same order, both flat writers loop over.
  */
-std::vector<ColorFace> color_faces_flat(const Mesh& rMesh);
+MESHIOPLUSPLUS_API std::vector<ColorFace> color_faces_flat(const Mesh& rMesh);
 
 /**
  * @brief Resolve `rSpec` into one scalar per face plus the mapped range.
@@ -114,7 +115,7 @@ std::vector<ColorFace> color_faces_flat(const Mesh& rMesh);
  * @throws std::invalid_argument for an unknown array name, an unknown
  *         colormap, an out-of-range component, or `vmin > vmax`
  */
-FaceColors resolve_face_colors(const ColorSpec& rSpec, const Mesh& rSource, const Mesh& rDraw,
+MESHIOPLUSPLUS_API FaceColors resolve_face_colors(const ColorSpec& rSpec, const Mesh& rSource, const Mesh& rDraw,
                                const std::vector<ColorFace>& rFaces);
 
 }  // namespace detail

@@ -33,6 +33,9 @@
 // System includes
 #include <string>
 
+// Project includes
+#include "meshioplusplus/export.hpp"
+
 namespace meshioplusplus {
 
 /**
@@ -42,6 +45,6 @@ namespace meshioplusplus {
  *         signature match, or `""` if the format cannot be determined (or the
  *         file cannot be opened)
  */
-std::string sniff_format(const std::string& rPath);
+MESHIOPLUSPLUS_API std::string sniff_format(const std::string& rPath);
 
 }  // namespace meshioplusplus

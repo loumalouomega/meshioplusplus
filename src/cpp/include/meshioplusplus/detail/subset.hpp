@@ -35,6 +35,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -51,7 +52,7 @@ struct SubsetResult {
 };
 
 /// Row-preserving gather: out[j] = src[idx[j]] (whole trailing dims), dtype kept.
-NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx);
+MESHIOPLUSPLUS_API NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx);
 
 /**
  * @brief Build a submesh containing exactly the chosen cells, pruning points to
@@ -71,7 +72,7 @@ NDArray subset_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>&
  * @return the pruned submesh — with its `point_data`, `cell_data`, `field_data`
  *         **and named regions** already carried over — plus the index maps.
  */
-SubsetResult build_cell_subset(const Mesh& rMesh,
+MESHIOPLUSPLUS_API SubsetResult build_cell_subset(const Mesh& rMesh,
                                const std::vector<std::vector<std::int64_t>>& rKeptCellsPerBlock,
                                const std::string& rPointIdName = "",
                                const std::string& rCellIdName = "",

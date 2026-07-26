@@ -40,6 +40,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -62,7 +63,7 @@ namespace meshioplusplus {
  *         `desc3` table
  * @note reads/writes `cell_data["pf3:ref"]`
  */
-void write_flux(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_flux(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a FLUX .pf3 file.
@@ -81,6 +82,6 @@ void write_flux(const std::string& rPath, const Mesh& rMesh);
  * @note region *names* (which FLUX may store separately) are never read —
  *       only the numeric per-element reference in `cell_data["pf3:ref"]`
  */
-Mesh read_flux(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_flux(const std::string& rPath);
 
 }  // namespace meshioplusplus

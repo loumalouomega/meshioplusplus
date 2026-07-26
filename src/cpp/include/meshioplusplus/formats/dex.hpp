@@ -31,14 +31,15 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
 
 /** @brief Read a FLUX field file (.dex) into a geometry-less Mesh. */
-Mesh read_dex(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_dex(const std::string& rPath);
 
 /** @brief Write a mesh's first nodal field as a FLUX field file (.dex). */
-void write_dex(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_dex(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus

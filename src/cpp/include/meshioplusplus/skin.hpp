@@ -35,6 +35,7 @@
  */
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/surface.hpp"  // extract_surface shares this implementation
 
@@ -67,7 +68,7 @@ namespace meshioplusplus {
  * @throws std::invalid_argument if `rMesh` contains no supported volume
  *         cell block at all
  */
-Mesh extract_skin(const Mesh& rMesh, bool linearize = false);
+MESHIOPLUSPLUS_API Mesh extract_skin(const Mesh& rMesh, bool linearize = false);
 
 /**
  * @brief Whether a mesh has at least one cell block the skin extractor
@@ -75,6 +76,6 @@ Mesh extract_skin(const Mesh& rMesh, bool linearize = false);
  * @param rMesh the mesh to test
  * @return true when `extract_skin(rMesh)` would have input to work on
  */
-bool has_skinnable_cells(const Mesh& rMesh);
+MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 
 }  // namespace meshioplusplus

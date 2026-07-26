@@ -46,6 +46,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -62,7 +63,7 @@ namespace meshioplusplus {
  * @param rPath filesystem path to the .off file to create/overwrite
  * @param rMesh the mesh to write
  */
-void write_off(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_off(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a Geomview OFF (.off) file into a Mesh.
@@ -78,7 +79,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh);
  * @throws ReadError if the first line isn't `"OFF"`, or any face row's
  *         leading vertex count is below 3
  */
-Mesh read_off(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_off(const std::string& rPath);
 
 /**
  * @brief Write a Mesh to a Wavefront OBJ (.obj) file.
@@ -94,7 +95,7 @@ Mesh read_off(const std::string& rPath);
  * @note reads `point_data["obj:vn"]`, `point_data["obj:vt"]`,
  *       `cell_data["obj:group_ids"]` if present
  */
-void write_obj(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_obj(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a Wavefront OBJ (.obj) file into a Mesh.
@@ -116,6 +117,6 @@ void write_obj(const std::string& rPath, const Mesh& rMesh);
  *         block, the originating group id, `-1` if before the first `g`)
  * @throws ReadError on a malformed file
  */
-Mesh read_obj(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_obj(const std::string& rPath);
 
 }  // namespace meshioplusplus

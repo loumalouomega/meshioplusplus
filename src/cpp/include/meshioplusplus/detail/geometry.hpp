@@ -44,6 +44,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -119,7 +120,7 @@ inline double det3(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
  * @param nodeId Global point index.
  * @return The point's coordinates, with unused components set to 0.
  */
-Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId);
+MESHIOPLUSPLUS_API Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId);
 
 /**
  * @brief Reads the first @p n connectivity entries of one cell row into @p rOut
@@ -131,7 +132,7 @@ Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeI
  * @param n Number of leading entries to read (the corner count).
  * @param rOut Cleared and filled with @p n coordinates.
  */
-void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
+MESHIOPLUSPLUS_API void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
                         std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut);
 
 /**
@@ -144,7 +145,7 @@ void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDAr
  *         (`Polygon`, `Polyhedron`, the VTK Lagrange family, `Custom`) — the
  *         caller must skip those.
  */
-int cell_corner_count(CellType type);
+MESHIOPLUSPLUS_API int cell_corner_count(CellType type);
 
 }  // namespace detail
 }  // namespace meshioplusplus

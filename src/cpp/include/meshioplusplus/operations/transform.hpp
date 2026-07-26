@@ -39,6 +39,7 @@
 #include <cstddef>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -53,26 +54,26 @@ struct AffineTransform {
 };
 
 /** @brief A pure translation by `(dx, dy, dz)`. */
-AffineTransform transform_translation(double dx, double dy, double dz);
+MESHIOPLUSPLUS_API AffineTransform transform_translation(double dx, double dy, double dz);
 
 /** @brief A per-axis scale `(sx, sy, sz)` about the origin. */
-AffineTransform transform_scale(double sx, double sy, double sz);
+MESHIOPLUSPLUS_API AffineTransform transform_scale(double sx, double sy, double sz);
 
 /** @brief A uniform scale by `factor` about the origin (e.g. unit conversion). */
-AffineTransform transform_units(double factor);
+MESHIOPLUSPLUS_API AffineTransform transform_units(double factor);
 
 /**
  * @brief A rotation of `angle_rad` radians about the axis `(ax, ay, az)`
  * (Rodrigues' formula; the axis is normalized internally).
  * @throws std::invalid_argument if the axis is (near) zero-length.
  */
-AffineTransform transform_rotation(double ax, double ay, double az, double angle_rad);
+MESHIOPLUSPLUS_API AffineTransform transform_rotation(double ax, double ay, double az, double angle_rad);
 
 /** @brief Wrap a caller-supplied row-major 4x4 matrix. */
-AffineTransform transform_from_matrix(const double* pMatrix16);
+MESHIOPLUSPLUS_API AffineTransform transform_from_matrix(const double* pMatrix16);
 
 /** @brief Compose two transforms: the result applies `rSecond` after `rFirst`. */
-AffineTransform transform_compose(const AffineTransform& rSecond, const AffineTransform& rFirst);
+MESHIOPLUSPLUS_API AffineTransform transform_compose(const AffineTransform& rSecond, const AffineTransform& rFirst);
 
 /**
  * @brief Apply an affine transform to a mesh's point coordinates.
@@ -83,6 +84,6 @@ AffineTransform transform_compose(const AffineTransform& rSecond, const AffineTr
  *        block (`R*v` / `R*A*R^T`); off by default.
  * @return a new mesh with transformed points; connectivity and data preserved.
  */
-Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vector_data = false);
+MESHIOPLUSPLUS_API Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vector_data = false);
 
 }  // namespace meshioplusplus

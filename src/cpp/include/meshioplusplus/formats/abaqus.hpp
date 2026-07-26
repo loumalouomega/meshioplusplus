@@ -46,6 +46,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -66,7 +67,7 @@ namespace meshioplusplus {
  *       `cell_sets` — anything else falls back to the Python writer, which
  *       also supports `translate_cell_names=False` (verbatim type strings).
  */
-void write_abaqus(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_abaqus(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read an Abaqus .inp file (`*NODE`/`*ELEMENT` only).
@@ -87,6 +88,6 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh);
  *         (always deferred to the Python fallback, which supports them,
  *         including `GENERATE` ranges and recursive `*ELSET` references)
  */
-Mesh read_abaqus(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_abaqus(const std::string& rPath);
 
 }  // namespace meshioplusplus

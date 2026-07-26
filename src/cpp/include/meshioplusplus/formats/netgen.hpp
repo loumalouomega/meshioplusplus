@@ -57,6 +57,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -81,7 +82,7 @@ namespace meshioplusplus {
  *         doesn't implement, or a `.gz` path
  * @note reads `cell_data["netgen:index"]` if present
  */
-void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
+MESHIOPLUSPLUS_API void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
 
 /**
  * @brief Read a Netgen neutral mesh (.vol) file into a Mesh, ascii,
@@ -102,6 +103,6 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
  *         a `.gz` path, or a malformed file — all of which route to the
  *         Python fallback
  */
-Mesh read_netgen(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_netgen(const std::string& rPath);
 
 }  // namespace meshioplusplus

@@ -37,6 +37,7 @@
  */
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -65,14 +66,14 @@ namespace meshioplusplus {
  * @return a new mesh holding the boundary facets
  * @throws std::invalid_argument if `rMesh` has no supported 2D/3D cell block
  */
-Mesh extract_surface(const Mesh& rMesh, bool recordParentIds = false);
+MESHIOPLUSPLUS_API Mesh extract_surface(const Mesh& rMesh, bool recordParentIds = false);
 
 /**
  * @brief Whether a mesh has at least one cell block `extract_surface` supports.
  * @param rMesh the mesh to test
  * @return true when `extract_surface(rMesh)` would have input to work on
  */
-bool has_surface_extractable_cells(const Mesh& rMesh);
+MESHIOPLUSPLUS_API bool has_surface_extractable_cells(const Mesh& rMesh);
 
 /**
  * @brief Copy a mesh's cell data onto the boundary facets extracted from it.
@@ -92,7 +93,7 @@ bool has_surface_extractable_cells(const Mesh& rMesh);
  * @param rSource the mesh the boundary was extracted from
  * @param rSurface the extracted boundary, modified in place
  */
-void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface);
+MESHIOPLUSPLUS_API void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface);
 
 namespace detail {
 
@@ -120,7 +121,7 @@ namespace detail {
  * @param pOpName the caller's name, used in error and warning messages
  * @return a new mesh holding the boundary facets
  */
-Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool recordParentIds,
+MESHIOPLUSPLUS_API Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool recordParentIds,
                      const char* pOpName);
 
 }  // namespace detail

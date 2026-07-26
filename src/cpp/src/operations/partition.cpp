@@ -34,6 +34,7 @@
 // Project includes
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
+#include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/space_filling.hpp"
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -511,14 +512,78 @@ std::vector<int> partition_kahip_parts(const Mesh& rMesh, const PartitionOptions
 
 // --- dispatch ----------------------------------------------------------------
 
+// --- ghost (halo) layers -----------------------------------------------------
+
+/// CSR adjacency: rows indexed by `mOffsets`, payload in `mEntries`.
+struct PartitionCsr {
+    std::vector<std::int64_t> mOffsets;
+    std::vector<std::int64_t> mEntries;
+};
+
+/// Global cell -> its (distinct) node ids. Handles ragged blocks; a polyhedron
+/// contributes the distinct nodes across all of its faces.
+PartitionCsr partition_cell_nodes(const Mesh& rMesh, std::size_t total) {
+    PartitionCsr csr;
+    csr.mOffsets.reserve(total + 1);
+    csr.mOffsets.push_back(0);
+    std::vector<std::int64_t> row;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        for (std::size_t c = 0; c < ncells; ++c) {
+            row.clear();
+            if (cb.IsPolyhedron()) {
+                const std::size_t nf = cb.NumFaces(c);
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const auto [p_face, len] = cb.Face(c, f);
+                    row.insert(row.end(), p_face, p_face + len);
+                }
+                std::sort(row.begin(), row.end());
+                row.erase(std::unique(row.begin(), row.end()), row.end());
+            } else if (cb.IsRagged()) {
+                const std::int64_t* p_row = cb.Row(c);
+                row.assign(p_row, p_row + cb.RowSize(c));
+            } else {
+                const std::size_t k = cb.NodesPerCell();
+                const std::int64_t* p_conn = cb.Conn().As<std::int64_t>();
+                row.assign(p_conn + c * k, p_conn + (c + 1) * k);
+            }
+            csr.mEntries.insert(csr.mEntries.end(), row.begin(), row.end());
+            csr.mOffsets.push_back(static_cast<std::int64_t>(csr.mEntries.size()));
+        }
+    }
+    return csr;
+}
+
+/// Invert cell->nodes into node->cells, by counting (no per-node vector).
+PartitionCsr partition_node_cells(const PartitionCsr& rCellNodes, std::size_t npoints,
+                                  std::size_t total) {
+    PartitionCsr csr;
+    csr.mOffsets.assign(npoints + 1, 0);
+    for (std::int64_t nid : rCellNodes.mEntries)
+        if (nid >= 0 && static_cast<std::size_t>(nid) < npoints)
+            ++csr.mOffsets[static_cast<std::size_t>(nid) + 1];
+    for (std::size_t i = 0; i < npoints; ++i)
+        csr.mOffsets[i + 1] += csr.mOffsets[i];
+    csr.mEntries.assign(static_cast<std::size_t>(csr.mOffsets.back()), 0);
+    std::vector<std::int64_t> cursor(csr.mOffsets.begin(), csr.mOffsets.end() - 1);
+    for (std::size_t c = 0; c < total; ++c)
+        for (std::int64_t k = rCellNodes.mOffsets[c]; k < rCellNodes.mOffsets[c + 1]; ++k) {
+            const std::int64_t nid = rCellNodes.mEntries[static_cast<std::size_t>(k)];
+            if (nid >= 0 && static_cast<std::size_t>(nid) < npoints)
+                csr.mEntries[static_cast<std::size_t>(cursor[static_cast<std::size_t>(nid)]++)] =
+                    static_cast<std::int64_t>(c);
+        }
+    return csr;
+}
+
 // Validate the options and resolve Auto to a concrete method.
 PartitionMethod partition_resolve_method(const PartitionOptions& rOptions) {
     if (rOptions.mNParts < 1)
         throw std::invalid_argument("partition: nparts must be >= 1, got " +
                                     std::to_string(rOptions.mNParts));
-    if (rOptions.mGhostLayers != 0)
-        throw std::invalid_argument(
-            "partition: ghost_layers is not implemented yet (only 0 is supported)");
+    if (rOptions.mGhostLayers < 0)
+        throw std::invalid_argument("partition: ghost_layers must be >= 0, got " +
+                                    std::to_string(rOptions.mGhostLayers));
     PartitionMethod method = rOptions.mMethod;
     if (method == PartitionMethod::Auto)
         method = partition_has_kahip() ? PartitionMethod::KaHIP : PartitionMethod::SFC;
@@ -574,6 +639,13 @@ bool partition_has_kahip() noexcept {
 }
 
 std::vector<NDArray> partition_labels(const Mesh& rMesh, const PartitionOptions& rOptions) {
+    // One label per input cell IS the ownership map; ghosting is a property of
+    // the extracted pieces (a cell can be a ghost of several parts at once), so
+    // it cannot be expressed here. Refuse rather than silently ignore it.
+    if (rOptions.mGhostLayers != 0)
+        throw std::invalid_argument(
+            "partition_labels: ghost_layers has no meaning for a flat per-cell label array "
+            "(a cell may be a ghost of several parts); use partition() for ghosted pieces");
     const std::vector<int> parts = partition_compute_parts(rMesh, rOptions);
     std::vector<NDArray> out;
     out.reserve(rMesh.NumCellBlocks());
@@ -595,18 +667,76 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     const std::size_t nparts = static_cast<std::size_t>(rOptions.mNParts);
 
-    // Per part, per block, the kept (ascending) local cell indices.
+    const std::size_t total = parts.size();
+
+    // Ghost (halo) layers: cells owned by ANOTHER part that share at least one
+    // node with this part's cells, grown breadth-first `mGhostLayers` times.
+    // Shared-node (rather than shared-facet) adjacency is the conservative
+    // choice -- it is what a node-based assembly actually needs, and it is the
+    // same neighbour definition the KaHIP dual graph falls back on.
+    const int nghost = rOptions.mGhostLayers;
+    PartitionCsr cell_nodes, node_cells;
+    if (nghost > 0) {
+        cell_nodes = partition_cell_nodes(rMesh, total);
+        node_cells = partition_node_cells(cell_nodes, rMesh.NumPoints(), total);
+    }
+
+    // Per part, per block, the kept (ascending) local cell indices, and the
+    // matching ghost depth (0 = owned) for the partition:ghost tag.
     std::vector<std::vector<std::vector<std::int64_t>>> kept(nparts);
-    for (std::size_t p = 0; p < nparts; ++p)
+    std::vector<std::vector<std::vector<std::int64_t>>> depth(nparts);
+    for (std::size_t p = 0; p < nparts; ++p) {
         kept[p].assign(nblocks, {});
-    std::size_t base = 0, b = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t ncells = cb.NumCells();
-        for (std::size_t c = 0; c < ncells; ++c)
-            kept[static_cast<std::size_t>(parts[base + c])][b].push_back(
-                static_cast<std::int64_t>(c));
-        base += ncells;
-        ++b;
+        depth[p].assign(nblocks, {});
+    }
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    // stamp[c] == p means cell c is already in part p's set, so each cell is
+    // visited once per part instead of needing a per-part boolean array.
+    std::vector<int> stamp(total, -1);
+    std::vector<int> cell_depth(total, 0);
+    std::vector<std::int64_t> owned, frontier, next;
+
+    for (std::size_t p = 0; p < nparts; ++p) {
+        owned.clear();
+        for (std::size_t c = 0; c < total; ++c)
+            if (static_cast<std::size_t>(parts[c]) == p) {
+                stamp[c] = static_cast<int>(p);
+                cell_depth[c] = 0;
+                owned.push_back(static_cast<std::int64_t>(c));
+            }
+
+        frontier = owned;
+        for (int layer = 1; layer <= nghost && !frontier.empty(); ++layer) {
+            next.clear();
+            for (std::int64_t c : frontier)
+                for (std::int64_t k = cell_nodes.mOffsets[static_cast<std::size_t>(c)];
+                     k < cell_nodes.mOffsets[static_cast<std::size_t>(c) + 1]; ++k) {
+                    const std::int64_t nid = cell_nodes.mEntries[static_cast<std::size_t>(k)];
+                    if (nid < 0 || static_cast<std::size_t>(nid) >= rMesh.NumPoints())
+                        continue;
+                    for (std::int64_t j = node_cells.mOffsets[static_cast<std::size_t>(nid)];
+                         j < node_cells.mOffsets[static_cast<std::size_t>(nid) + 1]; ++j) {
+                        const std::int64_t c2 = node_cells.mEntries[static_cast<std::size_t>(j)];
+                        if (stamp[static_cast<std::size_t>(c2)] == static_cast<int>(p))
+                            continue;
+                        stamp[static_cast<std::size_t>(c2)] = static_cast<int>(p);
+                        cell_depth[static_cast<std::size_t>(c2)] = layer;
+                        owned.push_back(c2);
+                        next.push_back(c2);
+                    }
+                }
+            frontier.swap(next);
+        }
+
+        // Ascending global order -> ascending (block, local) order, which is
+        // what build_cell_subset expects.
+        std::sort(owned.begin(), owned.end());
+        for (std::int64_t g : owned) {
+            const auto [blk, row] = detail::global_to_block_row(bases, g);
+            kept[p][blk].push_back(row);
+            depth[p][blk].push_back(cell_depth[static_cast<std::size_t>(g)]);
+        }
     }
 
     // Exactly nparts pieces (possibly empty), input block structure kept 1:1
@@ -624,6 +754,18 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
         piece.mMesh = std::move(sub.mMesh);
         piece.mPointMap = std::move(sub.mPointMap);
         piece.mCellMaps = std::move(sub.mCellMaps);
+        if (nghost > 0) {
+            // 0 = owned by this part, L = reached at BFS layer L. Emitted for
+            // every block so the array stays block-aligned (the cell_data
+            // invariant), including the empty ones.
+            for (std::size_t blk = 0; blk < nblocks; ++blk) {
+                NDArray a = NDArray::Uninit(DType::Int64, {depth[p][blk].size()});
+                std::int64_t* dst = a.As<std::int64_t>();
+                for (std::size_t i = 0; i < depth[p][blk].size(); ++i)
+                    dst[i] = depth[p][blk][i];
+                piece.mMesh.AppendCellData("partition:ghost", std::move(a));
+            }
+        }
         res.mPieces.push_back(std::move(piece));
     }
     return res;

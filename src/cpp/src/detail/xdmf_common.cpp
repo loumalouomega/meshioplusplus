@@ -16,12 +16,21 @@
 //
 
 // System includes
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <unordered_map>
 
 // Project includes
 #include "meshioplusplus/detail/xdmf_common.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+#include "meshioplusplus/detail/hdf5_util.hpp"
+#endif
 
 namespace meshioplusplus {
 namespace xdmfcommon {
@@ -123,6 +132,184 @@ std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
         blocks.push_back(std::move(b));
     }
     return blocks;
+}
+
+// ---- write-path helpers ----
+
+std::pair<const char*, const char*> numpy_to_xdmf_dtype(DType dt) {
+    switch (dt) {
+        case DType::Int8:
+            return {"Int", "1"};
+        case DType::Int16:
+            return {"Int", "2"};
+        case DType::Int32:
+            return {"Int", "4"};
+        case DType::Int64:
+            return {"Int", "8"};
+        case DType::UInt8:
+            return {"UInt", "1"};
+        case DType::UInt16:
+            return {"UInt", "2"};
+        case DType::UInt32:
+            return {"UInt", "4"};
+        case DType::UInt64:
+            return {"UInt", "8"};
+        case DType::Float32:
+            return {"Float", "4"};
+        case DType::Float64:
+            return {"Float", "8"};
+    }
+    return {"Float", "8"};
+}
+
+std::string attribute_type(const std::vector<std::size_t>& rShape) {
+    if (rShape.size() == 1 || (rShape.size() == 2 && rShape[1] == 1))
+        return "Scalar";
+    if (rShape.size() == 2 && (rShape[1] == 2 || rShape[1] == 3))
+        return "Vector";
+    if ((rShape.size() == 2 && rShape[1] == 9) ||
+        (rShape.size() == 3 && rShape[1] == 3 && rShape[2] == 3))
+        return "Tensor";
+    if (rShape.size() == 2 && rShape[1] == 6)
+        return "Tensor6";
+    return "Matrix";
+}
+
+int meshio_to_xdmf_index(const std::string& rT) {
+    static const std::unordered_map<std::string, int> m = {
+        {"vertex", 0x1},        {"line", 0x2},          {"triangle", 0x4},     {"quad", 0x5},
+        {"tetra", 0x6},         {"pyramid", 0x7},       {"wedge", 0x8},        {"hexahedron", 0x9},
+        {"line3", 0x22},        {"quad9", 0x23},        {"triangle6", 0x24},   {"quad8", 0x25},
+        {"tetra10", 0x26},      {"pyramid13", 0x27},    {"wedge15", 0x28},     {"wedge18", 0x29},
+        {"hexahedron20", 0x30}, {"hexahedron24", 0x31}, {"hexahedron27", 0x32}};
+    auto it = m.find(rT);
+    if (it == m.end())
+        throw WriteError("XDMF: cannot mix cell type " + rT);
+    return it->second;
+}
+
+std::string dims_string(const NDArray& rArr) {
+    std::string dims;
+    for (std::size_t i = 0; i < rArr.Shape().size(); ++i) {
+        if (i)
+            dims += " ";
+        dims += std::to_string(rArr.Shape()[i]);
+    }
+    return dims;
+}
+
+NDArray pack_mixed_topology(const Mesh& rMesh, std::size_t& rTotalCells) {
+    std::size_t total_cells = 0, total_len = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        std::size_t nc = cb.NumCells();
+        std::size_t npc = detail::cols(cb.Conn());
+        std::size_t prefix = (cb.Type() == "vertex" || cb.Type() == "line") ? 2 : 1;
+        total_cells += nc;
+        total_len += nc * (prefix + npc);
+    }
+    NDArray cd(DType::Int64, {total_len});
+    std::int64_t* cp = cd.As<std::int64_t>();
+    std::size_t pos = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        std::size_t nc = cb.NumCells();
+        const NDArray& conn = cb.Conn();
+        std::size_t npc = detail::cols(conn);
+        int idx = meshio_to_xdmf_index(cb.Type());
+        std::size_t prefix = (cb.Type() == "vertex" || cb.Type() == "line") ? 2 : 1;
+        for (std::size_t r = 0; r < nc; ++r) {
+            for (std::size_t pq = 0; pq < prefix; ++pq)
+                cp[pos++] = idx;
+            for (std::size_t j = 0; j < npc; ++j)
+                cp[pos++] = detail::read_int(conn, r * npc + j);
+        }
+    }
+    rTotalCells = total_cells;
+    return cd;
+}
+
+struct DataItemStore::Impl {
+    std::string mDataFormat;
+    std::string mBase;
+    int mCounter = 0;
+    int mGzipLevel = -1;
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    h5::Hid mH5File;
+    std::string mH5Basename;
+#endif
+};
+
+DataItemStore::DataItemStore(const std::string& rDataFormat, const std::string& rBase,
+                             int GzipLevel)
+    : mImpl(std::make_unique<Impl>()) {
+    mImpl->mDataFormat = rDataFormat;
+    mImpl->mBase = rBase;
+    mImpl->mGzipLevel = GzipLevel;
+}
+
+DataItemStore::~DataItemStore() = default;
+
+const std::string& DataItemStore::DataFormat() const {
+    return mImpl->mDataFormat;
+}
+
+void DataItemStore::Close() {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    mImpl->mH5File.Reset();
+#endif
+}
+
+std::string DataItemStore::Store(const NDArray& rArr) {
+    const std::size_t rows = rArr.Shape().empty() ? 0 : rArr.Shape()[0];
+    const std::size_t cols = rows ? rArr.Size() / rows : 0;
+
+    if (mImpl->mDataFormat == "Binary") {
+        std::string fn = mImpl->mBase + std::to_string(mImpl->mCounter++) + ".bin";
+        std::ofstream bf(fn, std::ios::binary);
+        if (!bf)
+            throw WriteError("XDMF: could not write " + fn);
+        bf.write(reinterpret_cast<const char*>(rArr.Data()),
+                 static_cast<std::streamsize>(rArr.Nbytes()));
+        return fn;
+    }
+    if (mImpl->mDataFormat == "HDF") {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        if (!mImpl->mH5File.Valid()) {
+            std::string h5_path = mImpl->mBase + ".h5";
+            mImpl->mH5File = h5::create_file(h5_path);
+            std::size_t slash = h5_path.find_last_of("/\\");
+            mImpl->mH5Basename = slash == std::string::npos ? h5_path : h5_path.substr(slash + 1);
+        }
+        std::string name = "data" + std::to_string(mImpl->mCounter++);
+        h5::write_dataset(mImpl->mH5File, name, rArr, mImpl->mGzipLevel);
+        return mImpl->mH5Basename + ":/" + name;
+#else
+        throw WriteError(
+            "XDMF: HDF data format requires an HDF5-enabled build "
+            "(-DMESHIOPLUSPLUS_WITH_HDF5=ON)");
+#endif
+    }
+    // XML inline
+    std::string text = "\n";
+    char buf[40];
+    const bool is_float = detail::is_float_dtype(rArr.Dtype());
+    const bool f32 = rArr.Dtype() == DType::Float32;
+    for (std::size_t r = 0; r < rows; ++r) {
+        for (std::size_t cc = 0; cc < cols; ++cc) {
+            std::size_t i = r * cols + cc;
+            if (is_float) {
+                std::snprintf(buf, sizeof(buf), f32 ? "%.7e" : "%.16e",
+                              detail::read_double(rArr, i));
+            } else {
+                std::snprintf(buf, sizeof(buf), "%lld",
+                              static_cast<long long>(detail::read_int(rArr, i)));
+            }
+            if (cc)
+                text += " ";
+            text += buf;
+        }
+        text += "\n";
+    }
+    return text;
 }
 
 }  // namespace xdmfcommon

@@ -85,6 +85,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -124,6 +125,6 @@ struct IsosurfaceOptions {
  *         empty or holds a non-finite value, when `mComponent` is out of range,
  *         or when a cell block cannot be simplexified (a polyhedron block).
  */
-Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions);
+MESHIOPLUSPLUS_API Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions);
 
 }  // namespace meshioplusplus

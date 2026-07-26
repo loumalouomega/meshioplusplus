@@ -45,6 +45,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -66,7 +67,7 @@ namespace meshioplusplus {
  *        written datasets
  * @throws WriteError on an unsupported cell type or mesh layout
  */
-void write_hmf(const std::string& rPath, const Mesh& rMesh, int gzip_level);
+MESHIOPLUSPLUS_API void write_hmf(const std::string& rPath, const Mesh& rMesh, int gzip_level);
 
 /**
  * @brief Read a meshio++ HMF (.hmf) HDF5 container into a Mesh.
@@ -87,7 +88,7 @@ void write_hmf(const std::string& rPath, const Mesh& rMesh, int gzip_level);
  * @throws ReadError if `GeometryType` is not one of "X"/"XY"/"XYZ", or on a
  *         malformed/unsupported HDF5 layout
  */
-Mesh read_hmf(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_hmf(const std::string& rPath);
 
 }  // namespace meshioplusplus
 

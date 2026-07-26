@@ -38,6 +38,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -69,7 +70,7 @@ struct CropResult {
  * @param record_ids attach Int64 `crop:original_point_id` / `crop:original_cell_id`.
  * @return the pruned submesh and index maps.
  */
-CropResult crop_bbox(const Mesh& rMesh, const double* pLo, const double* pHi,
+MESHIOPLUSPLUS_API CropResult crop_bbox(const Mesh& rMesh, const double* pLo, const double* pHi,
                      CropMode mode = CropMode::All, bool record_ids = false);
 
 /**
@@ -82,7 +83,7 @@ CropResult crop_bbox(const Mesh& rMesh, const double* pLo, const double* pHi,
  * @param record_ids attach Int64 `crop:original_point_id` / `crop:original_cell_id`.
  * @return the pruned submesh and index maps.
  */
-CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double* pNormal,
+MESHIOPLUSPLUS_API CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double* pNormal,
                           CropMode mode = CropMode::All, bool record_ids = false);
 
 }  // namespace meshioplusplus

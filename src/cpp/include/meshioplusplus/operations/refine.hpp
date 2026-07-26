@@ -85,6 +85,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -127,6 +128,6 @@ struct RefineResult {
  * @throws std::invalid_argument on a higher-order, `pyramid`, or ragged cell
  *   block, none of which can be subdivided into same-type children.
  */
-RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
+MESHIOPLUSPLUS_API RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
 
 }  // namespace meshioplusplus

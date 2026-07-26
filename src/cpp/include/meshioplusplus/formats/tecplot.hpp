@@ -51,6 +51,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -69,7 +70,7 @@ namespace meshioplusplus {
  *         type (the Python fallback handles that case by degrading
  *         everything into one FEQUADRILATERAL/FEBRICK zone)
  */
-void write_tecplot(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_tecplot(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a Tecplot ASCII file's first FE zone.
@@ -89,6 +90,6 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh);
  * @note point_data/cell_data keys are the raw Tecplot variable names (no
  *       prefix); `X`/`Y`/`Z` are reserved for coordinates.
  */
-Mesh read_tecplot(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_tecplot(const std::string& rPath);
 
 }  // namespace meshioplusplus

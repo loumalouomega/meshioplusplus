@@ -46,6 +46,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -79,7 +80,7 @@ struct ReorderResult {
  * @return the matching enum value
  * @throws std::invalid_argument on an unknown name
  */
-ReorderMethod reorder_method_from_name(const std::string& rName);
+MESHIOPLUSPLUS_API ReorderMethod reorder_method_from_name(const std::string& rName);
 
 /**
  * @brief Connectivity bandwidth of a mesh: the maximum over all cells of
@@ -90,7 +91,7 @@ ReorderMethod reorder_method_from_name(const std::string& rName);
  * @param rMesh the mesh to measure
  * @return the bandwidth (0 for an empty / node-less mesh)
  */
-std::int64_t compute_bandwidth(const Mesh& rMesh);
+MESHIOPLUSPLUS_API std::int64_t compute_bandwidth(const Mesh& rMesh);
 
 /**
  * @brief Renumber a mesh with the given strategy (pure permutation).
@@ -99,6 +100,6 @@ std::int64_t compute_bandwidth(const Mesh& rMesh);
  * @return a `ReorderResult` carrying the permuted mesh and the applied
  *         node/cell permutations
  */
-ReorderResult reorder(const Mesh& rMesh, ReorderMethod method = ReorderMethod::RCM);
+MESHIOPLUSPLUS_API ReorderResult reorder(const Mesh& rMesh, ReorderMethod method = ReorderMethod::RCM);
 
 }  // namespace meshioplusplus

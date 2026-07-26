@@ -14,33 +14,22 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-#pragma once
-
 /**
- * @file mff.hpp
- * @brief Modulef Formatted Field (.mff) C++ reader/writer.
+ * @file mesh_backend_check.cpp
+ * @brief The one definition of the backend sentinel declared in
+ * `detail/mesh_backend_check.hpp`.
  *
- * An MFF file is the field companion to a Modulef mesh (.mfm): an integer
- * value count followed by a flat list of double-precision floats, with no
- * geometry or component/location metadata. Read here as a geometry-less Mesh
- * (no cells, `points` with zero columns) carrying `point_data["mff:field"]`;
- * written from the first `point_data` array (or first non-`unv:pid`
- * `cell_data` array). Standalone, only field values round-trip.
+ * Which symbol this is depends entirely on the `MESHIOPLUSPLUS_MESH_BACKEND_*`
+ * macro this translation unit is compiled with, so each per-backend library
+ * ends up defining a different name and a mismatched consumer fails to link.
+ * See the header for the full rationale.
  */
 
-// System includes
-#include <string>
-
 // Project includes
-#include "meshioplusplus/export.hpp"
-#include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/detail/mesh_backend_check.hpp"
 
-namespace meshioplusplus {
+namespace meshioplusplus::detail {
 
-/** @brief Read a Modulef Formatted Field (.mff) into a geometry-less Mesh. */
-MESHIOPLUSPLUS_API Mesh read_mff(const std::string& rPath);
+void MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND)() {}
 
-/** @brief Write a mesh's first field as a Modulef Formatted Field (.mff). */
-MESHIOPLUSPLUS_API void write_mff(const std::string& rPath, const Mesh& rMesh);
-
-}  // namespace meshioplusplus
+}  // namespace meshioplusplus::detail

@@ -50,6 +50,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -74,7 +75,7 @@ namespace meshioplusplus {
  * @note cell_data key consumed: the first integer-typed array (used as
  *       `"ugrid:ref"` boundary tags on the surface blocks).
  */
-void write_ugrid(const std::string& rPath, const Mesh& rMesh);
+MESHIOPLUSPLUS_API void write_ugrid(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a UGRID file, flavour taken from `path`'s penultimate suffix.
@@ -95,6 +96,6 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh);
  *       block (real boundary tags for triangle/quad, all-zero for the
  *       volume types).
  */
-Mesh read_ugrid(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_ugrid(const std::string& rPath);
 
 }  // namespace meshioplusplus

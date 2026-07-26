@@ -55,8 +55,9 @@ public:
         auto it = mIndex.find(name);
         if (it != mIndex.end()) {
             mItems[it->second].second = std::move(value);
-            return;
+            return;  // name set unchanged, so the sorted cache still holds
         }
+        mSortedDirty = true;
         mIndex.emplace(name, mItems.size());
         mItems.emplace_back(std::move(name), std::move(value));
     }
@@ -74,27 +75,45 @@ public:
         auto it = mIndex.find(rName);
         if (it != mIndex.end())
             return mItems[it->second].second;
+        mSortedDirty = true;
         mIndex.emplace(rName, mItems.size());
         mItems.emplace_back(rName, T{});
         return mItems.back().second;
     }
     /** @brief Number of entries. */
     std::size_t Size() const { return mItems.size(); }
-    /** @brief All names, sorted ascending (the API's observable order). */
-    std::vector<std::string> SortedNames() const {
-        std::vector<std::string> names;
-        names.reserve(mItems.size());
-        for (const auto& kv : mItems)
-            names.push_back(kv.first);
-        std::sort(names.begin(), names.end());
-        return names;
+
+    /**
+     * @brief All names, sorted ascending (the API's observable order).
+     *
+     * The sort is memoized: only `Set`/`GetOrCreate` introducing a *new* name
+     * can change the name set, and both are the only way in, so the cache
+     * cannot go stale. Callers that ask repeatedly -- `mesh_api.hpp`'s
+     * `PointDataNames()` and friends are called per array by several writers --
+     * then pay one vector copy instead of a re-sort each time.
+     */
+    const std::vector<std::string>& SortedNamesRef() const {
+        if (mSortedDirty) {
+            mSortedCache.clear();
+            mSortedCache.reserve(mItems.size());
+            for (const auto& kv : mItems)
+                mSortedCache.push_back(kv.first);
+            std::sort(mSortedCache.begin(), mSortedCache.end());
+            mSortedDirty = false;
+        }
+        return mSortedCache;
     }
+    /** @brief `SortedNamesRef()` as an owned copy (the uniform API's shape). */
+    std::vector<std::string> SortedNames() const { return SortedNamesRef(); }
     /** @brief The underlying insertion-ordered items (for direct iteration). */
     const std::vector<std::pair<std::string, T>>& Items() const { return mItems; }
 
 private:
     std::vector<std::pair<std::string, T>> mItems;
     std::unordered_map<std::string, std::size_t> mIndex;
+    // Memoized SortedNamesRef(); mutable so it can fill on a const call.
+    mutable std::vector<std::string> mSortedCache;
+    mutable bool mSortedDirty = true;
 };
 
 using NamedArrays = NamedItems<NDArray>;

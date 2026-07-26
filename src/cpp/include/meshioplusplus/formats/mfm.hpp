@@ -42,6 +42,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -65,7 +66,7 @@ namespace meshioplusplus {
  *         higher-order cell type, or is otherwise unsupported
  * @note reads `cell_data["mfm:ref"]` if present
  */
-void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
+MESHIOPLUSPLUS_API void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt);
 
 /**
  * @brief Read an MFM (.mfm) file into a Mesh.
@@ -84,6 +85,6 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
  *         `nnod != nver`, or the `(lnv, lne, lnf)` triple doesn't match a
  *         known linear type
  */
-Mesh read_mfm(const std::string& rPath);
+MESHIOPLUSPLUS_API Mesh read_mfm(const std::string& rPath);
 
 }  // namespace meshioplusplus

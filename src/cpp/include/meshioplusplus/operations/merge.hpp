@@ -50,6 +50,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -94,6 +95,6 @@ struct MergeResult {
  * @return a `MergeResult` carrying the merged mesh and the point/cell index maps
  * @throws std::invalid_argument if `rMeshes` is empty or contains a null pointer
  */
-MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& rOpts = {});
+MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& rOpts = {});
 
 }  // namespace meshioplusplus

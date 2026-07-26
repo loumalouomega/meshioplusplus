@@ -69,6 +69,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
@@ -100,7 +101,7 @@ struct NodeAdjacency {
  * @param NumPoints Node-id upper bound (ids outside `[0, NumPoints)` are dropped).
  * @param rOut Cleared and filled with the cell's node ids.
  */
-void cell_node_ids(const Mesh::CellView& rBlock, std::size_t Cell, std::size_t NumPoints,
+MESHIOPLUSPLUS_API void cell_node_ids(const Mesh::CellView& rBlock, std::size_t Cell, std::size_t NumPoints,
                    std::vector<std::int64_t>& rOut);
 
 /**
@@ -115,7 +116,7 @@ void cell_node_ids(const Mesh::CellView& rBlock, std::size_t Cell, std::size_t N
  * @param rBlock The cell block to classify.
  * @return `true` when the block's edges are known exactly.
  */
-bool node_edge_topology_known(const Mesh::CellView& rBlock);
+MESHIOPLUSPLUS_API bool node_edge_topology_known(const Mesh::CellView& rBlock);
 
 /**
  * @brief Builds the node-to-node graph of @p rMesh.
@@ -124,7 +125,7 @@ bool node_edge_topology_known(const Mesh::CellView& rBlock);
  * @param Kind Which neighbour definition to use (see `NodeAdjacencyKind`).
  * @return The CSR graph, with each node's neighbour list sorted and deduplicated.
  */
-NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
+MESHIOPLUSPLUS_API NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
                                    NodeAdjacencyKind Kind);
 
 }  // namespace detail

@@ -79,6 +79,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 
@@ -150,7 +151,7 @@ struct MarchingOptions {
  * @throws std::invalid_argument when a block cannot be simplexified (a
  *         polyhedron block).
  */
-MarchingInput marching_prepare(const Mesh& rMesh);
+MESHIOPLUSPLUS_API MarchingInput marching_prepare(const Mesh& rMesh);
 
 /**
  * @brief Cuts the prepared mesh where @p rNodeValues changes sign.
@@ -166,7 +167,7 @@ MarchingInput marching_prepare(const Mesh& rMesh);
  *         array is replicated from the parent cell; `convert:parent_cell` is
  *         consumed rather than forwarded.
  */
-Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeValues,
+MESHIOPLUSPLUS_API Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeValues,
                   const MarchingOptions& rOptions);
 
 }  // namespace detail
