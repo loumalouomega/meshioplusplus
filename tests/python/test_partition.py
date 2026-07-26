@@ -159,6 +159,33 @@ def test_negative_ghost_layers_raises():
         meshioplusplus.partition(mesh, 2, ghost_layers=-1)
 
 
+def test_ghost_layers_with_python_kahip_route(monkeypatch):
+    # The CI "kahip PyPI wheel + KaHIP-less _core" leg: with the wheel importable
+    # and no KaHIP in the core, method="auto"/"kahip" normally bypass _core for
+    # the pure-Python quality path — which builds disjoint pieces only. Ghosting
+    # must then route "auto" back to the C++ core (auto is a preference order,
+    # and the core is the one ghost-capable path), while an EXPLICIT "kahip"
+    # fails by name rather than silently downgrading to SFC.
+    import sys
+    import types
+
+    from meshioplusplus import _core, _partition
+
+    if getattr(_core, "__has_kahip__", False):
+        pytest.skip("core has KaHIP: the python-kahip bypass never engages")
+
+    monkeypatch.setitem(sys.modules, "kahip", types.ModuleType("kahip"))
+    mesh = _quad_grid(4, 4)
+    assert _partition._use_python_kahip("auto"), "stub should engage the bypass"
+
+    pieces = meshioplusplus.partition(mesh, 2, ghost_layers=1)  # auto
+    assert len(pieces) == 2
+    assert all("partition:ghost" in p.cell_data for p in pieces)
+
+    with pytest.raises(NotImplementedError, match="kahip"):
+        meshioplusplus.partition(mesh, 2, method="kahip", ghost_layers=1)
+
+
 def test_ghost_layers_grow_pieces_and_tag_the_halo():
     mesh = _quad_grid(4, 4)
     plain = meshioplusplus.partition(mesh, 2)

@@ -598,7 +598,21 @@ def partition(
     """
     _validate(mesh, nparts, method, mode, ghost_layers)
     pieces = None
-    if not _use_python_kahip(method):
+    use_py_kahip = _use_python_kahip(method)
+    if use_py_kahip and int(ghost_layers) != 0:
+        # The pure-Python KaHIP route computes labels and builds disjoint
+        # pieces; it cannot grow a halo. An EXPLICIT method="kahip" request
+        # fails by name (the documented no-silent-SFC-downgrade rule), while
+        # "auto" — a preference order, not a method — routes to the C++ core,
+        # the one ghost-capable path.
+        if method == "kahip":
+            raise NotImplementedError(
+                "partition: ghost_layers with method='kahip' needs KaHIP "
+                "compiled into the C++ core (-DMESHIOPLUSPLUS_WITH_KAHIP=ON); "
+                "the kahip PyPI route cannot build ghosted pieces"
+            )
+        use_py_kahip = False
+    if not use_py_kahip:
         try:
             from . import _core
 
