@@ -1306,9 +1306,7 @@ Begin SubModelPart Fluid
     End SubModelPartConditions
 End SubModelPart
 
-""".split(
-    "\n"
-)
+""".split("\n")
 
 
 # Path to the new test file for comprehensive geometry reading
@@ -2168,7 +2166,6 @@ def test_cpp_declines_by_name(tmp_path):
     cases = [
         ("Begin Table 1 T V\n 0.0 1.0\nEnd Table\n", "Table"),
         ("Begin Mesh 1\nEnd Mesh\n", "Mesh"),
-        ("Begin Properties 3\n DENSITY 1.0\nEnd Properties\n", "Properties"),
         ('Begin ModelPartData\n NAME "x"\nEnd ModelPartData\n', "ModelPartData"),
         ("Begin Nodes\n1 0 0 0\n5 1 1 1\nEnd Nodes\n", "node ids"),
     ]
@@ -2177,6 +2174,28 @@ def test_cpp_declines_by_name(tmp_path):
         p.write_text(text)
         with pytest.raises(meshioplusplus.ReadError, match=needle):
             _core.mdpa_read(str(p))
+
+
+def test_cpp_reads_properties_bodies(tmp_path):
+    """A non-empty `Begin Properties` used to be on the decline list above.
+
+    It made essentially every production deck unreadable through the C++ path,
+    so v9.1.0 parses it instead. The body has no place on the `Mesh` (NDArray
+    has no string dtype), so without an `MdpaInfo` it is dropped with a warning
+    -- exactly what the flat bindings do with `MedInfo`.
+    """
+    p = tmp_path / "props.mdpa"
+    p.write_text(
+        "Begin Properties 3\n DENSITY 1.0\n CONSTITUTIVE_LAW LinearElastic3DLaw\n"
+        "End Properties\n"
+        "Begin Nodes\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Nodes\n"
+        "Begin Elements Element2D3N\n1 3 1 2 3\nEnd Elements\n"
+    )
+    mesh = _core.mdpa_read(str(p))
+    assert len(mesh.points) == 3
+    assert len(mesh.cells) == 1
+    # The per-entity property id still rides on the mesh as gmsh:physical.
+    assert mesh.cell_data["gmsh:physical"][0][0] == 3
 
 
 def test_write_shim_falls_back_for_misc_data(tmp_path):
