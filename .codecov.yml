@@ -5,6 +5,19 @@ comment: no
 # (cpp-coverage.info, lcov). Both are produced in the same job, so the C++
 # numbers include the format code reached through the pybind11 shims rather
 # than only what the GoogleTest binary touches.
+
+codecov:
+  notify:
+    # Wait for BOTH uploads before evaluating anything. Without this Codecov
+    # notifies as soon as the first one lands, so the un-flagged `project`
+    # status is computed from the Python half alone and reports a large phantom
+    # drop -- 70.79% (-7.69%) against a real 78.47% on PR #53, and the same
+    # thing on #52. It corrects itself seconds later when the second upload
+    # arrives, but only for the commit *status*: the check-run created from the
+    # partial report is never revised, so the PR keeps a red mark that no
+    # re-run clears (Codecov will not re-evaluate a sha it has already
+    # processed). Both flags come from one job, so 2 is exact, not a guess.
+    after_n_builds: 2
 flags:
   python:
     paths:
