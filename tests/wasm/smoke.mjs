@@ -192,6 +192,29 @@ for (const [format, path, mesh] of [
     });
 }
 
+step('exodus SPHERE elements and per-element attributes round-trip', () => {
+    // The pair of things a particle/peridynamics mesh is made of, and the
+    // surface that actually mattered for
+    // https://github.com/loumalouomega/VSCode-MDPA-Preview/issues/63: wasm has
+    // no Python fallback, so the C++ reader failing on such a file made Exodus
+    // unusable in the browser viewer specifically. One-node SPHERE elements are
+    // `vertex` cells, and the radius rides in `cell_data` under `exodus:attr:`.
+    const spheres = {
+        points: [0, 0, 0, 1, 0, 0, 2, 0, 0],
+        dim: 3,
+        cells: [{ type: 'vertex', data: [0, 1, 2], nodesPerCell: 1 }],
+        cell_data: { 'exodus:attr:RADIUS': [[0.5, 0.25, 0.125]] },
+    };
+    m.writeMesh('/spheres.exo', spheres, 'exodus');
+    const back = m.readMesh('/spheres.exo', 'exodus');
+    assert.equal(back.cells.length, 1);
+    assert.equal(back.cells[0].type, 'vertex');
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2]);
+    const radius = back.cell_data['exodus:attr:RADIUS'];
+    assert.ok(radius, 'the radius attribute must survive the round-trip');
+    assert.deepEqual(Array.from(radius[0]), [0.5, 0.25, 0.125]);
+});
+
 step('an ASCII read still works after netCDF/HDF5 has run (stack-size guard)', () => {
     // Regression guard for a silent, global corruption, not a niceties check.
     // HDF5's and netCDF-4's frames overran Emscripten's default 64 KiB stack,
