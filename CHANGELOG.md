@@ -47,6 +47,19 @@ Both items are additive.
   `WriteError` naming it, since an Exodus attribute is one value per element.
   Ordinary (non-attribute) `cell_data` is still dropped on write — neither writer
   emits `vals_elem_var`, a pre-existing gap this does not change.
+- **The file that failed is now a committed fixture**, at
+  `tests/python/meshes/exodus/DCBmodel_PD_solid.e` (Git-LFS): a real PeriLab
+  double-cantilever-beam run — 504 `SPHERE` particles in four blocks, 2-D
+  coordinates, nine nodal fields and ten time steps whose damage field goes from
+  0 to 0.48, so a reader pinned to the first step fails rather than merely
+  differs. A hand-authored fixture can reproduce the shape but not the encoding
+  (`netCDF4` strips the NUL whatever spelling you pass), so both exist, and a
+  byte-level test asserts the fixture still carries the NUL — otherwise a
+  re-fetch from an upstream that changed writers would leave the regression
+  suite passing while testing nothing. It is redistributed unmodified under
+  **BSD-3-Clause** (Copyright (c) 2023 Christian Willberg, Jan-Timo Hesse, DLR)
+  with its notice and licence text alongside; permissive, so no obligation
+  attaches to the rest of this MIT repository. Credited in `CITATION.cff`.
 
 ## v9.2.0 (2026-07-27)
 

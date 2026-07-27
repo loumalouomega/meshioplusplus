@@ -199,6 +199,13 @@ step('exodus SPHERE elements and per-element attributes round-trip', () => {
     // no Python fallback, so the C++ reader failing on such a file made Exodus
     // unusable in the browser viewer specifically. One-node SPHERE elements are
     // `vertex` cells, and the radius rides in `cell_data` under `exodus:attr:`.
+    //
+    // This deliberately writes its own file rather than reading the real
+    // PeriLab one at tests/python/meshes/exodus/: that fixture is Git-LFS, and
+    // wasm.yml checks out WITHOUT `lfs: true` (only ci.yml sets it), so
+    // reaching for it here would hand this test a 130-byte pointer. The
+    // NUL-terminated `elem_type` that fixture exists for is a property of the
+    // shared C++ reader, and tests/python/test_exodus.py pins it there.
     const spheres = {
         points: [0, 0, 0, 1, 0, 0, 2, 0, 0],
         dim: 3,
