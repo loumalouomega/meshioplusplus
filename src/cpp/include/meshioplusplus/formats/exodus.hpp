@@ -74,6 +74,25 @@ struct ExodusInfo {
 };
 
 /**
+ * @brief `cell_data` name prefix that marks an Exodus per-element attribute.
+ *
+ * Exodus stores a fixed number of floating-point *attributes* per element of a
+ * block (`attrib{k}`, named by `attrib_name{k}`) alongside its connectivity --
+ * the standard home for a `SPHERE`/`CIRCLE` element's radius, a beam's cross
+ * section, a shell's thickness. They are per-cell values, so meshio++ carries
+ * them as ordinary `cell_data`, under this prefix.
+ *
+ * The prefix is what makes the round trip unambiguous in both directions: on
+ * read it keeps an attribute from colliding with a same-named element *variable*
+ * (`name_elem_var`, a genuinely different concept -- attributes are constant in
+ * time, element variables are per-time-step), and on write it is the only signal
+ * telling the writer which `cell_data` arrays belong in `attrib{k}`.
+ *
+ * So a `RADIUS` attribute reads back as `cell_data["exodus:attr:RADIUS"]`.
+ */
+inline constexpr const char* kExodusAttributePrefix = "exodus:attr:";
+
+/**
  * @brief Write `mesh` as an Exodus II (netCDF classic) file.
  *
  * Writes global attrs (`title`, `version=5.1f`, `api_version=5.1f`,
