@@ -93,6 +93,10 @@ Two guards catch the cases CMake cannot:
 * defining more than one backend macro is a **compile** error (`mesh.hpp`);
 * defining none — so `mesh.hpp` silently assumes `MESHIO` — while linking a `NATIVE`/`KRATOS` build is a **link** error naming the backend it expected (`detail/mesh_backend_check.hpp`). This is what protects a pkg-config or hand-written-makefile consumer, which gets the include path but not the definitions. Define `MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` to opt out.
 
+  On GNU/Clang this is an undefined reference to `mesh_backend_is_<backend>`; on MSVC it is a `/FAILIFMISMATCH` error naming both values. **MSVC plus a *shared* meshio++ is a documented gap** — the mismatch records are not reliably carried through a DLL's import library, so the check is absent there. Static MSVC builds and every GNU/Clang configuration are covered, and CI proves it by compiling a TU without the definitions and requiring the link to fail (`tests/consumer/no_backend_macro.cpp`).
+
+  This guard was **inert before v9.2.0**: it relies on an `inline` variable that nothing reads, and such a variable is emitted lazily, so no reference ever reached the object file. If you are on v9.1.0 or earlier, do not rely on it.
+
 ## The Kratos bridge
 
 `kratos_bridge.hpp` is header-only and has **no Kratos dependency at all** — it is templated on the consumer's own model-part type via a `bridge_traits` customization point, defaulting to meshio++'s own `meshioplusplus::ModelPart`. It is unreachable through the C ABI (which cannot hand out a `ModelPart`), which is a large part of why this install exists.
@@ -198,7 +202,9 @@ CMake package's `SameMajorVersion` mode describes only the first.
 The mesh-backend macro rides in `INTERFACE_COMPILE_DEFINITIONS`, so a CMake
 consumer cannot disagree about the backend by accident; a non-CMake consumer
 that defines none gets an undefined `mesh_backend_is_<backend>` at link time
-instead (`MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` opts out).
+instead — on MSVC, a `/FAILIFMISMATCH` error naming both backends, except with a
+shared build, where the check is absent (see the gap noted above).
+`MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` opts out.
 
 ## `MESHIOPLUSPLUS_NO_STD_SPAN`
 

@@ -49,6 +49,14 @@
  *
  * Cost is one constant-initialized function pointer and one relocation per TU.
  * Define `MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` to opt out.
+ *
+ * @note MSVC + a **shared** meshio++ is a documented gap. The MSVC arm below is
+ *       `#pragma detect_mismatch`, whose `/FAILIFMISMATCH` records live in the
+ *       `.obj` files; they are not reliably carried through a DLL's import
+ *       library, so there the guard degrades to no check at all. Static MSVC
+ *       builds and every GNU/Clang configuration are covered. A run-time probe
+ *       would close it, at the price of a static initializer in every TU --
+ *       exactly what this design exists to avoid.
  */
 
 // Project includes
@@ -66,6 +74,10 @@
 #define MESHIOPLUSPLUS_BACKEND_SYM_(name) mesh_backend_is_##name
 #define MESHIOPLUSPLUS_BACKEND_SYM(name) MESHIOPLUSPLUS_BACKEND_SYM_(name)
 
+// Same two-level trick for the string form the MSVC arm needs.
+#define MESHIOPLUSPLUS_BACKEND_STR_(name) #name
+#define MESHIOPLUSPLUS_BACKEND_STR(name) MESHIOPLUSPLUS_BACKEND_STR_(name)
+
 namespace meshioplusplus::detail {
 
 /**
@@ -76,14 +88,35 @@ namespace meshioplusplus::detail {
 MESHIOPLUSPLUS_API void MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND)();
 
 #ifndef MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK
+#if defined(__GNUC__) || defined(__clang__)
 /**
  * @brief Constant-initialized reference that forces the symbol above to resolve.
  *
- * `[[maybe_unused]]` keeps `-Wunused` quiet; the pointer is still emitted
- * because taking a function's address odr-uses it.
+ * `[[maybe_unused]]` keeps `-Wunused` quiet.
+ *
+ * `gnu::used` is **load-bearing, not decoration** -- do not "tidy" it away. An
+ * `inline` variable has vague linkage and is emitted *lazily*: nothing in this
+ * header or in `mesh.hpp` reads the pointer, so without `used` no relocation
+ * ever reaches the object file and the entire guard is inert. That was the
+ * state through v9.1.0; `nm -uC` on any consumer TU showed no reference at all,
+ * with or without a backend macro, and a mismatched consumer got raw mangled
+ * undefined references to whatever it actually called instead of a message
+ * naming the backend. Dropping `inline`/`const` does not fix it either -- a
+ * plain `static const` initializer is still discarded at `-O2`.
  */
-[[maybe_unused]] inline void (*const mesh_backend_link_check)() =
+[[maybe_unused, gnu::used]] inline void (*const mesh_backend_link_check)() =
     &MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND);
+#elif defined(_MSC_VER)
+// MSVC has no `used`, so the pointer above cannot be forced into the object.
+// `detect_mismatch` reaches the same failure at the same moment by a different
+// route: it embeds a /FAILIFMISMATCH record in every .obj, and the linker
+// rejects a link whose records disagree -- naming BOTH values, which is
+// strictly more informative than an undefined symbol. It also needs no symbol
+// at all, sidestepping the __declspec(dllimport) function-pointer question.
+// See the DLL caveat in the file comment above.
+#pragma detect_mismatch("meshioplusplus_mesh_backend", \
+                        MESHIOPLUSPLUS_BACKEND_STR(MESHIOPLUSPLUS_ACTIVE_BACKEND))
+#endif
 #endif
 
 }  // namespace meshioplusplus::detail
