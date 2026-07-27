@@ -38,6 +38,22 @@ set(MESHIOPLUSPLUS_PARALLEL_BACKEND "@_meshioplusplus_parallel@")
 set(MESHIOPLUSPLUS_MESH_BACKENDS "@MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS@")
 set(MESHIOPLUSPLUS_NO_STD_SPAN @MESHIOPLUSPLUS_NO_STD_SPAN@)
 
+# The C++ binary-compatibility counter, distinct from the release version
+# (${meshioplusplus_VERSION}) and the thing a COMPONENTS CXX consumer actually
+# depends on. It moves only when the installed headers stop being compatible
+# with an already-compiled consumer -- see doc/abi.md -- so it is the finer,
+# more honest pin than `find_package(meshioplusplus X.Y.Z EXACT ...)`:
+#
+#   find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
+#   if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 3)
+#     message(FATAL_ERROR "meshio++ ABI 3 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+#   endif()
+#
+# Getting it wrong is not silent either way: the C++ variants' SOVERSION is this
+# number, and every consumer TU carries a link-time sentinel naming it
+# (detail/abi_version_check.hpp).
+set(MESHIOPLUSPLUS_ABI_VERSION @MESHIOPLUSPLUS_ABI_VERSION@)
+
 # Only the C++ targets carry PUBLIC dependencies. Emitting these for a
 # C-API-only install would impose find_package()s on consumers that genuinely do
 # not need them -- the historical, documented behaviour of this file.

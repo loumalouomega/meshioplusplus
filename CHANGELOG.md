@@ -8,6 +8,55 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.4.0 (2026-07-27)
+
+The C++ ABI contract becomes explicit, machine-checkable, and no coarser than the code
+requires. Additive except for the `SOVERSION` change noted below.
+
+### C++ ABI
+
+- **`MESHIOPLUSPLUS_ABI_VERSION`, a binary-compatibility counter separate from the release
+  version.** `find_package(... X.Y.Z EXACT ...)` keys on the release version, which moves
+  whenever anything in the project does — so a release that provably cannot affect a compiled
+  consumer still forced every C++ consumer to re-pin and rebuild. v9.3.0 is the case in point:
+  its entire installed-header delta was one new `inline constexpr` string in
+  `formats/exodus.hpp`. The new counter moves only when the headers stop being compatible, and
+  is exported as `MESHIOPLUSPLUS_ABI_VERSION` from `meshioplusplusConfig.cmake` beside the
+  existing `MESHIOPLUSPLUS_MESH_BACKEND` / `MESHIOPLUSPLUS_WITH_*` introspection. It lives in
+  exactly one place, `abi_version.hpp`; CMake parses it back out of that header rather than
+  keeping a second copy. Retroactively: ABI 1 = v9.0.0, 2 = v9.1.0, 3 = v9.2.0 onwards.
+  `X.Y.Z EXACT` remains fully supported as the conservative pin.
+- **A mismatch now fails at link time instead of corrupting memory.**
+  `detail/abi_version_check.hpp` plants a reference to
+  `meshioplusplus::detail::abi_version_is_<N>()` in every TU that includes `mesh.hpp`, and the
+  library defines exactly one such symbol — the `detail/mesh_backend_check.hpp` technique
+  applied to the second axis, deliberately as a *separate* symbol so a consumer with the right
+  backend and stale headers is told about the headers. Opt out with
+  `MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK`. As for the backend guard, **MSVC + a shared build is a
+  documented gap** (`/FAILIFMISMATCH` records are not reliably carried through an import
+  library), and `gnu::used` is load-bearing — CI asserts with `nm -uC` that the reference is
+  really emitted, which is the check whose absence let the backend guard ship inert through
+  v9.1.0.
+- **Breaking: the C++ variants' `SOVERSION` now tracks the ABI version**, so they install as
+  `libmeshioplusplus_core_<backend>.so.3` rather than `.so.0` and the dynamic linker itself
+  refuses to load an incompatible library into an already-linked binary. Existing C++ consumers
+  must relink once — a no-op in practice, since that contract already required rebuilding with
+  the library. **The C API's `libmeshioplusplus` and the Fortran library keep `SOVERSION 0`**;
+  their contract (append-only option structs, pin the major) is unchanged, as are the Python
+  wheel, WASM and the Julia/R bindings.
+- **Two gates keep the number honest**, because a hand-bumped integer otherwise has exactly the
+  "someone forgets" failure mode of the prose rule it replaces: `tests/cpp/test_abi_layout.cpp`
+  pins `sizeof`/`alignof` for every boundary type per backend (catches layout changes
+  mechanically), and `tools/check-abi-version.sh` fails a build whose installed headers changed
+  while the ABI version did not and `doc/abi_reviews.md` records no additive review (catches
+  inline-body/ODR changes, which no tool can infer). Neither is sufficient alone.
+- **New [`doc/abi.md`](doc/abi.md)** states the criterion the above rests on: scope is *every*
+  installed header — not a curated subset, which would have missed `formats/mdpa.hpp`,
+  `formats/xdmf_time_series.hpp`, `kratos_bridge.hpp` and every `operations/*.hpp` options
+  struct — classified by what the change does. Layout changes and edits to an existing inline
+  function's body both bump; purely additive changes do not. `doc/cpp_api.md`'s "Versioning:
+  what to pin" is rewritten around it, and no longer describes the `SOVERSION` as meaningless.
+
 ## v9.3.0 (2026-07-27)
 
 Exodus support for particle/peridynamics meshes, from

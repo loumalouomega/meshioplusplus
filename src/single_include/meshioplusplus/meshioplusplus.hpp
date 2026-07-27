@@ -33,6 +33,64 @@
 // MESHIOPLUSPLUS_MESH_BACKEND_NATIVE or _KRATOS before including to change it.
 
 // ================= DECLARATIONS (always compiled) =================
+// ===== begin src/cpp/include/meshioplusplus/abi_version.hpp =====
+/**
+ * @file abi_version.hpp
+ * @brief `MESHIOPLUSPLUS_ABI_VERSION` -- the C++ API's binary-compatibility
+ * counter, deliberately **not** the release version.
+ *
+ * The release version (`project(... VERSION ...)`) moves on every release. This
+ * one moves only when the installed headers change in a way that makes an
+ * already-compiled consumer incompatible with a freshly built library. Those are
+ * different questions, and conflating them is what forced every C++ consumer to
+ * re-pin and fully rebuild for releases that provably could not affect them --
+ * v9.3.0's entire installed-header delta, for instance, was one new
+ * `inline constexpr` string in `formats/exodus.hpp`.
+ *
+ * `doc/abi.md` owns the criterion in full. In short, scope is **every** header
+ * under `src/cpp/include/meshioplusplus/` (all of them are installed and
+ * compiled by consumers -- not a curated subset), and a bump is required for:
+ *
+ *  - a **layout** change to any type a consumer can name (data members, bases,
+ *    virtuals, alignment, an enum's underlying type, template parameter lists);
+ *  - an **ODR** change: editing the *body* of an existing inline function,
+ *    template or default argument. Both sides emit a vague-linkage copy and the
+ *    linker keeps one arbitrarily, so the program can run the older body where
+ *    the newer was intended.
+ *
+ * and NOT for purely additive changes -- a new inline function, constexpr
+ * variable, type, declaration or header, or an appended enumerator. Nothing
+ * existing changes definition there, so an already-compiled consumer's
+ * translation unit is byte-identical to what it was.
+ *
+ * Retroactive numbering of the 9.x line (see `doc/abi.md` for the diffs this was
+ * derived from):
+ *
+ *  | ABI | releases           | what moved                                     |
+ *  |-----|--------------------|------------------------------------------------|
+ *  | 1   | v9.0.0             | (baseline)                                     |
+ *  | 2   | v9.1.0             | `GeometricalEntity`, `ModelPart`, `MdpaInfo`, … |
+ *  | 3   | v9.2.0 .. v9.4.0   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
+ *
+ * ### This is the ONE place the number is written
+ *
+ * `CMakeLists.txt` parses it back out of this file with `file(STRINGS ... REGEX)`
+ * rather than keeping a second copy, and feeds it to the installed libraries'
+ * `SOVERSION` and to `MESHIOPLUSPLUS_ABI_VERSION` in the generated
+ * `meshioplusplusConfig.cmake`. A header rather than a CMake variable because a
+ * consumer that never runs CMake -- pkg-config, a hand-written makefile -- must
+ * still be able to read it.
+ *
+ * Deliberately **not** overridable with `-D`: `detail/abi_version_check.hpp`
+ * turns this value into a link-time requirement, and a knob to change it would be
+ * a knob to silence the guard while still miscompiling. `tools/check-abi-version.sh`
+ * and the mismatch test in CI both work by patching a *copy* of the installed
+ * headers for exactly this reason. `MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK` is the
+ * supported opt-out.
+ */
+
+#define MESHIOPLUSPLUS_ABI_VERSION 3
+// ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
  * @file cell_type.hpp
@@ -4884,6 +4942,113 @@ struct Mesh {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/backends/meshio_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/abi_version_check.hpp =====
+/**
+ * @file detail/abi_version_check.hpp
+ * @brief Makes a C++ ABI-version mismatch across the install boundary a **link**
+ * error instead of silent undefined behaviour.
+ *
+ * The sibling of `detail/mesh_backend_check.hpp`, for the second axis on which a
+ * consumer and the library can silently disagree. That header asks "were these
+ * two compiled with the same *backend*?"; this one asks "were these two compiled
+ * against the same *headers*?".
+ *
+ * The failure it catches is the one the version pin in `doc/cpp_api.md` is the
+ * only other defence against: a consumer whose translation units were compiled
+ * against one meshio++'s headers linking against a different meshio++'s library.
+ * `Mesh`, `ModelPart`, every `operations/*` options struct and much else are
+ * header-defined, so the two then disagree about layout -- an ODR violation that
+ * typically shows up as unrelated memory corruption, never as a diagnosable
+ * error. It happens in practice via a relaxed `find_package` version request, a
+ * distro that rebuilt the library in place, or a pkg-config /
+ * `compile_commands.json` setup that picked up an include path and a `-L` from
+ * different prefixes.
+ *
+ * The mechanism is exactly the backend guard's: the library defines a single
+ * `abi_version_is_<N>()` whose *name encodes* `MESHIOPLUSPLUS_ABI_VERSION`
+ * (`abi_version.hpp`), and every TU that includes `mesh.hpp` references the one
+ * its own headers name. Disagree, and the link fails naming the version the TU
+ * expected.
+ *
+ * ### Deliberately a separate symbol from the backend guard
+ *
+ * Fusing the two into one `meshioplusplus_kratos_v3()` would halve the
+ * relocations and ruin the diagnostic: a consumer with the right backend and
+ * stale headers would get a message about the backend, which is the one thing
+ * that *was* right. Two axes, two symbols, two messages. The honest cost is two
+ * relocations per TU instead of one -- still no static initializer, which is the
+ * property that matters.
+ *
+ * ### What it does NOT catch
+ *
+ * Only the meshio++-vs-meshio++ axis. A consumer built with a different compiler,
+ * standard library, `_GLIBCXX_USE_CXX11_ABI`, or set of `-D`s affecting the
+ * standard library is equally broken and equally undiagnosable here; that is
+ * outside any single library's reach and is why `doc/abi.md` states the
+ * same-toolchain precondition explicitly.
+ *
+ * Cost is one constant-initialized function pointer and one relocation per TU.
+ * Define `MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK` to opt out.
+ *
+ * @note MSVC + a **shared** meshio++ is a documented gap, identically to the
+ *       backend guard and for the identical reason. The MSVC arm below is
+ *       `#pragma detect_mismatch`, whose `/FAILIFMISMATCH` records live in the
+ *       `.obj` files; they are not reliably carried through a DLL's import
+ *       library, so there this guard degrades to no check at all. Static MSVC
+ *       builds and every GNU/Clang configuration are covered. On that
+ *       configuration the `SOVERSION`-derived DLL name and the version pin are
+ *       the remaining defences.
+ */
+
+// Project includes
+
+// Two levels, so MESHIOPLUSPLUS_ABI_VERSION expands to its number before ## and
+// # see it. Without the indirection the symbol would literally be
+// `abi_version_is_MESHIOPLUSPLUS_ABI_VERSION`.
+#define MESHIOPLUSPLUS_ABI_SYM_(n) abi_version_is_##n
+#define MESHIOPLUSPLUS_ABI_SYM(n) MESHIOPLUSPLUS_ABI_SYM_(n)
+
+#define MESHIOPLUSPLUS_ABI_STR_(n) #n
+#define MESHIOPLUSPLUS_ABI_STR(n) MESHIOPLUSPLUS_ABI_STR_(n)
+
+namespace meshioplusplus::detail {
+
+/**
+ * @brief Defined once by the library; referenced by every TU that includes
+ * `mesh.hpp`. Never called -- only its address is taken, so this costs a
+ * relocation rather than a static initializer.
+ */
+MESHIOPLUSPLUS_API void MESHIOPLUSPLUS_ABI_SYM(MESHIOPLUSPLUS_ABI_VERSION)();
+
+#ifndef MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK
+#if defined(__GNUC__) || defined(__clang__)
+/**
+ * @brief Constant-initialized reference that forces the symbol above to resolve.
+ *
+ * `gnu::used` is **load-bearing, not decoration** -- do not "tidy" it away. This
+ * is the lesson `detail/mesh_backend_check.hpp` paid for over a full release: an
+ * `inline` variable has vague linkage and is emitted *lazily*, so with nothing
+ * reading the pointer no relocation ever reaches the object file and the entire
+ * guard is silently inert. That was the backend guard's state through v9.1.0.
+ * Dropping `inline`/`const` does not fix it either -- a plain `static const`
+ * initializer is still discarded at `-O2`. `nm -uC` on a consumer object file
+ * must show this reference; CI asserts exactly that rather than trusting it.
+ */
+[[maybe_unused, gnu::used]] inline void (*const abi_version_link_check)() =
+    &MESHIOPLUSPLUS_ABI_SYM(MESHIOPLUSPLUS_ABI_VERSION);
+#elif defined(_MSC_VER)
+// MSVC has no `used`, so the pointer above cannot be forced into the object.
+// detect_mismatch reaches the same failure at the same moment by a different
+// route: a /FAILIFMISMATCH record in every .obj, which the linker rejects when
+// two disagree -- naming BOTH values, which beats an undefined symbol. See the
+// DLL caveat in the file comment above.
+#pragma detect_mismatch("meshioplusplus_abi_version", \
+                        MESHIOPLUSPLUS_ABI_STR(MESHIOPLUSPLUS_ABI_VERSION))
+#endif
+#endif
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/include/meshioplusplus/detail/abi_version_check.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/byteswap.hpp =====
 /**
  * @file byteswap.hpp
@@ -5313,6 +5478,9 @@ MESHIOPLUSPLUS_API void MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND
 // Referenced by nobody here on purpose: it plants the link-time sentinel in
 // every TU that includes mesh.hpp, which is exactly the set that could get the
 // backend wrong. IWYU pragma: keep
+// Likewise, for the second axis: same TU set, same technique, different
+// question -- "were these headers and this library the same meshio++?" rather
+// than "the same backend?". See detail/abi_version_check.hpp. IWYU pragma: keep
 
 #if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
 namespace meshioplusplus {
@@ -31340,6 +31508,28 @@ namespace pugi
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 // ===== end src/cpp/third_party/pugixml/pugixml.cpp =====
+// ===== begin src/cpp/src/abi_version_check.cpp =====
+/**
+ * @file abi_version_check.cpp
+ * @brief The one definition of the ABI sentinel declared in
+ * `detail/abi_version_check.hpp`.
+ *
+ * Which symbol this is depends entirely on the `MESHIOPLUSPLUS_ABI_VERSION` this
+ * translation unit was compiled with, so a library built from one set of headers
+ * defines a different name from the one a consumer compiled against another set
+ * references, and the two fail to link. See the header for the full rationale,
+ * and `src/cpp/src/mesh_backend_check.cpp` for the same pattern on the backend
+ * axis.
+ */
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+void MESHIOPLUSPLUS_ABI_SYM(MESHIOPLUSPLUS_ABI_VERSION)() {}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/abi_version_check.cpp =====
 // ===== begin src/cpp/src/detail/cell_edges.cpp =====
 
 namespace meshioplusplus {

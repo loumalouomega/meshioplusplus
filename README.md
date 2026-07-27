@@ -646,15 +646,19 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
-`EXACT` is deliberate: the C++ API makes **no ABI promise** (`Mesh`, `ModelPart`
-and `GeometricalEntity` are header-defined types whose layout moves with the
-headers), so library and consumer must be built from the same version. The C API
-is the stable one — pin `find_package(meshioplusplus 9 … COMPONENTS C)` there.
-See [versioning](https://loumalouomega.github.io/meshioplusplus/cpp_api).
+`EXACT` is the conservative pin: the C++ API makes **no ABI promise** (`Mesh`,
+`ModelPart` and `GeometricalEntity` are header-defined types whose layout moves
+with the headers), so library and consumer must be built from compatible
+headers. The finer pin is `MESHIOPLUSPLUS_ABI_VERSION`, which moves only when a
+change really would break an already-compiled consumer — so a release that
+cannot affect you costs no rebuild. Either way a mismatch now fails at **link**
+time rather than corrupting memory, and the C API is the stable one — pin
+`find_package(meshioplusplus 9 … COMPONENTS C)` there. See
+[ABI compatibility](https://loumalouomega.github.io/meshioplusplus/abi).
 
 ```cpp
 #include "meshioplusplus/registry.hpp"

@@ -9,13 +9,38 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 9.3.0
+  VERSION 9.4.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ---------------------------------------------------------------------------
+# The C++ ABI version, PARSED OUT OF THE HEADER rather than duplicated here.
+#
+# src/cpp/include/meshioplusplus/abi_version.hpp is the single source of truth
+# (a header, so a consumer who never runs CMake can read it too), and this is
+# the only reader. Keeping a second copy in this file is precisely the drift
+# this arrangement exists to prevent: the number is baked into every compiled
+# TU by detail/abi_version_check.hpp, so a CMake copy that disagreed would put
+# a wrong SOVERSION on a library whose symbols say otherwise.
+#
+# Unlike PROJECT_VERSION this moves only when the installed headers stop being
+# binary-compatible -- see doc/abi.md for the criterion.
+# ---------------------------------------------------------------------------
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/meshioplusplus/abi_version.hpp"
+     _mio_abi_version_line REGEX "^#define[ \t]+MESHIOPLUSPLUS_ABI_VERSION[ \t]+[0-9]+")
+if(NOT _mio_abi_version_line MATCHES "MESHIOPLUSPLUS_ABI_VERSION[ \t]+([0-9]+)")
+  message(FATAL_ERROR
+    "meshio++: could not parse MESHIOPLUSPLUS_ABI_VERSION out of "
+    "src/cpp/include/meshioplusplus/abi_version.hpp")
+endif()
+set(MESHIOPLUSPLUS_ABI_VERSION ${CMAKE_MATCH_1})
+unset(_mio_abi_version_line)
+message(STATUS "meshio++: C++ ABI version: ${MESHIOPLUSPLUS_ABI_VERSION} "
+               "(release ${PROJECT_VERSION})")
 
 # Hoisted to the top (it used to be included inside the C API block): the C++
 # core's usage requirements are collected with an $<INSTALL_INTERFACE:> pointing
@@ -639,7 +664,17 @@ function(meshioplusplus_add_core_variant backend)
   meshioplusplus_configure_core_target(${backend} ${_lib})
   set_target_properties(${_lib} PROPERTIES
     VERSION ${PROJECT_VERSION}
-    SOVERSION 0  # C++ ABI declared unstable pre-1.0, as for the C API
+    # Tracks the ABI counter, NOT the release version and no longer a flat 0.
+    # This is what makes the number enforced rather than advisory: the SONAME
+    # becomes libmeshioplusplus_core_<backend>.so.<abi>, so the dynamic linker
+    # itself refuses to load an incompatible library into a binary built against
+    # an older one -- no cooperation from the consumer's build system required.
+    # A flat 0 said "this filename promises nothing", which was true but useless.
+    #
+    # The C API's libmeshioplusplus deliberately does NOT follow: its contract is
+    # SOVERSION 0 + append-only option structs + pin-the-major, and it is
+    # unaffected by header layout changes because no C consumer compiles them.
+    SOVERSION ${MESHIOPLUSPLUS_ABI_VERSION}
     POSITION_INDEPENDENT_CODE ON
     # Hidden by default: MESHIOPLUSPLUS_API (export.hpp) is what opts a symbol
     # back in, and a missing annotation then fails a shared consumer's link
