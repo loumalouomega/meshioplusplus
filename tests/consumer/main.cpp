@@ -237,12 +237,32 @@ int main() {
             w.Finalize();
         }
         {
-            // ...and a restart continues that same collection.
+            // ...and a restart continues that same collection, writing further
+            // steps through the NamedArray fast path. That combination was
+            // broken through v9.1.0 -- the appending writer never recovered the
+            // point/cell counts, so it rejected every array with "expected 0
+            // (0 x 1)" and a restartable solver had to fall back to re-staging
+            // a whole Mesh per step. Checked here, against an INSTALLED shared
+            // library, because that is what a real consumer links.
             meshioplusplus::XdmfTimeSeriesWriter w(path, "XML", -1,
                                                    meshioplusplus::XdmfSeriesMode::Append);
             check(w.NumSteps() == 1, "Append mode counts the existing step");
+            meshioplusplus::XdmfTimeSeriesWriter::NamedArray u2;
+            u2.mName = "u";
+            u2.mNumComponents = 1;
+            u2.mValues.assign(make_mesh().NumPoints(), 2.5);
+            bool wrote = true;
+            try {
+                w.WriteData(1.0, {u2});
+            } catch (const std::exception&) {
+                wrote = false;
+            }
+            check(wrote, "Append + NamedArray WriteData (the v9.1.0 regression)");
+            check(w.NumSteps() == 2, "the appended step is counted");
             w.Finalize();
         }
+        // Delete only after the writer's scope has ended: the destructor
+        // finalizes, so removing the file while it is alive recreates it.
         std::error_code ec;
         std::filesystem::remove(path, ec);
     }

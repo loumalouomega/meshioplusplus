@@ -147,11 +147,37 @@ public:
                                   int GzipLevel = -1,
                                   XdmfSeriesMode Mode = XdmfSeriesMode::Truncate);
 
-    /** @brief Finalizes the series if it has not been finalized already. */
+    /**
+     * @brief Finalizes the series if it has not been finalized already.
+     *
+     * @warning Because this **writes** `rPath`, deleting the output while the
+     *          writer is still alive recreates it:
+     *          @code
+     *          {
+     *              XdmfTimeSeriesWriter w(path, "XML");
+     *              w.WritePointsCells(m);
+     *              w.WriteData(0.0, {u});
+     *              std::filesystem::remove(path);   // "clean up"
+     *          }   // <-- the destructor finalizes here, recreating path
+     *          @endcode
+     *          The second half is what makes this bite: with
+     *          `XdmfSeriesMode::Append` the *next* run then continues a series
+     *          you believed deleted, so the failure surfaces one run later as a
+     *          wrong step count rather than at the delete. Destroy the writer
+     *          before removing its output -- end the scope, or call `Finalize()`
+     *          explicitly and then delete.
+     */
     ~XdmfTimeSeriesWriter();
 
     XdmfTimeSeriesWriter(const XdmfTimeSeriesWriter&) = delete;
     XdmfTimeSeriesWriter& operator=(const XdmfTimeSeriesWriter&) = delete;
+    // Moving leaves the source empty. Its contract, so a moved-from writer is
+    // diagnosable rather than undefined: the observers and the idempotent
+    // operations (`SetAutoFlush`, `AutoFlush`, `NumSteps`, `Finalized`,
+    // `Flush`, `Finalize`) are safe no-ops answering as for a finished series,
+    // while the three that cannot silently do nothing -- `WritePointsCells` and
+    // both `WriteData` overloads -- throw `WriteError`, because a caller
+    // writing a step must never be left believing it landed.
     XdmfTimeSeriesWriter(XdmfTimeSeriesWriter&&) noexcept;
     XdmfTimeSeriesWriter& operator=(XdmfTimeSeriesWriter&&) noexcept;
 

@@ -12348,11 +12348,37 @@ public:
                                   int GzipLevel = -1,
                                   XdmfSeriesMode Mode = XdmfSeriesMode::Truncate);
 
-    /** @brief Finalizes the series if it has not been finalized already. */
+    /**
+     * @brief Finalizes the series if it has not been finalized already.
+     *
+     * @warning Because this **writes** `rPath`, deleting the output while the
+     *          writer is still alive recreates it:
+     *          @code
+     *          {
+     *              XdmfTimeSeriesWriter w(path, "XML");
+     *              w.WritePointsCells(m);
+     *              w.WriteData(0.0, {u});
+     *              std::filesystem::remove(path);   // "clean up"
+     *          }   // <-- the destructor finalizes here, recreating path
+     *          @endcode
+     *          The second half is what makes this bite: with
+     *          `XdmfSeriesMode::Append` the *next* run then continues a series
+     *          you believed deleted, so the failure surfaces one run later as a
+     *          wrong step count rather than at the delete. Destroy the writer
+     *          before removing its output -- end the scope, or call `Finalize()`
+     *          explicitly and then delete.
+     */
     ~XdmfTimeSeriesWriter();
 
     XdmfTimeSeriesWriter(const XdmfTimeSeriesWriter&) = delete;
     XdmfTimeSeriesWriter& operator=(const XdmfTimeSeriesWriter&) = delete;
+    // Moving leaves the source empty. Its contract, so a moved-from writer is
+    // diagnosable rather than undefined: the observers and the idempotent
+    // operations (`SetAutoFlush`, `AutoFlush`, `NumSteps`, `Finalized`,
+    // `Flush`, `Finalize`) are safe no-ops answering as for a finished series,
+    // while the three that cannot silently do nothing -- `WritePointsCells` and
+    // both `WriteData` overloads -- throw `WriteError`, because a caller
+    // writing a step must never be left believing it landed.
     XdmfTimeSeriesWriter(XdmfTimeSeriesWriter&&) noexcept;
     XdmfTimeSeriesWriter& operator=(XdmfTimeSeriesWriter&&) noexcept;
 
@@ -17658,6 +17684,204 @@ namespace std
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 // ===== end src/cpp/third_party/pugixml/pugixml.hpp =====
+// ===== begin src/cpp/src/formats/xdmf_doc.hpp =====
+/**
+ * @file formats/xdmf_doc.hpp
+ * @brief The XDMF document-structure helpers `read_xdmf` and
+ * `XdmfTimeSeriesWriter` both need: locating a temporal collection and its
+ * static mesh grid, and recovering the point/cell counts from a grid already
+ * on disk.
+ *
+ * @note This is a **private** header, deliberately under `src/cpp/src/` rather
+ * than `src/cpp/include/`, and the first of its kind in the tree (the nearest
+ * precedent is `src/cpp/cli/view_payload.hpp`). It cannot live in
+ * `detail/xdmf_common.hpp`, which is *installed*: these declarations name
+ * `pugi::xml_node` by value, pugixml is a build-only vendored dependency that
+ * no installed header may include, and a forward declaration does not help
+ * because `XdmfDoc` stores a `std::vector<pugi::xml_node>` (a complete type is
+ * required at class definition). The amalgamator picks it up automatically --
+ * it resolves a quoted include relative to the including file's directory and
+ * emits any header a `.cpp` needs into the implementation prelude.
+ *
+ * Sharing matters here, and not only on principle: through v9.1.0 the transient
+ * writer's append path re-transcribed a *weaker* copy of `xdmf_resolve` that
+ * skipped the `Version` check and recognised a static grid only if it was
+ * literally named `"mesh"`, so appending to any other producer's series
+ * silently appended a second static grid.
+ */
+
+// System includes
+#include <cstddef>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+namespace xdmfdetail {
+
+// Helpers here are `xdmf_`-prefixed because the single-header amalgamation
+// concatenates every src/cpp/src/**.cpp into one translation unit.
+
+/**
+ * @brief Parse a `Dimensions="..."` attribute into its extents.
+ * @param rS The attribute value, whitespace-separated integers.
+ * @return The extents, outermost first; empty when @p rS holds no integer.
+ */
+inline std::vector<std::size_t> xdmf_parse_dims(const std::string& rS) {
+    std::vector<std::size_t> dims;
+    std::istringstream iss(rS);
+    std::int64_t v;
+    while (iss >> v)
+        dims.push_back(static_cast<std::size_t>(v));
+    return dims;
+}
+
+/**
+ * @brief A resolved XDMF document: its static mesh grid, and its time steps.
+ *
+ * `mSteps` empty means "a plain single-grid file", which is the historical case
+ * and takes the historical code path unchanged.
+ */
+struct XdmfDoc {
+    pugi::xml_node mMeshGrid;            ///< Grid holding `<Topology>`/`<Geometry>`.
+    pugi::xml_node mCollection;          ///< The temporal collection, if the file has one.
+    std::vector<pugi::xml_node> mSteps;  ///< Temporal-collection children, in file order.
+};
+
+/**
+ * @brief Validate the document and locate its mesh grid (and time steps).
+ *
+ * Shared by the mesh reader, the metadata reader and the transient writer's
+ * append path, so a summary can never accept a file `read_xdmf` would reject
+ * and an append can never disagree with a read about which grid is the mesh. A
+ * temporal collection (`GridType="Collection" CollectionType="Temporal"`, what
+ * `XdmfTimeSeriesWriter` emits) stores the static geometry once in a sibling
+ * `Uniform` grid and one `<Grid>` per step inside the collection; the step
+ * grids reference the geometry through an `xi:include` this reader ignores,
+ * resolving it structurally instead -- the same thing the Python
+ * `TimeSeriesReader` does, and for the same reason: a generic XInclude pass
+ * would have to implement XPointer.
+ *
+ * @param rDoc The parsed document.
+ * @return The resolved grids.
+ * @throws ReadError if the document is not an XDMF 3 document with a `<Grid>`,
+ *         or if a temporal collection carries no mesh grid at all.
+ */
+inline XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("Xdmf");
+    if (!root)
+        throw ReadError("XDMF: missing <Xdmf> root");
+    std::string version = root.attribute("Version").value();
+    if (!version.empty() && version[0] != '3')
+        throw ReadError("XDMF: only version 3 handled by the C++ core");
+
+    pugi::xml_node domain = root.child("Domain");
+    pugi::xml_node first, uniform, collection;
+    for (pugi::xml_node g : domain.children("Grid")) {
+        if (!first)
+            first = g;
+        const std::string gtype = g.attribute("GridType").value();
+        if (gtype == "Collection" &&
+            std::string(g.attribute("CollectionType").value()) == "Temporal") {
+            if (!collection)
+                collection = g;
+        } else if (gtype == "Uniform" && !uniform) {
+            uniform = g;
+        }
+    }
+    if (!first)
+        throw ReadError("XDMF: missing <Grid>");
+
+    XdmfDoc out;
+    out.mCollection = collection;
+    if (!collection) {
+        out.mMeshGrid = first;
+        return out;
+    }
+    for (pugi::xml_node s : collection.children("Grid"))
+        out.mSteps.push_back(s);
+    out.mMeshGrid = uniform;
+    if (!out.mMeshGrid) {
+        // No sibling mesh grid: take the first uniform grid inside the
+        // collection, which is where a writer that repeats the geometry per
+        // step puts it.
+        for (pugi::xml_node s : out.mSteps) {
+            if (std::string(s.attribute("GridType").value()) == "Uniform") {
+                out.mMeshGrid = s;
+                break;
+            }
+        }
+    }
+    if (!out.mMeshGrid)
+        throw ReadError("XDMF: temporal collection carries no mesh grid");
+    return out;
+}
+
+/** @brief Point/cell counts recovered from a mesh grid that is already on disk. */
+struct XdmfGridCounts {
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+    bool mPointsKnown = false;
+    bool mCellsKnown = false;
+};
+
+/**
+ * @brief Recover a grid's point and cell counts from its attributes alone.
+ *
+ * No payload is read: every `<DataItem>` declares its shape, so this costs one
+ * attribute lookup even for an HDF series (the `.h5` is never opened).
+ *
+ * Cells come from `<Topology>`'s `NumberOfElements` **first**, and only then
+ * from the child `<DataItem>`'s `Dimensions`. The order is load-bearing: for a
+ * `TopologyType="Mixed"` grid the `DataItem` holds one flat packed array whose
+ * length is not the cell count, and `NumberOfElements` is the only correct
+ * source. That is also why this cannot simply call `read_xdmf_metadata`, which
+ * declines Mixed outright.
+ *
+ * @param rMeshGrid The static mesh grid, e.g. `xdmf_resolve(doc).mMeshGrid`.
+ * @return The counts, each flagged with whether anything readable was found.
+ */
+inline XdmfGridCounts xdmf_grid_counts(const pugi::xml_node& rMeshGrid) {
+    XdmfGridCounts out;
+    if (!rMeshGrid)
+        return out;
+
+    if (pugi::xml_node geo = rMeshGrid.child("Geometry")) {
+        const std::vector<std::size_t> dims =
+            xdmf_parse_dims(geo.child("DataItem").attribute("Dimensions").value());
+        if (!dims.empty()) {
+            out.mNumPoints = dims[0];
+            out.mPointsKnown = true;
+        }
+    }
+
+    if (pugi::xml_node topo = rMeshGrid.child("Topology")) {
+        if (pugi::xml_attribute n = topo.attribute("NumberOfElements")) {
+            out.mNumCells = static_cast<std::size_t>(n.as_ullong());
+            out.mCellsKnown = true;
+        } else {
+            const std::vector<std::size_t> dims =
+                xdmf_parse_dims(topo.child("DataItem").attribute("Dimensions").value());
+            if (!dims.empty()) {
+                out.mNumCells = dims[0];
+                out.mCellsKnown = true;
+            }
+        }
+    } else {
+        // A grid with no <Topology> is points-only, which WritePointsCells
+        // emits for a mesh with zero cell blocks: zero cells, known exactly.
+        out.mCellsKnown = true;
+    }
+    return out;
+}
+
+}  // namespace xdmfdetail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/xdmf_doc.hpp =====
 // ===== begin src/cpp/third_party/pugixml/pugixml.cpp =====
 /**
  * pugixml parser - version 1.14
@@ -53279,6 +53503,8 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 
 // External includes
 
+// Project includes (private, not installed)
+
 // Project includes
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -53287,6 +53513,17 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 namespace fs = std::filesystem;
 
 namespace meshioplusplus {
+
+// The document-structure helpers live in the private `formats/xdmf_doc.hpp` so
+// the transient writer's append path resolves a document exactly the way this
+// reader does. They were local to this file through v9.1.0, which is how the
+// writer came to carry a weaker transcription. Pulled in by name rather than
+// qualified at each of the five call sites, so those stay byte-identical.
+using xdmfdetail::xdmf_resolve;
+using xdmfdetail::XdmfDoc;
+// The reader has always spelled this one `parse_dims`; keep that at the call
+// sites rather than churn them.
+constexpr auto& parse_dims = xdmfdetail::xdmf_parse_dims;
 
 namespace {
 
@@ -53335,15 +53572,6 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
                : p == 4 ? DType::UInt32
                         : DType::UInt64;
     return p == 4 ? DType::Float32 : DType::Float64;
-}
-
-std::vector<std::size_t> parse_dims(const std::string& rS) {
-    std::vector<std::size_t> dims;
-    std::istringstream iss(rS);
-    std::int64_t v;
-    while (iss >> v)
-        dims.push_back(static_cast<std::size_t>(v));
-    return dims;
 }
 
 void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
@@ -53492,79 +53720,6 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         rMesh.AddCellBlock(xdmf_idx_to_meshio(xt), std::move(data));
         start = end;
     }
-}
-
-/**
- * @brief What a parsed XDMF document holds: the grid carrying the geometry, and
- * the steps of a temporal collection if it has one.
- *
- * `mSteps` empty means "a plain single-grid file", which is the historical case
- * and takes the historical code path unchanged.
- */
-struct XdmfDoc {
-    pugi::xml_node mMeshGrid;            ///< Grid holding `<Topology>`/`<Geometry>`.
-    std::vector<pugi::xml_node> mSteps;  ///< Temporal-collection children, in file order.
-};
-
-/**
- * @brief Validate the document and locate its mesh grid (and time steps).
- *
- * Shared by the mesh and metadata readers so a summary can never accept a file
- * `read_xdmf` would reject. A temporal collection (`GridType="Collection"
- * CollectionType="Temporal"`, what `XdmfTimeSeriesWriter` emits) stores the
- * static geometry once in a sibling `Uniform` grid and one `<Grid>` per step
- * inside the collection; the step grids reference the geometry through an
- * `xi:include` this reader ignores, resolving it structurally instead -- the
- * same thing the Python `TimeSeriesReader` does, and for the same reason: a
- * generic XInclude pass would have to implement XPointer.
- */
-XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("Xdmf");
-    if (!root)
-        throw ReadError("XDMF: missing <Xdmf> root");
-    std::string version = root.attribute("Version").value();
-    if (!version.empty() && version[0] != '3')
-        throw ReadError("XDMF: only version 3 handled by the C++ core");
-
-    pugi::xml_node domain = root.child("Domain");
-    pugi::xml_node first, uniform, collection;
-    for (pugi::xml_node g : domain.children("Grid")) {
-        if (!first)
-            first = g;
-        const std::string gtype = g.attribute("GridType").value();
-        if (gtype == "Collection" &&
-            std::string(g.attribute("CollectionType").value()) == "Temporal") {
-            if (!collection)
-                collection = g;
-        } else if (gtype == "Uniform" && !uniform) {
-            uniform = g;
-        }
-    }
-    if (!first)
-        throw ReadError("XDMF: missing <Grid>");
-
-    XdmfDoc out;
-    if (!collection) {
-        out.mMeshGrid = first;
-        return out;
-    }
-    for (pugi::xml_node s : collection.children("Grid"))
-        out.mSteps.push_back(s);
-    out.mMeshGrid = uniform;
-    if (!out.mMeshGrid) {
-        // No sibling mesh grid: take the first uniform grid inside the
-        // collection, which is where a writer that repeats the geometry per
-        // step puts it.
-        for (pugi::xml_node s : out.mSteps) {
-            if (std::string(s.attribute("GridType").value()) == "Uniform") {
-                out.mMeshGrid = s;
-                break;
-            }
-        }
-    }
-    if (!out.mMeshGrid)
-        throw ReadError("XDMF: temporal collection carries no mesh grid");
-    return out;
 }
 
 /** @brief Read a grid's `<Topology>`/`<Geometry>` into @p rMesh, ignoring the rest. */
@@ -53882,6 +54037,8 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
 // External includes
 
+// Project includes (private, not installed)
+
 // Project includes
 
 namespace meshioplusplus {
@@ -53947,8 +54104,12 @@ struct XdmfTimeSeriesWriter::Impl {
     pugi::xml_node mCollection;
     std::unique_ptr<xdmfcommon::DataItemStore> mStore;
     std::size_t mNumSteps = 0;
-    std::size_t mNumPoints = 0;  // from WritePointsCells, for array validation
+    // From WritePointsCells, or recovered from the document on the append path;
+    // used to validate the NamedArray overload's lengths. mCountsKnown is what
+    // distinguishes "the mesh has zero points" from "we could not find out".
+    std::size_t mNumPoints = 0;
     std::size_t mNumCells = 0;
+    bool mCountsKnown = false;
     bool mHasMesh = false;
     bool mFinalized = false;
     bool mAutoFlush = false;
@@ -54015,30 +54176,45 @@ XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::
     if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
         if (!mImpl->mDoc.load_file(rPath.c_str()))
             throw WriteError("XDMF time series: could not parse '" + rPath + "' to append to it");
-        // Resolve structurally, the way read_xdmf's xdmf_resolve does -- an
-        // xpointer is never followed, and the collection is the first temporal
-        // one under <Domain>.
-        pugi::xml_node domain = mImpl->mDoc.child("Xdmf").child("Domain");
-        for (pugi::xml_node g = domain.child("Grid"); g; g = g.next_sibling("Grid")) {
-            const std::string gt = g.attribute("GridType").as_string();
-            const std::string ct = g.attribute("CollectionType").as_string();
-            if (gt == "Collection" && ct == "Temporal") {
-                mImpl->mCollection = g;
-                break;
-            }
-            if (gt == "Uniform" && std::string(g.attribute("Name").as_string()) == xts_mesh_name)
-                mImpl->mHasMesh = true;
+        // Resolve through the SAME helper read_xdmf uses, so an append can never
+        // disagree with a read about which grid is the mesh. This file carried
+        // its own weaker transcription through v9.1.0, which skipped the
+        // version check and recognised a static grid only when it was literally
+        // named "mesh" -- so appending to another producer's series quietly
+        // added a second static grid.
+        xdmfdetail::XdmfDoc parsed;
+        try {
+            parsed = xdmfdetail::xdmf_resolve(mImpl->mDoc);
+        } catch (const ReadError& e) {
+            throw WriteError("XDMF time series: cannot append to '" + rPath + "': " + e.what());
         }
-        if (!mImpl->mCollection)
+        if (!parsed.mCollection)
             throw WriteError("XDMF time series: '" + rPath +
                              "' carries no temporal collection to append to");
-        for (pugi::xml_node g = mImpl->mCollection.child("Grid"); g; g = g.next_sibling("Grid"))
-            ++mImpl->mNumSteps;
-        // A second pass for the mesh grid: it may sit after the collection.
-        if (!mImpl->mHasMesh)
-            for (pugi::xml_node g = domain.child("Grid"); g; g = g.next_sibling("Grid"))
-                if (std::string(g.attribute("Name").as_string()) == xts_mesh_name)
-                    mImpl->mHasMesh = true;
+        mImpl->mCollection = parsed.mCollection;
+        mImpl->mNumSteps = parsed.mSteps.size();
+        mImpl->mHasMesh = static_cast<bool>(parsed.mMeshGrid);
+
+        // Recover the counts the NamedArray overload validates against. They
+        // are declared in the document -- <Topology NumberOfElements> and the
+        // geometry <DataItem>'s Dimensions -- so this costs attribute lookups
+        // and never opens the heavy-data container. Without this the counts
+        // stayed 0 and that overload rejected every array on an appended
+        // series, which is the v9.1.0 bug this fixes; WritePointsCells cannot
+        // repair it, since appending sets mHasMesh and it refuses a second call.
+        if (parsed.mMeshGrid) {
+            const xdmfdetail::XdmfGridCounts counts =
+                xdmfdetail::xdmf_grid_counts(parsed.mMeshGrid);
+            mImpl->mNumPoints = counts.mNumPoints;
+            mImpl->mNumCells = counts.mNumCells;
+            mImpl->mCountsKnown = counts.mPointsKnown && counts.mCellsKnown;
+            if (!mImpl->mCountsKnown)
+                log::warn(
+                    "XDMF time series: could not recover the point/cell counts from '{}'; "
+                    "array-length validation is skipped for this series",
+                    rPath);
+        }
+
         // Resume the heavy-data naming past whatever the earlier run wrote. A
         // mis-resumed counter would silently overwrite data0 rather than fail.
         mImpl->mStore->OpenExisting();
@@ -54092,6 +54268,10 @@ XdmfTimeSeriesWriter& XdmfTimeSeriesWriter::operator=(XdmfTimeSeriesWriter&& rOt
 }
 
 void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (mImpl->mHasMesh)
@@ -54115,6 +54295,7 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
     mImpl->mNumCells = 0;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
         mImpl->mNumCells += rMesh.Cells(b).NumCells();
+    mImpl->mCountsKnown = true;
 
     // Topology (single-type, or one packed Mixed array)
     if (rMesh.NumCellBlocks() == 1) {
@@ -54138,6 +54319,10 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (!mImpl->mHasMesh)
@@ -54165,6 +54350,10 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
                                      const std::vector<NamedArray>& rCellData) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (!mImpl->mHasMesh)
@@ -54176,17 +54365,29 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>&
                           const char* p_center, const char* p_what) {
         for (const NamedArray& r_a : rArrays) {
             const std::size_t nc = r_a.mNumComponents ? r_a.mNumComponents : 1;
-            const std::size_t want = entities * nc;
-            if (r_a.mValues.size() != want)
-                throw WriteError("XDMF time series: " + std::string(p_what) + " array '" +
-                                 r_a.mName + "' holds " + std::to_string(r_a.mValues.size()) +
-                                 " values, expected " + std::to_string(want) + " (" +
-                                 std::to_string(entities) + " x " + std::to_string(nc) + ")");
+            // `rows` is `entities` in every normal case. It differs only when
+            // appending to a document whose counts could not be recovered (a
+            // foreign producer with no Dimensions/NumberOfElements to read),
+            // where deriving the row count from the array is the honest answer:
+            // the <DataItem> carries its own Dimensions, so the output stays
+            // structurally valid and only the helpfulness check is lost -- and
+            // that case already warned once, at construction.
+            std::size_t rows = entities;
+            if (mImpl->mCountsKnown) {
+                const std::size_t want = entities * nc;
+                if (r_a.mValues.size() != want)
+                    throw WriteError("XDMF time series: " + std::string(p_what) + " array '" +
+                                     r_a.mName + "' holds " + std::to_string(r_a.mValues.size()) +
+                                     " values, expected " + std::to_string(want) + " (" +
+                                     std::to_string(entities) + " x " + std::to_string(nc) + ")");
+            } else {
+                rows = r_a.mValues.size() / nc;
+            }
             std::vector<std::size_t> shape;
             if (nc == 1)
-                shape = {entities};
+                shape = {rows};
             else
-                shape = {entities, nc};
+                shape = {rows, nc};
             NDArray arr = NDArray::Uninit(DType::Float64, shape);
             if (!r_a.mValues.empty())
                 std::memcpy(arr.Data(), r_a.mValues.data(), r_a.mValues.size() * sizeof(double));
@@ -54204,7 +54405,7 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>&
 }
 
 void XdmfTimeSeriesWriter::Flush() {
-    if (mImpl->mFinalized)
+    if (!mImpl || mImpl->mFinalized)
         return;
     // Heavy data first: the .xdmf must never name a dataset that is not on disk.
     mImpl->mStore->Flush();
@@ -54212,6 +54413,8 @@ void XdmfTimeSeriesWriter::Flush() {
 }
 
 void XdmfTimeSeriesWriter::SetAutoFlush(bool Enable) {
+    if (!mImpl)
+        return;
     mImpl->mAutoFlush = Enable;
 }
 
@@ -54220,7 +54423,7 @@ bool XdmfTimeSeriesWriter::AutoFlush() const {
 }
 
 void XdmfTimeSeriesWriter::Finalize() {
-    if (mImpl->mFinalized)
+    if (!mImpl || mImpl->mFinalized)
         return;
     // Set first: a failed save must not be retried by the destructor, which
     // could not report the second failure either.
