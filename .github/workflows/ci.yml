@@ -279,6 +279,36 @@ jobs:
             -DMESHIOPLUSPLUS_CONSUMER_NO_STD_SPAN=ON
           cmake --build /tmp/consumer-nospan
           LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/consumer-nospan/consumer_smoketest
+      # doc/cpp_api.md and README.md both print an EXACT find_package line for
+      # COMPONENTS CXX. Under SameMajorVersion, EXACT is a full-string compare,
+      # so a two-component request can never match a three-component install --
+      # which is what both files printed through v9.1.0. Exercise the real
+      # thing, and assert the docs quote a line that works.
+      - name: Consume with the documented EXACT pin
+        run: |
+          set -eux
+          export PKG_CONFIG_PATH="$PWD/inst/lib/pkgconfig"
+          ver=$(pkg-config --modversion meshioplusplus)
+          # (1) the full three-component version must satisfy EXACT
+          cmake -S tests/consumer -B /tmp/consumer-exact \
+            -Dmeshioplusplus_DIR="$PWD/inst/lib/cmake/meshioplusplus" \
+            -DMESHIOPLUSPLUS_CONSUMER_EXACT_VERSION="$ver"
+          cmake --build /tmp/consumer-exact
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/consumer-exact/consumer_smoketest
+          # (2) major.minor must NOT -- this is exactly why the docs have to
+          #     spell all three components, and this keeps that reason from
+          #     rotting back into a two-component line.
+          if cmake -S tests/consumer -B /tmp/consumer-exact-bad \
+               -Dmeshioplusplus_DIR="$PWD/inst/lib/cmake/meshioplusplus" \
+               -DMESHIOPLUSPLUS_CONSUMER_EXACT_VERSION="${ver%.*}" > /tmp/exact.log 2>&1; then
+            echo "::error::'${ver%.*} EXACT' should not have been satisfied"
+            cat /tmp/exact.log
+            exit 1
+          fi
+          # (3) the docs must quote the line that actually works, verbatim, so
+          #     a version bump that forgets them turns this step red.
+          grep -qF "find_package(meshioplusplus $ver EXACT CONFIG REQUIRED COMPONENTS CXX)" doc/cpp_api.md
+          grep -qF "find_package(meshioplusplus $ver EXACT CONFIG REQUIRED COMPONENTS CXX)" README.md
       # The backend link guard, which no CMake consumer can exercise: the macro
       # always arrives via INTERFACE_COMPILE_DEFINITIONS, and main.cpp #errors
       # without it. Only a hand-rolled compile reaches the state the guard is
