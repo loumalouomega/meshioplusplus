@@ -28,6 +28,9 @@
 // External includes
 #include "pugixml.hpp"
 
+// Project includes (private, not installed)
+#include "xdmf_doc.hpp"
+
 // Project includes
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -98,8 +101,12 @@ struct XdmfTimeSeriesWriter::Impl {
     pugi::xml_node mCollection;
     std::unique_ptr<xdmfcommon::DataItemStore> mStore;
     std::size_t mNumSteps = 0;
-    std::size_t mNumPoints = 0;  // from WritePointsCells, for array validation
+    // From WritePointsCells, or recovered from the document on the append path;
+    // used to validate the NamedArray overload's lengths. mCountsKnown is what
+    // distinguishes "the mesh has zero points" from "we could not find out".
+    std::size_t mNumPoints = 0;
     std::size_t mNumCells = 0;
+    bool mCountsKnown = false;
     bool mHasMesh = false;
     bool mFinalized = false;
     bool mAutoFlush = false;
@@ -166,30 +173,45 @@ XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::
     if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
         if (!mImpl->mDoc.load_file(rPath.c_str()))
             throw WriteError("XDMF time series: could not parse '" + rPath + "' to append to it");
-        // Resolve structurally, the way read_xdmf's xdmf_resolve does -- an
-        // xpointer is never followed, and the collection is the first temporal
-        // one under <Domain>.
-        pugi::xml_node domain = mImpl->mDoc.child("Xdmf").child("Domain");
-        for (pugi::xml_node g = domain.child("Grid"); g; g = g.next_sibling("Grid")) {
-            const std::string gt = g.attribute("GridType").as_string();
-            const std::string ct = g.attribute("CollectionType").as_string();
-            if (gt == "Collection" && ct == "Temporal") {
-                mImpl->mCollection = g;
-                break;
-            }
-            if (gt == "Uniform" && std::string(g.attribute("Name").as_string()) == xts_mesh_name)
-                mImpl->mHasMesh = true;
+        // Resolve through the SAME helper read_xdmf uses, so an append can never
+        // disagree with a read about which grid is the mesh. This file carried
+        // its own weaker transcription through v9.1.0, which skipped the
+        // version check and recognised a static grid only when it was literally
+        // named "mesh" -- so appending to another producer's series quietly
+        // added a second static grid.
+        xdmfdetail::XdmfDoc parsed;
+        try {
+            parsed = xdmfdetail::xdmf_resolve(mImpl->mDoc);
+        } catch (const ReadError& e) {
+            throw WriteError("XDMF time series: cannot append to '" + rPath + "': " + e.what());
         }
-        if (!mImpl->mCollection)
+        if (!parsed.mCollection)
             throw WriteError("XDMF time series: '" + rPath +
                              "' carries no temporal collection to append to");
-        for (pugi::xml_node g = mImpl->mCollection.child("Grid"); g; g = g.next_sibling("Grid"))
-            ++mImpl->mNumSteps;
-        // A second pass for the mesh grid: it may sit after the collection.
-        if (!mImpl->mHasMesh)
-            for (pugi::xml_node g = domain.child("Grid"); g; g = g.next_sibling("Grid"))
-                if (std::string(g.attribute("Name").as_string()) == xts_mesh_name)
-                    mImpl->mHasMesh = true;
+        mImpl->mCollection = parsed.mCollection;
+        mImpl->mNumSteps = parsed.mSteps.size();
+        mImpl->mHasMesh = static_cast<bool>(parsed.mMeshGrid);
+
+        // Recover the counts the NamedArray overload validates against. They
+        // are declared in the document -- <Topology NumberOfElements> and the
+        // geometry <DataItem>'s Dimensions -- so this costs attribute lookups
+        // and never opens the heavy-data container. Without this the counts
+        // stayed 0 and that overload rejected every array on an appended
+        // series, which is the v9.1.0 bug this fixes; WritePointsCells cannot
+        // repair it, since appending sets mHasMesh and it refuses a second call.
+        if (parsed.mMeshGrid) {
+            const xdmfdetail::XdmfGridCounts counts =
+                xdmfdetail::xdmf_grid_counts(parsed.mMeshGrid);
+            mImpl->mNumPoints = counts.mNumPoints;
+            mImpl->mNumCells = counts.mNumCells;
+            mImpl->mCountsKnown = counts.mPointsKnown && counts.mCellsKnown;
+            if (!mImpl->mCountsKnown)
+                log::warn(
+                    "XDMF time series: could not recover the point/cell counts from '{}'; "
+                    "array-length validation is skipped for this series",
+                    rPath);
+        }
+
         // Resume the heavy-data naming past whatever the earlier run wrote. A
         // mis-resumed counter would silently overwrite data0 rather than fail.
         mImpl->mStore->OpenExisting();
@@ -243,6 +265,10 @@ XdmfTimeSeriesWriter& XdmfTimeSeriesWriter::operator=(XdmfTimeSeriesWriter&& rOt
 }
 
 void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (mImpl->mHasMesh)
@@ -266,6 +292,7 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
     mImpl->mNumCells = 0;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
         mImpl->mNumCells += rMesh.Cells(b).NumCells();
+    mImpl->mCountsKnown = true;
 
     // Topology (single-type, or one packed Mixed array)
     if (rMesh.NumCellBlocks() == 1) {
@@ -289,6 +316,10 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (!mImpl->mHasMesh)
@@ -316,6 +347,10 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
                                      const std::vector<NamedArray>& rCellData) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (!mImpl->mHasMesh)
@@ -327,17 +362,29 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>&
                           const char* p_center, const char* p_what) {
         for (const NamedArray& r_a : rArrays) {
             const std::size_t nc = r_a.mNumComponents ? r_a.mNumComponents : 1;
-            const std::size_t want = entities * nc;
-            if (r_a.mValues.size() != want)
-                throw WriteError("XDMF time series: " + std::string(p_what) + " array '" +
-                                 r_a.mName + "' holds " + std::to_string(r_a.mValues.size()) +
-                                 " values, expected " + std::to_string(want) + " (" +
-                                 std::to_string(entities) + " x " + std::to_string(nc) + ")");
+            // `rows` is `entities` in every normal case. It differs only when
+            // appending to a document whose counts could not be recovered (a
+            // foreign producer with no Dimensions/NumberOfElements to read),
+            // where deriving the row count from the array is the honest answer:
+            // the <DataItem> carries its own Dimensions, so the output stays
+            // structurally valid and only the helpfulness check is lost -- and
+            // that case already warned once, at construction.
+            std::size_t rows = entities;
+            if (mImpl->mCountsKnown) {
+                const std::size_t want = entities * nc;
+                if (r_a.mValues.size() != want)
+                    throw WriteError("XDMF time series: " + std::string(p_what) + " array '" +
+                                     r_a.mName + "' holds " + std::to_string(r_a.mValues.size()) +
+                                     " values, expected " + std::to_string(want) + " (" +
+                                     std::to_string(entities) + " x " + std::to_string(nc) + ")");
+            } else {
+                rows = r_a.mValues.size() / nc;
+            }
             std::vector<std::size_t> shape;
             if (nc == 1)
-                shape = {entities};
+                shape = {rows};
             else
-                shape = {entities, nc};
+                shape = {rows, nc};
             NDArray arr = NDArray::Uninit(DType::Float64, shape);
             if (!r_a.mValues.empty())
                 std::memcpy(arr.Data(), r_a.mValues.data(), r_a.mValues.size() * sizeof(double));
@@ -355,7 +402,7 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>&
 }
 
 void XdmfTimeSeriesWriter::Flush() {
-    if (mImpl->mFinalized)
+    if (!mImpl || mImpl->mFinalized)
         return;
     // Heavy data first: the .xdmf must never name a dataset that is not on disk.
     mImpl->mStore->Flush();
@@ -363,6 +410,8 @@ void XdmfTimeSeriesWriter::Flush() {
 }
 
 void XdmfTimeSeriesWriter::SetAutoFlush(bool Enable) {
+    if (!mImpl)
+        return;
     mImpl->mAutoFlush = Enable;
 }
 
@@ -371,7 +420,7 @@ bool XdmfTimeSeriesWriter::AutoFlush() const {
 }
 
 void XdmfTimeSeriesWriter::Finalize() {
-    if (mImpl->mFinalized)
+    if (!mImpl || mImpl->mFinalized)
         return;
     // Set first: a failed save must not be retried by the destructor, which
     // could not report the second failure either.

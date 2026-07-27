@@ -954,11 +954,14 @@ using NamedArrayLists = NamedItems<std::vector<NDArray>>;
  * "apply property" callback in `kratos_bridge.hpp`, which is how a real Kratos
  * consumer turns these key/value pairs into typed variables.
  *
- * @note The C++ `Mesh` cannot carry this: `NDArray` has ten numeric dtypes and
- *       no string or bytes dtype, so a `CONSTITUTIVE_LAW LinearElastic3DLaw`
- *       line has no `field_data` representation at all. That is precisely why
- *       properties travel in a side-channel struct (the `MedInfo`/`ExodusInfo`
- *       pattern) rather than on the mesh.
+ * @note These do not go through `field_data`: `NDArray` has ten numeric dtypes
+ *       and no string or bytes dtype, so a `CONSTITUTIVE_LAW LinearElastic3DLaw`
+ *       line has no representation there at all. Since v9.2.0 the `Mesh` carries
+ *       them **as themselves** instead, through the uniform API's
+ *       `AddPropertySet`/`GetPropertySet` (see `mesh_api.hpp`) -- a
+ *       `PropertySet` is an ordinary struct with `std::string` members, so
+ *       storing it needs no dtype. Before that they could only ride the
+ *       `MdpaInfo` side channel, which no registry-based consumer could reach.
  */
 
 // System includes
@@ -1007,6 +1010,69 @@ struct PropertySet {
     std::vector<PropertyValue> mValues;
 };
 
+namespace detail {
+
+/**
+ * @brief Every properties block of a mesh, kept ascending by `mId`.
+ *
+ * The structural twin of `detail::RegionList`, and for the same reason: the
+ * three mesh backends each hold one of these, so a shared container is what
+ * stops them drifting on ordering or on the replace-by-key rule.
+ *
+ * Unlike regions, property sets are keyed by **id, not by entity index**, so
+ * nothing here ever needs remapping when an operation renumbers cells or
+ * points -- there is no `detail/region_remap.hpp` counterpart to look for.
+ */
+class PropertySetList {
+public:
+    /**
+     * @brief Insert a set, or replace the one with the same `mId`.
+     * @param propertySet The set to store.
+     */
+    void Add(PropertySet propertySet) {
+        auto it = std::lower_bound(
+            mSets.begin(), mSets.end(), propertySet.mId,
+            [](const PropertySet& rLhs, std::int64_t id) { return rLhs.mId < id; });
+        if (it != mSets.end() && it->mId == propertySet.mId)
+            *it = std::move(propertySet);
+        else
+            mSets.insert(it, std::move(propertySet));
+    }
+
+    /** @brief Number of stored property sets. */
+    std::size_t Size() const { return mSets.size(); }
+    /** @brief Set @p Index, in ascending-`mId` order. */
+    const PropertySet& At(std::size_t Index) const { return mSets[Index]; }
+    /** @brief The whole list, for backends that forward it wholesale. */
+    const std::vector<PropertySet>& All() const { return mSets; }
+    /** @brief Drop every stored set. */
+    void Clear() { mSets.clear(); }
+
+    /** @brief Whether a set with this id exists. */
+    bool Has(std::int64_t Id) const { return Find(Id) != npos; }
+
+    /**
+     * @brief Index of the set with this id.
+     * @param Id The properties id to look for.
+     * @return The index, or `npos` when absent.
+     */
+    std::size_t Find(std::int64_t Id) const {
+        auto it = std::lower_bound(
+            mSets.begin(), mSets.end(), Id,
+            [](const PropertySet& rLhs, std::int64_t id) { return rLhs.mId < id; });
+        if (it == mSets.end() || it->mId != Id)
+            return npos;
+        return static_cast<std::size_t>(it - mSets.begin());
+    }
+
+    /// Sentinel returned by `Find` when no set matches.
+    static constexpr std::size_t npos = static_cast<std::size_t>(-1);
+
+private:
+    std::vector<PropertySet> mSets;  // kept sorted by mId
+};
+
+}  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/properties.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/backends/model_part.hpp =====
@@ -1958,6 +2024,33 @@ inline void write_int(NDArray& rA, std::size_t i, std::int64_t v) {
  * body. Every declaration after the accessor must spell the type out
  * fully-qualified — which is why the accessor itself returns
  * `const meshioplusplus::Region&`.
+ *
+ * ## Property sets (`properties.hpp`)
+ *
+ * `Begin Properties` blocks — Kratos material data, and whatever other formats
+ * grow an equivalent — are carried on the mesh rather than in a per-format side
+ * struct, because a side struct is unreachable through `registry_read`:
+ *
+ *  - `void AddPropertySet(PropertySet propertySet)` — insert, or replace the
+ *    set with the same `mId`.
+ *  - `std::size_t NumPropertySets() const`, and
+ *    `const PropertySet& GetPropertySet(std::size_t Index) const` — indexed in
+ *    **ascending `mId`** order, identical on every backend.
+ *  - `bool HasPropertySet(std::int64_t Id)` /
+ *    `std::size_t FindPropertySet(std::int64_t Id)` (`Mesh::npos` when absent).
+ *
+ * Two things follow from these being keyed by **id, not by entity index**.
+ * There is no `detail/region_remap.hpp` counterpart and none is needed — an
+ * operation that renumbers cells or points cannot invalidate them. And the rule
+ * for operations is simply: **shape-preserving operations carry property sets
+ * through** (`clean`, `smooth`, `transform`, `attach_quality`, the data ops),
+ * while **restructuring and multi-input ones do not** (`merge`, whose inputs
+ * would collide on id, plus `crop`/`split`/`partition`/`diff`).
+ *
+ * The accessor is `GetPropertySet`, not `PropertySet(i)`, deliberately: an
+ * accessor named `PropertySet` would hide that *type* for the rest of each
+ * backend's class body exactly as `Region(i)` does above, and the KRATOS backend
+ * genuinely needs to name the type afterwards.
  */
 
 // System includes
@@ -2628,6 +2721,27 @@ public:
     static constexpr std::size_t npos = detail::RegionList::npos;
 
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+
+    // --- uniform API: property sets (properties.hpp) -----------------------
+    //
+    // Keyed by id, never by entity index, so no operation has to remap them.
+    // Named GetPropertySet rather than PropertySet(i) on purpose: an accessor
+    // called PropertySet would hide the TYPE of that name for the rest of this
+    // class body, the trap mesh_api.hpp documents for Region(i).
+
+    /** @brief Store a properties block, replacing one with the same `mId`. */
+    void AddPropertySet(PropertySet propertySet) { mPropertySets.Add(std::move(propertySet)); }
+    /** @brief Number of properties blocks. */
+    std::size_t NumPropertySets() const { return mPropertySets.Size(); }
+    /** @brief Properties block @p Index, in ascending-`mId` order. */
+    const PropertySet& GetPropertySet(std::size_t Index) const { return mPropertySets.At(Index); }
+    /** @brief Whether a properties block with this id exists. */
+    bool HasPropertySet(std::int64_t Id) const { return mPropertySets.Has(Id); }
+    /** @brief Index of the block with this id, or `npos`. */
+    std::size_t FindPropertySet(std::int64_t Id) const { return mPropertySets.Find(Id); }
+    /** @brief The whole list (used by the KRATOS backend's staging forward). */
+    const detail::PropertySetList& PropertySets() const { return mPropertySets; }
+
     std::size_t NumRegions() const { return mRegions.Size(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return mRegions.At(i); }
     std::vector<std::string> RegionNames() const { return mRegions.Names(); }
@@ -2711,7 +2825,8 @@ private:
     detail::NamedArrays mPointData;     // canonical Float64/Int64 arrays
     detail::NamedArrayLists mCellData;  // one array per block, block order
     detail::NamedArrays mFieldData;
-    detail::RegionList mRegions;  // named groups, canonical + sorted
+    detail::RegionList mRegions;            // named groups, canonical + sorted
+    detail::PropertySetList mPropertySets;  // material blocks, ascending by id
     mutable std::optional<GlobalCsr> mGlobalCsr;
 };
 
@@ -3429,6 +3544,10 @@ public:
         ResetModelPartOnly();
         mStage.AddRegion(std::move(region));
     }
+    void AddPropertySet(PropertySet propertySet) {
+        ResetModelPartOnly();
+        mStage.AddPropertySet(std::move(propertySet));
+    }
 
     // --- uniform API: writer-side accessors (staging, stale-synced) --------
 
@@ -3469,6 +3588,13 @@ public:
 
     /// Sentinel returned by `FindRegion` when no region matches.
     static constexpr std::size_t npos = detail::RegionList::npos;
+
+    std::size_t NumPropertySets() const { return Stage().NumPropertySets(); }
+    const PropertySet& GetPropertySet(std::size_t Index) const {
+        return Stage().GetPropertySet(Index);
+    }
+    bool HasPropertySet(std::int64_t Id) const { return Stage().HasPropertySet(Id); }
+    std::size_t FindPropertySet(std::int64_t Id) const { return Stage().FindPropertySet(Id); }
 
     std::size_t NumRegions() const { return Stage().NumRegions(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return Stage().Region(i); }
@@ -3530,12 +3656,57 @@ public:
      */
     void SetBuildSubModelPartsFromTags(bool enable) {
         mTagsToSubModelParts = enable;
-        if (mMaterialized && !mStale) {
-            mMaterialized = false;  // re-materialize with the new setting
-            mpRoot.reset();
-        }
+        InvalidateMaterialization();  // re-materialize with the new setting
     }
     bool BuildSubModelPartsFromTags() const { return mTagsToSubModelParts; }
+
+    /**
+     * @brief Restrict the automatic tag pass to these `cell_data` keys.
+     *
+     * `SetBuildSubModelPartsFromTags` is all-or-nothing, which is too coarse
+     * when only one key is unwanted. The motivating case is `.mdpa`: a Kratos
+     * properties id is read as a `gmsh:physical` cell tag, so the tag pass
+     * synthesizes a `gmsh_physical_<id>` SubModelPart beside the file's real
+     * ones -- material assignment surfacing as a group. For a genuine gmsh file
+     * that same inference is wanted, so the key cannot simply be dropped from
+     * #KnownTagKeys; the consumer has to say which it means.
+     *
+     * @param keys The keys to consider. **Empty restores the default**, i.e.
+     *        every key in #KnownTagKeys.
+     */
+    void SetTagSubModelPartKeys(std::vector<std::string> keys) {
+        mTagKeys = std::move(keys);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief Exclude one key from the automatic tag pass. Repeatable, additive.
+     *
+     * Expresses "everything except this" without re-listing #KnownTagKeys,
+     * which an inclusion list alone would force -- and which would silently
+     * freeze the caller against any key added to that table later.
+     */
+    void ExcludeTagSubModelPartKey(const std::string& rKey) {
+        if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), rKey) ==
+            mExcludedTagKeys.end())
+            mExcludedTagKeys.push_back(rKey);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief The keys the tag pass will actually consider.
+     * @return The effective set, in #KnownTagKeys order.
+     */
+    std::vector<std::string> TagSubModelPartKeys() const {
+        const std::vector<std::string>& source = mTagKeys.empty() ? KnownTagKeys() : mTagKeys;
+        std::vector<std::string> out;
+        out.reserve(source.size());
+        for (const std::string& r_key : source)
+            if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), r_key) ==
+                mExcludedTagKeys.end())
+                out.push_back(r_key);
+        return out;
+    }
 
 private:
     /** @brief Per staged block: what it became in the ModelPart. */
@@ -3640,6 +3811,17 @@ private:
                 if (id >= 0)
                     r_mp.CreateNewProperties(static_cast<IndexType>(id));
 
+        // Real material values, where the mesh carries them. The loop above
+        // only creates the ids the entity rows reference, leaving every block
+        // empty; this fills them in. CreateNewProperties is find-or-create, so
+        // an id both passes see is filled in place rather than duplicated, and
+        // the creation order above is unchanged. This is what makes
+        // kratos_bridge's "apply property" to_model_part overload transfer
+        // anything at all -- it iterates rSource.Properties(), which held
+        // id-only sets before v9.2.0.
+        for (const PropertySet& r_set : mStage.PropertySets().All())
+            r_mp.CreateNewProperties(static_cast<IndexType>(r_set.mId)).mValues = r_set.mValues;
+
         IndexType next_elem = 1, next_cond = 1;
         std::size_t n_elem_rows = 0, n_cond_rows = 0;
         std::size_t block_index = 0;
@@ -3710,7 +3892,7 @@ private:
 
         // Integer tags -> SubModelParts (unless disabled).
         if (mTagsToSubModelParts)
-            for (const auto& r_key : KnownTagKeys())
+            for (const auto& r_key : TagSubModelPartKeys())
                 if (mStage.HasCellData(r_key) &&
                     mStage.CellDataNumBlocks(r_key) == mStage.NumCellBlocks())
                     BuildSubModelPartsFor(r_key);
@@ -4033,6 +4215,13 @@ private:
             fresh.AddFieldData(r_name, mStage.FieldData(r_name));
 
         RestoreRegions(r_mp, plan, fresh);
+        // The ModelPart is the authority after a direct mutation, so read the
+        // properties back from it rather than carrying the old stage's forward:
+        // a set the user deleted must not be resurrected. They are keyed by id,
+        // not by entity index, so unlike regions and cell_data slices there is
+        // nothing to remap.
+        for (const PropertySet& r_set : r_mp.Properties())
+            fresh.AddPropertySet(r_set);
 
         mRecords.clear();
         for (PendingBlock& r_pb : plan)
@@ -4280,6 +4469,9 @@ private:
     /// rebuild re-derives it from the ModelPart.
     mutable std::vector<std::string> mBlockEntityNames;
     bool mTagsToSubModelParts = true;
+    /// Empty = every KnownTagKeys() entry; see SetTagSubModelPartKeys.
+    std::vector<std::string> mTagKeys;
+    std::vector<std::string> mExcludedTagKeys;
 };
 
 }  // namespace meshioplusplus
@@ -4469,6 +4661,7 @@ struct Mesh {
     // Region::Key() with canonical (sorted, de-duplicated) entries, so region
     // order and content are identical on every backend.
     detail::RegionList mRegions;
+    detail::PropertySetList mPropertySets;
 
     /**
      * @brief Number of points in the mesh.
@@ -4652,6 +4845,25 @@ struct Mesh {
 
     /** @brief Adds a region, replacing one with the same (kind, name, dim, tag). */
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+
+    // --- uniform API: property sets (properties.hpp) -----------------------
+    //
+    // Keyed by id, never by entity index, so no operation has to remap them.
+    // Named GetPropertySet rather than PropertySet(i) on purpose: an accessor
+    // called PropertySet would hide the TYPE of that name for the rest of this
+    // class body, the trap mesh_api.hpp documents for Region(i).
+
+    /** @brief Store a properties block, replacing one with the same `mId`. */
+    void AddPropertySet(PropertySet propertySet) { mPropertySets.Add(std::move(propertySet)); }
+    /** @brief Number of properties blocks. */
+    std::size_t NumPropertySets() const { return mPropertySets.Size(); }
+    /** @brief Properties block @p Index, in ascending-`mId` order. */
+    const PropertySet& GetPropertySet(std::size_t Index) const { return mPropertySets.At(Index); }
+    /** @brief Whether a properties block with this id exists. */
+    bool HasPropertySet(std::int64_t Id) const { return mPropertySets.Has(Id); }
+    /** @brief Index of the block with this id, or `npos`. */
+    std::size_t FindPropertySet(std::int64_t Id) const { return mPropertySets.Find(Id); }
+
     /** @brief Number of named regions. */
     std::size_t NumRegions() const { return mRegions.Size(); }
     /** @brief Region @p i in `(kind, name, dim, tag)` order. */
@@ -4985,6 +5197,14 @@ inline bool skin_supported(CellType Type) {
  *
  * Cost is one constant-initialized function pointer and one relocation per TU.
  * Define `MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` to opt out.
+ *
+ * @note MSVC + a **shared** meshio++ is a documented gap. The MSVC arm below is
+ *       `#pragma detect_mismatch`, whose `/FAILIFMISMATCH` records live in the
+ *       `.obj` files; they are not reliably carried through a DLL's import
+ *       library, so there the guard degrades to no check at all. Static MSVC
+ *       builds and every GNU/Clang configuration are covered. A run-time probe
+ *       would close it, at the price of a static initializer in every TU --
+ *       exactly what this design exists to avoid.
  */
 
 // Project includes
@@ -5001,6 +5221,10 @@ inline bool skin_supported(CellType Type) {
 #define MESHIOPLUSPLUS_BACKEND_SYM_(name) mesh_backend_is_##name
 #define MESHIOPLUSPLUS_BACKEND_SYM(name) MESHIOPLUSPLUS_BACKEND_SYM_(name)
 
+// Same two-level trick for the string form the MSVC arm needs.
+#define MESHIOPLUSPLUS_BACKEND_STR_(name) #name
+#define MESHIOPLUSPLUS_BACKEND_STR(name) MESHIOPLUSPLUS_BACKEND_STR_(name)
+
 namespace meshioplusplus::detail {
 
 /**
@@ -5011,14 +5235,35 @@ namespace meshioplusplus::detail {
 MESHIOPLUSPLUS_API void MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND)();
 
 #ifndef MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK
+#if defined(__GNUC__) || defined(__clang__)
 /**
  * @brief Constant-initialized reference that forces the symbol above to resolve.
  *
- * `[[maybe_unused]]` keeps `-Wunused` quiet; the pointer is still emitted
- * because taking a function's address odr-uses it.
+ * `[[maybe_unused]]` keeps `-Wunused` quiet.
+ *
+ * `gnu::used` is **load-bearing, not decoration** -- do not "tidy" it away. An
+ * `inline` variable has vague linkage and is emitted *lazily*: nothing in this
+ * header or in `mesh.hpp` reads the pointer, so without `used` no relocation
+ * ever reaches the object file and the entire guard is inert. That was the
+ * state through v9.1.0; `nm -uC` on any consumer TU showed no reference at all,
+ * with or without a backend macro, and a mismatched consumer got raw mangled
+ * undefined references to whatever it actually called instead of a message
+ * naming the backend. Dropping `inline`/`const` does not fix it either -- a
+ * plain `static const` initializer is still discarded at `-O2`.
  */
-[[maybe_unused]] inline void (*const mesh_backend_link_check)() =
+[[maybe_unused, gnu::used]] inline void (*const mesh_backend_link_check)() =
     &MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND);
+#elif defined(_MSC_VER)
+// MSVC has no `used`, so the pointer above cannot be forced into the object.
+// `detect_mismatch` reaches the same failure at the same moment by a different
+// route: it embeds a /FAILIFMISMATCH record in every .obj, and the linker
+// rejects a link whose records disagree -- naming BOTH values, which is
+// strictly more informative than an undefined symbol. It also needs no symbol
+// at all, sidestepping the __declspec(dllimport) function-pointer question.
+// See the DLL caveat in the file comment above.
+#pragma detect_mismatch("meshioplusplus_mesh_backend", \
+                        MESHIOPLUSPLUS_BACKEND_STR(MESHIOPLUSPLUS_ACTIVE_BACKEND))
+#endif
 #endif
 
 }  // namespace meshioplusplus::detail
@@ -12315,11 +12560,37 @@ public:
                                   int GzipLevel = -1,
                                   XdmfSeriesMode Mode = XdmfSeriesMode::Truncate);
 
-    /** @brief Finalizes the series if it has not been finalized already. */
+    /**
+     * @brief Finalizes the series if it has not been finalized already.
+     *
+     * @warning Because this **writes** `rPath`, deleting the output while the
+     *          writer is still alive recreates it:
+     *          @code
+     *          {
+     *              XdmfTimeSeriesWriter w(path, "XML");
+     *              w.WritePointsCells(m);
+     *              w.WriteData(0.0, {u});
+     *              std::filesystem::remove(path);   // "clean up"
+     *          }   // <-- the destructor finalizes here, recreating path
+     *          @endcode
+     *          The second half is what makes this bite: with
+     *          `XdmfSeriesMode::Append` the *next* run then continues a series
+     *          you believed deleted, so the failure surfaces one run later as a
+     *          wrong step count rather than at the delete. Destroy the writer
+     *          before removing its output -- end the scope, or call `Finalize()`
+     *          explicitly and then delete.
+     */
     ~XdmfTimeSeriesWriter();
 
     XdmfTimeSeriesWriter(const XdmfTimeSeriesWriter&) = delete;
     XdmfTimeSeriesWriter& operator=(const XdmfTimeSeriesWriter&) = delete;
+    // Moving leaves the source empty. Its contract, so a moved-from writer is
+    // diagnosable rather than undefined: the observers and the idempotent
+    // operations (`SetAutoFlush`, `AutoFlush`, `NumSteps`, `Finalized`,
+    // `Flush`, `Finalize`) are safe no-ops answering as for a finished series,
+    // while the three that cannot silently do nothing -- `WritePointsCells` and
+    // both `WriteData` overloads -- throw `WriteError`, because a caller
+    // writing a step must never be left believing it landed.
     XdmfTimeSeriesWriter(XdmfTimeSeriesWriter&&) noexcept;
     XdmfTimeSeriesWriter& operator=(XdmfTimeSeriesWriter&&) noexcept;
 
@@ -17625,6 +17896,204 @@ namespace std
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 // ===== end src/cpp/third_party/pugixml/pugixml.hpp =====
+// ===== begin src/cpp/src/formats/xdmf_doc.hpp =====
+/**
+ * @file formats/xdmf_doc.hpp
+ * @brief The XDMF document-structure helpers `read_xdmf` and
+ * `XdmfTimeSeriesWriter` both need: locating a temporal collection and its
+ * static mesh grid, and recovering the point/cell counts from a grid already
+ * on disk.
+ *
+ * @note This is a **private** header, deliberately under `src/cpp/src/` rather
+ * than `src/cpp/include/`, and the first of its kind in the tree (the nearest
+ * precedent is `src/cpp/cli/view_payload.hpp`). It cannot live in
+ * `detail/xdmf_common.hpp`, which is *installed*: these declarations name
+ * `pugi::xml_node` by value, pugixml is a build-only vendored dependency that
+ * no installed header may include, and a forward declaration does not help
+ * because `XdmfDoc` stores a `std::vector<pugi::xml_node>` (a complete type is
+ * required at class definition). The amalgamator picks it up automatically --
+ * it resolves a quoted include relative to the including file's directory and
+ * emits any header a `.cpp` needs into the implementation prelude.
+ *
+ * Sharing matters here, and not only on principle: through v9.1.0 the transient
+ * writer's append path re-transcribed a *weaker* copy of `xdmf_resolve` that
+ * skipped the `Version` check and recognised a static grid only if it was
+ * literally named `"mesh"`, so appending to any other producer's series
+ * silently appended a second static grid.
+ */
+
+// System includes
+#include <cstddef>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+namespace xdmfdetail {
+
+// Helpers here are `xdmf_`-prefixed because the single-header amalgamation
+// concatenates every src/cpp/src/**.cpp into one translation unit.
+
+/**
+ * @brief Parse a `Dimensions="..."` attribute into its extents.
+ * @param rS The attribute value, whitespace-separated integers.
+ * @return The extents, outermost first; empty when @p rS holds no integer.
+ */
+inline std::vector<std::size_t> xdmf_parse_dims(const std::string& rS) {
+    std::vector<std::size_t> dims;
+    std::istringstream iss(rS);
+    std::int64_t v;
+    while (iss >> v)
+        dims.push_back(static_cast<std::size_t>(v));
+    return dims;
+}
+
+/**
+ * @brief A resolved XDMF document: its static mesh grid, and its time steps.
+ *
+ * `mSteps` empty means "a plain single-grid file", which is the historical case
+ * and takes the historical code path unchanged.
+ */
+struct XdmfDoc {
+    pugi::xml_node mMeshGrid;            ///< Grid holding `<Topology>`/`<Geometry>`.
+    pugi::xml_node mCollection;          ///< The temporal collection, if the file has one.
+    std::vector<pugi::xml_node> mSteps;  ///< Temporal-collection children, in file order.
+};
+
+/**
+ * @brief Validate the document and locate its mesh grid (and time steps).
+ *
+ * Shared by the mesh reader, the metadata reader and the transient writer's
+ * append path, so a summary can never accept a file `read_xdmf` would reject
+ * and an append can never disagree with a read about which grid is the mesh. A
+ * temporal collection (`GridType="Collection" CollectionType="Temporal"`, what
+ * `XdmfTimeSeriesWriter` emits) stores the static geometry once in a sibling
+ * `Uniform` grid and one `<Grid>` per step inside the collection; the step
+ * grids reference the geometry through an `xi:include` this reader ignores,
+ * resolving it structurally instead -- the same thing the Python
+ * `TimeSeriesReader` does, and for the same reason: a generic XInclude pass
+ * would have to implement XPointer.
+ *
+ * @param rDoc The parsed document.
+ * @return The resolved grids.
+ * @throws ReadError if the document is not an XDMF 3 document with a `<Grid>`,
+ *         or if a temporal collection carries no mesh grid at all.
+ */
+inline XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("Xdmf");
+    if (!root)
+        throw ReadError("XDMF: missing <Xdmf> root");
+    std::string version = root.attribute("Version").value();
+    if (!version.empty() && version[0] != '3')
+        throw ReadError("XDMF: only version 3 handled by the C++ core");
+
+    pugi::xml_node domain = root.child("Domain");
+    pugi::xml_node first, uniform, collection;
+    for (pugi::xml_node g : domain.children("Grid")) {
+        if (!first)
+            first = g;
+        const std::string gtype = g.attribute("GridType").value();
+        if (gtype == "Collection" &&
+            std::string(g.attribute("CollectionType").value()) == "Temporal") {
+            if (!collection)
+                collection = g;
+        } else if (gtype == "Uniform" && !uniform) {
+            uniform = g;
+        }
+    }
+    if (!first)
+        throw ReadError("XDMF: missing <Grid>");
+
+    XdmfDoc out;
+    out.mCollection = collection;
+    if (!collection) {
+        out.mMeshGrid = first;
+        return out;
+    }
+    for (pugi::xml_node s : collection.children("Grid"))
+        out.mSteps.push_back(s);
+    out.mMeshGrid = uniform;
+    if (!out.mMeshGrid) {
+        // No sibling mesh grid: take the first uniform grid inside the
+        // collection, which is where a writer that repeats the geometry per
+        // step puts it.
+        for (pugi::xml_node s : out.mSteps) {
+            if (std::string(s.attribute("GridType").value()) == "Uniform") {
+                out.mMeshGrid = s;
+                break;
+            }
+        }
+    }
+    if (!out.mMeshGrid)
+        throw ReadError("XDMF: temporal collection carries no mesh grid");
+    return out;
+}
+
+/** @brief Point/cell counts recovered from a mesh grid that is already on disk. */
+struct XdmfGridCounts {
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+    bool mPointsKnown = false;
+    bool mCellsKnown = false;
+};
+
+/**
+ * @brief Recover a grid's point and cell counts from its attributes alone.
+ *
+ * No payload is read: every `<DataItem>` declares its shape, so this costs one
+ * attribute lookup even for an HDF series (the `.h5` is never opened).
+ *
+ * Cells come from `<Topology>`'s `NumberOfElements` **first**, and only then
+ * from the child `<DataItem>`'s `Dimensions`. The order is load-bearing: for a
+ * `TopologyType="Mixed"` grid the `DataItem` holds one flat packed array whose
+ * length is not the cell count, and `NumberOfElements` is the only correct
+ * source. That is also why this cannot simply call `read_xdmf_metadata`, which
+ * declines Mixed outright.
+ *
+ * @param rMeshGrid The static mesh grid, e.g. `xdmf_resolve(doc).mMeshGrid`.
+ * @return The counts, each flagged with whether anything readable was found.
+ */
+inline XdmfGridCounts xdmf_grid_counts(const pugi::xml_node& rMeshGrid) {
+    XdmfGridCounts out;
+    if (!rMeshGrid)
+        return out;
+
+    if (pugi::xml_node geo = rMeshGrid.child("Geometry")) {
+        const std::vector<std::size_t> dims =
+            xdmf_parse_dims(geo.child("DataItem").attribute("Dimensions").value());
+        if (!dims.empty()) {
+            out.mNumPoints = dims[0];
+            out.mPointsKnown = true;
+        }
+    }
+
+    if (pugi::xml_node topo = rMeshGrid.child("Topology")) {
+        if (pugi::xml_attribute n = topo.attribute("NumberOfElements")) {
+            out.mNumCells = static_cast<std::size_t>(n.as_ullong());
+            out.mCellsKnown = true;
+        } else {
+            const std::vector<std::size_t> dims =
+                xdmf_parse_dims(topo.child("DataItem").attribute("Dimensions").value());
+            if (!dims.empty()) {
+                out.mNumCells = dims[0];
+                out.mCellsKnown = true;
+            }
+        }
+    } else {
+        // A grid with no <Topology> is points-only, which WritePointsCells
+        // emits for a mesh with zero cell blocks: zero cells, known exactly.
+        out.mCellsKnown = true;
+    }
+    return out;
+}
+
+}  // namespace xdmfdetail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/xdmf_doc.hpp =====
 // ===== begin src/cpp/third_party/pugixml/pugixml.cpp =====
 /**
  * pugixml parser - version 1.14
@@ -31394,6 +31863,11 @@ Mesh clone_geometry(const Mesh& rMesh) {
     // and which pass through.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
     return out;
 }
 
@@ -42478,6 +42952,10 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     std::vector<double> coords;  // flat (n, 3)
     std::size_t num_points = 0;
     std::vector<MdpaBlock> blocks;
+    // The Properties bodies, staged for the Mesh. Kept in file order here; the
+    // mesh canonicalizes them to ascending id, which is why MdpaInfo remains
+    // the way to preserve an unusual declaration order verbatim.
+    std::vector<PropertySet> property_sets;
     std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_ids,
         condition_ids;
     std::map<std::string, NDArray> field_data;
@@ -42670,17 +43148,16 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 throw ReadError("MDPA: EOF before '" + end_token + "'");
         } else if (mdpa_starts_with(line, "Begin Properties")) {
             // Parsed unconditionally, not gated on mLenient: this is a pure
-            // de-throwing, so no read that used to succeed changes. Without an
-            // MdpaInfo to put it in the body is dropped with a warning -- what
-            // every flat binding does, the MedInfo precedent.
+            // de-throwing, so no read that used to succeed changes.
             PropertySet ps = mdpa_parse_properties(cur, line);
+            // Onto the mesh, so a registry-based consumer gets it. Through
+            // v9.1.0 this rode the MdpaInfo side channel only, which nothing
+            // reachable from registry_readers() could ask for -- so the values
+            // were unreachable from every consumer that did not link
+            // formats/mdpa.hpp and call read_mdpa directly.
+            property_sets.push_back(ps);
             if (pInfo)
                 pInfo->mProperties.push_back(std::move(ps));
-            else if (!ps.mValues.empty())
-                log::warn(
-                    "mdpa: dropping the body of Properties {} ({} entries): pass an MdpaInfo to "
-                    "read_mdpa to keep it",
-                    ps.mId, ps.mValues.size());
         } else if (mdpa_starts_with(line, "Begin NodalData")) {
             const std::vector<std::string> head = mdpa_tokens(line);
             if (head.size() < 3)
@@ -42896,6 +43373,11 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             mesh.AddRegion(Region(smp.first, RegionKind::Cell, std::move(e)));
         }
     }
+    // Properties last: they are keyed by id, so order relative to the cell
+    // blocks and regions above does not matter.
+    for (PropertySet& r_ps : property_sets)
+        mesh.AddPropertySet(std::move(r_ps));
+
     return mesh;
 }
 
@@ -43069,21 +43551,36 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     // `gmsh:physical` -- still emits exactly the old two lines.
     const bool has_props =
         rMesh.HasCellData("gmsh:physical") && rMesh.CellDataNumBlocks("gmsh:physical") == nblocks;
+    std::set<std::int64_t> referenced_ids;
+    if (has_props) {
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& tags = rMesh.CellData("gmsh:physical", b);
+            for (std::size_t r = 0; r < tags.Size(); ++r)
+                referenced_ids.insert(detail::read_int(tags, r));
+        }
+    }
     if (!rInfo.mProperties.empty()) {
+        // An explicit MdpaInfo wins, and keeps the caller's order verbatim --
+        // which is the one thing the mesh channel cannot do, since it
+        // canonicalizes to ascending id.
         for (const PropertySet& ps : rInfo.mProperties)
             mdpa_write_properties(os, ps);
-    } else {
-        std::set<std::int64_t> ids;
-        if (has_props) {
-            for (std::size_t b = 0; b < nblocks; ++b) {
-                const NDArray& tags = rMesh.CellData("gmsh:physical", b);
-                for (std::size_t r = 0; r < tags.Size(); ++r)
-                    ids.insert(detail::read_int(tags, r));
-            }
+    } else if (rMesh.NumPropertySets() > 0) {
+        // Bodies carried on the mesh (v9.2.0): what read_mdpa now stores, so a
+        // registry-driven mdpa -> mdpa round trip keeps its material data
+        // instead of emitting empty blocks.
+        for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i) {
+            mdpa_write_properties(os, rMesh.GetPropertySet(i));
+            referenced_ids.erase(rMesh.GetPropertySet(i).mId);
         }
-        if (ids.empty())
-            ids.insert(0);
-        for (std::int64_t id : ids)
+        // Any id the rows reference but no set covers still has to be declared:
+        // Kratos's own ModelPartIO rejects a row naming an undeclared id.
+        for (std::int64_t id : referenced_ids)
+            os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    } else {
+        if (referenced_ids.empty())
+            referenced_ids.insert(0);
+        for (std::int64_t id : referenced_ids)
             os << "Begin Properties " << id << "\nEnd Properties\n\n";
     }
 
@@ -53246,6 +53743,8 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 
 // External includes
 
+// Project includes (private, not installed)
+
 // Project includes
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -53254,6 +53753,17 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 namespace fs = std::filesystem;
 
 namespace meshioplusplus {
+
+// The document-structure helpers live in the private `formats/xdmf_doc.hpp` so
+// the transient writer's append path resolves a document exactly the way this
+// reader does. They were local to this file through v9.1.0, which is how the
+// writer came to carry a weaker transcription. Pulled in by name rather than
+// qualified at each of the five call sites, so those stay byte-identical.
+using xdmfdetail::xdmf_resolve;
+using xdmfdetail::XdmfDoc;
+// The reader has always spelled this one `parse_dims`; keep that at the call
+// sites rather than churn them.
+constexpr auto& parse_dims = xdmfdetail::xdmf_parse_dims;
 
 namespace {
 
@@ -53302,15 +53812,6 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
                : p == 4 ? DType::UInt32
                         : DType::UInt64;
     return p == 4 ? DType::Float32 : DType::Float64;
-}
-
-std::vector<std::size_t> parse_dims(const std::string& rS) {
-    std::vector<std::size_t> dims;
-    std::istringstream iss(rS);
-    std::int64_t v;
-    while (iss >> v)
-        dims.push_back(static_cast<std::size_t>(v));
-    return dims;
 }
 
 void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
@@ -53459,79 +53960,6 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         rMesh.AddCellBlock(xdmf_idx_to_meshio(xt), std::move(data));
         start = end;
     }
-}
-
-/**
- * @brief What a parsed XDMF document holds: the grid carrying the geometry, and
- * the steps of a temporal collection if it has one.
- *
- * `mSteps` empty means "a plain single-grid file", which is the historical case
- * and takes the historical code path unchanged.
- */
-struct XdmfDoc {
-    pugi::xml_node mMeshGrid;            ///< Grid holding `<Topology>`/`<Geometry>`.
-    std::vector<pugi::xml_node> mSteps;  ///< Temporal-collection children, in file order.
-};
-
-/**
- * @brief Validate the document and locate its mesh grid (and time steps).
- *
- * Shared by the mesh and metadata readers so a summary can never accept a file
- * `read_xdmf` would reject. A temporal collection (`GridType="Collection"
- * CollectionType="Temporal"`, what `XdmfTimeSeriesWriter` emits) stores the
- * static geometry once in a sibling `Uniform` grid and one `<Grid>` per step
- * inside the collection; the step grids reference the geometry through an
- * `xi:include` this reader ignores, resolving it structurally instead -- the
- * same thing the Python `TimeSeriesReader` does, and for the same reason: a
- * generic XInclude pass would have to implement XPointer.
- */
-XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("Xdmf");
-    if (!root)
-        throw ReadError("XDMF: missing <Xdmf> root");
-    std::string version = root.attribute("Version").value();
-    if (!version.empty() && version[0] != '3')
-        throw ReadError("XDMF: only version 3 handled by the C++ core");
-
-    pugi::xml_node domain = root.child("Domain");
-    pugi::xml_node first, uniform, collection;
-    for (pugi::xml_node g : domain.children("Grid")) {
-        if (!first)
-            first = g;
-        const std::string gtype = g.attribute("GridType").value();
-        if (gtype == "Collection" &&
-            std::string(g.attribute("CollectionType").value()) == "Temporal") {
-            if (!collection)
-                collection = g;
-        } else if (gtype == "Uniform" && !uniform) {
-            uniform = g;
-        }
-    }
-    if (!first)
-        throw ReadError("XDMF: missing <Grid>");
-
-    XdmfDoc out;
-    if (!collection) {
-        out.mMeshGrid = first;
-        return out;
-    }
-    for (pugi::xml_node s : collection.children("Grid"))
-        out.mSteps.push_back(s);
-    out.mMeshGrid = uniform;
-    if (!out.mMeshGrid) {
-        // No sibling mesh grid: take the first uniform grid inside the
-        // collection, which is where a writer that repeats the geometry per
-        // step puts it.
-        for (pugi::xml_node s : out.mSteps) {
-            if (std::string(s.attribute("GridType").value()) == "Uniform") {
-                out.mMeshGrid = s;
-                break;
-            }
-        }
-    }
-    if (!out.mMeshGrid)
-        throw ReadError("XDMF: temporal collection carries no mesh grid");
-    return out;
 }
 
 /** @brief Read a grid's `<Topology>`/`<Geometry>` into @p rMesh, ignoring the rest. */
@@ -53849,6 +54277,8 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
 // External includes
 
+// Project includes (private, not installed)
+
 // Project includes
 
 namespace meshioplusplus {
@@ -53914,8 +54344,12 @@ struct XdmfTimeSeriesWriter::Impl {
     pugi::xml_node mCollection;
     std::unique_ptr<xdmfcommon::DataItemStore> mStore;
     std::size_t mNumSteps = 0;
-    std::size_t mNumPoints = 0;  // from WritePointsCells, for array validation
+    // From WritePointsCells, or recovered from the document on the append path;
+    // used to validate the NamedArray overload's lengths. mCountsKnown is what
+    // distinguishes "the mesh has zero points" from "we could not find out".
+    std::size_t mNumPoints = 0;
     std::size_t mNumCells = 0;
+    bool mCountsKnown = false;
     bool mHasMesh = false;
     bool mFinalized = false;
     bool mAutoFlush = false;
@@ -53982,30 +54416,45 @@ XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::
     if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
         if (!mImpl->mDoc.load_file(rPath.c_str()))
             throw WriteError("XDMF time series: could not parse '" + rPath + "' to append to it");
-        // Resolve structurally, the way read_xdmf's xdmf_resolve does -- an
-        // xpointer is never followed, and the collection is the first temporal
-        // one under <Domain>.
-        pugi::xml_node domain = mImpl->mDoc.child("Xdmf").child("Domain");
-        for (pugi::xml_node g = domain.child("Grid"); g; g = g.next_sibling("Grid")) {
-            const std::string gt = g.attribute("GridType").as_string();
-            const std::string ct = g.attribute("CollectionType").as_string();
-            if (gt == "Collection" && ct == "Temporal") {
-                mImpl->mCollection = g;
-                break;
-            }
-            if (gt == "Uniform" && std::string(g.attribute("Name").as_string()) == xts_mesh_name)
-                mImpl->mHasMesh = true;
+        // Resolve through the SAME helper read_xdmf uses, so an append can never
+        // disagree with a read about which grid is the mesh. This file carried
+        // its own weaker transcription through v9.1.0, which skipped the
+        // version check and recognised a static grid only when it was literally
+        // named "mesh" -- so appending to another producer's series quietly
+        // added a second static grid.
+        xdmfdetail::XdmfDoc parsed;
+        try {
+            parsed = xdmfdetail::xdmf_resolve(mImpl->mDoc);
+        } catch (const ReadError& e) {
+            throw WriteError("XDMF time series: cannot append to '" + rPath + "': " + e.what());
         }
-        if (!mImpl->mCollection)
+        if (!parsed.mCollection)
             throw WriteError("XDMF time series: '" + rPath +
                              "' carries no temporal collection to append to");
-        for (pugi::xml_node g = mImpl->mCollection.child("Grid"); g; g = g.next_sibling("Grid"))
-            ++mImpl->mNumSteps;
-        // A second pass for the mesh grid: it may sit after the collection.
-        if (!mImpl->mHasMesh)
-            for (pugi::xml_node g = domain.child("Grid"); g; g = g.next_sibling("Grid"))
-                if (std::string(g.attribute("Name").as_string()) == xts_mesh_name)
-                    mImpl->mHasMesh = true;
+        mImpl->mCollection = parsed.mCollection;
+        mImpl->mNumSteps = parsed.mSteps.size();
+        mImpl->mHasMesh = static_cast<bool>(parsed.mMeshGrid);
+
+        // Recover the counts the NamedArray overload validates against. They
+        // are declared in the document -- <Topology NumberOfElements> and the
+        // geometry <DataItem>'s Dimensions -- so this costs attribute lookups
+        // and never opens the heavy-data container. Without this the counts
+        // stayed 0 and that overload rejected every array on an appended
+        // series, which is the v9.1.0 bug this fixes; WritePointsCells cannot
+        // repair it, since appending sets mHasMesh and it refuses a second call.
+        if (parsed.mMeshGrid) {
+            const xdmfdetail::XdmfGridCounts counts =
+                xdmfdetail::xdmf_grid_counts(parsed.mMeshGrid);
+            mImpl->mNumPoints = counts.mNumPoints;
+            mImpl->mNumCells = counts.mNumCells;
+            mImpl->mCountsKnown = counts.mPointsKnown && counts.mCellsKnown;
+            if (!mImpl->mCountsKnown)
+                log::warn(
+                    "XDMF time series: could not recover the point/cell counts from '{}'; "
+                    "array-length validation is skipped for this series",
+                    rPath);
+        }
+
         // Resume the heavy-data naming past whatever the earlier run wrote. A
         // mis-resumed counter would silently overwrite data0 rather than fail.
         mImpl->mStore->OpenExisting();
@@ -54059,6 +54508,10 @@ XdmfTimeSeriesWriter& XdmfTimeSeriesWriter::operator=(XdmfTimeSeriesWriter&& rOt
 }
 
 void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (mImpl->mHasMesh)
@@ -54082,6 +54535,7 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
     mImpl->mNumCells = 0;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
         mImpl->mNumCells += rMesh.Cells(b).NumCells();
+    mImpl->mCountsKnown = true;
 
     // Topology (single-type, or one packed Mixed array)
     if (rMesh.NumCellBlocks() == 1) {
@@ -54105,6 +54559,10 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (!mImpl->mHasMesh)
@@ -54132,6 +54590,10 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
                                      const std::vector<NamedArray>& rCellData) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (!mImpl->mHasMesh)
@@ -54143,17 +54605,29 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>&
                           const char* p_center, const char* p_what) {
         for (const NamedArray& r_a : rArrays) {
             const std::size_t nc = r_a.mNumComponents ? r_a.mNumComponents : 1;
-            const std::size_t want = entities * nc;
-            if (r_a.mValues.size() != want)
-                throw WriteError("XDMF time series: " + std::string(p_what) + " array '" +
-                                 r_a.mName + "' holds " + std::to_string(r_a.mValues.size()) +
-                                 " values, expected " + std::to_string(want) + " (" +
-                                 std::to_string(entities) + " x " + std::to_string(nc) + ")");
+            // `rows` is `entities` in every normal case. It differs only when
+            // appending to a document whose counts could not be recovered (a
+            // foreign producer with no Dimensions/NumberOfElements to read),
+            // where deriving the row count from the array is the honest answer:
+            // the <DataItem> carries its own Dimensions, so the output stays
+            // structurally valid and only the helpfulness check is lost -- and
+            // that case already warned once, at construction.
+            std::size_t rows = entities;
+            if (mImpl->mCountsKnown) {
+                const std::size_t want = entities * nc;
+                if (r_a.mValues.size() != want)
+                    throw WriteError("XDMF time series: " + std::string(p_what) + " array '" +
+                                     r_a.mName + "' holds " + std::to_string(r_a.mValues.size()) +
+                                     " values, expected " + std::to_string(want) + " (" +
+                                     std::to_string(entities) + " x " + std::to_string(nc) + ")");
+            } else {
+                rows = r_a.mValues.size() / nc;
+            }
             std::vector<std::size_t> shape;
             if (nc == 1)
-                shape = {entities};
+                shape = {rows};
             else
-                shape = {entities, nc};
+                shape = {rows, nc};
             NDArray arr = NDArray::Uninit(DType::Float64, shape);
             if (!r_a.mValues.empty())
                 std::memcpy(arr.Data(), r_a.mValues.data(), r_a.mValues.size() * sizeof(double));
@@ -54171,7 +54645,7 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>&
 }
 
 void XdmfTimeSeriesWriter::Flush() {
-    if (mImpl->mFinalized)
+    if (!mImpl || mImpl->mFinalized)
         return;
     // Heavy data first: the .xdmf must never name a dataset that is not on disk.
     mImpl->mStore->Flush();
@@ -54179,6 +54653,8 @@ void XdmfTimeSeriesWriter::Flush() {
 }
 
 void XdmfTimeSeriesWriter::SetAutoFlush(bool Enable) {
+    if (!mImpl)
+        return;
     mImpl->mAutoFlush = Enable;
 }
 
@@ -54187,7 +54663,7 @@ bool XdmfTimeSeriesWriter::AutoFlush() const {
 }
 
 void XdmfTimeSeriesWriter::Finalize() {
-    if (mImpl->mFinalized)
+    if (!mImpl || mImpl->mFinalized)
         return;
     // Set first: a failed save must not be retried by the destructor, which
     // could not report the second failure either.
@@ -61921,6 +62397,11 @@ Mesh quality_clone_mesh(const Mesh& rMesh) {
     // cell_data and renumbers nothing.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
     return out;
 }
 
@@ -63977,6 +64458,11 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     // so no point, cell or facet is renumbered.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
 
     return result;
 }
@@ -65274,6 +65760,11 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
     // same entity.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
 
     return out;
 }

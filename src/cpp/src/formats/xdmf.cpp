@@ -28,6 +28,9 @@
 // External includes
 #include "pugixml.hpp"
 
+// Project includes (private, not installed)
+#include "xdmf_doc.hpp"
+
 // Project includes
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -41,6 +44,17 @@
 namespace fs = std::filesystem;
 
 namespace meshioplusplus {
+
+// The document-structure helpers live in the private `formats/xdmf_doc.hpp` so
+// the transient writer's append path resolves a document exactly the way this
+// reader does. They were local to this file through v9.1.0, which is how the
+// writer came to carry a weaker transcription. Pulled in by name rather than
+// qualified at each of the five call sites, so those stay byte-identical.
+using xdmfdetail::xdmf_resolve;
+using xdmfdetail::XdmfDoc;
+// The reader has always spelled this one `parse_dims`; keep that at the call
+// sites rather than churn them.
+constexpr auto& parse_dims = xdmfdetail::xdmf_parse_dims;
 
 namespace {
 
@@ -89,15 +103,6 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
                : p == 4 ? DType::UInt32
                         : DType::UInt64;
     return p == 4 ? DType::Float32 : DType::Float64;
-}
-
-std::vector<std::size_t> parse_dims(const std::string& rS) {
-    std::vector<std::size_t> dims;
-    std::istringstream iss(rS);
-    std::int64_t v;
-    while (iss >> v)
-        dims.push_back(static_cast<std::size_t>(v));
-    return dims;
 }
 
 void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
@@ -246,79 +251,6 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         rMesh.AddCellBlock(xdmf_idx_to_meshio(xt), std::move(data));
         start = end;
     }
-}
-
-/**
- * @brief What a parsed XDMF document holds: the grid carrying the geometry, and
- * the steps of a temporal collection if it has one.
- *
- * `mSteps` empty means "a plain single-grid file", which is the historical case
- * and takes the historical code path unchanged.
- */
-struct XdmfDoc {
-    pugi::xml_node mMeshGrid;            ///< Grid holding `<Topology>`/`<Geometry>`.
-    std::vector<pugi::xml_node> mSteps;  ///< Temporal-collection children, in file order.
-};
-
-/**
- * @brief Validate the document and locate its mesh grid (and time steps).
- *
- * Shared by the mesh and metadata readers so a summary can never accept a file
- * `read_xdmf` would reject. A temporal collection (`GridType="Collection"
- * CollectionType="Temporal"`, what `XdmfTimeSeriesWriter` emits) stores the
- * static geometry once in a sibling `Uniform` grid and one `<Grid>` per step
- * inside the collection; the step grids reference the geometry through an
- * `xi:include` this reader ignores, resolving it structurally instead -- the
- * same thing the Python `TimeSeriesReader` does, and for the same reason: a
- * generic XInclude pass would have to implement XPointer.
- */
-XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("Xdmf");
-    if (!root)
-        throw ReadError("XDMF: missing <Xdmf> root");
-    std::string version = root.attribute("Version").value();
-    if (!version.empty() && version[0] != '3')
-        throw ReadError("XDMF: only version 3 handled by the C++ core");
-
-    pugi::xml_node domain = root.child("Domain");
-    pugi::xml_node first, uniform, collection;
-    for (pugi::xml_node g : domain.children("Grid")) {
-        if (!first)
-            first = g;
-        const std::string gtype = g.attribute("GridType").value();
-        if (gtype == "Collection" &&
-            std::string(g.attribute("CollectionType").value()) == "Temporal") {
-            if (!collection)
-                collection = g;
-        } else if (gtype == "Uniform" && !uniform) {
-            uniform = g;
-        }
-    }
-    if (!first)
-        throw ReadError("XDMF: missing <Grid>");
-
-    XdmfDoc out;
-    if (!collection) {
-        out.mMeshGrid = first;
-        return out;
-    }
-    for (pugi::xml_node s : collection.children("Grid"))
-        out.mSteps.push_back(s);
-    out.mMeshGrid = uniform;
-    if (!out.mMeshGrid) {
-        // No sibling mesh grid: take the first uniform grid inside the
-        // collection, which is where a writer that repeats the geometry per
-        // step puts it.
-        for (pugi::xml_node s : out.mSteps) {
-            if (std::string(s.attribute("GridType").value()) == "Uniform") {
-                out.mMeshGrid = s;
-                break;
-            }
-        }
-    }
-    if (!out.mMeshGrid)
-        throw ReadError("XDMF: temporal collection carries no mesh grid");
-    return out;
 }
 
 /** @brief Read a grid's `<Topology>`/`<Geometry>` into @p rMesh, ignoring the rest. */

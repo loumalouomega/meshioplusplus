@@ -16,7 +16,24 @@ project(meshioplusplus_consumer_smoketest LANGUAGES CXX C)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX C)
+# doc/cpp_api.md pins COMPONENTS CXX with an EXACT version, and CMake's
+# SameMajorVersion EXACT mode is a full-STRING compare -- "9.2" never matches
+# "9.2.0", so the documented line has to spell all three components. Through
+# v9.1.0 the docs printed the two-component form, which could never succeed and
+# which nothing here exercised. CI now passes the real version (from
+# `pkg-config --modversion` against the install itself, so nothing is hard-coded
+# and nothing needs bumping at release time) to make that line a gate.
+# Empty -- the default -- keeps the historical unversioned call, so every
+# existing invocation is unchanged.
+set(MESHIOPLUSPLUS_CONSUMER_EXACT_VERSION "" CACHE STRING
+    "Request this exact version from find_package (empty: no version request)")
+
+if(MESHIOPLUSPLUS_CONSUMER_EXACT_VERSION)
+  find_package(meshioplusplus ${MESHIOPLUSPLUS_CONSUMER_EXACT_VERSION} EXACT
+               CONFIG REQUIRED COMPONENTS CXX C)
+else()
+  find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX C)
+endif()
 
 set(MESHIOPLUSPLUS_CONSUMER_BACKEND "" CACHE STRING
     "Backend variant to link: meshio, native, kratos, or empty for meshioplusplus::core")

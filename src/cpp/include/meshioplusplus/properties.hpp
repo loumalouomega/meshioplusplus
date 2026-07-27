@@ -37,11 +37,14 @@
  * "apply property" callback in `kratos_bridge.hpp`, which is how a real Kratos
  * consumer turns these key/value pairs into typed variables.
  *
- * @note The C++ `Mesh` cannot carry this: `NDArray` has ten numeric dtypes and
- *       no string or bytes dtype, so a `CONSTITUTIVE_LAW LinearElastic3DLaw`
- *       line has no `field_data` representation at all. That is precisely why
- *       properties travel in a side-channel struct (the `MedInfo`/`ExodusInfo`
- *       pattern) rather than on the mesh.
+ * @note These do not go through `field_data`: `NDArray` has ten numeric dtypes
+ *       and no string or bytes dtype, so a `CONSTITUTIVE_LAW LinearElastic3DLaw`
+ *       line has no representation there at all. Since v9.2.0 the `Mesh` carries
+ *       them **as themselves** instead, through the uniform API's
+ *       `AddPropertySet`/`GetPropertySet` (see `mesh_api.hpp`) -- a
+ *       `PropertySet` is an ordinary struct with `std::string` members, so
+ *       storing it needs no dtype. Before that they could only ride the
+ *       `MdpaInfo` side channel, which no registry-based consumer could reach.
  */
 
 // System includes
@@ -91,4 +94,67 @@ struct PropertySet {
     std::vector<PropertyValue> mValues;
 };
 
+namespace detail {
+
+/**
+ * @brief Every properties block of a mesh, kept ascending by `mId`.
+ *
+ * The structural twin of `detail::RegionList`, and for the same reason: the
+ * three mesh backends each hold one of these, so a shared container is what
+ * stops them drifting on ordering or on the replace-by-key rule.
+ *
+ * Unlike regions, property sets are keyed by **id, not by entity index**, so
+ * nothing here ever needs remapping when an operation renumbers cells or
+ * points -- there is no `detail/region_remap.hpp` counterpart to look for.
+ */
+class PropertySetList {
+public:
+    /**
+     * @brief Insert a set, or replace the one with the same `mId`.
+     * @param propertySet The set to store.
+     */
+    void Add(PropertySet propertySet) {
+        auto it = std::lower_bound(
+            mSets.begin(), mSets.end(), propertySet.mId,
+            [](const PropertySet& rLhs, std::int64_t id) { return rLhs.mId < id; });
+        if (it != mSets.end() && it->mId == propertySet.mId)
+            *it = std::move(propertySet);
+        else
+            mSets.insert(it, std::move(propertySet));
+    }
+
+    /** @brief Number of stored property sets. */
+    std::size_t Size() const { return mSets.size(); }
+    /** @brief Set @p Index, in ascending-`mId` order. */
+    const PropertySet& At(std::size_t Index) const { return mSets[Index]; }
+    /** @brief The whole list, for backends that forward it wholesale. */
+    const std::vector<PropertySet>& All() const { return mSets; }
+    /** @brief Drop every stored set. */
+    void Clear() { mSets.clear(); }
+
+    /** @brief Whether a set with this id exists. */
+    bool Has(std::int64_t Id) const { return Find(Id) != npos; }
+
+    /**
+     * @brief Index of the set with this id.
+     * @param Id The properties id to look for.
+     * @return The index, or `npos` when absent.
+     */
+    std::size_t Find(std::int64_t Id) const {
+        auto it = std::lower_bound(
+            mSets.begin(), mSets.end(), Id,
+            [](const PropertySet& rLhs, std::int64_t id) { return rLhs.mId < id; });
+        if (it == mSets.end() || it->mId != Id)
+            return npos;
+        return static_cast<std::size_t>(it - mSets.begin());
+    }
+
+    /// Sentinel returned by `Find` when no set matches.
+    static constexpr std::size_t npos = static_cast<std::size_t>(-1);
+
+private:
+    std::vector<PropertySet> mSets;  // kept sorted by mId
+};
+
+}  // namespace detail
 }  // namespace meshioplusplus

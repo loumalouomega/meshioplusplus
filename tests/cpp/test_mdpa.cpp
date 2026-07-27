@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -669,4 +670,113 @@ TEST(Mdpa, UntaggedMeshStillEmitsExactlyPropertiesZero) {
     EXPECT_EQ(text.find("Begin Properties 1"), std::string::npos);
     std::error_code ec;
     std::filesystem::remove(path, ec);
+}
+
+// --- v9.2.0: Properties bodies ride on the Mesh ----------------------------
+//
+// Through v9.1.0 they rode the MdpaInfo side channel only, which nothing
+// reachable from registry_readers() could ask for -- so a registry-based
+// consumer (i.e. every one that does not link formats/mdpa.hpp directly) got
+// the ids and no material data, and a write emitted empty blocks.
+
+TEST(Mdpa, PropertiesReachTheMeshWithoutAnMdpaInfo) {
+    const std::string path = mt::temp_path(".mdpa");
+    {
+        std::ofstream f(path);
+        f << "Begin Properties 1\n"
+             "  DENSITY 7850.0\n"
+             "  CONSTITUTIVE_LAW LinearElastic3DLaw\n"
+             "End Properties\n\n"
+             "Begin Properties 2\n"
+             "  DENSITY 2700.0\n"
+             "End Properties\n\n"
+             "Begin Nodes\n  1 0.0 0.0 0.0\n  2 1.0 0.0 0.0\n  3 0.0 1.0 0.0\n"
+             "End Nodes\n\n"
+             "Begin Elements Element2D3N\n  1 1 1 2 3\nEnd Elements\n";
+    }
+    // The plain overload -- exactly what registry_readers() calls.
+    const Mesh m = meshioplusplus::read_mdpa(path);
+    ASSERT_EQ(m.NumPropertySets(), 2u);
+    EXPECT_EQ(m.GetPropertySet(0).mId, 1);
+    EXPECT_EQ(m.GetPropertySet(1).mId, 2);
+    ASSERT_EQ(m.GetPropertySet(0).mValues.size(), 2u);
+    EXPECT_EQ(m.GetPropertySet(0).mValues[0].mKey, "DENSITY");
+    EXPECT_DOUBLE_EQ(m.GetPropertySet(0).mValues[0].mValues.As<double>()[0], 7850.0);
+    EXPECT_EQ(m.GetPropertySet(0).mValues[1].mKey, "CONSTITUTIVE_LAW");
+    EXPECT_EQ(m.GetPropertySet(0).mValues[1].mText, "LinearElastic3DLaw");
+    std::remove(path.c_str());
+}
+
+TEST(Mdpa, PropertiesRoundTripThroughTheMeshAlone) {
+    const std::string path = mt::temp_path(".mdpa");
+    {
+        std::ofstream f(path);
+        f << "Begin Properties 1\n  DENSITY 7850.0\n  CONSTITUTIVE_LAW LinearElastic3DLaw\n"
+             "End Properties\n\n"
+             "Begin Nodes\n  1 0.0 0.0 0.0\n  2 1.0 0.0 0.0\n  3 0.0 1.0 0.0\n"
+             "End Nodes\n\n"
+             "Begin Elements Element2D3N\n  1 1 1 2 3\nEnd Elements\n";
+    }
+    const Mesh m = meshioplusplus::read_mdpa(path);
+    const std::string out = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out, m);  // no MdpaInfo anywhere
+    const Mesh back = meshioplusplus::read_mdpa(out);
+
+    ASSERT_EQ(back.NumPropertySets(), 1u);
+    ASSERT_EQ(back.GetPropertySet(0).mValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(back.GetPropertySet(0).mValues[0].mValues.As<double>()[0], 7850.0);
+    EXPECT_EQ(back.GetPropertySet(0).mValues[1].mText, "LinearElastic3DLaw");
+    std::remove(path.c_str());
+    std::remove(out.c_str());
+}
+
+TEST(Mdpa, AMeshWithNoPropertySetsWritesExactlyTheOldBytes) {
+    // The byte-identity guard for the new writer branch: a mesh carrying
+    // gmsh:physical but no property sets must emit what it always did.
+    Mesh m = mt::tri_mesh();
+    std::vector<NDArray> tags;
+    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+        NDArray a(meshioplusplus::DType::Int64, {m.Cells(b).NumCells()});
+        for (std::size_t c = 0; c < a.Size(); ++c)
+            a.As<std::int64_t>()[c] = 0;
+        tags.push_back(std::move(a));
+    }
+    m.AddCellData("gmsh:physical", std::move(tags));
+    ASSERT_EQ(m.NumPropertySets(), 0u);
+
+    const std::string out = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out, m);
+    std::ifstream in(out);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("Begin Properties 0\nEnd Properties\n"), std::string::npos);
+    EXPECT_EQ(text.find("Begin Properties 1"), std::string::npos);
+    std::remove(out.c_str());
+}
+
+TEST(Mdpa, AnExplicitMdpaInfoStillWinsOverTheMeshChannel) {
+    // MdpaInfo keeps its v9.1.0 meaning: it preserves FILE order, which the
+    // mesh channel deliberately does not (it canonicalizes to ascending id).
+    const std::string path = mt::temp_path(".mdpa");
+    {
+        std::ofstream f(path);
+        f << "Begin Properties 2\n  DENSITY 2700.0\nEnd Properties\n\n"
+             "Begin Properties 1\n  DENSITY 7850.0\nEnd Properties\n\n"
+             "Begin Nodes\n  1 0.0 0.0 0.0\n  2 1.0 0.0 0.0\n  3 0.0 1.0 0.0\n"
+             "End Nodes\n\n"
+             "Begin Elements Element2D3N\n  1 1 1 2 3\nEnd Elements\n";
+    }
+    meshioplusplus::MdpaInfo info;
+    const Mesh m = meshioplusplus::read_mdpa(path, info);
+    // The mesh sorted them; the info kept the file's order.
+    EXPECT_EQ(m.GetPropertySet(0).mId, 1);
+    ASSERT_EQ(info.mProperties.size(), 2u);
+    EXPECT_EQ(info.mProperties[0].mId, 2);
+
+    const std::string out = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out, m, info);
+    std::ifstream in(out);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_LT(text.find("Begin Properties 2"), text.find("Begin Properties 1"));
+    std::remove(path.c_str());
+    std::remove(out.c_str());
 }

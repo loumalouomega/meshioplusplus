@@ -91,6 +91,27 @@ mesh backends. `Finalize()` is idempotent and is called by the destructor; an
 explicit call exists so a write failure surfaces as an exception rather than
 being swallowed during unwinding.
 
+::: warning Deleting the output
+Because the destructor writes the `.xdmf`, removing that file while the writer is
+still alive **recreates it**:
+
+```cpp
+{
+    XdmfTimeSeriesWriter w(path, "XML");
+    w.WritePointsCells(m);
+    w.WriteData(0.0, {u});
+    std::filesystem::remove(path);   // "clean up"
+}   // <-- the destructor finalizes here, recreating path
+```
+
+The second half is what makes this bite: with `XdmfSeriesMode::Append` the *next*
+run continues a series you believed deleted, so the symptom appears one run later
+as a wrong step count rather than at the delete. Destroy the writer before
+removing its output — end the scope, or call `Finalize()` explicitly and delete
+afterwards. This matters most in a test suite that writes, asserts and cleans up
+inside a single scope.
+:::
+
 Two differences from the Python writer, both deliberate:
 
 - the `"HDF"` companion is a **sibling of the `.xdmf`** (`<path minus
@@ -341,6 +362,23 @@ The heavy-data counter resumes past what is already on disk by **scanning the
 container** — the `.h5` root group, or probing `<base>N.bin` — rather than
 trusting the document, because a mis-resumed counter would silently overwrite
 `data0` instead of failing.
+
+The point and cell counts are recovered from the document too, out of
+`<Topology NumberOfElements>` and the geometry `<DataItem>`'s `Dimensions`, so an
+appended series validates the [`NamedArray` overload](#writing-a-step-from-solver-arrays)
+exactly as a fresh one does. **In v9.1.0 it did not**: the counts stayed at 0 and
+that overload rejected every array with `expected 0 (0 x 1)`, so a resumed solver
+had to fall back to passing a whole `Mesh` per step. If a foreign document
+declares neither, meshio++ warns once and skips the length check rather than
+failing — the `<DataItem>` carries its own `Dimensions`, so the output is still
+valid.
+
+The collection and the static grid are located **structurally**, by the same
+resolver `read_xdmf` uses: the first `GridType="Collection" CollectionType="Temporal"`
+under `<Domain>`, and any `GridType="Uniform"` sibling. A grid named something
+other than `mesh` is therefore recognized (v9.1.0 matched the literal name and
+would append a second static grid), and a non-version-3 document is rejected
+rather than silently continued.
 
 ## Writing a step from solver arrays
 

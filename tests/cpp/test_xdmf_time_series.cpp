@@ -21,7 +21,10 @@
 // System includes
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 #ifndef _WIN32
 #include <sys/wait.h>
@@ -461,5 +464,193 @@ TEST(XdmfTimeSeries, NamedArrayOverloadRejectsAMisSizedArray) {
         bad.mValues.assign(7, 0.0);  // not NumPoints * 3
         EXPECT_THROW(w.WriteData(0.0, {bad}), meshioplusplus::WriteError);
     }
+    xts_cleanup(path);
+}
+
+// --- v9.2.0: Append + the NamedArray overload ------------------------------
+//
+// Through v9.1.0 these two features -- added in the same release, for the same
+// restartable-solver consumer -- did not work together. Impl::mNumPoints /
+// mNumCells were set only by WritePointsCells, which an appending writer cannot
+// call (mHasMesh is already set, so it throws "called more than once"), so the
+// NamedArray overload validated every array against 0 and rejected all of them
+// with "expected 0 (0 x 1)". Nothing combined the two, which is why it shipped.
+
+TEST(XdmfTimeSeries, AppendThenNamedArrayWriteData) {
+    const std::string path = mt::temp_path(".xdmf");
+    const Mesh base = mt::tri_mesh();
+    const std::size_t np = base.NumPoints();
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+        w.WritePointsCells(base);
+        meshioplusplus::XdmfTimeSeriesWriter::NamedArray u;
+        u.mName = "u";
+        u.mNumComponents = 1;
+        u.mValues.assign(np, 1.5);
+        w.WriteData(0.0, {u});
+        w.Finalize();
+    }
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML", -1,
+                                               meshioplusplus::XdmfSeriesMode::Append);
+        ASSERT_EQ(w.NumSteps(), 1u);
+        meshioplusplus::XdmfTimeSeriesWriter::NamedArray u;
+        u.mName = "u";
+        u.mNumComponents = 1;
+        u.mValues.assign(np, 2.5);
+        // The regression: this threw before the counts were recovered.
+        w.WriteData(1.0, {u});
+        w.Finalize();
+        EXPECT_EQ(w.NumSteps(), 2u);
+    }
+    const meshioplusplus::MeshMetadata meta = meshioplusplus::read_xdmf_metadata(path);
+    ASSERT_EQ(meta.mTimeValues.size(), 2u);
+    meshioplusplus::ReadOptions opts;
+    opts.mTimeStep = 1;
+    const Mesh back = meshioplusplus::read_xdmf(path, opts);
+    ASSERT_TRUE(back.HasPointData("u"));
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(back.PointData("u"), 0), 2.5);
+    xts_cleanup(path);
+}
+
+TEST(XdmfTimeSeries, AppendRejectsAMisSizedNamedArrayJustLikeAFreshSeries) {
+    // The recovered counts must actually be USED, not merely be non-zero:
+    // deriving rows from the array would make this write happily.
+    const std::string path = mt::temp_path(".xdmf");
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+        w.WritePointsCells(mt::tri_mesh());
+        w.WriteData(0.0, xts_step_mesh(mt::tri_mesh(), 0));
+        w.Finalize();
+    }
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML", -1,
+                                               meshioplusplus::XdmfSeriesMode::Append);
+        meshioplusplus::XdmfTimeSeriesWriter::NamedArray bad;
+        bad.mName = "u";
+        bad.mNumComponents = 3;
+        bad.mValues.assign(7, 0.0);  // not NumPoints * 3
+        EXPECT_THROW(w.WriteData(1.0, {bad}), meshioplusplus::WriteError);
+    }
+    xts_cleanup(path);
+}
+
+TEST(XdmfTimeSeries, NamedArrayOverloadWritesCellArrays) {
+    // Cell arrays were untested in either mode; only the point half had cover.
+    const std::string path = mt::temp_path(".xdmf");
+    const Mesh base = mt::tri_mesh();
+    std::size_t ncells = 0;
+    for (std::size_t b = 0; b < base.NumCellBlocks(); ++b)
+        ncells += base.Cells(b).NumCells();
+    ASSERT_GT(ncells, 0u);
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+        w.WritePointsCells(base);
+        meshioplusplus::XdmfTimeSeriesWriter::NamedArray rho;
+        rho.mName = "rho";
+        rho.mNumComponents = 1;
+        rho.mValues.assign(ncells, 7.0);
+        w.WriteData(0.0, {}, {rho});
+        w.Finalize();
+    }
+    const Mesh back = meshioplusplus::read_xdmf(path);
+    ASSERT_TRUE(back.HasCellData("rho"));
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(back.CellData("rho", 0), 0), 7.0);
+    xts_cleanup(path);
+}
+
+TEST(XdmfTimeSeries, AppendToAMixedTopologySeriesRecoversTheCellCount) {
+    // A multi-block mesh writes TopologyType="Mixed", whose DataItem Dimensions
+    // is the flat packed length, NOT the cell count -- so the recovery has to
+    // read NumberOfElements. read_xdmf_metadata declines Mixed outright, which
+    // is exactly why xdmf_grid_counts exists rather than reusing it.
+    const std::string path = mt::temp_path(".xdmf");
+    const Mesh base = mt::tri_quad_mesh();
+    std::size_t ncells = 0;
+    for (std::size_t b = 0; b < base.NumCellBlocks(); ++b)
+        ncells += base.Cells(b).NumCells();
+    ASSERT_GT(base.NumCellBlocks(), 1u);
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+        w.WritePointsCells(base);
+        w.Finalize();
+    }
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML", -1,
+                                               meshioplusplus::XdmfSeriesMode::Append);
+        meshioplusplus::XdmfTimeSeriesWriter::NamedArray rho;
+        rho.mName = "rho";
+        rho.mNumComponents = 1;
+        rho.mValues.assign(ncells, 3.0);
+        w.WriteData(0.0, {}, {rho});  // correct length must pass...
+        meshioplusplus::XdmfTimeSeriesWriter::NamedArray bad = rho;
+        bad.mValues.assign(ncells + 1, 3.0);
+        EXPECT_THROW(w.WriteData(1.0, {}, {bad}), meshioplusplus::WriteError);  // ...wrong must not
+        w.Finalize();
+    }
+    xts_cleanup(path);
+}
+
+TEST(XdmfTimeSeries, AppendUsesTheSameStructuralResolutionAsTheReader) {
+    // The static grid is found by GridType="Uniform", not by Name=="mesh". The
+    // pre-9.2.0 transcription matched the literal name, so appending to another
+    // producer's series set mHasMesh=false and added a SECOND static grid.
+    const std::string path = mt::temp_path(".xdmf");
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+        w.WritePointsCells(mt::tri_mesh());
+        w.WriteData(0.0, xts_step_mesh(mt::tri_mesh(), 0));
+        w.Finalize();
+    }
+    // Rename the static grid, as a foreign producer would. Done as text: this
+    // test TU cannot include pugixml (a build-only vendored PRIVATE dependency).
+    {
+        std::ifstream in(path);
+        ASSERT_TRUE(in.good());
+        std::string xml((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        const std::string from = "Name=\"mesh\" GridType=\"Uniform\"";
+        const std::string to = "Name=\"not_called_mesh\" GridType=\"Uniform\"";
+        const std::size_t at = xml.find(from);
+        ASSERT_NE(at, std::string::npos);
+        // The step xpointers still say mesh, which is the point: this reader
+        // never follows them and resolves structurally instead.
+        xml.replace(at, from.size(), to);
+        std::ofstream out(path);
+        out << xml;
+    }
+    {
+        meshioplusplus::XdmfTimeSeriesWriter w(path, "XML", -1,
+                                               meshioplusplus::XdmfSeriesMode::Append);
+        EXPECT_EQ(w.NumSteps(), 1u);
+        // The mesh grid was found, so a second one must be refused.
+        EXPECT_THROW(w.WritePointsCells(mt::tri_mesh()), meshioplusplus::WriteError);
+    }
+    xts_cleanup(path);
+}
+
+TEST(XdmfTimeSeries, MovedFromWriterIsDiagnosableNotUndefined) {
+    const std::string path = mt::temp_path(".xdmf");
+    meshioplusplus::XdmfTimeSeriesWriter src(path, "XML");
+    src.WritePointsCells(mt::tri_mesh());
+    meshioplusplus::XdmfTimeSeriesWriter dst(std::move(src));
+
+    // Observers and idempotent operations answer as for a finished series.
+    EXPECT_EQ(src.NumSteps(), 0u);            // NOLINT(bugprone-use-after-move)
+    EXPECT_TRUE(src.Finalized());             // NOLINT(bugprone-use-after-move)
+    EXPECT_FALSE(src.AutoFlush());            // NOLINT(bugprone-use-after-move)
+    EXPECT_NO_THROW(src.SetAutoFlush(true));  // NOLINT(bugprone-use-after-move)
+    EXPECT_NO_THROW(src.Flush());             // NOLINT(bugprone-use-after-move)
+    EXPECT_NO_THROW(src.Finalize());          // NOLINT(bugprone-use-after-move)
+
+    // The three that cannot silently do nothing must say so.
+    meshioplusplus::XdmfTimeSeriesWriter::NamedArray u;
+    u.mName = "u";
+    u.mValues.assign(mt::tri_mesh().NumPoints(), 0.0);
+    EXPECT_THROW(src.WritePointsCells(mt::tri_mesh()), meshioplusplus::WriteError);
+    EXPECT_THROW(src.WriteData(0.0, mt::tri_mesh()), meshioplusplus::WriteError);
+    EXPECT_THROW(src.WriteData(0.0, {u}), meshioplusplus::WriteError);
+
+    dst.Finalize();
     xts_cleanup(path);
 }

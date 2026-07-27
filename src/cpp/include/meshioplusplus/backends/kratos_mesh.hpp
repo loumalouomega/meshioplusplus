@@ -168,6 +168,10 @@ public:
         ResetModelPartOnly();
         mStage.AddRegion(std::move(region));
     }
+    void AddPropertySet(PropertySet propertySet) {
+        ResetModelPartOnly();
+        mStage.AddPropertySet(std::move(propertySet));
+    }
 
     // --- uniform API: writer-side accessors (staging, stale-synced) --------
 
@@ -208,6 +212,13 @@ public:
 
     /// Sentinel returned by `FindRegion` when no region matches.
     static constexpr std::size_t npos = detail::RegionList::npos;
+
+    std::size_t NumPropertySets() const { return Stage().NumPropertySets(); }
+    const PropertySet& GetPropertySet(std::size_t Index) const {
+        return Stage().GetPropertySet(Index);
+    }
+    bool HasPropertySet(std::int64_t Id) const { return Stage().HasPropertySet(Id); }
+    std::size_t FindPropertySet(std::int64_t Id) const { return Stage().FindPropertySet(Id); }
 
     std::size_t NumRegions() const { return Stage().NumRegions(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return Stage().Region(i); }
@@ -269,12 +280,57 @@ public:
      */
     void SetBuildSubModelPartsFromTags(bool enable) {
         mTagsToSubModelParts = enable;
-        if (mMaterialized && !mStale) {
-            mMaterialized = false;  // re-materialize with the new setting
-            mpRoot.reset();
-        }
+        InvalidateMaterialization();  // re-materialize with the new setting
     }
     bool BuildSubModelPartsFromTags() const { return mTagsToSubModelParts; }
+
+    /**
+     * @brief Restrict the automatic tag pass to these `cell_data` keys.
+     *
+     * `SetBuildSubModelPartsFromTags` is all-or-nothing, which is too coarse
+     * when only one key is unwanted. The motivating case is `.mdpa`: a Kratos
+     * properties id is read as a `gmsh:physical` cell tag, so the tag pass
+     * synthesizes a `gmsh_physical_<id>` SubModelPart beside the file's real
+     * ones -- material assignment surfacing as a group. For a genuine gmsh file
+     * that same inference is wanted, so the key cannot simply be dropped from
+     * #KnownTagKeys; the consumer has to say which it means.
+     *
+     * @param keys The keys to consider. **Empty restores the default**, i.e.
+     *        every key in #KnownTagKeys.
+     */
+    void SetTagSubModelPartKeys(std::vector<std::string> keys) {
+        mTagKeys = std::move(keys);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief Exclude one key from the automatic tag pass. Repeatable, additive.
+     *
+     * Expresses "everything except this" without re-listing #KnownTagKeys,
+     * which an inclusion list alone would force -- and which would silently
+     * freeze the caller against any key added to that table later.
+     */
+    void ExcludeTagSubModelPartKey(const std::string& rKey) {
+        if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), rKey) ==
+            mExcludedTagKeys.end())
+            mExcludedTagKeys.push_back(rKey);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief The keys the tag pass will actually consider.
+     * @return The effective set, in #KnownTagKeys order.
+     */
+    std::vector<std::string> TagSubModelPartKeys() const {
+        const std::vector<std::string>& source = mTagKeys.empty() ? KnownTagKeys() : mTagKeys;
+        std::vector<std::string> out;
+        out.reserve(source.size());
+        for (const std::string& r_key : source)
+            if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), r_key) ==
+                mExcludedTagKeys.end())
+                out.push_back(r_key);
+        return out;
+    }
 
 private:
     /** @brief Per staged block: what it became in the ModelPart. */
@@ -379,6 +435,17 @@ private:
                 if (id >= 0)
                     r_mp.CreateNewProperties(static_cast<IndexType>(id));
 
+        // Real material values, where the mesh carries them. The loop above
+        // only creates the ids the entity rows reference, leaving every block
+        // empty; this fills them in. CreateNewProperties is find-or-create, so
+        // an id both passes see is filled in place rather than duplicated, and
+        // the creation order above is unchanged. This is what makes
+        // kratos_bridge's "apply property" to_model_part overload transfer
+        // anything at all -- it iterates rSource.Properties(), which held
+        // id-only sets before v9.2.0.
+        for (const PropertySet& r_set : mStage.PropertySets().All())
+            r_mp.CreateNewProperties(static_cast<IndexType>(r_set.mId)).mValues = r_set.mValues;
+
         IndexType next_elem = 1, next_cond = 1;
         std::size_t n_elem_rows = 0, n_cond_rows = 0;
         std::size_t block_index = 0;
@@ -449,7 +516,7 @@ private:
 
         // Integer tags -> SubModelParts (unless disabled).
         if (mTagsToSubModelParts)
-            for (const auto& r_key : KnownTagKeys())
+            for (const auto& r_key : TagSubModelPartKeys())
                 if (mStage.HasCellData(r_key) &&
                     mStage.CellDataNumBlocks(r_key) == mStage.NumCellBlocks())
                     BuildSubModelPartsFor(r_key);
@@ -772,6 +839,13 @@ private:
             fresh.AddFieldData(r_name, mStage.FieldData(r_name));
 
         RestoreRegions(r_mp, plan, fresh);
+        // The ModelPart is the authority after a direct mutation, so read the
+        // properties back from it rather than carrying the old stage's forward:
+        // a set the user deleted must not be resurrected. They are keyed by id,
+        // not by entity index, so unlike regions and cell_data slices there is
+        // nothing to remap.
+        for (const PropertySet& r_set : r_mp.Properties())
+            fresh.AddPropertySet(r_set);
 
         mRecords.clear();
         for (PendingBlock& r_pb : plan)
@@ -1019,6 +1093,9 @@ private:
     /// rebuild re-derives it from the ModelPart.
     mutable std::vector<std::string> mBlockEntityNames;
     bool mTagsToSubModelParts = true;
+    /// Empty = every KnownTagKeys() entry; see SetTagSubModelPartKeys.
+    std::vector<std::string> mTagKeys;
+    std::vector<std::string> mExcludedTagKeys;
 };
 
 }  // namespace meshioplusplus

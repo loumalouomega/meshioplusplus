@@ -211,6 +211,21 @@ int main() {
                     ++applied;
             });
         check(applied == 1, "the property applier is invoked once per value");
+
+        // v9.2.0: the same values now reach a Mesh through the ordinary read
+        // path, so a registry-based consumer no longer has to link
+        // formats/mdpa.hpp to get them.
+        meshioplusplus::Mesh pm = make_mesh();
+        meshioplusplus::PropertySet ps;
+        ps.mId = 3;
+        meshioplusplus::PropertyValue rho;
+        rho.mKey = "DENSITY";
+        rho.mValues = meshioplusplus::NDArray(meshioplusplus::DType::Float64, {1});
+        rho.mValues.As<double>()[0] = 7850.0;
+        ps.mValues.push_back(std::move(rho));
+        pm.AddPropertySet(std::move(ps));
+        check(pm.NumPropertySets() == 1, "the uniform API carries property sets");
+        check(pm.HasPropertySet(3), "a property set is found by its id");
         check(dest.GetElement(1).Name() == "SmallDisplacementElement3D4N",
               "to_model_part() preserves the entity name");
 
@@ -237,12 +252,32 @@ int main() {
             w.Finalize();
         }
         {
-            // ...and a restart continues that same collection.
+            // ...and a restart continues that same collection, writing further
+            // steps through the NamedArray fast path. That combination was
+            // broken through v9.1.0 -- the appending writer never recovered the
+            // point/cell counts, so it rejected every array with "expected 0
+            // (0 x 1)" and a restartable solver had to fall back to re-staging
+            // a whole Mesh per step. Checked here, against an INSTALLED shared
+            // library, because that is what a real consumer links.
             meshioplusplus::XdmfTimeSeriesWriter w(path, "XML", -1,
                                                    meshioplusplus::XdmfSeriesMode::Append);
             check(w.NumSteps() == 1, "Append mode counts the existing step");
+            meshioplusplus::XdmfTimeSeriesWriter::NamedArray u2;
+            u2.mName = "u";
+            u2.mNumComponents = 1;
+            u2.mValues.assign(make_mesh().NumPoints(), 2.5);
+            bool wrote = true;
+            try {
+                w.WriteData(1.0, {u2});
+            } catch (const std::exception&) {
+                wrote = false;
+            }
+            check(wrote, "Append + NamedArray WriteData (the v9.1.0 regression)");
+            check(w.NumSteps() == 2, "the appended step is counted");
             w.Finalize();
         }
+        // Delete only after the writer's scope has ended: the destructor
+        // finalizes, so removing the file while it is alive recreates it.
         std::error_code ec;
         std::filesystem::remove(path, ec);
     }

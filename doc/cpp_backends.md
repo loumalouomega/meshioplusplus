@@ -79,6 +79,18 @@ mp.GetSubModelPart("gmsh_physical_1");  // built from integer tag arrays
 
 - **Elements vs Conditions**: blocks whose topological dimension equals the mesh's maximum become Elements, lower-dimension blocks Conditions (the Kratos convention, matching the [mdpa](formats/mdpa.md) reader/writer), each kind Id-numbered 1..N in block order with default Kratos names (`Element3D4N`, `SurfaceCondition3D3N`, ... — `backends/kratos_names.hpp`).
 - **Tags → SubModelParts**: integer cell-data under well-known names (`gmsh:physical`, `su2:tag`, `medit:ref`, `cell_tags`, ...) automatically become SubModelParts named `<key>_<value>` containing the tagged entities and their nodes. Disable with `mesh.SetBuildSubModelPartsFromTags(false)` before the first `GetModelPart()` call. The tag arrays also stay as elemental/conditional data, so writer round-trips are byte-identical.
+
+  Since v9.2.0 the pass can also be narrowed **per key**, which matters for `.mdpa`: a Kratos properties id is read as a `gmsh:physical` cell tag, so a deck with one sub model part comes back with `gmsh_physical_0` beside it — material assignment surfacing as a group. For a genuine gmsh file that same inference is wanted, so the key stays in the table and the consumer says which meaning applies:
+
+  ```cpp
+  mesh.ExcludeTagSubModelPartKey("gmsh:physical");   // everything else still applies
+  mesh.SetTagSubModelPartKeys({"cell_tags"});        // ...or an explicit allow-list
+  mesh.TagSubModelPartKeys();                        // the effective set
+  ```
+
+  An empty allow-list restores the default. Both setters re-materialize, so they may be called after `GetModelPart()`.
+
+- **Property sets → `Properties`** (v9.2.0): `Begin Properties` bodies read from a `.mdpa` ride on the mesh (`AddPropertySet`/`GetPropertySet`) and materialize as `ModelPart::Properties` blocks with **real values**, not just ids — which is what makes `to_model_part`'s "apply property" overload transfer material data. They are keyed by id rather than by entity index, so no operation ever has to remap them; shape-preserving operations (`clean`, `smooth`, `transform`, `attach_quality`, the data ops) carry them through, while restructuring and multi-input ones (`merge`, `crop`, `split`, `partition`) do not.
 - **point/cell data** become simplified per-entity variables (`mp.GetNodalData("temperature")`, `mp.GetElementalData(...)`, `mp.GetNodalValue("temperature", nodeId)`).
 - **Lazy and write-transparent**: a plain read → write conversion never builds the ModelPart at all; writer accessors serve from the canonical staging storage, so output matches the NATIVE backend byte-for-byte.
 - **Mutation**: after changing the ModelPart directly (`CreateNewNode`, ...), call `mesh.InvalidateBlocks()`; the block view is then rebuilt from the ModelPart (consecutive same-type Elements group into blocks, then Conditions). Ragged pass-through blocks (polygon/polyhedron — Kratos has no such geometry) and SubModelPart structure are not representable back and are dropped by that rebuild.
