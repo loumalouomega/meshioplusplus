@@ -12,7 +12,7 @@ import re
 import numpy as np
 
 from ..__about__ import __version__
-from .._exceptions import ReadError
+from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
 
 exodus_to_meshio_type = {
@@ -62,6 +62,44 @@ exodus_to_meshio_type = {
     "WEDGE": "wedge",
 }
 meshio_to_exodus_type = {v: k for k, v in exodus_to_meshio_type.items()}
+
+#: ``cell_data`` name prefix marking an Exodus per-element attribute. Twin of
+#: ``kExodusAttributePrefix`` in ``src/cpp/include/meshioplusplus/formats/exodus.hpp``
+#: — KEEP THE TWO IN SYNC. See that constant for why the prefix exists.
+ATTRIBUTE_PREFIX = "exodus:attr:"
+
+
+def _block_suffix(key, prefix):
+    """The 1-based block number in ``<prefix><n>``, or ``None`` if not a match.
+
+    ``None`` for a non-numeric suffix rather than a raised ``ValueError``: the
+    C++ twin reaches these variables through ``std::atoi``, which yields 0 for
+    garbage and so quietly matches no block. Failing the whole read where the
+    other path shrugs would let the shim's fallback paper over a real difference.
+    """
+    if not key.startswith(prefix):
+        return None
+    rest = key[len(prefix) :]
+    if not rest:
+        return 1
+    return int(rest) if rest.isdigit() else None
+
+
+def _elem_type(value):
+    """The ``elem_type`` attribute of a ``connect{k}`` variable, normalized.
+
+    Twin of ``read_att_text`` in ``src/cpp/src/formats/exodus.cpp``. NetCDF.jl —
+    what PeriLab and other Julia solvers write Exodus with — stores the C
+    string's terminating NUL *inside* the attribute, so a ``SPHERE`` block's
+    ``elem_type`` is 7 characters. ``netCDF4`` happens to strip that on the way
+    in, which is why only the C++ reader ever failed on such files; the strip is
+    repeated here so the two readers cannot disagree about a file either of them
+    might see. Fixed-width writers pad with spaces instead.
+    """
+    text = value.elem_type
+    if isinstance(text, bytes):
+        text = text.decode("UTF-8", "replace")
+    return text.strip("\x00 \t\r\n").upper()
 
 
 # Exodus numbers an element's sides in its own order, which is NOT
@@ -176,6 +214,12 @@ def read(filename, time_step=0):  # noqa: C901
         side_elems = {}
         side_sides = {}
         info = []
+        # Per-element attributes, keyed by the block number `connect{k}` uses.
+        # `block_keys` runs parallel to `cells`, since the two are collected in
+        # netCDF variable order rather than by block number.
+        attribs = {}
+        attrib_names = {}
+        block_keys = []
 
         # Resolve the requested step up front, so an out-of-range request fails
         # before any heavy array is sliced rather than midway through.
@@ -210,8 +254,24 @@ def read(filename, time_step=0):  # noqa: C901
                 value.set_auto_mask(False)
                 for val in value:
                     info += [b"".join(c).decode("UTF-8") for c in val[:]]
+            elif _block_suffix(key, "attrib_name") is not None:
+                # Tested before "attrib", which is its prefix.
+                value.set_auto_mask(False)
+                attrib_names[_block_suffix(key, "attrib_name")] = [
+                    b"".join(c).decode("UTF-8").rstrip("\x00") for c in value[:]
+                ]
+            elif _block_suffix(key, "attrib") is not None:
+                value.set_auto_mask(False)
+                arr = np.asarray(value[:], dtype=np.float64)
+                attribs[_block_suffix(key, "attrib")] = (
+                    arr.reshape(-1, 1) if arr.ndim == 1 else arr
+                )
             elif key[:7] == "connect":
-                meshio_type = exodus_to_meshio_type[value.elem_type.upper()]
+                elem_type = _elem_type(value)
+                if elem_type not in exodus_to_meshio_type:
+                    raise ReadError(f"Exodus: unknown element type {elem_type}")
+                meshio_type = exodus_to_meshio_type[elem_type]
+                block_keys.append(int(key[7:] or 1))
                 cells.append((meshio_type, value[:] - 1))
             elif key == "coord":
                 points = nc.variables["coord"][:].T
@@ -289,6 +349,12 @@ def read(filename, time_step=0):  # noqa: C901
                 cell_data[name].append(data[k : k + n])
             k += n
 
+        cell_data.update(
+            _attributes_to_cell_data(
+                [len(cell) for _, cell in cells], block_keys, attribs, attrib_names
+            )
+        )
+
     mesh = Mesh(
         points,
         cells,
@@ -320,6 +386,50 @@ def read(filename, time_step=0):  # noqa: C901
     # returned mesh itself only ever holds the one requested step.
     mesh.time_values = [float(v) for v in time_values]
     return mesh
+
+
+def _attributes_to_cell_data(block_sizes, block_keys, attribs, attrib_names):
+    """Turn Exodus per-element attributes into ``cell_data`` arrays.
+
+    Twin of ``exo_add_attributes`` in ``src/cpp/src/formats/exodus.cpp`` — KEEP
+    THE TWO IN SYNC. ``attrib{k}`` is ``(num_el_in_blk{k}, num_att_in_blk{k})``,
+    one column per attribute; ``cell_data`` is the other way round, one entry per
+    *name* holding one array per cell block. So the columns are transposed out
+    here, and a block that does not carry a given attribute is filled with NaN —
+    which is also the signal ``write`` reads back to leave it out again, so a
+    file where only some blocks carry an attribute round-trips.
+
+    Values are always float64 (Exodus attributes are floating point by
+    definition, and the NaN fill needs somewhere to live).
+    """
+    if not attribs:
+        return {}
+
+    by_name = {}
+    for b, key in enumerate(block_keys):
+        arr = attribs.get(key)
+        if arr is None:
+            continue
+        names = attrib_names.get(key, [])
+        for c in range(arr.shape[1]):
+            # An unnamed attribute is still an attribute; naming it by its
+            # 1-based column is what lets two blocks agree on which is "first".
+            name = names[c] if c < len(names) and names[c] else f"attribute{c + 1}"
+            by_name.setdefault(ATTRIBUTE_PREFIX + name, {}).setdefault(b, arr[:, c])
+
+    out = {}
+    for name in sorted(by_name):
+        columns = by_name[name]
+        blocks = []
+        for b, n in enumerate(block_sizes):
+            values = np.full(n, np.nan)
+            column = columns.get(b)
+            if column is not None:
+                m = min(n, len(column))
+                values[:m] = column[:m]
+            blocks.append(values)
+        out[name] = blocks
+    return out
 
 
 def _build_regions(  # noqa: C901
@@ -475,6 +585,53 @@ numpy_to_exodus_dtype = {
 }
 
 
+def _write_attributes(rootgrp, mesh):
+    """Write ``cell_data`` under ``ATTRIBUTE_PREFIX`` back as ``attrib{k}``.
+
+    Twin of the attribute block in ``write_exodus``. Everything else in
+    ``cell_data`` is left alone — this writer emits no ``vals_elem_var`` at all,
+    a separate pre-existing gap.
+    """
+    att_names = sorted(n for n in mesh.cell_data if n.startswith(ATTRIBUTE_PREFIX))
+    if not att_names:
+        return
+
+    for k, cell_block in enumerate(mesh.cells):
+        n = len(cell_block.data)
+        names, columns = [], []
+        for full in att_names:
+            values = np.asarray(mesh.cell_data[full][k], dtype=np.float64)
+            if values.ndim > 1 and int(np.prod(values.shape[1:])) != 1:
+                raise WriteError(
+                    f"Exodus: element attribute '{full}' must be scalar "
+                    "(one value per element)"
+                )
+            values = values.reshape(-1)
+            # All non-finite means the block never carried this attribute (that
+            # NaN is what the reader fills in), so leaving it out is what makes a
+            # mixed file round-trip rather than gaining NaN attributes.
+            if not np.any(np.isfinite(values)):
+                continue
+            names.append(full[len(ATTRIBUTE_PREFIX) :])
+            columns.append(values)
+        if not names:
+            continue
+
+        dim_att = f"num_att_in_blk{k + 1}"
+        rootgrp.createDimension(dim_att, len(names))
+        var = rootgrp.createVariable(
+            f"attrib{k + 1}", "f8", (f"num_el_in_blk{k + 1}", dim_att)
+        )
+        var[:] = np.column_stack(columns) if n else np.zeros((0, len(names)))
+        name_var = rootgrp.createVariable(
+            f"attrib_name{k + 1}", "S1", (dim_att, "len_string")
+        )
+        name_var.set_auto_mask(False)
+        for i, name in enumerate(names):
+            for j, letter in enumerate(name[:33]):
+                name_var[i, j] = letter.encode()
+
+
 def write(filename, mesh):
     import netCDF4
 
@@ -534,6 +691,8 @@ def write(filename, mesh):
             data.elem_type = meshio_to_exodus_type[cell_block.type]
             # Exodus is 1-based
             data[:] = cell_block.data + 1
+
+        _write_attributes(rootgrp, mesh)
 
         # point data
         # The variable `name_nod_var` holds the names and indices of the node variables, the
