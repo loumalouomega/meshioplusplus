@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "9.2.0",
+  "version": "9.3.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
