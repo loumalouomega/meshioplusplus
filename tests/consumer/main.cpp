@@ -211,6 +211,21 @@ int main() {
                     ++applied;
             });
         check(applied == 1, "the property applier is invoked once per value");
+
+        // v9.2.0: the same values now reach a Mesh through the ordinary read
+        // path, so a registry-based consumer no longer has to link
+        // formats/mdpa.hpp to get them.
+        meshioplusplus::Mesh pm = make_mesh();
+        meshioplusplus::PropertySet ps;
+        ps.mId = 3;
+        meshioplusplus::PropertyValue rho;
+        rho.mKey = "DENSITY";
+        rho.mValues = meshioplusplus::NDArray(meshioplusplus::DType::Float64, {1});
+        rho.mValues.As<double>()[0] = 7850.0;
+        ps.mValues.push_back(std::move(rho));
+        pm.AddPropertySet(std::move(ps));
+        check(pm.NumPropertySets() == 1, "the uniform API carries property sets");
+        check(pm.HasPropertySet(3), "a property set is found by its id");
         check(dest.GetElement(1).Name() == "SmallDisplacementElement3D4N",
               "to_model_part() preserves the entity name");
 

@@ -129,10 +129,34 @@ meshioplusplus::Mesh mesh = meshioplusplus::read_mdpa("model.mdpa", info);
 meshioplusplus::write_mdpa("out.mdpa", mesh, info);   // properties and names restored
 ```
 
-`read_mdpa(path)` and `write_mdpa(path, mesh)` are unchanged. Without an
-`MdpaInfo` the properties body is parsed and dropped with a warning, which is
-what the registry — and therefore the C API, Fortran, Julia, R, WASM and the
-native CLI — does. That is a documented flat-ABI gap, not a silent loss.
+`read_mdpa(path)` and `write_mdpa(path, mesh)` are unchanged.
+
+**Since v9.2.0 you rarely need an `MdpaInfo` for the properties.** The bodies are
+carried on the `Mesh` itself, through the uniform API's `AddPropertySet` /
+`GetPropertySet` (see [the C++ API](../cpp_api.md)), so a plain
+
+```cpp
+meshioplusplus::Mesh mesh = meshioplusplus::registry_read("model.mdpa", "mdpa", {});
+meshioplusplus::write_mdpa("out.mdpa", mesh);      // material data preserved
+```
+
+round-trips them — and under the KRATOS backend `mesh.GetModelPart()` hands back
+`Properties` blocks with real values rather than bare ids, which is what makes
+`to_model_part`'s "apply property" overload transfer anything. Through v9.1.0 the
+bodies rode this side channel *only*, and nothing reachable from
+`registry_readers()` could ask for one, so every registry-based consumer — which
+is all of them — got the ids and no material data.
+
+`MdpaInfo` keeps two jobs the mesh channel deliberately does not do: it preserves
+the **file order** of the blocks (the mesh canonicalizes them to ascending id),
+and it carries `mEntityNames` and `mSkippedConstructs`. When both are supplied,
+the `MdpaInfo` wins.
+
+Property sets do not cross a boundary where the mesh is materialized in the host
+language — the Python numpy `Mesh`, WASM's JS objects, the C API's `mio_mesh`
+accessors — since a `PropertySet` has no numpy or embind analogue. File-to-file
+paths (`mio_read`/`mio_write`, the WASM `convert`, the native CLI) keep them,
+because the `Mesh` never leaves the core.
 
 Values are typed where they can be and verbatim where they cannot:
 
@@ -164,9 +188,11 @@ The reader's block-splitting key includes the entity name, so two adjacent
 The writer emitted a single hard-coded `Begin Properties 0` while the entity rows
 wrote their `gmsh:physical` value as the property id, so a tagged mesh produced a
 file referencing undeclared properties, which Kratos's own `ModelPartIO` rejects.
-Without an `MdpaInfo` the writer now emits one **empty** block per distinct id
-the rows actually reference, ascending. A mesh whose ids are all 0 — every mesh
-with no `gmsh:physical` — still emits exactly the same two lines as before.
+Without an `MdpaInfo` the writer emits the mesh's own property sets when it has
+any (v9.2.0), plus one **empty** block per referenced id no set covers; with none
+at all, one empty block per distinct id the rows reference, ascending. A mesh
+whose ids are all 0 — every mesh with no `gmsh:physical` — still emits exactly
+the same two lines as before.
 
 ### `--lenient`
 

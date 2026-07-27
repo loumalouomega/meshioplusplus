@@ -954,11 +954,14 @@ using NamedArrayLists = NamedItems<std::vector<NDArray>>;
  * "apply property" callback in `kratos_bridge.hpp`, which is how a real Kratos
  * consumer turns these key/value pairs into typed variables.
  *
- * @note The C++ `Mesh` cannot carry this: `NDArray` has ten numeric dtypes and
- *       no string or bytes dtype, so a `CONSTITUTIVE_LAW LinearElastic3DLaw`
- *       line has no `field_data` representation at all. That is precisely why
- *       properties travel in a side-channel struct (the `MedInfo`/`ExodusInfo`
- *       pattern) rather than on the mesh.
+ * @note These do not go through `field_data`: `NDArray` has ten numeric dtypes
+ *       and no string or bytes dtype, so a `CONSTITUTIVE_LAW LinearElastic3DLaw`
+ *       line has no representation there at all. Since v9.2.0 the `Mesh` carries
+ *       them **as themselves** instead, through the uniform API's
+ *       `AddPropertySet`/`GetPropertySet` (see `mesh_api.hpp`) -- a
+ *       `PropertySet` is an ordinary struct with `std::string` members, so
+ *       storing it needs no dtype. Before that they could only ride the
+ *       `MdpaInfo` side channel, which no registry-based consumer could reach.
  */
 
 // System includes
@@ -1007,6 +1010,69 @@ struct PropertySet {
     std::vector<PropertyValue> mValues;
 };
 
+namespace detail {
+
+/**
+ * @brief Every properties block of a mesh, kept ascending by `mId`.
+ *
+ * The structural twin of `detail::RegionList`, and for the same reason: the
+ * three mesh backends each hold one of these, so a shared container is what
+ * stops them drifting on ordering or on the replace-by-key rule.
+ *
+ * Unlike regions, property sets are keyed by **id, not by entity index**, so
+ * nothing here ever needs remapping when an operation renumbers cells or
+ * points -- there is no `detail/region_remap.hpp` counterpart to look for.
+ */
+class PropertySetList {
+public:
+    /**
+     * @brief Insert a set, or replace the one with the same `mId`.
+     * @param propertySet The set to store.
+     */
+    void Add(PropertySet propertySet) {
+        auto it = std::lower_bound(
+            mSets.begin(), mSets.end(), propertySet.mId,
+            [](const PropertySet& rLhs, std::int64_t id) { return rLhs.mId < id; });
+        if (it != mSets.end() && it->mId == propertySet.mId)
+            *it = std::move(propertySet);
+        else
+            mSets.insert(it, std::move(propertySet));
+    }
+
+    /** @brief Number of stored property sets. */
+    std::size_t Size() const { return mSets.size(); }
+    /** @brief Set @p Index, in ascending-`mId` order. */
+    const PropertySet& At(std::size_t Index) const { return mSets[Index]; }
+    /** @brief The whole list, for backends that forward it wholesale. */
+    const std::vector<PropertySet>& All() const { return mSets; }
+    /** @brief Drop every stored set. */
+    void Clear() { mSets.clear(); }
+
+    /** @brief Whether a set with this id exists. */
+    bool Has(std::int64_t Id) const { return Find(Id) != npos; }
+
+    /**
+     * @brief Index of the set with this id.
+     * @param Id The properties id to look for.
+     * @return The index, or `npos` when absent.
+     */
+    std::size_t Find(std::int64_t Id) const {
+        auto it = std::lower_bound(
+            mSets.begin(), mSets.end(), Id,
+            [](const PropertySet& rLhs, std::int64_t id) { return rLhs.mId < id; });
+        if (it == mSets.end() || it->mId != Id)
+            return npos;
+        return static_cast<std::size_t>(it - mSets.begin());
+    }
+
+    /// Sentinel returned by `Find` when no set matches.
+    static constexpr std::size_t npos = static_cast<std::size_t>(-1);
+
+private:
+    std::vector<PropertySet> mSets;  // kept sorted by mId
+};
+
+}  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/properties.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/backends/model_part.hpp =====
@@ -1958,6 +2024,33 @@ inline void write_int(NDArray& rA, std::size_t i, std::int64_t v) {
  * body. Every declaration after the accessor must spell the type out
  * fully-qualified — which is why the accessor itself returns
  * `const meshioplusplus::Region&`.
+ *
+ * ## Property sets (`properties.hpp`)
+ *
+ * `Begin Properties` blocks — Kratos material data, and whatever other formats
+ * grow an equivalent — are carried on the mesh rather than in a per-format side
+ * struct, because a side struct is unreachable through `registry_read`:
+ *
+ *  - `void AddPropertySet(PropertySet propertySet)` — insert, or replace the
+ *    set with the same `mId`.
+ *  - `std::size_t NumPropertySets() const`, and
+ *    `const PropertySet& GetPropertySet(std::size_t Index) const` — indexed in
+ *    **ascending `mId`** order, identical on every backend.
+ *  - `bool HasPropertySet(std::int64_t Id)` /
+ *    `std::size_t FindPropertySet(std::int64_t Id)` (`Mesh::npos` when absent).
+ *
+ * Two things follow from these being keyed by **id, not by entity index**.
+ * There is no `detail/region_remap.hpp` counterpart and none is needed — an
+ * operation that renumbers cells or points cannot invalidate them. And the rule
+ * for operations is simply: **shape-preserving operations carry property sets
+ * through** (`clean`, `smooth`, `transform`, `attach_quality`, the data ops),
+ * while **restructuring and multi-input ones do not** (`merge`, whose inputs
+ * would collide on id, plus `crop`/`split`/`partition`/`diff`).
+ *
+ * The accessor is `GetPropertySet`, not `PropertySet(i)`, deliberately: an
+ * accessor named `PropertySet` would hide that *type* for the rest of each
+ * backend's class body exactly as `Region(i)` does above, and the KRATOS backend
+ * genuinely needs to name the type afterwards.
  */
 
 // System includes
@@ -2628,6 +2721,27 @@ public:
     static constexpr std::size_t npos = detail::RegionList::npos;
 
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+
+    // --- uniform API: property sets (properties.hpp) -----------------------
+    //
+    // Keyed by id, never by entity index, so no operation has to remap them.
+    // Named GetPropertySet rather than PropertySet(i) on purpose: an accessor
+    // called PropertySet would hide the TYPE of that name for the rest of this
+    // class body, the trap mesh_api.hpp documents for Region(i).
+
+    /** @brief Store a properties block, replacing one with the same `mId`. */
+    void AddPropertySet(PropertySet propertySet) { mPropertySets.Add(std::move(propertySet)); }
+    /** @brief Number of properties blocks. */
+    std::size_t NumPropertySets() const { return mPropertySets.Size(); }
+    /** @brief Properties block @p Index, in ascending-`mId` order. */
+    const PropertySet& GetPropertySet(std::size_t Index) const { return mPropertySets.At(Index); }
+    /** @brief Whether a properties block with this id exists. */
+    bool HasPropertySet(std::int64_t Id) const { return mPropertySets.Has(Id); }
+    /** @brief Index of the block with this id, or `npos`. */
+    std::size_t FindPropertySet(std::int64_t Id) const { return mPropertySets.Find(Id); }
+    /** @brief The whole list (used by the KRATOS backend's staging forward). */
+    const detail::PropertySetList& PropertySets() const { return mPropertySets; }
+
     std::size_t NumRegions() const { return mRegions.Size(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return mRegions.At(i); }
     std::vector<std::string> RegionNames() const { return mRegions.Names(); }
@@ -2711,7 +2825,8 @@ private:
     detail::NamedArrays mPointData;     // canonical Float64/Int64 arrays
     detail::NamedArrayLists mCellData;  // one array per block, block order
     detail::NamedArrays mFieldData;
-    detail::RegionList mRegions;  // named groups, canonical + sorted
+    detail::RegionList mRegions;            // named groups, canonical + sorted
+    detail::PropertySetList mPropertySets;  // material blocks, ascending by id
     mutable std::optional<GlobalCsr> mGlobalCsr;
 };
 
@@ -3429,6 +3544,10 @@ public:
         ResetModelPartOnly();
         mStage.AddRegion(std::move(region));
     }
+    void AddPropertySet(PropertySet propertySet) {
+        ResetModelPartOnly();
+        mStage.AddPropertySet(std::move(propertySet));
+    }
 
     // --- uniform API: writer-side accessors (staging, stale-synced) --------
 
@@ -3469,6 +3588,13 @@ public:
 
     /// Sentinel returned by `FindRegion` when no region matches.
     static constexpr std::size_t npos = detail::RegionList::npos;
+
+    std::size_t NumPropertySets() const { return Stage().NumPropertySets(); }
+    const PropertySet& GetPropertySet(std::size_t Index) const {
+        return Stage().GetPropertySet(Index);
+    }
+    bool HasPropertySet(std::int64_t Id) const { return Stage().HasPropertySet(Id); }
+    std::size_t FindPropertySet(std::int64_t Id) const { return Stage().FindPropertySet(Id); }
 
     std::size_t NumRegions() const { return Stage().NumRegions(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return Stage().Region(i); }
@@ -3530,12 +3656,57 @@ public:
      */
     void SetBuildSubModelPartsFromTags(bool enable) {
         mTagsToSubModelParts = enable;
-        if (mMaterialized && !mStale) {
-            mMaterialized = false;  // re-materialize with the new setting
-            mpRoot.reset();
-        }
+        InvalidateMaterialization();  // re-materialize with the new setting
     }
     bool BuildSubModelPartsFromTags() const { return mTagsToSubModelParts; }
+
+    /**
+     * @brief Restrict the automatic tag pass to these `cell_data` keys.
+     *
+     * `SetBuildSubModelPartsFromTags` is all-or-nothing, which is too coarse
+     * when only one key is unwanted. The motivating case is `.mdpa`: a Kratos
+     * properties id is read as a `gmsh:physical` cell tag, so the tag pass
+     * synthesizes a `gmsh_physical_<id>` SubModelPart beside the file's real
+     * ones -- material assignment surfacing as a group. For a genuine gmsh file
+     * that same inference is wanted, so the key cannot simply be dropped from
+     * #KnownTagKeys; the consumer has to say which it means.
+     *
+     * @param keys The keys to consider. **Empty restores the default**, i.e.
+     *        every key in #KnownTagKeys.
+     */
+    void SetTagSubModelPartKeys(std::vector<std::string> keys) {
+        mTagKeys = std::move(keys);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief Exclude one key from the automatic tag pass. Repeatable, additive.
+     *
+     * Expresses "everything except this" without re-listing #KnownTagKeys,
+     * which an inclusion list alone would force -- and which would silently
+     * freeze the caller against any key added to that table later.
+     */
+    void ExcludeTagSubModelPartKey(const std::string& rKey) {
+        if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), rKey) ==
+            mExcludedTagKeys.end())
+            mExcludedTagKeys.push_back(rKey);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief The keys the tag pass will actually consider.
+     * @return The effective set, in #KnownTagKeys order.
+     */
+    std::vector<std::string> TagSubModelPartKeys() const {
+        const std::vector<std::string>& source = mTagKeys.empty() ? KnownTagKeys() : mTagKeys;
+        std::vector<std::string> out;
+        out.reserve(source.size());
+        for (const std::string& r_key : source)
+            if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), r_key) ==
+                mExcludedTagKeys.end())
+                out.push_back(r_key);
+        return out;
+    }
 
 private:
     /** @brief Per staged block: what it became in the ModelPart. */
@@ -3640,6 +3811,17 @@ private:
                 if (id >= 0)
                     r_mp.CreateNewProperties(static_cast<IndexType>(id));
 
+        // Real material values, where the mesh carries them. The loop above
+        // only creates the ids the entity rows reference, leaving every block
+        // empty; this fills them in. CreateNewProperties is find-or-create, so
+        // an id both passes see is filled in place rather than duplicated, and
+        // the creation order above is unchanged. This is what makes
+        // kratos_bridge's "apply property" to_model_part overload transfer
+        // anything at all -- it iterates rSource.Properties(), which held
+        // id-only sets before v9.2.0.
+        for (const PropertySet& r_set : mStage.PropertySets().All())
+            r_mp.CreateNewProperties(static_cast<IndexType>(r_set.mId)).mValues = r_set.mValues;
+
         IndexType next_elem = 1, next_cond = 1;
         std::size_t n_elem_rows = 0, n_cond_rows = 0;
         std::size_t block_index = 0;
@@ -3710,7 +3892,7 @@ private:
 
         // Integer tags -> SubModelParts (unless disabled).
         if (mTagsToSubModelParts)
-            for (const auto& r_key : KnownTagKeys())
+            for (const auto& r_key : TagSubModelPartKeys())
                 if (mStage.HasCellData(r_key) &&
                     mStage.CellDataNumBlocks(r_key) == mStage.NumCellBlocks())
                     BuildSubModelPartsFor(r_key);
@@ -4033,6 +4215,13 @@ private:
             fresh.AddFieldData(r_name, mStage.FieldData(r_name));
 
         RestoreRegions(r_mp, plan, fresh);
+        // The ModelPart is the authority after a direct mutation, so read the
+        // properties back from it rather than carrying the old stage's forward:
+        // a set the user deleted must not be resurrected. They are keyed by id,
+        // not by entity index, so unlike regions and cell_data slices there is
+        // nothing to remap.
+        for (const PropertySet& r_set : r_mp.Properties())
+            fresh.AddPropertySet(r_set);
 
         mRecords.clear();
         for (PendingBlock& r_pb : plan)
@@ -4280,6 +4469,9 @@ private:
     /// rebuild re-derives it from the ModelPart.
     mutable std::vector<std::string> mBlockEntityNames;
     bool mTagsToSubModelParts = true;
+    /// Empty = every KnownTagKeys() entry; see SetTagSubModelPartKeys.
+    std::vector<std::string> mTagKeys;
+    std::vector<std::string> mExcludedTagKeys;
 };
 
 }  // namespace meshioplusplus
@@ -4469,6 +4661,7 @@ struct Mesh {
     // Region::Key() with canonical (sorted, de-duplicated) entries, so region
     // order and content are identical on every backend.
     detail::RegionList mRegions;
+    detail::PropertySetList mPropertySets;
 
     /**
      * @brief Number of points in the mesh.
@@ -4652,6 +4845,25 @@ struct Mesh {
 
     /** @brief Adds a region, replacing one with the same (kind, name, dim, tag). */
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+
+    // --- uniform API: property sets (properties.hpp) -----------------------
+    //
+    // Keyed by id, never by entity index, so no operation has to remap them.
+    // Named GetPropertySet rather than PropertySet(i) on purpose: an accessor
+    // called PropertySet would hide the TYPE of that name for the rest of this
+    // class body, the trap mesh_api.hpp documents for Region(i).
+
+    /** @brief Store a properties block, replacing one with the same `mId`. */
+    void AddPropertySet(PropertySet propertySet) { mPropertySets.Add(std::move(propertySet)); }
+    /** @brief Number of properties blocks. */
+    std::size_t NumPropertySets() const { return mPropertySets.Size(); }
+    /** @brief Properties block @p Index, in ascending-`mId` order. */
+    const PropertySet& GetPropertySet(std::size_t Index) const { return mPropertySets.At(Index); }
+    /** @brief Whether a properties block with this id exists. */
+    bool HasPropertySet(std::int64_t Id) const { return mPropertySets.Has(Id); }
+    /** @brief Index of the block with this id, or `npos`. */
+    std::size_t FindPropertySet(std::int64_t Id) const { return mPropertySets.Find(Id); }
+
     /** @brief Number of named regions. */
     std::size_t NumRegions() const { return mRegions.Size(); }
     /** @brief Region @p i in `(kind, name, dim, tag)` order. */
@@ -31651,6 +31863,11 @@ Mesh clone_geometry(const Mesh& rMesh) {
     // and which pass through.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
     return out;
 }
 
@@ -42735,6 +42952,10 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     std::vector<double> coords;  // flat (n, 3)
     std::size_t num_points = 0;
     std::vector<MdpaBlock> blocks;
+    // The Properties bodies, staged for the Mesh. Kept in file order here; the
+    // mesh canonicalizes them to ascending id, which is why MdpaInfo remains
+    // the way to preserve an unusual declaration order verbatim.
+    std::vector<PropertySet> property_sets;
     std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_ids,
         condition_ids;
     std::map<std::string, NDArray> field_data;
@@ -42927,17 +43148,16 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 throw ReadError("MDPA: EOF before '" + end_token + "'");
         } else if (mdpa_starts_with(line, "Begin Properties")) {
             // Parsed unconditionally, not gated on mLenient: this is a pure
-            // de-throwing, so no read that used to succeed changes. Without an
-            // MdpaInfo to put it in the body is dropped with a warning -- what
-            // every flat binding does, the MedInfo precedent.
+            // de-throwing, so no read that used to succeed changes.
             PropertySet ps = mdpa_parse_properties(cur, line);
+            // Onto the mesh, so a registry-based consumer gets it. Through
+            // v9.1.0 this rode the MdpaInfo side channel only, which nothing
+            // reachable from registry_readers() could ask for -- so the values
+            // were unreachable from every consumer that did not link
+            // formats/mdpa.hpp and call read_mdpa directly.
+            property_sets.push_back(ps);
             if (pInfo)
                 pInfo->mProperties.push_back(std::move(ps));
-            else if (!ps.mValues.empty())
-                log::warn(
-                    "mdpa: dropping the body of Properties {} ({} entries): pass an MdpaInfo to "
-                    "read_mdpa to keep it",
-                    ps.mId, ps.mValues.size());
         } else if (mdpa_starts_with(line, "Begin NodalData")) {
             const std::vector<std::string> head = mdpa_tokens(line);
             if (head.size() < 3)
@@ -43153,6 +43373,11 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             mesh.AddRegion(Region(smp.first, RegionKind::Cell, std::move(e)));
         }
     }
+    // Properties last: they are keyed by id, so order relative to the cell
+    // blocks and regions above does not matter.
+    for (PropertySet& r_ps : property_sets)
+        mesh.AddPropertySet(std::move(r_ps));
+
     return mesh;
 }
 
@@ -43326,21 +43551,36 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     // `gmsh:physical` -- still emits exactly the old two lines.
     const bool has_props =
         rMesh.HasCellData("gmsh:physical") && rMesh.CellDataNumBlocks("gmsh:physical") == nblocks;
+    std::set<std::int64_t> referenced_ids;
+    if (has_props) {
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& tags = rMesh.CellData("gmsh:physical", b);
+            for (std::size_t r = 0; r < tags.Size(); ++r)
+                referenced_ids.insert(detail::read_int(tags, r));
+        }
+    }
     if (!rInfo.mProperties.empty()) {
+        // An explicit MdpaInfo wins, and keeps the caller's order verbatim --
+        // which is the one thing the mesh channel cannot do, since it
+        // canonicalizes to ascending id.
         for (const PropertySet& ps : rInfo.mProperties)
             mdpa_write_properties(os, ps);
-    } else {
-        std::set<std::int64_t> ids;
-        if (has_props) {
-            for (std::size_t b = 0; b < nblocks; ++b) {
-                const NDArray& tags = rMesh.CellData("gmsh:physical", b);
-                for (std::size_t r = 0; r < tags.Size(); ++r)
-                    ids.insert(detail::read_int(tags, r));
-            }
+    } else if (rMesh.NumPropertySets() > 0) {
+        // Bodies carried on the mesh (v9.2.0): what read_mdpa now stores, so a
+        // registry-driven mdpa -> mdpa round trip keeps its material data
+        // instead of emitting empty blocks.
+        for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i) {
+            mdpa_write_properties(os, rMesh.GetPropertySet(i));
+            referenced_ids.erase(rMesh.GetPropertySet(i).mId);
         }
-        if (ids.empty())
-            ids.insert(0);
-        for (std::int64_t id : ids)
+        // Any id the rows reference but no set covers still has to be declared:
+        // Kratos's own ModelPartIO rejects a row naming an undeclared id.
+        for (std::int64_t id : referenced_ids)
+            os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    } else {
+        if (referenced_ids.empty())
+            referenced_ids.insert(0);
+        for (std::int64_t id : referenced_ids)
             os << "Begin Properties " << id << "\nEnd Properties\n\n";
     }
 
@@ -62157,6 +62397,11 @@ Mesh quality_clone_mesh(const Mesh& rMesh) {
     // cell_data and renumbers nothing.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
     return out;
 }
 
@@ -64213,6 +64458,11 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     // so no point, cell or facet is renumbered.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
 
     return result;
 }
@@ -65510,6 +65760,11 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
     // same entity.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
 
     return out;
 }

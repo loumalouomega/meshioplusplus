@@ -27,6 +27,7 @@
 #ifdef MESHIOPLUSPLUS_MESH_BACKEND_KRATOS
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -340,4 +341,70 @@ TEST(KratosBackend, RegionNameThatCannotBeASubModelPartIsWarnedNotThrown) {
     EXPECT_TRUE(m.HasRegion("bad.name"));
 }
 
+// --- v9.2.0: per-key control over the automatic tag pass -------------------
+//
+// A `.mdpa` properties id arrives as a `gmsh:physical` cell tag, so the tag
+// pass synthesized a `gmsh_physical_<id>` SubModelPart beside the file's real
+// ones -- material assignment surfacing as a group, which a consumer then had
+// to filter by name. For a genuine gmsh file that inference is wanted, so the
+// key stays in KnownTagKeys and the caller says which meaning applies.
+
+TEST(KratosBackend, TagSubModelPartKeysDefaultsToEveryKnownKey) {
+    Mesh m = mixed_dim_mesh();
+    EXPECT_EQ(m.TagSubModelPartKeys(), Mesh::KnownTagKeys());
+}
+
+TEST(KratosBackend, ExcludingOneTagKeyLeavesTheOthersWorking) {
+    Mesh m = mixed_dim_mesh();
+    m.AddCellData("gmsh:physical", {int64_array({10, 20}), int64_array({7, 7})});
+    m.AddCellData("cell_tags", {int64_array({3, 3}), int64_array({4, 4})});
+    m.ExcludeTagSubModelPartKey("gmsh:physical");
+
+    const std::vector<std::string> keys = m.TagSubModelPartKeys();
+    EXPECT_EQ(std::find(keys.begin(), keys.end(), "gmsh:physical"), keys.end());
+    EXPECT_NE(std::find(keys.begin(), keys.end(), "cell_tags"), keys.end());
+
+    ModelPart& r_mp = m.GetModelPart();
+    EXPECT_FALSE(r_mp.HasSubModelPart("gmsh_physical_7"));
+    EXPECT_FALSE(r_mp.HasSubModelPart("gmsh_physical_10"));
+    EXPECT_TRUE(r_mp.HasSubModelPart("cell_tags_3"));
+    EXPECT_TRUE(r_mp.HasSubModelPart("cell_tags_4"));
+    // The tag array itself is untouched, so writer round-trips are unaffected.
+    EXPECT_TRUE(m.HasCellData("gmsh:physical"));
+}
+
+TEST(KratosBackend, AnInclusionListRestrictsToJustThoseKeys) {
+    Mesh m = mixed_dim_mesh();
+    m.AddCellData("gmsh:physical", {int64_array({10, 20}), int64_array({7, 7})});
+    m.AddCellData("cell_tags", {int64_array({3, 3}), int64_array({4, 4})});
+    m.SetTagSubModelPartKeys({"cell_tags"});
+
+    ModelPart& r_mp = m.GetModelPart();
+    EXPECT_TRUE(r_mp.HasSubModelPart("cell_tags_3"));
+    EXPECT_FALSE(r_mp.HasSubModelPart("gmsh_physical_7"));
+}
+
+TEST(KratosBackend, AnEmptyInclusionListRestoresTheDefault) {
+    Mesh m = mixed_dim_mesh();
+    m.SetTagSubModelPartKeys({"cell_tags"});
+    m.SetTagSubModelPartKeys({});
+    EXPECT_EQ(m.TagSubModelPartKeys(), Mesh::KnownTagKeys());
+}
+
+TEST(KratosBackend, ExcludingEveryKeyMatchesDisablingTheTagPass) {
+    Mesh m = mixed_dim_mesh();
+    m.AddCellData("gmsh:physical", {int64_array({10, 20}), int64_array({7, 7})});
+    for (const std::string& r_key : Mesh::KnownTagKeys())
+        m.ExcludeTagSubModelPartKey(r_key);
+    EXPECT_TRUE(m.TagSubModelPartKeys().empty());
+    EXPECT_EQ(m.GetModelPart().NumberOfSubModelParts(), 0u);
+}
+
+TEST(KratosBackend, ChangingTheTagKeysAfterMaterializationReMaterializes) {
+    Mesh m = mixed_dim_mesh();
+    m.AddCellData("gmsh:physical", {int64_array({10, 20}), int64_array({7, 7})});
+    ASSERT_TRUE(m.GetModelPart().HasSubModelPart("gmsh_physical_7"));
+    m.ExcludeTagSubModelPartKey("gmsh:physical");
+    EXPECT_FALSE(m.GetModelPart().HasSubModelPart("gmsh_physical_7"));
+}
 #endif  // MESHIOPLUSPLUS_MESH_BACKEND_KRATOS

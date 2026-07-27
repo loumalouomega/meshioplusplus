@@ -251,3 +251,28 @@ TEST(KratosBridge, NameTablesRoundTrip) {
             << kratos_condition_name(t);
     }
 }
+
+// v9.2.0: the applier overload iterates rSource.Properties(), which held
+// id-only sets before property sets could ride on the Mesh -- so for a mesh
+// read from a file it transferred nothing at all, silently.
+TEST(KratosBridge, ApplierFiresForPropertiesThatCameFromTheMesh) {
+    meshioplusplus::ModelPart source("Main");
+    meshioplusplus::PropertySet ps;
+    ps.mId = 3;
+    meshioplusplus::PropertyValue density;
+    density.mKey = "DENSITY";
+    density.mValues = meshioplusplus::NDArray(meshioplusplus::DType::Float64, {1});
+    density.mValues.As<double>()[0] = 7850.0;
+    ps.mValues.push_back(std::move(density));
+    source.CreateNewProperties(3).mValues = ps.mValues;
+
+    meshioplusplus::ModelPart dest("Main");
+    std::vector<std::string> applied_keys;
+    meshioplusplus::to_model_part(
+        source, dest, [](meshioplusplus::IndexType id) { return id; },
+        [&](meshioplusplus::IndexType, const meshioplusplus::PropertyValue& rValue) {
+            applied_keys.push_back(rValue.mKey);
+        });
+    ASSERT_EQ(applied_keys.size(), 1u);
+    EXPECT_EQ(applied_keys[0], "DENSITY");
+}

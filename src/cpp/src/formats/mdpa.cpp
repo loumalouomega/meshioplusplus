@@ -488,6 +488,10 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     std::vector<double> coords;  // flat (n, 3)
     std::size_t num_points = 0;
     std::vector<MdpaBlock> blocks;
+    // The Properties bodies, staged for the Mesh. Kept in file order here; the
+    // mesh canonicalizes them to ascending id, which is why MdpaInfo remains
+    // the way to preserve an unusual declaration order verbatim.
+    std::vector<PropertySet> property_sets;
     std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_ids,
         condition_ids;
     std::map<std::string, NDArray> field_data;
@@ -680,17 +684,16 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 throw ReadError("MDPA: EOF before '" + end_token + "'");
         } else if (mdpa_starts_with(line, "Begin Properties")) {
             // Parsed unconditionally, not gated on mLenient: this is a pure
-            // de-throwing, so no read that used to succeed changes. Without an
-            // MdpaInfo to put it in the body is dropped with a warning -- what
-            // every flat binding does, the MedInfo precedent.
+            // de-throwing, so no read that used to succeed changes.
             PropertySet ps = mdpa_parse_properties(cur, line);
+            // Onto the mesh, so a registry-based consumer gets it. Through
+            // v9.1.0 this rode the MdpaInfo side channel only, which nothing
+            // reachable from registry_readers() could ask for -- so the values
+            // were unreachable from every consumer that did not link
+            // formats/mdpa.hpp and call read_mdpa directly.
+            property_sets.push_back(ps);
             if (pInfo)
                 pInfo->mProperties.push_back(std::move(ps));
-            else if (!ps.mValues.empty())
-                log::warn(
-                    "mdpa: dropping the body of Properties {} ({} entries): pass an MdpaInfo to "
-                    "read_mdpa to keep it",
-                    ps.mId, ps.mValues.size());
         } else if (mdpa_starts_with(line, "Begin NodalData")) {
             const std::vector<std::string> head = mdpa_tokens(line);
             if (head.size() < 3)
@@ -906,6 +909,11 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             mesh.AddRegion(Region(smp.first, RegionKind::Cell, std::move(e)));
         }
     }
+    // Properties last: they are keyed by id, so order relative to the cell
+    // blocks and regions above does not matter.
+    for (PropertySet& r_ps : property_sets)
+        mesh.AddPropertySet(std::move(r_ps));
+
     return mesh;
 }
 
@@ -1079,21 +1087,36 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     // `gmsh:physical` -- still emits exactly the old two lines.
     const bool has_props =
         rMesh.HasCellData("gmsh:physical") && rMesh.CellDataNumBlocks("gmsh:physical") == nblocks;
+    std::set<std::int64_t> referenced_ids;
+    if (has_props) {
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& tags = rMesh.CellData("gmsh:physical", b);
+            for (std::size_t r = 0; r < tags.Size(); ++r)
+                referenced_ids.insert(detail::read_int(tags, r));
+        }
+    }
     if (!rInfo.mProperties.empty()) {
+        // An explicit MdpaInfo wins, and keeps the caller's order verbatim --
+        // which is the one thing the mesh channel cannot do, since it
+        // canonicalizes to ascending id.
         for (const PropertySet& ps : rInfo.mProperties)
             mdpa_write_properties(os, ps);
-    } else {
-        std::set<std::int64_t> ids;
-        if (has_props) {
-            for (std::size_t b = 0; b < nblocks; ++b) {
-                const NDArray& tags = rMesh.CellData("gmsh:physical", b);
-                for (std::size_t r = 0; r < tags.Size(); ++r)
-                    ids.insert(detail::read_int(tags, r));
-            }
+    } else if (rMesh.NumPropertySets() > 0) {
+        // Bodies carried on the mesh (v9.2.0): what read_mdpa now stores, so a
+        // registry-driven mdpa -> mdpa round trip keeps its material data
+        // instead of emitting empty blocks.
+        for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i) {
+            mdpa_write_properties(os, rMesh.GetPropertySet(i));
+            referenced_ids.erase(rMesh.GetPropertySet(i).mId);
         }
-        if (ids.empty())
-            ids.insert(0);
-        for (std::int64_t id : ids)
+        // Any id the rows reference but no set covers still has to be declared:
+        // Kratos's own ModelPartIO rejects a row naming an undeclared id.
+        for (std::int64_t id : referenced_ids)
+            os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    } else {
+        if (referenced_ids.empty())
+            referenced_ids.insert(0);
+        for (std::int64_t id : referenced_ids)
             os << "Begin Properties " << id << "\nEnd Properties\n\n";
     }
 
