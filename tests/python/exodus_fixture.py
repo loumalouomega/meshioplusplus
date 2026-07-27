@@ -219,6 +219,146 @@ def write_fixture(path) -> str:
     return path
 
 
+# --------------------------------------------------------------------------- #
+# A peridynamics-shaped fixture: 2-D coordinates, one-node SPHERE elements and  #
+# a per-element RADIUS attribute. This is the shape PeriLab (and other particle #
+# codes) write, and the one meshio++'s C++ reader used to reject outright --    #
+# see SPHERE_FIXTURE_FACTS.                                                     #
+# --------------------------------------------------------------------------- #
+
+SPHERE_FIXTURE_FACTS = {
+    "nul_terminated_elem_type": (
+        "NetCDF.jl stores the C string's terminating NUL inside the attribute, so "
+        "`elem_type` is 'SPHERE\\0' -- 7 chars. The C++ reader compared all 7 "
+        "against its type table and failed with 'unknown element type SPHERE', the "
+        "NUL invisible because what() stops at it. netCDF4-python strips it, so the "
+        "Python twin never saw this and the shim's fallback hid it everywhere "
+        "except WASM, which has no fallback."
+    ),
+    "sphere_elements": "one-node SPHERE elements must read back as `vertex` cells",
+    "two_dimensional": "num_dim=2 with coordx/coordy, no coordz: points pad to (n, 3)",
+    "element_attributes": (
+        "block 1 carries a RADIUS attribute and block 2 does not -- the missing one "
+        "must fill with NaN, and must NOT come back as a NaN attribute on write"
+    ),
+}
+
+#: 2-D particle coordinates; x fastest.
+SPHERE_POINTS = np.array(
+    [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=np.float64
+)
+
+SPHERE_BLOCK_NAMES = ["bulk", "boundary"]
+SPHERE_BLOCK_IDS = [1, 2]
+#: 0-based node index of each one-node element, per block.
+SPHERE_BLOCK_NODES = [[0, 1, 2], [3, 4]]
+#: The RADIUS attribute, on block 1 only.
+SPHERE_RADII = [0.5, 0.5, 0.25]
+SPHERE_ATTRIBUTE_NAME = "RADIUS"
+SPHERE_NODE_SETS = {"fixed": [0, 3]}
+SPHERE_NODE_SET_IDS = [7]
+
+
+def write_sphere_fixture(path) -> str:
+    """Write the peridynamics-shaped fixture to `path` and return it as a string."""
+    import netCDF4
+
+    path = str(path)
+    with netCDF4.Dataset(path, "w", format="NETCDF3_CLASSIC") as nc:
+        nc.title = "meshio++ test fixture (peridynamics-shaped)"
+        nc.version = np.float32(5.1)
+        nc.api_version = np.float32(5.1)
+        nc.floating_point_word_size = 8
+
+        nc.createDimension("num_nodes", len(SPHERE_POINTS))
+        nc.createDimension("num_dim", 2)
+        nc.createDimension("num_elem", sum(len(b) for b in SPHERE_BLOCK_NODES))
+        nc.createDimension("num_el_blk", len(SPHERE_BLOCK_NODES))
+        nc.createDimension("num_node_sets", len(SPHERE_NODE_SETS))
+        nc.createDimension("len_string", 33)
+        nc.createDimension("time_step", None)
+
+        # coordx/coordy rather than coord, and no coordz at all -- the other of
+        # the two coordinate layouts, and the one a 2-D solver writes.
+        nc.createVariable("coordx", "f8", ("num_nodes",))[:] = SPHERE_POINTS[:, 0]
+        nc.createVariable("coordy", "f8", ("num_nodes",))[:] = SPHERE_POINTS[:, 1]
+
+        nc.createVariable("eb_prop1", "i4", "num_el_blk")[:] = np.array(
+            SPHERE_BLOCK_IDS, dtype=np.int32
+        )
+        _fill_names(
+            nc.createVariable("eb_names", "S1", ("num_el_blk", "len_string")),
+            SPHERE_BLOCK_NAMES,
+        )
+        for k, nodes in enumerate(SPHERE_BLOCK_NODES):
+            nc.createDimension(f"num_el_in_blk{k + 1}", len(nodes))
+            nc.createDimension(f"num_nod_per_el{k + 1}", 1)
+            var = nc.createVariable(
+                f"connect{k + 1}",
+                "i4",
+                (f"num_el_in_blk{k + 1}", f"num_nod_per_el{k + 1}"),
+            )
+            var.elem_type = "SPHERE"  # patched to include its NUL below
+            var[:] = np.array(nodes, dtype=np.int32).reshape(-1, 1) + 1
+
+        # Element attributes, on the first block only.
+        nc.createDimension("num_att_in_blk1", 1)
+        nc.createVariable("attrib1", "f8", ("num_el_in_blk1", "num_att_in_blk1"))[:] = (
+            np.array(SPHERE_RADII, dtype=np.float64).reshape(-1, 1)
+        )
+        _fill_names(
+            nc.createVariable("attrib_name1", "S1", ("num_att_in_blk1", "len_string")),
+            [SPHERE_ATTRIBUTE_NAME],
+        )
+
+        nc.createVariable("ns_prop1", "i4", "num_node_sets")[:] = np.array(
+            SPHERE_NODE_SET_IDS, dtype=np.int32
+        )
+        _fill_names(
+            nc.createVariable("ns_names", "S1", ("num_node_sets", "len_string")),
+            list(SPHERE_NODE_SETS),
+        )
+        for k, nodes in enumerate(SPHERE_NODE_SETS.values()):
+            nc.createDimension(f"num_nod_ns{k + 1}", len(nodes))
+            nc.createVariable(f"node_ns{k + 1}", "i4", (f"num_nod_ns{k + 1}",))[:] = (
+                np.array(nodes, dtype=np.int32) + 1
+            )
+
+    patched = _nul_terminate_elem_type(path, "SPHERE")
+    assert patched == len(SPHERE_BLOCK_NODES), "every connect{k} must be patched"
+    return path
+
+
+def _nul_terminate_elem_type(path, text: str) -> int:
+    """Make every ``elem_type`` attribute equal to ``text`` count its trailing NUL.
+
+    ``netCDF4`` cannot write this: it strips the NUL before handing the value to
+    the C library, whichever spelling you pass. So the classic-format bytes are
+    patched directly, which is exact rather than approximate: a classic attribute
+    is ``[nc_type][nelems][value padded to 4 bytes]``, and since ``len("SPHERE")``
+    is not a multiple of 4 the padded size is the same for 6 and 7 characters.
+    Bumping the recorded count therefore rewrites four bytes in place and shifts
+    no offset anywhere else in the file.
+
+    Returns how many attributes were patched, so a caller can assert it got them
+    all rather than silently testing a file that never had the property.
+    """
+    import struct
+
+    raw = text.encode()
+    assert len(raw) % 4, "needs a spare padding byte: len(text) % 4 must be nonzero"
+    old = struct.pack(">II", 2, len(raw)) + raw  # 2 = NC_CHAR
+    new = struct.pack(">II", 2, len(raw) + 1) + raw
+
+    with open(path, "rb") as f:
+        blob = f.read()
+    count = blob.count(old)
+    if count:
+        with open(path, "wb") as f:
+            f.write(blob.replace(old, new))
+    return count
+
+
 def _fill_names(var, rows) -> None:
     """Fill a char variable one character at a time.
 

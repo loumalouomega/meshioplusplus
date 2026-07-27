@@ -1,3 +1,5 @@
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -15,9 +17,14 @@ from .exodus_fixture import (
     SIDE_SET_EXPECTED,
     SIDE_SET_ID,
     SIDE_SET_NAME,
+    SPHERE_ATTRIBUTE_NAME,
+    SPHERE_BLOCK_NODES,
+    SPHERE_POINTS,
+    SPHERE_RADII,
     TIME_VALUES,
     temperature_at,
     write_fixture,
+    write_sphere_fixture,
 )
 
 netCDF4 = pytest.importorskip("netCDF4")
@@ -47,6 +54,22 @@ def _readers():
             )
         )
     return readers
+
+
+@pytest.fixture
+def sphere_file(tmp_path):
+    """A peridynamics-shaped file: 2-D, NUL-padded SPHERE elem_type, attributes."""
+    return write_sphere_fixture(tmp_path / "spheres.exo")
+
+
+def _writers():
+    """The C++ core writer and the pure-Python twin, which must agree."""
+    writers = [pytest.param(py_exodus.write, id="python")]
+    if _HAS_CPP:
+        writers.append(
+            pytest.param(lambda p, m: _core.exodus_write(str(p), m), id="cpp")
+        )
+    return writers
 
 
 test_set = [
@@ -230,3 +253,246 @@ def test_reader_supports_options():
     if not _HAS_CPP:
         pytest.skip("core built without netCDF")
     assert _core.reader_supports_options("exodus")
+
+
+# ---------------------------------------------------------------------------- #
+# Peridynamics-shaped files: SPHERE elements, 2-D coordinates and per-element    #
+# attributes. See tests/python/exodus_fixture.py's SPHERE_FIXTURE_FACTS.         #
+# ---------------------------------------------------------------------------- #
+
+ATTRIBUTE_KEY = "exodus:attr:" + SPHERE_ATTRIBUTE_NAME
+
+
+@pytest.mark.parametrize("reader", _readers())
+def test_nul_terminated_elem_type_is_read(reader, sphere_file):
+    """The regression: an `elem_type` of "SPHERE\\0" must still be SPHERE.
+
+    NetCDF.jl counts the terminating NUL as part of the attribute, so the C++
+    reader compared 7 characters against its type table and failed with
+    "unknown element type SPHERE" -- the NUL invisible in the message, because
+    `what()` is a `const char*`. netCDF4-python strips it, so only the C++ path
+    (and therefore only WASM, which has no Python fallback) ever failed.
+    """
+    mesh = reader(sphere_file)
+    assert [cb.type for cb in mesh.cells] == ["vertex", "vertex"]
+    for block, nodes in zip(mesh.cells, SPHERE_BLOCK_NODES):
+        assert block.data.reshape(-1).tolist() == nodes
+
+
+@pytest.mark.parametrize("reader", _readers())
+def test_two_dimensional_points_pad_to_three_components(reader, sphere_file):
+    """num_dim=2 with coordx/coordy and no coordz -- z fills with zeros."""
+    mesh = reader(sphere_file)
+    assert mesh.points.shape == (len(SPHERE_POINTS), 3)
+    assert np.allclose(mesh.points[:, :2], SPHERE_POINTS)
+    assert np.all(mesh.points[:, 2] == 0.0)
+
+
+@pytest.mark.parametrize("reader", _readers())
+def test_element_attributes_become_prefixed_cell_data(reader, sphere_file):
+    """A SPHERE's radius lives in `attrib{k}`; it must reach the user as data.
+
+    The prefix keeps it apart from a same-named element *variable*, which is a
+    genuinely different concept (attributes are constant in time).
+    """
+    mesh = reader(sphere_file)
+    assert ATTRIBUTE_KEY in mesh.cell_data
+    values = mesh.cell_data[ATTRIBUTE_KEY]
+    assert len(values) == len(mesh.cells), "one array per cell block"
+    assert values[0].tolist() == SPHERE_RADII
+    # Block 2 carries no attribute at all -- NaN, since a cell_data array must
+    # cover every block and there is no value to report.
+    assert np.all(np.isnan(values[1]))
+
+
+@pytest.mark.parametrize("writer", _writers())
+@pytest.mark.parametrize("reader", _readers())
+def test_element_attributes_round_trip(reader, writer, sphere_file, tmp_path):
+    """Both writers must put attributes back where both readers find them."""
+    mesh = py_exodus.read(sphere_file)
+    out = tmp_path / "out.exo"
+    writer(out, mesh)
+
+    back = reader(out)
+    values = back.cell_data[ATTRIBUTE_KEY]
+    assert values[0].tolist() == SPHERE_RADII
+    # The all-NaN block must NOT gain an attribute of its own: that NaN means
+    # "this block never had one", so writing it back would be inventing data.
+    assert np.all(np.isnan(values[1]))
+    with netCDF4.Dataset(out) as nc:
+        assert "num_att_in_blk1" in nc.dimensions
+        assert "num_att_in_blk2" not in nc.dimensions
+
+
+@pytest.mark.parametrize("writer", _writers())
+def test_non_scalar_element_attribute_is_an_error(writer, sphere_file, tmp_path):
+    """An Exodus attribute is one value per element -- a vector cannot go there."""
+    mesh = py_exodus.read(sphere_file)
+    mesh.cell_data[ATTRIBUTE_KEY] = [np.zeros((len(cb.data), 2)) for cb in mesh.cells]
+    with pytest.raises(Exception, match="scalar"):
+        writer(tmp_path / "bad.exo", mesh)
+
+
+def test_cpp_matches_python_on_spheres(sphere_file):
+    """The shim swaps the two paths freely, so they must agree on this file too."""
+    if not _HAS_CPP:
+        pytest.skip("core built without netCDF")
+    cpp = _core.exodus_read(str(sphere_file))
+    py = py_exodus.read(sphere_file)
+    assert np.allclose(cpp.points, py.points)
+    assert [cb.type for cb in cpp.cells] == [cb.type for cb in py.cells]
+    for a, b in zip(cpp.cells, py.cells):
+        assert np.array_equal(a.data, b.data)
+    assert sorted(cpp.cell_data) == sorted(py.cell_data)
+    for name, arrays in cpp.cell_data.items():
+        for a, b in zip(arrays, py.cell_data[name]):
+            assert np.array_equal(a, b, equal_nan=True)
+
+
+def test_generic_read_handles_spheres(sphere_file):
+    """The public entry point, i.e. what the CLI and every consumer goes through."""
+    mesh = meshioplusplus.read(sphere_file)
+    assert [cb.type for cb in mesh.cells] == ["vertex", "vertex"]
+    assert mesh.cell_data[ATTRIBUTE_KEY][0].tolist() == SPHERE_RADII
+
+
+# ---------------------------------------------------------------------------- #
+# The real PeriLab output from VSCode-MDPA-Preview#63. Everything above          #
+# constructs the failing shape; this is the file that actually failed. See       #
+# tests/python/meshes/exodus/README.md for provenance and licensing.             #
+# ---------------------------------------------------------------------------- #
+
+PERILAB_FILE = (
+    pathlib.Path(__file__).resolve().parent
+    / "meshes"
+    / "exodus"
+    / "DCBmodel_PD_solid.e"
+)
+
+#: 4 SPHERE element blocks, in file order.
+PERILAB_BLOCK_SIZES = [216, 216, 36, 36]
+PERILAB_POINT_DATA = [
+    "Cauchy Stressxx",
+    "Cauchy Stressxy",
+    "Cauchy Stressyx",
+    "Cauchy Stressyy",
+    "Damage",
+    "Displacementsx",
+    "Displacementsy",
+    "Forcesx",
+    "Forcesy",
+]
+PERILAB_NUM_STEPS = 10
+
+
+@pytest.fixture
+def perilab_file():
+    """The reference file, having checked it is not an unfetched LFS pointer.
+
+    A hard failure with a readable message rather than a skip: the two CI jobs
+    that run this suite (`test`, `coverage`) both check out with `lfs: true`, so
+    a pointer here means the checkout is broken, and skipping would let that
+    look green. The netCDF error you get from reading a 130-byte pointer says
+    nothing about the cause.
+    """
+    with open(PERILAB_FILE, "rb") as f:
+        if f.read(24).startswith(b"version https://git-lfs"):
+            pytest.fail(f"{PERILAB_FILE.name} is a Git-LFS pointer; run `git lfs pull`")
+    return PERILAB_FILE
+
+
+def test_the_reference_file_still_carries_a_nul_terminated_elem_type(perilab_file):
+    """Guard the fixture's defining property, not just the code that reads it.
+
+    Everything below passes just as well against a file whose `elem_type` is a
+    plain 6-character "SPHERE" — so if this file were ever re-fetched from an
+    upstream that had switched netCDF writers, the regression suite would go on
+    passing while testing nothing. The classic-format encoding of an attribute
+    is `[nc_type][nelems][value]`, so assert the recorded length is 7, i.e. that
+    the terminating NUL is genuinely counted in.
+    """
+    import struct
+
+    blob = perilab_file.read_bytes()
+    assert not blob.startswith(
+        b"version https://git-lfs"
+    ), "the fixture is an unfetched Git-LFS pointer; run `git lfs pull`"
+    padded = struct.pack(">II", 2, 7) + b"SPHERE\x00"  # 2 = NC_CHAR
+    plain = struct.pack(">II", 2, 6) + b"SPHERE"
+    assert blob.count(padded) == len(PERILAB_BLOCK_SIZES)
+    assert blob.count(plain) == 0, "no block may have the plain 6-character form"
+
+
+@pytest.mark.parametrize("reader", _readers())
+def test_perilab_reference_file(reader, perilab_file):
+    """The end-to-end regression: this read used to fail on the C++ path.
+
+    `Exodus: unknown element type SPHERE` — on a type both tables had mapped to
+    `vertex` all along. Only the C++ reader compared the NUL too, so this was
+    invisible from Python and fatal in WASM, which has no fallback.
+    """
+    mesh = reader(perilab_file)
+
+    assert [cb.type for cb in mesh.cells] == ["vertex"] * len(PERILAB_BLOCK_SIZES)
+    assert [len(cb.data) for cb in mesh.cells] == PERILAB_BLOCK_SIZES
+    # num_dim = 2 (coordx/coordy, no coordz): points pad out to three columns.
+    assert mesh.points.shape == (504, 3)
+    assert np.all(mesh.points[:, 2] == 0.0)
+
+    assert sorted(mesh.point_data) == PERILAB_POINT_DATA
+    # None of these recombine: `categorize()` only pairs names ending in an
+    # UPPERCASE X/Y/Z, and PeriLab writes "Displacementsx".
+    assert mesh.point_data["Damage"].shape == (504,)
+
+    cell_regions = {r.name: r for r in mesh.regions if r.kind == "cell"}
+    assert sorted(cell_regions) == ["block_1", "block_2", "block_3", "block_4"]
+    for name, size in zip(sorted(cell_regions), PERILAB_BLOCK_SIZES):
+        # A SPHERE is topologically a point, so its blocks are dimension 0.
+        assert len(cell_regions[name].entries) == size
+        assert cell_regions[name].dim == 0
+    point_regions = [r for r in mesh.regions if r.kind == "point"]
+    assert len(point_regions) == 2
+    assert all(len(r.entries) == 36 for r in point_regions)
+
+    # qa_records/info_records: real provenance, the thing that used to throw.
+    assert any("PeriLab" in line for line in mesh.info)
+
+
+@pytest.mark.parametrize("reader", _readers())
+def test_perilab_reference_file_time_steps(reader, perilab_file):
+    """A genuine 10-step run: the damage field is what makes a wrong step visible."""
+    first = reader(perilab_file, time_step=0)
+    last = reader(perilab_file, time_step=-1)
+    # Undamaged at t=0 and cracked at the end -- so a reader silently pinned to
+    # step 0 (the pre-v8.6.0 behaviour) would fail this, not merely differ.
+    assert np.nanmax(first.point_data["Damage"]) == 0.0
+    assert np.nanmax(last.point_data["Damage"]) == pytest.approx(0.48148148, abs=1e-7)
+
+    meta = meshioplusplus.read_metadata(perilab_file)
+    assert meta["format"] == "exodus"
+    assert len(meta["time_values"]) == PERILAB_NUM_STEPS
+    assert meta["time_values"][0] == 0.0
+
+
+def test_perilab_reference_file_cpp_matches_python(perilab_file):
+    """The shim swaps the paths freely, so they must agree on the real file too."""
+    if not _HAS_CPP:
+        pytest.skip("core built without netCDF")
+    cpp = _core.exodus_read(str(perilab_file))
+    py = py_exodus.read(perilab_file)
+    assert np.array_equal(cpp.points, py.points)
+    assert [cb.type for cb in cpp.cells] == [cb.type for cb in py.cells]
+    for a, b in zip(cpp.cells, py.cells):
+        assert np.array_equal(a.data, b.data)
+    assert sorted(cpp.point_data) == sorted(py.point_data)
+    for name in cpp.point_data:
+        assert np.array_equal(cpp.point_data[name], py.point_data[name])
+    assert list(cpp.info) == list(py.info)
+
+    def key(regions):
+        return sorted(
+            (r.name, r.kind, r.dim, r.tag, tuple(map(tuple, np.atleast_2d(r.entries))))
+            for r in regions
+        )
+
+    assert key(cpp.regions) == key(py.regions)

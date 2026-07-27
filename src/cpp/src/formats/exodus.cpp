@@ -23,9 +23,11 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -184,6 +186,31 @@ std::vector<std::string> read_names(int ncid, int varid) {
     out.reserve(n);
     for (std::size_t i = 0; i < n; ++i)
         out.emplace_back(buf.data() + i * w, strnlen(buf.data() + i * w, w));
+    return out;
+}
+
+// A netCDF text attribute, with the padding some writers count as part of its
+// own length trimmed off.
+//
+// NetCDF.jl -- what PeriLab and other Julia solvers write Exodus with -- stores
+// the C string's terminating NUL *inside* the attribute, so a SPHERE block's
+// `elem_type` arrives as the 7 characters "SPHERE\0" and matches no key in
+// `exodus_to_meshio()`. The read then failed with "unknown element type SPHERE"
+// -- the NUL invisible, since `std::runtime_error::what()` is a `const char*`
+// that stops at it. netCDF4-python strips the NUL on the way in, so the Python
+// reference never saw this and the shim's fallback hid it everywhere except
+// WASM, which has no fallback. Fixed-width writers pad with spaces instead;
+// both are trimmed here.
+std::string read_att_text(int ncid, int varid, const char* pName) {
+    std::size_t attlen = 0;
+    check(nc_inq_attlen(ncid, varid, pName, &attlen), pName);
+    std::string out(attlen, '\0');
+    if (attlen > 0)
+        check(nc_get_att_text(ncid, varid, pName, out.data()), pName);
+    // The set is built with an explicit length: a `const char*` would end at
+    // the NUL that is the whole point of this trim.
+    const std::size_t last = out.find_last_not_of(std::string("\0 \t\r\n", 5));
+    out.erase(last == std::string::npos ? 0 : last + 1);
     return out;
 }
 
@@ -465,6 +492,70 @@ void exo_add_regions(Mesh& rMesh, const std::vector<std::string>& rBlockTypes,
     }
 }
 
+// Turn Exodus per-element attributes into `cell_data` under
+// `kExodusAttributePrefix`.
+//
+// `attrib{k}` is `(num_el_in_blk{k}, num_att_in_blk{k})` -- one column per
+// attribute, one row per element -- while cell_data is the other way round: one
+// array per *name*, holding one sub-array per cell block. So the columns are
+// transposed out here, and a block that does not carry a given attribute is
+// filled with NaN. That fill is not just padding: it is the signal `write_exodus`
+// reads back to leave the attribute out of that block again, which is what makes
+// a mixed file round-trip.
+//
+// Values are always Float64 (Exodus attributes are floating point by definition,
+// and NaN needs somewhere to live) regardless of the on-disk type.
+void exo_add_attributes(Mesh& rMesh, const std::vector<int>& rBlockKeys,
+                        const std::map<int, NDArray>& rAttribs,
+                        const std::map<int, std::vector<std::string>>& rNames) {
+    const std::size_t nblocks = rBlockKeys.size();
+    if (nblocks == 0 || rAttribs.empty())
+        return;
+
+    // name -> block position -> that block's column. `std::map` keeps the
+    // cell_data insertion order deterministic across runs and backends.
+    std::map<std::string, std::map<std::size_t, std::vector<double>>> by_name;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        auto ait = rAttribs.find(rBlockKeys[b]);
+        if (ait == rAttribs.end())
+            continue;
+        const NDArray& att = ait->second;
+        const std::size_t rows = att.Shape().empty() ? 0 : att.Shape()[0];
+        const std::size_t cols = att.Shape().size() >= 2 ? att.Shape()[1] : 1;
+        auto nit = rNames.find(rBlockKeys[b]);
+        for (std::size_t c = 0; c < cols; ++c) {
+            std::string name;
+            if (nit != rNames.end() && c < nit->second.size())
+                name = nit->second[c];
+            // An unnamed attribute is still an attribute -- SEACAS writes
+            // `attrib_name{k}` blank often enough. Naming it by its 1-based
+            // column is what lets two blocks agree on which one is "the first".
+            if (name.empty())
+                name = "attribute" + std::to_string(c + 1);
+            std::vector<double> vals(rows, 0.0);
+            for (std::size_t r = 0; r < rows; ++r)
+                vals[r] = detail::read_double(att, r * cols + c);
+            by_name[std::string(kExodusAttributePrefix) + name].emplace(b, std::move(vals));
+        }
+    }
+
+    for (auto& kv : by_name) {
+        std::vector<NDArray> per_block;
+        per_block.reserve(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const std::size_t n = rMesh.Cells(b).NumCells();
+            NDArray arr(DType::Float64, {n});
+            auto it = kv.second.find(b);
+            for (std::size_t r = 0; r < n; ++r)
+                arr.As<double>()[r] = (it != kv.second.end() && r < it->second.size())
+                                          ? it->second[r]
+                                          : std::numeric_limits<double>::quiet_NaN();
+            per_block.push_back(std::move(arr));
+        }
+        rMesh.AddCellData(kv.first, std::move(per_block));
+    }
+}
+
 NDArray column_stack(const std::vector<const NDArray*>& rCols) {
     std::size_t n = rCols.empty() || rCols[0]->Shape().empty() ? 0 : rCols[0]->Shape()[0];
     NDArray out(rCols[0]->Dtype(), {n, rCols.size()});
@@ -521,6 +612,12 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
     std::map<int, std::vector<std::int64_t>> side_elems;  // set k -> element ids (1-based)
     std::map<int, std::vector<std::int64_t>> side_sides;  // set k -> Exodus side numbers
 
+    // Per-element attributes, keyed by the same block number `connect{k}` uses.
+    // Kept raw here and turned into cell_data once the blocks are ordered, since
+    // a cell_data array is per *mesh block position*, not per file block id.
+    std::map<int, NDArray> attribs;                        // block k -> (n_el, n_att)
+    std::map<int, std::vector<std::string>> attrib_names;  // block k -> per-column names
+
     // Resolve the requested time step up front, so an out-of-range request
     // fails before any heavy array is decoded rather than midway through.
     const std::vector<double> time_values = exo_time_values(ncid);
@@ -557,12 +654,14 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             side_elems[exo_suffix(key, 7)] = read_ints(ncid, varid);
         } else if (key.rfind("side_ss", 0) == 0) {
             side_sides[exo_suffix(key, 7)] = read_ints(ncid, varid);
+        } else if (key.rfind("attrib_name", 0) == 0) {
+            // Tested before "attrib", which is its prefix.
+            attrib_names[exo_suffix(key, 11)] = read_names(ncid, varid);
+        } else if (key.rfind("attrib", 0) == 0) {
+            attribs[exo_suffix(key, 6)] =
+                read_var(ncid, varid, std::vector<std::size_t>(dims.size(), 0), dims);
         } else if (key.rfind("connect", 0) == 0) {
-            char et[NC_MAX_NAME + 1] = {0};
-            std::size_t attlen = 0;
-            check(nc_inq_attlen(ncid, varid, "elem_type", &attlen), "elem_type len");
-            check(nc_get_att_text(ncid, varid, "elem_type", et), "elem_type");
-            std::string elem_type(et, attlen);
+            std::string elem_type = read_att_text(ncid, varid, "elem_type");
             std::transform(elem_type.begin(), elem_type.end(), elem_type.begin(),
                            [](unsigned char c) { return std::toupper(c); });
             auto it = exodus_to_meshio().find(elem_type);
@@ -647,14 +746,18 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
     std::sort(blocks.begin(), blocks.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
     std::vector<std::string> block_types;
+    std::vector<int> block_keys;  // the file's block number per mesh block position
     block_types.reserve(blocks.size());
+    block_keys.reserve(blocks.size());
     for (auto& b : blocks) {
         block_types.push_back(b.second.mType);
+        block_keys.push_back(b.first);
         mesh.AddCellBlock(b.second.mType, std::move(b.second.mData));
     }
 
     exo_add_regions(mesh, block_types, eb_names, eb_ids, ns_names, ns_ids, node_sets, ss_names,
                     ss_ids, side_elems, side_sides);
+    exo_add_attributes(mesh, block_keys, attribs, attrib_names);
 
     // Point data with X/Y/Z + _R/_Z recombination.
     if (!point_data_names.empty()) {
@@ -861,6 +964,74 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         }
         if (shifted.Size() > 0)
             check(nc_put_var(ncid, var, shifted.Data()), "connect", true);
+    }
+
+    // Per-element attributes: every cell_data array whose name starts with
+    // `kExodusAttributePrefix` goes back out as a column of `attrib{k}`, named in
+    // `attrib_name{k}`. Everything else in cell_data is left alone (this writer
+    // emits no `vals_elem_var` at all -- a separate, pre-existing gap).
+    {
+        const std::string prefix(kExodusAttributePrefix);
+        std::vector<std::string> att_names;
+        for (const auto& name : rMesh.CellDataNames())
+            if (name.rfind(prefix, 0) == 0)
+                att_names.push_back(name);
+
+        for (std::size_t k = 0; k < rMesh.NumCellBlocks() && !att_names.empty(); ++k) {
+            const std::size_t n = rMesh.Cells(k).NumCells();
+            std::vector<std::string> names;
+            std::vector<const NDArray*> cols;
+            for (const auto& full : att_names) {
+                const NDArray& arr = rMesh.CellData(full, k);
+                if (detail::cols(arr) != 1)
+                    throw WriteError("Exodus: element attribute '" + full +
+                                     "' must be scalar (one value per element)");
+                // A block whose values are all non-finite never carried this
+                // attribute -- that NaN is exactly what the reader fills in for a
+                // block the file left it out of. Skipping it here is what makes a
+                // mixed file round-trip instead of gaining NaN attributes.
+                bool any_finite = false;
+                for (std::size_t r = 0; r < n && !any_finite; ++r)
+                    any_finite = std::isfinite(detail::read_double(arr, r));
+                if (!any_finite)
+                    continue;
+                names.push_back(full.substr(prefix.size()));
+                cols.push_back(&arr);
+            }
+            if (names.empty())
+                continue;
+
+            std::string dim_el = "num_el_in_blk" + std::to_string(k + 1);
+            std::string dim_att = "num_att_in_blk" + std::to_string(k + 1);
+            int d_el, d_att;
+            check(nc_inq_dimid(ncid, dim_el.c_str(), &d_el), "num_el_in_blk", true);
+            check(nc_def_dim(ncid, dim_att.c_str(), names.size(), &d_att), "def num_att_in_blk",
+                  true);
+
+            int dims[2] = {d_el, d_att};
+            int var;
+            std::string vname = "attrib" + std::to_string(k + 1);
+            check(nc_def_var(ncid, vname.c_str(), NC_DOUBLE, 2, dims, &var), "def attrib", true);
+            NDArray flat(DType::Float64, {n, names.size()});
+            for (std::size_t r = 0; r < n; ++r)
+                for (std::size_t c = 0; c < names.size(); ++c)
+                    flat.As<double>()[r * names.size() + c] = detail::read_double(*cols[c], r);
+            if (flat.Size() > 0)
+                check(nc_put_var(ncid, var, flat.Data()), "attrib", true);
+
+            int name_dims[2] = {d_att, d_str};
+            int name_var;
+            std::string nname = "attrib_name" + std::to_string(k + 1);
+            check(nc_def_var(ncid, nname.c_str(), NC_CHAR, 2, name_dims, &name_var),
+                  "def attrib_name", true);
+            for (std::size_t c = 0; c < names.size(); ++c) {
+                std::size_t start[2] = {c, 0};
+                std::size_t count[2] = {1, std::min<std::size_t>(names[c].size(), 33)};
+                if (count[1] > 0)
+                    check(nc_put_vara_text(ncid, name_var, start, count, names[c].c_str()),
+                          "attrib_name", true);
+            }
+        }
     }
 
     // point data

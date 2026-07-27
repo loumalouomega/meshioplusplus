@@ -8,6 +8,59 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.3.0 (2026-07-27)
+
+Exodus support for particle/peridynamics meshes, from
+[VSCode-MDPA-Preview#63](https://github.com/loumalouomega/VSCode-MDPA-Preview/issues/63).
+Both items are additive.
+
+### Exodus
+
+- **Fixed: a NUL-terminated `elem_type` made a file unreadable.** netCDF text
+  attributes carry an explicit length, and NetCDF.jl — what PeriLab and other
+  Julia solvers write Exodus with — counts the C string's terminating NUL as part
+  of it. A `SPHERE` block therefore arrived as the 7 characters `"SPHERE\0"`,
+  matched no key in the C++ reader's type table, and failed the read with
+  `Exodus: unknown element type SPHERE` — the NUL invisible in the message,
+  because `std::runtime_error::what()` is a `const char*` that stops at it.
+  `netCDF4` strips the NUL on the way in, so the Python reference never saw this
+  and the shim's silent fallback hid it everywhere **except WASM**, which has no
+  fallback; that is why it surfaced in the VS Code extension rather than in
+  Python. Both readers now trim trailing NULs and spaces before the type lookup,
+  which also covers fixed-width writers that pad with spaces. `SPHERE` itself was
+  already mapped to `vertex` on both paths — nothing about the type table
+  changed.
+- **Per-element attributes now round-trip as `cell_data`.** Exodus stores a fixed
+  number of floating-point attributes per element of a block (`attrib{k}`, named
+  by `attrib_name{k}`) — the standard home for a `SPHERE`'s **radius**, a beam's
+  cross-section, a shell's thickness. meshio++ read none of them. They now read
+  and write under the `exodus:attr:` prefix (`cell_data["exodus:attr:RADIUS"]`),
+  on both the C++ and the Python path, so the value reaches every binding that
+  carries cell_data. The prefix is load-bearing in both directions: on read it
+  keeps an attribute apart from a same-named element *variable* (`name_elem_var`
+  — constant in time vs. per-time-step, genuinely different concepts), and on
+  write it is the only signal saying which `cell_data` arrays belong in
+  `attrib{k}`. Values are always float64; a block the file gives no such
+  attribute reads as NaN, and on write an all-non-finite block is left out again,
+  so a file where only some blocks carry an attribute round-trips exactly rather
+  than gaining NaN attributes. A multi-component array under the prefix is a
+  `WriteError` naming it, since an Exodus attribute is one value per element.
+  Ordinary (non-attribute) `cell_data` is still dropped on write — neither writer
+  emits `vals_elem_var`, a pre-existing gap this does not change.
+- **The file that failed is now a committed fixture**, at
+  `tests/python/meshes/exodus/DCBmodel_PD_solid.e` (Git-LFS): a real PeriLab
+  double-cantilever-beam run — 504 `SPHERE` particles in four blocks, 2-D
+  coordinates, nine nodal fields and ten time steps whose damage field goes from
+  0 to 0.48, so a reader pinned to the first step fails rather than merely
+  differs. A hand-authored fixture can reproduce the shape but not the encoding
+  (`netCDF4` strips the NUL whatever spelling you pass), so both exist, and a
+  byte-level test asserts the fixture still carries the NUL — otherwise a
+  re-fetch from an upstream that changed writers would leave the regression
+  suite passing while testing nothing. It is redistributed unmodified under
+  **BSD-3-Clause** (Copyright (c) 2023 Christian Willberg, Jan-Timo Hesse, DLR)
+  with its notice and licence text alongside; permissive, so no obligation
+  attaches to the rest of this MIT repository. Credited in `CITATION.cff`.
+
 ## v9.2.0 (2026-07-27)
 
 Fixes the gaps a real Kratos Multiphysics consumer hit while building against
