@@ -207,3 +207,21 @@ sensibly in code compiled against an older header.
 Conan gains `with_zstd` / `with_lz4` and vcpkg gains `zstd` / `lz4` features, both **off by
 default** (unlike `with_hdf5`/`with_netcdf`/`with_zlib`). zlib remains the default codec, so
 existing package IDs and consumers are unaffected. See [Compression codecs](codecs.md).
+
+## v9.1.0 additions
+
+- `mio_read_opts.lenient` — downgrade "this reader cannot represent construct X"
+  to a warning plus a skip (currently mdpa only). It took a second former
+  `reserved` slot, so `sizeof(mio_read_opts)` and every preceding offset are
+  unchanged. See [`doc/selective_read.md`](selective_read.md).
+- Transient XDMF: `mio_xdmf_series_create_ex` + `mio_xdmf_series_opts` (append
+  mode, auto-flush), `mio_xdmf_series_flush`, `mio_xdmf_series_finalized`, and
+  `mio_xdmf_series_write_data_arrays` + `mio_named_array` for writing a step from
+  raw solver arrays. `mio_xdmf_series_create` is unchanged. See
+  [`doc/xdmf_time_series.md`](xdmf_time_series.md).
+
+**Not on this ABI, by design:** `MdpaInfo` (MDPA properties bodies and entity
+names) is dropped by the registry, exactly as `MedInfo`/`ExodusInfo` are — the
+C ABI cannot hand out a variable-length tree of typed values. `ModelPart`,
+entity names and the Kratos bridge are likewise unreachable here; that is the
+reason the installable C++ API (`MESHIOPLUSPLUS_INSTALL_CPP`) exists at all.

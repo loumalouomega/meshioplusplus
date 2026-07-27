@@ -110,6 +110,26 @@ struct bridge_traits {
     static IndexType PropertiesIdOf(const TEntity& rEntity) {
         return rEntity.PropertiesId();
     }
+    /**
+     * @brief The entity's Kratos registration name, `""` to derive it.
+     *
+     * Detection-guarded rather than required, so every existing duck-typed
+     * source (CoSimIO's simplified ModelPart, the mocks in
+     * `tests/cpp/test_kratos_bridge.cpp`, a consumer's own class) keeps
+     * compiling untouched and simply reports "no name".
+     *
+     * Real Kratos does not store the registered name on the element -- it lives
+     * in `KratosComponents<Element>` -- so a Kratos consumer specializes this
+     * to whatever their application knows, typically the name they used when
+     * creating the entity.
+     */
+    template <class TEntity>
+    static std::string NameOf(const TEntity& rEntity) {
+        if constexpr (requires { rEntity.Name(); })
+            return rEntity.Name();
+        else
+            return {};
+    }
 };
 
 namespace detail {
@@ -168,12 +188,17 @@ void to_model_part(const ModelPart& rSource, TModelPart& rDest,
                    TPropertiesGetter&& rGetProperties) {
     for (const Node& r_node : rSource.Nodes())
         rDest.CreateNewNode(r_node.Id(), r_node.X(), r_node.Y(), r_node.Z());
+    // A name the source carries wins over the derived one: deriving is lossy in
+    // one direction only, so re-deriving here is what turned every
+    // SmallDisplacementElement3D4N into a plain Element3D4N.
     for (const Element& r_elem : rSource.Elements())
-        rDest.CreateNewElement(kratos_element_name(r_elem.Type()), r_elem.Id(), r_elem.NodeIds(),
-                               rGetProperties(r_elem.PropertiesId()));
+        rDest.CreateNewElement(
+            r_elem.HasName() ? r_elem.Name() : kratos_element_name(r_elem.Type()), r_elem.Id(),
+            r_elem.NodeIds(), rGetProperties(r_elem.PropertiesId()));
     for (const Condition& r_cond : rSource.Conditions())
-        rDest.CreateNewCondition(kratos_condition_name(r_cond.Type()), r_cond.Id(),
-                                 r_cond.NodeIds(), rGetProperties(r_cond.PropertiesId()));
+        rDest.CreateNewCondition(
+            r_cond.HasName() ? r_cond.Name() : kratos_condition_name(r_cond.Type()), r_cond.Id(),
+            r_cond.NodeIds(), rGetProperties(r_cond.PropertiesId()));
     detail::copy_sub_model_parts(rSource, rDest);
 }
 
@@ -185,6 +210,42 @@ void to_model_part(const ModelPart& rSource, TModelPart& rDest,
 template <class TModelPart>
 void to_model_part(const ModelPart& rSource, TModelPart& rDest) {
     to_model_part(rSource, rDest, [](IndexType propertiesId) { return propertiesId; });
+}
+
+/**
+ * @brief `to_model_part` overload that also transfers the material data.
+ *
+ * meshio++ cannot fill a real `Kratos::Properties` itself: doing so needs
+ * `KratosComponents<Variable<double>>::Get(key)`, Kratos's own variable
+ * registry, which is deliberately not linked here and never will be. So the
+ * key/value pairs are handed to the caller one at a time and the caller does
+ * the typed assignment -- five lines they already know how to write:
+ *
+ * @code
+ * mio::to_model_part(source, r_kratos_mp,
+ *     [&](mio::IndexType id) { return r_kratos_mp.pGetProperties(id); },
+ *     [](auto p_props, const mio::PropertyValue& r_v) {
+ *         if (r_v.IsText() || r_v.mIsTable) return;   // handled by the app
+ *         p_props->SetValue(Kratos::KratosComponents<Kratos::Variable<double>>::Get(r_v.mKey),
+ *                           r_v.mValues.template As<double>()[0]);
+ *     });
+ * @endcode
+ *
+ * Properties are applied **before** the entity loop, so the destination's
+ * `pGetProperties` sees populated blocks by the time entities reference them.
+ *
+ * @tparam TPropertyApplier Callable `(properties handle, const PropertyValue&)`.
+ * @param rApplyProperty Invoked once per value of each properties block.
+ */
+template <class TModelPart, class TPropertiesGetter, class TPropertyApplier>
+void to_model_part(const ModelPart& rSource, TModelPart& rDest, TPropertiesGetter&& rGetProperties,
+                   TPropertyApplier&& rApplyProperty) {
+    for (const PropertySet& r_set : rSource.Properties()) {
+        auto props = rGetProperties(static_cast<IndexType>(r_set.mId));
+        for (const PropertyValue& r_value : r_set.mValues)
+            rApplyProperty(props, r_value);
+    }
+    to_model_part(rSource, rDest, std::forward<TPropertiesGetter>(rGetProperties));
 }
 
 /**
@@ -207,12 +268,18 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
     for (const auto& r_node : rSource.Nodes())
         out.CreateNewNode(Traits::IdOf(r_node), Traits::XOf(r_node), Traits::YOf(r_node),
                           Traits::ZOf(r_node));
+    // The five-argument overloads: the same unvalidated bulk path as before,
+    // now also carrying the source's own entity name. An empty NameOf (the
+    // default for any source that has no such accessor) stores no name, which
+    // is byte-for-byte the previous behaviour.
     for (const auto& r_elem : rSource.Elements())
         out.CreateNewElement(Traits::TypeOf(r_elem), Traits::IdOf(r_elem),
-                             Traits::ConnectivityOf(r_elem), Traits::PropertiesIdOf(r_elem));
+                             Traits::ConnectivityOf(r_elem), Traits::PropertiesIdOf(r_elem),
+                             Traits::NameOf(r_elem));
     for (const auto& r_cond : rSource.Conditions())
         out.CreateNewCondition(Traits::TypeOf(r_cond), Traits::IdOf(r_cond),
-                               Traits::ConnectivityOf(r_cond), Traits::PropertiesIdOf(r_cond));
+                               Traits::ConnectivityOf(r_cond), Traits::PropertiesIdOf(r_cond),
+                               Traits::NameOf(r_cond));
     detail::copy_sub_model_parts_from(rSource, out);
     return out;
 }

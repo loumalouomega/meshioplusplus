@@ -119,6 +119,39 @@ MESHIOPLUSPLUS_API Hid open_file_read(const std::string& rPath);
 MESHIOPLUSPLUS_API Hid create_file(const std::string& rPath);
 
 /**
+ * @brief Opens an existing HDF5 file for reading *and* writing.
+ *
+ * Distinct from both `open_file_read` (read-only) and `create_file` (which
+ * truncates): appending to a file that already carries datasets needs a third
+ * mode, and reaching for `create_file` would silently destroy the very data an
+ * append is meant to continue.
+ *
+ * @param rPath Filesystem path of the file to open.
+ * @return Owning `Hid` for the open file.
+ * @throws WriteError if the file cannot be opened read-write.
+ */
+MESHIOPLUSPLUS_API Hid open_file_rw(const std::string& rPath);
+
+/**
+ * @brief Flush a file's buffers to disk without closing it.
+ *
+ * What makes a partially-written series readable by another process: HDF5
+ * buffers aggressively, so an un-flushed `.h5` can be unopenable even though
+ * every dataset was "written".
+ *
+ * @param rFile An open file handle; an invalid handle is a no-op.
+ * @throws WriteError if the flush fails.
+ */
+MESHIOPLUSPLUS_API void flush_file(Hid& rFile);
+
+/**
+ * @brief The names of every link directly under a group or file.
+ * @param loc Group or file handle to list.
+ * @return Link names in the container's own iteration order.
+ */
+MESHIOPLUSPLUS_API std::vector<std::string> link_names(hid_t loc);
+
+/**
  * @brief Whether a link named `name` exists directly under group/file `loc`.
  * @param loc Group or file handle to look under.
  * @param rName Link name to test.
@@ -208,7 +241,8 @@ MESHIOPLUSPLUS_API NDArray read_dataset(hid_t loc, const std::string& rName);
  *                   compression (the default).
  * @throws WriteError if the dataset cannot be created or the write fails.
  */
-MESHIOPLUSPLUS_API void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int gzip_level = -1);
+MESHIOPLUSPLUS_API void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr,
+                                      int gzip_level = -1);
 
 // ---- attribute helpers ----
 
@@ -238,7 +272,7 @@ MESHIOPLUSPLUS_API std::int64_t read_attr_int(hid_t loc, const std::string& rNam
  * @throws WriteError if the attribute cannot be created.
  */
 MESHIOPLUSPLUS_API void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v,
-                    hid_t ftype = H5T_STD_I64LE);
+                                       hid_t ftype = H5T_STD_I64LE);
 
 /**
  * @brief Reads a string attribute, handling both variable- and fixed-length
@@ -265,7 +299,8 @@ MESHIOPLUSPLUS_API std::string read_attr_string(hid_t loc, const std::string& rN
  * @param rValue String value to write.
  * @throws WriteError if the attribute cannot be created.
  */
-MESHIOPLUSPLUS_API void write_attr_string(hid_t loc, const std::string& rName, const std::string& rValue);
+MESHIOPLUSPLUS_API void write_attr_string(hid_t loc, const std::string& rName,
+                                          const std::string& rValue);
 
 /**
  * @brief Lists the link (child) names directly under a group, in HDF5's

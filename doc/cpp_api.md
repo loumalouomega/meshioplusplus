@@ -166,3 +166,66 @@ See the [C API's package-manager notes](/c_api#package-managers-conan-vcpkg) for
 * An HDF5-enabled install requires **`C` among your project's languages** (above).
 * Names under `detail/` are installed (the public headers need them) but are **not** a stable API.
 * `KratosMesh::InvalidateBlocks()`'s rebuild cannot recover a SubModelPart's *nesting* (regions are flat) or a region's `mDim`/`mTag`, which a SubModelPart has nowhere to store — see [mesh backends](/cpp_backends).
+
+## Versioning: what to pin
+
+The two installed components make **different** compatibility promises, and the
+CMake package's `SameMajorVersion` mode describes only the first.
+
+- **`COMPONENTS C`** (`libmeshioplusplus`, the flat C ABI) — `SOVERSION 0`, and
+  the option structs (`mio_read_opts`, `mio_write_opts`, `mio_xdmf_series_opts`)
+  grow only into their `reserved` tails, so a binary compiled against 9.0
+  headers keeps running against a 9.1 `.so`. Pin the major:
+
+  ```cmake
+  find_package(meshioplusplus 9 CONFIG REQUIRED COMPONENTS C)
+  ```
+
+- **`COMPONENTS CXX`** — **no ABI promise at all.** `Mesh`, `ModelPart` and
+  `GeometricalEntity` are header-defined types whose layout changes with the
+  headers; v9.1.0 added a member to `GeometricalEntity`, for instance. The
+  library and every consumer translation unit must be compiled from the *same*
+  meshio++ version, and a consumer must be rebuilt whenever meshio++ is:
+
+  ```cmake
+  find_package(meshioplusplus 9.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
+  ```
+
+  For distribution packaging that means an exact `= 9.1.x` dependency, not a
+  range. The `SOVERSION 0` on the C++ variants exists so the files install
+  cleanly, not as a compatibility claim.
+
+The mesh-backend macro rides in `INTERFACE_COMPILE_DEFINITIONS`, so a CMake
+consumer cannot disagree about the backend by accident; a non-CMake consumer
+that defines none gets an undefined `mesh_backend_is_<backend>` at link time
+instead (`MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` opts out).
+
+## `MESHIOPLUSPLUS_NO_STD_SPAN`
+
+Boost's uBLAS and MSVC's `<span>` both use an internal macro named
+`_BACKUP_ITERATOR_DEBUG_LEVEL`, so any MSVC translation unit including both
+fails inside `<span>` itself ([boostorg/ublas#77](https://github.com/boostorg/ublas/issues/77)).
+Kratos uses uBLAS, so this is a real collision. Three facts about the escape
+hatch, all of which CI now gates:
+
+- It guards **only** the `<span>` include and the inline `NativeMesh::ConnSpan()`
+  accessor. No member variable is involved, so it is **ABI-neutral**.
+- The guard is `#ifndef`, so **a consumer can define it themselves** —
+  `target_compile_definitions(app PRIVATE MESHIOPLUSPLUS_NO_STD_SPAN)` — against
+  *any* prefix, including a distro or Conan build that left the CMake option
+  off. A private meshio++ build is not required.
+- A build that sets the CMake option exports it (through
+  `INTERFACE_COMPILE_DEFINITIONS` and `meshioplusplus-cxx.pc`), so consumers of
+  such a prefix inherit the same choice by default.
+
+## Parallelism: meshio++ is serial
+
+There is **no MPI in the library**: no distributed reader or writer, no
+communicator anywhere in the API, and none planned. `FindMPI` appearing in the
+generated package config is HDF5's transitive requirement (a parallel HDF5 needs
+`mpi.h` even for purely serial use of its API), not meshio++'s.
+
+The intended distributed workflow is to decompose and then let each rank handle
+its own piece: `partition(mesh, {nparts, ghost_layers})` produces exactly the
+shared-node halo an MPI assembly needs when `mGhostLayers > 0`. All parallelism
+inside meshio++ is intra-process (`MESHIOPLUSPLUS_PARALLEL_BACKEND`).

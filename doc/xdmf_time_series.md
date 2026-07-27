@@ -286,3 +286,97 @@ seven free functions rather than an embind `class_`, so that no live C++ object
 - With `data_format="HDF"`, all numerical data goes into a companion `<stem>.h5` file. Both files must be present to read.
 - `data_format="XML"` embeds all data directly into the XML, which avoids external files but produces large `.xdmf` files.
 - `data_format="Binary"` writes one `.bin` file per data array; useful when HDF5 is not available.
+
+## Crash resilience: `Flush()` and append mode
+
+By default the light data (`.xdmf`) is written once, at `Finalize()`: the
+temporal collection element has to enclose every step. That is fine for a script
+that runs to completion and wrong for a solve that is killed, hits a node
+failure, or is simply still running — those leave heavy data on disk and no
+readable `.xdmf` at all.
+
+`Flush()` writes the document as it currently stands without finalizing, so the
+file opens in ParaView and covers every step written so far:
+
+```cpp
+meshioplusplus::XdmfTimeSeriesWriter w("run.xdmf");
+w.WritePointsCells(mesh);
+for (int k = 0; k < nsteps; ++k) {
+    solve(mesh);
+    w.WriteData(k * dt, mesh);
+    if (k % 10 == 0)
+        w.Flush();          // a checkpoint every ten steps
+}
+w.Finalize();
+```
+
+The document goes to a sibling temp file and is then `rename`d over the target,
+so a crash *during* a flush cannot truncate the previous one; heavy data is
+flushed first, so the `.xdmf` never names a dataset that is not on disk yet.
+
+`SetAutoFlush(true)` does it after every `WriteData`. It is **off by default**
+because a flush re-serializes the whole document, so flushing every step is
+quadratic in the step count — and for `"XML"`, whose heavy data lives *in* that
+document, quadratic in the data volume too. Pick a cadence that matches what you
+can afford to lose.
+
+### Continuing a series
+
+`XdmfSeriesMode::Append` continues the temporal collection already at the path
+instead of overwriting it, which is what a restarted analysis needs:
+
+```cpp
+meshioplusplus::XdmfTimeSeriesWriter w("run.xdmf", "HDF", -1,
+                                       meshioplusplus::XdmfSeriesMode::Append);
+// w.NumSteps() is already the count the earlier run wrote.
+```
+
+Appending to a path with **no file yet is not an error** — it is simply a fresh
+series, so a restartable solver can pass `Append` unconditionally instead of
+probing the filesystem. `WritePointsCells` still rejects a second call: the
+static grid is exactly the thing that must not be duplicated, and an appended
+series reuses the one already in the file.
+
+The heavy-data counter resumes past what is already on disk by **scanning the
+container** — the `.h5` root group, or probing `<base>N.bin` — rather than
+trusting the document, because a mis-resumed counter would silently overwrite
+`data0` instead of failing.
+
+## Writing a step from solver arrays
+
+After `WritePointsCells` the geometry and connectivity are fixed, and each step
+produces nodal and elemental *values*, not a new mesh. The `NamedArray` overload
+takes them directly:
+
+```cpp
+meshioplusplus::XdmfTimeSeriesWriter::NamedArray u;
+u.mName = "displacement";
+u.mNumComponents = 3;                     // row-major, NumPoints * 3 values
+u.mValues = solver.NodalDisplacements();
+w.WriteData(t, {u});
+```
+
+Under the KRATOS mesh backend this is not merely tidier: passing a `Mesh` per
+step re-stages the whole `ModelPart` every output step when only the values
+changed.
+
+Row counts are validated against the static grid and a mismatch throws naming
+the array — deliberately stricter than the `Mesh` overload, which reads the
+counts off the mesh and cannot get them wrong. Arrays are emitted in the order
+given, unlike the `Mesh` overload's sorted-name order.
+
+### On other surfaces
+
+| Surface | Flush | Append | Solver arrays |
+|---|---|---|---|
+| C++ | `Flush()`, `SetAutoFlush()` | `XdmfSeriesMode::Append` | `WriteData(t, point, cell)` |
+| C API | `mio_xdmf_series_flush` | `mio_xdmf_series_create_ex` + `mio_xdmf_series_opts.mode` | `mio_xdmf_series_write_data_arrays` + `mio_named_array` |
+| Fortran | `s%flush()` | `s%create(..., mode='append')` | — (see below) |
+| Julia | `flush!(s)` | `XdmfSeries(path; mode=:append)` | `write_data!(s, t, Dict(...))` |
+| R | `mio_xdmf_series_flush()` | `mio_xdmf_series(..., mode = "append")` | — |
+| WASM | `w.flush()` | `{ mode: 'append' }` | `w.writeDataArrays(t, {...})` |
+| Python | `w.flush()`, `w.auto_flush` | `mode="append"` | `w.write_data_arrays(t, {...})` |
+
+**Fortran has no solver-array overload**, deliberately: an array of derived types
+holding interop pointers is a poor fit for Fortran, and a Fortran solver already
+holds an `mio_mesh` handle it can `add_point_data` into before `write_data`.

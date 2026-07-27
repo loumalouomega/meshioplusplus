@@ -256,4 +256,88 @@ TEST(KratosBackend, RoundTripThroughFormatStillWorks) {
                   mixed_dim_mesh(), ".su2");
 }
 
+// ---------------------------------------------------------------------------
+// v9.1.0: entity names, properties ids, nested SubModelParts
+// ---------------------------------------------------------------------------
+
+TEST(KratosBackend, BlockEntityNamesReachTheModelPart) {
+    Mesh m = mt::tet_mesh();
+    EXPECT_EQ(m.BlockEntityName(0), "");  // unset means "derive from the type"
+    m.SetBlockEntityName(0, "SmallDisplacementElement3D4N");
+    const ModelPart& r_mp = m.GetModelPart();
+    ASSERT_EQ(r_mp.NumberOfElements(), 2u);
+    for (const meshioplusplus::Element& r_e : r_mp.Elements()) {
+        EXPECT_TRUE(r_e.HasName());
+        EXPECT_EQ(r_e.Name(), "SmallDisplacementElement3D4N");
+    }
+}
+
+TEST(KratosBackend, EntityNamesSurviveTheStagingRoundTrip) {
+    Mesh m = mt::tet_mesh();
+    m.SetBlockEntityName(0, "TotalLagrangianElement3D4N");
+    m.GetModelPart();  // materialize
+    m.InvalidateBlocks();
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    EXPECT_EQ(m.BlockEntityName(0), "TotalLagrangianElement3D4N");
+}
+
+TEST(KratosBackend, MaterializeHonoursPropertyIds) {
+    // Before v9.1.0 every entity landed on properties 0, silently dropping the
+    // material assignment the file carried.
+    Mesh m = mt::tet_mesh();
+    NDArray tags(DType::Int64, {2});
+    tags.As<std::int64_t>()[0] = 3;
+    tags.As<std::int64_t>()[1] = 7;
+    std::vector<NDArray> blocks;
+    blocks.push_back(std::move(tags));
+    m.AddCellData("gmsh:physical", std::move(blocks));
+
+    const ModelPart& r_mp = m.GetModelPart();
+    ASSERT_EQ(r_mp.NumberOfElements(), 2u);
+    EXPECT_EQ(r_mp.GetElement(1).PropertiesId(), 3u);
+    EXPECT_EQ(r_mp.GetElement(2).PropertiesId(), 7u);
+    // ...and the referenced blocks exist.
+    EXPECT_TRUE(r_mp.HasProperties(3));
+    EXPECT_TRUE(r_mp.HasProperties(7));
+    EXPECT_FALSE(r_mp.HasProperties(5));
+}
+
+TEST(KratosBackend, NestedSubModelPartsRoundTripThroughSlashRegions) {
+    Mesh m = mt::tet_mesh();
+    NDArray entries(DType::Int64, {1});
+    entries.As<std::int64_t>()[0] = 0;
+    m.AddRegion(meshioplusplus::Region("Structure/Loads", meshioplusplus::RegionKind::Cell,
+                                       std::move(entries)));
+
+    ModelPart& r_mp = m.GetModelPart();
+    // The '/' path became real nesting rather than one flatly-named part.
+    ASSERT_TRUE(r_mp.HasSubModelPart("Structure"));
+    ModelPart& r_parent = r_mp.GetSubModelPart("Structure");
+    ASSERT_TRUE(r_parent.HasSubModelPart("Loads"));
+    EXPECT_EQ(r_parent.GetSubModelPart("Loads").NumberOfElements(), 1u);
+
+    // ...and reading it back reproduces the same single flattened name, which
+    // is what makes the whole trip lossless.
+    m.InvalidateBlocks();
+    bool found = false;
+    for (std::size_t i = 0; i < m.NumRegions(); ++i)
+        if (m.Region(i).mName == "Structure/Loads" &&
+            m.Region(i).mKind == meshioplusplus::RegionKind::Cell)
+            found = true;
+    EXPECT_TRUE(found) << "nested SubModelPart did not come back as 'Structure/Loads'";
+}
+
+TEST(KratosBackend, RegionNameThatCannotBeASubModelPartIsWarnedNotThrown) {
+    // A '.' is reserved by ModelPart::FullName. Materializing must not let an
+    // exception escape a lazy GetModelPart(); the region stays on the mesh.
+    Mesh m = mt::tet_mesh();
+    NDArray entries(DType::Int64, {1});
+    entries.As<std::int64_t>()[0] = 0;
+    m.AddRegion(
+        meshioplusplus::Region("bad.name", meshioplusplus::RegionKind::Cell, std::move(entries)));
+    ModelPart& r_mp = m.GetModelPart();
+    EXPECT_FALSE(r_mp.HasSubModelPart("bad.name"));
+    EXPECT_TRUE(m.HasRegion("bad.name"));
+}
+
 #endif  // MESHIOPLUSPLUS_MESH_BACKEND_KRATOS

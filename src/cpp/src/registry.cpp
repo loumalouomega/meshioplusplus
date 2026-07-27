@@ -86,7 +86,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"freefem", meshioplusplus::read_freefem},
         {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
-        {"mdpa", meshioplusplus::read_mdpa},
+        // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
+        // function pointer no longer converts to ReadFn -- the hazard noted
+        // for unv/med below. The MdpaInfo is dropped here, like MedInfo.
+        {"mdpa", [](const std::string& path) { return meshioplusplus::read_mdpa(path); }},
         {"medit", meshioplusplus::read_medit_ascii},
         {"mff", meshioplusplus::read_mff},
         {"mfm", meshioplusplus::read_mfm},
@@ -171,7 +174,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"gmsh22", [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
-        {"mdpa", meshioplusplus::write_mdpa},
+        {"mdpa", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); }},
         {"medit", meshioplusplus::write_medit_ascii},
         {"mff", meshioplusplus::write_mff},
         {"mfm",
@@ -353,6 +356,12 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
                       const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); }},
 #endif
         {"gmsh", meshioplusplus::read_gmsh},
+        // mdpa honours mLenient rather than the narrowing options -- the same
+        // "options-aware is several capabilities, not one" note as exodus. This
+        // entry is what makes `--lenient` reach the C API, Fortran, Julia, R,
+        // WASM and the native CLI with no per-binding code.
+        {"mdpa", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},

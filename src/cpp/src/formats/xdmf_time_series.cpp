@@ -17,9 +17,13 @@
 // System includes
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <vector>
 
 // External includes
 #include "pugixml.hpp"
@@ -94,12 +98,49 @@ struct XdmfTimeSeriesWriter::Impl {
     pugi::xml_node mCollection;
     std::unique_ptr<xdmfcommon::DataItemStore> mStore;
     std::size_t mNumSteps = 0;
+    std::size_t mNumPoints = 0;  // from WritePointsCells, for array validation
+    std::size_t mNumCells = 0;
     bool mHasMesh = false;
     bool mFinalized = false;
+    bool mAutoFlush = false;
+
+    /**
+     * @brief Serialize the document over `mPath` atomically.
+     *
+     * Written to a sibling temp file and renamed, so a crash mid-write cannot
+     * leave a truncated `.xdmf` where a complete earlier one used to be -- the
+     * whole point of flushing being that the file on disk is always openable.
+     */
+    void SaveDocument() {
+        const std::string tmp = mPath + ".tmp";
+        if (!mDoc.save_file(tmp.c_str(), "  "))
+            throw WriteError("XDMF: could not write " + tmp);
+        std::error_code ec;
+        std::filesystem::rename(tmp, mPath, ec);
+        if (ec) {
+            std::filesystem::remove(tmp, ec);
+            throw WriteError("XDMF: could not write " + mPath);
+        }
+    }
+
+    /** @brief Start one step's `<Grid>`: the xpointer to the mesh plus `<Time>`. */
+    pugi::xml_node BeginStep(double Time) {
+        pugi::xml_node grid = mCollection.append_child("Grid");
+        // The step references the static grid rather than repeating it. Readers
+        // that do not implement XPointer (this repo's own, and Python's
+        // TimeSeriesReader) resolve the collection structurally and skip this.
+        pugi::xml_node inc = grid.append_child("xi:include");
+        const std::string ptr = std::string("xpointer(//Grid[@Name=\"") + xts_mesh_name +
+                                "\"]/*[self::Topology or self::Geometry])";
+        inc.append_attribute("xpointer") = ptr.c_str();
+        pugi::xml_node time = grid.append_child("Time");
+        time.append_attribute("Value") = xts_format_time(Time).c_str();
+        return grid;
+    }
 };
 
 XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::string& rDataFormat,
-                                           int GzipLevel)
+                                           int GzipLevel, XdmfSeriesMode Mode)
     : mImpl(std::make_unique<Impl>()) {
     if (rDataFormat != "XML" && rDataFormat != "Binary" && rDataFormat != "HDF")
         throw WriteError("XDMF: unknown data format '" + rDataFormat +
@@ -120,6 +161,46 @@ XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::
     if (dot != std::string::npos)
         base = base.substr(0, dot);
     mImpl->mStore = std::make_unique<xdmfcommon::DataItemStore>(rDataFormat, base, GzipLevel);
+
+    std::error_code ec;
+    if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
+        if (!mImpl->mDoc.load_file(rPath.c_str()))
+            throw WriteError("XDMF time series: could not parse '" + rPath + "' to append to it");
+        // Resolve structurally, the way read_xdmf's xdmf_resolve does -- an
+        // xpointer is never followed, and the collection is the first temporal
+        // one under <Domain>.
+        pugi::xml_node domain = mImpl->mDoc.child("Xdmf").child("Domain");
+        for (pugi::xml_node g = domain.child("Grid"); g; g = g.next_sibling("Grid")) {
+            const std::string gt = g.attribute("GridType").as_string();
+            const std::string ct = g.attribute("CollectionType").as_string();
+            if (gt == "Collection" && ct == "Temporal") {
+                mImpl->mCollection = g;
+                break;
+            }
+            if (gt == "Uniform" && std::string(g.attribute("Name").as_string()) == xts_mesh_name)
+                mImpl->mHasMesh = true;
+        }
+        if (!mImpl->mCollection)
+            throw WriteError("XDMF time series: '" + rPath +
+                             "' carries no temporal collection to append to");
+        for (pugi::xml_node g = mImpl->mCollection.child("Grid"); g; g = g.next_sibling("Grid"))
+            ++mImpl->mNumSteps;
+        // A second pass for the mesh grid: it may sit after the collection.
+        if (!mImpl->mHasMesh)
+            for (pugi::xml_node g = domain.child("Grid"); g; g = g.next_sibling("Grid"))
+                if (std::string(g.attribute("Name").as_string()) == xts_mesh_name)
+                    mImpl->mHasMesh = true;
+        // Resume the heavy-data naming past whatever the earlier run wrote. A
+        // mis-resumed counter would silently overwrite data0 rather than fail.
+        mImpl->mStore->OpenExisting();
+        if (rDataFormat == "Binary") {
+            int next = 0;
+            while (std::filesystem::exists(base + std::to_string(next) + ".bin", ec))
+                ++next;
+            mImpl->mStore->SetCounter(next);
+        }
+        return;
+    }
 
     pugi::xml_node xdmf = mImpl->mDoc.append_child("Xdmf");
     xdmf.append_attribute("Version") = "3.0";
@@ -181,6 +262,11 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
     geo.append_attribute("GeometryType") = geo_type;
     xts_add_data_item(geo, *mImpl->mStore, points);
 
+    mImpl->mNumPoints = rMesh.NumPoints();
+    mImpl->mNumCells = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        mImpl->mNumCells += rMesh.Cells(b).NumCells();
+
     // Topology (single-type, or one packed Mixed array)
     if (rMesh.NumCellBlocks() == 1) {
         const auto cb = rMesh.Cells(0);
@@ -208,18 +294,7 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
     if (!mImpl->mHasMesh)
         throw WriteError("XDMF time series: WritePointsCells must be called before WriteData");
 
-    pugi::xml_node grid = mImpl->mCollection.append_child("Grid");
-
-    // The step references the static grid rather than repeating it. Readers that
-    // do not implement XPointer (this repo's own, and Python's TimeSeriesReader)
-    // resolve the collection structurally instead and simply skip this element.
-    pugi::xml_node inc = grid.append_child("xi:include");
-    const std::string ptr = std::string("xpointer(//Grid[@Name=\"") + xts_mesh_name +
-                            "\"]/*[self::Topology or self::Geometry])";
-    inc.append_attribute("xpointer") = ptr.c_str();
-
-    pugi::xml_node time = grid.append_child("Time");
-    time.append_attribute("Value") = xts_format_time(Time).c_str();
+    pugi::xml_node grid = mImpl->BeginStep(Time);
 
     // Sorted name order on both, matching write_xdmf and the uniform API's
     // guarantee, so a series is byte-deterministic across mesh backends.
@@ -235,6 +310,64 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
     }
 
     ++mImpl->mNumSteps;
+    if (mImpl->mAutoFlush)
+        Flush();
+}
+
+void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
+                                     const std::vector<NamedArray>& rCellData) {
+    if (mImpl->mFinalized)
+        throw WriteError("XDMF time series: writer already finalized");
+    if (!mImpl->mHasMesh)
+        throw WriteError("XDMF time series: WritePointsCells must be called before WriteData");
+
+    pugi::xml_node grid = mImpl->BeginStep(Time);
+
+    const auto emit = [&](const std::vector<NamedArray>& rArrays, std::size_t entities,
+                          const char* p_center, const char* p_what) {
+        for (const NamedArray& r_a : rArrays) {
+            const std::size_t nc = r_a.mNumComponents ? r_a.mNumComponents : 1;
+            const std::size_t want = entities * nc;
+            if (r_a.mValues.size() != want)
+                throw WriteError("XDMF time series: " + std::string(p_what) + " array '" +
+                                 r_a.mName + "' holds " + std::to_string(r_a.mValues.size()) +
+                                 " values, expected " + std::to_string(want) + " (" +
+                                 std::to_string(entities) + " x " + std::to_string(nc) + ")");
+            std::vector<std::size_t> shape;
+            if (nc == 1)
+                shape = {entities};
+            else
+                shape = {entities, nc};
+            NDArray arr = NDArray::Uninit(DType::Float64, shape);
+            if (!r_a.mValues.empty())
+                std::memcpy(arr.Data(), r_a.mValues.data(), r_a.mValues.size() * sizeof(double));
+            // Through the same helper as the Mesh path, so the attribute type,
+            // dtype mapping and DataItem shape cannot drift between the two.
+            xts_add_attribute(grid, *mImpl->mStore, r_a.mName, p_center, arr);
+        }
+    };
+    emit(rPointData, mImpl->mNumPoints, "Node", "point");
+    emit(rCellData, mImpl->mNumCells, "Cell", "cell");
+
+    ++mImpl->mNumSteps;
+    if (mImpl->mAutoFlush)
+        Flush();
+}
+
+void XdmfTimeSeriesWriter::Flush() {
+    if (mImpl->mFinalized)
+        return;
+    // Heavy data first: the .xdmf must never name a dataset that is not on disk.
+    mImpl->mStore->Flush();
+    mImpl->SaveDocument();
+}
+
+void XdmfTimeSeriesWriter::SetAutoFlush(bool Enable) {
+    mImpl->mAutoFlush = Enable;
+}
+
+bool XdmfTimeSeriesWriter::AutoFlush() const {
+    return mImpl && mImpl->mAutoFlush;
 }
 
 void XdmfTimeSeriesWriter::Finalize() {
@@ -246,8 +379,7 @@ void XdmfTimeSeriesWriter::Finalize() {
     // Close the heavy data before the light data appears, so a reader that finds
     // the .xdmf always finds a complete .h5 beside it.
     mImpl->mStore->Close();
-    if (!mImpl->mDoc.save_file(mImpl->mPath.c_str(), "  "))
-        throw WriteError("XDMF: could not write " + mImpl->mPath);
+    mImpl->SaveDocument();
 }
 
 std::size_t XdmfTimeSeriesWriter::NumSteps() const {

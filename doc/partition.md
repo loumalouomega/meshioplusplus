@@ -186,6 +186,13 @@ limited to `int32` by the `kaffpa` interface in both builds.
   builds disjoint pieces only and raises `NotImplementedError` rather than
   silently returning unghosted ones.
 
+  The [pure-Python KaHIP route](#kahip-optional-the-quality-path) (the `kahip`
+  PyPI wheel against a KaHIP-less `_core`) cannot ghost either: with
+  `ghost_layers > 0`, `method="auto"` routes to the C++ core instead (auto is
+  a preference order, and the core is the one ghost-capable path), while an
+  explicit `method="kahip"` raises naming
+  `-DMESHIOPLUSPLUS_WITH_KAHIP=ON` — never a silent SFC downgrade.
+
   ```python
   pieces = mp.partition(mesh, 4, ghost_layers=1)
   owned = pieces[0].cell_data["partition:ghost"][0] == 0
@@ -202,3 +209,11 @@ The operation exists on every binding surface: C
 (`partition`/`partitionLabels`, SFC only — KaHIP is never part of the WASM
 build, see [WASM](/wasm)), and the `partition` verb in both
 [CLIs](/cli).
+
+## meshio++ is serial
+
+`partition` computes a decomposition; it does not run one. There is no MPI in
+the library, no distributed reader or writer and no communicator anywhere in the
+API. The intended workflow is to partition on one rank (or in a pre-step) and
+have each rank read or receive its own piece; `ghost_layers > 0` produces the
+shared-node halo an MPI assembly needs. See `doc/cpp_api.md`.

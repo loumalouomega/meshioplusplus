@@ -163,3 +163,15 @@ Two things worth knowing before reading the result back:
 Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no
 finalizer. Reading a finished series back is the ordinary `m%read(path,
 time_step=k)`, with `mio_read_metadata(path)%time_values` reporting the steps.
+
+## v9.1.0 additions
+
+- `m%read(..., lenient=.true.)` — see [`doc/selective_read.md`](selective_read.md).
+- XDMF series: `s%flush()`, `s%finalized()`, and
+  `s%create(..., mode='append', auto_flush=...)`.
+
+**Gap, deliberate:** there is no Fortran counterpart to the solver-array
+`write_data` overload. An array of derived types holding interop pointers is a
+poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it
+can `add_point_data` into before `write_data`. `MdpaInfo` is likewise absent, as
+for every flat binding.

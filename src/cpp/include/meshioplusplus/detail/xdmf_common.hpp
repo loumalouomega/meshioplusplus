@@ -204,6 +204,37 @@ public:
     /** @brief Close the HDF5 container, if one was opened. Idempotent. */
     void Close();
 
+    /**
+     * @brief Push everything stored so far to disk, keeping the store usable.
+     *
+     * `"Binary"` writes and closes a file per array, and `"XML"` has no heavy
+     * data at all, so this only does real work for `"HDF"` -- but calling it is
+     * how a caller says "another process may read this now" without having to
+     * know which format it picked.
+     */
+    void Flush();
+
+    /**
+     * @brief The next index the flat `dataN` / `<base>N.bin` naming will use.
+     *
+     * Exposed only so an appending writer can resume past what an earlier run
+     * already wrote; a fresh store starts at 0 and no other caller should care.
+     */
+    int Counter() const;
+    /** @brief Resume the flat naming counter at @p Value (see `Counter()`). */
+    void SetCounter(int Value);
+
+    /**
+     * @brief Reopen an existing heavy-data container instead of creating one.
+     *
+     * `"HDF"` opens `<base>.h5` read-write rather than truncating it, which is
+     * the difference between continuing a series and destroying it. A missing
+     * file is not an error -- appending to a path that does not exist yet is
+     * simply a fresh series, which is what makes an append-mode writer usable
+     * unconditionally in a restartable solver.
+     */
+    void OpenExisting();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> mImpl;

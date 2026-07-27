@@ -913,6 +913,14 @@ silent clamp; `info --fast` prints `Time steps: N [...]` when a file records mor
 Honoured by formats carrying a time series (currently `exodus`); a format whose reader has
 no time concept refuses rather than quietly returning the first step.
 
+`--lenient` (**native CLI only**) downgrades "this reader cannot represent construct X"
+errors to a warning plus a skip — currently MDPA's `Table`, `Geometries`, `Mesh` and
+`Constraints` blocks, which nearly every production `.mdpa` carries. It is *not* "ignore
+all errors": a malformed row, a bad node reference or non-sequential node ids still fail,
+because continuing past those returns a mesh that is quietly wrong rather than merely
+incomplete. The Python CLI has no such flag, deliberately: its MDPA reader is the
+pure-Python reference, which already accepts every construct the flag covers.
+
 Formats without a header-only path are read in full and `info --fast` says so explicitly
 (`no header-only path for this format; the file was read in full`) rather than implying a
 saving that did not happen. See [Selective reads](selective_read.md).

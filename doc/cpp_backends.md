@@ -111,3 +111,44 @@ Sub model parts (including nested ones) are copied when the destination supports
 ## Adding a backend
 
 One CMake branch defining `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>`, one `#elif` in `src/cpp/include/meshioplusplus/mesh.hpp`, and a `backends/<name>_mesh.hpp` implementing the uniform API (`mesh_api.hpp` documents the exact contract; `tests/cpp/test_mesh_api.cpp` is its executable form and must pass).
+
+## Kratos entity names, properties and nesting (v9.1.0)
+
+Three things a Kratos consumer needs that used to be lost on the way through.
+
+**Entity names.** `GeometricalEntity` carries an optional Kratos registration
+name (`Name()`/`HasName()`); empty means "derive it from the cell type", which is
+what every caller got before. It matters because deriving is lossy in one
+direction only: `SmallDisplacementElement3D4N` resolves to `Tetrahedra4`, but
+`Tetrahedra4` only ever derives back to the canonical `Element3D4N`.
+
+Names are stored as interned `const std::string*` from a root-owned
+`detail::NamePool`, not owned strings: there is one distinct name per *block* but
+one entity per *cell*, so an owned string would add ~320 MB to a 10 M-element
+model part. `std::unordered_set` is node-based, so the pointers survive both
+rehashing and a `ModelPart` move.
+
+On the mesh backend they ride per block:
+
+```cpp
+meshioplusplus::MdpaInfo info;
+Mesh m = meshioplusplus::read_mdpa(path, info);
+for (std::size_t b = 0; b < m.NumCellBlocks(); ++b)
+    m.SetBlockEntityName(b, info.mEntityNames[b].mName);
+ModelPart& r_mp = m.GetModelPart();   // entities now carry the real names
+```
+
+`SetBlockEntityName`/`BlockEntityName` are KRATOS-only extras, not part of the
+uniform mesh API — no other backend has a ModelPart to spell names for. This is
+the same "fast-consumer surface" shape as NATIVE's `PointsData()`/`ConnSpan()`.
+
+**Properties.** `ModelPart` has a real Properties store
+(`CreateNewProperties`/`GetProperties`/`Properties()`), and `Materialize()` reads
+each entity's properties id from the `gmsh:physical` cell_data instead of leaving
+every entity on properties 0. The values are `PropertyValue` key/value pairs
+(`meshioplusplus/properties.hpp`), shared with MDPA so there is one
+representation. Turning them into typed Kratos `Variable<T>`s is the consumer's
+job — see the applier overload in [`doc/cpp_api.md`](cpp_api.md).
+
+**Nesting.** SubModelPart nesting now survives the staging round trip, flattened
+into region names with `/` — see [`doc/regions.md`](regions.md#nested-groups-the--convention).

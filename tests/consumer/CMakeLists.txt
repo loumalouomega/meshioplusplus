@@ -37,7 +37,19 @@ message(STATUS "meshio++ consumer: default backend  ${MESHIOPLUSPLUS_MESH_BACKEN
 message(STATUS "meshio++ consumer: parallel backend ${MESHIOPLUSPLUS_PARALLEL_BACKEND}")
 message(STATUS "meshio++ consumer: backends shipped ${MESHIOPLUSPLUS_MESH_BACKENDS}")
 
+# MESHIOPLUSPLUS_NO_STD_SPAN guards only the <span> include and the inline
+# NativeMesh::ConnSpan() accessor -- no member variable, so it is ABI-neutral --
+# and the guard is #ifndef. A consumer whose own Boost uBLAS collides with
+# <span> under MSVC must therefore be able to define it themselves even against
+# a prefix that did not. This option is how CI proves that.
+option(MESHIOPLUSPLUS_CONSUMER_NO_STD_SPAN
+       "Define MESHIOPLUSPLUS_NO_STD_SPAN on the consumer side only" OFF)
+
 add_executable(consumer_smoketest main.cpp)
+
+if(MESHIOPLUSPLUS_CONSUMER_NO_STD_SPAN)
+  target_compile_definitions(consumer_smoketest PRIVATE MESHIOPLUSPLUS_NO_STD_SPAN)
+endif()
 
 # Both components in one binary, on purpose: proving they coexist is part of what
 # this test is for.

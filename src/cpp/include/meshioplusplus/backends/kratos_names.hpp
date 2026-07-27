@@ -128,6 +128,36 @@ inline CellType cell_type_from_kratos_name(const std::string& rName) {
 }
 
 /**
+ * @brief Resolve a Kratos entity name, allowing an application-specific prefix.
+ *
+ * Exact lookup first, then the longest suffix that resolves -- which is what
+ * makes `SmallDisplacementElement3D4N` (and every other application element
+ * name) work through its canonical `Element3D4N` tail. Without the fallback
+ * only the handful of names in the tables above resolve, and essentially no
+ * real Kratos application or deck restricts itself to those.
+ *
+ * This is the single owner of that rule: `ModelPart::CreateNewElement` and the
+ * MDPA reader both go through it, so they cannot disagree about which names are
+ * usable.
+ *
+ * @param rName the entity name as the application or file spells it.
+ * @return the meshio cell type, or `CellType::Custom` if nothing resolves.
+ */
+inline CellType cell_type_from_kratos_name_or_suffix(const std::string& rName) {
+    if (rName.empty())
+        return CellType::Custom;
+    CellType t = cell_type_from_kratos_name(rName);
+    if (t != CellType::Custom)
+        return t;
+    for (std::size_t i = 1; i + 1 < rName.size(); ++i) {
+        t = cell_type_from_kratos_name(rName.substr(i));
+        if (t != CellType::Custom)
+            return t;
+    }
+    return CellType::Custom;
+}
+
+/**
  * @brief Default Kratos *element* name for a cell type (ported from
  * `_meshio_to_kratos_element_type`), falling back to the Kratos geometry
  * name, then the meshio name itself for types with no Kratos equivalent.

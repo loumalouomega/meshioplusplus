@@ -1474,8 +1474,18 @@ finalizes.
 ...     for k in range(3):
 ...         w.write_data(k * 0.5, mesh)
 )doc")
-        .def(py::init<const std::string&, const std::string&, int>(), py::arg("path"),
-             py::arg("data_format") = "HDF", py::arg("gzip_level") = -1)
+        .def(py::init([](const std::string& rPath, const std::string& rDataFormat, int gzip_level,
+                         const std::string& rMode) {
+                 if (rMode != "truncate" && rMode != "append")
+                     throw std::invalid_argument("mode must be 'truncate' or 'append', got '" +
+                                                 rMode + "'");
+                 return std::make_unique<meshioplusplus::XdmfTimeSeriesWriter>(
+                     rPath, rDataFormat, gzip_level,
+                     rMode == "append" ? meshioplusplus::XdmfSeriesMode::Append
+                                       : meshioplusplus::XdmfSeriesMode::Truncate);
+             }),
+             py::arg("path"), py::arg("data_format") = "HDF", py::arg("gzip_level") = -1,
+             py::arg("mode") = "truncate")
         .def(
             "write_points_cells",
             [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, py::object pymesh) {
@@ -1493,6 +1503,47 @@ finalizes.
             },
             py::arg("time"), py::arg("mesh"),
             "Append one step's point_data/cell_data at simulation time `time`.")
+        .def(
+            "write_data_arrays",
+            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, double time, const py::dict& rPointData,
+               const py::dict& rCellData) {
+                const auto convert = [](const py::dict& rSrc) {
+                    std::vector<meshioplusplus::XdmfTimeSeriesWriter::NamedArray> out;
+                    for (const auto& r_item : rSrc) {
+                        auto arr = py::array_t<double, py::array::c_style | py::array::forcecast>(
+                            py::reinterpret_borrow<py::object>(r_item.second));
+                        meshioplusplus::XdmfTimeSeriesWriter::NamedArray a;
+                        a.mName = py::cast<std::string>(r_item.first);
+                        // Components are the trailing dimension, the same rule
+                        // the rest of the repo uses for a multi-component array.
+                        a.mNumComponents = arr.ndim() >= 2
+                                               ? static_cast<std::size_t>(arr.shape(arr.ndim() - 1))
+                                               : 1u;
+                        a.mValues.assign(arr.data(), arr.data() + arr.size());
+                        out.push_back(std::move(a));
+                    }
+                    return out;
+                };
+                rSelf.WriteData(time, convert(rPointData), convert(rCellData));
+            },
+            py::arg("time"), py::arg("point_data"), py::arg("cell_data") = py::dict(),
+            "Append one step from name -> array dicts, with no Mesh in between -- "
+            "the granularity a solver has once write_points_cells has fixed the "
+            "geometry. Arrays are emitted in dict order.")
+        .def(
+            "flush", [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) { rSelf.Flush(); },
+            "Write the .xdmf as it currently stands without finalizing, so a run "
+            "that is killed or still going leaves a readable file covering every "
+            "flushed step. Safe to call repeatedly.")
+        .def_property(
+            "auto_flush",
+            [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.AutoFlush(); },
+            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, bool enable) {
+                rSelf.SetAutoFlush(enable);
+            },
+            "Flush after every write_data (default False). Off by default because "
+            "a flush re-serializes the whole document, making per-step flushing "
+            "quadratic in the step count.")
         .def(
             "finalize", [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) { rSelf.Finalize(); },
             "Write the .xdmf light data and close the heavy-data container. "
