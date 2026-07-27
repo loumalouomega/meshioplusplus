@@ -15,9 +15,14 @@ from .exodus_fixture import (
     SIDE_SET_EXPECTED,
     SIDE_SET_ID,
     SIDE_SET_NAME,
+    SPHERE_ATTRIBUTE_NAME,
+    SPHERE_BLOCK_NODES,
+    SPHERE_POINTS,
+    SPHERE_RADII,
     TIME_VALUES,
     temperature_at,
     write_fixture,
+    write_sphere_fixture,
 )
 
 netCDF4 = pytest.importorskip("netCDF4")
@@ -47,6 +52,22 @@ def _readers():
             )
         )
     return readers
+
+
+@pytest.fixture
+def sphere_file(tmp_path):
+    """A peridynamics-shaped file: 2-D, NUL-padded SPHERE elem_type, attributes."""
+    return write_sphere_fixture(tmp_path / "spheres.exo")
+
+
+def _writers():
+    """The C++ core writer and the pure-Python twin, which must agree."""
+    writers = [pytest.param(py_exodus.write, id="python")]
+    if _HAS_CPP:
+        writers.append(
+            pytest.param(lambda p, m: _core.exodus_write(str(p), m), id="cpp")
+        )
+    return writers
 
 
 test_set = [
@@ -230,3 +251,104 @@ def test_reader_supports_options():
     if not _HAS_CPP:
         pytest.skip("core built without netCDF")
     assert _core.reader_supports_options("exodus")
+
+
+# ---------------------------------------------------------------------------- #
+# Peridynamics-shaped files: SPHERE elements, 2-D coordinates and per-element    #
+# attributes. See tests/python/exodus_fixture.py's SPHERE_FIXTURE_FACTS.         #
+# ---------------------------------------------------------------------------- #
+
+ATTRIBUTE_KEY = "exodus:attr:" + SPHERE_ATTRIBUTE_NAME
+
+
+@pytest.mark.parametrize("reader", _readers())
+def test_nul_terminated_elem_type_is_read(reader, sphere_file):
+    """The regression: an `elem_type` of "SPHERE\\0" must still be SPHERE.
+
+    NetCDF.jl counts the terminating NUL as part of the attribute, so the C++
+    reader compared 7 characters against its type table and failed with
+    "unknown element type SPHERE" -- the NUL invisible in the message, because
+    `what()` is a `const char*`. netCDF4-python strips it, so only the C++ path
+    (and therefore only WASM, which has no Python fallback) ever failed.
+    """
+    mesh = reader(sphere_file)
+    assert [cb.type for cb in mesh.cells] == ["vertex", "vertex"]
+    for block, nodes in zip(mesh.cells, SPHERE_BLOCK_NODES):
+        assert block.data.reshape(-1).tolist() == nodes
+
+
+@pytest.mark.parametrize("reader", _readers())
+def test_two_dimensional_points_pad_to_three_components(reader, sphere_file):
+    """num_dim=2 with coordx/coordy and no coordz -- z fills with zeros."""
+    mesh = reader(sphere_file)
+    assert mesh.points.shape == (len(SPHERE_POINTS), 3)
+    assert np.allclose(mesh.points[:, :2], SPHERE_POINTS)
+    assert np.all(mesh.points[:, 2] == 0.0)
+
+
+@pytest.mark.parametrize("reader", _readers())
+def test_element_attributes_become_prefixed_cell_data(reader, sphere_file):
+    """A SPHERE's radius lives in `attrib{k}`; it must reach the user as data.
+
+    The prefix keeps it apart from a same-named element *variable*, which is a
+    genuinely different concept (attributes are constant in time).
+    """
+    mesh = reader(sphere_file)
+    assert ATTRIBUTE_KEY in mesh.cell_data
+    values = mesh.cell_data[ATTRIBUTE_KEY]
+    assert len(values) == len(mesh.cells), "one array per cell block"
+    assert values[0].tolist() == SPHERE_RADII
+    # Block 2 carries no attribute at all -- NaN, since a cell_data array must
+    # cover every block and there is no value to report.
+    assert np.all(np.isnan(values[1]))
+
+
+@pytest.mark.parametrize("writer", _writers())
+@pytest.mark.parametrize("reader", _readers())
+def test_element_attributes_round_trip(reader, writer, sphere_file, tmp_path):
+    """Both writers must put attributes back where both readers find them."""
+    mesh = py_exodus.read(sphere_file)
+    out = tmp_path / "out.exo"
+    writer(out, mesh)
+
+    back = reader(out)
+    values = back.cell_data[ATTRIBUTE_KEY]
+    assert values[0].tolist() == SPHERE_RADII
+    # The all-NaN block must NOT gain an attribute of its own: that NaN means
+    # "this block never had one", so writing it back would be inventing data.
+    assert np.all(np.isnan(values[1]))
+    with netCDF4.Dataset(out) as nc:
+        assert "num_att_in_blk1" in nc.dimensions
+        assert "num_att_in_blk2" not in nc.dimensions
+
+
+@pytest.mark.parametrize("writer", _writers())
+def test_non_scalar_element_attribute_is_an_error(writer, sphere_file, tmp_path):
+    """An Exodus attribute is one value per element -- a vector cannot go there."""
+    mesh = py_exodus.read(sphere_file)
+    mesh.cell_data[ATTRIBUTE_KEY] = [np.zeros((len(cb.data), 2)) for cb in mesh.cells]
+    with pytest.raises(Exception, match="scalar"):
+        writer(tmp_path / "bad.exo", mesh)
+
+
+def test_cpp_matches_python_on_spheres(sphere_file):
+    """The shim swaps the two paths freely, so they must agree on this file too."""
+    if not _HAS_CPP:
+        pytest.skip("core built without netCDF")
+    cpp = _core.exodus_read(str(sphere_file))
+    py = py_exodus.read(sphere_file)
+    assert np.allclose(cpp.points, py.points)
+    assert [cb.type for cb in cpp.cells] == [cb.type for cb in py.cells]
+    for a, b in zip(cpp.cells, py.cells):
+        assert np.array_equal(a.data, b.data)
+    assert sorted(cpp.cell_data) == sorted(py.cell_data)
+    for name, arrays in cpp.cell_data.items():
+        for a, b in zip(arrays, py.cell_data[name]):
+            assert np.array_equal(a, b, equal_nan=True)
+
+
+def test_generic_read_handles_spheres(sphere_file):
+    """The public entry point, i.e. what the CLI and every consumer goes through."""
+    mesh = meshioplusplus.read(sphere_file)
+    assert [cb.type for cb in mesh.cells] == ["vertex", "vertex"]
+    assert mesh.cell_data[ATTRIBUTE_KEY][0].tolist() == SPHERE_RADII
