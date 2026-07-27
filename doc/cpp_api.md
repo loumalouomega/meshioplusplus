@@ -93,6 +93,10 @@ Two guards catch the cases CMake cannot:
 * defining more than one backend macro is a **compile** error (`mesh.hpp`);
 * defining none — so `mesh.hpp` silently assumes `MESHIO` — while linking a `NATIVE`/`KRATOS` build is a **link** error naming the backend it expected (`detail/mesh_backend_check.hpp`). This is what protects a pkg-config or hand-written-makefile consumer, which gets the include path but not the definitions. Define `MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` to opt out.
 
+  On GNU/Clang this is an undefined reference to `mesh_backend_is_<backend>`; on MSVC it is a `/FAILIFMISMATCH` error naming both values. **MSVC plus a *shared* meshio++ is a documented gap** — the mismatch records are not reliably carried through a DLL's import library, so the check is absent there. Static MSVC builds and every GNU/Clang configuration are covered, and CI proves it by compiling a TU without the definitions and requiring the link to fail (`tests/consumer/no_backend_macro.cpp`).
+
+  This guard was **inert before v9.2.0**: it relies on an `inline` variable that nothing reads, and such a variable is emitted lazily, so no reference ever reached the object file. If you are on v9.1.0 or earlier, do not rely on it.
+
 ## The Kratos bridge
 
 `kratos_bridge.hpp` is header-only and has **no Kratos dependency at all** — it is templated on the consumer's own model-part type via a `bridge_traits` customization point, defaulting to meshio++'s own `meshioplusplus::ModelPart`. It is unreachable through the C ABI (which cannot hand out a `ModelPart`), which is a large part of why this install exists.
@@ -166,3 +170,76 @@ See the [C API's package-manager notes](/c_api#package-managers-conan-vcpkg) for
 * An HDF5-enabled install requires **`C` among your project's languages** (above).
 * Names under `detail/` are installed (the public headers need them) but are **not** a stable API.
 * `KratosMesh::InvalidateBlocks()`'s rebuild cannot recover a SubModelPart's *nesting* (regions are flat) or a region's `mDim`/`mTag`, which a SubModelPart has nowhere to store — see [mesh backends](/cpp_backends).
+
+## Versioning: what to pin
+
+The two installed components make **different** compatibility promises, and the
+CMake package's `SameMajorVersion` mode describes only the first.
+
+- **`COMPONENTS C`** (`libmeshioplusplus`, the flat C ABI) — `SOVERSION 0`, and
+  the option structs (`mio_read_opts`, `mio_write_opts`, `mio_xdmf_series_opts`)
+  grow only into their `reserved` tails, so a binary compiled against 9.0
+  headers keeps running against a 9.1 `.so`. Pin the major:
+
+  ```cmake
+  find_package(meshioplusplus 9 CONFIG REQUIRED COMPONENTS C)
+  ```
+
+- **`COMPONENTS CXX`** — **no ABI promise at all.** `Mesh`, `ModelPart` and
+  `GeometricalEntity` are header-defined types whose layout changes with the
+  headers; v9.1.0 added a member to `GeometricalEntity`, for instance. The
+  library and every consumer translation unit must be compiled from the *same*
+  meshio++ version, and a consumer must be rebuilt whenever meshio++ is:
+
+  ```cmake
+  find_package(meshioplusplus 9.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+  ```
+
+  **All three components are required.** Under `SameMajorVersion`, `EXACT` is a
+  full *string* comparison against the package version, so `9.2 EXACT` does not
+  match an installed `9.2.0` — it fails with "no configuration file … exactly
+  matches requested version". (Through v9.1.0 this page printed the
+  two-component form, which could never succeed.)
+
+  For distribution packaging that means an exact `= <full three-component
+  version>` dependency, re-pinned on every release including patch releases —
+  not a range, and not `= 9.2.x`, which `EXACT` cannot express. The
+  `SOVERSION 0` on the C++ variants exists so the files install cleanly, not as
+  a compatibility claim.
+
+The mesh-backend macro rides in `INTERFACE_COMPILE_DEFINITIONS`, so a CMake
+consumer cannot disagree about the backend by accident; a non-CMake consumer
+that defines none gets an undefined `mesh_backend_is_<backend>` at link time
+instead — on MSVC, a `/FAILIFMISMATCH` error naming both backends, except with a
+shared build, where the check is absent (see the gap noted above).
+`MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` opts out.
+
+## `MESHIOPLUSPLUS_NO_STD_SPAN`
+
+Boost's uBLAS and MSVC's `<span>` both use an internal macro named
+`_BACKUP_ITERATOR_DEBUG_LEVEL`, so any MSVC translation unit including both
+fails inside `<span>` itself ([boostorg/ublas#77](https://github.com/boostorg/ublas/issues/77)).
+Kratos uses uBLAS, so this is a real collision. Three facts about the escape
+hatch, all of which CI now gates:
+
+- It guards **only** the `<span>` include and the inline `NativeMesh::ConnSpan()`
+  accessor. No member variable is involved, so it is **ABI-neutral**.
+- The guard is `#ifndef`, so **a consumer can define it themselves** —
+  `target_compile_definitions(app PRIVATE MESHIOPLUSPLUS_NO_STD_SPAN)` — against
+  *any* prefix, including a distro or Conan build that left the CMake option
+  off. A private meshio++ build is not required.
+- A build that sets the CMake option exports it (through
+  `INTERFACE_COMPILE_DEFINITIONS` and `meshioplusplus-cxx.pc`), so consumers of
+  such a prefix inherit the same choice by default.
+
+## Parallelism: meshio++ is serial
+
+There is **no MPI in the library**: no distributed reader or writer, no
+communicator anywhere in the API, and none planned. `FindMPI` appearing in the
+generated package config is HDF5's transitive requirement (a parallel HDF5 needs
+`mpi.h` even for purely serial use of its API), not meshio++'s.
+
+The intended distributed workflow is to decompose and then let each rank handle
+its own piece: `partition(mesh, {nparts, ghost_layers})` produces exactly the
+shared-node halo an MPI assembly needs when `mGhostLayers > 0`. All parallelism
+inside meshio++ is intra-process (`MESHIOPLUSPLUS_PARALLEL_BACKEND`).

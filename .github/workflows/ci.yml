@@ -185,8 +185,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "static, all backends", backends: "MESHIO;NATIVE;KRATOS", shared: "OFF", cli: "ON" }
-          - { name: "shared, meshio", backends: "MESHIO", shared: "ON", cli: "OFF" }
+          - { name: "static, all backends", backends: "MESHIO;NATIVE;KRATOS", shared: "OFF", cli: "ON", default_backend: "MESHIO" }
+          - { name: "shared, meshio", backends: "MESHIO", shared: "ON", cli: "OFF", default_backend: "MESHIO" }
+          # shared + KRATOS is the configuration a Kratos Multiphysics
+          # application actually ships, and the only one where hidden-visibility
+          # export is observable on that backend -- a missing MESHIOPLUSPLUS_API
+          # is a link error here and nowhere else.
+          - { name: "shared, kratos", backends: "KRATOS", shared: "ON", cli: "OFF", default_backend: "KRATOS" }
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -205,6 +210,7 @@ jobs:
           "-DMESHIOPLUSPLUS_INSTALL_CPP_BACKENDS=${{ matrix.backends }}"
           -DMESHIOPLUSPLUS_BUILD_CLI=${{ matrix.cli }}
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+          -DMESHIOPLUSPLUS_MESH_BACKEND=${{ matrix.default_backend }}
       - name: Build + install
         run: |
           cmake --build build
@@ -263,6 +269,72 @@ jobs:
             -Dmeshioplusplus_DIR="$PWD/inst/lib/cmake/meshioplusplus"
           cmake --build /tmp/consumer-default
           LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/consumer-default/consumer_smoketest
+          # MESHIOPLUSPLUS_NO_STD_SPAN is ABI-neutral (it guards only the
+          # <span> include and the inline NativeMesh::ConnSpan accessor) and is
+          # #ifndef-guarded, so a consumer must be able to define it themselves
+          # against a prefix built WITHOUT it -- which is exactly the Kratos/
+          # Boost-uBLAS case. This turns that claim into a gate.
+          cmake -S tests/consumer -B /tmp/consumer-nospan \
+            -Dmeshioplusplus_DIR="$PWD/inst/lib/cmake/meshioplusplus" \
+            -DMESHIOPLUSPLUS_CONSUMER_NO_STD_SPAN=ON
+          cmake --build /tmp/consumer-nospan
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/consumer-nospan/consumer_smoketest
+      # doc/cpp_api.md and README.md both print an EXACT find_package line for
+      # COMPONENTS CXX. Under SameMajorVersion, EXACT is a full-string compare,
+      # so a two-component request can never match a three-component install --
+      # which is what both files printed through v9.1.0. Exercise the real
+      # thing, and assert the docs quote a line that works.
+      - name: Consume with the documented EXACT pin
+        run: |
+          set -eux
+          export PKG_CONFIG_PATH="$PWD/inst/lib/pkgconfig"
+          ver=$(pkg-config --modversion meshioplusplus)
+          # (1) the full three-component version must satisfy EXACT
+          cmake -S tests/consumer -B /tmp/consumer-exact \
+            -Dmeshioplusplus_DIR="$PWD/inst/lib/cmake/meshioplusplus" \
+            -DMESHIOPLUSPLUS_CONSUMER_EXACT_VERSION="$ver"
+          cmake --build /tmp/consumer-exact
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/consumer-exact/consumer_smoketest
+          # (2) major.minor must NOT -- this is exactly why the docs have to
+          #     spell all three components, and this keeps that reason from
+          #     rotting back into a two-component line.
+          if cmake -S tests/consumer -B /tmp/consumer-exact-bad \
+               -Dmeshioplusplus_DIR="$PWD/inst/lib/cmake/meshioplusplus" \
+               -DMESHIOPLUSPLUS_CONSUMER_EXACT_VERSION="${ver%.*}" > /tmp/exact.log 2>&1; then
+            echo "::error::'${ver%.*} EXACT' should not have been satisfied"
+            cat /tmp/exact.log
+            exit 1
+          fi
+          # (3) the docs must quote the line that actually works, verbatim, so
+          #     a version bump that forgets them turns this step red.
+          grep -qF "find_package(meshioplusplus $ver EXACT CONFIG REQUIRED COMPONENTS CXX)" doc/cpp_api.md
+          grep -qF "find_package(meshioplusplus $ver EXACT CONFIG REQUIRED COMPONENTS CXX)" README.md
+      # The backend link guard, which no CMake consumer can exercise: the macro
+      # always arrives via INTERFACE_COMPILE_DEFINITIONS, and main.cpp #errors
+      # without it. Only a hand-rolled compile reaches the state the guard is
+      # for. Gated on KRATOS because a non-MESHIO library is what makes the
+      # mismatch real, and because the deps live inside the .so there (a static
+      # leg would need the whole HDF5/netCDF link line).
+      - name: Backend link guard fires without the definitions
+        if: matrix.default_backend == 'KRATOS'
+        run: |
+          set -eux
+          # Negative: include path only, exactly the pkg-config / makefile
+          # consumer. mesh.hpp falls through to MESHIO, so the link must fail.
+          if g++ -std=c++20 -I inst/include tests/consumer/no_backend_macro.cpp \
+               -L inst/lib -lmeshioplusplus_core_kratos -o /tmp/nb 2> /tmp/nb.log; then
+            echo "::error::a TU with no backend macro linked against a KRATOS build"
+            exit 1
+          fi
+          # ...and it must name the backend the TU assumed, not just emit raw
+          # mangled references to whatever it happened to call.
+          grep -q 'mesh_backend_is_meshio' /tmp/nb.log
+          # Positive control. Without it the negative half would also pass for a
+          # typo'd include path, i.e. for entirely the wrong reason.
+          g++ -std=c++20 -DMESHIOPLUSPLUS_MESH_BACKEND_KRATOS -I inst/include \
+            tests/consumer/no_backend_macro.cpp \
+            -L inst/lib -lmeshioplusplus_core_kratos -o /tmp/nb_ok
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/nb_ok
       # COMPONENTS must genuinely gate: this install has no Fortran, so asking
       # for it has to fail rather than silently succeed and break at link time.
       - name: COMPONENTS enforcement

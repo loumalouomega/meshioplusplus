@@ -67,6 +67,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/mesh_api.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/properties.hpp"
 #include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
@@ -329,6 +330,27 @@ public:
     static constexpr std::size_t npos = detail::RegionList::npos;
 
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+
+    // --- uniform API: property sets (properties.hpp) -----------------------
+    //
+    // Keyed by id, never by entity index, so no operation has to remap them.
+    // Named GetPropertySet rather than PropertySet(i) on purpose: an accessor
+    // called PropertySet would hide the TYPE of that name for the rest of this
+    // class body, the trap mesh_api.hpp documents for Region(i).
+
+    /** @brief Store a properties block, replacing one with the same `mId`. */
+    void AddPropertySet(PropertySet propertySet) { mPropertySets.Add(std::move(propertySet)); }
+    /** @brief Number of properties blocks. */
+    std::size_t NumPropertySets() const { return mPropertySets.Size(); }
+    /** @brief Properties block @p Index, in ascending-`mId` order. */
+    const PropertySet& GetPropertySet(std::size_t Index) const { return mPropertySets.At(Index); }
+    /** @brief Whether a properties block with this id exists. */
+    bool HasPropertySet(std::int64_t Id) const { return mPropertySets.Has(Id); }
+    /** @brief Index of the block with this id, or `npos`. */
+    std::size_t FindPropertySet(std::int64_t Id) const { return mPropertySets.Find(Id); }
+    /** @brief The whole list (used by the KRATOS backend's staging forward). */
+    const detail::PropertySetList& PropertySets() const { return mPropertySets; }
+
     std::size_t NumRegions() const { return mRegions.Size(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return mRegions.At(i); }
     std::vector<std::string> RegionNames() const { return mRegions.Names(); }
@@ -412,7 +434,8 @@ private:
     detail::NamedArrays mPointData;     // canonical Float64/Int64 arrays
     detail::NamedArrayLists mCellData;  // one array per block, block order
     detail::NamedArrays mFieldData;
-    detail::RegionList mRegions;  // named groups, canonical + sorted
+    detail::RegionList mRegions;            // named groups, canonical + sorted
+    detail::PropertySetList mPropertySets;  // material blocks, ascending by id
     mutable std::optional<GlobalCsr> mGlobalCsr;
 };
 

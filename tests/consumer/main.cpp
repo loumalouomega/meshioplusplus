@@ -41,7 +41,10 @@
 // System includes
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 // Project includes -- the full C++ API, from the install prefix
@@ -52,6 +55,8 @@
 #include "meshioplusplus/kratos_bridge.hpp"
 #include "meshioplusplus/backends/model_part.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/properties.hpp"
 
 // ...and the C API, in the same translation unit
 #include "meshioplusplus/meshioplusplus.h"
@@ -164,6 +169,117 @@ int main() {
         const meshioplusplus::ModelPart round = meshioplusplus::from_model_part(dest, "Round");
         check(round.NumberOfNodes() == 3, "from_model_part() reads 3 nodes back");
         check(round.NumberOfElements() == 1, "from_model_part() reads 1 element back");
+    }
+
+    // ------------------------------------- 5. v9.1.0 Kratos-consumer surface
+    // Names, nested sub model parts and Properties are all header-only, so this
+    // is the one place that proves they are reachable from an INSTALLED prefix.
+    {
+        meshioplusplus::ModelPart source("Main");
+        source.CreateNewNode(1, 0.0, 0.0, 0.0);
+        source.CreateNewNode(2, 1.0, 0.0, 0.0);
+        source.CreateNewNode(3, 0.0, 1.0, 0.0);
+        source.CreateNewNode(4, 0.0, 0.0, 1.0);
+        source.CreateNewElement("SmallDisplacementElement3D4N", 1, {1, 2, 3, 4}, 7);
+        check(source.GetElement(1).HasName(), "an entity created by name carries one");
+        check(source.GetElement(1).Name() == "SmallDisplacementElement3D4N",
+              "the application-specific name is stored verbatim");
+
+        // Material data crosses as key/value pairs; a real Kratos consumer turns
+        // them into typed Variables through the applier overload below.
+        meshioplusplus::PropertySet& r_props = source.CreateNewProperties(7);
+        meshioplusplus::PropertyValue density;
+        density.mKey = "DENSITY";
+        density.mValues = meshioplusplus::NDArray(meshioplusplus::DType::Float64, {1});
+        density.mValues.As<double>()[0] = 7850.0;
+        r_props.mValues.push_back(std::move(density));
+        check(source.NumberOfProperties() == 1, "CreateNewProperties registers a block");
+
+        // Nested sub model parts, the '/' region convention's other half.
+        meshioplusplus::ModelPart& r_structure = source.CreateSubModelPart("Structure");
+        r_structure.CreateSubModelPart("Loads").AddElements({1});
+        check(r_structure.GetSubModelPart("Loads").NumberOfElements() == 1,
+              "a nested sub model part holds its member");
+
+        // The name must survive to_model_part, which used to re-derive it.
+        meshioplusplus::ModelPart dest("Dest");
+        int applied = 0;
+        meshioplusplus::to_model_part(
+            source, dest, [](meshioplusplus::IndexType id) { return id; },
+            [&applied](meshioplusplus::IndexType, const meshioplusplus::PropertyValue& r_v) {
+                if (r_v.mKey == "DENSITY")
+                    ++applied;
+            });
+        check(applied == 1, "the property applier is invoked once per value");
+
+        // v9.2.0: the same values now reach a Mesh through the ordinary read
+        // path, so a registry-based consumer no longer has to link
+        // formats/mdpa.hpp to get them.
+        meshioplusplus::Mesh pm = make_mesh();
+        meshioplusplus::PropertySet ps;
+        ps.mId = 3;
+        meshioplusplus::PropertyValue rho;
+        rho.mKey = "DENSITY";
+        rho.mValues = meshioplusplus::NDArray(meshioplusplus::DType::Float64, {1});
+        rho.mValues.As<double>()[0] = 7850.0;
+        ps.mValues.push_back(std::move(rho));
+        pm.AddPropertySet(std::move(ps));
+        check(pm.NumPropertySets() == 1, "the uniform API carries property sets");
+        check(pm.HasPropertySet(3), "a property set is found by its id");
+        check(dest.GetElement(1).Name() == "SmallDisplacementElement3D4N",
+              "to_model_part() preserves the entity name");
+
+        const meshioplusplus::ModelPart round = meshioplusplus::from_model_part(dest, "Round");
+        check(round.GetElement(1).Name() == "SmallDisplacementElement3D4N",
+              "from_model_part() reads the entity name back");
+    }
+
+    // ------------------------------------------- 6. transient XDMF from a solver
+    {
+        const std::string path = "consumer_series.xdmf";
+        {
+            // "XML" so this needs no HDF5 in the consumer's environment.
+            const meshioplusplus::Mesh m = make_mesh();
+            meshioplusplus::XdmfTimeSeriesWriter w(path, "XML");
+            w.WritePointsCells(m);
+            meshioplusplus::XdmfTimeSeriesWriter::NamedArray u;
+            u.mName = "u";
+            u.mNumComponents = 1;
+            u.mValues.assign(m.NumPoints(), 1.5);
+            w.WriteData(0.0, {u});
+            w.Flush();  // readable before Finalize -- the killed-run contract
+            check(std::filesystem::exists(path), "Flush() writes the .xdmf");
+            w.Finalize();
+        }
+        {
+            // ...and a restart continues that same collection, writing further
+            // steps through the NamedArray fast path. That combination was
+            // broken through v9.1.0 -- the appending writer never recovered the
+            // point/cell counts, so it rejected every array with "expected 0
+            // (0 x 1)" and a restartable solver had to fall back to re-staging
+            // a whole Mesh per step. Checked here, against an INSTALLED shared
+            // library, because that is what a real consumer links.
+            meshioplusplus::XdmfTimeSeriesWriter w(path, "XML", -1,
+                                                   meshioplusplus::XdmfSeriesMode::Append);
+            check(w.NumSteps() == 1, "Append mode counts the existing step");
+            meshioplusplus::XdmfTimeSeriesWriter::NamedArray u2;
+            u2.mName = "u";
+            u2.mNumComponents = 1;
+            u2.mValues.assign(make_mesh().NumPoints(), 2.5);
+            bool wrote = true;
+            try {
+                w.WriteData(1.0, {u2});
+            } catch (const std::exception&) {
+                wrote = false;
+            }
+            check(wrote, "Append + NamedArray WriteData (the v9.1.0 regression)");
+            check(w.NumSteps() == 2, "the appended step is counted");
+            w.Finalize();
+        }
+        // Delete only after the writer's scope has ended: the destructor
+        // finalizes, so removing the file while it is alive recreates it.
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
     }
 
     // ---------------------------------------------------------------- 4. C API

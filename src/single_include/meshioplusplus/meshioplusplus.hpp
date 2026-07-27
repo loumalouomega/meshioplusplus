@@ -334,6 +334,36 @@ inline CellType cell_type_from_kratos_name(const std::string& rName) {
 }
 
 /**
+ * @brief Resolve a Kratos entity name, allowing an application-specific prefix.
+ *
+ * Exact lookup first, then the longest suffix that resolves -- which is what
+ * makes `SmallDisplacementElement3D4N` (and every other application element
+ * name) work through its canonical `Element3D4N` tail. Without the fallback
+ * only the handful of names in the tables above resolve, and essentially no
+ * real Kratos application or deck restricts itself to those.
+ *
+ * This is the single owner of that rule: `ModelPart::CreateNewElement` and the
+ * MDPA reader both go through it, so they cannot disagree about which names are
+ * usable.
+ *
+ * @param rName the entity name as the application or file spells it.
+ * @return the meshio cell type, or `CellType::Custom` if nothing resolves.
+ */
+inline CellType cell_type_from_kratos_name_or_suffix(const std::string& rName) {
+    if (rName.empty())
+        return CellType::Custom;
+    CellType t = cell_type_from_kratos_name(rName);
+    if (t != CellType::Custom)
+        return t;
+    for (std::size_t i = 1; i + 1 < rName.size(); ++i) {
+        t = cell_type_from_kratos_name(rName.substr(i));
+        if (t != CellType::Custom)
+            return t;
+    }
+    return CellType::Custom;
+}
+
+/**
  * @brief Default Kratos *element* name for a cell type (ported from
  * `_meshio_to_kratos_element_type`), falling back to the Kratos geometry
  * name, then the meshio name itself for types with no Kratos equivalent.
@@ -902,6 +932,149 @@ using NamedArrayLists = NamedItems<std::vector<NDArray>>;
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/named_arrays.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/properties.hpp =====
+/**
+ * @file properties.hpp
+ * @brief `PropertyValue` / `PropertySet`: the key/value content of a Kratos
+ * `Properties` block (material data), independent of both the mesh backend and
+ * the MDPA format.
+ *
+ * This exists because two unrelated places need the *same* representation and
+ * would otherwise each invent one: `formats/mdpa.hpp` (which reads and writes
+ * `Begin Properties <id>` bodies through `MdpaInfo`) and
+ * `backends/model_part.hpp` (whose `ModelPart` stores them so material data
+ * survives the Kratos bridge instead of being reduced to a bare id). Keeping
+ * one owner is what lets a deck round-trip
+ * file -> `MdpaInfo` -> `ModelPart` -> `MdpaInfo` -> file with nothing lost.
+ *
+ * It deliberately does **not** model Kratos's typed `Variable<T>` system. A
+ * `Variable<double>` cannot be looked up without Kratos's own component
+ * registry (`KratosComponents<Variable<double>>::Get`), which is not linked
+ * here and never will be -- see the `to_model_part` overload taking an
+ * "apply property" callback in `kratos_bridge.hpp`, which is how a real Kratos
+ * consumer turns these key/value pairs into typed variables.
+ *
+ * @note These do not go through `field_data`: `NDArray` has ten numeric dtypes
+ *       and no string or bytes dtype, so a `CONSTITUTIVE_LAW LinearElastic3DLaw`
+ *       line has no representation there at all. Since v9.2.0 the `Mesh` carries
+ *       them **as themselves** instead, through the uniform API's
+ *       `AddPropertySet`/`GetPropertySet` (see `mesh_api.hpp`) -- a
+ *       `PropertySet` is an ordinary struct with `std::string` members, so
+ *       storing it needs no dtype. Before that they could only ride the
+ *       `MdpaInfo` side channel, which no registry-based consumer could reach.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief One `KEY value` entry of a properties block.
+ *
+ * Exactly one of `mValues` and `mText` carries the value:
+ *
+ *  - a plain number becomes a one-element Float64 `mValues`;
+ *  - an inline `Begin Table` becomes an `(n, k)` Float64 `mValues` with
+ *    `mIsTable` set, `mKey` holding the table header's arguments verbatim
+ *    (e.g. `"1 TEMPERATURE YOUNG_MODULUS"`) so it re-emits unchanged;
+ *  - anything else -- a constitutive-law name, a bracketed vector or matrix
+ *    such as `[3] (1.0, 0.0, 0.0)` -- is kept verbatim in `mText`.
+ *
+ * The text fallback is not a gap to close later: it is what makes an
+ * unrecognized value **lossless**, since it is re-emitted byte for byte. It is
+ * also what the pure-Python reference does (`_mdpa.py` falls back to the raw
+ * string when `float()` fails), so the two readers agree.
+ */
+struct PropertyValue {
+    /** @brief The variable name, or a table's header arguments when `mIsTable`. */
+    std::string mKey;
+    /** @brief Numeric value: `{1}` for a scalar, `(n, k)` for a table. */
+    NDArray mValues;
+    /** @brief The value verbatim, when it is not numeric. Empty otherwise. */
+    std::string mText;
+    /** @brief Whether this entry is an inline `Begin Table` rather than a value. */
+    bool mIsTable = false;
+
+    /** @brief Whether the value lives in `mText` rather than `mValues`. */
+    bool IsText() const { return mValues.Size() == 0; }
+};
+
+/** @brief One `Begin Properties <id>` block: an id plus its entries, in file order. */
+struct PropertySet {
+    std::int64_t mId = 0;
+    std::vector<PropertyValue> mValues;
+};
+
+namespace detail {
+
+/**
+ * @brief Every properties block of a mesh, kept ascending by `mId`.
+ *
+ * The structural twin of `detail::RegionList`, and for the same reason: the
+ * three mesh backends each hold one of these, so a shared container is what
+ * stops them drifting on ordering or on the replace-by-key rule.
+ *
+ * Unlike regions, property sets are keyed by **id, not by entity index**, so
+ * nothing here ever needs remapping when an operation renumbers cells or
+ * points -- there is no `detail/region_remap.hpp` counterpart to look for.
+ */
+class PropertySetList {
+public:
+    /**
+     * @brief Insert a set, or replace the one with the same `mId`.
+     * @param propertySet The set to store.
+     */
+    void Add(PropertySet propertySet) {
+        auto it = std::lower_bound(
+            mSets.begin(), mSets.end(), propertySet.mId,
+            [](const PropertySet& rLhs, std::int64_t id) { return rLhs.mId < id; });
+        if (it != mSets.end() && it->mId == propertySet.mId)
+            *it = std::move(propertySet);
+        else
+            mSets.insert(it, std::move(propertySet));
+    }
+
+    /** @brief Number of stored property sets. */
+    std::size_t Size() const { return mSets.size(); }
+    /** @brief Set @p Index, in ascending-`mId` order. */
+    const PropertySet& At(std::size_t Index) const { return mSets[Index]; }
+    /** @brief The whole list, for backends that forward it wholesale. */
+    const std::vector<PropertySet>& All() const { return mSets; }
+    /** @brief Drop every stored set. */
+    void Clear() { mSets.clear(); }
+
+    /** @brief Whether a set with this id exists. */
+    bool Has(std::int64_t Id) const { return Find(Id) != npos; }
+
+    /**
+     * @brief Index of the set with this id.
+     * @param Id The properties id to look for.
+     * @return The index, or `npos` when absent.
+     */
+    std::size_t Find(std::int64_t Id) const {
+        auto it = std::lower_bound(
+            mSets.begin(), mSets.end(), Id,
+            [](const PropertySet& rLhs, std::int64_t id) { return rLhs.mId < id; });
+        if (it == mSets.end() || it->mId != Id)
+            return npos;
+        return static_cast<std::size_t>(it - mSets.begin());
+    }
+
+    /// Sentinel returned by `Find` when no set matches.
+    static constexpr std::size_t npos = static_cast<std::size_t>(-1);
+
+private:
+    std::vector<PropertySet> mSets;  // kept sorted by mId
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/properties.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/backends/model_part.hpp =====
 /**
  * @file model_part.hpp
@@ -954,6 +1127,31 @@ using NamedArrayLists = NamedItems<std::vector<NDArray>>;
 
 namespace meshioplusplus {
 
+namespace detail {
+
+/**
+ * @brief Interning pool for Kratos entity names, owned by the root ModelPart.
+ *
+ * `std::unordered_set` is node-based, so an interned string's address survives
+ * both rehashing and a move of the owning ModelPart -- which is what lets
+ * `GeometricalEntity` hold an 8-byte pointer instead of a 32-byte string it
+ * would duplicate once per cell.
+ */
+class NamePool {
+public:
+    /** @brief Intern @p rName; an empty name interns to null ("derive it"). */
+    const std::string* Intern(const std::string& rName) {
+        if (rName.empty())
+            return nullptr;
+        return &*mNames.insert(rName).first;
+    }
+
+private:
+    std::unordered_set<std::string> mNames;
+};
+
+}  // namespace detail
+
 /** @brief Entity id type; ids are 1-based (0 is never a valid id). */
 using IndexType = std::size_t;
 
@@ -983,8 +1181,12 @@ private:
 class GeometricalEntity {
 public:
     GeometricalEntity(IndexType id, CellType type, std::vector<IndexType> nodeIds,
-                      IndexType propertiesId)
-        : mId(id), mType(type), mPropertiesId(propertiesId), mNodeIds(std::move(nodeIds)) {
+                      IndexType propertiesId, const std::string* pName = nullptr)
+        : mId(id),
+          mType(type),
+          mPropertiesId(propertiesId),
+          mpName(pName),
+          mNodeIds(std::move(nodeIds)) {
         if (id < 1)
             throw std::invalid_argument("meshio++ ModelPart: entity Id must be >= 1");
         if (mNodeIds.empty())
@@ -998,6 +1200,27 @@ public:
     IndexType Id() const { return mId; }
     CellType Type() const { return mType; }
     IndexType PropertiesId() const { return mPropertiesId; }
+
+    /**
+     * @brief The Kratos registration name this entity was created with.
+     *
+     * Empty when it was created from a `CellType` alone, which means "derive it
+     * from the type" -- `kratos_element_name`/`kratos_condition_name`, the
+     * behaviour every caller had before names existed.
+     *
+     * The point of storing it is that the derivation is lossy in one direction
+     * only: `SmallDisplacementElement3D4N` resolves to `Tetrahedra4`, but
+     * `Tetrahedra4` only ever derives back to the canonical `Element3D4N`, so a
+     * Kratos -> meshio++ -> Kratos round trip silently downgraded every
+     * application-specific element before this.
+     */
+    const std::string& Name() const {
+        static const std::string empty;
+        return mpName ? *mpName : empty;
+    }
+    /** @brief Whether a name was supplied (as opposed to deriving it). */
+    bool HasName() const { return mpName != nullptr; }
+
     const std::vector<IndexType>& NodeIds() const { return mNodeIds; }
     std::size_t NumberOfNodes() const { return mNodeIds.size(); }
 
@@ -1005,6 +1228,14 @@ private:
     IndexType mId;
     CellType mType;
     IndexType mPropertiesId;
+    /**
+     * A pointer into the root's `NamePool`, not a `std::string`: there is one
+     * distinct name per *block*, but one entity per *cell*, so an owned string
+     * would add ~32 bytes to every entity -- ~320 MB on a 10 M-element model
+     * part -- to store a handful of distinct values. The pool is node-based, so
+     * the pointer stays valid across rehashing and across a ModelPart move.
+     */
+    const std::string* mpName;
     std::vector<IndexType> mNodeIds;
 };
 
@@ -1108,6 +1339,10 @@ public:
           mNodes(std::move(rOther.mNodes)),
           mElements(std::move(rOther.mElements)),
           mConditions(std::move(rOther.mConditions)),
+          mProperties(std::move(rOther.mProperties)),
+          // Moving the pool transfers its nodes, so every entity's interned
+          // name pointer stays valid; leaving it behind would dangle them all.
+          mNamePool(std::move(rOther.mNamePool)),
           mLocalNodeIds(std::move(rOther.mLocalNodeIds)),
           mLocalElementIds(std::move(rOther.mLocalElementIds)),
           mLocalConditionIds(std::move(rOther.mLocalConditionIds)),
@@ -1146,15 +1381,19 @@ public:
     }
     Element& CreateNewElement(const std::string& rKratosName, IndexType id,
                               std::vector<IndexType> nodeIds, IndexType propertiesId = 0) {
-        Element& r_elem = GetRootModelPart().mElements.Create(
-            id, ResolveEntityType(rKratosName), ValidatedNodeIds(std::move(nodeIds)), propertiesId);
+        ModelPart& r_root = GetRootModelPart();
+        Element& r_elem = r_root.mElements.Create(
+            id, ResolveEntityType(rKratosName), ValidatedNodeIds(std::move(nodeIds)), propertiesId,
+            r_root.mNamePool.Intern(rKratosName));
         RecordMembership(&ModelPart::mLocalElementIds, id);
         return r_elem;
     }
     Condition& CreateNewCondition(const std::string& rKratosName, IndexType id,
                                   std::vector<IndexType> nodeIds, IndexType propertiesId = 0) {
-        Condition& r_cond = GetRootModelPart().mConditions.Create(
-            id, ResolveEntityType(rKratosName), ValidatedNodeIds(std::move(nodeIds)), propertiesId);
+        ModelPart& r_root = GetRootModelPart();
+        Condition& r_cond = r_root.mConditions.Create(
+            id, ResolveEntityType(rKratosName), ValidatedNodeIds(std::move(nodeIds)), propertiesId,
+            r_root.mNamePool.Intern(rKratosName));
         RecordMembership(&ModelPart::mLocalConditionIds, id);
         return r_cond;
     }
@@ -1174,6 +1413,72 @@ public:
         RecordMembership(&ModelPart::mLocalConditionIds, id);
         return r_cond;
     }
+    // CellType-plus-name overloads: the bulk-ingest fast path (no per-entity
+    // name *resolution*, no connectivity validation) while still carrying the
+    // application's own spelling. A distinct arity from the four-argument
+    // CellType overloads above, so no existing call is affected.
+    Element& CreateNewElement(CellType type, IndexType id, std::vector<IndexType> nodeIds,
+                              IndexType propertiesId, const std::string& rKratosName) {
+        ModelPart& r_root = GetRootModelPart();
+        Element& r_elem = r_root.mElements.Create(id, type, std::move(nodeIds), propertiesId,
+                                                  r_root.mNamePool.Intern(rKratosName));
+        RecordMembership(&ModelPart::mLocalElementIds, id);
+        return r_elem;
+    }
+    Condition& CreateNewCondition(CellType type, IndexType id, std::vector<IndexType> nodeIds,
+                                  IndexType propertiesId, const std::string& rKratosName) {
+        ModelPart& r_root = GetRootModelPart();
+        Condition& r_cond = r_root.mConditions.Create(id, type, std::move(nodeIds), propertiesId,
+                                                      r_root.mNamePool.Intern(rKratosName));
+        RecordMembership(&ModelPart::mLocalConditionIds, id);
+        return r_cond;
+    }
+
+    // --- properties (material data; see properties.hpp) --------------------
+
+    /**
+     * @brief Create (or return) the root's properties block with this id.
+     *
+     * Properties live in the root beside the entities, as in Kratos. The values
+     * are `PropertyValue` key/value pairs rather than typed `Variable<T>`s:
+     * resolving a Kratos variable needs Kratos's own component registry, which
+     * is deliberately not linked here -- see `to_model_part`'s "apply property"
+     * overload in `kratos_bridge.hpp` for how a real consumer bridges the two.
+     */
+    PropertySet& CreateNewProperties(IndexType id) {
+        ModelPart& r_root = GetRootModelPart();
+        for (PropertySet& r_p : r_root.mProperties)
+            if (static_cast<IndexType>(r_p.mId) == id)
+                return r_p;
+        PropertySet p;
+        p.mId = static_cast<std::int64_t>(id);
+        r_root.mProperties.push_back(std::move(p));
+        return r_root.mProperties.back();
+    }
+    bool HasProperties(IndexType id) const {
+        const ModelPart& r_root = GetRootModelPart();
+        for (const PropertySet& r_p : r_root.mProperties)
+            if (static_cast<IndexType>(r_p.mId) == id)
+                return true;
+        return false;
+    }
+    PropertySet& GetProperties(IndexType id) {
+        for (PropertySet& r_p : GetRootModelPart().mProperties)
+            if (static_cast<IndexType>(r_p.mId) == id)
+                return r_p;
+        throw std::invalid_argument("meshio++ ModelPart: no properties with Id " +
+                                    std::to_string(id));
+    }
+    const PropertySet& GetProperties(IndexType id) const {
+        for (const PropertySet& r_p : GetRootModelPart().mProperties)
+            if (static_cast<IndexType>(r_p.mId) == id)
+                return r_p;
+        throw std::invalid_argument("meshio++ ModelPart: no properties with Id " +
+                                    std::to_string(id));
+    }
+    std::size_t NumberOfProperties() const { return GetRootModelPart().mProperties.size(); }
+    /** @brief Every properties block, in creation order. */
+    const std::vector<PropertySet>& Properties() const { return GetRootModelPart().mProperties; }
 
     // --- membership (add existing root entities to a sub part) -------------
 
@@ -1315,7 +1620,11 @@ public:
 private:
     /** @brief Resolve a Kratos entity/geometry name or meshio name to a CellType. */
     static CellType ResolveEntityType(const std::string& rKratosName) {
-        const CellType type = cell_type_from_kratos_name(rKratosName);
+        // The suffix-tolerant resolver, so an application-specific name such as
+        // SmallDisplacementElement3D4N works through its canonical Element3D4N
+        // tail -- without it only the handful of canonical names resolve, which
+        // no real Kratos application restricts itself to.
+        const CellType type = cell_type_from_kratos_name_or_suffix(rKratosName);
         // Custom is only acceptable when the spelling itself carries meaning
         // (variable-node-count meshio names like "polyhedron12"); a name
         // neither table knows and that is not a meshio spelling is an error.
@@ -1370,6 +1679,11 @@ private:
     detail::EntityContainer<Node> mNodes;
     detail::EntityContainer<Element> mElements;
     detail::EntityContainer<Condition> mConditions;
+
+    // Root-only material data and the entity-name interning pool. The pool must
+    // outlive every entity pointing into it, which the root does by owning them.
+    std::vector<PropertySet> mProperties;
+    detail::NamePool mNamePool;
 
     // Sub-part membership (unused on the root).
     detail::IdList mLocalNodeIds, mLocalElementIds, mLocalConditionIds;
@@ -1710,6 +2024,33 @@ inline void write_int(NDArray& rA, std::size_t i, std::int64_t v) {
  * body. Every declaration after the accessor must spell the type out
  * fully-qualified — which is why the accessor itself returns
  * `const meshioplusplus::Region&`.
+ *
+ * ## Property sets (`properties.hpp`)
+ *
+ * `Begin Properties` blocks — Kratos material data, and whatever other formats
+ * grow an equivalent — are carried on the mesh rather than in a per-format side
+ * struct, because a side struct is unreachable through `registry_read`:
+ *
+ *  - `void AddPropertySet(PropertySet propertySet)` — insert, or replace the
+ *    set with the same `mId`.
+ *  - `std::size_t NumPropertySets() const`, and
+ *    `const PropertySet& GetPropertySet(std::size_t Index) const` — indexed in
+ *    **ascending `mId`** order, identical on every backend.
+ *  - `bool HasPropertySet(std::int64_t Id)` /
+ *    `std::size_t FindPropertySet(std::int64_t Id)` (`Mesh::npos` when absent).
+ *
+ * Two things follow from these being keyed by **id, not by entity index**.
+ * There is no `detail/region_remap.hpp` counterpart and none is needed — an
+ * operation that renumbers cells or points cannot invalidate them. And the rule
+ * for operations is simply: **shape-preserving operations carry property sets
+ * through** (`clean`, `smooth`, `transform`, `attach_quality`, the data ops),
+ * while **restructuring and multi-input ones do not** (`merge`, whose inputs
+ * would collide on id, plus `crop`/`split`/`partition`/`diff`).
+ *
+ * The accessor is `GetPropertySet`, not `PropertySet(i)`, deliberately: an
+ * accessor named `PropertySet` would hide that *type* for the rest of each
+ * backend's class body exactly as `Region(i)` does above, and the KRATOS backend
+ * genuinely needs to name the type afterwards.
  */
 
 // System includes
@@ -2380,6 +2721,27 @@ public:
     static constexpr std::size_t npos = detail::RegionList::npos;
 
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+
+    // --- uniform API: property sets (properties.hpp) -----------------------
+    //
+    // Keyed by id, never by entity index, so no operation has to remap them.
+    // Named GetPropertySet rather than PropertySet(i) on purpose: an accessor
+    // called PropertySet would hide the TYPE of that name for the rest of this
+    // class body, the trap mesh_api.hpp documents for Region(i).
+
+    /** @brief Store a properties block, replacing one with the same `mId`. */
+    void AddPropertySet(PropertySet propertySet) { mPropertySets.Add(std::move(propertySet)); }
+    /** @brief Number of properties blocks. */
+    std::size_t NumPropertySets() const { return mPropertySets.Size(); }
+    /** @brief Properties block @p Index, in ascending-`mId` order. */
+    const PropertySet& GetPropertySet(std::size_t Index) const { return mPropertySets.At(Index); }
+    /** @brief Whether a properties block with this id exists. */
+    bool HasPropertySet(std::int64_t Id) const { return mPropertySets.Has(Id); }
+    /** @brief Index of the block with this id, or `npos`. */
+    std::size_t FindPropertySet(std::int64_t Id) const { return mPropertySets.Find(Id); }
+    /** @brief The whole list (used by the KRATOS backend's staging forward). */
+    const detail::PropertySetList& PropertySets() const { return mPropertySets; }
+
     std::size_t NumRegions() const { return mRegions.Size(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return mRegions.At(i); }
     std::vector<std::string> RegionNames() const { return mRegions.Names(); }
@@ -2463,7 +2825,8 @@ private:
     detail::NamedArrays mPointData;     // canonical Float64/Int64 arrays
     detail::NamedArrayLists mCellData;  // one array per block, block order
     detail::NamedArrays mFieldData;
-    detail::RegionList mRegions;  // named groups, canonical + sorted
+    detail::RegionList mRegions;            // named groups, canonical + sorted
+    detail::PropertySetList mPropertySets;  // material blocks, ascending by id
     mutable std::optional<GlobalCsr> mGlobalCsr;
 };
 
@@ -3103,6 +3466,36 @@ namespace meshioplusplus {
  */
 class KratosMesh {
 public:
+    /**
+     * @brief The cell_data key holding each cell's Kratos properties id.
+     *
+     * The same key the MDPA reader/writer uses, so a `.mdpa` round trip through
+     * this backend keeps its material assignment instead of collapsing to 0.
+     */
+    static constexpr const char* kKratosPropertyTagKey = "gmsh:physical";
+
+    // --- KRATOS-only extras: per-block Kratos entity names -----------------
+    //
+    // Not part of the uniform mesh API (no other backend has a ModelPart to
+    // spell names for) -- the same "fast-consumer surface" shape as NATIVE's
+    // PointsData()/ConnSpan(). A block with no name set derives one from its
+    // cell type, which is what every caller got before names existed.
+
+    /** @brief Set block @p Block's Kratos entity name (e.g. from `MdpaInfo`). */
+    void SetBlockEntityName(std::size_t Block, const std::string& rName) {
+        if (Block >= mStage.NumCellBlocks())
+            throw std::out_of_range("meshio++ KratosMesh: block index out of range");
+        if (mBlockEntityNames.size() < mStage.NumCellBlocks())
+            mBlockEntityNames.resize(mStage.NumCellBlocks());
+        mBlockEntityNames[Block] = rName;
+        InvalidateMaterialization();
+    }
+    /** @brief Block @p Block's Kratos entity name, or `""` when unset. */
+    const std::string& BlockEntityName(std::size_t Block) const {
+        static const std::string empty;
+        return Block < mBlockEntityNames.size() ? mBlockEntityNames[Block] : empty;
+    }
+
     /** @brief Cell-data names treated as entity tags for automatic SubModelParts. */
     static const std::vector<std::string>& KnownTagKeys() {
         static const std::vector<std::string> keys = {
@@ -3151,6 +3544,10 @@ public:
         ResetModelPartOnly();
         mStage.AddRegion(std::move(region));
     }
+    void AddPropertySet(PropertySet propertySet) {
+        ResetModelPartOnly();
+        mStage.AddPropertySet(std::move(propertySet));
+    }
 
     // --- uniform API: writer-side accessors (staging, stale-synced) --------
 
@@ -3191,6 +3588,13 @@ public:
 
     /// Sentinel returned by `FindRegion` when no region matches.
     static constexpr std::size_t npos = detail::RegionList::npos;
+
+    std::size_t NumPropertySets() const { return Stage().NumPropertySets(); }
+    const PropertySet& GetPropertySet(std::size_t Index) const {
+        return Stage().GetPropertySet(Index);
+    }
+    bool HasPropertySet(std::int64_t Id) const { return Stage().HasPropertySet(Id); }
+    std::size_t FindPropertySet(std::int64_t Id) const { return Stage().FindPropertySet(Id); }
 
     std::size_t NumRegions() const { return Stage().NumRegions(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return Stage().Region(i); }
@@ -3252,12 +3656,57 @@ public:
      */
     void SetBuildSubModelPartsFromTags(bool enable) {
         mTagsToSubModelParts = enable;
-        if (mMaterialized && !mStale) {
-            mMaterialized = false;  // re-materialize with the new setting
-            mpRoot.reset();
-        }
+        InvalidateMaterialization();  // re-materialize with the new setting
     }
     bool BuildSubModelPartsFromTags() const { return mTagsToSubModelParts; }
+
+    /**
+     * @brief Restrict the automatic tag pass to these `cell_data` keys.
+     *
+     * `SetBuildSubModelPartsFromTags` is all-or-nothing, which is too coarse
+     * when only one key is unwanted. The motivating case is `.mdpa`: a Kratos
+     * properties id is read as a `gmsh:physical` cell tag, so the tag pass
+     * synthesizes a `gmsh_physical_<id>` SubModelPart beside the file's real
+     * ones -- material assignment surfacing as a group. For a genuine gmsh file
+     * that same inference is wanted, so the key cannot simply be dropped from
+     * #KnownTagKeys; the consumer has to say which it means.
+     *
+     * @param keys The keys to consider. **Empty restores the default**, i.e.
+     *        every key in #KnownTagKeys.
+     */
+    void SetTagSubModelPartKeys(std::vector<std::string> keys) {
+        mTagKeys = std::move(keys);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief Exclude one key from the automatic tag pass. Repeatable, additive.
+     *
+     * Expresses "everything except this" without re-listing #KnownTagKeys,
+     * which an inclusion list alone would force -- and which would silently
+     * freeze the caller against any key added to that table later.
+     */
+    void ExcludeTagSubModelPartKey(const std::string& rKey) {
+        if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), rKey) ==
+            mExcludedTagKeys.end())
+            mExcludedTagKeys.push_back(rKey);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief The keys the tag pass will actually consider.
+     * @return The effective set, in #KnownTagKeys order.
+     */
+    std::vector<std::string> TagSubModelPartKeys() const {
+        const std::vector<std::string>& source = mTagKeys.empty() ? KnownTagKeys() : mTagKeys;
+        std::vector<std::string> out;
+        out.reserve(source.size());
+        for (const std::string& r_key : source)
+            if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), r_key) ==
+                mExcludedTagKeys.end())
+                out.push_back(r_key);
+        return out;
+    }
 
 private:
     /** @brief Per staged block: what it became in the ModelPart. */
@@ -3265,6 +3714,8 @@ private:
         enum class Kind { Element, Condition, Ragged } mKind = Kind::Ragged;
         IndexType mFirstId = 0;  // first entity Id (Element/Condition kinds)
         std::size_t mCount = 0;
+        /// The block's Kratos entity name, "" to derive it from the cell type.
+        std::string mEntityName;
     };
 
     void ResetModelPartOnly() {
@@ -3274,6 +3725,14 @@ private:
             mRecords.clear();
             mMaterialized = false;
             mStale = false;
+        }
+    }
+
+    /** @brief Drop a built ModelPart so the next access rebuilds it. */
+    void InvalidateMaterialization() {
+        if (mMaterialized && !mStale) {
+            mMaterialized = false;
+            mpRoot.reset();
         }
     }
 
@@ -3326,11 +3785,51 @@ private:
         for (const auto& r_b : mStage.Blocks())
             mesh_dim = std::max(mesh_dim, BlockDimension(r_b));
 
+        // Per-block property ids, when the mesh carries a usable tag array.
+        // Empty means "no tags", which is the pre-9.1.0 behaviour of 0 for all.
+        std::vector<std::vector<std::int64_t>> prop_ids;
+        if (mStage.HasCellData(kKratosPropertyTagKey) &&
+            mStage.CellDataNumBlocks(kKratosPropertyTagKey) == mStage.NumCellBlocks()) {
+            bool usable = true;
+            for (std::size_t b = 0; b < mStage.NumCellBlocks() && usable; ++b) {
+                const NDArray& r_tags = mStage.CellData(kKratosPropertyTagKey, b);
+                if (detail::is_float_dtype(r_tags.Dtype()) ||
+                    r_tags.Size() != mStage.Blocks()[b].NumCells()) {
+                    usable = false;  // a float or mis-sized tag is not an id
+                    break;
+                }
+                std::vector<std::int64_t> col(r_tags.Size());
+                for (std::size_t i = 0; i < r_tags.Size(); ++i)
+                    col[i] = detail::read_int(r_tags, i);
+                prop_ids.push_back(std::move(col));
+            }
+            if (!usable)
+                prop_ids.clear();
+        }
+        for (const std::vector<std::int64_t>& r_col : prop_ids)
+            for (std::int64_t id : r_col)
+                if (id >= 0)
+                    r_mp.CreateNewProperties(static_cast<IndexType>(id));
+
+        // Real material values, where the mesh carries them. The loop above
+        // only creates the ids the entity rows reference, leaving every block
+        // empty; this fills them in. CreateNewProperties is find-or-create, so
+        // an id both passes see is filled in place rather than duplicated, and
+        // the creation order above is unchanged. This is what makes
+        // kratos_bridge's "apply property" to_model_part overload transfer
+        // anything at all -- it iterates rSource.Properties(), which held
+        // id-only sets before v9.2.0.
+        for (const PropertySet& r_set : mStage.PropertySets().All())
+            r_mp.CreateNewProperties(static_cast<IndexType>(r_set.mId)).mValues = r_set.mValues;
+
         IndexType next_elem = 1, next_cond = 1;
         std::size_t n_elem_rows = 0, n_cond_rows = 0;
+        std::size_t block_index = 0;
         for (const auto& r_b : mStage.Blocks()) {
             BlockRecord rec;
             rec.mCount = r_b.NumCells();
+            if (block_index < mBlockEntityNames.size())
+                rec.mEntityName = mBlockEntityNames[block_index];
             if (r_b.IsRagged()) {
                 rec.mKind = BlockRecord::Kind::Ragged;  // pass-through, no entities
             } else {
@@ -3344,14 +3843,23 @@ private:
                     std::vector<IndexType> ids(k);
                     for (std::size_t j = 0; j < k; ++j)
                         ids[j] = static_cast<IndexType>(conn[c * k + j]) + 1;
+                    // Properties id from the staged gmsh:physical tag when it
+                    // covers every block: before this it was always 0, so a
+                    // materialized ModelPart silently lost every material
+                    // assignment the file carried.
+                    const IndexType prop =
+                        prop_ids.empty() ? 0 : static_cast<IndexType>(prop_ids[block_index][c]);
                     if (is_elem)
-                        r_mp.CreateNewElement(r_b.mType, next_elem++, std::move(ids));
+                        r_mp.CreateNewElement(r_b.mType, next_elem++, std::move(ids), prop,
+                                              rec.mEntityName);
                     else
-                        r_mp.CreateNewCondition(r_b.mType, next_cond++, std::move(ids));
+                        r_mp.CreateNewCondition(r_b.mType, next_cond++, std::move(ids), prop,
+                                                rec.mEntityName);
                 }
                 (is_elem ? n_elem_rows : n_cond_rows) += n;
             }
             mRecords.push_back(rec);
+            ++block_index;
         }
 
         // point_data -> nodal data (shared row order: node index).
@@ -3384,7 +3892,7 @@ private:
 
         // Integer tags -> SubModelParts (unless disabled).
         if (mTagsToSubModelParts)
-            for (const auto& r_key : KnownTagKeys())
+            for (const auto& r_key : TagSubModelPartKeys())
                 if (mStage.HasCellData(r_key) &&
                     mStage.CellDataNumBlocks(r_key) == mStage.NumCellBlocks())
                     BuildSubModelPartsFor(r_key);
@@ -3401,6 +3909,63 @@ private:
      * Point regions become node-only SubModelParts. `Side` regions have no
      * ModelPart entity to attach to and are skipped with a warning.
      */
+    /** @brief Split a region name on the '/' path separator. */
+    static std::vector<std::string> SplitRegionPath(const std::string& rName) {
+        std::vector<std::string> out;
+        std::size_t start = 0;
+        while (true) {
+            const std::size_t slash = rName.find('/', start);
+            out.push_back(rName.substr(start, slash - start));
+            if (slash == std::string::npos)
+                break;
+            start = slash + 1;
+        }
+        return out;
+    }
+
+    /** @brief Whether the SubModelPart chain @p rName names already exists. */
+    bool RegionSubModelPartExists(const std::string& rName) const {
+        const ModelPart* p_at = mpRoot.get();
+        for (const std::string& r_seg : SplitRegionPath(rName)) {
+            if (!p_at->HasSubModelPart(r_seg))
+                return false;
+            p_at = &p_at->GetSubModelPart(r_seg);
+        }
+        return true;
+    }
+
+    /**
+     * @brief Walk/create the SubModelPart chain a region name denotes.
+     *
+     * `'/'` is the nesting separator, matching what the MDPA reader already
+     * emits for a nested `Begin SubModelPart` and what `RestoreRegions` reads
+     * back, so nesting survives a full region -> ModelPart -> region trip.
+     * `'.'` cannot appear in a segment (ModelPart::FullName joins with it), and
+     * an empty segment names nothing; either is a warning and a skip rather than
+     * an exception escaping a lazy `GetModelPart()`, and the region itself stays
+     * on the mesh untouched.
+     *
+     * @return the leaf part, or null when the name cannot be used.
+     */
+    ModelPart* ResolveRegionSubModelPart(const std::string& rName) const {
+        const std::vector<std::string> segments = SplitRegionPath(rName);
+        for (const std::string& r_seg : segments) {
+            if (!r_seg.empty() && r_seg.find('.') == std::string::npos)
+                continue;
+            log::warn(
+                "kratos backend: region '{}' has a segment that cannot name a SubModelPart "
+                "(empty, or containing '.', which ModelPart::FullName reserves); it is not "
+                "materialized (the region itself is kept)",
+                rName);
+            return nullptr;
+        }
+        ModelPart* p_at = mpRoot.get();
+        for (const std::string& r_seg : segments)
+            p_at = p_at->HasSubModelPart(r_seg) ? &p_at->GetSubModelPart(r_seg)
+                                                : &p_at->CreateSubModelPart(r_seg);
+        return p_at;
+    }
+
     void BuildSubModelPartsFromRegions() const {
         const std::size_t nregions = mStage.NumRegions();
         if (nregions == 0)
@@ -3424,12 +3989,15 @@ private:
                     r_region.mName);
                 continue;
             }
-            if (mpRoot->HasSubModelPart(r_region.mName))
+            if (RegionSubModelPartExists(r_region.mName))
                 continue;
 
             const std::int64_t* entries = r_region.Entries();
             const std::size_t n = r_region.NumEntries();
-            ModelPart& r_smp = mpRoot->CreateSubModelPart(r_region.mName);
+            ModelPart* p_smp = ResolveRegionSubModelPart(r_region.mName);
+            if (!p_smp)
+                continue;  // unusable name; warned about, and the region is kept
+            ModelPart& r_smp = *p_smp;
 
             if (r_region.mKind == RegionKind::Point) {
                 std::vector<IndexType> node_ids;
@@ -3565,6 +4133,18 @@ private:
         }
     }
 
+    /**
+     * @brief The name an entity would be written under: its own, or the derived
+     * default for its cell type.
+     */
+    static std::string EffectiveEntityName(const GeometricalEntity& rEntity,
+                                           BlockRecord::Kind kind) {
+        if (rEntity.HasName())
+            return rEntity.Name();
+        return kind == BlockRecord::Kind::Element ? kratos_element_name(rEntity.Type())
+                                                  : kratos_condition_name(rEntity.Type());
+    }
+
     /** @brief One block of the rebuilt mesh, before it is added to the stage. */
     struct PendingBlock {
         BlockRecord mRecord;
@@ -3635,10 +4215,22 @@ private:
             fresh.AddFieldData(r_name, mStage.FieldData(r_name));
 
         RestoreRegions(r_mp, plan, fresh);
+        // The ModelPart is the authority after a direct mutation, so read the
+        // properties back from it rather than carrying the old stage's forward:
+        // a set the user deleted must not be resurrected. They are keyed by id,
+        // not by entity index, so unlike regions and cell_data slices there is
+        // nothing to remap.
+        for (const PropertySet& r_set : r_mp.Properties())
+            fresh.AddPropertySet(r_set);
 
         mRecords.clear();
         for (PendingBlock& r_pb : plan)
             mRecords.push_back(r_pb.mRecord);
+        // Re-align the per-block names with the rebuilt block layout; a ragged
+        // block never had an entity name, so it keeps an empty one.
+        mBlockEntityNames.assign(plan.size(), std::string());
+        for (std::size_t b = 0; b < plan.size(); ++b)
+            mBlockEntityNames[b] = plan[b].mRecord.mEntityName;
         mStage = std::move(fresh);
     }
 
@@ -3686,14 +4278,26 @@ private:
             pb.mRecord.mKind = kind;
             pb.mRecord.mFirstId = run.front()->Id();
             pb.mRecord.mCount = nc;
+            pb.mRecord.mEntityName = run.front()->Name();
             pb.mType = cell_type_name(run.front()->Type());
             pb.mConn = std::move(conn);
             rOut.push_back(std::move(pb));
             run.clear();
         };
         for (const auto& r_e : rEntities) {
-            if (!run.empty() && (run.front()->Type() != r_e.Type() ||
-                                 run.front()->NumberOfNodes() != r_e.NumberOfNodes()))
+            // The Kratos entity NAME is part of the run key, not just the cell
+            // type: two adjacent SmallDisplacementElement3D4N and
+            // TotalLagrangianElement3D4N runs are both `tetra`, and merging them
+            // would leave one name to write both back under.
+            //
+            // The comparison is on the EFFECTIVE name -- an entity created from
+            // a bare CellType has no name and means "derive it" -- so adding an
+            // explicitly-named `Element3D4N` next to entities materialized
+            // without names still groups into one block, as it always did.
+            if (!run.empty() &&
+                (run.front()->Type() != r_e.Type() ||
+                 run.front()->NumberOfNodes() != r_e.NumberOfNodes() ||
+                 EffectiveEntityName(*run.front(), kind) != EffectiveEntityName(r_e, kind)))
                 flush();
             run.push_back(&r_e);
         }
@@ -3776,25 +4380,48 @@ private:
         };
 
         std::vector<std::string> rebuilt;
-        for (const auto& r_name : rMp.SubModelPartNames()) {
-            const ModelPart& r_smp = rMp.GetSubModelPart(r_name);
+        // Recursive, with the '/' path convention: a nested SubModelPart comes
+        // back as one region named `parent/child`, which is exactly what the
+        // MDPA reader already produces and what BuildSubModelPartsFromRegions
+        // splits again on the way in. Before this the walk was top-level only,
+        // so every nested part was silently dropped by a rebuild.
+        RestoreRegionsFrom(rMp, rMp, std::string(), rPlan, elem_to_cell, cond_to_cell, staged_meta,
+                           rebuilt, rOut);
+
+        for (const auto& r_region : mStage.Regions().All())
+            if (std::find(rebuilt.begin(), rebuilt.end(), r_region.mName) == rebuilt.end())
+                rOut.AddRegion(r_region);
+    }
+
+    /** @brief One level of `RestoreRegions`' walk; recurses into nested parts. */
+    template <class TStagedMeta>
+    void RestoreRegionsFrom(const ModelPart& rMp, const ModelPart& rParent,
+                            const std::string& rPrefix, const std::vector<PendingBlock>& rPlan,
+                            const std::unordered_map<IndexType, std::int64_t>& rElemToCell,
+                            const std::unordered_map<IndexType, std::int64_t>& rCondToCell,
+                            const TStagedMeta& rStagedMeta, std::vector<std::string>& rRebuilt,
+                            NativeMesh& rOut) const {
+        (void)rPlan;
+        for (const auto& r_name : rParent.SubModelPartNames()) {
+            const ModelPart& r_smp = rParent.GetSubModelPart(r_name);
+            const std::string full = rPrefix.empty() ? r_name : rPrefix + "/" + r_name;
 
             std::vector<std::int64_t> cells;
             for (IndexType id : r_smp.ElementIds()) {
-                const auto it = elem_to_cell.find(id);
-                if (it != elem_to_cell.end())
+                const auto it = rElemToCell.find(id);
+                if (it != rElemToCell.end())
                     cells.push_back(it->second);
             }
             for (IndexType id : r_smp.ConditionIds()) {
-                const auto it = cond_to_cell.find(id);
-                if (it != cond_to_cell.end())
+                const auto it = rCondToCell.find(id);
+                if (it != rCondToCell.end())
                     cells.push_back(it->second);
             }
             if (!cells.empty()) {
                 int dim = -1, tag = -1;
-                staged_meta(r_name, RegionKind::Cell, dim, tag);
-                rOut.AddRegion(MakeRegion(r_name, RegionKind::Cell, dim, tag, cells));
-                rebuilt.push_back(r_name);
+                rStagedMeta(full, RegionKind::Cell, dim, tag);
+                rOut.AddRegion(MakeRegion(full, RegionKind::Cell, dim, tag, cells));
+                rRebuilt.push_back(full);
             }
 
             // A node-only SubModelPart is a Point region; one that also has
@@ -3806,16 +4433,15 @@ private:
                     pts.push_back(static_cast<std::int64_t>(rMp.Nodes().IndexOf(id)));
                 if (!pts.empty()) {
                     int dim = -1, tag = -1;
-                    staged_meta(r_name, RegionKind::Point, dim, tag);
-                    rOut.AddRegion(MakeRegion(r_name, RegionKind::Point, dim, tag, pts));
-                    rebuilt.push_back(r_name);
+                    rStagedMeta(full, RegionKind::Point, dim, tag);
+                    rOut.AddRegion(MakeRegion(full, RegionKind::Point, dim, tag, pts));
+                    rRebuilt.push_back(full);
                 }
             }
-        }
 
-        for (const auto& r_region : mStage.Regions().All())
-            if (std::find(rebuilt.begin(), rebuilt.end(), r_region.mName) == rebuilt.end())
-                rOut.AddRegion(r_region);
+            RestoreRegionsFrom(rMp, r_smp, full, rPlan, rElemToCell, rCondToCell, rStagedMeta,
+                               rRebuilt, rOut);
+        }
     }
 
     static meshioplusplus::Region MakeRegion(const std::string& rName, RegionKind kind, int dim,
@@ -3838,7 +4464,14 @@ private:
     mutable std::vector<BlockRecord> mRecords;
     mutable bool mMaterialized = false;
     mutable bool mStale = false;
+    /// Per staged block, the Kratos entity name to create its entities under.
+    /// `mutable` for the same reason `mRecords` is: the const `EnsureStage()`
+    /// rebuild re-derives it from the ModelPart.
+    mutable std::vector<std::string> mBlockEntityNames;
     bool mTagsToSubModelParts = true;
+    /// Empty = every KnownTagKeys() entry; see SetTagSubModelPartKeys.
+    std::vector<std::string> mTagKeys;
+    std::vector<std::string> mExcludedTagKeys;
 };
 
 }  // namespace meshioplusplus
@@ -4028,6 +4661,7 @@ struct Mesh {
     // Region::Key() with canonical (sorted, de-duplicated) entries, so region
     // order and content are identical on every backend.
     detail::RegionList mRegions;
+    detail::PropertySetList mPropertySets;
 
     /**
      * @brief Number of points in the mesh.
@@ -4211,6 +4845,25 @@ struct Mesh {
 
     /** @brief Adds a region, replacing one with the same (kind, name, dim, tag). */
     void AddRegion(meshioplusplus::Region region) { mRegions.Add(std::move(region)); }
+
+    // --- uniform API: property sets (properties.hpp) -----------------------
+    //
+    // Keyed by id, never by entity index, so no operation has to remap them.
+    // Named GetPropertySet rather than PropertySet(i) on purpose: an accessor
+    // called PropertySet would hide the TYPE of that name for the rest of this
+    // class body, the trap mesh_api.hpp documents for Region(i).
+
+    /** @brief Store a properties block, replacing one with the same `mId`. */
+    void AddPropertySet(PropertySet propertySet) { mPropertySets.Add(std::move(propertySet)); }
+    /** @brief Number of properties blocks. */
+    std::size_t NumPropertySets() const { return mPropertySets.Size(); }
+    /** @brief Properties block @p Index, in ascending-`mId` order. */
+    const PropertySet& GetPropertySet(std::size_t Index) const { return mPropertySets.At(Index); }
+    /** @brief Whether a properties block with this id exists. */
+    bool HasPropertySet(std::int64_t Id) const { return mPropertySets.Has(Id); }
+    /** @brief Index of the block with this id, or `npos`. */
+    std::size_t FindPropertySet(std::int64_t Id) const { return mPropertySets.Find(Id); }
+
     /** @brief Number of named regions. */
     std::size_t NumRegions() const { return mRegions.Size(); }
     /** @brief Region @p i in `(kind, name, dim, tag)` order. */
@@ -4544,6 +5197,14 @@ inline bool skin_supported(CellType Type) {
  *
  * Cost is one constant-initialized function pointer and one relocation per TU.
  * Define `MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` to opt out.
+ *
+ * @note MSVC + a **shared** meshio++ is a documented gap. The MSVC arm below is
+ *       `#pragma detect_mismatch`, whose `/FAILIFMISMATCH` records live in the
+ *       `.obj` files; they are not reliably carried through a DLL's import
+ *       library, so there the guard degrades to no check at all. Static MSVC
+ *       builds and every GNU/Clang configuration are covered. A run-time probe
+ *       would close it, at the price of a static initializer in every TU --
+ *       exactly what this design exists to avoid.
  */
 
 // Project includes
@@ -4560,6 +5221,10 @@ inline bool skin_supported(CellType Type) {
 #define MESHIOPLUSPLUS_BACKEND_SYM_(name) mesh_backend_is_##name
 #define MESHIOPLUSPLUS_BACKEND_SYM(name) MESHIOPLUSPLUS_BACKEND_SYM_(name)
 
+// Same two-level trick for the string form the MSVC arm needs.
+#define MESHIOPLUSPLUS_BACKEND_STR_(name) #name
+#define MESHIOPLUSPLUS_BACKEND_STR(name) MESHIOPLUSPLUS_BACKEND_STR_(name)
+
 namespace meshioplusplus::detail {
 
 /**
@@ -4570,14 +5235,35 @@ namespace meshioplusplus::detail {
 MESHIOPLUSPLUS_API void MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND)();
 
 #ifndef MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK
+#if defined(__GNUC__) || defined(__clang__)
 /**
  * @brief Constant-initialized reference that forces the symbol above to resolve.
  *
- * `[[maybe_unused]]` keeps `-Wunused` quiet; the pointer is still emitted
- * because taking a function's address odr-uses it.
+ * `[[maybe_unused]]` keeps `-Wunused` quiet.
+ *
+ * `gnu::used` is **load-bearing, not decoration** -- do not "tidy" it away. An
+ * `inline` variable has vague linkage and is emitted *lazily*: nothing in this
+ * header or in `mesh.hpp` reads the pointer, so without `used` no relocation
+ * ever reaches the object file and the entire guard is inert. That was the
+ * state through v9.1.0; `nm -uC` on any consumer TU showed no reference at all,
+ * with or without a backend macro, and a mismatched consumer got raw mangled
+ * undefined references to whatever it actually called instead of a message
+ * naming the backend. Dropping `inline`/`const` does not fix it either -- a
+ * plain `static const` initializer is still discarded at `-O2`.
  */
-[[maybe_unused]] inline void (*const mesh_backend_link_check)() =
+[[maybe_unused, gnu::used]] inline void (*const mesh_backend_link_check)() =
     &MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND);
+#elif defined(_MSC_VER)
+// MSVC has no `used`, so the pointer above cannot be forced into the object.
+// `detect_mismatch` reaches the same failure at the same moment by a different
+// route: it embeds a /FAILIFMISMATCH record in every .obj, and the linker
+// rejects a link whose records disagree -- naming BOTH values, which is
+// strictly more informative than an undefined symbol. It also needs no symbol
+// at all, sidestepping the __declspec(dllimport) function-pointer question.
+// See the DLL caveat in the file comment above.
+#pragma detect_mismatch("meshioplusplus_mesh_backend", \
+                        MESHIOPLUSPLUS_BACKEND_STR(MESHIOPLUSPLUS_ACTIVE_BACKEND))
+#endif
 #endif
 
 }  // namespace meshioplusplus::detail
@@ -5572,6 +6258,29 @@ struct ReadOptions {
     int mTimeStep = 0;
 
     /**
+     * @brief Downgrade "this reader cannot represent construct X" to a warning.
+     *
+     * A reader that meets a construct it has no way to express normally throws
+     * `ReadError` naming it, so a caller with a Python fallback can take it and a
+     * caller without one at least learns what was in the file. That is the right
+     * default, but it makes formats whose *optional* sections are common
+     * -- MDPA's `Table`/`Geometries`/`Constraints` blocks, say -- unreadable in
+     * practice for a caller that only wants the mesh.
+     *
+     * `true` turns those specific rejections into a `log::warn` plus a skip.
+     * `false` (the default) reproduces the historical behaviour exactly.
+     *
+     * This is deliberately **not** "ignore all errors". It only applies where a
+     * reader can skip a construct and still return a *correct* mesh: a malformed
+     * file, a truncated block, a bad node reference or an unknown element type
+     * still throw, because continuing past those would hand back a mesh that is
+     * quietly wrong rather than merely incomplete.
+     *
+     * Currently honoured by `mdpa` only; every other reader ignores it.
+     */
+    bool mLenient = false;
+
+    /**
      * @brief Resolve `mTimeStep` against an actual step count.
      *
      * @param NumSteps Number of steps the file carries.
@@ -6098,6 +6807,39 @@ MESHIOPLUSPLUS_API Hid open_file_read(const std::string& rPath);
 MESHIOPLUSPLUS_API Hid create_file(const std::string& rPath);
 
 /**
+ * @brief Opens an existing HDF5 file for reading *and* writing.
+ *
+ * Distinct from both `open_file_read` (read-only) and `create_file` (which
+ * truncates): appending to a file that already carries datasets needs a third
+ * mode, and reaching for `create_file` would silently destroy the very data an
+ * append is meant to continue.
+ *
+ * @param rPath Filesystem path of the file to open.
+ * @return Owning `Hid` for the open file.
+ * @throws WriteError if the file cannot be opened read-write.
+ */
+MESHIOPLUSPLUS_API Hid open_file_rw(const std::string& rPath);
+
+/**
+ * @brief Flush a file's buffers to disk without closing it.
+ *
+ * What makes a partially-written series readable by another process: HDF5
+ * buffers aggressively, so an un-flushed `.h5` can be unopenable even though
+ * every dataset was "written".
+ *
+ * @param rFile An open file handle; an invalid handle is a no-op.
+ * @throws WriteError if the flush fails.
+ */
+MESHIOPLUSPLUS_API void flush_file(Hid& rFile);
+
+/**
+ * @brief The names of every link directly under a group or file.
+ * @param loc Group or file handle to list.
+ * @return Link names in the container's own iteration order.
+ */
+MESHIOPLUSPLUS_API std::vector<std::string> link_names(hid_t loc);
+
+/**
  * @brief Whether a link named `name` exists directly under group/file `loc`.
  * @param loc Group or file handle to look under.
  * @param rName Link name to test.
@@ -6187,7 +6929,8 @@ MESHIOPLUSPLUS_API NDArray read_dataset(hid_t loc, const std::string& rName);
  *                   compression (the default).
  * @throws WriteError if the dataset cannot be created or the write fails.
  */
-MESHIOPLUSPLUS_API void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int gzip_level = -1);
+MESHIOPLUSPLUS_API void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr,
+                                      int gzip_level = -1);
 
 // ---- attribute helpers ----
 
@@ -6217,7 +6960,7 @@ MESHIOPLUSPLUS_API std::int64_t read_attr_int(hid_t loc, const std::string& rNam
  * @throws WriteError if the attribute cannot be created.
  */
 MESHIOPLUSPLUS_API void write_attr_int(hid_t loc, const std::string& rName, std::int64_t v,
-                    hid_t ftype = H5T_STD_I64LE);
+                                       hid_t ftype = H5T_STD_I64LE);
 
 /**
  * @brief Reads a string attribute, handling both variable- and fixed-length
@@ -6244,7 +6987,8 @@ MESHIOPLUSPLUS_API std::string read_attr_string(hid_t loc, const std::string& rN
  * @param rValue String value to write.
  * @throws WriteError if the attribute cannot be created.
  */
-MESHIOPLUSPLUS_API void write_attr_string(hid_t loc, const std::string& rName, const std::string& rValue);
+MESHIOPLUSPLUS_API void write_attr_string(hid_t loc, const std::string& rName,
+                                          const std::string& rValue);
 
 /**
  * @brief Lists the link (child) names directly under a group, in HDF5's
@@ -7843,6 +8587,37 @@ public:
     /** @brief Close the HDF5 container, if one was opened. Idempotent. */
     void Close();
 
+    /**
+     * @brief Push everything stored so far to disk, keeping the store usable.
+     *
+     * `"Binary"` writes and closes a file per array, and `"XML"` has no heavy
+     * data at all, so this only does real work for `"HDF"` -- but calling it is
+     * how a caller says "another process may read this now" without having to
+     * know which format it picked.
+     */
+    void Flush();
+
+    /**
+     * @brief The next index the flat `dataN` / `<base>N.bin` naming will use.
+     *
+     * Exposed only so an appending writer can resume past what an earlier run
+     * already wrote; a fresh store starts at 0 and no other caller should care.
+     */
+    int Counter() const;
+    /** @brief Resume the flat naming counter at @p Value (see `Counter()`). */
+    void SetCounter(int Value);
+
+    /**
+     * @brief Reopen an existing heavy-data container instead of creating one.
+     *
+     * `"HDF"` opens `<base>.h5` read-write rather than truncating it, which is
+     * the difference between continuing a series and destroying it. A missing
+     * file is not an error -- appending to a path that does not exist yet is
+     * simply a fresh series, which is what makes an append-mode writer usable
+     * unconditionally in a restartable solver.
+     */
+    void OpenExisting();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> mImpl;
@@ -9207,7 +9982,13 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
  *    Int64 `cell_data["gmsh:physical"]` — the name the Python reference uses.
  *  - `Begin ModelPartData` — `KEY value` pairs, kept as one-element Float64
  *    `field_data` entries.
- *  - `Begin Properties <id>` — accepted only when empty (see limitations).
+ *  - `Begin Properties <id>` — the material data. Its body has no place on the
+ *    `Mesh` (`NDArray` has no string dtype, so `CONSTITUTIVE_LAW
+ *    LinearElastic3DLaw` is not expressible as `field_data`), so it travels in
+ *    the #MdpaInfo side channel — the `MedInfo`/`ExodusInfo` pattern. Reading
+ *    without one parses the block and drops it with a warning; the flat
+ *    bindings (C API, Fortran, Julia, R, WASM) do exactly that, a documented
+ *    gap rather than a silent loss.
  *  - `Begin NodalData <VAR>[n]` — sparse per-node values → `point_data`
  *    (Float64, NaN where a node is not listed). A leading `0`/`1` "fixed"
  *    column is detected and stored as Int64 `"<VAR>_fixed_status"` (`-1` where
@@ -9234,39 +10015,113 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
  * — which lets the Python shim fall back to the pure-Python reference
  * (`meshioplusplus/mdpa/_mdpa.py`), whose `mesh.misc_data` does carry it:
  *
- *  - `Begin Table` (top-level or inside `Properties`), `Begin Geometries`,
- *    `Begin Mesh <id>` and `Begin Constraints` blocks;
- *  - a non-empty `Begin Properties <id>` body, a non-numeric `ModelPartData`
- *    value, and non-empty `SubModelPartData` / `SubModelPartTables` /
- *    `SubModelPartGeometries` / `SubModelPartConstraints` sub-blocks;
- *  - node ids that are not `1..n` in ascending order (the format allows
- *    arbitrary ids; honouring them would need a renumbering the Python
- *    reference does not do, and ignoring them silently produces a wrong mesh);
+ *  - `Begin Table` (top-level), `Begin Geometries`, `Begin Mesh <id>` and
+ *    `Begin Constraints` blocks;
+ *  - a non-numeric `ModelPartData` value, and non-empty `SubModelPartData` /
+ *    `SubModelPartTables` / `SubModelPartGeometries` / `SubModelPartConstraints`
+ *    sub-blocks;
  *  - any unrecognized `Begin <Block>`.
  *
- * The writer emits the mesh-level blocks only (`ModelPartData` from scalar
- * `field_data`, an empty `Properties 0`, `Nodes`, `Elements`/`Conditions`,
+ * **`ReadOptions::mLenient` downgrades every one of those to a warning plus a
+ * skip**, which is what makes a production deck readable where there is no
+ * Python to fall back to (the C API, Fortran, Julia, R, WASM, the native CLI).
+ * What was skipped is recorded in `MdpaInfo::mSkippedConstructs`. Two things
+ * are deliberately *not* on that list and still throw even under `mLenient`,
+ * because skipping them would return a mesh that is quietly wrong rather than
+ * merely incomplete:
+ *
+ *  - node ids that are not `1..n` in ascending order (the format allows
+ *    arbitrary ids; honouring them would need a renumbering the Python
+ *    reference does not do);
+ *  - a malformed row, an unknown entity name, or connectivity naming a node
+ *    that does not exist.
+ *
+ * The writer emits the mesh-level blocks (`ModelPartData` from scalar
+ * `field_data`, `Properties`, `Nodes`, `Elements`/`Conditions`,
  * `NodalData`/`ElementalData`/`ConditionalData`, `SubModelPart`s from named
- * regions); it never writes `Tables`, `Geometries`, `Mesh` blocks or
- * per-property data, and `RegionKind::Side` regions are dropped with a warning
- * (MDPA has no facet-set concept).
+ * regions); it never writes `Tables`, `Geometries` or `Mesh` blocks, and
+ * `RegionKind::Side` regions are dropped with a warning (MDPA has no facet-set
+ * concept).
  */
 
 // System includes
 #include <string>
+#include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
 
+/** @brief One `Begin Properties <id>` block (see #PropertySet). */
+using MdpaProperties = PropertySet;
+
+/** @brief One `KEY value` entry of a properties block (see #PropertyValue). */
+using MdpaProperty = PropertyValue;
+
+/**
+ * @brief The Kratos entity spelling of one cell block.
+ *
+ * The name is kept rather than re-derived because MDPA's is
+ * application-specific: `SmallDisplacementElement3D4N` resolves to `tetra` via
+ * the longest-suffix fallback, but `kratos_element_name(Tetrahedra4)` only ever
+ * gives back the canonical `Element3D4N`, so a round trip through the C++ core
+ * silently downgraded every deck's element names before this existed.
+ *
+ * `mIsCondition` is recorded rather than inferred from the name: the writer's
+ * fallback rule ("a block whose default Kratos element name is 2-D is a
+ * Condition") is a heuristic about cell types, and guessing from an
+ * application-specific name would be a second, different guess.
+ */
+struct MdpaEntityName {
+    /** @brief The name as it appeared, or empty to derive it from the cell type. */
+    std::string mName;
+    /** @brief Whether the block was a `Conditions` block rather than `Elements`. */
+    bool mIsCondition = false;
+};
+
+/**
+ * @brief MDPA content the C++ `Mesh` cannot hold, carried alongside it.
+ *
+ * The `MedInfo`/`ExodusInfo`/`OpenFoamInfo` pattern: a reader overload fills
+ * one, a writer overload consumes one, and the registry (and therefore every
+ * flat binding) passes none — a documented gap, not a silent loss.
+ *
+ * Round-tripping a real deck is exactly `read_mdpa(in, info)` followed by
+ * `write_mdpa(out, mesh, info)`; both halves are additive, so `read_mdpa(in)`
+ * and `write_mdpa(out, mesh)` behave as they always did.
+ */
+struct MdpaInfo {
+    /** @brief Every `Begin Properties <id>` block, in file order. */
+    std::vector<MdpaProperties> mProperties;
+    /** @brief One entry per cell block, in mesh block order. */
+    std::vector<MdpaEntityName> mEntityNames;
+    /**
+     * @brief What `ReadOptions::mLenient` skipped, in the order it was met.
+     *
+     * Empty after a strict read by construction -- a strict read either has
+     * nothing to skip or throws. Reporting it is what keeps "lenient" from
+     * meaning "silently lossy".
+     */
+    std::vector<std::string> mSkippedConstructs;
+};
+
 /**
  * @brief Write a mesh to a Kratos MDPA file.
  *
  * Emits, in order: `ModelPartData` (one line per one-element `field_data`
- * array), an empty `Properties 0`, `Nodes` (always three coordinates —
+ * array), the `Properties` blocks, `Nodes` (always three coordinates —
  * 2-D meshes are padded with `z = 0`), then one `Elements` or `Conditions`
  * block per cell block, `NodalData`/`ElementalData`/`ConditionalData` for the
  * remaining data arrays and one `SubModelPart` per named region.
+ *
+ * With no #MdpaInfo the properties have no bodies, but one **empty** block is
+ * emitted per distinct id the entity rows actually reference, ascending. That
+ * is a fix, not a change of policy: the rows have always written their
+ * `gmsh:physical` value as the property id while the header was hard-coded to a
+ * single `Properties 0`, so a tagged mesh produced a file referencing
+ * undeclared properties, which Kratos's own `ModelPartIO` rejects. A mesh whose
+ * ids are all 0 — every mesh with no `gmsh:physical` — still emits exactly
+ * `Begin Properties 0` / `End Properties` and so is byte-identical to before.
  *
  * A block is written as `Conditions` when the default Kratos *element* name
  * for its cell type is a 2-D one (`Element2D4N`, ...) and as `Elements`
@@ -9286,6 +10141,23 @@ namespace meshioplusplus {
 MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh);
 
 /**
+ * @brief Write a mesh to MDPA, restoring the content `read_mdpa` set aside.
+ *
+ * Identical to the two-argument form except that `rInfo` supplies the
+ * `Properties` bodies and the per-block Kratos entity names. A block with no
+ * entry in `MdpaInfo::mEntityNames`, or one whose `mName` is empty, falls back
+ * to the derived name exactly as the two-argument form does, so a partially
+ * filled #MdpaInfo is legal.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @param rInfo the side-channel content (properties, entity names)
+ * @throws WriteError as the two-argument form
+ */
+MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh,
+                                   const MdpaInfo& rInfo);
+
+/**
  * @brief Read a Kratos MDPA mesh file.
  *
  * Parses the blocks listed in the file-level documentation, producing points,
@@ -9302,6 +10174,35 @@ MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh);
  * @note cell_data key produced: `"gmsh:physical"`.
  */
 MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath);
+
+/**
+ * @brief Read a Kratos MDPA mesh file honouring @p rOptions.
+ *
+ * Only `ReadOptions::mLenient` changes anything here; the narrowing options are
+ * applied by the caller (`registry_read`, the Python `_apply_read_filter`)
+ * after the read, as they are for every format with no native selective path.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions read options; `mLenient` downgrades the unsupported-construct
+ *        rejections listed above to a warning plus a skip
+ * @return the read Mesh
+ */
+MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief Read a Kratos MDPA mesh file, keeping what the `Mesh` cannot hold.
+ *
+ * The overload a round trip needs: `rInfo` comes back carrying the `Properties`
+ * bodies, the per-block Kratos entity names and (under `mLenient`) the list of
+ * skipped constructs, all of which `write_mdpa(path, mesh, info)` puts back.
+ *
+ * @param rPath filesystem path to read
+ * @param rInfo out: the side-channel content; cleared first
+ * @param rOptions read options (see the two-argument overload)
+ * @return the read Mesh
+ */
+MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
+                                  const ReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/mdpa.hpp =====
@@ -11585,6 +12486,7 @@ MESHIOPLUSPLUS_API MeshMetadata read_xdmf_metadata(const std::string& rPath, con
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 // Project includes
 
@@ -11608,13 +12510,39 @@ namespace meshioplusplus {
  * Move-only (it owns an open heavy-data container and an unwritten XML
  * document); copying it would write the same file twice.
  */
+/**
+ * @brief Whether a series starts fresh or continues an existing one.
+ *
+ * `Append` is what a restartable analysis needs: a run that was killed, hit a
+ * node failure, or simply finished a stage leaves an `.xdmf` plus its heavy
+ * data, and the next run must continue that temporal collection rather than
+ * overwrite it.
+ *
+ * Appending to a path that does **not** exist yet is not an error -- it is
+ * exactly `Truncate`. That is deliberate: a solver can then pass `Append`
+ * unconditionally instead of having to probe the filesystem and branch.
+ */
+enum class XdmfSeriesMode { Truncate, Append };
+
 class MESHIOPLUSPLUS_API XdmfTimeSeriesWriter {
 public:
     /**
+     * @brief One solver array for the `NamedArray` `WriteData` overload.
+     *
+     * Values are row-major, `mNumComponents` per entity: `{n}` for a scalar
+     * field, `{n, 3}` for a vector, and so on.
+     */
+    struct NamedArray {
+        std::string mName;
+        std::size_t mNumComponents = 1;
+        std::vector<double> mValues;
+    };
+
+    /**
      * @brief Open a series for writing.
      *
-     * Nothing is written yet: the `.xdmf` appears at `Finalize()`, and the
-     * `"HDF"` companion at the first stored array.
+     * Nothing is written yet: the `.xdmf` appears at `Finalize()` (or at the
+     * first `Flush()`), and the `"HDF"` companion at the first stored array.
      *
      * @param rPath Path of the `.xdmf`/`.xmf` light-data file to write.
      * @param rDataFormat `"HDF"` (default; companion `<base>.h5`, needs an
@@ -11622,17 +12550,47 @@ public:
      *        (sibling `<base><n>.bin` raw files).
      * @param GzipLevel gzip level for `"HDF"` datasets; negative (the default)
      *        means uncompressed. Ignored for the other formats.
-     * @throws WriteError if `rDataFormat` is unrecognized, or is `"HDF"` on a
-     *         build without HDF5 support.
+     * @param Mode `Truncate` (the default) starts a fresh series; `Append`
+     *        continues the one already at `rPath`, if any (see #XdmfSeriesMode).
+     * @throws WriteError if `rDataFormat` is unrecognized, is `"HDF"` on a
+     *         build without HDF5 support, or if `Append` was asked for and the
+     *         existing file is not a series this writer can continue.
      */
     explicit XdmfTimeSeriesWriter(const std::string& rPath, const std::string& rDataFormat = "HDF",
-                                  int GzipLevel = -1);
+                                  int GzipLevel = -1,
+                                  XdmfSeriesMode Mode = XdmfSeriesMode::Truncate);
 
-    /** @brief Finalizes the series if it has not been finalized already. */
+    /**
+     * @brief Finalizes the series if it has not been finalized already.
+     *
+     * @warning Because this **writes** `rPath`, deleting the output while the
+     *          writer is still alive recreates it:
+     *          @code
+     *          {
+     *              XdmfTimeSeriesWriter w(path, "XML");
+     *              w.WritePointsCells(m);
+     *              w.WriteData(0.0, {u});
+     *              std::filesystem::remove(path);   // "clean up"
+     *          }   // <-- the destructor finalizes here, recreating path
+     *          @endcode
+     *          The second half is what makes this bite: with
+     *          `XdmfSeriesMode::Append` the *next* run then continues a series
+     *          you believed deleted, so the failure surfaces one run later as a
+     *          wrong step count rather than at the delete. Destroy the writer
+     *          before removing its output -- end the scope, or call `Finalize()`
+     *          explicitly and then delete.
+     */
     ~XdmfTimeSeriesWriter();
 
     XdmfTimeSeriesWriter(const XdmfTimeSeriesWriter&) = delete;
     XdmfTimeSeriesWriter& operator=(const XdmfTimeSeriesWriter&) = delete;
+    // Moving leaves the source empty. Its contract, so a moved-from writer is
+    // diagnosable rather than undefined: the observers and the idempotent
+    // operations (`SetAutoFlush`, `AutoFlush`, `NumSteps`, `Finalized`,
+    // `Flush`, `Finalize`) are safe no-ops answering as for a finished series,
+    // while the three that cannot silently do nothing -- `WritePointsCells` and
+    // both `WriteData` overloads -- throw `WriteError`, because a caller
+    // writing a step must never be left believing it landed.
     XdmfTimeSeriesWriter(XdmfTimeSeriesWriter&&) noexcept;
     XdmfTimeSeriesWriter& operator=(XdmfTimeSeriesWriter&&) noexcept;
 
@@ -11664,6 +12622,64 @@ public:
      *         series is already finalized.
      */
     void WriteData(double Time, const Mesh& rMesh);
+
+    /**
+     * @brief Write one step from raw solver arrays, with no `Mesh` in between.
+     *
+     * The granularity a solver actually has: after `WritePointsCells` the
+     * geometry and connectivity are fixed, and each step produces nodal and
+     * elemental values, not a new mesh. Under the KRATOS mesh backend the
+     * difference is not cosmetic -- handing over a `Mesh` per step re-stages the
+     * whole ModelPart every output step when only the values changed.
+     *
+     * Arrays are emitted in the order given: unlike the `Mesh` overload, whose
+     * sorted-name order comes from the uniform API, here the caller's order *is*
+     * the deterministic order.
+     *
+     * @param Time The step's simulation time.
+     * @param rPointData Nodal arrays; each must hold `NumPoints * mNumComponents`
+     *        values.
+     * @param rCellData Cell arrays; each must hold `NumCells * mNumComponents`
+     *        values, `NumCells` being the total across every block.
+     * @throws WriteError if `WritePointsCells` has not been called, if the series
+     *         is already finalized, or if an array's length does not match --
+     *         deliberately stricter than the `Mesh` overload, which cannot get
+     *         this wrong because it reads the counts off the mesh.
+     */
+    void WriteData(double Time, const std::vector<NamedArray>& rPointData,
+                   const std::vector<NamedArray>& rCellData = {});
+
+    /**
+     * @brief Write the light data as it currently stands, without finalizing.
+     *
+     * The point of the whole feature: without it the `.xdmf` appears only at
+     * `Finalize()`, so a run that is killed, crashes, or is simply still going
+     * leaves heavy data on disk and **nothing readable**. After a `Flush()` the
+     * file opens in ParaView and covers every step written so far.
+     *
+     * The document is written to a sibling temporary file and renamed over the
+     * target, so a crash *during* a flush cannot truncate the previous one; the
+     * heavy data is flushed first, so the `.xdmf` never points at a dataset that
+     * is not on disk yet.
+     *
+     * Safe to call any number of times, and a no-op once finalized.
+     *
+     * @throws WriteError if the `.xdmf` cannot be written.
+     */
+    void Flush();
+
+    /**
+     * @brief Flush automatically after every `WriteData` (default: off).
+     *
+     * Off by default because a flush re-serializes the whole document, making a
+     * per-step flush quadratic in the step count -- and for `"XML"`, whose heavy
+     * data lives *in* that document, quadratic in the data volume too. Turn it
+     * on for a long solve where crash-resilience is worth more than the writing
+     * cost, or call `Flush()` on your own cadence (every n-th step, say).
+     */
+    void SetAutoFlush(bool Enable);
+    /** @brief Whether auto-flush is enabled. */
+    bool AutoFlush() const;
 
     /**
      * @brief Write the `.xdmf` light data and close the heavy-data container.
@@ -11782,6 +12798,26 @@ struct bridge_traits {
     static IndexType PropertiesIdOf(const TEntity& rEntity) {
         return rEntity.PropertiesId();
     }
+    /**
+     * @brief The entity's Kratos registration name, `""` to derive it.
+     *
+     * Detection-guarded rather than required, so every existing duck-typed
+     * source (CoSimIO's simplified ModelPart, the mocks in
+     * `tests/cpp/test_kratos_bridge.cpp`, a consumer's own class) keeps
+     * compiling untouched and simply reports "no name".
+     *
+     * Real Kratos does not store the registered name on the element -- it lives
+     * in `KratosComponents<Element>` -- so a Kratos consumer specializes this
+     * to whatever their application knows, typically the name they used when
+     * creating the entity.
+     */
+    template <class TEntity>
+    static std::string NameOf(const TEntity& rEntity) {
+        if constexpr (requires { rEntity.Name(); })
+            return rEntity.Name();
+        else
+            return {};
+    }
 };
 
 namespace detail {
@@ -11840,12 +12876,17 @@ void to_model_part(const ModelPart& rSource, TModelPart& rDest,
                    TPropertiesGetter&& rGetProperties) {
     for (const Node& r_node : rSource.Nodes())
         rDest.CreateNewNode(r_node.Id(), r_node.X(), r_node.Y(), r_node.Z());
+    // A name the source carries wins over the derived one: deriving is lossy in
+    // one direction only, so re-deriving here is what turned every
+    // SmallDisplacementElement3D4N into a plain Element3D4N.
     for (const Element& r_elem : rSource.Elements())
-        rDest.CreateNewElement(kratos_element_name(r_elem.Type()), r_elem.Id(), r_elem.NodeIds(),
-                               rGetProperties(r_elem.PropertiesId()));
+        rDest.CreateNewElement(
+            r_elem.HasName() ? r_elem.Name() : kratos_element_name(r_elem.Type()), r_elem.Id(),
+            r_elem.NodeIds(), rGetProperties(r_elem.PropertiesId()));
     for (const Condition& r_cond : rSource.Conditions())
-        rDest.CreateNewCondition(kratos_condition_name(r_cond.Type()), r_cond.Id(),
-                                 r_cond.NodeIds(), rGetProperties(r_cond.PropertiesId()));
+        rDest.CreateNewCondition(
+            r_cond.HasName() ? r_cond.Name() : kratos_condition_name(r_cond.Type()), r_cond.Id(),
+            r_cond.NodeIds(), rGetProperties(r_cond.PropertiesId()));
     detail::copy_sub_model_parts(rSource, rDest);
 }
 
@@ -11857,6 +12898,42 @@ void to_model_part(const ModelPart& rSource, TModelPart& rDest,
 template <class TModelPart>
 void to_model_part(const ModelPart& rSource, TModelPart& rDest) {
     to_model_part(rSource, rDest, [](IndexType propertiesId) { return propertiesId; });
+}
+
+/**
+ * @brief `to_model_part` overload that also transfers the material data.
+ *
+ * meshio++ cannot fill a real `Kratos::Properties` itself: doing so needs
+ * `KratosComponents<Variable<double>>::Get(key)`, Kratos's own variable
+ * registry, which is deliberately not linked here and never will be. So the
+ * key/value pairs are handed to the caller one at a time and the caller does
+ * the typed assignment -- five lines they already know how to write:
+ *
+ * @code
+ * mio::to_model_part(source, r_kratos_mp,
+ *     [&](mio::IndexType id) { return r_kratos_mp.pGetProperties(id); },
+ *     [](auto p_props, const mio::PropertyValue& r_v) {
+ *         if (r_v.IsText() || r_v.mIsTable) return;   // handled by the app
+ *         p_props->SetValue(Kratos::KratosComponents<Kratos::Variable<double>>::Get(r_v.mKey),
+ *                           r_v.mValues.template As<double>()[0]);
+ *     });
+ * @endcode
+ *
+ * Properties are applied **before** the entity loop, so the destination's
+ * `pGetProperties` sees populated blocks by the time entities reference them.
+ *
+ * @tparam TPropertyApplier Callable `(properties handle, const PropertyValue&)`.
+ * @param rApplyProperty Invoked once per value of each properties block.
+ */
+template <class TModelPart, class TPropertiesGetter, class TPropertyApplier>
+void to_model_part(const ModelPart& rSource, TModelPart& rDest, TPropertiesGetter&& rGetProperties,
+                   TPropertyApplier&& rApplyProperty) {
+    for (const PropertySet& r_set : rSource.Properties()) {
+        auto props = rGetProperties(static_cast<IndexType>(r_set.mId));
+        for (const PropertyValue& r_value : r_set.mValues)
+            rApplyProperty(props, r_value);
+    }
+    to_model_part(rSource, rDest, std::forward<TPropertiesGetter>(rGetProperties));
 }
 
 /**
@@ -11879,12 +12956,18 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
     for (const auto& r_node : rSource.Nodes())
         out.CreateNewNode(Traits::IdOf(r_node), Traits::XOf(r_node), Traits::YOf(r_node),
                           Traits::ZOf(r_node));
+    // The five-argument overloads: the same unvalidated bulk path as before,
+    // now also carrying the source's own entity name. An empty NameOf (the
+    // default for any source that has no such accessor) stores no name, which
+    // is byte-for-byte the previous behaviour.
     for (const auto& r_elem : rSource.Elements())
         out.CreateNewElement(Traits::TypeOf(r_elem), Traits::IdOf(r_elem),
-                             Traits::ConnectivityOf(r_elem), Traits::PropertiesIdOf(r_elem));
+                             Traits::ConnectivityOf(r_elem), Traits::PropertiesIdOf(r_elem),
+                             Traits::NameOf(r_elem));
     for (const auto& r_cond : rSource.Conditions())
         out.CreateNewCondition(Traits::TypeOf(r_cond), Traits::IdOf(r_cond),
-                               Traits::ConnectivityOf(r_cond), Traits::PropertiesIdOf(r_cond));
+                               Traits::ConnectivityOf(r_cond), Traits::PropertiesIdOf(r_cond),
+                               Traits::NameOf(r_cond));
     detail::copy_sub_model_parts_from(rSource, out);
     return out;
 }
@@ -16813,6 +17896,204 @@ namespace std
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 // ===== end src/cpp/third_party/pugixml/pugixml.hpp =====
+// ===== begin src/cpp/src/formats/xdmf_doc.hpp =====
+/**
+ * @file formats/xdmf_doc.hpp
+ * @brief The XDMF document-structure helpers `read_xdmf` and
+ * `XdmfTimeSeriesWriter` both need: locating a temporal collection and its
+ * static mesh grid, and recovering the point/cell counts from a grid already
+ * on disk.
+ *
+ * @note This is a **private** header, deliberately under `src/cpp/src/` rather
+ * than `src/cpp/include/`, and the first of its kind in the tree (the nearest
+ * precedent is `src/cpp/cli/view_payload.hpp`). It cannot live in
+ * `detail/xdmf_common.hpp`, which is *installed*: these declarations name
+ * `pugi::xml_node` by value, pugixml is a build-only vendored dependency that
+ * no installed header may include, and a forward declaration does not help
+ * because `XdmfDoc` stores a `std::vector<pugi::xml_node>` (a complete type is
+ * required at class definition). The amalgamator picks it up automatically --
+ * it resolves a quoted include relative to the including file's directory and
+ * emits any header a `.cpp` needs into the implementation prelude.
+ *
+ * Sharing matters here, and not only on principle: through v9.1.0 the transient
+ * writer's append path re-transcribed a *weaker* copy of `xdmf_resolve` that
+ * skipped the `Version` check and recognised a static grid only if it was
+ * literally named `"mesh"`, so appending to any other producer's series
+ * silently appended a second static grid.
+ */
+
+// System includes
+#include <cstddef>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+namespace xdmfdetail {
+
+// Helpers here are `xdmf_`-prefixed because the single-header amalgamation
+// concatenates every src/cpp/src/**.cpp into one translation unit.
+
+/**
+ * @brief Parse a `Dimensions="..."` attribute into its extents.
+ * @param rS The attribute value, whitespace-separated integers.
+ * @return The extents, outermost first; empty when @p rS holds no integer.
+ */
+inline std::vector<std::size_t> xdmf_parse_dims(const std::string& rS) {
+    std::vector<std::size_t> dims;
+    std::istringstream iss(rS);
+    std::int64_t v;
+    while (iss >> v)
+        dims.push_back(static_cast<std::size_t>(v));
+    return dims;
+}
+
+/**
+ * @brief A resolved XDMF document: its static mesh grid, and its time steps.
+ *
+ * `mSteps` empty means "a plain single-grid file", which is the historical case
+ * and takes the historical code path unchanged.
+ */
+struct XdmfDoc {
+    pugi::xml_node mMeshGrid;            ///< Grid holding `<Topology>`/`<Geometry>`.
+    pugi::xml_node mCollection;          ///< The temporal collection, if the file has one.
+    std::vector<pugi::xml_node> mSteps;  ///< Temporal-collection children, in file order.
+};
+
+/**
+ * @brief Validate the document and locate its mesh grid (and time steps).
+ *
+ * Shared by the mesh reader, the metadata reader and the transient writer's
+ * append path, so a summary can never accept a file `read_xdmf` would reject
+ * and an append can never disagree with a read about which grid is the mesh. A
+ * temporal collection (`GridType="Collection" CollectionType="Temporal"`, what
+ * `XdmfTimeSeriesWriter` emits) stores the static geometry once in a sibling
+ * `Uniform` grid and one `<Grid>` per step inside the collection; the step
+ * grids reference the geometry through an `xi:include` this reader ignores,
+ * resolving it structurally instead -- the same thing the Python
+ * `TimeSeriesReader` does, and for the same reason: a generic XInclude pass
+ * would have to implement XPointer.
+ *
+ * @param rDoc The parsed document.
+ * @return The resolved grids.
+ * @throws ReadError if the document is not an XDMF 3 document with a `<Grid>`,
+ *         or if a temporal collection carries no mesh grid at all.
+ */
+inline XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("Xdmf");
+    if (!root)
+        throw ReadError("XDMF: missing <Xdmf> root");
+    std::string version = root.attribute("Version").value();
+    if (!version.empty() && version[0] != '3')
+        throw ReadError("XDMF: only version 3 handled by the C++ core");
+
+    pugi::xml_node domain = root.child("Domain");
+    pugi::xml_node first, uniform, collection;
+    for (pugi::xml_node g : domain.children("Grid")) {
+        if (!first)
+            first = g;
+        const std::string gtype = g.attribute("GridType").value();
+        if (gtype == "Collection" &&
+            std::string(g.attribute("CollectionType").value()) == "Temporal") {
+            if (!collection)
+                collection = g;
+        } else if (gtype == "Uniform" && !uniform) {
+            uniform = g;
+        }
+    }
+    if (!first)
+        throw ReadError("XDMF: missing <Grid>");
+
+    XdmfDoc out;
+    out.mCollection = collection;
+    if (!collection) {
+        out.mMeshGrid = first;
+        return out;
+    }
+    for (pugi::xml_node s : collection.children("Grid"))
+        out.mSteps.push_back(s);
+    out.mMeshGrid = uniform;
+    if (!out.mMeshGrid) {
+        // No sibling mesh grid: take the first uniform grid inside the
+        // collection, which is where a writer that repeats the geometry per
+        // step puts it.
+        for (pugi::xml_node s : out.mSteps) {
+            if (std::string(s.attribute("GridType").value()) == "Uniform") {
+                out.mMeshGrid = s;
+                break;
+            }
+        }
+    }
+    if (!out.mMeshGrid)
+        throw ReadError("XDMF: temporal collection carries no mesh grid");
+    return out;
+}
+
+/** @brief Point/cell counts recovered from a mesh grid that is already on disk. */
+struct XdmfGridCounts {
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+    bool mPointsKnown = false;
+    bool mCellsKnown = false;
+};
+
+/**
+ * @brief Recover a grid's point and cell counts from its attributes alone.
+ *
+ * No payload is read: every `<DataItem>` declares its shape, so this costs one
+ * attribute lookup even for an HDF series (the `.h5` is never opened).
+ *
+ * Cells come from `<Topology>`'s `NumberOfElements` **first**, and only then
+ * from the child `<DataItem>`'s `Dimensions`. The order is load-bearing: for a
+ * `TopologyType="Mixed"` grid the `DataItem` holds one flat packed array whose
+ * length is not the cell count, and `NumberOfElements` is the only correct
+ * source. That is also why this cannot simply call `read_xdmf_metadata`, which
+ * declines Mixed outright.
+ *
+ * @param rMeshGrid The static mesh grid, e.g. `xdmf_resolve(doc).mMeshGrid`.
+ * @return The counts, each flagged with whether anything readable was found.
+ */
+inline XdmfGridCounts xdmf_grid_counts(const pugi::xml_node& rMeshGrid) {
+    XdmfGridCounts out;
+    if (!rMeshGrid)
+        return out;
+
+    if (pugi::xml_node geo = rMeshGrid.child("Geometry")) {
+        const std::vector<std::size_t> dims =
+            xdmf_parse_dims(geo.child("DataItem").attribute("Dimensions").value());
+        if (!dims.empty()) {
+            out.mNumPoints = dims[0];
+            out.mPointsKnown = true;
+        }
+    }
+
+    if (pugi::xml_node topo = rMeshGrid.child("Topology")) {
+        if (pugi::xml_attribute n = topo.attribute("NumberOfElements")) {
+            out.mNumCells = static_cast<std::size_t>(n.as_ullong());
+            out.mCellsKnown = true;
+        } else {
+            const std::vector<std::size_t> dims =
+                xdmf_parse_dims(topo.child("DataItem").attribute("Dimensions").value());
+            if (!dims.empty()) {
+                out.mNumCells = dims[0];
+                out.mCellsKnown = true;
+            }
+        }
+    } else {
+        // A grid with no <Topology> is points-only, which WritePointsCells
+        // emits for a mesh with zero cell blocks: zero cells, known exactly.
+        out.mCellsKnown = true;
+    }
+    return out;
+}
+
+}  // namespace xdmfdetail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/xdmf_doc.hpp =====
 // ===== begin src/cpp/third_party/pugixml/pugixml.cpp =====
 /**
  * pugixml parser - version 1.14
@@ -30582,6 +31863,11 @@ Mesh clone_geometry(const Mesh& rMesh) {
     // and which pass through.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
     return out;
 }
 
@@ -31073,6 +32359,38 @@ Hid create_file(const std::string& rPath) {
     if (!f.Valid())
         throw WriteError("HDF5: could not create file " + rPath);
     return f;
+}
+
+Hid open_file_rw(const std::string& rPath) {
+    Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+    if (!f.Valid())
+        throw WriteError("HDF5: could not open file for writing " + rPath);
+    return f;
+}
+
+void flush_file(Hid& rFile) {
+    if (!rFile.Valid())
+        return;
+    if (H5Fflush(rFile, H5F_SCOPE_GLOBAL) < 0)
+        throw WriteError("HDF5: could not flush file");
+}
+
+std::vector<std::string> link_names(hid_t loc) {
+    H5G_info_t info{};
+    std::vector<std::string> out;
+    if (H5Gget_info(loc, &info) < 0)
+        return out;
+    for (hsize_t i = 0; i < info.nlinks; ++i) {
+        const ssize_t len =
+            H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, nullptr, 0, H5P_DEFAULT);
+        if (len <= 0)
+            continue;
+        std::string name(static_cast<std::size_t>(len), '\0');
+        H5Lget_name_by_idx(loc, ".", H5_INDEX_NAME, H5_ITER_INC, i, name.data(),
+                           static_cast<std::size_t>(len) + 1, H5P_DEFAULT);
+        out.push_back(std::move(name));
+    }
+    return out;
 }
 
 bool exists(hid_t loc, const std::string& rName) {
@@ -33376,11 +34694,14 @@ std::string vtu_encode_binary(const unsigned char* pData, std::size_t nbytes, Vt
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/vtu_binary.cpp =====
 // ===== begin src/cpp/src/detail/xdmf_common.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 
 // Project includes
@@ -33611,6 +34932,50 @@ const std::string& DataItemStore::DataFormat() const {
 void DataItemStore::Close() {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     mImpl->mH5File.Reset();
+#endif
+}
+
+void DataItemStore::Flush() {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    h5::flush_file(mImpl->mH5File);
+#endif
+    // "Binary" opens, writes and closes one file per array, and "XML" keeps its
+    // numbers in the caller's document -- neither has anything buffered here.
+}
+
+int DataItemStore::Counter() const {
+    return mImpl->mCounter;
+}
+
+void DataItemStore::SetCounter(int Value) {
+    mImpl->mCounter = Value;
+}
+
+void DataItemStore::OpenExisting() {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (mImpl->mDataFormat != "HDF")
+        return;
+    const std::string h5_path = mImpl->mBase + ".h5";
+    std::error_code ec;
+    if (!std::filesystem::exists(h5_path, ec))
+        return;  // nothing to continue; Store() will create it as usual
+    mImpl->mH5File = h5::open_file_rw(h5_path);
+    const std::size_t slash = h5_path.find_last_of("/\\");
+    mImpl->mH5Basename = slash == std::string::npos ? h5_path : h5_path.substr(slash + 1);
+    // Resume past every dataN already there. Scanning the container rather than
+    // trusting the document is deliberate: a mis-resumed counter would silently
+    // overwrite data0 rather than fail, and the file is the authority on what
+    // it holds.
+    int next = 0;
+    for (const std::string& r_name : h5::link_names(mImpl->mH5File)) {
+        if (r_name.rfind("data", 0) != 0)
+            continue;
+        const std::string digits = r_name.substr(4);
+        if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        next = std::max(next, std::stoi(digits) + 1);
+    }
+    mImpl->mCounter = std::max(mImpl->mCounter, next);
 #endif
 }
 
@@ -41130,6 +42495,8 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
 #include <functional>
 #include <limits>
 #include <map>
+#include <ostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -41227,17 +42594,10 @@ const std::vector<int>& mdpa_kratos_node_order(CellType type) {
  * substring fallback for the cases that occur in practice.
  */
 CellType mdpa_entity_cell_type(const std::string& rName) {
-    if (rName.empty())
-        return CellType::Custom;
-    CellType t = cell_type_from_kratos_name(rName);
-    if (t != CellType::Custom)
-        return t;
-    for (std::size_t i = 1; i + 1 < rName.size(); ++i) {
-        t = cell_type_from_kratos_name(rName.substr(i));
-        if (t != CellType::Custom)
-            return t;
-    }
-    return CellType::Custom;
+    // kratos_names.hpp owns both the tables and the exact-then-longest-suffix
+    // rule, so this and ModelPart::CreateNewElement cannot disagree about which
+    // names a deck may use.
+    return cell_type_from_kratos_name_or_suffix(rName);
 }
 
 // ---------------------------------------------------------------------------
@@ -41246,6 +42606,8 @@ CellType mdpa_entity_cell_type(const std::string& rName) {
 
 struct MdpaBlock {
     std::string mType;
+    /// The Kratos entity name the file spelled, kept so it can be written back.
+    std::string mEntityName;
     std::size_t mNodes = 0;
     bool mIsCondition = false;
     std::vector<std::int64_t> mConn;
@@ -41270,18 +42632,167 @@ struct MdpaCursor {
     const std::string& Next() { return (*mpLines)[mIndex++]; }
 };
 
-/// Consume the rest of a block, throwing if it carries anything but comments.
-void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat) {
+/// Consume the rest of a block, ignoring blank/comment-only lines.
+void mdpa_consume_block(MdpaCursor& rCur, const std::string& rEnd) {
+    while (!rCur.Done())
+        if (mdpa_clean(rCur.Next()) == rEnd)
+            return;
+    throw ReadError("MDPA: EOF before '" + rEnd + "'");
+}
+
+/**
+ * @brief Reject a construct this reader cannot represent, or skip it.
+ *
+ * Strict (the default) throws naming it, so a caller with a Python fallback can
+ * take it and a caller without one at least learns what was in the file.
+ * `Lenient` warns, records it in @p pInfo and consumes the block instead --
+ * which is the only way a production deck reads at all where there is no Python
+ * (the C API, Fortran, Julia, R, WASM, the native CLI).
+ */
+void mdpa_reject_or_skip(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
+                         bool Lenient, MdpaInfo* pInfo) {
+    if (!Lenient)
+        throw ReadError("MDPA: " + rWhat +
+                        " is not supported by the C++ reader (set ReadOptions::mLenient to skip "
+                        "it instead)");
+    log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
+    if (pInfo)
+        pInfo->mSkippedConstructs.push_back(rWhat);
+    mdpa_consume_block(rCur, rEnd);
+}
+
+/// Consume a block that must be empty; a non-empty one goes through the above.
+void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
+                             bool Lenient, MdpaInfo* pInfo) {
     while (!rCur.Done()) {
         const std::string line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == rEnd)
             return;
-        throw ReadError("MDPA: " + rWhat +
-                        " is not supported by the C++ reader (offending line: '" + line + "')");
+        if (!Lenient)
+            throw ReadError("MDPA: " + rWhat +
+                            " is not supported by the C++ reader (offending line: '" + line +
+                            "'; set ReadOptions::mLenient to skip it instead)");
+        log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
+        if (pInfo)
+            pInfo->mSkippedConstructs.push_back(rWhat);
+        mdpa_consume_block(rCur, rEnd);
+        return;
     }
     throw ReadError("MDPA: EOF before '" + rEnd + "'");
+}
+
+/**
+ * @brief Parse an inline `Begin Table <args>` inside a `Properties` body.
+ *
+ * @p rHeader is the whole header line; everything after `Begin Table` becomes
+ * the entry's `mKey` verbatim, so the block re-emits with its id and variable
+ * names unchanged. Rows are whitespace-separated numbers; the first usable row
+ * fixes the column count and a row that disagrees is warned about and skipped.
+ */
+PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHeader) {
+    PropertyValue out;
+    out.mIsTable = true;
+    out.mKey = mdpa_strip(rHeader.substr(std::string("Begin Table").size()));
+
+    std::vector<double> values;
+    std::size_t ncols = 0;
+    bool terminated = false;
+    while (!rCur.Done()) {
+        const std::string line = mdpa_clean(rCur.Next());
+        if (line.empty())
+            continue;
+        if (line == "End Table") {
+            terminated = true;
+            break;
+        }
+        const std::vector<std::string> toks = mdpa_tokens(line);
+        std::vector<double> row;
+        row.reserve(toks.size());
+        bool ok = true;
+        for (const std::string& tok : toks) {
+            double v = 0.0;
+            if (!mdpa_parse_double(tok, v)) {
+                ok = false;
+                break;
+            }
+            row.push_back(v);
+        }
+        if (!ok) {
+            log::warn("mdpa: skipping non-numeric Table row: {}", line);
+            continue;
+        }
+        if (ncols == 0)
+            ncols = row.size();
+        if (row.size() != ncols) {
+            log::warn("mdpa: skipping Table row with {} values (expected {}): {}", row.size(),
+                      ncols, line);
+            continue;
+        }
+        values.insert(values.end(), row.begin(), row.end());
+    }
+    if (!terminated)
+        throw ReadError("MDPA: EOF before 'End Table'");
+
+    const std::size_t nrows = ncols ? values.size() / ncols : 0;
+    NDArray a(DType::Float64, {nrows, ncols});
+    double* p = a.As<double>();
+    for (std::size_t i = 0; i < values.size(); ++i)
+        p[i] = values[i];
+    out.mValues = std::move(a);
+    return out;
+}
+
+/**
+ * @brief Parse a `Begin Properties <id>` body.
+ *
+ * Never throws on content: a plain number becomes a Float64 scalar, an inline
+ * table an `(n, k)` array, and everything else -- a constitutive-law name, a
+ * bracketed vector or matrix -- is kept verbatim as text, which is both
+ * lossless and what the pure-Python reference does.
+ */
+PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) {
+    PropertySet out;
+    const std::vector<std::string> head = mdpa_tokens(rHeader);
+    if (head.size() < 3 || !mdpa_parse_int(head[2], out.mId)) {
+        log::warn("mdpa: Properties block with no readable id, using 0: {}", rHeader);
+        out.mId = 0;
+    }
+
+    while (true) {
+        if (rCur.Done())
+            throw ReadError("MDPA: EOF before 'End Properties'");
+        const std::string line = mdpa_clean(rCur.Next());
+        if (line.empty())
+            continue;
+        if (line == "End Properties")
+            break;
+        if (mdpa_starts_with(line, "Begin Table")) {
+            out.mValues.push_back(mdpa_parse_property_table(rCur, line));
+            continue;
+        }
+        // key + the rest of the line, exactly the Python reference's
+        // `split(None, 1)`, so both readers agree on where the value starts.
+        const std::size_t sep = line.find_first_of(" \t");
+        if (sep == std::string::npos) {
+            log::warn("mdpa: skipping valueless Properties line: {}", line);
+            continue;
+        }
+        PropertyValue v;
+        v.mKey = line.substr(0, sep);
+        const std::string rest = mdpa_strip(line.substr(sep + 1));
+        double scalar = 0.0;
+        if (mdpa_parse_double(rest, scalar)) {
+            NDArray a(DType::Float64, {1});
+            a.As<double>()[0] = scalar;
+            v.mValues = std::move(a);
+        } else {
+            v.mText = rest;
+        }
+        out.mValues.push_back(std::move(v));
+    }
+    return out;
 }
 
 /**
@@ -41418,7 +42929,16 @@ NDArray mdpa_data_array(const std::vector<MdpaDataRow>& rRows, std::size_t block
 // Reader
 // ---------------------------------------------------------------------------
 
-Mesh read_mdpa(const std::string& rPath) {
+namespace {
+
+/**
+ * @brief The one parse body behind all three `read_mdpa` overloads.
+ *
+ * @param rPath   file to read
+ * @param Lenient `ReadOptions::mLenient`
+ * @param pInfo   where to put what the `Mesh` cannot hold, or null to drop it
+ */
+Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     std::ifstream in(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
@@ -41432,6 +42952,10 @@ Mesh read_mdpa(const std::string& rPath) {
     std::vector<double> coords;  // flat (n, 3)
     std::size_t num_points = 0;
     std::vector<MdpaBlock> blocks;
+    // The Properties bodies, staged for the Mesh. Kept in file order here; the
+    // mesh canonicalizes them to ascending id, which is why MdpaInfo remains
+    // the way to preserve an unusual declaration order verbatim.
+    std::vector<PropertySet> property_sets;
     std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_ids,
         condition_ids;
     std::map<std::string, NDArray> field_data;
@@ -41501,9 +43025,17 @@ Mesh read_mdpa(const std::string& rPath) {
                     continue;
                 }
                 double v = 0.0;
-                if (t.size() != 2 || !mdpa_parse_double(t[1], v))
-                    throw ReadError("MDPA: non-numeric ModelPartData value for '" + t[0] +
-                                    "' is not supported by the C++ reader");
+                if (t.size() != 2 || !mdpa_parse_double(t[1], v)) {
+                    const std::string what = "a non-numeric ModelPartData value for '" + t[0] + "'";
+                    if (!Lenient)
+                        throw ReadError("MDPA: " + what +
+                                        " is not supported by the C++ reader (set "
+                                        "ReadOptions::mLenient to skip it instead)");
+                    log::warn("mdpa: skipping {} (ReadOptions::mLenient)", what);
+                    if (pInfo)
+                        pInfo->mSkippedConstructs.push_back(what);
+                    continue;
+                }
                 NDArray a(DType::Float64, {1});
                 a.As<double>()[0] = v;
                 field_data[t[0]] = std::move(a);
@@ -41579,10 +43111,17 @@ Mesh read_mdpa(const std::string& rPath) {
                 if (!mdpa_parse_int(t[0], id) || !mdpa_parse_int(t[1], prop))
                     throw ReadError("MDPA: non-integer id/property in: " + e);
 
+                // The Kratos *name* is part of the split key, not just the cell
+                // type: two adjacent SmallDisplacementElement3D4N and
+                // TotalLagrangianElement3D4N blocks are both `tetra`, and
+                // merging them would leave one name to write both back under --
+                // exactly the silent degradation MdpaInfo exists to stop.
                 if (blocks.empty() || blocks.back().mType != type_name ||
-                    blocks.back().mIsCondition != is_condition) {
+                    blocks.back().mIsCondition != is_condition ||
+                    blocks.back().mEntityName != entity_name) {
                     MdpaBlock b;
                     b.mType = type_name;
+                    b.mEntityName = entity_name;
                     b.mNodes = static_cast<std::size_t>(nn);
                     b.mIsCondition = is_condition;
                     blocks.push_back(std::move(b));
@@ -41608,7 +43147,17 @@ Mesh read_mdpa(const std::string& rPath) {
             if (!terminated)
                 throw ReadError("MDPA: EOF before '" + end_token + "'");
         } else if (mdpa_starts_with(line, "Begin Properties")) {
-            mdpa_expect_empty_block(cur, "End Properties", "a non-empty Properties block");
+            // Parsed unconditionally, not gated on mLenient: this is a pure
+            // de-throwing, so no read that used to succeed changes.
+            PropertySet ps = mdpa_parse_properties(cur, line);
+            // Onto the mesh, so a registry-based consumer gets it. Through
+            // v9.1.0 this rode the MdpaInfo side channel only, which nothing
+            // reachable from registry_readers() could ask for -- so the values
+            // were unreachable from every consumer that did not link
+            // formats/mdpa.hpp and call read_mdpa directly.
+            property_sets.push_back(ps);
+            if (pInfo)
+                pInfo->mProperties.push_back(std::move(ps));
         } else if (mdpa_starts_with(line, "Begin NodalData")) {
             const std::vector<std::string> head = mdpa_tokens(line);
             if (head.size() < 3)
@@ -41672,16 +43221,16 @@ Mesh read_mdpa(const std::string& rPath) {
             cell_data.push_back(std::move(sd));
         } else if (mdpa_starts_with(line, "Begin SubModelPartData")) {
             mdpa_expect_empty_block(cur, "End SubModelPartData",
-                                    "a non-empty SubModelPartData block");
+                                    "a non-empty SubModelPartData block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin SubModelPartTables")) {
             mdpa_expect_empty_block(cur, "End SubModelPartTables",
-                                    "a non-empty SubModelPartTables block");
+                                    "a non-empty SubModelPartTables block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin SubModelPartGeometries")) {
             mdpa_expect_empty_block(cur, "End SubModelPartGeometries",
-                                    "a non-empty SubModelPartGeometries block");
+                                    "a non-empty SubModelPartGeometries block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin SubModelPartConstraints")) {
             mdpa_expect_empty_block(cur, "End SubModelPartConstraints",
-                                    "a non-empty SubModelPartConstraints block");
+                                    "a non-empty SubModelPartConstraints block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin SubModelPartNodes")) {
             if (smp_stack.empty())
                 throw ReadError("MDPA: SubModelPartNodes outside a SubModelPart");
@@ -41720,13 +43269,19 @@ Mesh read_mdpa(const std::string& rPath) {
                 throw ReadError("MDPA: 'End SubModelPart' without a matching 'Begin'");
             smp_stack.pop_back();
         } else if (mdpa_starts_with(line, "Begin Table")) {
-            throw ReadError("MDPA: Table blocks are not supported by the C++ reader");
+            mdpa_reject_or_skip(cur, "End Table", "a top-level Table block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin Geometries")) {
-            throw ReadError("MDPA: Geometries blocks are not supported by the C++ reader");
+            mdpa_reject_or_skip(cur, "End Geometries", "a Geometries block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin Mesh")) {
-            throw ReadError("MDPA: Mesh blocks are not supported by the C++ reader");
+            mdpa_reject_or_skip(cur, "End Mesh", "a Mesh block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin ")) {
-            throw ReadError("MDPA: unsupported block '" + line + "'");
+            // Everything unrecognized, which is how `Begin Constraints` and any
+            // block a future Kratos adds are covered without a case each. The
+            // terminator is the header's first word after `Begin`, so a nested
+            // `End <other>` cannot end the scan early.
+            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::string end_token = "End " + (head.size() >= 2 ? head[1] : std::string());
+            mdpa_reject_or_skip(cur, end_token, "the block '" + line + "'", Lenient, pInfo);
         } else {
             throw ReadError("MDPA: unexpected line outside a block: '" + line + "'");
         }
@@ -41760,6 +43315,8 @@ Mesh read_mdpa(const std::string& rPath) {
         for (std::size_t i = 0; i < blk.mConn.size(); ++i)
             cp[i] = blk.mConn[i];
         mesh.AddCellBlock(blk.mType, std::move(conn));
+        if (pInfo)
+            pInfo->mEntityNames.push_back(MdpaEntityName{blk.mEntityName, blk.mIsCondition});
         NDArray tag(DType::Int64, {blk.mCount});
         std::int64_t* tp = tag.As<std::int64_t>();
         for (std::size_t i = 0; i < blk.mProps.size(); ++i)
@@ -41816,7 +43373,27 @@ Mesh read_mdpa(const std::string& rPath) {
             mesh.AddRegion(Region(smp.first, RegionKind::Cell, std::move(e)));
         }
     }
+    // Properties last: they are keyed by id, so order relative to the cell
+    // blocks and regions above does not matter.
+    for (PropertySet& r_ps : property_sets)
+        mesh.AddPropertySet(std::move(r_ps));
+
     return mesh;
+}
+
+}  // namespace
+
+Mesh read_mdpa(const std::string& rPath) {
+    return mdpa_read_impl(rPath, /*Lenient=*/false, /*pInfo=*/nullptr);
+}
+
+Mesh read_mdpa(const std::string& rPath, const ReadOptions& rOptions) {
+    return mdpa_read_impl(rPath, rOptions.mLenient, /*pInfo=*/nullptr);
+}
+
+Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo, const ReadOptions& rOptions) {
+    rInfo = MdpaInfo{};
+    return mdpa_read_impl(rPath, rOptions.mLenient, &rInfo);
 }
 
 // ---------------------------------------------------------------------------
@@ -41865,9 +43442,47 @@ bool mdpa_skip_cell_data(const std::string& rName) {
     return mdpa_starts_with(rName, "gmsh:");
 }
 
+/// Emit one `Begin Properties <id>` block, bodies included.
+void mdpa_write_properties(std::ostream& rOs, const PropertySet& rSet) {
+    rOs << "Begin Properties " << rSet.mId << "\n";
+    for (const PropertyValue& v : rSet.mValues) {
+        if (v.mIsTable) {
+            // mKey holds the header's arguments verbatim (id + variable names),
+            // so the block comes back out exactly as it went in.
+            rOs << "  Begin Table " << v.mKey << "\n";
+            const std::size_t ncols = v.mValues.Shape().size() >= 2 ? v.mValues.Shape()[1] : 1;
+            const std::size_t nrows = ncols ? v.mValues.Size() / ncols : 0;
+            for (std::size_t r = 0; r < nrows; ++r) {
+                rOs << "   ";
+                for (std::size_t c = 0; c < ncols; ++c)
+                    rOs << " " << mdpa_format_value(v.mValues, r * ncols + c);
+                rOs << "\n";
+            }
+            rOs << "  End Table\n";
+            continue;
+        }
+        rOs << "  " << v.mKey << " ";
+        if (v.IsText()) {
+            rOs << v.mText;
+        } else {
+            for (std::size_t i = 0; i < v.mValues.Size(); ++i) {
+                if (i)
+                    rOs << " ";
+                rOs << mdpa_format_value(v.mValues, i);
+            }
+        }
+        rOs << "\n";
+    }
+    rOs << "End Properties\n\n";
+}
+
 }  // namespace
 
 void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
+    write_mdpa(rPath, rMesh, MdpaInfo{});
+}
+
+void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rInfo) {
     std::ofstream os(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -41896,6 +43511,15 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
             is_condition[b] = kratos_element_name(type).find("2D") != std::string::npos;
             entity_name[b] =
                 is_condition[b] ? kratos_condition_name(type) : kratos_element_name(type);
+            // A name the reader kept wins over the derived one, which is what
+            // makes an application-specific SmallDisplacementElement3D4N
+            // survive a round trip instead of collapsing to Element3D4N. The
+            // recorded kind comes with it: inferring "Condition" from the name
+            // would be a second guess on top of the cell-type heuristic.
+            if (b < rInfo.mEntityNames.size() && !rInfo.mEntityNames[b].mName.empty()) {
+                entity_name[b] = rInfo.mEntityNames[b].mName;
+                is_condition[b] = rInfo.mEntityNames[b].mIsCondition;
+            }
             block_base[b] = running;
             running += cb.NumCells();
             written_ids[b].resize(cb.NumCells());
@@ -41916,7 +43540,49 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
         os << "    " << name << " " << mdpa_format_value(a, 0) << "\n";
     }
     os << "End ModelPartData\n\n";
-    os << "Begin Properties 0\nEnd Properties\n\n";
+
+    // ---- Properties -------------------------------------------------------
+    // With an MdpaInfo the blocks come back with their bodies. Without one,
+    // every id the entity rows below will actually reference gets an empty
+    // block, ascending: the rows have always written their `gmsh:physical`
+    // value as the property id, so hard-coding a single `Properties 0` left a
+    // tagged mesh referencing undeclared properties, which Kratos's own
+    // ModelPartIO rejects. A mesh whose ids are all 0 -- every mesh with no
+    // `gmsh:physical` -- still emits exactly the old two lines.
+    const bool has_props =
+        rMesh.HasCellData("gmsh:physical") && rMesh.CellDataNumBlocks("gmsh:physical") == nblocks;
+    std::set<std::int64_t> referenced_ids;
+    if (has_props) {
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& tags = rMesh.CellData("gmsh:physical", b);
+            for (std::size_t r = 0; r < tags.Size(); ++r)
+                referenced_ids.insert(detail::read_int(tags, r));
+        }
+    }
+    if (!rInfo.mProperties.empty()) {
+        // An explicit MdpaInfo wins, and keeps the caller's order verbatim --
+        // which is the one thing the mesh channel cannot do, since it
+        // canonicalizes to ascending id.
+        for (const PropertySet& ps : rInfo.mProperties)
+            mdpa_write_properties(os, ps);
+    } else if (rMesh.NumPropertySets() > 0) {
+        // Bodies carried on the mesh (v9.2.0): what read_mdpa now stores, so a
+        // registry-driven mdpa -> mdpa round trip keeps its material data
+        // instead of emitting empty blocks.
+        for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i) {
+            mdpa_write_properties(os, rMesh.GetPropertySet(i));
+            referenced_ids.erase(rMesh.GetPropertySet(i).mId);
+        }
+        // Any id the rows reference but no set covers still has to be declared:
+        // Kratos's own ModelPartIO rejects a row naming an undeclared id.
+        for (std::int64_t id : referenced_ids)
+            os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    } else {
+        if (referenced_ids.empty())
+            referenced_ids.insert(0);
+        for (std::int64_t id : referenced_ids)
+            os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    }
 
     // ---- Nodes ------------------------------------------------------------
     os << "Begin Nodes\n";
@@ -41938,8 +43604,6 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
     os << "End Nodes\n\n";
 
     // ---- Elements / Conditions -------------------------------------------
-    const bool has_props =
-        rMesh.HasCellData("gmsh:physical") && rMesh.CellDataNumBlocks("gmsh:physical") == nblocks;
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
         const CellType type = cell_type_from_name(std::string(cb.Type()));
@@ -52079,6 +53743,8 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 
 // External includes
 
+// Project includes (private, not installed)
+
 // Project includes
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -52087,6 +53753,17 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 namespace fs = std::filesystem;
 
 namespace meshioplusplus {
+
+// The document-structure helpers live in the private `formats/xdmf_doc.hpp` so
+// the transient writer's append path resolves a document exactly the way this
+// reader does. They were local to this file through v9.1.0, which is how the
+// writer came to carry a weaker transcription. Pulled in by name rather than
+// qualified at each of the five call sites, so those stay byte-identical.
+using xdmfdetail::xdmf_resolve;
+using xdmfdetail::XdmfDoc;
+// The reader has always spelled this one `parse_dims`; keep that at the call
+// sites rather than churn them.
+constexpr auto& parse_dims = xdmfdetail::xdmf_parse_dims;
 
 namespace {
 
@@ -52135,15 +53812,6 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
                : p == 4 ? DType::UInt32
                         : DType::UInt64;
     return p == 4 ? DType::Float32 : DType::Float64;
-}
-
-std::vector<std::size_t> parse_dims(const std::string& rS) {
-    std::vector<std::size_t> dims;
-    std::istringstream iss(rS);
-    std::int64_t v;
-    while (iss >> v)
-        dims.push_back(static_cast<std::size_t>(v));
-    return dims;
 }
 
 void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
@@ -52292,79 +53960,6 @@ void translate_mixed(const NDArray& rFlat, Mesh& rMesh) {
         rMesh.AddCellBlock(xdmf_idx_to_meshio(xt), std::move(data));
         start = end;
     }
-}
-
-/**
- * @brief What a parsed XDMF document holds: the grid carrying the geometry, and
- * the steps of a temporal collection if it has one.
- *
- * `mSteps` empty means "a plain single-grid file", which is the historical case
- * and takes the historical code path unchanged.
- */
-struct XdmfDoc {
-    pugi::xml_node mMeshGrid;            ///< Grid holding `<Topology>`/`<Geometry>`.
-    std::vector<pugi::xml_node> mSteps;  ///< Temporal-collection children, in file order.
-};
-
-/**
- * @brief Validate the document and locate its mesh grid (and time steps).
- *
- * Shared by the mesh and metadata readers so a summary can never accept a file
- * `read_xdmf` would reject. A temporal collection (`GridType="Collection"
- * CollectionType="Temporal"`, what `XdmfTimeSeriesWriter` emits) stores the
- * static geometry once in a sibling `Uniform` grid and one `<Grid>` per step
- * inside the collection; the step grids reference the geometry through an
- * `xi:include` this reader ignores, resolving it structurally instead -- the
- * same thing the Python `TimeSeriesReader` does, and for the same reason: a
- * generic XInclude pass would have to implement XPointer.
- */
-XdmfDoc xdmf_resolve(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("Xdmf");
-    if (!root)
-        throw ReadError("XDMF: missing <Xdmf> root");
-    std::string version = root.attribute("Version").value();
-    if (!version.empty() && version[0] != '3')
-        throw ReadError("XDMF: only version 3 handled by the C++ core");
-
-    pugi::xml_node domain = root.child("Domain");
-    pugi::xml_node first, uniform, collection;
-    for (pugi::xml_node g : domain.children("Grid")) {
-        if (!first)
-            first = g;
-        const std::string gtype = g.attribute("GridType").value();
-        if (gtype == "Collection" &&
-            std::string(g.attribute("CollectionType").value()) == "Temporal") {
-            if (!collection)
-                collection = g;
-        } else if (gtype == "Uniform" && !uniform) {
-            uniform = g;
-        }
-    }
-    if (!first)
-        throw ReadError("XDMF: missing <Grid>");
-
-    XdmfDoc out;
-    if (!collection) {
-        out.mMeshGrid = first;
-        return out;
-    }
-    for (pugi::xml_node s : collection.children("Grid"))
-        out.mSteps.push_back(s);
-    out.mMeshGrid = uniform;
-    if (!out.mMeshGrid) {
-        // No sibling mesh grid: take the first uniform grid inside the
-        // collection, which is where a writer that repeats the geometry per
-        // step puts it.
-        for (pugi::xml_node s : out.mSteps) {
-            if (std::string(s.attribute("GridType").value()) == "Uniform") {
-                out.mMeshGrid = s;
-                break;
-            }
-        }
-    }
-    if (!out.mMeshGrid)
-        throw ReadError("XDMF: temporal collection carries no mesh grid");
-    return out;
 }
 
 /** @brief Read a grid's `<Topology>`/`<Geometry>` into @p rMesh, ignoring the rest. */
@@ -52672,11 +54267,17 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
 // ===== begin src/cpp/src/formats/xdmf_time_series.cpp =====
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <vector>
 
 // External includes
+
+// Project includes (private, not installed)
 
 // Project includes
 
@@ -52743,12 +54344,53 @@ struct XdmfTimeSeriesWriter::Impl {
     pugi::xml_node mCollection;
     std::unique_ptr<xdmfcommon::DataItemStore> mStore;
     std::size_t mNumSteps = 0;
+    // From WritePointsCells, or recovered from the document on the append path;
+    // used to validate the NamedArray overload's lengths. mCountsKnown is what
+    // distinguishes "the mesh has zero points" from "we could not find out".
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+    bool mCountsKnown = false;
     bool mHasMesh = false;
     bool mFinalized = false;
+    bool mAutoFlush = false;
+
+    /**
+     * @brief Serialize the document over `mPath` atomically.
+     *
+     * Written to a sibling temp file and renamed, so a crash mid-write cannot
+     * leave a truncated `.xdmf` where a complete earlier one used to be -- the
+     * whole point of flushing being that the file on disk is always openable.
+     */
+    void SaveDocument() {
+        const std::string tmp = mPath + ".tmp";
+        if (!mDoc.save_file(tmp.c_str(), "  "))
+            throw WriteError("XDMF: could not write " + tmp);
+        std::error_code ec;
+        std::filesystem::rename(tmp, mPath, ec);
+        if (ec) {
+            std::filesystem::remove(tmp, ec);
+            throw WriteError("XDMF: could not write " + mPath);
+        }
+    }
+
+    /** @brief Start one step's `<Grid>`: the xpointer to the mesh plus `<Time>`. */
+    pugi::xml_node BeginStep(double Time) {
+        pugi::xml_node grid = mCollection.append_child("Grid");
+        // The step references the static grid rather than repeating it. Readers
+        // that do not implement XPointer (this repo's own, and Python's
+        // TimeSeriesReader) resolve the collection structurally and skip this.
+        pugi::xml_node inc = grid.append_child("xi:include");
+        const std::string ptr = std::string("xpointer(//Grid[@Name=\"") + xts_mesh_name +
+                                "\"]/*[self::Topology or self::Geometry])";
+        inc.append_attribute("xpointer") = ptr.c_str();
+        pugi::xml_node time = grid.append_child("Time");
+        time.append_attribute("Value") = xts_format_time(Time).c_str();
+        return grid;
+    }
 };
 
 XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::string& rDataFormat,
-                                           int GzipLevel)
+                                           int GzipLevel, XdmfSeriesMode Mode)
     : mImpl(std::make_unique<Impl>()) {
     if (rDataFormat != "XML" && rDataFormat != "Binary" && rDataFormat != "HDF")
         throw WriteError("XDMF: unknown data format '" + rDataFormat +
@@ -52769,6 +54411,61 @@ XdmfTimeSeriesWriter::XdmfTimeSeriesWriter(const std::string& rPath, const std::
     if (dot != std::string::npos)
         base = base.substr(0, dot);
     mImpl->mStore = std::make_unique<xdmfcommon::DataItemStore>(rDataFormat, base, GzipLevel);
+
+    std::error_code ec;
+    if (Mode == XdmfSeriesMode::Append && std::filesystem::exists(rPath, ec)) {
+        if (!mImpl->mDoc.load_file(rPath.c_str()))
+            throw WriteError("XDMF time series: could not parse '" + rPath + "' to append to it");
+        // Resolve through the SAME helper read_xdmf uses, so an append can never
+        // disagree with a read about which grid is the mesh. This file carried
+        // its own weaker transcription through v9.1.0, which skipped the
+        // version check and recognised a static grid only when it was literally
+        // named "mesh" -- so appending to another producer's series quietly
+        // added a second static grid.
+        xdmfdetail::XdmfDoc parsed;
+        try {
+            parsed = xdmfdetail::xdmf_resolve(mImpl->mDoc);
+        } catch (const ReadError& e) {
+            throw WriteError("XDMF time series: cannot append to '" + rPath + "': " + e.what());
+        }
+        if (!parsed.mCollection)
+            throw WriteError("XDMF time series: '" + rPath +
+                             "' carries no temporal collection to append to");
+        mImpl->mCollection = parsed.mCollection;
+        mImpl->mNumSteps = parsed.mSteps.size();
+        mImpl->mHasMesh = static_cast<bool>(parsed.mMeshGrid);
+
+        // Recover the counts the NamedArray overload validates against. They
+        // are declared in the document -- <Topology NumberOfElements> and the
+        // geometry <DataItem>'s Dimensions -- so this costs attribute lookups
+        // and never opens the heavy-data container. Without this the counts
+        // stayed 0 and that overload rejected every array on an appended
+        // series, which is the v9.1.0 bug this fixes; WritePointsCells cannot
+        // repair it, since appending sets mHasMesh and it refuses a second call.
+        if (parsed.mMeshGrid) {
+            const xdmfdetail::XdmfGridCounts counts =
+                xdmfdetail::xdmf_grid_counts(parsed.mMeshGrid);
+            mImpl->mNumPoints = counts.mNumPoints;
+            mImpl->mNumCells = counts.mNumCells;
+            mImpl->mCountsKnown = counts.mPointsKnown && counts.mCellsKnown;
+            if (!mImpl->mCountsKnown)
+                log::warn(
+                    "XDMF time series: could not recover the point/cell counts from '{}'; "
+                    "array-length validation is skipped for this series",
+                    rPath);
+        }
+
+        // Resume the heavy-data naming past whatever the earlier run wrote. A
+        // mis-resumed counter would silently overwrite data0 rather than fail.
+        mImpl->mStore->OpenExisting();
+        if (rDataFormat == "Binary") {
+            int next = 0;
+            while (std::filesystem::exists(base + std::to_string(next) + ".bin", ec))
+                ++next;
+            mImpl->mStore->SetCounter(next);
+        }
+        return;
+    }
 
     pugi::xml_node xdmf = mImpl->mDoc.append_child("Xdmf");
     xdmf.append_attribute("Version") = "3.0";
@@ -52811,6 +54508,10 @@ XdmfTimeSeriesWriter& XdmfTimeSeriesWriter::operator=(XdmfTimeSeriesWriter&& rOt
 }
 
 void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (mImpl->mHasMesh)
@@ -52829,6 +54530,12 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
     pugi::xml_node geo = grid.append_child("Geometry");
     geo.append_attribute("GeometryType") = geo_type;
     xts_add_data_item(geo, *mImpl->mStore, points);
+
+    mImpl->mNumPoints = rMesh.NumPoints();
+    mImpl->mNumCells = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        mImpl->mNumCells += rMesh.Cells(b).NumCells();
+    mImpl->mCountsKnown = true;
 
     // Topology (single-type, or one packed Mixed array)
     if (rMesh.NumCellBlocks() == 1) {
@@ -52852,23 +54559,16 @@ void XdmfTimeSeriesWriter::WritePointsCells(const Mesh& rMesh) {
 }
 
 void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
     if (mImpl->mFinalized)
         throw WriteError("XDMF time series: writer already finalized");
     if (!mImpl->mHasMesh)
         throw WriteError("XDMF time series: WritePointsCells must be called before WriteData");
 
-    pugi::xml_node grid = mImpl->mCollection.append_child("Grid");
-
-    // The step references the static grid rather than repeating it. Readers that
-    // do not implement XPointer (this repo's own, and Python's TimeSeriesReader)
-    // resolve the collection structurally instead and simply skip this element.
-    pugi::xml_node inc = grid.append_child("xi:include");
-    const std::string ptr = std::string("xpointer(//Grid[@Name=\"") + xts_mesh_name +
-                            "\"]/*[self::Topology or self::Geometry])";
-    inc.append_attribute("xpointer") = ptr.c_str();
-
-    pugi::xml_node time = grid.append_child("Time");
-    time.append_attribute("Value") = xts_format_time(Time).c_str();
+    pugi::xml_node grid = mImpl->BeginStep(Time);
 
     // Sorted name order on both, matching write_xdmf and the uniform API's
     // guarantee, so a series is byte-deterministic across mesh backends.
@@ -52884,10 +54584,86 @@ void XdmfTimeSeriesWriter::WriteData(double Time, const Mesh& rMesh) {
     }
 
     ++mImpl->mNumSteps;
+    if (mImpl->mAutoFlush)
+        Flush();
+}
+
+void XdmfTimeSeriesWriter::WriteData(double Time, const std::vector<NamedArray>& rPointData,
+                                     const std::vector<NamedArray>& rCellData) {
+    // Moved-from: this cannot silently no-op -- a caller writing a step must
+    // not believe it landed. See the class contract in the header.
+    if (!mImpl)
+        throw WriteError("XDMF time series: writer has been moved from");
+    if (mImpl->mFinalized)
+        throw WriteError("XDMF time series: writer already finalized");
+    if (!mImpl->mHasMesh)
+        throw WriteError("XDMF time series: WritePointsCells must be called before WriteData");
+
+    pugi::xml_node grid = mImpl->BeginStep(Time);
+
+    const auto emit = [&](const std::vector<NamedArray>& rArrays, std::size_t entities,
+                          const char* p_center, const char* p_what) {
+        for (const NamedArray& r_a : rArrays) {
+            const std::size_t nc = r_a.mNumComponents ? r_a.mNumComponents : 1;
+            // `rows` is `entities` in every normal case. It differs only when
+            // appending to a document whose counts could not be recovered (a
+            // foreign producer with no Dimensions/NumberOfElements to read),
+            // where deriving the row count from the array is the honest answer:
+            // the <DataItem> carries its own Dimensions, so the output stays
+            // structurally valid and only the helpfulness check is lost -- and
+            // that case already warned once, at construction.
+            std::size_t rows = entities;
+            if (mImpl->mCountsKnown) {
+                const std::size_t want = entities * nc;
+                if (r_a.mValues.size() != want)
+                    throw WriteError("XDMF time series: " + std::string(p_what) + " array '" +
+                                     r_a.mName + "' holds " + std::to_string(r_a.mValues.size()) +
+                                     " values, expected " + std::to_string(want) + " (" +
+                                     std::to_string(entities) + " x " + std::to_string(nc) + ")");
+            } else {
+                rows = r_a.mValues.size() / nc;
+            }
+            std::vector<std::size_t> shape;
+            if (nc == 1)
+                shape = {rows};
+            else
+                shape = {rows, nc};
+            NDArray arr = NDArray::Uninit(DType::Float64, shape);
+            if (!r_a.mValues.empty())
+                std::memcpy(arr.Data(), r_a.mValues.data(), r_a.mValues.size() * sizeof(double));
+            // Through the same helper as the Mesh path, so the attribute type,
+            // dtype mapping and DataItem shape cannot drift between the two.
+            xts_add_attribute(grid, *mImpl->mStore, r_a.mName, p_center, arr);
+        }
+    };
+    emit(rPointData, mImpl->mNumPoints, "Node", "point");
+    emit(rCellData, mImpl->mNumCells, "Cell", "cell");
+
+    ++mImpl->mNumSteps;
+    if (mImpl->mAutoFlush)
+        Flush();
+}
+
+void XdmfTimeSeriesWriter::Flush() {
+    if (!mImpl || mImpl->mFinalized)
+        return;
+    // Heavy data first: the .xdmf must never name a dataset that is not on disk.
+    mImpl->mStore->Flush();
+    mImpl->SaveDocument();
+}
+
+void XdmfTimeSeriesWriter::SetAutoFlush(bool Enable) {
+    if (!mImpl)
+        return;
+    mImpl->mAutoFlush = Enable;
+}
+
+bool XdmfTimeSeriesWriter::AutoFlush() const {
+    return mImpl && mImpl->mAutoFlush;
 }
 
 void XdmfTimeSeriesWriter::Finalize() {
-    if (mImpl->mFinalized)
+    if (!mImpl || mImpl->mFinalized)
         return;
     // Set first: a failed save must not be retried by the destructor, which
     // could not report the second failure either.
@@ -52895,8 +54671,7 @@ void XdmfTimeSeriesWriter::Finalize() {
     // Close the heavy data before the light data appears, so a reader that finds
     // the .xdmf always finds a complete .h5 beside it.
     mImpl->mStore->Close();
-    if (!mImpl->mDoc.save_file(mImpl->mPath.c_str(), "  "))
-        throw WriteError("XDMF: could not write " + mImpl->mPath);
+    mImpl->SaveDocument();
 }
 
 std::size_t XdmfTimeSeriesWriter::NumSteps() const {
@@ -60622,6 +62397,11 @@ Mesh quality_clone_mesh(const Mesh& rMesh) {
     // cell_data and renumbers nothing.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
     return out;
 }
 
@@ -62678,6 +64458,11 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     // so no point, cell or facet is renumbered.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
 
     return result;
 }
@@ -63975,6 +65760,11 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
     // same entity.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
 
     return out;
 }
@@ -64202,7 +65992,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"freefem", meshioplusplus::read_freefem},
         {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
-        {"mdpa", meshioplusplus::read_mdpa},
+        // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
+        // function pointer no longer converts to ReadFn -- the hazard noted
+        // for unv/med below. The MdpaInfo is dropped here, like MedInfo.
+        {"mdpa", [](const std::string& path) { return meshioplusplus::read_mdpa(path); }},
         {"medit", meshioplusplus::read_medit_ascii},
         {"mff", meshioplusplus::read_mff},
         {"mfm", meshioplusplus::read_mfm},
@@ -64287,7 +66080,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"gmsh22", [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
-        {"mdpa", meshioplusplus::write_mdpa},
+        {"mdpa", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); }},
         {"medit", meshioplusplus::write_medit_ascii},
         {"mff", meshioplusplus::write_mff},
         {"mfm",
@@ -64469,6 +66262,12 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
                       const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); }},
 #endif
         {"gmsh", meshioplusplus::read_gmsh},
+        // mdpa honours mLenient rather than the narrowing options -- the same
+        // "options-aware is several capabilities, not one" note as exodus. This
+        // entry is what makes `--lenient` reach the C API, Fortran, Julia, R,
+        // WASM and the native CLI with no per-binding code.
+        {"mdpa", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},

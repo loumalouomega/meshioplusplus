@@ -608,7 +608,7 @@ mesh = meshioplusplus.read("run.exo", time_step=-1)       # the last step of a t
 meta["time_values"]                                       # how many steps there are
 ```
 
-VTU, VTP, XDMF and Gmsh skip the unwanted array bodies outright; other formats are read in full and filtered, and `meta["fell_back_to_full_read"]` says which happened. `time_step` picks one step of a multi-step file (`0` = the first, negative counts from the end); out of range is an error naming the available count rather than a silent fallback to step 0. Currently honoured by Exodus. Large files can also be memory-mapped (automatic above 16 MiB), which roughly halves peak memory during a read. See [selective reads](doc/selective_read.md) and [memory-mapped reading](doc/mmap.md).
+VTU, VTP, XDMF and Gmsh skip the unwanted array bodies outright; other formats are read in full and filtered, and `meta["fell_back_to_full_read"]` says which happened. `time_step` picks one step of a multi-step file (`0` = the first, negative counts from the end); out of range is an error naming the available count rather than a silent fallback to step 0. Currently honoured by Exodus. A `lenient` option downgrades "this reader cannot represent construct X" errors to a warning plus a skip (currently MDPA's `Table`/`Geometries`/`Mesh`/`Constraints` blocks) — not "ignore all errors": a malformed file still fails. Large files can also be memory-mapped (automatic above 16 MiB), which roughly halves peak memory during a read. See [selective reads](doc/selective_read.md) and [memory-mapped reading](doc/mmap.md).
 
 VTK XML output can additionally use **lz4** (ParaView-readable) or **zstd** (a meshio++ extension) instead of zlib, when built with `-DMESHIOPLUSPLUS_WITH_LZ4=ON` / `-DMESHIOPLUSPLUS_WITH_ZSTD=ON`. zlib remains the default. See [compression codecs](doc/codecs.md).
 
@@ -646,9 +646,15 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.0 CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
+
+`EXACT` is deliberate: the C++ API makes **no ABI promise** (`Mesh`, `ModelPart`
+and `GeometricalEntity` are header-defined types whose layout moves with the
+headers), so library and consumer must be built from the same version. The C API
+is the stable one — pin `find_package(meshioplusplus 9 … COMPONENTS C)` there.
+See [versioning](https://loumalouomega.github.io/meshioplusplus/cpp_api).
 
 ```cpp
 #include "meshioplusplus/registry.hpp"
@@ -658,7 +664,7 @@ auto mesh  = meshioplusplus::registry_read("bracket.msh", "", {});
 auto parts = meshioplusplus::partition(mesh, {.mNParts = 8});
 ```
 
-All three [mesh backends](#c-mesh-backends) install side by side (`meshioplusplus::core_meshio`, `::core_native`, `::core_kratos`), so one prefix serves consumers that disagree about the backend; each carries its own backend macro, making a mismatch a compile or link error rather than silent UB. See the [C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api) doc page.
+All three [mesh backends](#c-mesh-backends) install side by side (`meshioplusplus::core_meshio`, `::core_native`, `::core_kratos`), so one prefix serves consumers that disagree about the backend; each carries its own backend macro, making a mismatch a compile or link error rather than silent UB. Kratos consumers get the whole `ModelPart` surface: application entity names such as `SmallDisplacementElement3D4N` are preserved end to end (file → `Mesh` → `ModelPart` → file), material data crosses as `Properties` key/value pairs, and nested SubModelParts round-trip as `parent/child` region names. meshio++ itself is **serial** — there is no MPI anywhere in the API; `partition(mesh, {nparts, ghost_layers})` produces the shared-node halo an MPI assembly needs and each rank takes its own piece. See the [C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api) doc page.
 
 ### C / Fortran API
 

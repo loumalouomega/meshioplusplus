@@ -248,3 +248,30 @@ Two things build directly on the model above, both added in v8.7.0:
   regions may overlap, so a cell can land in zero, one, or several output
   pieces; `Point`/`Side` regions produce no piece, since there is no sound
   default for "these facets alone".
+
+## Nested groups: the `/` convention
+
+Regions are flat — a `Region` has a name, not a parent. Formats with genuinely
+nested groups (Kratos SubModelParts, and MDPA's nested `Begin SubModelPart`)
+therefore **flatten the path into the name with `/`**:
+
+```
+Structure/Loads/PointLoad3D
+```
+
+This is a convention, not a parser: the region is one name that happens to
+contain slashes, and it round-trips as such. The KRATOS mesh backend is the one
+place that interprets it — `BuildSubModelPartsFromRegions` splits on `/` and
+walks or creates the chain, adding members to the leaf, and `RestoreRegions`
+walks the tree back into the same flattened names.
+
+`.` is **reserved** and cannot appear in a segment: `ModelPart::FullName()` joins
+ancestors with it. A region name containing one is left on the mesh but not
+materialized as a SubModelPart, with a warning — the same treatment `Side`
+regions already get.
+
+One thing a SubModelPart cannot carry back is a region's `mDim`/`mTag`: it stores
+a name and member ids and nothing else. A region reconstructed from one reports
+`-1` for both unless a staged region of the same name and kind supplied them.
+That is the truthful answer rather than a gap — synthesizing a value would be
+inventing data.

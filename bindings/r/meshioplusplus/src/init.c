@@ -22,7 +22,7 @@ extern SEXP R_mio_reader_supports_options(SEXP);
 extern SEXP R_mio_mesh_create(void);
 extern SEXP R_mio_mesh_release(SEXP);
 extern SEXP R_mio_mesh_is_open(SEXP);
-extern SEXP R_mio_read(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_read(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_write(SEXP, SEXP, SEXP);
 extern SEXP R_mio_convert(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_read_metadata(SEXP, SEXP);
@@ -84,7 +84,9 @@ extern SEXP R_mio_data_condition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
 extern SEXP R_mio_data_info(SEXP);
 
 /* xdmf_series.c */
-extern SEXP R_mio_xdmf_series_create(SEXP, SEXP, SEXP);
+extern SEXP R_mio_xdmf_series_create(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_xdmf_series_flush(SEXP);
+extern SEXP R_mio_xdmf_series_finalized(SEXP);
 extern SEXP R_mio_xdmf_series_write_points_cells(SEXP, SEXP);
 extern SEXP R_mio_xdmf_series_write_data(SEXP, SEXP, SEXP);
 extern SEXP R_mio_xdmf_series_finalize(SEXP);
@@ -107,7 +109,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_mesh_create, 0),
     CALLDEF(R_mio_mesh_release, 1),
     CALLDEF(R_mio_mesh_is_open, 1),
-    CALLDEF(R_mio_read, 7),
+    CALLDEF(R_mio_read, 8),
     CALLDEF(R_mio_write, 3),
     CALLDEF(R_mio_convert, 4),
     CALLDEF(R_mio_read_metadata, 2),
@@ -165,7 +167,9 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_data_calc, 5),
     CALLDEF(R_mio_data_condition, 10),
     CALLDEF(R_mio_data_info, 1),
-    CALLDEF(R_mio_xdmf_series_create, 3),
+    CALLDEF(R_mio_xdmf_series_create, 5),
+    CALLDEF(R_mio_xdmf_series_flush, 1),
+    CALLDEF(R_mio_xdmf_series_finalized, 1),
     CALLDEF(R_mio_xdmf_series_write_points_cells, 2),
     CALLDEF(R_mio_xdmf_series_write_data, 3),
     CALLDEF(R_mio_xdmf_series_finalize, 1),

@@ -128,6 +128,29 @@ struct ReadOptions {
     int mTimeStep = 0;
 
     /**
+     * @brief Downgrade "this reader cannot represent construct X" to a warning.
+     *
+     * A reader that meets a construct it has no way to express normally throws
+     * `ReadError` naming it, so a caller with a Python fallback can take it and a
+     * caller without one at least learns what was in the file. That is the right
+     * default, but it makes formats whose *optional* sections are common
+     * -- MDPA's `Table`/`Geometries`/`Constraints` blocks, say -- unreadable in
+     * practice for a caller that only wants the mesh.
+     *
+     * `true` turns those specific rejections into a `log::warn` plus a skip.
+     * `false` (the default) reproduces the historical behaviour exactly.
+     *
+     * This is deliberately **not** "ignore all errors". It only applies where a
+     * reader can skip a construct and still return a *correct* mesh: a malformed
+     * file, a truncated block, a bad node reference or an unknown element type
+     * still throw, because continuing past those would hand back a mesh that is
+     * quietly wrong rather than merely incomplete.
+     *
+     * Currently honoured by `mdpa` only; every other reader ignores it.
+     */
+    bool mLenient = false;
+
+    /**
      * @brief Resolve `mTimeStep` against an actual step count.
      *
      * @param NumSteps Number of steps the file carries.

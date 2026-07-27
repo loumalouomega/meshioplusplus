@@ -170,20 +170,26 @@ print.mio_mesh <- function(x, ...) {
 #'   from the end. Out of range is an error naming the available count, never a
 #'   silent clamp. Honoured by formats carrying a time series (currently
 #'   `exodus`); `mio_read_metadata()$time_values` reports how many there are.
+#' @param lenient Downgrade "this reader cannot represent construct X" errors to
+#'   a warning plus a skip -- currently `mdpa`'s `Table`, `Geometries`, `Mesh`
+#'   and `Constraints` blocks. This is *not* "ignore all errors": a malformed
+#'   file, a truncated block or a bad node reference still fails, because
+#'   continuing past those would return a mesh that is quietly wrong.
 #' @return A `mio_mesh` object.
 #' @examples
 #' \dontrun{
 #' m <- mio_read("bracket.msh")
 #' m <- mio_read("bracket.vtu", points_only = TRUE)
 #' m <- mio_read("run.exo", time_step = -1) # the last step
+#' m <- mio_read("model.mdpa", lenient = TRUE) # skip unsupported blocks
 #' }
 #' @export
 mio_read <- function(path, format = NULL, points_only = FALSE, metadata_only = FALSE,
-                     arrays = NULL, mmap = "auto", time_step = 0) {
+                     arrays = NULL, mmap = "auto", time_step = 0, lenient = FALSE) {
   .Call(
     R_mio_read, as.character(path), format, isTRUE(points_only),
     isTRUE(metadata_only), if (is.null(arrays)) NULL else as.character(arrays),
-    .mio_mmap(mmap), as.integer(time_step)
+    .mio_mmap(mmap), as.integer(time_step), isTRUE(lenient)
   )
 }
 
@@ -869,7 +875,8 @@ mio_data_info <- function(mesh) .Call(R_mio_data_info, mesh)
 #' solve appends a cheap step with `mio_xdmf_series_write_data()`.
 #'
 #' The `.xdmf` light data is **buffered until the series is finalized**, so the
-#' file is only readable after `mio_xdmf_series_finalize()` or
+#' file is only readable after `mio_xdmf_series_flush()`,
+#' `mio_xdmf_series_finalize()` or
 #' `mio_xdmf_series_release()`. Heavy data for `data_format = "HDF"` goes to a
 #' `<path minus extension>.h5` *sibling* of the `.xdmf`.
 #'
@@ -892,6 +899,14 @@ mio_data_info <- function(mesh) .Call(R_mio_data_info, mesh)
 #'   in place. Its cell blocks must match those of the static grid.
 #' @param time The step's time value.
 #' @param x A `mio_xdmf_series` object.
+#' @param mode `"truncate"` (default) starts a fresh series; `"append"`
+#'   continues the one already at `path`, if any. A path with no file yet is
+#'   simply a fresh series, so a restartable script can always pass `"append"`.
+#' @param auto_flush Flush the light data after every
+#'   `mio_xdmf_series_write_data()` (default `FALSE`). Off by default because a
+#'   flush re-serializes the whole document, making per-step flushing quadratic
+#'   in the step count; call `mio_xdmf_series_flush()` on your own cadence
+#'   instead.
 #' @param ... Ignored.
 #' @return `mio_xdmf_series()` returns a new `mio_xdmf_series`.
 #'   `mio_xdmf_series_num_steps()` returns the number of steps written so far
@@ -909,11 +924,13 @@ mio_data_info <- function(mesh) .Call(R_mio_data_info, mesh)
 #' mio_xdmf_series_release(s)
 #' }
 #' @export
-mio_xdmf_series <- function(path, data_format = "HDF", gzip_level = -1L) {
+mio_xdmf_series <- function(path, data_format = "HDF", gzip_level = -1L,
+                            mode = c("truncate", "append"), auto_flush = FALSE) {
+  mode <- match.arg(mode)
   .Call(
     R_mio_xdmf_series_create, as.character(path),
     if (is.null(data_format)) NULL else as.character(data_format),
-    as.integer(gzip_level)
+    as.integer(gzip_level), mode, isTRUE(auto_flush)
   )
 }
 
@@ -928,6 +945,16 @@ mio_xdmf_series_write_points_cells <- function(series, mesh) {
 mio_xdmf_series_write_data <- function(series, time, mesh) {
   invisible(.Call(R_mio_xdmf_series_write_data, series, as.numeric(time), mesh))
 }
+
+#' @rdname mio_xdmf_series
+#' @export
+mio_xdmf_series_flush <- function(series) {
+  invisible(.Call(R_mio_xdmf_series_flush, series))
+}
+
+#' @rdname mio_xdmf_series
+#' @export
+mio_xdmf_series_finalized <- function(series) .Call(R_mio_xdmf_series_finalized, series)
 
 #' @rdname mio_xdmf_series
 #' @export

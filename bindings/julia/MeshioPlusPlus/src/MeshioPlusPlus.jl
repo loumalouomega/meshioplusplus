@@ -96,6 +96,7 @@ export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export data_calc, data_condition, data_info
 
 # Transient (time-series) XDMF writing
-export XdmfSeries, write_points_cells!, write_data!, finalize!, num_steps
+export XdmfSeries, write_points_cells!, write_data!, flush!, finalize!, finalized,
+    num_steps
 
 end # module

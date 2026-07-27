@@ -24,6 +24,8 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <ostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -128,17 +130,10 @@ const std::vector<int>& mdpa_kratos_node_order(CellType type) {
  * substring fallback for the cases that occur in practice.
  */
 CellType mdpa_entity_cell_type(const std::string& rName) {
-    if (rName.empty())
-        return CellType::Custom;
-    CellType t = cell_type_from_kratos_name(rName);
-    if (t != CellType::Custom)
-        return t;
-    for (std::size_t i = 1; i + 1 < rName.size(); ++i) {
-        t = cell_type_from_kratos_name(rName.substr(i));
-        if (t != CellType::Custom)
-            return t;
-    }
-    return CellType::Custom;
+    // kratos_names.hpp owns both the tables and the exact-then-longest-suffix
+    // rule, so this and ModelPart::CreateNewElement cannot disagree about which
+    // names a deck may use.
+    return cell_type_from_kratos_name_or_suffix(rName);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +142,8 @@ CellType mdpa_entity_cell_type(const std::string& rName) {
 
 struct MdpaBlock {
     std::string mType;
+    /// The Kratos entity name the file spelled, kept so it can be written back.
+    std::string mEntityName;
     std::size_t mNodes = 0;
     bool mIsCondition = false;
     std::vector<std::int64_t> mConn;
@@ -171,18 +168,167 @@ struct MdpaCursor {
     const std::string& Next() { return (*mpLines)[mIndex++]; }
 };
 
-/// Consume the rest of a block, throwing if it carries anything but comments.
-void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat) {
+/// Consume the rest of a block, ignoring blank/comment-only lines.
+void mdpa_consume_block(MdpaCursor& rCur, const std::string& rEnd) {
+    while (!rCur.Done())
+        if (mdpa_clean(rCur.Next()) == rEnd)
+            return;
+    throw ReadError("MDPA: EOF before '" + rEnd + "'");
+}
+
+/**
+ * @brief Reject a construct this reader cannot represent, or skip it.
+ *
+ * Strict (the default) throws naming it, so a caller with a Python fallback can
+ * take it and a caller without one at least learns what was in the file.
+ * `Lenient` warns, records it in @p pInfo and consumes the block instead --
+ * which is the only way a production deck reads at all where there is no Python
+ * (the C API, Fortran, Julia, R, WASM, the native CLI).
+ */
+void mdpa_reject_or_skip(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
+                         bool Lenient, MdpaInfo* pInfo) {
+    if (!Lenient)
+        throw ReadError("MDPA: " + rWhat +
+                        " is not supported by the C++ reader (set ReadOptions::mLenient to skip "
+                        "it instead)");
+    log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
+    if (pInfo)
+        pInfo->mSkippedConstructs.push_back(rWhat);
+    mdpa_consume_block(rCur, rEnd);
+}
+
+/// Consume a block that must be empty; a non-empty one goes through the above.
+void mdpa_expect_empty_block(MdpaCursor& rCur, const std::string& rEnd, const std::string& rWhat,
+                             bool Lenient, MdpaInfo* pInfo) {
     while (!rCur.Done()) {
         const std::string line = mdpa_clean(rCur.Next());
         if (line.empty())
             continue;
         if (line == rEnd)
             return;
-        throw ReadError("MDPA: " + rWhat +
-                        " is not supported by the C++ reader (offending line: '" + line + "')");
+        if (!Lenient)
+            throw ReadError("MDPA: " + rWhat +
+                            " is not supported by the C++ reader (offending line: '" + line +
+                            "'; set ReadOptions::mLenient to skip it instead)");
+        log::warn("mdpa: skipping {} (ReadOptions::mLenient)", rWhat);
+        if (pInfo)
+            pInfo->mSkippedConstructs.push_back(rWhat);
+        mdpa_consume_block(rCur, rEnd);
+        return;
     }
     throw ReadError("MDPA: EOF before '" + rEnd + "'");
+}
+
+/**
+ * @brief Parse an inline `Begin Table <args>` inside a `Properties` body.
+ *
+ * @p rHeader is the whole header line; everything after `Begin Table` becomes
+ * the entry's `mKey` verbatim, so the block re-emits with its id and variable
+ * names unchanged. Rows are whitespace-separated numbers; the first usable row
+ * fixes the column count and a row that disagrees is warned about and skipped.
+ */
+PropertyValue mdpa_parse_property_table(MdpaCursor& rCur, const std::string& rHeader) {
+    PropertyValue out;
+    out.mIsTable = true;
+    out.mKey = mdpa_strip(rHeader.substr(std::string("Begin Table").size()));
+
+    std::vector<double> values;
+    std::size_t ncols = 0;
+    bool terminated = false;
+    while (!rCur.Done()) {
+        const std::string line = mdpa_clean(rCur.Next());
+        if (line.empty())
+            continue;
+        if (line == "End Table") {
+            terminated = true;
+            break;
+        }
+        const std::vector<std::string> toks = mdpa_tokens(line);
+        std::vector<double> row;
+        row.reserve(toks.size());
+        bool ok = true;
+        for (const std::string& tok : toks) {
+            double v = 0.0;
+            if (!mdpa_parse_double(tok, v)) {
+                ok = false;
+                break;
+            }
+            row.push_back(v);
+        }
+        if (!ok) {
+            log::warn("mdpa: skipping non-numeric Table row: {}", line);
+            continue;
+        }
+        if (ncols == 0)
+            ncols = row.size();
+        if (row.size() != ncols) {
+            log::warn("mdpa: skipping Table row with {} values (expected {}): {}", row.size(),
+                      ncols, line);
+            continue;
+        }
+        values.insert(values.end(), row.begin(), row.end());
+    }
+    if (!terminated)
+        throw ReadError("MDPA: EOF before 'End Table'");
+
+    const std::size_t nrows = ncols ? values.size() / ncols : 0;
+    NDArray a(DType::Float64, {nrows, ncols});
+    double* p = a.As<double>();
+    for (std::size_t i = 0; i < values.size(); ++i)
+        p[i] = values[i];
+    out.mValues = std::move(a);
+    return out;
+}
+
+/**
+ * @brief Parse a `Begin Properties <id>` body.
+ *
+ * Never throws on content: a plain number becomes a Float64 scalar, an inline
+ * table an `(n, k)` array, and everything else -- a constitutive-law name, a
+ * bracketed vector or matrix -- is kept verbatim as text, which is both
+ * lossless and what the pure-Python reference does.
+ */
+PropertySet mdpa_parse_properties(MdpaCursor& rCur, const std::string& rHeader) {
+    PropertySet out;
+    const std::vector<std::string> head = mdpa_tokens(rHeader);
+    if (head.size() < 3 || !mdpa_parse_int(head[2], out.mId)) {
+        log::warn("mdpa: Properties block with no readable id, using 0: {}", rHeader);
+        out.mId = 0;
+    }
+
+    while (true) {
+        if (rCur.Done())
+            throw ReadError("MDPA: EOF before 'End Properties'");
+        const std::string line = mdpa_clean(rCur.Next());
+        if (line.empty())
+            continue;
+        if (line == "End Properties")
+            break;
+        if (mdpa_starts_with(line, "Begin Table")) {
+            out.mValues.push_back(mdpa_parse_property_table(rCur, line));
+            continue;
+        }
+        // key + the rest of the line, exactly the Python reference's
+        // `split(None, 1)`, so both readers agree on where the value starts.
+        const std::size_t sep = line.find_first_of(" \t");
+        if (sep == std::string::npos) {
+            log::warn("mdpa: skipping valueless Properties line: {}", line);
+            continue;
+        }
+        PropertyValue v;
+        v.mKey = line.substr(0, sep);
+        const std::string rest = mdpa_strip(line.substr(sep + 1));
+        double scalar = 0.0;
+        if (mdpa_parse_double(rest, scalar)) {
+            NDArray a(DType::Float64, {1});
+            a.As<double>()[0] = scalar;
+            v.mValues = std::move(a);
+        } else {
+            v.mText = rest;
+        }
+        out.mValues.push_back(std::move(v));
+    }
+    return out;
 }
 
 /**
@@ -319,7 +465,16 @@ NDArray mdpa_data_array(const std::vector<MdpaDataRow>& rRows, std::size_t block
 // Reader
 // ---------------------------------------------------------------------------
 
-Mesh read_mdpa(const std::string& rPath) {
+namespace {
+
+/**
+ * @brief The one parse body behind all three `read_mdpa` overloads.
+ *
+ * @param rPath   file to read
+ * @param Lenient `ReadOptions::mLenient`
+ * @param pInfo   where to put what the `Mesh` cannot hold, or null to drop it
+ */
+Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     std::ifstream in(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
@@ -333,6 +488,10 @@ Mesh read_mdpa(const std::string& rPath) {
     std::vector<double> coords;  // flat (n, 3)
     std::size_t num_points = 0;
     std::vector<MdpaBlock> blocks;
+    // The Properties bodies, staged for the Mesh. Kept in file order here; the
+    // mesh canonicalizes them to ascending id, which is why MdpaInfo remains
+    // the way to preserve an unusual declaration order verbatim.
+    std::vector<PropertySet> property_sets;
     std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_ids,
         condition_ids;
     std::map<std::string, NDArray> field_data;
@@ -402,9 +561,17 @@ Mesh read_mdpa(const std::string& rPath) {
                     continue;
                 }
                 double v = 0.0;
-                if (t.size() != 2 || !mdpa_parse_double(t[1], v))
-                    throw ReadError("MDPA: non-numeric ModelPartData value for '" + t[0] +
-                                    "' is not supported by the C++ reader");
+                if (t.size() != 2 || !mdpa_parse_double(t[1], v)) {
+                    const std::string what = "a non-numeric ModelPartData value for '" + t[0] + "'";
+                    if (!Lenient)
+                        throw ReadError("MDPA: " + what +
+                                        " is not supported by the C++ reader (set "
+                                        "ReadOptions::mLenient to skip it instead)");
+                    log::warn("mdpa: skipping {} (ReadOptions::mLenient)", what);
+                    if (pInfo)
+                        pInfo->mSkippedConstructs.push_back(what);
+                    continue;
+                }
                 NDArray a(DType::Float64, {1});
                 a.As<double>()[0] = v;
                 field_data[t[0]] = std::move(a);
@@ -480,10 +647,17 @@ Mesh read_mdpa(const std::string& rPath) {
                 if (!mdpa_parse_int(t[0], id) || !mdpa_parse_int(t[1], prop))
                     throw ReadError("MDPA: non-integer id/property in: " + e);
 
+                // The Kratos *name* is part of the split key, not just the cell
+                // type: two adjacent SmallDisplacementElement3D4N and
+                // TotalLagrangianElement3D4N blocks are both `tetra`, and
+                // merging them would leave one name to write both back under --
+                // exactly the silent degradation MdpaInfo exists to stop.
                 if (blocks.empty() || blocks.back().mType != type_name ||
-                    blocks.back().mIsCondition != is_condition) {
+                    blocks.back().mIsCondition != is_condition ||
+                    blocks.back().mEntityName != entity_name) {
                     MdpaBlock b;
                     b.mType = type_name;
+                    b.mEntityName = entity_name;
                     b.mNodes = static_cast<std::size_t>(nn);
                     b.mIsCondition = is_condition;
                     blocks.push_back(std::move(b));
@@ -509,7 +683,17 @@ Mesh read_mdpa(const std::string& rPath) {
             if (!terminated)
                 throw ReadError("MDPA: EOF before '" + end_token + "'");
         } else if (mdpa_starts_with(line, "Begin Properties")) {
-            mdpa_expect_empty_block(cur, "End Properties", "a non-empty Properties block");
+            // Parsed unconditionally, not gated on mLenient: this is a pure
+            // de-throwing, so no read that used to succeed changes.
+            PropertySet ps = mdpa_parse_properties(cur, line);
+            // Onto the mesh, so a registry-based consumer gets it. Through
+            // v9.1.0 this rode the MdpaInfo side channel only, which nothing
+            // reachable from registry_readers() could ask for -- so the values
+            // were unreachable from every consumer that did not link
+            // formats/mdpa.hpp and call read_mdpa directly.
+            property_sets.push_back(ps);
+            if (pInfo)
+                pInfo->mProperties.push_back(std::move(ps));
         } else if (mdpa_starts_with(line, "Begin NodalData")) {
             const std::vector<std::string> head = mdpa_tokens(line);
             if (head.size() < 3)
@@ -573,16 +757,16 @@ Mesh read_mdpa(const std::string& rPath) {
             cell_data.push_back(std::move(sd));
         } else if (mdpa_starts_with(line, "Begin SubModelPartData")) {
             mdpa_expect_empty_block(cur, "End SubModelPartData",
-                                    "a non-empty SubModelPartData block");
+                                    "a non-empty SubModelPartData block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin SubModelPartTables")) {
             mdpa_expect_empty_block(cur, "End SubModelPartTables",
-                                    "a non-empty SubModelPartTables block");
+                                    "a non-empty SubModelPartTables block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin SubModelPartGeometries")) {
             mdpa_expect_empty_block(cur, "End SubModelPartGeometries",
-                                    "a non-empty SubModelPartGeometries block");
+                                    "a non-empty SubModelPartGeometries block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin SubModelPartConstraints")) {
             mdpa_expect_empty_block(cur, "End SubModelPartConstraints",
-                                    "a non-empty SubModelPartConstraints block");
+                                    "a non-empty SubModelPartConstraints block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin SubModelPartNodes")) {
             if (smp_stack.empty())
                 throw ReadError("MDPA: SubModelPartNodes outside a SubModelPart");
@@ -621,13 +805,19 @@ Mesh read_mdpa(const std::string& rPath) {
                 throw ReadError("MDPA: 'End SubModelPart' without a matching 'Begin'");
             smp_stack.pop_back();
         } else if (mdpa_starts_with(line, "Begin Table")) {
-            throw ReadError("MDPA: Table blocks are not supported by the C++ reader");
+            mdpa_reject_or_skip(cur, "End Table", "a top-level Table block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin Geometries")) {
-            throw ReadError("MDPA: Geometries blocks are not supported by the C++ reader");
+            mdpa_reject_or_skip(cur, "End Geometries", "a Geometries block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin Mesh")) {
-            throw ReadError("MDPA: Mesh blocks are not supported by the C++ reader");
+            mdpa_reject_or_skip(cur, "End Mesh", "a Mesh block", Lenient, pInfo);
         } else if (mdpa_starts_with(line, "Begin ")) {
-            throw ReadError("MDPA: unsupported block '" + line + "'");
+            // Everything unrecognized, which is how `Begin Constraints` and any
+            // block a future Kratos adds are covered without a case each. The
+            // terminator is the header's first word after `Begin`, so a nested
+            // `End <other>` cannot end the scan early.
+            const std::vector<std::string> head = mdpa_tokens(line);
+            const std::string end_token = "End " + (head.size() >= 2 ? head[1] : std::string());
+            mdpa_reject_or_skip(cur, end_token, "the block '" + line + "'", Lenient, pInfo);
         } else {
             throw ReadError("MDPA: unexpected line outside a block: '" + line + "'");
         }
@@ -661,6 +851,8 @@ Mesh read_mdpa(const std::string& rPath) {
         for (std::size_t i = 0; i < blk.mConn.size(); ++i)
             cp[i] = blk.mConn[i];
         mesh.AddCellBlock(blk.mType, std::move(conn));
+        if (pInfo)
+            pInfo->mEntityNames.push_back(MdpaEntityName{blk.mEntityName, blk.mIsCondition});
         NDArray tag(DType::Int64, {blk.mCount});
         std::int64_t* tp = tag.As<std::int64_t>();
         for (std::size_t i = 0; i < blk.mProps.size(); ++i)
@@ -717,7 +909,27 @@ Mesh read_mdpa(const std::string& rPath) {
             mesh.AddRegion(Region(smp.first, RegionKind::Cell, std::move(e)));
         }
     }
+    // Properties last: they are keyed by id, so order relative to the cell
+    // blocks and regions above does not matter.
+    for (PropertySet& r_ps : property_sets)
+        mesh.AddPropertySet(std::move(r_ps));
+
     return mesh;
+}
+
+}  // namespace
+
+Mesh read_mdpa(const std::string& rPath) {
+    return mdpa_read_impl(rPath, /*Lenient=*/false, /*pInfo=*/nullptr);
+}
+
+Mesh read_mdpa(const std::string& rPath, const ReadOptions& rOptions) {
+    return mdpa_read_impl(rPath, rOptions.mLenient, /*pInfo=*/nullptr);
+}
+
+Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo, const ReadOptions& rOptions) {
+    rInfo = MdpaInfo{};
+    return mdpa_read_impl(rPath, rOptions.mLenient, &rInfo);
 }
 
 // ---------------------------------------------------------------------------
@@ -766,9 +978,47 @@ bool mdpa_skip_cell_data(const std::string& rName) {
     return mdpa_starts_with(rName, "gmsh:");
 }
 
+/// Emit one `Begin Properties <id>` block, bodies included.
+void mdpa_write_properties(std::ostream& rOs, const PropertySet& rSet) {
+    rOs << "Begin Properties " << rSet.mId << "\n";
+    for (const PropertyValue& v : rSet.mValues) {
+        if (v.mIsTable) {
+            // mKey holds the header's arguments verbatim (id + variable names),
+            // so the block comes back out exactly as it went in.
+            rOs << "  Begin Table " << v.mKey << "\n";
+            const std::size_t ncols = v.mValues.Shape().size() >= 2 ? v.mValues.Shape()[1] : 1;
+            const std::size_t nrows = ncols ? v.mValues.Size() / ncols : 0;
+            for (std::size_t r = 0; r < nrows; ++r) {
+                rOs << "   ";
+                for (std::size_t c = 0; c < ncols; ++c)
+                    rOs << " " << mdpa_format_value(v.mValues, r * ncols + c);
+                rOs << "\n";
+            }
+            rOs << "  End Table\n";
+            continue;
+        }
+        rOs << "  " << v.mKey << " ";
+        if (v.IsText()) {
+            rOs << v.mText;
+        } else {
+            for (std::size_t i = 0; i < v.mValues.Size(); ++i) {
+                if (i)
+                    rOs << " ";
+                rOs << mdpa_format_value(v.mValues, i);
+            }
+        }
+        rOs << "\n";
+    }
+    rOs << "End Properties\n\n";
+}
+
 }  // namespace
 
 void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
+    write_mdpa(rPath, rMesh, MdpaInfo{});
+}
+
+void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rInfo) {
     std::ofstream os(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -797,6 +1047,15 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
             is_condition[b] = kratos_element_name(type).find("2D") != std::string::npos;
             entity_name[b] =
                 is_condition[b] ? kratos_condition_name(type) : kratos_element_name(type);
+            // A name the reader kept wins over the derived one, which is what
+            // makes an application-specific SmallDisplacementElement3D4N
+            // survive a round trip instead of collapsing to Element3D4N. The
+            // recorded kind comes with it: inferring "Condition" from the name
+            // would be a second guess on top of the cell-type heuristic.
+            if (b < rInfo.mEntityNames.size() && !rInfo.mEntityNames[b].mName.empty()) {
+                entity_name[b] = rInfo.mEntityNames[b].mName;
+                is_condition[b] = rInfo.mEntityNames[b].mIsCondition;
+            }
             block_base[b] = running;
             running += cb.NumCells();
             written_ids[b].resize(cb.NumCells());
@@ -817,7 +1076,49 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
         os << "    " << name << " " << mdpa_format_value(a, 0) << "\n";
     }
     os << "End ModelPartData\n\n";
-    os << "Begin Properties 0\nEnd Properties\n\n";
+
+    // ---- Properties -------------------------------------------------------
+    // With an MdpaInfo the blocks come back with their bodies. Without one,
+    // every id the entity rows below will actually reference gets an empty
+    // block, ascending: the rows have always written their `gmsh:physical`
+    // value as the property id, so hard-coding a single `Properties 0` left a
+    // tagged mesh referencing undeclared properties, which Kratos's own
+    // ModelPartIO rejects. A mesh whose ids are all 0 -- every mesh with no
+    // `gmsh:physical` -- still emits exactly the old two lines.
+    const bool has_props =
+        rMesh.HasCellData("gmsh:physical") && rMesh.CellDataNumBlocks("gmsh:physical") == nblocks;
+    std::set<std::int64_t> referenced_ids;
+    if (has_props) {
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& tags = rMesh.CellData("gmsh:physical", b);
+            for (std::size_t r = 0; r < tags.Size(); ++r)
+                referenced_ids.insert(detail::read_int(tags, r));
+        }
+    }
+    if (!rInfo.mProperties.empty()) {
+        // An explicit MdpaInfo wins, and keeps the caller's order verbatim --
+        // which is the one thing the mesh channel cannot do, since it
+        // canonicalizes to ascending id.
+        for (const PropertySet& ps : rInfo.mProperties)
+            mdpa_write_properties(os, ps);
+    } else if (rMesh.NumPropertySets() > 0) {
+        // Bodies carried on the mesh (v9.2.0): what read_mdpa now stores, so a
+        // registry-driven mdpa -> mdpa round trip keeps its material data
+        // instead of emitting empty blocks.
+        for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i) {
+            mdpa_write_properties(os, rMesh.GetPropertySet(i));
+            referenced_ids.erase(rMesh.GetPropertySet(i).mId);
+        }
+        // Any id the rows reference but no set covers still has to be declared:
+        // Kratos's own ModelPartIO rejects a row naming an undeclared id.
+        for (std::int64_t id : referenced_ids)
+            os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    } else {
+        if (referenced_ids.empty())
+            referenced_ids.insert(0);
+        for (std::int64_t id : referenced_ids)
+            os << "Begin Properties " << id << "\nEnd Properties\n\n";
+    }
 
     // ---- Nodes ------------------------------------------------------------
     os << "Begin Nodes\n";
@@ -839,8 +1140,6 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
     os << "End Nodes\n\n";
 
     // ---- Elements / Conditions -------------------------------------------
-    const bool has_props =
-        rMesh.HasCellData("gmsh:physical") && rMesh.CellDataNumBlocks("gmsh:physical") == nblocks;
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
         const CellType type = cell_type_from_name(std::string(cb.Type()));

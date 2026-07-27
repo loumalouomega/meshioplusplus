@@ -8,6 +8,260 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.2.0 (2026-07-27)
+
+Fixes the gaps a real Kratos Multiphysics consumer hit while building against
+v9.1.0. Everything is additive; the two deliberate behaviour changes are called
+out in their ledes.
+
+### Kratos consumers
+
+- **`Begin Properties` bodies now ride on the `Mesh`.** v9.1.0 parsed them into
+  the `MdpaInfo` side channel, but `ReadFn`/`ReadExFn`/`WriteFn` have no info
+  slot, so nothing reachable from `registry_read` could ask for one — every
+  registry-based consumer (that is, all of them) got the property *ids* and no
+  material data, and the v9.1.0 `Properties` plumbing was unreachable in
+  practice. Property sets are now part of the uniform mesh API
+  (`AddPropertySet`/`NumPropertySets`/`GetPropertySet`/`HasPropertySet`/
+  `FindPropertySet`, ascending by `mId`) on all three backends, `read_mdpa`
+  stores them unconditionally, and `KratosMesh::Materialize` fills
+  `ModelPart::Properties` with **real values** instead of the id-only sets that
+  made `to_model_part`'s "apply property" overload a silent no-op. They are keyed
+  by id rather than entity index, so no operation has to remap them;
+  shape-preserving operations carry them, restructuring and multi-input ones do
+  not. `MdpaInfo` is retained and still wins when supplied — it preserves the
+  blocks' *file order*, which the mesh channel deliberately does not.
+  **Behaviour change:** a registry-driven `.mdpa` → `.mdpa` write now emits the
+  full bodies where it previously emitted empty blocks. A mesh with no property
+  sets writes byte-identical output.
+- **The automatic tag pass can be narrowed per key.** A Kratos properties id
+  arrives as a `gmsh:physical` cell tag, so a deck came back with a spurious
+  `gmsh_physical_<id>` SubModelPart beside its real ones, which a consumer had to
+  filter by name. For a genuine gmsh file that inference is wanted, so the key
+  stays in `KnownTagKeys()` and the caller now says which meaning applies:
+  `SetTagSubModelPartKeys(...)`, `ExcludeTagSubModelPartKey(...)` and
+  `TagSubModelPartKeys()` beside the existing all-or-nothing
+  `SetBuildSubModelPartsFromTags`. The default is unchanged.
+
+### XDMF time series
+
+- **`XdmfSeriesMode::Append` works with the `NamedArray` `WriteData` overload.**
+  Both landed in v9.1.0, for the same restartable-solver consumer, and did not
+  work together: `Impl::mNumPoints`/`mNumCells` were written only by
+  `WritePointsCells`, which an appending writer cannot call (its guard is
+  `mHasMesh`, which appending sets), so the overload validated every array
+  against zero and rejected all of them with `expected 0 (0 x 1)`. A resumed
+  solver had to re-stage a whole `Mesh` per step — exactly the cost the array
+  overload exists to avoid. The counts are now recovered from the document, out
+  of `<Topology NumberOfElements>` (read first, so a **Mixed** series works —
+  `read_xdmf_metadata` declines Mixed outright) and the geometry `<DataItem>`'s
+  `Dimensions`. Where a foreign document declares neither, the writer warns once
+  and skips the length check rather than rejecting everything.
+- **The append path shares the reader's structural resolution.**
+  `xdmf_resolve`/`parse_dims` moved to a private `formats/xdmf_doc.hpp`; the
+  writer had carried a weaker transcription. Two consequences, both fixes:
+  appending to a series whose static grid is not literally named `mesh` no longer
+  adds a second static grid, and appending to a non-version-3 document now fails
+  instead of silently continuing. Reader output is byte-identical.
+- **Moved-from writers are diagnosable.** `SetAutoFlush` lacked the null guard
+  its neighbours had. Observers and idempotent operations are now safe no-ops;
+  `WritePointsCells` and both `WriteData` overloads throw.
+
+### Build and packaging
+
+- **The mesh-backend link guard actually fires.** `detail/mesh_backend_check.hpp`
+  promised a link error naming the backend when a consumer compiles with no
+  backend macro against a NATIVE/KRATOS build. It could never fire: the guard is
+  an `inline` variable that nothing reads, and such a variable is emitted lazily,
+  so no relocation reached the object file — with or without the macro, at `-O0`.
+  Dropping `inline`/`const` does not help either (a plain `static const` is
+  discarded at `-O2`). Fixed with `gnu::used` on GNU/Clang and
+  `#pragma detect_mismatch` on MSVC, which names both backends. **MSVC plus a
+  shared build remains a gap** — the mismatch records are not reliably carried
+  through a DLL import library — and is now stated rather than implied. A CI step
+  compiles a TU without the definitions and requires the link to fail naming the
+  backend, with a positive control beside it.
+- **The documented `find_package` line works.** `doc/cpp_api.md` and `README.md`
+  both printed `find_package(meshioplusplus 9.1 EXACT ...)`, which cannot succeed
+  against a `9.1.0` install: under `SameMajorVersion`, `EXACT` is a full string
+  comparison. Both now spell all three components, the neighbouring "an exact
+  `= 9.1.x` dependency" prose is corrected, and CI asserts that the full version
+  satisfies `EXACT`, that `major.minor` does not, and that both documents quote
+  the working line verbatim.
+
+### Documented limitations
+
+- The `XdmfTimeSeriesWriter` destructor finalizes, so **deleting the output while
+  the writer is alive recreates it** — and with `Append` the next run then
+  continues a series you believed deleted, surfacing one run later as a wrong
+  step count. Documented on the destructor, on `Finalize()` and in
+  `doc/xdmf_time_series.md`; destroy the writer before removing its output.
+- `read_xdmf_metadata` still declines a `Mixed` topology. The new
+  `xdmf_grid_counts` could summarize it, but that path is load-bearing for
+  `registry_read_metadata`'s decline-and-fall-back contract and
+  `MeshMetadata::mFellBackToFullRead`.
+- Property sets do not cross a boundary where the mesh is materialized in the
+  host language (Python's numpy `Mesh`, WASM's JS objects, the C API's
+  `mio_mesh` accessors): a `PropertySet` has no numpy or embind analogue.
+  File-to-file paths keep them, because the `Mesh` never leaves the core.
+
+## v9.1.0 (2026-07-26)
+
+Closes the gaps a real C++ Kratos Multiphysics consumer hit against v9.0.0 while
+wrapping both the I/O and the operations layer. Everything is additive: the
+Python wheel, C API, Fortran/Julia/R bindings, WASM and both CLIs behave exactly
+as before by default, and the two deliberate behaviour changes are called out in
+their ledes below.
+
+### Kratos consumers
+
+- **Kratos entity names are no longer discarded.** `GeometricalEntity` gained an
+  optional name (`Name()`/`HasName()`), so `SmallDisplacementElement3D4N` no
+  longer degrades to `Element3D4N` on every Kratos -> format -> Kratos trip. It
+  is stored as an interned `const std::string*` from a root-owned
+  `detail::NamePool`, not a `std::string`: there is one distinct name per *block*
+  but one entity per *cell*, so an owned string would add ~320 MB to a 10 M-element
+  model part. New five-argument `CreateNewElement`/`CreateNewCondition`
+  `CellType` overloads carry it on the bulk-ingest path; the existing four-argument
+  ones are untouched, and an absent name still means "derive it from the cell type".
+  `bridge_traits` gained a detection-guarded `NameOf` customization point (every
+  existing duck-typed source keeps compiling and simply reports no name), and both
+  `to_model_part` and `from_model_part` now preserve the name instead of
+  re-deriving it.
+- **Entity names also survive the `KratosMesh` staging round trip**, via
+  `SetBlockEntityName`/`BlockEntityName` (KRATOS-only extras, the shape of
+  NATIVE's `PointsData()`/`ConnSpan()`). `CollectEntityBlocks` groups runs by
+  *effective* name, so an explicitly-named `Element3D4N` still merges with
+  entities materialized without names -- only genuinely different spellings split.
+- **`ModelPart` gained a real Properties store** (`CreateNewProperties`,
+  `HasProperties`, `GetProperties`, `NumberOfProperties`, `Properties()`), so
+  material data crosses the bridge instead of being reduced to a bare id. Values
+  are `PropertyValue` key/value pairs in the new backend-neutral
+  `meshioplusplus/properties.hpp`, shared with MDPA so there is exactly one
+  representation. meshio++ cannot fill a real `Kratos::Properties` itself -- that
+  needs `KratosComponents<Variable<T>>::Get`, Kratos's own registry, deliberately
+  not linked here -- so a fourth `to_model_part` overload hands each value to a
+  caller-supplied applier callback; `doc/cpp_api.md` carries the five-line body.
+- **`KratosMesh::Materialize()` now honours `gmsh:physical` as the properties
+  id.** Every entity used to land on properties 0, silently dropping the material
+  assignment the file carried. No file output changes: `CollectEntityBlocks` /
+  `RestoreCellData` rebuild `gmsh:physical` from the staged cell data, not from
+  entity properties ids.
+- **Nested SubModelParts survive the staging round trip**, using `'/'` as the
+  sanctioned path separator -- already what the MDPA reader emits. `RestoreRegions`
+  walks recursively and emits `parent/child`; `BuildSubModelPartsFromRegions`
+  splits on `'/'` and walks/creates the chain, adding members to the leaf (Kratos's
+  own upward propagation fills the ancestors). A name segment that is empty or
+  contains `'.'` (which `ModelPart::FullName` reserves) is now a warning and a
+  skip rather than a `std::invalid_argument` escaping a lazy `GetModelPart()`;
+  the region itself stays on the mesh. A region's `mDim`/`mTag` still come back
+  as `-1` when no staged region of that name supplied them -- a SubModelPart has
+  nowhere to store them, and inventing a value would be worse.
+- **Application-specific Kratos names now resolve in `ModelPart` too.**
+  `cell_type_from_kratos_name_or_suffix` (exact lookup, then longest resolving
+  suffix) moved into `kratos_names.hpp` as the single owner of that rule;
+  `ModelPart::CreateNewElement` and the MDPA reader both go through it, so they
+  cannot disagree. Before this, `CreateNewElement("SmallDisplacementElement3D4N",
+  ...)` threw -- which is what essentially every real Kratos application calls.
+
+### MDPA
+
+- **`Begin Properties` bodies no longer make a deck unreadable.** They are parsed
+  unconditionally (a pure de-throwing, so no read that used to succeed changes)
+  and carried in a new `MdpaInfo` side channel -- the `MedInfo`/`ExodusInfo`
+  pattern, needed because `NDArray` has ten numeric dtypes and no string one, so
+  `CONSTITUTIVE_LAW LinearElastic3DLaw` has no `field_data` representation at all.
+  A plain number becomes a Float64 scalar, an inline `Begin Table` an `(n, k)`
+  array, and anything else -- a constitutive-law name, a bracketed vector -- is
+  kept verbatim as text, which is both lossless and what the pure-Python reference
+  does. New overloads `read_mdpa(path, MdpaInfo&, opts)` and
+  `write_mdpa(path, mesh, info)`; the existing one- and two-argument forms are
+  unchanged, and the registry (so every flat binding) passes none -- a documented
+  gap, not a silent loss.
+- **Per-block Kratos entity names round-trip** through `MdpaInfo::mEntityNames`.
+  The reader's block-splitting key gained the entity name, so two adjacent
+  `SmallDisplacementElement3D4N` and `TotalLagrangianElement3D4N` blocks -- both
+  `tetra` -- stay separate instead of collapsing onto one name.
+- **`write_mdpa` now declares every properties id its rows reference.** The rows
+  have always written their `gmsh:physical` value as the property id while the
+  header was a hard-coded single `Properties 0`, so a tagged mesh produced a file
+  referencing undeclared properties, which Kratos's own `ModelPartIO` rejects. A
+  mesh whose ids are all 0 -- every mesh with no `gmsh:physical` -- still emits
+  exactly the same two lines and is byte-identical to before.
+- **New `ReadOptions::mLenient`** downgrades "this reader cannot represent
+  construct X" to a warning plus a skip, recording what was skipped in
+  `MdpaInfo::mSkippedConstructs`. It is deliberately *not* "ignore all errors": a
+  malformed row, a bad node reference or non-sequential node ids still throw,
+  because continuing past those would return a mesh that is quietly wrong rather
+  than merely incomplete. It reaches every language through the existing
+  `ReadOptions` plumbing (`mio_read_opts.lenient` takes a second former `reserved`
+  slot, so the struct size and every preceding offset are unchanged) plus
+  `--lenient` on the native CLI. The Python `read` deliberately does *not* gain it:
+  mdpa's Python path is the pure-Python reference, which already accepts every
+  construct the flag covers, so the parameter would be dead.
+
+### Transient XDMF
+
+- **New `XdmfTimeSeriesWriter::Flush()`.** The light data used to be written only
+  at `Finalize()`, so a run that was killed, hit a node failure, or was simply
+  still going left heavy data on disk and **no readable `.xdmf`**. `Flush()`
+  writes the document as it stands, to a sibling temp file and then `rename`, so a
+  crash *during* a flush cannot truncate the previous one; heavy data is flushed
+  first, so the `.xdmf` never names a dataset that is not on disk. Opt-in
+  `SetAutoFlush(true)` does it after every step -- off by default because a flush
+  re-serializes the whole document, making per-step flushing quadratic in the step
+  count (and, for the `"XML"` data format, in the data volume too).
+- **New append mode** (`XdmfSeriesMode::Append`, a trailing defaulted constructor
+  parameter) continues an existing temporal collection instead of overwriting it,
+  so a restarted analysis does not destroy the previous run's output. The
+  collection is resolved structurally, the same way `read_xdmf` does; the
+  heavy-data counter resumes past what is already on disk by scanning the
+  container (`h5::open_file_rw` + `H5Lget_name_by_idx`, or probing `<base>N.bin`)
+  rather than trusting the document, because a mis-resumed counter would silently
+  overwrite `data0`. Appending to a path with no file yet is simply a fresh
+  series, so a restartable solver can pass it unconditionally.
+- **New `WriteData(time, point_arrays, cell_arrays)` overload** taking
+  `NamedArray{mName, mNumComponents, mValues}` vectors -- the granularity a solver
+  actually has once `WritePointsCells` has fixed the geometry. Under the KRATOS
+  backend this also avoids re-staging the whole ModelPart every output step when
+  only the values changed. It shares the step-grid scaffolding and the
+  `<Attribute>`/`<DataItem>` emission with the `Mesh` overload, which is kept and
+  unchanged -- deliberately *not* re-expressed in terms of the new one, since that
+  would force its Int64 cell data to Float64 and change existing output.
+- Exposed on every surface: C API (`mio_xdmf_series_create_ex` +
+  `mio_xdmf_series_opts`, `_flush`, `_finalized`, `_write_data_arrays` with
+  `mio_named_array`), Fortran, Julia (`flush!`, `finalized`, `mode=`/`auto_flush=`,
+  and a dict-taking `write_data!`), R, WASM (three files plus the smoke test's
+  exhaustive guard) and Python (`flush()`, `auto_flush`, `mode=`,
+  `write_data_arrays()`).
+
+### Build, CI and documented contracts
+
+- **`{shared, KRATOS}` is now a CI-covered combination** (`cpp-install` matrix),
+  the configuration a Kratos application actually ships and the only one where a
+  missing `MESHIOPLUSPLUS_API` on the KRATOS backend is a link error.
+- **`MESHIOPLUSPLUS_NO_STD_SPAN` needed no code change.** `std::span` appears in
+  exactly two lines repo-wide -- the `#include` and the inline
+  `NativeMesh::ConnSpan()` -- so the macro is **ABI-neutral**, and the guard is
+  `#ifndef`, so a consumer whose Boost uBLAS collides with `<span>` under MSVC can
+  define it themselves against *any* prefix, including a distro or Conan build
+  that left it off. `tests/consumer/` gained a
+  `MESHIOPLUSPLUS_CONSUMER_NO_STD_SPAN` option and CI a leg that exercises it, so
+  that is now a gate rather than a claim.
+- **Documented what to pin.** The C API is `SOVERSION 0` + `SameMajorVersion` with
+  append-only option structs, so `find_package(meshioplusplus 9 COMPONENTS C)` is
+  right. The **C++ API makes no ABI promise** -- `Mesh`, `ModelPart` and
+  `GeometricalEntity` are header-defined types whose layout changes with the
+  headers, and this release adds a member to `GeometricalEntity` -- so pin
+  `9.1 EXACT` for `COMPONENTS CXX` and rebuild the consumer whenever meshio++ is
+  rebuilt. See `doc/cpp_api.md`.
+- **meshio++ is serial, and that is intended.** There is no MPI in the library, no
+  distributed reader or writer and no communicator anywhere in the API; `FindMPI`
+  in the generated package config is HDF5's transitive requirement, not
+  meshio++'s. The intended distributed workflow is `partition(mesh, {nparts,
+  ghost_layers})` -- `mGhostLayers > 0` produces exactly the shared-node halo an
+  MPI assembly needs. Now stated in `doc/cpp_api.md` and `doc/partition.md`.
+
 ## v9.0.0 (2026-07-25)
 
 Closes the limitations and follow-ups recorded against v8.9.0's installable C++

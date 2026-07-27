@@ -66,6 +66,11 @@ Mesh clone_geometry(const Mesh& rMesh) {
     // and which pass through.
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         out.AddRegion(rMesh.Region(i));
+    // Property sets ride along too: these operations preserve the mesh's shape,
+    // so dropping a deck's material data here would be new lossiness. They are
+    // keyed by id, not by entity index, so there is nothing to remap.
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
     return out;
 }
 

@@ -71,6 +71,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
@@ -96,13 +97,39 @@ namespace meshioplusplus {
  * Move-only (it owns an open heavy-data container and an unwritten XML
  * document); copying it would write the same file twice.
  */
+/**
+ * @brief Whether a series starts fresh or continues an existing one.
+ *
+ * `Append` is what a restartable analysis needs: a run that was killed, hit a
+ * node failure, or simply finished a stage leaves an `.xdmf` plus its heavy
+ * data, and the next run must continue that temporal collection rather than
+ * overwrite it.
+ *
+ * Appending to a path that does **not** exist yet is not an error -- it is
+ * exactly `Truncate`. That is deliberate: a solver can then pass `Append`
+ * unconditionally instead of having to probe the filesystem and branch.
+ */
+enum class XdmfSeriesMode { Truncate, Append };
+
 class MESHIOPLUSPLUS_API XdmfTimeSeriesWriter {
 public:
     /**
+     * @brief One solver array for the `NamedArray` `WriteData` overload.
+     *
+     * Values are row-major, `mNumComponents` per entity: `{n}` for a scalar
+     * field, `{n, 3}` for a vector, and so on.
+     */
+    struct NamedArray {
+        std::string mName;
+        std::size_t mNumComponents = 1;
+        std::vector<double> mValues;
+    };
+
+    /**
      * @brief Open a series for writing.
      *
-     * Nothing is written yet: the `.xdmf` appears at `Finalize()`, and the
-     * `"HDF"` companion at the first stored array.
+     * Nothing is written yet: the `.xdmf` appears at `Finalize()` (or at the
+     * first `Flush()`), and the `"HDF"` companion at the first stored array.
      *
      * @param rPath Path of the `.xdmf`/`.xmf` light-data file to write.
      * @param rDataFormat `"HDF"` (default; companion `<base>.h5`, needs an
@@ -110,17 +137,47 @@ public:
      *        (sibling `<base><n>.bin` raw files).
      * @param GzipLevel gzip level for `"HDF"` datasets; negative (the default)
      *        means uncompressed. Ignored for the other formats.
-     * @throws WriteError if `rDataFormat` is unrecognized, or is `"HDF"` on a
-     *         build without HDF5 support.
+     * @param Mode `Truncate` (the default) starts a fresh series; `Append`
+     *        continues the one already at `rPath`, if any (see #XdmfSeriesMode).
+     * @throws WriteError if `rDataFormat` is unrecognized, is `"HDF"` on a
+     *         build without HDF5 support, or if `Append` was asked for and the
+     *         existing file is not a series this writer can continue.
      */
     explicit XdmfTimeSeriesWriter(const std::string& rPath, const std::string& rDataFormat = "HDF",
-                                  int GzipLevel = -1);
+                                  int GzipLevel = -1,
+                                  XdmfSeriesMode Mode = XdmfSeriesMode::Truncate);
 
-    /** @brief Finalizes the series if it has not been finalized already. */
+    /**
+     * @brief Finalizes the series if it has not been finalized already.
+     *
+     * @warning Because this **writes** `rPath`, deleting the output while the
+     *          writer is still alive recreates it:
+     *          @code
+     *          {
+     *              XdmfTimeSeriesWriter w(path, "XML");
+     *              w.WritePointsCells(m);
+     *              w.WriteData(0.0, {u});
+     *              std::filesystem::remove(path);   // "clean up"
+     *          }   // <-- the destructor finalizes here, recreating path
+     *          @endcode
+     *          The second half is what makes this bite: with
+     *          `XdmfSeriesMode::Append` the *next* run then continues a series
+     *          you believed deleted, so the failure surfaces one run later as a
+     *          wrong step count rather than at the delete. Destroy the writer
+     *          before removing its output -- end the scope, or call `Finalize()`
+     *          explicitly and then delete.
+     */
     ~XdmfTimeSeriesWriter();
 
     XdmfTimeSeriesWriter(const XdmfTimeSeriesWriter&) = delete;
     XdmfTimeSeriesWriter& operator=(const XdmfTimeSeriesWriter&) = delete;
+    // Moving leaves the source empty. Its contract, so a moved-from writer is
+    // diagnosable rather than undefined: the observers and the idempotent
+    // operations (`SetAutoFlush`, `AutoFlush`, `NumSteps`, `Finalized`,
+    // `Flush`, `Finalize`) are safe no-ops answering as for a finished series,
+    // while the three that cannot silently do nothing -- `WritePointsCells` and
+    // both `WriteData` overloads -- throw `WriteError`, because a caller
+    // writing a step must never be left believing it landed.
     XdmfTimeSeriesWriter(XdmfTimeSeriesWriter&&) noexcept;
     XdmfTimeSeriesWriter& operator=(XdmfTimeSeriesWriter&&) noexcept;
 
@@ -152,6 +209,64 @@ public:
      *         series is already finalized.
      */
     void WriteData(double Time, const Mesh& rMesh);
+
+    /**
+     * @brief Write one step from raw solver arrays, with no `Mesh` in between.
+     *
+     * The granularity a solver actually has: after `WritePointsCells` the
+     * geometry and connectivity are fixed, and each step produces nodal and
+     * elemental values, not a new mesh. Under the KRATOS mesh backend the
+     * difference is not cosmetic -- handing over a `Mesh` per step re-stages the
+     * whole ModelPart every output step when only the values changed.
+     *
+     * Arrays are emitted in the order given: unlike the `Mesh` overload, whose
+     * sorted-name order comes from the uniform API, here the caller's order *is*
+     * the deterministic order.
+     *
+     * @param Time The step's simulation time.
+     * @param rPointData Nodal arrays; each must hold `NumPoints * mNumComponents`
+     *        values.
+     * @param rCellData Cell arrays; each must hold `NumCells * mNumComponents`
+     *        values, `NumCells` being the total across every block.
+     * @throws WriteError if `WritePointsCells` has not been called, if the series
+     *         is already finalized, or if an array's length does not match --
+     *         deliberately stricter than the `Mesh` overload, which cannot get
+     *         this wrong because it reads the counts off the mesh.
+     */
+    void WriteData(double Time, const std::vector<NamedArray>& rPointData,
+                   const std::vector<NamedArray>& rCellData = {});
+
+    /**
+     * @brief Write the light data as it currently stands, without finalizing.
+     *
+     * The point of the whole feature: without it the `.xdmf` appears only at
+     * `Finalize()`, so a run that is killed, crashes, or is simply still going
+     * leaves heavy data on disk and **nothing readable**. After a `Flush()` the
+     * file opens in ParaView and covers every step written so far.
+     *
+     * The document is written to a sibling temporary file and renamed over the
+     * target, so a crash *during* a flush cannot truncate the previous one; the
+     * heavy data is flushed first, so the `.xdmf` never points at a dataset that
+     * is not on disk yet.
+     *
+     * Safe to call any number of times, and a no-op once finalized.
+     *
+     * @throws WriteError if the `.xdmf` cannot be written.
+     */
+    void Flush();
+
+    /**
+     * @brief Flush automatically after every `WriteData` (default: off).
+     *
+     * Off by default because a flush re-serializes the whole document, making a
+     * per-step flush quadratic in the step count -- and for `"XML"`, whose heavy
+     * data lives *in* that document, quadratic in the data volume too. Turn it
+     * on for a long solve where crash-resilience is worth more than the writing
+     * cost, or call `Flush()` on your own cadence (every n-th step, say).
+     */
+    void SetAutoFlush(bool Enable);
+    /** @brief Whether auto-flush is enabled. */
+    bool AutoFlush() const;
 
     /**
      * @brief Write the `.xdmf` light data and close the heavy-data container.

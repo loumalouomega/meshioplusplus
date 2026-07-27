@@ -90,6 +90,36 @@ namespace meshioplusplus {
  */
 class KratosMesh {
 public:
+    /**
+     * @brief The cell_data key holding each cell's Kratos properties id.
+     *
+     * The same key the MDPA reader/writer uses, so a `.mdpa` round trip through
+     * this backend keeps its material assignment instead of collapsing to 0.
+     */
+    static constexpr const char* kKratosPropertyTagKey = "gmsh:physical";
+
+    // --- KRATOS-only extras: per-block Kratos entity names -----------------
+    //
+    // Not part of the uniform mesh API (no other backend has a ModelPart to
+    // spell names for) -- the same "fast-consumer surface" shape as NATIVE's
+    // PointsData()/ConnSpan(). A block with no name set derives one from its
+    // cell type, which is what every caller got before names existed.
+
+    /** @brief Set block @p Block's Kratos entity name (e.g. from `MdpaInfo`). */
+    void SetBlockEntityName(std::size_t Block, const std::string& rName) {
+        if (Block >= mStage.NumCellBlocks())
+            throw std::out_of_range("meshio++ KratosMesh: block index out of range");
+        if (mBlockEntityNames.size() < mStage.NumCellBlocks())
+            mBlockEntityNames.resize(mStage.NumCellBlocks());
+        mBlockEntityNames[Block] = rName;
+        InvalidateMaterialization();
+    }
+    /** @brief Block @p Block's Kratos entity name, or `""` when unset. */
+    const std::string& BlockEntityName(std::size_t Block) const {
+        static const std::string empty;
+        return Block < mBlockEntityNames.size() ? mBlockEntityNames[Block] : empty;
+    }
+
     /** @brief Cell-data names treated as entity tags for automatic SubModelParts. */
     static const std::vector<std::string>& KnownTagKeys() {
         static const std::vector<std::string> keys = {
@@ -138,6 +168,10 @@ public:
         ResetModelPartOnly();
         mStage.AddRegion(std::move(region));
     }
+    void AddPropertySet(PropertySet propertySet) {
+        ResetModelPartOnly();
+        mStage.AddPropertySet(std::move(propertySet));
+    }
 
     // --- uniform API: writer-side accessors (staging, stale-synced) --------
 
@@ -178,6 +212,13 @@ public:
 
     /// Sentinel returned by `FindRegion` when no region matches.
     static constexpr std::size_t npos = detail::RegionList::npos;
+
+    std::size_t NumPropertySets() const { return Stage().NumPropertySets(); }
+    const PropertySet& GetPropertySet(std::size_t Index) const {
+        return Stage().GetPropertySet(Index);
+    }
+    bool HasPropertySet(std::int64_t Id) const { return Stage().HasPropertySet(Id); }
+    std::size_t FindPropertySet(std::int64_t Id) const { return Stage().FindPropertySet(Id); }
 
     std::size_t NumRegions() const { return Stage().NumRegions(); }
     const meshioplusplus::Region& Region(std::size_t i) const { return Stage().Region(i); }
@@ -239,12 +280,57 @@ public:
      */
     void SetBuildSubModelPartsFromTags(bool enable) {
         mTagsToSubModelParts = enable;
-        if (mMaterialized && !mStale) {
-            mMaterialized = false;  // re-materialize with the new setting
-            mpRoot.reset();
-        }
+        InvalidateMaterialization();  // re-materialize with the new setting
     }
     bool BuildSubModelPartsFromTags() const { return mTagsToSubModelParts; }
+
+    /**
+     * @brief Restrict the automatic tag pass to these `cell_data` keys.
+     *
+     * `SetBuildSubModelPartsFromTags` is all-or-nothing, which is too coarse
+     * when only one key is unwanted. The motivating case is `.mdpa`: a Kratos
+     * properties id is read as a `gmsh:physical` cell tag, so the tag pass
+     * synthesizes a `gmsh_physical_<id>` SubModelPart beside the file's real
+     * ones -- material assignment surfacing as a group. For a genuine gmsh file
+     * that same inference is wanted, so the key cannot simply be dropped from
+     * #KnownTagKeys; the consumer has to say which it means.
+     *
+     * @param keys The keys to consider. **Empty restores the default**, i.e.
+     *        every key in #KnownTagKeys.
+     */
+    void SetTagSubModelPartKeys(std::vector<std::string> keys) {
+        mTagKeys = std::move(keys);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief Exclude one key from the automatic tag pass. Repeatable, additive.
+     *
+     * Expresses "everything except this" without re-listing #KnownTagKeys,
+     * which an inclusion list alone would force -- and which would silently
+     * freeze the caller against any key added to that table later.
+     */
+    void ExcludeTagSubModelPartKey(const std::string& rKey) {
+        if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), rKey) ==
+            mExcludedTagKeys.end())
+            mExcludedTagKeys.push_back(rKey);
+        InvalidateMaterialization();
+    }
+
+    /**
+     * @brief The keys the tag pass will actually consider.
+     * @return The effective set, in #KnownTagKeys order.
+     */
+    std::vector<std::string> TagSubModelPartKeys() const {
+        const std::vector<std::string>& source = mTagKeys.empty() ? KnownTagKeys() : mTagKeys;
+        std::vector<std::string> out;
+        out.reserve(source.size());
+        for (const std::string& r_key : source)
+            if (std::find(mExcludedTagKeys.begin(), mExcludedTagKeys.end(), r_key) ==
+                mExcludedTagKeys.end())
+                out.push_back(r_key);
+        return out;
+    }
 
 private:
     /** @brief Per staged block: what it became in the ModelPart. */
@@ -252,6 +338,8 @@ private:
         enum class Kind { Element, Condition, Ragged } mKind = Kind::Ragged;
         IndexType mFirstId = 0;  // first entity Id (Element/Condition kinds)
         std::size_t mCount = 0;
+        /// The block's Kratos entity name, "" to derive it from the cell type.
+        std::string mEntityName;
     };
 
     void ResetModelPartOnly() {
@@ -261,6 +349,14 @@ private:
             mRecords.clear();
             mMaterialized = false;
             mStale = false;
+        }
+    }
+
+    /** @brief Drop a built ModelPart so the next access rebuilds it. */
+    void InvalidateMaterialization() {
+        if (mMaterialized && !mStale) {
+            mMaterialized = false;
+            mpRoot.reset();
         }
     }
 
@@ -313,11 +409,51 @@ private:
         for (const auto& r_b : mStage.Blocks())
             mesh_dim = std::max(mesh_dim, BlockDimension(r_b));
 
+        // Per-block property ids, when the mesh carries a usable tag array.
+        // Empty means "no tags", which is the pre-9.1.0 behaviour of 0 for all.
+        std::vector<std::vector<std::int64_t>> prop_ids;
+        if (mStage.HasCellData(kKratosPropertyTagKey) &&
+            mStage.CellDataNumBlocks(kKratosPropertyTagKey) == mStage.NumCellBlocks()) {
+            bool usable = true;
+            for (std::size_t b = 0; b < mStage.NumCellBlocks() && usable; ++b) {
+                const NDArray& r_tags = mStage.CellData(kKratosPropertyTagKey, b);
+                if (detail::is_float_dtype(r_tags.Dtype()) ||
+                    r_tags.Size() != mStage.Blocks()[b].NumCells()) {
+                    usable = false;  // a float or mis-sized tag is not an id
+                    break;
+                }
+                std::vector<std::int64_t> col(r_tags.Size());
+                for (std::size_t i = 0; i < r_tags.Size(); ++i)
+                    col[i] = detail::read_int(r_tags, i);
+                prop_ids.push_back(std::move(col));
+            }
+            if (!usable)
+                prop_ids.clear();
+        }
+        for (const std::vector<std::int64_t>& r_col : prop_ids)
+            for (std::int64_t id : r_col)
+                if (id >= 0)
+                    r_mp.CreateNewProperties(static_cast<IndexType>(id));
+
+        // Real material values, where the mesh carries them. The loop above
+        // only creates the ids the entity rows reference, leaving every block
+        // empty; this fills them in. CreateNewProperties is find-or-create, so
+        // an id both passes see is filled in place rather than duplicated, and
+        // the creation order above is unchanged. This is what makes
+        // kratos_bridge's "apply property" to_model_part overload transfer
+        // anything at all -- it iterates rSource.Properties(), which held
+        // id-only sets before v9.2.0.
+        for (const PropertySet& r_set : mStage.PropertySets().All())
+            r_mp.CreateNewProperties(static_cast<IndexType>(r_set.mId)).mValues = r_set.mValues;
+
         IndexType next_elem = 1, next_cond = 1;
         std::size_t n_elem_rows = 0, n_cond_rows = 0;
+        std::size_t block_index = 0;
         for (const auto& r_b : mStage.Blocks()) {
             BlockRecord rec;
             rec.mCount = r_b.NumCells();
+            if (block_index < mBlockEntityNames.size())
+                rec.mEntityName = mBlockEntityNames[block_index];
             if (r_b.IsRagged()) {
                 rec.mKind = BlockRecord::Kind::Ragged;  // pass-through, no entities
             } else {
@@ -331,14 +467,23 @@ private:
                     std::vector<IndexType> ids(k);
                     for (std::size_t j = 0; j < k; ++j)
                         ids[j] = static_cast<IndexType>(conn[c * k + j]) + 1;
+                    // Properties id from the staged gmsh:physical tag when it
+                    // covers every block: before this it was always 0, so a
+                    // materialized ModelPart silently lost every material
+                    // assignment the file carried.
+                    const IndexType prop =
+                        prop_ids.empty() ? 0 : static_cast<IndexType>(prop_ids[block_index][c]);
                     if (is_elem)
-                        r_mp.CreateNewElement(r_b.mType, next_elem++, std::move(ids));
+                        r_mp.CreateNewElement(r_b.mType, next_elem++, std::move(ids), prop,
+                                              rec.mEntityName);
                     else
-                        r_mp.CreateNewCondition(r_b.mType, next_cond++, std::move(ids));
+                        r_mp.CreateNewCondition(r_b.mType, next_cond++, std::move(ids), prop,
+                                                rec.mEntityName);
                 }
                 (is_elem ? n_elem_rows : n_cond_rows) += n;
             }
             mRecords.push_back(rec);
+            ++block_index;
         }
 
         // point_data -> nodal data (shared row order: node index).
@@ -371,7 +516,7 @@ private:
 
         // Integer tags -> SubModelParts (unless disabled).
         if (mTagsToSubModelParts)
-            for (const auto& r_key : KnownTagKeys())
+            for (const auto& r_key : TagSubModelPartKeys())
                 if (mStage.HasCellData(r_key) &&
                     mStage.CellDataNumBlocks(r_key) == mStage.NumCellBlocks())
                     BuildSubModelPartsFor(r_key);
@@ -388,6 +533,63 @@ private:
      * Point regions become node-only SubModelParts. `Side` regions have no
      * ModelPart entity to attach to and are skipped with a warning.
      */
+    /** @brief Split a region name on the '/' path separator. */
+    static std::vector<std::string> SplitRegionPath(const std::string& rName) {
+        std::vector<std::string> out;
+        std::size_t start = 0;
+        while (true) {
+            const std::size_t slash = rName.find('/', start);
+            out.push_back(rName.substr(start, slash - start));
+            if (slash == std::string::npos)
+                break;
+            start = slash + 1;
+        }
+        return out;
+    }
+
+    /** @brief Whether the SubModelPart chain @p rName names already exists. */
+    bool RegionSubModelPartExists(const std::string& rName) const {
+        const ModelPart* p_at = mpRoot.get();
+        for (const std::string& r_seg : SplitRegionPath(rName)) {
+            if (!p_at->HasSubModelPart(r_seg))
+                return false;
+            p_at = &p_at->GetSubModelPart(r_seg);
+        }
+        return true;
+    }
+
+    /**
+     * @brief Walk/create the SubModelPart chain a region name denotes.
+     *
+     * `'/'` is the nesting separator, matching what the MDPA reader already
+     * emits for a nested `Begin SubModelPart` and what `RestoreRegions` reads
+     * back, so nesting survives a full region -> ModelPart -> region trip.
+     * `'.'` cannot appear in a segment (ModelPart::FullName joins with it), and
+     * an empty segment names nothing; either is a warning and a skip rather than
+     * an exception escaping a lazy `GetModelPart()`, and the region itself stays
+     * on the mesh untouched.
+     *
+     * @return the leaf part, or null when the name cannot be used.
+     */
+    ModelPart* ResolveRegionSubModelPart(const std::string& rName) const {
+        const std::vector<std::string> segments = SplitRegionPath(rName);
+        for (const std::string& r_seg : segments) {
+            if (!r_seg.empty() && r_seg.find('.') == std::string::npos)
+                continue;
+            log::warn(
+                "kratos backend: region '{}' has a segment that cannot name a SubModelPart "
+                "(empty, or containing '.', which ModelPart::FullName reserves); it is not "
+                "materialized (the region itself is kept)",
+                rName);
+            return nullptr;
+        }
+        ModelPart* p_at = mpRoot.get();
+        for (const std::string& r_seg : segments)
+            p_at = p_at->HasSubModelPart(r_seg) ? &p_at->GetSubModelPart(r_seg)
+                                                : &p_at->CreateSubModelPart(r_seg);
+        return p_at;
+    }
+
     void BuildSubModelPartsFromRegions() const {
         const std::size_t nregions = mStage.NumRegions();
         if (nregions == 0)
@@ -411,12 +613,15 @@ private:
                     r_region.mName);
                 continue;
             }
-            if (mpRoot->HasSubModelPart(r_region.mName))
+            if (RegionSubModelPartExists(r_region.mName))
                 continue;
 
             const std::int64_t* entries = r_region.Entries();
             const std::size_t n = r_region.NumEntries();
-            ModelPart& r_smp = mpRoot->CreateSubModelPart(r_region.mName);
+            ModelPart* p_smp = ResolveRegionSubModelPart(r_region.mName);
+            if (!p_smp)
+                continue;  // unusable name; warned about, and the region is kept
+            ModelPart& r_smp = *p_smp;
 
             if (r_region.mKind == RegionKind::Point) {
                 std::vector<IndexType> node_ids;
@@ -552,6 +757,18 @@ private:
         }
     }
 
+    /**
+     * @brief The name an entity would be written under: its own, or the derived
+     * default for its cell type.
+     */
+    static std::string EffectiveEntityName(const GeometricalEntity& rEntity,
+                                           BlockRecord::Kind kind) {
+        if (rEntity.HasName())
+            return rEntity.Name();
+        return kind == BlockRecord::Kind::Element ? kratos_element_name(rEntity.Type())
+                                                  : kratos_condition_name(rEntity.Type());
+    }
+
     /** @brief One block of the rebuilt mesh, before it is added to the stage. */
     struct PendingBlock {
         BlockRecord mRecord;
@@ -622,10 +839,22 @@ private:
             fresh.AddFieldData(r_name, mStage.FieldData(r_name));
 
         RestoreRegions(r_mp, plan, fresh);
+        // The ModelPart is the authority after a direct mutation, so read the
+        // properties back from it rather than carrying the old stage's forward:
+        // a set the user deleted must not be resurrected. They are keyed by id,
+        // not by entity index, so unlike regions and cell_data slices there is
+        // nothing to remap.
+        for (const PropertySet& r_set : r_mp.Properties())
+            fresh.AddPropertySet(r_set);
 
         mRecords.clear();
         for (PendingBlock& r_pb : plan)
             mRecords.push_back(r_pb.mRecord);
+        // Re-align the per-block names with the rebuilt block layout; a ragged
+        // block never had an entity name, so it keeps an empty one.
+        mBlockEntityNames.assign(plan.size(), std::string());
+        for (std::size_t b = 0; b < plan.size(); ++b)
+            mBlockEntityNames[b] = plan[b].mRecord.mEntityName;
         mStage = std::move(fresh);
     }
 
@@ -673,14 +902,26 @@ private:
             pb.mRecord.mKind = kind;
             pb.mRecord.mFirstId = run.front()->Id();
             pb.mRecord.mCount = nc;
+            pb.mRecord.mEntityName = run.front()->Name();
             pb.mType = cell_type_name(run.front()->Type());
             pb.mConn = std::move(conn);
             rOut.push_back(std::move(pb));
             run.clear();
         };
         for (const auto& r_e : rEntities) {
-            if (!run.empty() && (run.front()->Type() != r_e.Type() ||
-                                 run.front()->NumberOfNodes() != r_e.NumberOfNodes()))
+            // The Kratos entity NAME is part of the run key, not just the cell
+            // type: two adjacent SmallDisplacementElement3D4N and
+            // TotalLagrangianElement3D4N runs are both `tetra`, and merging them
+            // would leave one name to write both back under.
+            //
+            // The comparison is on the EFFECTIVE name -- an entity created from
+            // a bare CellType has no name and means "derive it" -- so adding an
+            // explicitly-named `Element3D4N` next to entities materialized
+            // without names still groups into one block, as it always did.
+            if (!run.empty() &&
+                (run.front()->Type() != r_e.Type() ||
+                 run.front()->NumberOfNodes() != r_e.NumberOfNodes() ||
+                 EffectiveEntityName(*run.front(), kind) != EffectiveEntityName(r_e, kind)))
                 flush();
             run.push_back(&r_e);
         }
@@ -763,25 +1004,48 @@ private:
         };
 
         std::vector<std::string> rebuilt;
-        for (const auto& r_name : rMp.SubModelPartNames()) {
-            const ModelPart& r_smp = rMp.GetSubModelPart(r_name);
+        // Recursive, with the '/' path convention: a nested SubModelPart comes
+        // back as one region named `parent/child`, which is exactly what the
+        // MDPA reader already produces and what BuildSubModelPartsFromRegions
+        // splits again on the way in. Before this the walk was top-level only,
+        // so every nested part was silently dropped by a rebuild.
+        RestoreRegionsFrom(rMp, rMp, std::string(), rPlan, elem_to_cell, cond_to_cell, staged_meta,
+                           rebuilt, rOut);
+
+        for (const auto& r_region : mStage.Regions().All())
+            if (std::find(rebuilt.begin(), rebuilt.end(), r_region.mName) == rebuilt.end())
+                rOut.AddRegion(r_region);
+    }
+
+    /** @brief One level of `RestoreRegions`' walk; recurses into nested parts. */
+    template <class TStagedMeta>
+    void RestoreRegionsFrom(const ModelPart& rMp, const ModelPart& rParent,
+                            const std::string& rPrefix, const std::vector<PendingBlock>& rPlan,
+                            const std::unordered_map<IndexType, std::int64_t>& rElemToCell,
+                            const std::unordered_map<IndexType, std::int64_t>& rCondToCell,
+                            const TStagedMeta& rStagedMeta, std::vector<std::string>& rRebuilt,
+                            NativeMesh& rOut) const {
+        (void)rPlan;
+        for (const auto& r_name : rParent.SubModelPartNames()) {
+            const ModelPart& r_smp = rParent.GetSubModelPart(r_name);
+            const std::string full = rPrefix.empty() ? r_name : rPrefix + "/" + r_name;
 
             std::vector<std::int64_t> cells;
             for (IndexType id : r_smp.ElementIds()) {
-                const auto it = elem_to_cell.find(id);
-                if (it != elem_to_cell.end())
+                const auto it = rElemToCell.find(id);
+                if (it != rElemToCell.end())
                     cells.push_back(it->second);
             }
             for (IndexType id : r_smp.ConditionIds()) {
-                const auto it = cond_to_cell.find(id);
-                if (it != cond_to_cell.end())
+                const auto it = rCondToCell.find(id);
+                if (it != rCondToCell.end())
                     cells.push_back(it->second);
             }
             if (!cells.empty()) {
                 int dim = -1, tag = -1;
-                staged_meta(r_name, RegionKind::Cell, dim, tag);
-                rOut.AddRegion(MakeRegion(r_name, RegionKind::Cell, dim, tag, cells));
-                rebuilt.push_back(r_name);
+                rStagedMeta(full, RegionKind::Cell, dim, tag);
+                rOut.AddRegion(MakeRegion(full, RegionKind::Cell, dim, tag, cells));
+                rRebuilt.push_back(full);
             }
 
             // A node-only SubModelPart is a Point region; one that also has
@@ -793,16 +1057,15 @@ private:
                     pts.push_back(static_cast<std::int64_t>(rMp.Nodes().IndexOf(id)));
                 if (!pts.empty()) {
                     int dim = -1, tag = -1;
-                    staged_meta(r_name, RegionKind::Point, dim, tag);
-                    rOut.AddRegion(MakeRegion(r_name, RegionKind::Point, dim, tag, pts));
-                    rebuilt.push_back(r_name);
+                    rStagedMeta(full, RegionKind::Point, dim, tag);
+                    rOut.AddRegion(MakeRegion(full, RegionKind::Point, dim, tag, pts));
+                    rRebuilt.push_back(full);
                 }
             }
-        }
 
-        for (const auto& r_region : mStage.Regions().All())
-            if (std::find(rebuilt.begin(), rebuilt.end(), r_region.mName) == rebuilt.end())
-                rOut.AddRegion(r_region);
+            RestoreRegionsFrom(rMp, r_smp, full, rPlan, rElemToCell, rCondToCell, rStagedMeta,
+                               rRebuilt, rOut);
+        }
     }
 
     static meshioplusplus::Region MakeRegion(const std::string& rName, RegionKind kind, int dim,
@@ -825,7 +1088,14 @@ private:
     mutable std::vector<BlockRecord> mRecords;
     mutable bool mMaterialized = false;
     mutable bool mStale = false;
+    /// Per staged block, the Kratos entity name to create its entities under.
+    /// `mutable` for the same reason `mRecords` is: the const `EnsureStage()`
+    /// rebuild re-derives it from the ModelPart.
+    mutable std::vector<std::string> mBlockEntityNames;
     bool mTagsToSubModelParts = true;
+    /// Empty = every KnownTagKeys() entry; see SetTagSubModelPartKeys.
+    std::vector<std::string> mTagKeys;
+    std::vector<std::string> mExcludedTagKeys;
 };
 
 }  // namespace meshioplusplus

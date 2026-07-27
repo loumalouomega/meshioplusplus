@@ -524,6 +524,7 @@ meshioplusplus::ReadOptions capi_read_options(const mio_read_opts* pOpts) {
     if (pOpts->time_step > INT_MAX || pOpts->time_step < INT_MIN)
         throw meshioplusplus::ReadError("meshio++: time_step is out of range");
     out.mTimeStep = static_cast<int>(pOpts->time_step);
+    out.mLenient = pOpts->lenient != 0;
     return out;
 }
 
@@ -2420,6 +2421,29 @@ mio_xdmf_series* mio_xdmf_series_create(const char* path, const char* data_forma
     });
 }
 
+void mio_xdmf_series_opts_init(mio_xdmf_series_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_xdmf_series_opts{};  // value-initialized: HDF, truncate, no flush
+}
+
+mio_xdmf_series* mio_xdmf_series_create_ex(const char* path, const mio_xdmf_series_opts* opts) {
+    return guarded_ptr(static_cast<mio_xdmf_series*>(nullptr), [&]() -> mio_xdmf_series* {
+        if (!path)
+            throw meshioplusplus::WriteError("meshio++: path is NULL");
+        mio_xdmf_series_opts defaults{};
+        const mio_xdmf_series_opts& r_o = opts ? *opts : defaults;
+        const std::string fmt = r_o.data_format ? r_o.data_format : "HDF";
+        const auto mode = r_o.mode == MIO_XDMF_SERIES_APPEND
+                              ? meshioplusplus::XdmfSeriesMode::Append
+                              : meshioplusplus::XdmfSeriesMode::Truncate;
+        auto* p_out = new mio_xdmf_series{meshioplusplus::XdmfTimeSeriesWriter(
+            path, fmt, static_cast<int>(r_o.gzip_level), mode)};
+        p_out->mWriter.SetAutoFlush(r_o.auto_flush != 0);
+        return p_out;
+    });
+}
+
 mio_status mio_xdmf_series_write_points_cells(mio_xdmf_series* series, const mio_mesh* mesh) {
     return guarded([&]() -> mio_status {
         if (!series || !mesh)
@@ -2444,6 +2468,56 @@ mio_status mio_xdmf_series_finalize(mio_xdmf_series* series) {
             return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
         series->mWriter.Finalize();
         return MIO_OK;
+    });
+}
+
+mio_status mio_xdmf_series_write_data_arrays(mio_xdmf_series* series, double time,
+                                             const mio_named_array* point_arrays,
+                                             int64_t num_point_arrays,
+                                             const mio_named_array* cell_arrays,
+                                             int64_t num_cell_arrays) {
+    return guarded([&]() -> mio_status {
+        if (!series)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        const auto convert = [](const mio_named_array* p_src, std::int64_t n) {
+            std::vector<meshioplusplus::XdmfTimeSeriesWriter::NamedArray> out;
+            for (std::int64_t i = 0; i < n; ++i) {
+                if (!p_src)
+                    throw meshioplusplus::WriteError("meshio++: array list is NULL");
+                meshioplusplus::XdmfTimeSeriesWriter::NamedArray a;
+                a.mName = p_src[i].name ? p_src[i].name : "";
+                a.mNumComponents = p_src[i].num_components > 0
+                                       ? static_cast<std::size_t>(p_src[i].num_components)
+                                       : 1u;
+                if (p_src[i].num_values < 0)
+                    throw meshioplusplus::WriteError("meshio++: num_values is negative");
+                // Copied during the call, per the ABI's "setters copy" rule.
+                if (p_src[i].values)
+                    a.mValues.assign(p_src[i].values, p_src[i].values + p_src[i].num_values);
+                out.push_back(std::move(a));
+            }
+            return out;
+        };
+        series->mWriter.WriteData(time, convert(point_arrays, num_point_arrays),
+                                  convert(cell_arrays, num_cell_arrays));
+        return MIO_OK;
+    });
+}
+
+mio_status mio_xdmf_series_flush(mio_xdmf_series* series) {
+    return guarded([&]() -> mio_status {
+        if (!series)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        series->mWriter.Flush();
+        return MIO_OK;
+    });
+}
+
+int32_t mio_xdmf_series_finalized(const mio_xdmf_series* series) {
+    return guarded_ptr(static_cast<std::int32_t>(-1), [&]() -> std::int32_t {
+        if (!series)
+            throw meshioplusplus::ReadError("meshio++: series is NULL");
+        return series->mWriter.Finalized() ? 1 : 0;
     });
 }
 

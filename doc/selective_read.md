@@ -153,3 +153,30 @@ const last = m.readMeshSelective('run.exo', { format: 'exodus', timeStep: -1 });
 m.readMetadata('run.exo', 'exodus').timeValues;  // [0, 0.5, 1]
 const meta = m.readMetadata('big.vtu');
 ```
+
+## `lenient`: skipping what a reader cannot represent
+
+A reader that meets a construct it has no way to express throws `ReadError`
+naming it, so a caller with a Python fallback can take it and a caller without
+one at least learns what was in the file. That is the right default — but it
+makes formats whose *optional* sections are commonplace unreadable in practice
+for a caller that only wants the mesh.
+
+`ReadOptions::mLenient` (C `mio_read_opts.lenient`, Fortran/Julia/R/WASM
+`lenient`, `--lenient` on the native CLI) turns those specific rejections into a
+warning plus a skip.
+
+It is deliberately **not** "ignore all errors". It applies only where a reader
+can skip a construct and still return a *correct* mesh; a malformed file, a
+truncated block, a bad node reference or an unknown element type still throw,
+because continuing past those would hand back a mesh that is quietly wrong
+rather than merely incomplete.
+
+**Currently honoured by `mdpa` only** — its `Table`, `Geometries`, `Mesh`,
+`Constraints` and non-empty `SubModelPart*` blocks. Every other reader ignores
+the flag. `MdpaInfo::mSkippedConstructs` records what was skipped, so "lenient"
+never means "silently lossy". See [`doc/formats/mdpa.md`](formats/mdpa.md).
+
+The Python `read()` deliberately does **not** take this parameter: mdpa's Python
+path is the pure-Python reference reader, which already accepts every construct
+the flag covers, so it would be a dead argument.

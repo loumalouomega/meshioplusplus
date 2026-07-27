@@ -110,6 +110,33 @@
  * body. Every declaration after the accessor must spell the type out
  * fully-qualified — which is why the accessor itself returns
  * `const meshioplusplus::Region&`.
+ *
+ * ## Property sets (`properties.hpp`)
+ *
+ * `Begin Properties` blocks — Kratos material data, and whatever other formats
+ * grow an equivalent — are carried on the mesh rather than in a per-format side
+ * struct, because a side struct is unreachable through `registry_read`:
+ *
+ *  - `void AddPropertySet(PropertySet propertySet)` — insert, or replace the
+ *    set with the same `mId`.
+ *  - `std::size_t NumPropertySets() const`, and
+ *    `const PropertySet& GetPropertySet(std::size_t Index) const` — indexed in
+ *    **ascending `mId`** order, identical on every backend.
+ *  - `bool HasPropertySet(std::int64_t Id)` /
+ *    `std::size_t FindPropertySet(std::int64_t Id)` (`Mesh::npos` when absent).
+ *
+ * Two things follow from these being keyed by **id, not by entity index**.
+ * There is no `detail/region_remap.hpp` counterpart and none is needed — an
+ * operation that renumbers cells or points cannot invalidate them. And the rule
+ * for operations is simply: **shape-preserving operations carry property sets
+ * through** (`clean`, `smooth`, `transform`, `attach_quality`, the data ops),
+ * while **restructuring and multi-input ones do not** (`merge`, whose inputs
+ * would collide on id, plus `crop`/`split`/`partition`/`diff`).
+ *
+ * The accessor is `GetPropertySet`, not `PropertySet(i)`, deliberately: an
+ * accessor named `PropertySet` would hide that *type* for the rest of each
+ * backend's class body exactly as `Region(i)` does above, and the KRATOS backend
+ * genuinely needs to name the type afterwards.
  */
 
 // System includes

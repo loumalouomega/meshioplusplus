@@ -61,11 +61,38 @@ mutable struct XdmfSeries
     end
 end
 
+"""Mirror of C `mio_xdmf_series_opts`; field order and types are ABI."""
+struct _CXdmfSeriesOpts
+    data_format::Cstring
+    gzip_level::Int32
+    mode::Int32
+    auto_flush::Int32
+    reserved_pad::Int32
+    reserved::NTuple{6,Int64}
+end
+
 function XdmfSeries(path::AbstractString; data_format::AbstractString="HDF",
-                    gzip_level::Integer=-1)
-    XdmfSeries(_check_ptr(ccall(_sym(:mio_xdmf_series_create), Ptr{Cvoid},
-                                (Cstring, Cstring, Int32),
-                                path, data_format, Int32(gzip_level))))
+                    gzip_level::Integer=-1, mode::Symbol=:truncate,
+                    auto_flush::Bool=false)
+    mode in (:truncate, :append) ||
+        throw(ArgumentError("mode must be :truncate or :append, got :$mode"))
+    if mode === :truncate && !auto_flush
+        return XdmfSeries(_check_ptr(ccall(_sym(:mio_xdmf_series_create), Ptr{Cvoid},
+                                           (Cstring, Cstring, Int32),
+                                           path, data_format, Int32(gzip_level))))
+    end
+    fmt = Base.cconvert(Cstring, data_format)
+    GC.@preserve fmt begin
+        opts = _CXdmfSeriesOpts(Base.unsafe_convert(Cstring, fmt), Int32(gzip_level),
+                                mode === :append ? Int32(1) : Int32(0),
+                                auto_flush ? Int32(1) : Int32(0), Int32(0),
+                                ntuple(_ -> Int64(0), 6))
+        ref = Ref(opts)
+        GC.@preserve ref begin
+            XdmfSeries(_check_ptr(ccall(_sym(:mio_xdmf_series_create_ex), Ptr{Cvoid},
+                                        (Cstring, Ptr{_CXdmfSeriesOpts}), path, ref)))
+        end
+    end
 end
 
 function XdmfSeries(f::Function, path::AbstractString; kwargs...)
@@ -134,6 +161,86 @@ function write_data!(s::XdmfSeries, time::Real, m::Mesh)
     _check(ccall(_sym(:mio_xdmf_series_write_data), Cint,
                  (Ptr{Cvoid}, Cdouble, Ptr{Cvoid}),
                  _handle(s), Cdouble(time), _handle(m)))
+end
+
+"""Mirror of C `mio_named_array`; field order and types are ABI."""
+struct _MioNamedArray
+    name::Cstring
+    num_components::Int64
+    values::Ptr{Cdouble}
+    num_values::Int64
+end
+
+"""
+    write_data!(series, time, point_data::AbstractDict[, cell_data::AbstractDict])
+
+Write one step from raw solver arrays instead of a whole mesh — the granularity
+a solver has once [`write_points_cells!`](@ref) has fixed the geometry. Under
+the KRATOS mesh backend this also avoids re-staging the whole ModelPart every
+output step when only the values changed.
+
+Each value is a vector (a scalar field) or an `n x k` matrix (`k` components per
+entity). Arrays are emitted in iteration order, so pass an `OrderedDict` if you
+care about the order in the file.
+"""
+function write_data!(s::XdmfSeries, time::Real, point_data::AbstractDict,
+                     cell_data::AbstractDict=Dict{String,Vector{Float64}}())
+    names = String[]
+    arrays = Vector{Vector{Float64}}()
+    comps = Int64[]
+    counts = Int64[]
+    for src in (point_data, cell_data)
+        n = 0
+        for (k, v) in src
+            a = Array(v)
+            # Julia is column-major, so an (n, k) matrix must be transposed to
+            # reach the C ABI's row-major "k components per entity" layout.
+            push!(arrays, ndims(a) >= 2 ? vec(permutedims(a)) : vec(Float64.(a)))
+            push!(comps, ndims(a) >= 2 ? size(a, 2) : 1)
+            push!(names, String(k))
+            n += 1
+        end
+        push!(counts, n)
+    end
+    cnames = [Base.cconvert(Cstring, n) for n in names]
+    GC.@preserve arrays cnames begin
+        structs = [(_MioNamedArray(Base.unsafe_convert(Cstring, cnames[i]), comps[i],
+                                   pointer(arrays[i]), Int64(length(arrays[i]))))
+                   for i in eachindex(arrays)]
+        GC.@preserve structs begin
+            p_pt = counts[1] > 0 ? pointer(structs) : Ptr{_MioNamedArray}(C_NULL)
+            p_cl = counts[2] > 0 ? pointer(structs, counts[1] + 1) :
+                   Ptr{_MioNamedArray}(C_NULL)
+            _check(ccall(_sym(:mio_xdmf_series_write_data_arrays), Cint,
+                         (Ptr{Cvoid}, Cdouble, Ptr{_MioNamedArray}, Int64,
+                          Ptr{_MioNamedArray}, Int64),
+                         _handle(s), Cdouble(time), p_pt, counts[1], p_cl, counts[2]))
+        end
+    end
+end
+
+"""
+    flush!(series)
+
+Write the `.xdmf` as it currently stands, without finalizing, so a run that is
+killed or still going leaves a readable file covering every flushed step. Safe
+to call repeatedly; a no-op once finalized.
+
+Named `flush!` rather than `flush` for the same reason as [`finalize!`](@ref):
+`Base.flush` means "flush this IO stream".
+"""
+function flush!(s::XdmfSeries)
+    _check(ccall(_sym(:mio_xdmf_series_flush), Cint, (Ptr{Cvoid},), _handle(s)))
+end
+
+"""
+    finalized(series) -> Bool
+
+Whether [`finalize!`](@ref) has already run.
+"""
+function finalized(s::XdmfSeries)
+    Int(_check_count(ccall(_sym(:mio_xdmf_series_finalized), Int32, (Ptr{Cvoid},),
+                           _handle(s)), "finalized")) == 1
 end
 
 """

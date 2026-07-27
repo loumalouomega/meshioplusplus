@@ -412,6 +412,28 @@ export interface XdmfTimeSeriesWriter {
   writeData(time: number, mesh: Mesh): void;
 
   /**
+   * Append one step from raw arrays instead of a mesh -- the granularity a
+   * solver has once `writePointsCells` has fixed the geometry. Arrays are
+   * emitted in key order; `components` gives the per-entity width of any array
+   * that is not a scalar, since a flat typed array carries no shape.
+   * @throws {Error} if an array's length does not match the static grid.
+   */
+  writeDataArrays(
+    time: number,
+    pointData: Record<string, Float64Array | number[]>,
+    cellData?: Record<string, Float64Array | number[]>,
+    components?: Record<string, number>
+  ): void;
+
+  /**
+   * Write the `.xdmf` as it currently stands, without finalizing, so a run that
+   * is killed or still going leaves a readable file covering every flushed
+   * step. Safe to call repeatedly; a no-op once finalized.
+   * @throws {Error} if the `.xdmf` cannot be written.
+   */
+  flush(): void;
+
+  /**
    * Write the `.xdmf` light data and close the heavy-data container. This is
    * when the files appear in MEMFS. Idempotent.
    * @throws {Error} if the `.xdmf` cannot be written.
@@ -471,6 +493,12 @@ export interface MeshioPlusPlusModule {
    * Honoured by formats carrying a time series (currently exodus); see
    * `readMetadata(...).timeValues` for how many there are.
    *
+   * `lenient` downgrades "this reader cannot represent construct X" errors to a
+   * warning plus a skip -- currently mdpa's `Table`, `Geometries`, `Mesh` and
+   * `Constraints` blocks. It is *not* "ignore all errors": a malformed file, a
+   * truncated block or a bad node reference still throws, because continuing
+   * past those would return a mesh that is quietly wrong.
+   *
    * @throws {Error} on an out-of-range `timeStep`.
    */
   readMeshSelective(
@@ -480,6 +508,7 @@ export interface MeshioPlusPlusModule {
       pointsOnly?: boolean;
       arrays?: string[] | null;
       timeStep?: number;
+      lenient?: boolean;
     }
   ): Mesh;
 
@@ -891,11 +920,22 @@ export interface MeshioPlusPlusModule {
    *   wasm32 HDF5, so this works here), `'XML'` or `'Binary'`.
    * @param options.gzipLevel gzip level for `'HDF'` datasets; negative (the
    *   default) means uncompressed. Ignored by the other formats.
-   * @throws {Error} on an unrecognized `dataFormat`.
+   * @param options.mode `'append'` continues a series already at `path`
+   *   instead of overwriting it; a path with no file yet is simply a fresh
+   *   series, so a restartable caller can pass it unconditionally.
+   * @param options.autoFlush flush the light data after every `writeData`
+   *   (default false). Off by default because a flush re-serializes the whole
+   *   document, making per-step flushing quadratic in the step count.
+   * @throws {Error} on an unrecognized `dataFormat` or `mode`.
    */
   createXdmfTimeSeriesWriter(
     path: string,
-    options?: { dataFormat?: XdmfDataFormat; gzipLevel?: number },
+    options?: {
+      dataFormat?: XdmfDataFormat;
+      gzipLevel?: number;
+      mode?: 'truncate' | 'append';
+      autoFlush?: boolean;
+    },
   ): XdmfTimeSeriesWriter;
 }
 
