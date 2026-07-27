@@ -192,18 +192,18 @@ CMake package's `SameMajorVersion` mode describes only the first.
   meshio++ version, and a consumer must be rebuilt whenever meshio++ is:
 
   ```cmake
-  find_package(meshioplusplus 9.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+  find_package(meshioplusplus 9.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
   ```
 
   **All three components are required.** Under `SameMajorVersion`, `EXACT` is a
-  full *string* comparison against the package version, so `9.2 EXACT` does not
-  match an installed `9.2.0` — it fails with "no configuration file … exactly
+  full *string* comparison against the package version, so `9.3 EXACT` does not
+  match an installed `9.3.0` — it fails with "no configuration file … exactly
   matches requested version". (Through v9.1.0 this page printed the
   two-component form, which could never succeed.)
 
   For distribution packaging that means an exact `= <full three-component
   version>` dependency, re-pinned on every release including patch releases —
-  not a range, and not `= 9.2.x`, which `EXACT` cannot express. The
+  not a range, and not `= 9.3.x`, which `EXACT` cannot express. The
   `SOVERSION 0` on the C++ variants exists so the files install cleanly, not as
   a compatibility claim.
 

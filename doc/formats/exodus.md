@@ -36,7 +36,8 @@ Global attrs: `title`, `version=5.1f`, `api_version=5.1f`, `floating_point_word_
 - `coor_names(num_dim, len_string)` — single-character `"X"`, `"Y"`, `"Z"`.
 - `coord(num_dim, num_nodes)` — transposed relative to meshio++'s `(n, dim)` layout — or, alternatively, separate `coordx`/`coordy`/`coordz(num_nodes)` variables (both styles are accepted on read).
 - `eb_prop1(num_el_blk)` — arbitrary distinct per-block ids (their exact values don't matter, only that they differ, per a ParaView requirement noted in the source).
-- `connect{k}(num_el_in_blk{k}, num_nod_per_el{k})` for `k = 1..num_el_blk`, with a text `elem_type` attribute; 1-based node indices.
+- `connect{k}(num_el_in_blk{k}, num_nod_per_el{k})` for `k = 1..num_el_blk`, with a text `elem_type` attribute; 1-based node indices. The attribute is trimmed of trailing NULs and spaces before the type lookup — see [Quirks](#quirks-limitations).
+- `attrib{k}(num_el_in_blk{k}, num_att_in_blk{k})` / `attrib_name{k}(num_att_in_blk{k}, len_string)` — per-element attributes, read and written as `cell_data` under the `exodus:attr:` prefix (see [Element attributes](#element-attributes)).
 - `name_nod_var`/`vals_nod_var{k}` — point-data names and values, sliced at the requested time step (see [Time steps](#time-steps)); the writer emits one dummy step.
 - `name_elem_var`/`vals_elem_var{idx}[eb{block}]` — cell data indexed by `(variable index, element block)`, later concatenated across blocks in block order and re-split by target cell-block size.
 - `eb_names(num_el_blk, len_string)` — element-block names, read into `Cell` regions.
@@ -62,12 +63,57 @@ A large type table; representative entries:
 
 The write-side reverse map picks one canonical Exodus name per meshio++ type (e.g. `hexahedron → HEX8`, `tetra → TETRA`, `tetra4 → TET4` — a distinct entry from plain `tetra`).
 
+`SPHERE` is the one-node element particle codes use — peridynamics solvers such as
+[PeriLab](https://github.com/PeriHub/PeriLab.jl) write whole meshes of them — and
+maps to meshio++'s `vertex`. Its radius is not part of the connectivity; it lives
+in a per-element attribute (below).
+
 ## Data mapping
 
 - `point_data` — arbitrary names, with automatic recombination: names ending in `X`/`Y`/`Z` are checked for sibling `Y`/`Z` names and, if found, stacked into a 3-component vector; names ending `_R`/`_Z` are checked for a sibling and stacked into a 2-component vector.
 - `cell_data` — arbitrary names, split per cell block by node count.
+- `cell_data["exodus:attr:<NAME>"]` — per-element attributes (see [Element attributes](#element-attributes)).
 - `regions` — element blocks, node sets and side sets (see [Named regions](#named-regions)). `point_sets` is a compat view over the `Point` regions.
 - `mesh.info` — free-text strings from `info_records`/`qa_records`.
+
+## Element attributes
+
+Exodus stores a fixed number of floating-point **attributes** per element of a
+block, in `attrib{k}` and named by `attrib_name{k}`. They are the standard home
+for a value the connectivity cannot express: a `SPHERE`/`CIRCLE` element's
+**radius**, a beam's cross-section area, a shell's thickness. Since v9.3.0 they
+read and write as ordinary `cell_data`, under the `exodus:attr:` prefix:
+
+```python
+mesh = meshioplusplus.read("particles.exo")
+radius = mesh.cell_data["exodus:attr:RADIUS"]   # one array per cell block
+```
+
+The prefix is what makes the mapping unambiguous in both directions. On read it
+keeps an attribute from colliding with a same-named element *variable*
+(`name_elem_var`), which is a genuinely different concept — attributes are
+constant in time, element variables are per-time-step. On write it is the only
+signal telling the writer which `cell_data` arrays belong in `attrib{k}`;
+everything else in `cell_data` is left alone.
+
+Three rules follow from `cell_data` having exactly one array per cell block while
+Exodus attributes are per block:
+
+- Values are always **float64** on read, whatever the on-disk type — Exodus
+  attributes are floating point by definition, and the NaN below needs somewhere
+  to live.
+- A block the file gives no such attribute is filled with **NaN**. There is no
+  "absent" to report in a `cell_data` array, and the name is still information.
+- On write, a block whose values are **all** non-finite is left out again. That
+  is exactly the NaN the reader fills in, so a file where only some blocks carry
+  an attribute round-trips instead of gaining NaN attributes; the only thing lost
+  is a genuinely all-NaN attribute, which carries no information anyway.
+
+An attribute is one value per element, so a multi-component array under this
+prefix is a `WriteError` naming it rather than a silent flatten. Unnamed
+attributes (a blank `attrib_name{k}`, which SEACAS writes often enough) are named
+by their 1-based column, `exodus:attr:attribute1` and so on, so two blocks agree
+on which one is "the first".
 
 ## Named regions
 
@@ -120,13 +166,16 @@ true and the option reaches every binding: `time_step=` in Python,
 
 ## Quirks & limitations
 
+- **A NUL-terminated `elem_type` used to fail the read.** netCDF text attributes carry an explicit length, and NetCDF.jl — which is what [PeriLab](https://github.com/PeriHub/PeriLab.jl) and other Julia solvers write Exodus with — counts the C string's terminating NUL as part of it. So a `SPHERE` block arrives as the 7 characters `"SPHERE\0"`, which matched no key in the C++ reader's type table: the read failed with `Exodus: unknown element type SPHERE`, the NUL invisible in the message because `std::runtime_error::what()` is a `const char*` that stops at it. `netCDF4` strips the NUL on the way in, so the Python reference never saw this and the shim's silent fallback hid it everywhere **except WASM**, which has no fallback — which is how it surfaced as [VSCode-MDPA-Preview#63](https://github.com/loumalouomega/VSCode-MDPA-Preview/issues/63) rather than as a Python bug. Fixed in v9.3.0: both readers now trim trailing NULs and spaces before the lookup. The same normalization covers fixed-width writers that pad with spaces.
 - The point-data name recombination (`categorize()`) has a **deliberately preserved quirk**: the check for a paired variable uses Python truthiness on the found array index, so an index of exactly `0` is treated the same as "not found". This is a latent edge case in the reference implementation that the C++ port reproduces on purpose, rather than silently fixing — changing it would make the two implementations disagree on some inputs.
 - `qa_records`/`info_records` are **provenance strings**, and `NDArray` has no string dtype, so they cannot ride on the mesh. They travel in an `ExodusInfo` side-channel struct (the `MedInfo`/`OpenFoamInfo` pattern) that the pybind binding attaches as `mesh.info`. The **flat bindings** (C, Fortran, Julia, R, WASM) construct one and drop it — the same documented gap `MedInfo` already has.
 - Before v8.6.0 the C++ reader **threw** on `qa_records`, `info_records`, `ns_names` and `node_ns*`, routing the whole file to Python. Since every file SEACAS, Cubit or Sierra writes carries `qa_records`, that made Exodus entirely unreadable from **WASM**, which has no Python fallback to defer to. Fixed; see [Time steps](#time-steps) and [Named regions](#named-regions) for what those variables now produce.
 - The C++ writer does not support `mesh.point_sets` at all; the shim only attempts the C++ write path when `point_sets` is empty. It also emits no `eb_names` and no side sets, which is why regions are read-only here.
+- Neither writer emits `name_elem_var`/`vals_elem_var`, so ordinary (non-attribute) `cell_data` is **dropped on write** — a pre-existing gap that the element-attribute support does not change, and the reason the `exodus:attr:` prefix has to be explicit rather than "write every cell_data as an attribute".
+- A file with `num_dim = 2` (`coordx`/`coordy`, no `coordz`) reads back with **3-component** points whose `z` column is zero, on both paths. That is upstream meshio's behaviour and is kept.
 
 ## Notes
 
 - Read/written through the C++ core when built with `MESHIO_WITH_NETCDF`, otherwise through `netCDF4`.
 - Read/written through the C++ core when built with netCDF, otherwise through `netCDF4`.
-- Tests round-trip synthetic meshes, **plus** a hand-authored SEACAS/Cubit-shaped fixture built at test time by `tests/python/exodus_fixture.py` (`qa_records`, two same-type element blocks, two node sets, one side set, three time steps). It is hand-authored because meshio++'s own writer emits none of those, so a round-trip test could not have caught the `qa_records` defect.
+- Tests round-trip synthetic meshes, **plus** two hand-authored fixtures built at test time by `tests/python/exodus_fixture.py`: a SEACAS/Cubit-shaped one (`qa_records`, two same-type element blocks, two node sets, one side set, three time steps) and a peridynamics-shaped one (2-D `coordx`/`coordy`, NUL-terminated `elem_type`, one-node `SPHERE` blocks, a `RADIUS` attribute on one block only). They are hand-authored because meshio++'s own writer emits none of that, so a round-trip test could not have caught either the `qa_records` defect or the `elem_type` one. The NUL-terminated attribute cannot be written through `netCDF4` at all (it strips the NUL), so the fixture patches the classic-format bytes: an attribute is `[nc_type][nelems][value padded to 4 bytes]`, and since `len("SPHERE")` is not a multiple of 4 the padded size is the same for 6 and 7 characters, so bumping the recorded count rewrites four bytes in place and shifts nothing. The gtest counterpart (`tests/cpp/test_netcdf_formats.cpp`) builds its fixture through the netCDF C API instead, where the length is simply a parameter.
