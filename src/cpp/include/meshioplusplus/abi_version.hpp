@@ -1,0 +1,74 @@
+//  ██████   ██████ ██████████  █████████  █████   █████ █████    ███████
+// ░░██████ ██████ ░░███░░░░░█ ███░░░░░███░░███   ░░███ ░░███   ███░░░░░███      ███         ███
+//  ░███░█████░███  ░███  █ ░ ░███    ░░░  ░███    ░███  ░███  ███     ░░███    ░███        ░███
+//  ░███░░███ ░███  ░██████   ░░█████████  ░███████████  ░███ ░███      ░███ ███████████ ███████████
+//  ░███ ░░░  ░███  ░███░░█    ░░░░░░░░███ ░███░░░░░███  ░███ ░███      ░███░░░░░███░░░ ░░░░░███░░░
+//  ░███      ░███  ░███ ░   █ ███    ░███ ░███    ░███  ░███ ░░███     ███     ░███        ░███
+//  █████     █████ ██████████░░█████████  █████   █████ █████ ░░░███████░      ░░░         ░░░
+// ░░░░░     ░░░░░ ░░░░░░░░░░  ░░░░░░░░░  ░░░░░   ░░░░░ ░░░░░    ░░░░░░░
+//
+//
+//  License:         MIT License
+//                   meshio++ default license: LICENSE
+//
+//  Main authors:    Vicente Mataix Ferrandiz
+//
+//
+#pragma once
+
+/**
+ * @file abi_version.hpp
+ * @brief `MESHIOPLUSPLUS_ABI_VERSION` -- the C++ API's binary-compatibility
+ * counter, deliberately **not** the release version.
+ *
+ * The release version (`project(... VERSION ...)`) moves on every release. This
+ * one moves only when the installed headers change in a way that makes an
+ * already-compiled consumer incompatible with a freshly built library. Those are
+ * different questions, and conflating them is what forced every C++ consumer to
+ * re-pin and fully rebuild for releases that provably could not affect them --
+ * v9.3.0's entire installed-header delta, for instance, was one new
+ * `inline constexpr` string in `formats/exodus.hpp`.
+ *
+ * `doc/abi.md` owns the criterion in full. In short, scope is **every** header
+ * under `src/cpp/include/meshioplusplus/` (all of them are installed and
+ * compiled by consumers -- not a curated subset), and a bump is required for:
+ *
+ *  - a **layout** change to any type a consumer can name (data members, bases,
+ *    virtuals, alignment, an enum's underlying type, template parameter lists);
+ *  - an **ODR** change: editing the *body* of an existing inline function,
+ *    template or default argument. Both sides emit a vague-linkage copy and the
+ *    linker keeps one arbitrarily, so the program can run the older body where
+ *    the newer was intended.
+ *
+ * and NOT for purely additive changes -- a new inline function, constexpr
+ * variable, type, declaration or header, or an appended enumerator. Nothing
+ * existing changes definition there, so an already-compiled consumer's
+ * translation unit is byte-identical to what it was.
+ *
+ * Retroactive numbering of the 9.x line (see `doc/abi.md` for the diffs this was
+ * derived from):
+ *
+ *  | ABI | releases           | what moved                                     |
+ *  |-----|--------------------|------------------------------------------------|
+ *  | 1   | v9.0.0             | (baseline)                                     |
+ *  | 2   | v9.1.0             | `GeometricalEntity`, `ModelPart`, `MdpaInfo`, … |
+ *  | 3   | v9.2.0 .. v9.4.0   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
+ *
+ * ### This is the ONE place the number is written
+ *
+ * `CMakeLists.txt` parses it back out of this file with `file(STRINGS ... REGEX)`
+ * rather than keeping a second copy, and feeds it to the installed libraries'
+ * `SOVERSION` and to `MESHIOPLUSPLUS_ABI_VERSION` in the generated
+ * `meshioplusplusConfig.cmake`. A header rather than a CMake variable because a
+ * consumer that never runs CMake -- pkg-config, a hand-written makefile -- must
+ * still be able to read it.
+ *
+ * Deliberately **not** overridable with `-D`: `detail/abi_version_check.hpp`
+ * turns this value into a link-time requirement, and a knob to change it would be
+ * a knob to silence the guard while still miscompiling. `tools/check-abi-version.sh`
+ * and the mismatch test in CI both work by patching a *copy* of the installed
+ * headers for exactly this reason. `MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK` is the
+ * supported opt-out.
+ */
+
+#define MESHIOPLUSPLUS_ABI_VERSION 3

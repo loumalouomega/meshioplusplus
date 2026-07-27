@@ -62,6 +62,10 @@
 // every TU that includes mesh.hpp, which is exactly the set that could get the
 // backend wrong. IWYU pragma: keep
 #include "detail/mesh_backend_check.hpp"
+// Likewise, for the second axis: same TU set, same technique, different
+// question -- "were these headers and this library the same meshio++?" rather
+// than "the same backend?". See detail/abi_version_check.hpp. IWYU pragma: keep
+#include "detail/abi_version_check.hpp"
 
 #if defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE)
 #include "backends/native_mesh.hpp"

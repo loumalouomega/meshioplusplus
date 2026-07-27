@@ -16,6 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The ABI staleness gate below diffs the installed headers against the
+          # previous release tag, so it needs tags and history. Without this it
+          # degrades to a no-op that passes vacuously -- exactly the kind of
+          # silently-inert check this whole change exists to stop shipping.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -28,6 +34,13 @@ jobs:
       # .svg and .ts sets are in step. See doc/icons/README.md.
       - name: Icons are current and well-formed
         run: node doc/icons/check-icons.mjs
+      # Keeps MESHIOPLUSPLUS_ABI_VERSION honest: an installed header changed
+      # since the last release tag, the ABI version did not, and doc/abi_reviews.md
+      # records no additive review => red. Needs no build, hence the lint job.
+      # See doc/abi.md for the tiers; tests/cpp/test_abi_layout.cpp is the other
+      # half (it catches layout changes mechanically, this catches ODR ones).
+      - name: ABI version is not stale
+        run: bash tools/check-abi-version.sh
 
   cpp-tests:
     name: C++ tests (${{ matrix.mesh }} mesh / ${{ matrix.parallel }})
@@ -335,6 +348,53 @@ jobs:
             tests/consumer/no_backend_macro.cpp \
             -L inst/lib -lmeshioplusplus_core_kratos -o /tmp/nb_ok
           LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/nb_ok
+      # The second axis: headers from one meshio++, library from another. The
+      # backend guard above cannot see this -- the backend can be right while the
+      # headers are stale -- and until v9.4.0 nothing did, leaving the version pin
+      # as the only protection against a silent ODR/layout mismatch.
+      #
+      # The mismatch is staged by patching a COPY of the installed headers, which
+      # is exactly what a consumer whose -I and -L point at different prefixes
+      # has. MESHIOPLUSPLUS_ABI_VERSION is deliberately not -D-overridable, since
+      # a knob to change it would be a knob to silence the guard.
+      - name: ABI version guard fires on mismatched headers
+        if: matrix.default_backend == 'KRATOS'
+        run: |
+          set -eux
+          abi=$(sed -n 's/^#define[[:space:]]\+MESHIOPLUSPLUS_ABI_VERSION[[:space:]]\+\([0-9]\+\).*/\1/p' \
+                  inst/include/meshioplusplus/abi_version.hpp)
+          test -n "$abi"
+          # The installed SOVERSION must BE that number -- the dynamic linker's
+          # half of the contract, and the reason the filename means something.
+          test -e "inst/lib/libmeshioplusplus_core_kratos.so.$abi"
+          # ...while the C library's stays 0. Its contract did not change.
+          test -e inst/lib/libmeshioplusplus.so.0
+          # Negative: a consumer holding headers that declare a different ABI.
+          cp -r inst/include /tmp/stale_include
+          sed -i "s/MESHIOPLUSPLUS_ABI_VERSION $abi/MESHIOPLUSPLUS_ABI_VERSION 99/" \
+            /tmp/stale_include/meshioplusplus/abi_version.hpp
+          if g++ -std=c++20 -DMESHIOPLUSPLUS_MESH_BACKEND_KRATOS -I /tmp/stale_include \
+               tests/consumer/abi_mismatch.cpp \
+               -L inst/lib -lmeshioplusplus_core_kratos -o /tmp/abi_bad 2> /tmp/abi.log; then
+            echo "::error::a TU compiled against ABI-99 headers linked against an ABI-$abi library"
+            exit 1
+          fi
+          # It must name the version the TU expected, not emit raw mangled
+          # references to whatever it happened to call.
+          grep -q 'abi_version_is_99' /tmp/abi.log
+          # Positive control, same shape as the backend guard's: without it the
+          # negative half would pass for a typo'd include path.
+          g++ -std=c++20 -DMESHIOPLUSPLUS_MESH_BACKEND_KRATOS -I inst/include \
+            tests/consumer/abi_mismatch.cpp \
+            -L inst/lib -lmeshioplusplus_core_kratos -o /tmp/abi_ok
+          LD_LIBRARY_PATH="$PWD/inst/lib" /tmp/abi_ok
+          # The guard must not be INERT. This is the v9.1.0 lesson made a gate:
+          # the backend guard shipped for a full release emitting no relocation at
+          # all, and passed every test anyone had written, because nobody looked
+          # for the reference itself.
+          g++ -std=c++20 -DMESHIOPLUSPLUS_MESH_BACKEND_KRATOS -I inst/include \
+            -c tests/consumer/abi_mismatch.cpp -o /tmp/abi_ok.o
+          nm -uC /tmp/abi_ok.o | grep -q "abi_version_is_$abi"
       # COMPONENTS must genuinely gate: this install has no Fortran, so asking
       # for it has to fail rather than silently succeed and break at link time.
       - name: COMPONENTS enforcement

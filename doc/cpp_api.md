@@ -165,7 +165,7 @@ See the [C API's package-manager notes](/c_api#package-managers-conan-vcpkg) for
 
 ## Limitations
 
-* The C++ **ABI is unstable** (`SOVERSION 0`). Rebuild consumers against a matching version.
+* The C++ **ABI is unstable**, and moves on its own counter: the variants install as `libmeshioplusplus_core_<backend>.so.<abi>`. Rebuild consumers when [`MESHIOPLUSPLUS_ABI_VERSION`](/abi) changes — not necessarily on every release.
 * Building several backends multiplies compile time — each is a full, independent compile of the core. Trim `MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS` to the ones you need.
 * An HDF5-enabled install requires **`C` among your project's languages** (above).
 * Names under `detail/` are installed (the public headers need them) but are **not** a stable API.
@@ -176,36 +176,81 @@ See the [C API's package-manager notes](/c_api#package-managers-conan-vcpkg) for
 The two installed components make **different** compatibility promises, and the
 CMake package's `SameMajorVersion` mode describes only the first.
 
-- **`COMPONENTS C`** (`libmeshioplusplus`, the flat C ABI) — `SOVERSION 0`, and
-  the option structs (`mio_read_opts`, `mio_write_opts`, `mio_xdmf_series_opts`)
-  grow only into their `reserved` tails, so a binary compiled against 9.0
-  headers keeps running against a 9.1 `.so`. Pin the major:
+### `COMPONENTS C` — pin the major
 
-  ```cmake
-  find_package(meshioplusplus 9 CONFIG REQUIRED COMPONENTS C)
-  ```
+`libmeshioplusplus`, the flat C ABI: `SOVERSION 0`, and the option structs
+(`mio_read_opts`, `mio_write_opts`, `mio_xdmf_series_opts`) grow only into their
+`reserved` tails, so a binary compiled against 9.0 headers keeps running against
+a 9.1 `.so`.
 
-- **`COMPONENTS CXX`** — **no ABI promise at all.** `Mesh`, `ModelPart` and
-  `GeometricalEntity` are header-defined types whose layout changes with the
-  headers; v9.1.0 added a member to `GeometricalEntity`, for instance. The
-  library and every consumer translation unit must be compiled from the *same*
-  meshio++ version, and a consumer must be rebuilt whenever meshio++ is:
+```cmake
+find_package(meshioplusplus 9 CONFIG REQUIRED COMPONENTS C)
+```
 
-  ```cmake
-  find_package(meshioplusplus 9.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
-  ```
+Nothing in the rest of this section applies to it: a C consumer compiles no
+meshio++ header that defines a type, so header layout cannot reach it.
 
-  **All three components are required.** Under `SameMajorVersion`, `EXACT` is a
-  full *string* comparison against the package version, so `9.3 EXACT` does not
-  match an installed `9.3.0` — it fails with "no configuration file … exactly
-  matches requested version". (Through v9.1.0 this page printed the
-  two-component form, which could never succeed.)
+### `COMPONENTS CXX` — pin the ABI version, or the exact release
 
-  For distribution packaging that means an exact `= <full three-component
-  version>` dependency, re-pinned on every release including patch releases —
-  not a range, and not `= 9.3.x`, which `EXACT` cannot express. The
-  `SOVERSION 0` on the C++ variants exists so the files install cleanly, not as
-  a compatibility claim.
+`Mesh`, `ModelPart`, `GeometricalEntity` and every `operations/*` options struct
+are **header-defined**: the consumer compiles them, so the consumer and the
+library must agree on them exactly. What that does *not* mean is that every
+release breaks — v9.3.0's entire installed-header delta was one new
+`inline constexpr` string, which cannot affect anything already compiled.
+
+[**`MESHIOPLUSPLUS_ABI_VERSION`**](/abi) is the thing that actually constrains
+you. It moves only when a change would break an already-compiled consumer;
+[`doc/abi.md`](/abi) states the criterion (layout changes and inline-body/ODR
+changes bump it; purely additive changes do not) and records the history.
+
+```cmake
+find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 3)
+  message(FATAL_ERROR
+    "this project needs meshio++ ABI 3, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+endif()
+```
+
+The conservative pin is still fully supported, and is the right choice if you
+would rather not reason about any of this:
+
+```cmake
+find_package(meshioplusplus 9.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+```
+
+**All three components are required.** Under `SameMajorVersion`, `EXACT` is a
+full *string* comparison against the package version, so `9.4 EXACT` does not
+match an installed `9.4.0` — it fails with "no configuration file … exactly
+matches requested version". (Through v9.1.0 this page printed the
+two-component form, which could never succeed.)
+
+For distribution packaging, `EXACT` means an exact `= <full three-component
+version>` dependency, re-pinned on every release including patch releases — not
+a range, and not `= 9.4.x`, which `EXACT` cannot express. Depending on the ABI
+version instead is what lets a package skip the releases that provably cannot
+affect it.
+
+### If you get it wrong, the build tells you
+
+Both knobs above are advisory — a consumer can ignore them, and a distro can
+rebuild a library in place under an unchanged version. Two things make a
+mismatch fail loudly instead of corrupting memory:
+
+- **`SOVERSION` tracks the ABI version.** The C++ variants install as
+  `libmeshioplusplus_core_<backend>.so.<abi>`, so the dynamic linker itself
+  refuses to load an incompatible library into an already-linked binary. (This
+  changed in v9.4.0; it used to be a flat `SOVERSION 0`, which promised nothing
+  and said so.)
+- **Every translation unit carries a link-time sentinel.** A TU compiled against
+  headers declaring a different ABI version fails to link with
+  `undefined reference to meshioplusplus::detail::abi_version_is_<N>()` naming
+  the version it expected. `MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK` opts out;
+  MSVC + a shared build is a documented gap, exactly as for the backend guard.
+
+Neither replaces the version pin — they catch the mistake at build time rather
+than preventing it — and neither can detect a consumer built with a different
+compiler or standard library, which is equally fatal and outside any library's
+reach. See [ABI compatibility](/abi) for the whole contract.
 
 The mesh-backend macro rides in `INTERFACE_COMPILE_DEFINITIONS`, so a CMake
 consumer cannot disagree about the backend by accident; a non-CMake consumer
