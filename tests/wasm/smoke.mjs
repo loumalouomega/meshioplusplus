@@ -550,6 +550,56 @@ step('refine rejects a cell type with no same-type subdivision', () => {
     assert.throws(() => m.refine(up));
 });
 
+step('refine: a selection is closed up conformingly, not propagated', () => {
+    // A 4 x 4 grid of quadrilaterals; refine one cell.
+    const n = 4;
+    const points = [];
+    for (let j = 0; j <= n; ++j)
+        for (let i = 0; i <= n; ++i) points.push(i, j, 0);
+    const conn = [];
+    for (let j = 0; j < n; ++j)
+        for (let i = 0; i < n; ++i) {
+            const a = j * (n + 1) + i;
+            conn.push(a, a + 1, a + n + 2, a + n + 1);
+        }
+    const grid = {
+        points: Float64Array.from(points),
+        dim: 3,
+        cells: [{ type: 'quad', data: Int32Array.from(conn), nodesPerCell: 4 }],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+
+    const uniform = m.refine(grid);
+    assert.equal(uniform.cells[0].data.length / 4, 64);
+
+    const selective = m.refine(grid, 1, false, { cells: [5], recordLevels: true });
+    assert.equal(selective.cells[0].type, 'quad', 'green quads stay quads');
+    const nsel = selective.cells[0].data.length / 4;
+    assert.ok(nsel > 16 && nsel < 64, `expected a local refinement, got ${nsel} cells`);
+    assert.ok('refine:level' in selective.cell_data, 'recordLevels attaches refine:level');
+
+    // Propagation is the always-works baseline: on a connected mesh it reaches
+    // every cell, which is exactly the uniform refinement.
+    const propagated = m.refine(grid, 1, false, { cells: [5], closure: 'propagate' });
+    assert.equal(propagated.cells[0].data.length / 4, 64);
+
+    // Two selectors at once is an error, surfaced as a catchable JS Error.
+    assert.throws(() => m.refine(grid, 1, false, { cells: [5], region: 'nope' }));
+
+    // And through the pipeline, which is path-based. The comparison key there is
+    // `compare` because `op` is the step's own discriminant.
+    m.writeMesh('/grid.vtu', grid);
+    const piped = m.convertSurfaceOps('/grid.vtu', '/grid-ref.vtp', [
+        { op: 'refine', cells: [5] },
+    ]);
+    assert.equal(piped.steps.length, 1);
+    assert.equal(piped.steps[0].op, 'refine');
+    const back = m.readMesh('/grid-ref.vtp');
+    assert.ok(back.cells[0].data.length > 0);
+});
+
 step('decimate: collapses a refined cube skin, pinning its creases', () => {
     // The skin of a refined cube: 24 quads -> 48 triangles, with every cube
     // edge/corner vertex a pinned feature; only face-interior vertices go.
