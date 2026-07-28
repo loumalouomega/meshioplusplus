@@ -200,7 +200,24 @@ export type OpSpec =
       mu?: number;
       fixBoundary?: boolean;
     }
-  | { op: 'refine'; levels?: number }
+  | {
+      op: 'refine';
+      levels?: number;
+      /** Global (block-major) indices of the cells to refine. */
+      cells?: number[];
+      /** Name of a cell or point region to refine. */
+      region?: string;
+      /**
+       * Scalar `cell_data` array to threshold, with `compare` and `value`. The
+       * comparison is spelled `compare` rather than `op` because `op` is this
+       * union's own discriminant.
+       */
+      array?: string;
+      compare?: RefineCompare;
+      value?: number;
+      closure?: RefineClosure;
+      recordLevels?: boolean;
+    }
   | {
       /**
        * QEM surface decimation. With no criterion given the pipeline chip
@@ -286,6 +303,43 @@ export type ConvertCellsMode = 'linearize' | 'simplexify' | 'elevate';
 
 /** Smoothing operator applied by `smooth`. `'taubin'` is shrink-free. */
 export type SmoothMethod = 'laplacian' | 'taubin';
+
+/**
+ * How `refine` resolves the hanging nodes a partial refinement leaves behind.
+ * `'redgreen'` promotes an affected cell's split-edge mask to the smallest
+ * admissible superset, keeping the extra refinement local. `'propagate'`
+ * promotes it straight to a full split: always conforming and defined for every
+ * cell type, but it converges to uniform refinement of the whole edge-connected
+ * component.
+ */
+export type RefineClosure = 'redgreen' | 'green' | 'propagate' | 'red';
+
+/** The comparison a `refine` predicate selector applies. */
+export type RefineCompare = '<' | '<=' | '>' | '>=' | '==' | '!=';
+
+/**
+ * Which cells `refine` should split. At most ONE of `cells`, `region` and
+ * `array` may be given; with none, every cell is refined.
+ */
+export interface RefineOptions {
+  /** Global (block-major) indices of the cells to refine. */
+  cells?: number[];
+  /**
+   * Name of a region to refine. A cell region selects its own cells, a point
+   * region every cell with any node in it; a side region is an error.
+   */
+  region?: string;
+  /** Name of a scalar `cell_data` array to threshold. */
+  array?: string;
+  /** The predicate's comparison (default `'<'`). */
+  compare?: RefineCompare;
+  /** The predicate's right-hand side. A non-finite cell value never matches. */
+  value?: number;
+  /** How to resolve hanging nodes (default `'redgreen'`). */
+  closure?: RefineClosure;
+  /** Attach the `refine:level` `cell_data` array. */
+  recordLevels?: boolean;
+}
 
 /** Where `decimate` places the surviving vertex of a collapsed edge. */
 export type DecimatePlacement = 'optimal' | 'midpoint' | 'endpoint';
@@ -770,15 +824,25 @@ export interface MeshioPlusPlusModule {
   convertCells(mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean): Mesh;
 
   /**
-   * Uniformly refine a mesh, subdividing every cell into same-type children
-   * (`line` → 2, `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8,
-   * `hexahedron` → 8). New nodes sit at edge / quad-face / body midpoints and
-   * are shared between neighbouring cells, so the result has no hanging nodes.
-   * `levels` applies the templates repeatedly; `0` returns an unchanged copy.
+   * Refine a mesh, subdividing cells into same-type children (`line` → 2,
+   * `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8).
+   * New nodes sit at edge / quad-face / body midpoints and are shared between
+   * neighbouring cells, so the result has no hanging nodes. `levels` applies
+   * the templates repeatedly; `0` returns an unchanged copy.
+   *
+   * With `options` naming a SUBSET of the cells — at most one of `cells`,
+   * `region` and `array` — only those are refined and the hanging nodes that
+   * leaves are resolved by `closure`, so the output is still conforming.
    * @throws {Error} on a higher-order cell, a `pyramid`, or a ragged
-   *   polygon/polyhedron block — none has a same-type subdivision.
+   *   polygon/polyhedron block — none has a same-type subdivision — and on more
+   *   than one selector, an unknown region, or an unusable predicate array.
    */
-  refine(mesh: Mesh, levels?: number, recordParentIds?: boolean): Mesh;
+  refine(
+    mesh: Mesh,
+    levels?: number,
+    recordParentIds?: boolean,
+    options?: RefineOptions
+  ): Mesh;
 
   /**
    * Decimate a SURFACE mesh by quadric-error-metric (Garland-Heckbert) edge
