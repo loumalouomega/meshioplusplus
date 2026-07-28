@@ -35,10 +35,67 @@ def add_args(parser):
         action="store_true",
         help="attach refine:parent_cell cell_data of the original cell indices",
     )
+    # At most one selector; with none, every cell is refined.
+    parser.add_argument(
+        "--cells",
+        type=str,
+        default=None,
+        help=(
+            "comma-separated global (block-major) cell indices to refine; "
+            "everything else is only split as far as conformity demands"
+        ),
+    )
+    parser.add_argument(
+        "--region",
+        type=str,
+        default=None,
+        help=(
+            "name of a region to refine (a cell region selects its cells, a "
+            "point region every cell touching it; a side region is an error)"
+        ),
+    )
+    parser.add_argument(
+        "--where",
+        type=str,
+        default=None,
+        metavar="EXPR",
+        help=(
+            "refine the cells satisfying a threshold on a scalar cell_data "
+            'array, e.g. --where "quality:scaled_jacobian < 0.3"'
+        ),
+    )
+    parser.add_argument(
+        "--closure",
+        type=str,
+        choices=("redgreen", "propagate"),
+        default="redgreen",
+        help=(
+            "how to resolve hanging nodes: redgreen keeps the extra refinement "
+            "local (default), propagate works for every cell type but reaches "
+            "the whole edge-connected component"
+        ),
+    )
+    parser.add_argument(
+        "--record-levels",
+        action="store_true",
+        help="attach refine:level cell_data of each cell's refinement depth",
+    )
 
 
 def refine_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
-    out = refine(mesh, levels=args.levels, record_parent_ids=args.record_parent_ids)
+    cells = None
+    if args.cells is not None:
+        cells = [int(x) for x in args.cells.split(",") if x.strip()]
+    out = refine(
+        mesh,
+        levels=args.levels,
+        record_parent_ids=args.record_parent_ids,
+        cells=cells,
+        region=args.region,
+        where=args.where,
+        closure=args.closure,
+        record_levels=args.record_levels,
+    )
     write(args.outfile, out, file_format=args.output_format)
     return 0
