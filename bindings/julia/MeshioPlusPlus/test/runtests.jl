@@ -331,6 +331,30 @@ end
     close(m)
 end
 
+@testset "operations: selective refine with a conforming closure" begin
+    m = fixture()
+
+    # One cell only. `cells` is 1-based here, like every index array this
+    # binding takes, and is shifted to the C API's 0-based numbering inside.
+    sel = refine(m; cells=[1], record_levels=true)
+    @test num_cells(sel.mesh) > num_cells(m)
+    @test num_cells(sel.mesh) < 16           # not the uniform 8-per-cell
+    @test "refine:level" in cell_data_names(sel.mesh)
+    close(sel.mesh)
+
+    # Propagation is the always-works baseline: on a connected mesh it reaches
+    # every cell, which is exactly the uniform refinement.
+    prop = refine(m; cells=[1], closure="propagate")
+    @test num_cells(prop.mesh) == 16
+    close(prop.mesh)
+
+    # At most one selector, and the closure name is validated before the call.
+    @test_throws Exception refine(m; cells=[1], region="anything")
+    @test_throws ArgumentError refine(m; closure="blue")
+    @test_throws ArgumentError refine(m; where_array="q", where_op="~=")
+    close(m)
+end
+
 @testset "operations: split and partition own their meshes" begin
     m = fixture()
 
