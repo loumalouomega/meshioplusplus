@@ -823,6 +823,22 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
     if (op == "refine") {
         meshioplusplus::RefineOptions opts;
         opts.mLevels = static_cast<int>(number("levels", 1));
+        opts.mRecordLevels = flag("recordLevels", false);
+        opts.mClosure = meshioplusplus::refine_closure_from_name(text("closure", ""));
+        val cells = rSpec["cells"];
+        if (!cells.isUndefined() && !cells.isNull()) {
+            const unsigned n = cells["length"].as<unsigned>();
+            opts.mCells.reserve(n);
+            for (unsigned i = 0; i < n; ++i)
+                opts.mCells.push_back(static_cast<std::int64_t>(cells[i].as<double>()));
+        }
+        opts.mRegion = text("region", "");
+        opts.mPredicateArray = text("array", "");
+        if (!opts.mPredicateArray.empty()) {
+            // `compare`, not `op`: `op` is the pipeline spec's own discriminant.
+            opts.mPredicateOp = meshioplusplus::refine_compare_from_name(text("compare", "<"));
+            opts.mPredicateValue = number("value", 0.0);
+        }
         auto result = meshioplusplus::refine(mesh, opts);
         rSteps.call<void>("push", step);
         return std::move(result.mMesh);
@@ -1288,17 +1304,47 @@ val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordP
 }
 
 /**
- * @brief Uniformly refine a mesh, subdividing every cell into same-type
- * children (line -> 2, triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8,
- * hexahedron -> 8). Returns the refined mesh; the index maps are not carried
- * across the JS boundary (use `recordParentIds` for the `refine:parent_cell`
- * cell_data instead).
+ * @brief Refine a mesh, subdividing cells into same-type children (line -> 2,
+ * triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8, hexahedron -> 8). Returns
+ * the refined mesh; the index maps are not carried across the JS boundary (use
+ * `recordParentIds` for the `refine:parent_cell` cell_data instead).
+ *
+ * `options` is an optional object selecting a SUBSET of the cells to refine —
+ * `{cells, region, array/op/value, closure, recordLevels}`, at most one
+ * selector — in which case the hanging nodes that leaves are resolved by the
+ * closure and the output is still conforming. Omit it to refine every cell.
  */
-val refine_js(const val& rMeshObj, int levels, bool recordParentIds) {
+val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::RefineOptions options;
         options.mLevels = levels;
         options.mRecordParentIds = recordParentIds;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            const auto text = [&rOptions](const char* key, const char* fallback) {
+                val v = rOptions[key];
+                return v.isUndefined() || v.isNull() ? std::string(fallback) : v.as<std::string>();
+            };
+            val cells = rOptions["cells"];
+            if (!cells.isUndefined() && !cells.isNull()) {
+                const unsigned n = cells["length"].as<unsigned>();
+                options.mCells.reserve(n);
+                for (unsigned i = 0; i < n; ++i)
+                    options.mCells.push_back(static_cast<std::int64_t>(cells[i].as<double>()));
+            }
+            options.mRegion = text("region", "");
+            options.mPredicateArray = text("array", "");
+            if (!options.mPredicateArray.empty()) {
+                options.mPredicateOp =
+                    meshioplusplus::refine_compare_from_name(text("compare", "<"));
+                val value = rOptions["value"];
+                options.mPredicateValue =
+                    value.isUndefined() || value.isNull() ? 0.0 : value.as<double>();
+            }
+            options.mClosure = meshioplusplus::refine_closure_from_name(text("closure", ""));
+            val levels_flag = rOptions["recordLevels"];
+            options.mRecordLevels =
+                !levels_flag.isUndefined() && !levels_flag.isNull() && levels_flag.as<bool>();
+        }
         return mesh_to_val(meshioplusplus::refine(val_to_mesh(rMeshObj), options).mMesh);
     });
 }
