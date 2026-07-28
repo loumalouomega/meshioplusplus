@@ -474,9 +474,64 @@ SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids) {
     return res;
 }
 
-SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids) {
-    mio_refine_result *r = mio_refine(mio_r_mesh(mesh), mio_r_int(levels, "levels"),
-                                      mio_r_bool(record_parent_ids, "record_parent_ids"));
+/* The mio_refine_closure / mio_refine_compare code for a name, or -1. */
+static int refine_closure_code(const char *name) {
+    if (name == NULL || name[0] == '\0') return MIO_REFINE_CLOSURE_REDGREEN;
+    if (strcmp(name, "redgreen") == 0 || strcmp(name, "red-green") == 0 ||
+        strcmp(name, "green") == 0)
+        return MIO_REFINE_CLOSURE_REDGREEN;
+    if (strcmp(name, "propagate") == 0 || strcmp(name, "red") == 0)
+        return MIO_REFINE_CLOSURE_PROPAGATE;
+    return -1;
+}
+
+static int refine_compare_code(const char *name) {
+    if (name == NULL || name[0] == '\0') return MIO_REFINE_LT;
+    if (strcmp(name, "<") == 0 || strcmp(name, "lt") == 0) return MIO_REFINE_LT;
+    if (strcmp(name, "<=") == 0 || strcmp(name, "le") == 0) return MIO_REFINE_LE;
+    if (strcmp(name, ">") == 0 || strcmp(name, "gt") == 0) return MIO_REFINE_GT;
+    if (strcmp(name, ">=") == 0 || strcmp(name, "ge") == 0) return MIO_REFINE_GE;
+    if (strcmp(name, "==") == 0 || strcmp(name, "=") == 0 || strcmp(name, "eq") == 0)
+        return MIO_REFINE_EQ;
+    if (strcmp(name, "!=") == 0 || strcmp(name, "ne") == 0) return MIO_REFINE_NE;
+    return -1;
+}
+
+SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SEXP region,
+                  SEXP where_array, SEXP where_op, SEXP where_value, SEXP closure,
+                  SEXP record_levels) {
+    mio_refine_opts opts;
+    int64_t *ids = NULL;
+    R_xlen_t n_ids = 0;
+    mio_refine_result *r = NULL;
+
+    mio_refine_opts_init(&opts);
+    opts.levels = (int32_t)mio_r_int(levels, "levels");
+    opts.record_parent_ids = mio_r_bool(record_parent_ids, "record_parent_ids");
+    opts.record_levels = mio_r_bool(record_levels, "record_levels");
+    opts.region = mio_r_opt_string(region);
+    opts.predicate_array = mio_r_opt_string(where_array);
+    if (where_value != R_NilValue && Rf_length(where_value) > 0)
+        opts.predicate_value = Rf_asReal(where_value);
+    opts.closure = refine_closure_code(mio_r_opt_string(closure));
+    if (opts.closure < 0) Rf_error("meshio++: refine: unknown closure");
+    opts.predicate_op = refine_compare_code(mio_r_opt_string(where_op));
+    if (opts.predicate_op < 0) Rf_error("meshio++: refine: unknown comparison");
+
+    if (cells != R_NilValue && Rf_length(cells) > 0) {
+        /* R has no native int64, so cell indices arrive as double (exact to
+         * 2^53) or integer; either way they are 1-based on this side. */
+        n_ids = Rf_length(cells);
+        ids = (int64_t *)R_alloc((size_t)n_ids, sizeof(int64_t));
+        for (R_xlen_t i = 0; i < n_ids; ++i) {
+            double v = (TYPEOF(cells) == REALSXP) ? REAL(cells)[i] : (double)INTEGER(cells)[i];
+            ids[i] = (int64_t)v - 1;
+        }
+        opts.cells = ids;
+        opts.num_cells = (int64_t)n_ids;
+    }
+
+    r = mio_refine_ex(mio_r_mesh(mesh), &opts);
     if (r == NULL) mio_r_fail("refine");
     SEXP pm = R_NilValue, cm = R_NilValue;
     if (result_maps(r, 1, &pm, &cm) == NULL) {
