@@ -15,19 +15,32 @@
 //
 //
 
-// Uniform mesh refinement: subdivide every cell into congruent same-type
-// children, inserting nodes at edge midpoints, quad-face centres and (for the
-// hexahedron) the body centre. Built entirely through the uniform mesh API so it
-// compiles under every mesh backend. See operations/refine.hpp for the contract.
+// Mesh refinement: subdivide cells into congruent same-type children, either
+// every cell (uniform) or a selected subset closed up to a conforming mesh
+// (selective). Built entirely through the uniform mesh API so it compiles under
+// every mesh backend. See operations/refine.hpp for the contract and
+// detail/refine_templates.hpp for the per-(type, split-edge mask) tables.
 //
-// Determinism: the subdivision templates are fixed, and the new-node numbering
-// comes from a serial dedup pass over a parallel-filled disjoint-slot buffer --
-// surface.cpp's phase-split idiom -- never from a concurrent hash insert. Output
-// is therefore byte-identical across backends and thread counts.
+// The whole operation is driven by one set: which EDGES carry a new mid-edge
+// node. Everything else is derived from it -- a quad face carries a centre iff
+// all four of its edges are split, a hexahedron carries a body node iff all
+// twelve are, and a cell's subdivision is the template for its own split-edge
+// mask. Two cells sharing an entity read the same edges, so they cannot
+// disagree, which is what makes conformity structural rather than sampled. With
+// every edge split those rules collapse into the uniform templates, which is
+// what makes uniform output byte-identical to the pre-selective implementation.
+//
+// Determinism: the split set grows under a monotone idempotent closure operator
+// (detail/refine_templates.hpp), so its fixed point does not depend on the order
+// cells are visited in; and the new-node numbering comes from a serial dedup
+// pass over a parallel-filled disjoint-slot buffer -- surface.cpp's phase-split
+// idiom -- never from a concurrent hash insert. Output is therefore
+// byte-identical across backends and thread counts.
 
 // System includes
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -42,114 +55,19 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/refine_templates.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
 
 namespace {
-
-// --- templates ---------------------------------------------------------------
-
-// One cell type's subdivision template.
-//
-// Local node ids in `mChildren` address a single flat space per parent cell:
-//   [0, mNumCorners)                          the parent's own corner nodes
-//   [mNumCorners, +num_edges)                 one node per edge, in
-//                                             cell_refine_edges() order
-//   [.., +num_quad_faces)                     one node per quad face, in
-//                                             cell_refine_quad_faces() order
-//   [.., +1) when mHasBody                    the body centre
-//
-// That layout is not arbitrary: it coincides exactly with each type's own
-// meshio/VTK full-Lagrange node numbering (line3, triangle6, quad9, tetra10,
-// wedge18, hexahedron27), which is what makes the tables below readable against
-// the reference elements.
-struct RefineTemplate {
-    CellType mType;
-    std::uint8_t mNumCorners;
-    bool mHasBody;
-    std::vector<std::vector<std::uint8_t>> mChildren;
-};
-
-const std::unordered_map<CellType, RefineTemplate>& refine_table() {
-    static const std::unordered_map<CellType, RefineTemplate> table = [] {
-        std::unordered_map<CellType, RefineTemplate> t;
-        // line3 layout: 2 = mid(0,1).
-        t[CellType::Line] = {CellType::Line, 2, false, {{0, 2}, {2, 1}}};
-        // triangle6 layout: 3 = m(0,1), 4 = m(1,2), 5 = m(2,0). The central
-        // child keeps the parent's winding.
-        t[CellType::Triangle] = {
-            CellType::Triangle, 3, false, {{0, 3, 5}, {3, 1, 4}, {5, 4, 2}, {3, 4, 5}}};
-        // quad9 layout: 4..7 = edge mids, 8 = face centre. Each parent corner
-        // stays in its own slot, which is what preserves the winding.
-        t[CellType::Quad] = {
-            CellType::Quad, 4, false, {{0, 4, 8, 7}, {4, 1, 5, 8}, {8, 5, 2, 6}, {7, 8, 6, 3}}};
-        // tetra10 layout: 4=m(0,1) 5=m(1,2) 6=m(0,2) 7=m(0,3) 8=m(1,3) 9=m(2,3).
-        // Four corner tetrahedra (each a half-scale homothety of the parent
-        // about its own vertex), then the residual octahedron split along the
-        // fixed interior diagonal 4-9 with the remaining ring 6->7->8->5. All
-        // eight children have exactly one eighth of the parent's volume.
-        t[CellType::Tetra] = {CellType::Tetra,
-                              4,
-                              false,
-                              {
-                                  {0, 4, 6, 7},
-                                  {4, 1, 5, 8},
-                                  {6, 5, 2, 9},
-                                  {7, 8, 9, 3},
-                                  {4, 9, 6, 7},
-                                  {4, 9, 7, 8},
-                                  {4, 9, 8, 5},
-                                  {4, 9, 5, 6},
-                              }};
-        // wedge18 layout: 6..8 bottom-triangle mids, 9..11 top-triangle mids,
-        // 12..14 vertical mids, 15..17 quad-face centres. A wedge refines as
-        // "triangle 1-to-4 split x 2 vertical levels", and the mid-level
-        // triangle's three edge midpoints ARE the three quad-face centres --
-        // which is why a wedge needs no body node.
-        t[CellType::Wedge] = {CellType::Wedge,
-                              6,
-                              false,
-                              {
-                                  {0, 6, 8, 12, 15, 17},
-                                  {6, 1, 7, 15, 13, 16},
-                                  {8, 7, 2, 17, 16, 14},
-                                  {6, 7, 8, 15, 16, 17},
-                                  {12, 15, 17, 3, 9, 11},
-                                  {15, 13, 16, 9, 4, 10},
-                                  {17, 16, 14, 11, 10, 5},
-                                  {15, 16, 17, 9, 10, 11},
-                              }};
-        // hexahedron27 layout: 8..19 edge mids, 20..25 face centres, 26 body.
-        // Rows follow the parent's own parametric (i,j,k) ordering over the
-        // 3x3x3 lattice, so orientation is preserved by construction.
-        t[CellType::Hexahedron] = {CellType::Hexahedron,
-                                   8,
-                                   true,
-                                   {
-                                       {0, 8, 24, 11, 16, 20, 26, 23},
-                                       {8, 1, 9, 24, 20, 17, 21, 26},
-                                       {11, 24, 10, 3, 23, 26, 22, 19},
-                                       {24, 9, 2, 10, 26, 21, 18, 22},
-                                       {16, 20, 26, 23, 4, 12, 25, 15},
-                                       {20, 17, 21, 26, 12, 5, 13, 25},
-                                       {23, 26, 22, 19, 15, 25, 14, 7},
-                                       {26, 21, 18, 22, 25, 13, 6, 14},
-                                   }};
-        return t;
-    }();
-    return table;
-}
-
-const RefineTemplate* refine_template(CellType Type) {
-    const auto& table = refine_table();
-    auto it = table.find(Type);
-    return it == table.end() ? nullptr : &it->second;
-}
 
 // --- new-node keys -----------------------------------------------------------
 
@@ -185,13 +103,20 @@ RefineNodeKey refine_face_key(std::int64_t p, std::int64_t q, std::int64_t r, st
 
 // Everything one input block contributes to the shared slot buffer.
 struct RefineBlockDesc {
-    const RefineTemplate* mpTpl = nullptr;
+    CellType mType = CellType::Custom;
     const std::vector<detail::CellEdgePair>* mpEdges = nullptr;
     const std::vector<detail::CellQuadFace>* mpFaces = nullptr;
+    // Per quad face, the bits of the four edges bounding it: that face carries a
+    // centre node exactly when all of them are split. Derived here once per
+    // block from cell_refine_edges/cell_refine_quad_faces rather than tabulated,
+    // so the two tables stay the only owners of the orderings.
+    std::vector<std::uint16_t> mFaceEdgeMasks;
+    std::uint8_t mNumCorners = 0;
+    std::uint16_t mFullMask = 0;
     std::size_t mNumCells = 0;
     std::size_t mSlotsPerCell = 0;
     std::size_t mFirstSlot = 0;  // into the flat edge+face key buffer
-    std::size_t mFirstBody = 0;  // into the body-centre range
+    std::size_t mFirstCell = 0;  // this block's base in the global cell numbering
 };
 
 // Reject, by name, every construct that cannot yield same-type children.
@@ -201,7 +126,7 @@ void refine_check_block(const Mesh::CellView& rBlock) {
             "refine: cannot refine ragged cell block '" + std::string(rBlock.Type()) +
             "' (polygon/polyhedron blocks have no same-type subdivision template)");
     const CellType type = cell_type_from_name(std::string(rBlock.Type()));
-    if (refine_template(type) != nullptr)
+    if (detail::refine_type_supported(type))
         return;
     if (type == CellType::Pyramid)
         throw std::invalid_argument(
@@ -210,6 +135,27 @@ void refine_check_block(const Mesh::CellView& rBlock) {
     throw std::invalid_argument("refine: cannot refine cell type '" + cell_type_name(type) +
                                 "' into same-type children (higher-order cells have no same-type "
                                 "subdivision template; linearize the mesh first)");
+}
+
+// The edge-bit mask of each quadrilateral face of a cell type.
+std::vector<std::uint16_t> refine_face_edge_masks(CellType Type) {
+    const std::vector<detail::CellEdgePair>& edges = detail::cell_refine_edges(Type);
+    const std::vector<detail::CellQuadFace>& faces = detail::cell_refine_quad_faces(Type);
+    std::vector<std::uint16_t> out(faces.size(), 0);
+    for (std::size_t f = 0; f < faces.size(); ++f) {
+        for (std::size_t i = 0; i < 4; ++i) {
+            const std::uint8_t a = faces[f][i];
+            const std::uint8_t b = faces[f][(i + 1) % 4];
+            for (std::size_t k = 0; k < edges.size(); ++k) {
+                if ((edges[k][0] == a && edges[k][1] == b) ||
+                    (edges[k][0] == b && edges[k][1] == a)) {
+                    out[f] = static_cast<std::uint16_t>(out[f] | (1u << k));
+                    break;
+                }
+            }
+        }
+    }
+    return out;
 }
 
 // The identity Int64 map [0, n).
@@ -229,33 +175,73 @@ NDArray refine_int64_vector(const std::vector<std::int64_t>& rValues) {
     return a;
 }
 
+// --- refine:level ------------------------------------------------------------
+
+// The per-cell refinement depth already recorded on a mesh, or an empty vector
+// when it carries none. A malformed array is ignored with a warning rather than
+// rejected: it is this operation's own bookkeeping, not user input, and
+// refusing to refine because of it would be a worse answer than recomputing it.
+std::vector<std::int64_t> refine_read_levels(const Mesh& rMesh,
+                                             const std::vector<RefineBlockDesc>& rDescs) {
+    if (!rMesh.HasCellData(kRefineLevelName))
+        return {};
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(kRefineLevelName) != nblocks) {
+        log::warn("refine: ignoring '{}': it does not cover every cell block.", kRefineLevelName);
+        return {};
+    }
+    std::vector<std::int64_t> levels;
+    levels.reserve(rDescs.empty() ? 0 : rDescs.back().mFirstCell + rDescs.back().mNumCells);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const NDArray& a = rMesh.CellData(kRefineLevelName, b);
+        if (detail::rows(a) != rDescs[b].mNumCells ||
+            (rDescs[b].mNumCells != 0 && a.Size() / rDescs[b].mNumCells != 1)) {
+            log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
+                      kRefineLevelName, b);
+            return {};
+        }
+        for (std::size_t c = 0; c < rDescs[b].mNumCells; ++c)
+            levels.push_back(detail::read_int(a, c));
+    }
+    return levels;
+}
+
 // --- one refinement level ----------------------------------------------------
 
-RefineResult refine_once(const Mesh& rMesh) {
+// Refine `rMesh` once. `pRedSeed` is a per-global-cell flag choosing the cells
+// to split fully; `nullptr` means every cell (the uniform path, which skips the
+// closure entirely). `pOutRedChildren`, when given, receives the same flag for
+// the OUTPUT cells -- set on the children of a fully-split parent -- which is
+// what the next level uses as its own seed.
+RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
+                         RefineClosure Closure, bool RecordLevels,
+                         std::vector<char>* pOutRedChildren) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     const std::size_t num_points = rMesh.NumPoints();
+    const bool propagate = Closure == RefineClosure::Propagate;
 
-    // --- pre-scan: validate, size the shared slot buffer and the body range ---
+    // --- phase 0: validate, size the shared slot buffer ----------------------
     std::vector<RefineBlockDesc> descs(nblocks);
     std::size_t total_slots = 0;
-    std::size_t total_bodies = 0;
+    std::size_t total_cells = 0;
     {
         std::size_t bi = 0;
         for (const auto cb : rMesh.CellRange()) {
             refine_check_block(cb);
             const CellType type = cell_type_from_name(std::string(cb.Type()));
             RefineBlockDesc& d = descs[bi];
-            d.mpTpl = refine_template(type);
+            d.mType = type;
             d.mpEdges = &detail::cell_refine_edges(type);
             d.mpFaces = &detail::cell_refine_quad_faces(type);
+            d.mFaceEdgeMasks = refine_face_edge_masks(type);
+            d.mNumCorners = static_cast<std::uint8_t>(cell_type_num_nodes(type));
+            d.mFullMask = detail::refine_full_mask(type);
             d.mNumCells = cb.NumCells();
             d.mSlotsPerCell = d.mpEdges->size() + d.mpFaces->size();
             d.mFirstSlot = total_slots;
+            d.mFirstCell = total_cells;
             total_slots += d.mNumCells * d.mSlotsPerCell;
-            if (d.mpTpl->mHasBody) {
-                d.mFirstBody = total_bodies;
-                total_bodies += d.mNumCells;
-            }
+            total_cells += d.mNumCells;
             ++bi;
         }
     }
@@ -294,36 +280,164 @@ RefineResult refine_once(const Mesh& rMesh) {
     }
 
     // --- phase 2: dedup in stored order (SERIAL -> deterministic) ------------
-    // This pass is the determinism pin: ids are handed out by a single sweep
+    // This pass is the determinism pin: entities are numbered by a single sweep
     // over the slot buffer, whose order is a pure function of (block, cell,
-    // slot). It must never become a concurrent insert.
-    std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> node_id;
-    node_id.reserve(total_slots * 2);
-    std::vector<RefineNodeKey> new_nodes;
-    std::vector<std::int64_t> slot_id(total_slots);
-    for (std::size_t i = 0; i < total_slots; ++i) {
-        auto it = node_id.find(keys[i]);
-        if (it == node_id.end()) {
-            const std::int64_t id = static_cast<std::int64_t>(num_points + new_nodes.size());
-            node_id.emplace(keys[i], id);
-            new_nodes.push_back(keys[i]);
-            slot_id[i] = id;
-        } else {
-            slot_id[i] = it->second;
+    // slot). It must never become a concurrent insert. Note it numbers
+    // ENTITIES, not points -- which of them earn a node is decided in phase 4,
+    // and the point ids are handed out in this same first-seen order there.
+    std::vector<RefineNodeKey> entities;
+    std::vector<std::int64_t> entity_of_slot(total_slots);
+    {
+        std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> entity_id;
+        entity_id.reserve(total_slots * 2);
+        for (std::size_t i = 0; i < total_slots; ++i) {
+            auto it = entity_id.find(keys[i]);
+            if (it == entity_id.end()) {
+                const std::int64_t id = static_cast<std::int64_t>(entities.size());
+                entity_id.emplace(keys[i], id);
+                entities.push_back(keys[i]);
+                entity_of_slot[i] = id;
+            } else {
+                entity_of_slot[i] = it->second;
+            }
         }
     }
     keys.clear();
-    keys.shrink_to_fit();  // phase 4 needs only slot_id; halves peak memory
-    node_id.clear();
+    keys.shrink_to_fit();  // nothing downstream needs the per-slot keys
+
+    // --- phase 3: the split-edge set and its closure -------------------------
+    // `masks[c]` is the promoted split-edge mask of cell c. Uniform refinement
+    // short-circuits the whole fixed point: every cell is red, every edge is
+    // split, and the promotion of a full mask is itself.
+    std::vector<std::uint16_t> masks(total_cells, 0);
+    std::vector<char> split(entities.size(), 0);
+    if (pRedSeed == nullptr) {
+        for (std::size_t b = 0; b < nblocks; ++b)
+            std::fill(masks.begin() + static_cast<std::ptrdiff_t>(descs[b].mFirstCell),
+                      masks.begin() +
+                          static_cast<std::ptrdiff_t>(descs[b].mFirstCell + descs[b].mNumCells),
+                      descs[b].mFullMask);
+        std::fill(split.begin(), split.end(), static_cast<char>(1));
+    } else {
+        // Seed: every edge of every selected cell.
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const RefineBlockDesc& d = descs[b];
+            const std::size_t nedges = d.mpEdges->size();
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                if (!(*pRedSeed)[d.mFirstCell + c])
+                    continue;
+                const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                for (std::size_t k = 0; k < nedges; ++k)
+                    split[static_cast<std::size_t>(entity_of_slot[slot0 + k])] = 1;
+            }
+        }
+        // Closure. `refine_promote_mask` is monotone and idempotent, so this
+        // converges to a unique fixed point no matter what order cells are
+        // visited in; the serial union below is what makes the *number* of
+        // sweeps reproducible too. Bounded by the entity count, since bits are
+        // only ever set.
+        std::vector<std::uint16_t> promoted(total_cells, 0);
+        for (;;) {
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const RefineBlockDesc& d = descs[b];
+                if (d.mNumCells == 0)
+                    continue;
+                const std::size_t nedges = d.mpEdges->size();
+                const CellType type = d.mType;
+                parallel_for(d.mNumCells, [&](std::size_t c) {
+                    const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                    std::uint16_t mask = 0;
+                    for (std::size_t k = 0; k < nedges; ++k) {
+                        if (split[static_cast<std::size_t>(entity_of_slot[slot0 + k])])
+                            mask = static_cast<std::uint16_t>(mask | (1u << k));
+                    }
+                    promoted[d.mFirstCell + c] = detail::refine_promote_mask(type, mask, propagate);
+                });
+            }
+            bool changed = false;
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const RefineBlockDesc& d = descs[b];
+                const std::size_t nedges = d.mpEdges->size();
+                for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                    const std::uint16_t mask = promoted[d.mFirstCell + c];
+                    if (mask == 0)
+                        continue;
+                    const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                    for (std::size_t k = 0; k < nedges; ++k) {
+                        if (!(mask & (1u << k)))
+                            continue;
+                        char& s = split[static_cast<std::size_t>(entity_of_slot[slot0 + k])];
+                        if (!s) {
+                            s = 1;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if (!changed)
+                break;
+        }
+        masks = std::move(promoted);
+    }
+
+    // --- phase 4: which entities earn a node, and their point ids ------------
+    // An edge entity earns one iff it is split; a quad-face entity iff all four
+    // of the bounding edges are. Both cells sharing an entity evaluate the same
+    // predicate over the same edges, so they cannot disagree -- that is the
+    // conformity argument, and it is why nothing here is tabulated per template.
+    std::vector<std::int64_t> node_of_entity(entities.size(), -1);
+    std::vector<std::int64_t> kept_entities;  // entity index, in id order
+    {
+        std::vector<char> needs(entities.size(), 0);
+        for (std::size_t e = 0; e < entities.size(); ++e)
+            needs[e] = entities[e][0] < 0 ? split[e] : 0;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const RefineBlockDesc& d = descs[b];
+            const std::size_t nedges = d.mpEdges->size();
+            const std::size_t nfaces = d.mpFaces->size();
+            if (nfaces == 0 || d.mNumCells == 0)
+                continue;
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                const std::uint16_t mask = masks[d.mFirstCell + c];
+                const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                for (std::size_t f = 0; f < nfaces; ++f) {
+                    const std::uint16_t need = d.mFaceEdgeMasks[f];
+                    if ((mask & need) == need)
+                        needs[static_cast<std::size_t>(entity_of_slot[slot0 + nedges + f])] = 1;
+                }
+            }
+        }
+        kept_entities.reserve(entities.size());
+        for (std::size_t e = 0; e < entities.size(); ++e) {
+            if (!needs[e])
+                continue;
+            node_of_entity[e] = static_cast<std::int64_t>(num_points + kept_entities.size());
+            kept_entities.push_back(static_cast<std::int64_t>(e));
+        }
+    }
 
     // Body centres are unique per cell and so need no dedup, but their ids only
-    // become known once the deduped range is closed.
-    const std::size_t body_base = num_points + new_nodes.size();
+    // become known once the deduped range is closed. Only a fully split
+    // hexahedron has one.
+    const std::size_t body_base = num_points + kept_entities.size();
+    std::vector<std::int64_t> body_of_cell(total_cells, -1);
+    std::size_t total_bodies = 0;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const RefineBlockDesc& d = descs[b];
+        if (d.mType != CellType::Hexahedron)
+            continue;
+        for (std::size_t c = 0; c < d.mNumCells; ++c) {
+            if (masks[d.mFirstCell + c] != d.mFullMask)
+                continue;
+            body_of_cell[d.mFirstCell + c] = static_cast<std::int64_t>(body_base + total_bodies);
+            ++total_bodies;
+        }
+    }
     const std::size_t num_points_out = body_base + total_bodies;
 
     Mesh out;
 
-    // --- phase 3: points -----------------------------------------------------
+    // --- phase 5: points -----------------------------------------------------
     // A new node's coordinate is the mean of its entity's corners. The mean is
     // order-independent, so two neighbours sharing an entity compute
     // bit-identical coordinates from the same sorted key -- no tie-break rule.
@@ -332,8 +446,8 @@ RefineResult refine_once(const Mesh& rMesh) {
         const std::size_t dim = detail::cols(points);
         NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points_out, dim});
         std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
-        parallel_for_bw(new_nodes.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = new_nodes[i];
+        parallel_for_bw(kept_entities.size(), [&](std::size_t i) {
+            const RefineNodeKey& key = entities[static_cast<std::size_t>(kept_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
             const double inv = 1.0 / static_cast<double>(4 - first);
             for (std::size_t k = 0; k < dim; ++k) {
@@ -348,14 +462,16 @@ RefineResult refine_once(const Mesh& rMesh) {
             std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
                 const RefineBlockDesc& d = descs[bi++];
-                if (!d.mpTpl->mHasBody || d.mNumCells == 0)
+                if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
                     continue;
                 const NDArray& conn = cb.Conn();
                 const std::size_t npc = cb.NodesPerCell();
-                const std::size_t ncorners = d.mpTpl->mNumCorners;
+                const std::size_t ncorners = d.mNumCorners;
                 const double inv = 1.0 / static_cast<double>(ncorners);
                 parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                    const std::size_t dst = body_base + d.mFirstBody + c;
+                    const std::int64_t body = body_of_cell[d.mFirstCell + c];
+                    if (body < 0)
+                        return;
                     for (std::size_t k = 0; k < dim; ++k) {
                         double sum = 0.0;
                         for (std::size_t n = 0; n < ncorners; ++n) {
@@ -363,7 +479,8 @@ RefineResult refine_once(const Mesh& rMesh) {
                                 static_cast<std::size_t>(detail::read_int(conn, c * npc + n));
                             sum += detail::read_double(points, p * dim + k);
                         }
-                        detail::write_double(new_points, dst * dim + k, sum * inv);
+                        detail::write_double(new_points, static_cast<std::size_t>(body) * dim + k,
+                                             sum * inv);
                     }
                 });
             }
@@ -371,52 +488,77 @@ RefineResult refine_once(const Mesh& rMesh) {
         out.AssignPoints(std::move(new_points));
     }
 
-    // --- phase 4: child connectivity ----------------------------------------
+    // --- phase 6: child counts, then connectivity ----------------------------
+    // A cell's child count depends on its mask, so the first-child map is a
+    // serial ascending prefix sum rather than a constant stride. It stays
+    // monotone with every entry non-negative and every run contiguous, which is
+    // what keeps detail/region_remap.hpp's FirstChild contract valid.
     std::vector<NDArray> cell_maps;
     cell_maps.reserve(nblocks);
+    std::vector<std::vector<std::int64_t>> parent_of_child(nblocks);
+    std::vector<std::vector<char>> red_child(nblocks);
     {
         std::size_t bi = 0;
         for (const auto cb : rMesh.CellRange()) {
-            const RefineBlockDesc& d = descs[bi++];
-            const RefineTemplate& tpl = *d.mpTpl;
-            const std::size_t nchildren = tpl.mChildren.size();
-            const std::size_t out_npc = tpl.mChildren[0].size();
+            const std::size_t b = bi++;
+            const RefineBlockDesc& d = descs[b];
+            const std::size_t out_npc = static_cast<std::size_t>(cell_type_num_nodes(d.mType));
             const NDArray& conn = cb.Conn();
             const std::size_t npc = cb.NodesPerCell();
             const std::size_t nedges = d.mpEdges->size();
             const std::size_t nfaces = d.mpFaces->size();
-            const std::size_t ncorners = tpl.mNumCorners;
+            const std::size_t ncorners = d.mNumCorners;
 
-            NDArray out_conn = NDArray::Uninit(DType::Int64, {d.mNumCells * nchildren, out_npc});
+            std::vector<std::int64_t> first_child(d.mNumCells);
+            std::size_t total_children = 0;
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                first_child[c] = static_cast<std::int64_t>(total_children);
+                total_children +=
+                    detail::refine_mask_template(d.mType, masks[d.mFirstCell + c]).NumChildren();
+            }
+            parent_of_child[b].resize(total_children);
+            red_child[b].resize(total_children);
+
+            NDArray out_conn = NDArray::Uninit(DType::Int64, {total_children, out_npc});
             std::int64_t* dst = out_conn.As<std::int64_t>();
             parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                // Resolve the parent's local node space once per cell.
+                // Resolve the parent's local node space once per cell. A slot
+                // whose entity earned no node stays -1; a template never
+                // references one, by construction of the node rules in phase 4.
                 std::int64_t local[27];
                 for (std::size_t n = 0; n < ncorners; ++n)
                     local[n] = detail::read_int(conn, c * npc + n);
                 const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
                 for (std::size_t s = 0; s < nedges + nfaces; ++s)
-                    local[ncorners + s] = slot_id[slot0 + s];
-                if (tpl.mHasBody)
-                    local[ncorners + nedges + nfaces] =
-                        static_cast<std::int64_t>(body_base + d.mFirstBody + c);
-                for (std::size_t k = 0; k < nchildren; ++k) {
-                    const std::vector<std::uint8_t>& child = tpl.mChildren[k];
-                    std::int64_t* row = dst + (c * nchildren + k) * out_npc;
+                    local[ncorners + s] =
+                        node_of_entity[static_cast<std::size_t>(entity_of_slot[slot0 + s])];
+                local[ncorners + nedges + nfaces] = body_of_cell[d.mFirstCell + c];
+
+                const std::uint16_t mask = masks[d.mFirstCell + c];
+                const detail::RefineMaskTemplate& tpl = detail::refine_mask_template(d.mType, mask);
+                // The one choice made from GLOBAL node ids rather than the
+                // template's local numbering, so that the cell across the
+                // affected face resolves it the same way.
+                const bool alt = tpl.HasVariant() && local[tpl.mTieB] < local[tpl.mTieA];
+                const std::vector<std::vector<std::uint8_t>>& children =
+                    alt ? tpl.mChildrenAlt : tpl.mChildren;
+                const bool is_red = mask == d.mFullMask && mask != 0;
+                for (std::size_t k = 0; k < children.size(); ++k) {
+                    const std::vector<std::uint8_t>& child = children[k];
+                    const std::size_t row_index = static_cast<std::size_t>(first_child[c]) + k;
+                    std::int64_t* row = dst + row_index * out_npc;
                     for (std::size_t n = 0; n < out_npc; ++n)
                         row[n] = local[child[n]];
+                    parent_of_child[b][row_index] = static_cast<std::int64_t>(c);
+                    red_child[b][row_index] = is_red ? 1 : 0;
                 }
             });
-            out.AddCellBlock(cell_type_name(tpl.mType), std::move(out_conn));
-
-            std::vector<std::int64_t> first_child(d.mNumCells);
-            for (std::size_t c = 0; c < d.mNumCells; ++c)
-                first_child[c] = static_cast<std::int64_t>(c * nchildren);
+            out.AddCellBlock(cell_type_name(d.mType), std::move(out_conn));
             cell_maps.push_back(refine_int64_vector(first_child));
         }
     }
 
-    // --- phase 5: point_data -------------------------------------------------
+    // --- phase 7: point_data -------------------------------------------------
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
         if (detail::rows(a) != num_points) {
@@ -428,8 +570,8 @@ RefineResult refine_once(const Mesh& rMesh) {
         shape[0] = num_points_out;
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
-        parallel_for_bw(new_nodes.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = new_nodes[i];
+        parallel_for_bw(kept_entities.size(), [&](std::size_t i) {
+            const RefineNodeKey& key = entities[static_cast<std::size_t>(kept_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
             const double inv = 1.0 / static_cast<double>(4 - first);
             for (std::size_t k = 0; k < ncomp; ++k) {
@@ -443,14 +585,16 @@ RefineResult refine_once(const Mesh& rMesh) {
             std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
                 const RefineBlockDesc& d = descs[bi++];
-                if (!d.mpTpl->mHasBody || d.mNumCells == 0)
+                if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
                     continue;
                 const NDArray& conn = cb.Conn();
                 const std::size_t npc = cb.NodesPerCell();
-                const std::size_t ncorners = d.mpTpl->mNumCorners;
+                const std::size_t ncorners = d.mNumCorners;
                 const double inv = 1.0 / static_cast<double>(ncorners);
                 parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                    const std::size_t dst = body_base + d.mFirstBody + c;
+                    const std::int64_t body = body_of_cell[d.mFirstCell + c];
+                    if (body < 0)
+                        return;
                     for (std::size_t k = 0; k < ncomp; ++k) {
                         double sum = 0.0;
                         for (std::size_t n = 0; n < ncorners; ++n) {
@@ -458,7 +602,8 @@ RefineResult refine_once(const Mesh& rMesh) {
                                 static_cast<std::size_t>(detail::read_int(conn, c * npc + n));
                             sum += detail::read_double(a, p * ncomp + k);
                         }
-                        detail::write_double(b, dst * ncomp + k, sum * inv);
+                        detail::write_double(b, static_cast<std::size_t>(body) * ncomp + k,
+                                             sum * inv);
                     }
                 });
             }
@@ -466,8 +611,11 @@ RefineResult refine_once(const Mesh& rMesh) {
         out.AddPointData(name, std::move(b));
     }
 
-    // --- phase 6: cell_data replicated parent -> children --------------------
+    // --- phase 8: cell_data gathered parent -> children ----------------------
+    const std::vector<std::int64_t> base_levels = refine_read_levels(rMesh, descs);
     for (const std::string& name : rMesh.CellDataNames()) {
+        if (name == kRefineLevelName)
+            continue;  // recomputed below, never replicated
         const std::size_t ndata = rMesh.CellDataNumBlocks(name);
         std::vector<NDArray> blocks;
         blocks.reserve(ndata);
@@ -478,22 +626,51 @@ RefineResult refine_once(const Mesh& rMesh) {
                 blocks.push_back(detail::data_owned_copy(a));
                 continue;
             }
-            const std::size_t nchildren = descs[b].mpTpl->mChildren.size();
+            const std::vector<std::int64_t>& parents = parent_of_child[b];
             std::vector<std::size_t> shape = a.Shape();
-            shape[0] = in_rows * nchildren;
+            shape[0] = parents.size();
             const std::size_t row_bytes = a.Nbytes() / in_rows;
-            NDArray replicated = NDArray::Uninit(a.Dtype(), std::move(shape));
+            NDArray gathered = NDArray::Uninit(a.Dtype(), std::move(shape));
             const std::byte* src = a.Data();
-            std::byte* dst = replicated.Data();
-            parallel_for_bw(in_rows * nchildren, [&](std::size_t i) {
-                std::memcpy(dst + i * row_bytes, src + (i / nchildren) * row_bytes, row_bytes);
+            std::byte* dst = gathered.Data();
+            parallel_for_bw(parents.size(), [&](std::size_t i) {
+                std::memcpy(dst + i * row_bytes,
+                            src + static_cast<std::size_t>(parents[i]) * row_bytes, row_bytes);
             });
-            blocks.push_back(std::move(replicated));
+            blocks.push_back(std::move(gathered));
         }
         out.AddCellData(name, std::move(blocks));
     }
+
+    // refine:level. Red children increment; green and untouched cells inherit,
+    // because a green split is a closure, not a refinement.
+    if (RecordLevels || !base_levels.empty()) {
+        std::vector<NDArray> blocks;
+        blocks.reserve(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const std::vector<std::int64_t>& parents = parent_of_child[b];
+            NDArray a = NDArray::Uninit(DType::Int64, {parents.size(), 1});
+            std::int64_t* dst = a.As<std::int64_t>();
+            for (std::size_t i = 0; i < parents.size(); ++i) {
+                const std::size_t parent =
+                    descs[b].mFirstCell + static_cast<std::size_t>(parents[i]);
+                const std::int64_t base = base_levels.empty() ? 0 : base_levels[parent];
+                dst[i] = base + (red_child[b][i] ? 1 : 0);
+            }
+            blocks.push_back(std::move(a));
+        }
+        out.AddCellData(kRefineLevelName, std::move(blocks));
+    }
+
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    if (pOutRedChildren != nullptr) {
+        pOutRedChildren->clear();
+        for (std::size_t b = 0; b < nblocks; ++b)
+            pOutRedChildren->insert(pOutRedChildren->end(), red_child[b].begin(),
+                                    red_child[b].end());
+    }
 
     RefineResult res;
     res.mMesh = std::move(out);
@@ -551,7 +728,7 @@ void refine_attach_parent_ids(RefineResult& rResult) {
         }
         blocks.push_back(std::move(a));
     }
-    rResult.mMesh.AddCellData("refine:parent_cell", std::move(blocks));
+    rResult.mMesh.AddCellData(kRefineParentCellName, std::move(blocks));
 }
 
 // Cells the next level would produce, for the pre-flight size warning.
@@ -560,22 +737,202 @@ std::size_t refine_projected_cells(const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange()) {
         if (cb.IsRagged())
             continue;
-        const RefineTemplate* tpl = refine_template(cell_type_from_name(std::string(cb.Type())));
-        total += cb.NumCells() * (tpl == nullptr ? 1 : tpl->mChildren.size());
+        const CellType type = cell_type_from_name(std::string(cb.Type()));
+        const std::size_t children =
+            detail::refine_mask_template(type, detail::refine_full_mask(type)).NumChildren();
+        total += cb.NumCells() * (children == 0 ? 1 : children);
     }
     return total;
+}
+
+// --- selection ---------------------------------------------------------------
+
+bool refine_has_selector(const RefineOptions& rOptions) {
+    return !rOptions.mCells.empty() || !rOptions.mRegion.empty() ||
+           !rOptions.mPredicateArray.empty();
+}
+
+bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
+    // A non-finite value never matches. compute_quality deliberately reports NaN
+    // where a metric does not apply, so a predicate over `quality:*` on a mixed
+    // mesh is the headline use case -- rejecting the array would break it.
+    if (!std::isfinite(Value))
+        return false;
+    switch (Op) {
+        case RefineCompare::Less:
+            return Value < Rhs;
+        case RefineCompare::LessEqual:
+            return Value <= Rhs;
+        case RefineCompare::Greater:
+            return Value > Rhs;
+        case RefineCompare::GreaterEqual:
+            return Value >= Rhs;
+        case RefineCompare::Equal:
+            return Value == Rhs;
+        case RefineCompare::NotEqual:
+            return Value != Rhs;
+    }
+    return false;
+}
+
+std::string refine_region_names(const Mesh& rMesh) {
+    std::string names;
+    for (const std::string& n : rMesh.RegionNames()) {
+        if (!names.empty())
+            names += ", ";
+        names += "'" + n + "'";
+    }
+    return names.empty() ? "none" : names;
+}
+
+// Resolve the selector into a per-global-cell red flag. Only called when
+// `refine_has_selector`, so "no selector" and "a selector that matched nothing"
+// stay distinguishable -- the latter is a legitimate request for an unchanged
+// mesh, not a silent fall-through to refining everything.
+std::vector<char> refine_resolve_selection(const Mesh& rMesh, const RefineOptions& rOptions) {
+    const int num_set = (rOptions.mCells.empty() ? 0 : 1) + (rOptions.mRegion.empty() ? 0 : 1) +
+                        (rOptions.mPredicateArray.empty() ? 0 : 1);
+    if (num_set > 1)
+        throw std::invalid_argument(
+            "refine: set at most one cell selector -- cells, region or predicate array -- but " +
+            std::to_string(num_set) + " were given");
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::int64_t ncells = detail::total_cells(bases);
+    std::vector<char> red(static_cast<std::size_t>(ncells), 0);
+
+    if (!rOptions.mCells.empty()) {
+        for (std::int64_t g : rOptions.mCells) {
+            if (g < 0 || g >= ncells)
+                throw std::invalid_argument("refine: cell index " + std::to_string(g) +
+                                            " is out of range; the mesh has " +
+                                            std::to_string(ncells) + " cells");
+            red[static_cast<std::size_t>(g)] = 1;  // duplicates collapse here
+        }
+        return red;
+    }
+
+    if (!rOptions.mRegion.empty()) {
+        std::size_t idx = rMesh.FindRegion(rOptions.mRegion, RegionKind::Cell);
+        if (idx != Mesh::npos) {
+            const Region& region = rMesh.Region(idx);
+            const std::int64_t* entries = region.Entries();
+            for (std::size_t i = 0; i < region.NumEntries(); ++i) {
+                const std::int64_t g = entries[i];
+                if (g >= 0 && g < ncells)
+                    red[static_cast<std::size_t>(g)] = 1;
+            }
+            return red;
+        }
+        idx = rMesh.FindRegion(rOptions.mRegion, RegionKind::Point);
+        if (idx != Mesh::npos) {
+            const Region& region = rMesh.Region(idx);
+            std::vector<char> in_region(rMesh.NumPoints(), 0);
+            const std::int64_t* entries = region.Entries();
+            for (std::size_t i = 0; i < region.NumEntries(); ++i) {
+                const std::int64_t p = entries[i];
+                if (p >= 0 && p < static_cast<std::int64_t>(rMesh.NumPoints()))
+                    in_region[static_cast<std::size_t>(p)] = 1;
+            }
+            // A cell is selected when ANY of its nodes is in the region. "All"
+            // would select nothing at all for a point set describing a surface.
+            std::size_t b = 0;
+            for (const auto cb : rMesh.CellRange()) {
+                const std::size_t base = static_cast<std::size_t>(bases[b++]);
+                if (cb.IsRagged())
+                    continue;  // rejected by refine_check_block later, by name
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                    for (std::size_t n = 0; n < npc; ++n) {
+                        const std::int64_t p = detail::read_int(conn, c * npc + n);
+                        if (p >= 0 && p < static_cast<std::int64_t>(in_region.size()) &&
+                            in_region[static_cast<std::size_t>(p)]) {
+                            red[base + c] = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            return red;
+        }
+        if (rMesh.FindRegion(rOptions.mRegion, RegionKind::Side) != Mesh::npos)
+            throw std::invalid_argument(
+                "refine: region '" + rOptions.mRegion +
+                "' is a side region; a facet is not a cell, so it cannot select what to refine "
+                "(use a cell or point region)");
+        throw std::invalid_argument("refine: no region named '" + rOptions.mRegion +
+                                    "' (available: " + refine_region_names(rMesh) + ")");
+    }
+
+    const std::string& name = rOptions.mPredicateArray;
+    if (!rMesh.HasCellData(name))
+        throw std::invalid_argument("refine: " +
+                                    data_unknown_key_message(rMesh, DataLocation::Cell, name));
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(name) != nblocks)
+        throw std::invalid_argument("refine: cell_data '" + name +
+                                    "' does not cover every cell block");
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& a = rMesh.CellData(name, b);
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+        ++b;
+        if (detail::rows(a) != cb.NumCells())
+            throw std::invalid_argument("refine: cell_data '" + name + "' has " +
+                                        std::to_string(detail::rows(a)) + " rows on a block of " +
+                                        std::to_string(cb.NumCells()) + " cells");
+        if (cb.NumCells() != 0 && data_num_components(a) != 1)
+            throw std::invalid_argument("refine: cell_data '" + name +
+                                        "' must be scalar (one value per cell) to be used as a "
+                                        "refinement predicate");
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            if (refine_compare_value(detail::read_double(a, c), rOptions.mPredicateOp,
+                                     rOptions.mPredicateValue))
+                red[base + c] = 1;
+        }
+    }
+    return red;
 }
 
 }  // namespace
 
 // --- public API --------------------------------------------------------------
 
+RefineClosure refine_closure_from_name(const std::string& rName) {
+    if (rName.empty() || rName == "redgreen" || rName == "red-green" || rName == "green")
+        return RefineClosure::RedGreen;
+    if (rName == "propagate" || rName == "red")
+        return RefineClosure::Propagate;
+    throw std::invalid_argument("refine: unknown closure '" + rName +
+                                "' (expected 'redgreen'/'green' or 'propagate')");
+}
+
+RefineCompare refine_compare_from_name(const std::string& rName) {
+    if (rName == "<" || rName == "lt")
+        return RefineCompare::Less;
+    if (rName == "<=" || rName == "le")
+        return RefineCompare::LessEqual;
+    if (rName == ">" || rName == "gt")
+        return RefineCompare::Greater;
+    if (rName == ">=" || rName == "ge")
+        return RefineCompare::GreaterEqual;
+    if (rName == "==" || rName == "=" || rName == "eq")
+        return RefineCompare::Equal;
+    if (rName == "!=" || rName == "ne")
+        return RefineCompare::NotEqual;
+    throw std::invalid_argument("refine: unknown comparison '" + rName +
+                                "' (expected '<', '<=', '>', '>=', '==' or '!=')");
+}
+
 namespace {
 
 // Carry the input's named regions onto the output. The cell map is FirstChild:
-// a parent's children occupy a contiguous run. Side regions are dropped — a
-// child cell is a new cell of a subdivided topology, so its facets have no
-// correspondence with the parent's. See detail/region_remap.hpp.
+// a parent's children occupy a contiguous run -- of length 1 for a cell the
+// selection left untouched, which is still a run and still non-negative. Side
+// regions are dropped: a child cell is a new cell of a subdivided topology, so
+// its facets have no correspondence with the parent's. See
+// detail/region_remap.hpp.
 void refine_carry_regions(const Mesh& rIn, RefineResult& rRes) {
     detail::RegionRemap rmap;
     rmap.pPointMap = &rRes.mPointMap;
@@ -588,6 +945,14 @@ void refine_carry_regions(const Mesh& rIn, RefineResult& rRes) {
 }  // namespace
 
 RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
+    // Resolve (and validate) the selection against the INPUT mesh, before the
+    // level loop: a selector names input cells, and level k > 1 refines the
+    // children of level k - 1's red cells rather than re-resolving it.
+    const bool selective = refine_has_selector(rOptions);
+    std::vector<char> seed;
+    if (selective)
+        seed = refine_resolve_selection(rMesh, rOptions);
+
     if (rOptions.mLevels <= 0) {
         RefineResult res;
         res.mMesh = detail::clone_mesh(rMesh);
@@ -602,17 +967,27 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     }
 
     // Refinement is exponential in `levels`; the failure mode at depth is a
-    // bad_alloc rather than a wrong answer, so say so before it happens.
-    static constexpr std::size_t refine_warn_cells = 20'000'000;
-    if (refine_projected_cells(rMesh) > refine_warn_cells)
-        log::warn("refine: one level of this mesh yields ~{} cells; {} level(s) requested.",
-                  refine_projected_cells(rMesh), rOptions.mLevels);
+    // bad_alloc rather than a wrong answer, so say so before it happens. Only
+    // meaningful for the uniform path -- a selection's growth is bounded by the
+    // closure, which is exactly what cannot be predicted from the cell count.
+    if (!selective) {
+        static constexpr std::size_t refine_warn_cells = 20'000'000;
+        const std::size_t projected = refine_projected_cells(rMesh);
+        if (projected > refine_warn_cells)
+            log::warn("refine: one level of this mesh yields ~{} cells; {} level(s) requested.",
+                      projected, rOptions.mLevels);
+    }
 
-    RefineResult acc = refine_once(rMesh);
+    std::vector<char> next_seed;
+    RefineResult acc = refine_once(rMesh, selective ? &seed : nullptr, rOptions.mClosure,
+                                   rOptions.mRecordLevels, selective ? &next_seed : nullptr);
     for (int level = 1; level < rOptions.mLevels; ++level) {
-        RefineResult next = refine_once(acc.mMesh);  // borrows acc.mMesh
-        refine_compose_maps(acc, next);              // reads next's maps first
-        acc.mMesh = std::move(next.mMesh);           // sequenced after
+        const std::vector<char> current = std::move(next_seed);
+        RefineResult next =
+            refine_once(acc.mMesh, selective ? &current : nullptr, rOptions.mClosure,
+                        rOptions.mRecordLevels, selective ? &next_seed : nullptr);
+        refine_compose_maps(acc, next);     // reads next's maps first
+        acc.mMesh = std::move(next.mMesh);  // sequenced after
     }
     if (rOptions.mRecordParentIds)
         refine_attach_parent_ids(acc);
