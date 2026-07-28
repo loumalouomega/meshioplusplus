@@ -505,8 +505,8 @@ meshioplusplus convert-cells in.msh out.vtu --mode elevate
 
 ## meshioplusplus refine
 
-Uniformly refine a mesh, subdividing every cell into same-type children (see
-[refine](/refine)).
+Refine a mesh, subdividing cells into same-type children — every cell, or a
+selected subset with a conforming closure (see [refine](/refine)).
 
 ```
 meshioplusplus refine [options] INFILE OUTFILE
@@ -516,7 +516,18 @@ meshioplusplus refine [options] INFILE OUTFILE
 |--------|-------------|
 | `--levels N` | How many times to subdivide (default `1`) |
 | `--record-parent-ids` | Attach `refine:parent_cell` cell_data of the original cell indices |
+| `--cells i,j,k` | Refine only these global (block-major) cells |
+| `--region NAME` | Refine a named region (a cell region selects its cells, a point region every cell touching it; a side region is an error) |
+| `--where "EXPR"` | Refine the cells satisfying a threshold on a scalar cell_data array, e.g. `"quality:scaled_jacobian < 0.3"` |
+| `--closure redgreen\|propagate` | How to resolve hanging nodes (default `redgreen`) |
+| `--record-levels` | Attach `refine:level` cell_data of each cell's refinement depth |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+At most one of `--cells`, `--region` and `--where` may be given; with none, every
+cell is refined. `--closure redgreen` keeps the extra refinement local — a single
+refined quadrilateral costs one row of a structured grid, a hexahedron one dual
+sheet. `--closure propagate` is defined for every cell type but reaches the whole
+edge-connected component, so on a connected mesh it *is* the uniform refinement.
 
 One level splits a `triangle`/`quad` into 4 and a `tetra`/`wedge`/`hexahedron`
 into 8, inserting nodes at edge, quad-face and body midpoints. Those nodes are
@@ -534,6 +545,8 @@ is already a 512× increase on a volume mesh.
 meshioplusplus refine in.msh out.vtu
 meshioplusplus refine in.msh out.vtu --levels 2
 meshioplusplus refine coarse.vtu fine.vtu --levels 2 --record-parent-ids
+meshioplusplus refine coarse.vtu graded.vtu --cells 12,13,44 --record-levels
+meshioplusplus refine coarse.vtu graded.vtu --where "quality:scaled_jacobian < 0.3"
 ```
 
 ---

@@ -136,13 +136,17 @@ no upload, no round trip:
 | **Quality** | attaches per-cell shape metrics ([mesh quality](/mesh_quality)) so you can colour by them |
 | **Clean** | welds coincident points, drops degenerate and duplicate cells ([clean](/clean)) |
 | **Smooth** | Laplacian or Taubin relaxation ([smoothing](/smooth)) |
-| **Refine** | uniform subdivision ([refine](/refine)) |
+| **Refine** | subdivision ([refine](/refine)) — every cell, or only those satisfying a threshold on a cell array, with the hanging nodes that leaves resolved conformingly |
 | **Partition** | decomposes into balanced parts and colours by part ([partitioning](/partition)) |
 | **Section** | the planar cross-section — the actual intersection with a plane ([slice](/slice)) |
 | **Isosurface** | the level set of a `point_data` field ([isosurface](/isosurface)) |
 
 They compose: apply Refine then Quality and you are looking at the quality of
-the refined mesh. Each one appears as a chip you can remove, **Undo** steps
+the refined mesh — and the other way round, Quality then Refine with a threshold
+on `quality:*`, is adaptive refinement driven by the metric the first chip just
+computed. (Pick a metric that applies to the cell type: `compute_quality`
+reports `NaN` where one does not, and a non-finite value never matches a
+threshold, so `scaled_jacobian` on a quadrilateral surface selects nothing.) Each one appears as a chip you can remove, **Undo** steps
 back, and **Revert** clears everything.
 
 Undo is *exact*, not approximate. The worker keeps the original file bytes and

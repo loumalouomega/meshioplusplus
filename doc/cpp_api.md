@@ -215,12 +215,12 @@ The conservative pin is still fully supported, and is the right choice if you
 would rather not reason about any of this:
 
 ```cmake
-find_package(meshioplusplus 9.4.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.5.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 **All three components are required.** Under `SameMajorVersion`, `EXACT` is a
 full *string* comparison against the package version, so `9.4 EXACT` does not
-match an installed `9.4.1` — it fails with "no configuration file … exactly
+match an installed `9.5.0` — it fails with "no configuration file … exactly
 matches requested version". (Through v9.1.0 this page printed the
 two-component form, which could never succeed.)
 

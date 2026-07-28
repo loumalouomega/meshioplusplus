@@ -102,6 +102,7 @@ CMake package can never disagree.
 | 1 | v9.0.0 | baseline |
 | 2 | v9.1.0 | `GeometricalEntity` gained a member; `ModelPart`, `MdpaInfo`, `PropertySet`, `ReadOptions`, `XdmfTimeSeriesWriter`, `kratos_bridge.hpp` |
 | 3 | v9.2.0 – v9.4.1 | `KratosMesh`, `MeshioMesh`, `NativeMesh`, `PropertySet`, `mesh_api.hpp`, `XdmfTimeSeriesWriter` |
+| 4 | v9.5.0 | `RefineOptions` gained the selective-refinement fields (a cell list, a region name, a `cell_data` predicate, the closure mode and the level flag) |
 
 It reaches consumers three ways:
 
@@ -178,14 +179,14 @@ See [the C++ API page](/cpp_api#versioning-what-to-pin) for the full guidance. I
 ```cmake
 # Finer, and true: pin what actually constrains you.
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
-if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 3)
-  message(FATAL_ERROR "meshio++ ABI 3 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 4)
+  message(FATAL_ERROR "meshio++ ABI 4 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
 endif()
 ```
 
 ```cmake
 # Conservative, and still fully supported: pin the release.
-find_package(meshioplusplus 9.4.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.5.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 Both are correct. The second is stricter than it needs to be, and that is a legitimate choice —
