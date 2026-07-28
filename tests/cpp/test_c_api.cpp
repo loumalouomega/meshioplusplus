@@ -1269,6 +1269,76 @@ TEST(CApi, RefineHexIntoEight) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, RefineExWithDefaultsMatchesMioRefine) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    // A NULL options pointer and a zero-initialized struct must both reproduce
+    // mio_refine(mesh, 1, 0) exactly -- the append-only-tail contract.
+    mio_refine_opts opts;
+    mio_refine_opts_init(&opts);
+    mio_refine_result* a = mio_refine(m, 1, 0);
+    mio_refine_result* b = mio_refine_ex(m, &opts);
+    mio_refine_result* c = mio_refine_ex(m, nullptr);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(mio_refine_result_mesh(a)), 27);
+    EXPECT_EQ(mio_mesh_num_points(mio_refine_result_mesh(b)), 27);
+    EXPECT_EQ(mio_mesh_num_points(mio_refine_result_mesh(c)), 27);
+    mio_refine_result_free(a);
+    mio_refine_result_free(b);
+    mio_refine_result_free(c);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RefineExSelectsASubsetAndClosesUp) {
+    // A 3 x 3 grid of quadrilaterals; refine the middle one only.
+    std::vector<double> pts;
+    for (int j = 0; j <= 3; ++j)
+        for (int i = 0; i <= 3; ++i) {
+            pts.push_back(i);
+            pts.push_back(j);
+            pts.push_back(0);
+        }
+    std::vector<std::int64_t> conn;
+    for (int j = 0; j < 3; ++j)
+        for (int i = 0; i < 3; ++i) {
+            const std::int64_t a = j * 4 + i;
+            conn.insert(conn.end(), {a, a + 1, a + 5, a + 4});
+        }
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 16, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 9, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    const std::int64_t selected[] = {4};
+    mio_refine_opts opts;
+    mio_refine_opts_init(&opts);
+    opts.cells = selected;
+    opts.num_cells = 1;
+    opts.record_levels = 1;
+    mio_refine_result* r = mio_refine_ex(m, &opts);
+    ASSERT_NE(r, nullptr);
+    std::int64_t num_cells = 0, npc = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(mio_refine_result_mesh(r), 0, &num_cells, &npc, nullptr),
+              MIO_OK);
+    // More than the input, far fewer than the 36 a uniform refinement gives.
+    EXPECT_GT(num_cells, 9);
+    EXPECT_LT(num_cells, 36);
+    EXPECT_EQ(npc, 4) << "green quadrilaterals stay quadrilaterals";
+    mio_refine_result_free(r);
+
+    // Two selectors at once is an error, reported rather than thrown.
+    opts.region = "anything";
+    EXPECT_EQ(mio_refine_ex(m, &opts), nullptr);
+    EXPECT_NE(mio_last_error(), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RefineChainsOnABorrowedMesh) {
     mio_mesh* m = build_tet_mesh();  // 2 tetrahedra
 
