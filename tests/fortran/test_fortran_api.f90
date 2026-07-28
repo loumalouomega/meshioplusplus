@@ -434,6 +434,36 @@ program test_fortran_api
         call quadratic%free()
     end block
 
+    ! -- refine: selective, with a conforming closure --
+    block
+        type(mio_mesh) :: sel, prop, oops
+        integer(int64) :: n0
+        integer :: st
+
+        n0 = m%cell_block_num_cells(1)
+
+        ! One cell only (1-based here, shifted to the C API's 0-based inside).
+        sel = m%refine(cells=[1_int64], record_levels=.true., stat=st)
+        call check(st == 0, 'selective refine succeeded')
+        call check(sel%cell_block_num_cells(1) > n0, 'selective refine added cells')
+        call check(sel%cell_block_num_cells(1) < n0*8, &
+                   'selective refine did not refine everything')
+
+        ! Propagation is the always-works baseline: on a connected mesh it
+        ! reaches every cell, which is exactly a uniform refinement.
+        prop = m%refine(cells=[1_int64], closure='propagate', stat=st)
+        call check(st == 0, 'propagate closure succeeded')
+        call check(prop%cell_block_num_cells(1) == n0*8, &
+                   'propagate reproduces the uniform refinement')
+
+        ! Two selectors at once is an error reported through stat.
+        oops = m%refine(cells=[1_int64], region='anything', stat=st)
+        call check(st /= 0, 'refine rejects two selectors at once')
+
+        call sel%free()
+        call prop%free()
+    end block
+
     ! -- decimate: QEM edge collapse of a surface mesh --
     block
         type(mio_mesh) :: fan, coarse, bad
