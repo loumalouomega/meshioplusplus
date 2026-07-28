@@ -287,3 +287,363 @@ def test_roundtrip_write_read(tmp_path):
     back = meshioplusplus.read(path)
     assert len(back.points) == len(out.points)
     assert np.array_equal(back.cells[0].data, out.cells[0].data)
+
+
+# --------------------------------------------------------------------------- #
+# selective / adaptive refinement                                              #
+# --------------------------------------------------------------------------- #
+def _tri_grid(n):
+    pts = [[float(i), float(j), 0.0] for j in range(n + 1) for i in range(n + 1)]
+    cells = []
+    for j in range(n):
+        for i in range(n):
+            a = j * (n + 1) + i
+            cells.append([a, a + 1, a + n + 2])
+            cells.append([a, a + n + 2, a + n + 1])
+    return meshioplusplus.Mesh(np.array(pts), [("triangle", np.array(cells))])
+
+
+def _quad_grid(n):
+    pts = [[float(i), float(j), 0.0] for j in range(n + 1) for i in range(n + 1)]
+    cells = [
+        [
+            j * (n + 1) + i,
+            j * (n + 1) + i + 1,
+            j * (n + 1) + i + n + 2,
+            j * (n + 1) + i + n + 1,
+        ]
+        for j in range(n)
+        for i in range(n)
+    ]
+    return meshioplusplus.Mesh(np.array(pts), [("quad", np.array(cells))])
+
+
+def _hex_grid(n):
+    s = n + 1
+    pts = [
+        [float(i), float(j), float(k)]
+        for k in range(s)
+        for j in range(s)
+        for i in range(s)
+    ]
+
+    def idx(i, j, k):
+        return (k * s + j) * s + i
+
+    cells = [
+        [
+            idx(i, j, k),
+            idx(i + 1, j, k),
+            idx(i + 1, j + 1, k),
+            idx(i, j + 1, k),
+            idx(i, j, k + 1),
+            idx(i + 1, j, k + 1),
+            idx(i + 1, j + 1, k + 1),
+            idx(i, j + 1, k + 1),
+        ]
+        for k in range(n)
+        for j in range(n)
+        for i in range(n)
+    ]
+    return meshioplusplus.Mesh(np.array(pts), [("hexahedron", np.array(cells))])
+
+
+def _count_hanging_nodes(mesh):
+    """Output nodes sitting exactly on another cell's edge midpoint.
+
+    The oracle that actually finds a hanging node: facet counting cannot, since
+    a hanging node leaves one big facet on one side and two small ones on the
+    other, all with a count of 1. New nodes are order-independent corner means,
+    so the comparison is exact rather than approximate.
+    """
+    from meshioplusplus._refine_templates import EDGES
+
+    points = np.asarray(mesh.points)
+    at = {tuple(p): i for i, p in enumerate(points)}
+    hanging = 0
+    for cb in mesh.cells:
+        data = np.asarray(cb.data)
+        for a, b in EDGES[cb.type]:
+            mids = (points[data[:, a]] + points[data[:, b]]) * 0.5
+            hanging += sum(1 for m in mids if tuple(m) in at)
+    return hanging
+
+
+def _assert_conforming(mesh):
+    assert _count_hanging_nodes(mesh) == 0, "the refined mesh has hanging nodes"
+
+
+def test_the_hanging_node_oracle_actually_fires():
+    # An oracle that cannot fail proves nothing. The left quadrilateral is split
+    # across its mid height and its neighbour is not, so node 7 hangs.
+    bad = meshioplusplus.Mesh(
+        np.array(
+            [
+                [0.0, 0, 0],
+                [1, 0, 0],
+                [2, 0, 0],
+                [0, 1, 0],
+                [1, 1, 0],
+                [2, 1, 0],
+                [0, 0.5, 0],
+                [1, 0.5, 0],
+            ]
+        ),
+        [("quad", np.array([[0, 1, 7, 6], [6, 7, 4, 3], [1, 2, 5, 4]]))],
+    )
+    assert _count_hanging_nodes(bad) == 1
+
+
+def test_no_selector_is_the_uniform_refinement():
+    mesh = _tri_grid(2)
+    assert np.array_equal(
+        np.asarray(refine(mesh).cells[0].data),
+        np.asarray(refine(mesh, cells=None).cells[0].data),
+    )
+
+
+def test_one_triangle_greens_its_neighbours_conformingly():
+    mesh = _tri_grid(3)
+    before = len(mesh.cells[0].data)
+    out = refine(mesh, cells=[8])
+    _assert_conforming(out)
+    assert before < len(out.cells[0].data) < before + 12
+    assert out.cells[0].type == "triangle"
+
+
+def test_one_quad_refines_one_row_not_the_whole_grid():
+    # The anisotropic rule: a single split edge promotes to its opposite pair,
+    # so the bisection travels along one row instead of the whole grid. Full
+    # propagation would give 4 * 64 = 256 cells.
+    n = 8
+    mesh = _quad_grid(n)
+    out = refine(mesh, cells=[27])
+    _assert_conforming(out)
+    assert out.cells[0].type == "quad", "green quads stay quads"
+    assert (
+        len(mesh.cells[0].data)
+        < len(out.cells[0].data)
+        < len(mesh.cells[0].data) + 6 * n
+    )
+
+
+def test_one_hex_refines_sheets_not_the_whole_block():
+    n = 4
+    mesh = _hex_grid(n)
+    out = refine(mesh, cells=[21])
+    _assert_conforming(out)
+    assert out.cells[0].type == "hexahedron"
+    assert len(out.cells[0].data) < len(mesh.cells[0].data) + 4 * n * n
+
+
+@pytest.mark.parametrize("factory,n", [(_tri_grid, 3), (_quad_grid, 3), (_hex_grid, 2)])
+def test_propagate_reproduces_uniform_refinement(factory, n):
+    # The oracle, and the honest statement of what that mode costs: on a
+    # connected mesh propagation reaches every cell.
+    mesh = factory(n)
+    uniform = refine(mesh)
+    propagated = refine(mesh, cells=[0], closure="propagate")
+    assert np.array_equal(
+        np.asarray(uniform.cells[0].data), np.asarray(propagated.cells[0].data)
+    )
+    assert np.array_equal(np.asarray(uniform.points), np.asarray(propagated.points))
+
+
+def test_two_successive_passes_stay_conforming():
+    mesh = _tri_grid(4)
+    first = refine(mesh, cells=[10])
+    _assert_conforming(first)
+    _assert_conforming(refine(first, cells=[0]))
+
+
+def test_selectors_agree_with_each_other():
+    mesh = _tri_grid(3)
+    by_index = refine(mesh, cells=[4, 9])
+
+    region_mesh = _tri_grid(3)
+    region_mesh.cell_sets["hot"] = [np.array([4, 9])]
+    by_region = refine(region_mesh, region="hot")
+    assert np.array_equal(
+        np.asarray(by_index.cells[0].data), np.asarray(by_region.cells[0].data)
+    )
+
+    pred_mesh = _tri_grid(3)
+    score = np.full(len(pred_mesh.cells[0].data), 0.9)
+    score[[4, 9]] = 0.1
+    pred_mesh.cell_data["q"] = [score]
+    by_pred = refine(pred_mesh, where="q < 0.3")
+    assert np.array_equal(
+        np.asarray(by_index.cells[0].data), np.asarray(by_pred.cells[0].data)
+    )
+
+
+def test_a_point_region_selects_every_cell_touching_it():
+    mesh = _tri_grid(3)
+    mesh.point_sets["corner"] = np.array([0])
+    out = refine(mesh, region="corner")
+    _assert_conforming(out)
+    assert len(out.cells[0].data) > len(mesh.cells[0].data)
+
+
+def test_non_finite_predicate_values_never_match():
+    # compute_quality reports NaN where a metric does not apply, so a predicate
+    # over `quality:*` on a mixed mesh is the headline use case; rejecting the
+    # array outright would break it.
+    mesh = _tri_grid(2)
+    mesh.cell_data["q"] = [np.full(len(mesh.cells[0].data), np.nan)]
+    out = refine(mesh, where="q < 1.0")
+    assert len(out.cells[0].data) == len(mesh.cells[0].data)
+
+
+def test_levels_are_opt_in_and_green_children_inherit():
+    mesh = _tri_grid(3)
+    assert "refine:level" not in refine(mesh, cells=[8]).cell_data
+
+    out = refine(mesh, cells=[8], record_levels=True)
+    levels = np.asarray(out.cell_data["refine:level"][0]).reshape(-1)
+    first = np.asarray(_first_child_map(mesh, out, 8))
+    assert set(levels[first[0] : first[1]]) == {1}, "the selected cell's children"
+    assert 0 in set(levels), "a transitional split is a closure, not a refinement"
+
+
+def _first_child_map(mesh, out, parent):
+    """`[first, next_first)` for one parent, recomputed from a fresh call."""
+    from meshioplusplus import _core
+
+    res = _core.refine(
+        mesh,
+        1,
+        False,
+        np.array([parent], dtype=np.int64),
+        "",
+        "",
+        "<",
+        0.0,
+        "redgreen",
+        True,
+    )
+    first = np.asarray(res["cell_maps"][0])
+    total = len(res["mesh"].cells[0].data)
+    return (first[parent], first[parent + 1] if parent + 1 < len(first) else total)
+
+
+def test_an_existing_level_array_accumulates_rather_than_replicating():
+    mesh = _tri_grid(3)
+    first = refine(mesh, cells=[4], record_levels=True)
+    # The flag only controls CREATING the array; once present it is maintained.
+    again = refine(first, cells=[0])
+    levels = np.asarray(again.cell_data["refine:level"][0]).reshape(-1)
+    assert levels.max() >= 1
+
+
+def test_cell_data_is_gathered_not_blindly_repeated():
+    mesh = _tri_grid(2)
+    n = len(mesh.cells[0].data)
+    mesh.cell_data["tag"] = [np.arange(n)]
+    out = refine(mesh, cells=[3])
+    tags = np.asarray(out.cell_data["tag"][0]).reshape(-1)
+    # Every value still appears, and only values that were in the input.
+    assert set(tags) == set(range(n))
+
+
+def test_cell_sets_expand_under_a_selective_pass():
+    mesh = _tri_grid(2)
+    mesh.cell_sets["patch"] = [np.array([3])]
+    out = refine(mesh, cells=[3])
+    assert len(out.cell_sets["patch"][0]) == 4
+
+
+def test_regions_survive_a_selective_pass():
+    mesh = _tri_grid(2)
+    mesh.cell_sets["patch"] = [np.array([3])]
+    out = refine(mesh, cells=[3], record_levels=True)
+    assert "patch" in out.cell_sets
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"cells": [0], "region": "anything"},
+        {"cells": [1000]},
+        {"cells": [-1]},
+        {"region": "nope"},
+        {"where": "absent < 1"},
+        {"where": "not-an-expression"},
+        {"closure": "blue"},
+    ],
+)
+def test_bad_selectors_raise(kwargs):
+    with pytest.raises(ValueError):
+        refine(_tri_grid(2), **kwargs)
+
+
+def test_selective_numbering_is_stable_across_repeated_runs():
+    mesh = _quad_grid(5)
+    first = refine(mesh, cells=[7, 18])
+    for _ in range(5):
+        again = refine(mesh, cells=[7, 18])
+        assert np.array_equal(
+            np.asarray(first.cells[0].data), np.asarray(again.cells[0].data)
+        )
+        assert np.array_equal(np.asarray(first.points), np.asarray(again.points))
+
+
+# --------------------------------------------------------------------------- #
+# the tables, and C++/numpy parity for the selective path                      #
+# --------------------------------------------------------------------------- #
+def test_mask_tables_match_the_cpp_core():
+    """The Python tables ARE the C++ tables, checked rather than transcribed.
+
+    Both sides generate the tetrahedron's 27 admissible masks from six orbit
+    representatives by the same 12 even permutations, so this also pins that the
+    two generators agree on which representative reaches each mask.
+    """
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus import _refine_templates as t
+
+    for cell_type in t.SUPPORTED_TYPES:
+        cpp = core.refine_mask_table(cell_type)
+        assert set(cpp) == set(t.TABLES[cell_type]), cell_type
+        for mask, entry in cpp.items():
+            children, children_alt, tie_a, tie_b = t.TABLES[cell_type][mask]
+            assert [list(r) for r in children] == entry["children"], (cell_type, mask)
+            assert [list(r) for r in children_alt] == entry["children_alt"], (
+                cell_type,
+                mask,
+            )
+            if children_alt:
+                assert (tie_a, tie_b) == (entry["tie_a"], entry["tie_b"])
+        for mask in range(t.FULL_MASK[cell_type] + 1):
+            for propagate in (False, True):
+                assert t.promote_mask(
+                    cell_type, mask, propagate
+                ) == core.refine_promote_mask(cell_type, mask, propagate), (
+                    cell_type,
+                    mask,
+                    propagate,
+                )
+
+
+@pytest.mark.parametrize(
+    "factory,n,selected", [(_tri_grid, 3, 8), (_quad_grid, 4, 5), (_hex_grid, 3, 13)]
+)
+@pytest.mark.parametrize("closure", ["redgreen", "propagate"])
+@pytest.mark.parametrize("levels", [1, 2])
+def test_cpp_matches_python_selective(factory, n, selected, closure, levels):
+    """Byte-identical across the C++-core/numpy-fallback boundary, selective too."""
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus._refine import _refine_py, _resolve_selection
+    from meshioplusplus._refine_templates import closure_from_name
+
+    mesh = factory(n)
+    ids = np.array([selected], dtype=np.int64)
+    got = core.refine(mesh, levels, False, ids, "", "", "<", 0.0, closure, True)["mesh"]
+    seed = _resolve_selection(mesh, ids, None, "", "<", 0.0)
+    want, _, _ = _refine_py(mesh, levels, False, seed, closure_from_name(closure), True)
+
+    assert [cb.type for cb in got.cells] == [cb.type for cb in want.cells]
+    for a, b in zip(got.cells, want.cells):
+        assert np.array_equal(np.asarray(a.data), np.asarray(b.data))
+    assert np.array_equal(np.asarray(got.points), np.asarray(want.points))
+    for a, b in zip(got.cell_data["refine:level"], want.cell_data["refine:level"]):
+        assert np.array_equal(np.asarray(a).reshape(-1), np.asarray(b).reshape(-1))
