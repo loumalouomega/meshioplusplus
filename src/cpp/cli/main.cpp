@@ -421,7 +421,8 @@ void print_usage(std::ostream& os) {
           "                            (not a partition -- overlapping regions overlap)\n"
           "  regions                 List a mesh's named regions (name/kind/dim/tag/entries)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
-          "  refine                  Uniformly subdivide every cell (same-type children)\n"
+          "  refine                  Subdivide cells into same-type children (all, or a\n"
+          "                          selected subset with a conforming closure)\n"
           "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"
           "                            exactly one of --ratio/--target-faces/--max-error\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
@@ -1252,12 +1253,41 @@ int cmd_convert_cells(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// The comma-separated Int64 list `--cells` takes; parse_doubles' twin.
+std::vector<std::int64_t> refine_parse_int64s(const std::string& rText) {
+    std::vector<std::int64_t> out;
+    std::size_t start = 0;
+    while (start <= rText.size()) {
+        const std::size_t comma = rText.find(',', start);
+        const std::string tok =
+            rText.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (!tok.empty())
+            out.push_back(static_cast<std::int64_t>(std::stoll(tok)));
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    return out;
+}
+
+std::string refine_trim(const std::string& rText) {
+    const std::size_t first = rText.find_first_not_of(" \t");
+    if (first == std::string::npos)
+        return "";
+    return rText.substr(first, rText.find_last_not_of(" \t") - first + 1);
+}
+
 int cmd_refine(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
                                   {"output-format", {"-o"}, true},
                                   {"levels", {}, true},
                                   {"record-parent-ids", {}, false},
+                                  {"cells", {}, true},
+                                  {"region", {}, true},
+                                  {"where", {}, true},
+                                  {"closure", {}, true},
+                                  {"record-levels", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("refine requires exactly INFILE and OUTFILE");
@@ -1266,6 +1296,30 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
     meshioplusplus::RefineOptions options;
     options.mLevels = std::stoi(opt_value(p, "levels", "1"));
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
+    options.mRecordLevels = has_flag(p, "record-levels");
+    options.mClosure = meshioplusplus::refine_closure_from_name(opt_value(p, "closure"));
+    if (has_opt(p, "cells"))
+        options.mCells = refine_parse_int64s(opt_value(p, "cells"));
+    options.mRegion = opt_value(p, "region");
+    if (has_opt(p, "where")) {
+        // The operator is the maximal run of <>=! characters, located from the
+        // first of them: array names routinely contain ':' and '.' but never a
+        // comparison character. Deliberately not a second data_calc grammar.
+        const std::string where = opt_value(p, "where");
+        const std::size_t start = where.find_first_of("<>=!");
+        std::size_t end = start;
+        while (end != std::string::npos && end < where.size() &&
+               std::string("<>=!").find(where[end]) != std::string::npos)
+            ++end;
+        if (start == std::string::npos || start == 0 || end >= where.size())
+            throw std::runtime_error("refine: cannot parse --where '" + where +
+                                     "' (expected 'NAME OP VALUE', e.g. "
+                                     "'quality:scaled_jacobian < 0.3')");
+        options.mPredicateArray = refine_trim(where.substr(0, start));
+        options.mPredicateOp =
+            meshioplusplus::refine_compare_from_name(where.substr(start, end - start));
+        options.mPredicateValue = std::stod(refine_trim(where.substr(end)));
+    }
 
     auto result = meshioplusplus::refine(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
