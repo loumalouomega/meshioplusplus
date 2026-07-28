@@ -97,6 +97,7 @@ meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # split by criterio
 meshioplusplus stats      mesh.vtu                           # geometric statistics
 meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
 meshioplusplus refine     in.vtu out.vtu --levels 2          # uniform subdivision
+meshioplusplus refine     in.vtu out.vtu --where "q<0.3"     # adaptive, closed conformingly
 meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
 meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positions
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
@@ -311,7 +312,7 @@ Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-
 
 #### Refinement
 
-**`meshioplusplus.refine`** subdivides every cell into congruent children of the *same* cell type, increasing a mesh's resolution: `line` → 2, `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8, with `levels=n` applying the templates `n` times. See `doc/refine.md`.
+**`meshioplusplus.refine`** subdivides cells into congruent children of the *same* cell type, increasing a mesh's resolution: `line` → 2, `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8, with `levels=n` applying the templates `n` times. Given a **selection** — a cell list, a region name, or a `cell_data` threshold — it refines only those cells and resolves the resulting hanging nodes, so the output is still conforming. See `doc/refine.md`.
 
 New nodes sit at the midpoints of the parent's edges, quad faces and (hexahedron only) body, and carry the mean of that entity's corner values for every `point_data` array — so a linear field is interpolated exactly. Mid-edge and quad-face-centre nodes are **shared** between every cell touching the entity, so the refined mesh has no hanging nodes; each parent's `cell_data` row is replicated to its children.
 
@@ -321,6 +322,13 @@ New nodes sit at the midpoints of the parent's edges, quad faces and (hexahedron
 fine = meshioplusplus.refine(mesh)                      # one level
 finer = meshioplusplus.refine(mesh, levels=2)           # 64x the cells in 3D
 tagged = meshioplusplus.refine(mesh, record_parent_ids=True)
+
+# adaptive: refine the worst cells and close up conformingly around them
+graded = meshioplusplus.refine(
+    meshioplusplus.attach_quality(mesh),
+    where="quality:scaled_jacobian < 0.3",
+    record_levels=True,                                 # colour by refine:level
+)
 ```
 
 Children inherit the parent's orientation (zero newly-inverted cells for a well-oriented input), and volume is conserved — exactly for `tetra` always, and for `wedge`/`hexahedron` when the parent is affine. Higher-order cells, `pyramid`, and ragged blocks have no same-type subdivision and raise by name.
@@ -646,7 +654,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.4.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.5.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
