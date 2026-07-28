@@ -20,6 +20,8 @@
 
 // Project includes
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/cell_subdivision.hpp"
+#include "meshioplusplus/detail/refine_templates.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
@@ -662,17 +664,32 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("mode") = "linearize", py::arg("record_parent_ids") = false);
 
-    // Uniform refinement: subdivide every cell into same-type children.
-    // Returns a dict {mesh, point_map, cell_maps}. See operations/refine.hpp.
+    // Refinement: subdivide every cell (uniform) or a selected subset with a
+    // conforming closure (selective) into same-type children. Returns a dict
+    // {mesh, point_map, cell_maps}. See operations/refine.hpp.
     m.def(
         "refine",
-        [](py::object pymesh, int levels, bool record_parent_ids) {
+        [](py::object pymesh, int levels, bool record_parent_ids, py::object cells,
+           const std::string& region, const std::string& predicate_array,
+           const std::string& predicate_op, double predicate_value, const std::string& closure,
+           bool record_levels) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
             meshioplusplus::RefineOptions options;
             options.mLevels = levels;
             options.mRecordParentIds = record_parent_ids;
+            if (!cells.is_none()) {
+                auto ids = cells.cast<
+                    py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>>();
+                options.mCells.assign(ids.data(), ids.data() + ids.size());
+            }
+            options.mRegion = region;
+            options.mPredicateArray = predicate_array;
+            options.mPredicateOp = meshioplusplus::refine_compare_from_name(predicate_op);
+            options.mPredicateValue = predicate_value;
+            options.mClosure = meshioplusplus::refine_closure_from_name(closure);
+            options.mRecordLevels = record_levels;
             meshioplusplus::RefineResult r = meshioplusplus::refine(cpp, options);
             py::dict out;
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
@@ -683,7 +700,58 @@ PYBIND11_MODULE(_core, m) {
             out["cell_maps"] = cell_maps;
             return out;
         },
-        py::arg("mesh"), py::arg("levels") = 1, py::arg("record_parent_ids") = false);
+        py::arg("mesh"), py::arg("levels") = 1, py::arg("record_parent_ids") = false,
+        py::arg("cells") = py::none(), py::arg("region") = "", py::arg("predicate_array") = "",
+        py::arg("predicate_op") = "<", py::arg("predicate_value") = 0.0,
+        py::arg("closure") = "redgreen", py::arg("record_levels") = false);
+
+    // The selective-refinement subdivision table for one cell type, as
+    // {mask: [[child node ids], ...]} plus the tie-break metadata. Exported so
+    // the numpy reference implementation is pinned against the C++ tables
+    // rather than merely transcribed from them -- the colormap_table precedent.
+    m.def(
+        "refine_mask_table",
+        [](const std::string& type_name) {
+            const meshioplusplus::CellType type = meshioplusplus::cell_type_from_name(type_name);
+            py::dict out;
+            const std::size_t nedges = meshioplusplus::detail::cell_refine_edges(type).size();
+            for (std::uint32_t mask = 0; mask < (1u << nedges); ++mask) {
+                const meshioplusplus::detail::RefineMaskTemplate& tpl =
+                    meshioplusplus::detail::refine_mask_template(type,
+                                                                 static_cast<std::uint16_t>(mask));
+                if (!tpl.IsAdmissible())
+                    continue;
+                py::dict entry;
+                const auto rows = [](const std::vector<std::vector<std::uint8_t>>& children) {
+                    py::list out_rows;
+                    for (const std::vector<std::uint8_t>& child : children) {
+                        py::list row;
+                        for (std::uint8_t n : child)
+                            row.append(static_cast<int>(n));
+                        out_rows.append(row);
+                    }
+                    return out_rows;
+                };
+                entry["children"] = rows(tpl.mChildren);
+                entry["children_alt"] = rows(tpl.mChildrenAlt);
+                entry["tie_a"] = static_cast<int>(tpl.mTieA);
+                entry["tie_b"] = static_cast<int>(tpl.mTieB);
+                out[py::int_(mask)] = entry;
+            }
+            return out;
+        },
+        py::arg("cell_type"));
+
+    // The smallest admissible split-edge mask containing `mask` -- the closure
+    // operator selective refinement iterates. See detail/refine_templates.hpp.
+    m.def(
+        "refine_promote_mask",
+        [](const std::string& type_name, int mask, bool propagate) {
+            return static_cast<int>(meshioplusplus::detail::refine_promote_mask(
+                meshioplusplus::cell_type_from_name(type_name), static_cast<std::uint16_t>(mask),
+                propagate));
+        },
+        py::arg("cell_type"), py::arg("mask"), py::arg("propagate") = false);
 
     // Quadric-error-metric surface decimation. Returns a dict {mesh, point_map,
     // cell_maps, faces_removed, points_removed, collapses_rejected,
