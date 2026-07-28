@@ -59,7 +59,11 @@ read_abi() {  # read_abi <ref|WORKTREE>
     else
         text=$(git show "$ref:$abi_header" 2>/dev/null || true)
     fi
-    printf '%s\n' "$text" | sed -n 's/^#define[[:space:]]\+MESHIOPLUSPLUS_ABI_VERSION[[:space:]]\+\([0-9]\+\).*/\1/p' | head -1
+    # `sed -nE`, not `sed -n` with `\+`: `\+` is a GNU extension that BSD sed
+    # (macOS) reads as a literal plus, so the pattern silently matched nothing
+    # there and the script died with "cannot parse MESHIOPLUSPLUS_ABI_VERSION".
+    # -E/ERE is understood by GNU, BSD and busybox alike.
+    printf '%s\n' "$text" | sed -nE 's/^#define[[:space:]]+MESHIOPLUSPLUS_ABI_VERSION[[:space:]]+([0-9]+).*/\1/p' | head -1
 }
 
 base=${1:-}
@@ -121,7 +125,7 @@ fi
 # Unchanged ABI + changed headers => the change must have been reviewed as
 # additive, and that review must be recorded against THIS release and name THESE
 # headers. See the header comment for why neither key alone is enough.
-version_now=$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\+\([0-9][0-9.]*\)[[:space:]]*$/\1/p' \
+version_now=$(sed -nE 's/^[[:space:]]*VERSION[[:space:]]+([0-9][0-9.]*)[[:space:]]*$/\1/p' \
               CMakeLists.txt | head -1)
 if [ -z "$version_now" ]; then
     echo "check-abi-version: ERROR: cannot parse the project VERSION from CMakeLists.txt" >&2

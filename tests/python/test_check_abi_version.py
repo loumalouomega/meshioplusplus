@@ -27,6 +27,36 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO / "tools" / "check-abi-version.sh"
 
+
+def _usable_bash():
+    """Is there a ``bash`` on PATH that can actually run a POSIX script?
+
+    Probed rather than inferred from ``sys.platform``. On GitHub's
+    ``windows-latest``, ``bash`` resolves to ``C:\\Windows\\System32\\bash.exe``
+    -- the WSL launcher -- ahead of Git Bash, and with no distribution installed
+    it fails with a UTF-16 "Windows Subsystem for Linux has no installed
+    distributions." A Windows box whose PATH does reach Git Bash runs these
+    tests fine, which a platform check would have skipped for no reason.
+
+    Nothing is lost where this skips: the gate runs in the Linux ``lint`` job.
+    """
+    try:
+        probe = subprocess.run(
+            ["bash", "-c", "printf ok"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0 and probe.stdout.strip() == "ok"
+
+
+pytestmark = pytest.mark.skipif(
+    not _usable_bash(),
+    reason="no usable POSIX bash on PATH (e.g. the Windows WSL stub)",
+)
+
 BASE_VERSION = "9.4.0"
 NEXT_VERSION = "9.4.1"
 
