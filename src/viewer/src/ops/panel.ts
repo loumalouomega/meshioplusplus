@@ -78,7 +78,8 @@ export class OpsPanel {
     reset(
         bounds: { min: Vector3; max: Vector3 } | null,
         cellCount: number,
-        pointArrays: string[] = []
+        pointArrays: string[] = [],
+        cellArrays: string[] = []
     ): void {
         this.ops = [];
         this.bounds = bounds;
@@ -86,6 +87,7 @@ export class OpsPanel {
         this.warnings.replaceChildren();
         this.resetSectionSlider();
         this.setIsosurfaceArrays(pointArrays);
+        this.setRefineArrays(cellArrays);
         this.renderChips();
     }
 
@@ -224,21 +226,58 @@ export class OpsPanel {
         );
     }
 
+    /**
+     * Offer the mesh's own cell arrays as refine predicates, plus the metrics a
+     * preceding `quality` chip would produce: composing the two is the point of
+     * the feature, and those names do not exist on the file itself.
+     */
+    private setRefineArrays(names: string[]): void {
+        const select = maybe<HTMLSelectElement>('op-refine-array');
+        if (!select) return;
+        const offered = [...names];
+        for (const metric of ['scaled_jacobian', 'aspect_ratio', 'skewness']) {
+            const full = `quality:${metric}`;
+            if (!offered.includes(full)) offered.push(full);
+        }
+        setOptions(
+            select,
+            [
+                { value: '', label: 'every cell' },
+                ...offered.map((name) => ({ value: name, label: name })),
+            ],
+            ''
+        );
+    }
+
     private wireRefine(): void {
         const levels = $<HTMLInputElement>('op-refine-levels');
         const note = $('op-refine-note');
+        const array = maybe<HTMLSelectElement>('op-refine-array');
         const projected = () => {
             const n = Number(levels.value) || 1;
+            // A predicate refines only the cells that match, and the closure
+            // adds a bounded amount around them, so the uniform bound is only
+            // honest when no predicate is set.
+            if (array && array.value) return 0;
             // Every supported type splits 8-for-1 in 3D, 4-for-1 in 2D; 8 is
             // the honest upper bound to warn against.
             return this.cellCount * Math.pow(8, n);
         };
         const updateNote = () => {
-            note.textContent = this.cellCount
-                ? `≈ ${projected().toLocaleString('en-US')} cells`
-                : '';
+            const cells = projected();
+            if (!this.cellCount) {
+                note.textContent = '';
+            } else if (cells === 0) {
+                // A predicate's growth depends on how many cells match and how
+                // far the closure has to reach, neither of which is knowable
+                // before running it. Say that rather than print a wrong number.
+                note.textContent = 'only the matching cells, plus a conforming closure';
+            } else {
+                note.textContent = `≈ ${cells.toLocaleString('en-US')} cells`;
+            }
         };
         levels.addEventListener('input', updateNote);
+        array?.addEventListener('change', updateNote);
         updateNote();
 
         $('op-refine-apply').addEventListener('click', () => {
@@ -252,7 +291,16 @@ export class OpsPanel {
             ) {
                 return;
             }
-            this.push({ ...OP_DEFAULTS.refine, levels: Number(levels.value) || 1 });
+            this.push({
+                ...OP_DEFAULTS.refine,
+                levels: Number(levels.value) || 1,
+                array: array?.value ?? '',
+                compare: ($<HTMLSelectElement>('op-refine-compare').value as '<' | '>') ?? '<',
+                value: Number($<HTMLInputElement>('op-refine-value').value) || 0,
+                closure: $<HTMLSelectElement>('op-refine-closure').value as
+                    | 'redgreen'
+                    | 'propagate',
+            });
         });
     }
 
