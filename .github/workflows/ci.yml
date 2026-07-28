@@ -796,6 +796,7 @@ jobs:
                '*/src/cpp/third_party/*' '*/_deps/*' '*/build*/_deps/*' '/usr/*' \
                '*/backends/native_mesh.hpp' '*/backends/kratos_mesh.hpp' \
                '*/backends/model_part.hpp' '*/backends/kratos_names.hpp' \
+               '*/src/abi_version_check.cpp' '*/src/mesh_backend_check.cpp' \
                --output-file cpp-coverage.info \
                --ignore-errors unused
           lcov --list cpp-coverage.info

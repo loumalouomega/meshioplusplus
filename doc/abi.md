@@ -70,7 +70,9 @@ unit is byte-for-byte what it was. It simply does not have the new name. v9.3.0'
 `kExodusAttributePrefix` is exactly this.
 
 Record these in [`doc/abi_reviews.md`](abi_reviews.md), which is what lets the CI gate pass
-while keeping the reasoning on the record.
+while keeping the reasoning on the record. The entry is keyed on the **release** and must name
+**every** header that changed: the gate reads both columns, so a review of an earlier release
+does not carry a later one, and a header you leave off is a red build naming it.
 
 #### The one asymmetry: appended enumerators
 
@@ -99,7 +101,7 @@ CMake package can never disagree.
 | --- | --- | --- |
 | 1 | v9.0.0 | baseline |
 | 2 | v9.1.0 | `GeometricalEntity` gained a member; `ModelPart`, `MdpaInfo`, `PropertySet`, `ReadOptions`, `XdmfTimeSeriesWriter`, `kratos_bridge.hpp` |
-| 3 | v9.2.0 – v9.4.0 | `KratosMesh`, `MeshioMesh`, `NativeMesh`, `PropertySet`, `mesh_api.hpp`, `XdmfTimeSeriesWriter` |
+| 3 | v9.2.0 – v9.4.1 | `KratosMesh`, `MeshioMesh`, `NativeMesh`, `PropertySet`, `mesh_api.hpp`, `XdmfTimeSeriesWriter` |
 
 It reaches consumers three ways:
 
@@ -157,10 +159,17 @@ replaces. Two gates, covering different tiers:
 | gate | catches | how |
 | --- | --- | --- |
 | `tests/cpp/test_abi_layout.cpp` | Tier A | `static_assert`s on `sizeof`/`alignof`, per backend, in the `cpp-tests` matrix. Objective; no judgement. |
-| `tools/check-abi-version.sh` | Tier B | Diffs installed headers against the previous release tag. Headers changed + ABI unchanged + no [review entry](abi_reviews.md) = red build. |
+| `tools/check-abi-version.sh` | Tier B | Diffs installed headers against the previous release tag. Headers changed + ABI unchanged + no [review entry](abi_reviews.md) *for this release naming those headers* = red build. |
 
 Neither is sufficient alone: the first cannot see an inline body change, and the second cannot
 tell an edited inline function from a new one.
+
+The emphasis in that second row is load-bearing, and was a bug fixed in v9.4.1: matching a
+review row on the ABI number alone passes vacuously as soon as one such row exists, so the
+lookup is keyed on the release version *and* on the set of headers the row accounts for.
+`tests/python/test_check_abi_version.py` asserts the gate actually fires — the same lesson the
+backend guard learned in v9.1.0, when it shipped inert for a full release because nothing tested
+that it did.
 
 ## What to pin, in practice
 
@@ -176,7 +185,7 @@ endif()
 
 ```cmake
 # Conservative, and still fully supported: pin the release.
-find_package(meshioplusplus 9.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.4.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 Both are correct. The second is stricter than it needs to be, and that is a legitimate choice —

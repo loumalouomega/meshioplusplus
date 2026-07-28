@@ -7,7 +7,7 @@
 #
 #   Any installed header changed since the previous release tag
 #   AND MESHIOPLUSPLUS_ABI_VERSION did not change
-#   AND the release recorded no "reviewed as additive" entry
+#   AND doc/abi_reviews.md has no row for THIS release naming THOSE headers
 #   => FAIL
 #
 # It deliberately does NOT try to decide whether a header change was additive.
@@ -16,6 +16,24 @@
 # the tool demands the judgement be *recorded* in doc/abi_reviews.md rather than
 # pretending to make it. `tests/cpp/test_abi_layout.cpp` is the complementary
 # half: it catches Tier A layout changes mechanically, with no judgement at all.
+#
+# ### What the review lookup keys on, and why it is not just the ABI number
+#
+# Through v9.4.0 this matched any row whose first column was the current ABI
+# number. That passes VACUOUSLY the moment one such row exists: doc/abi_reviews.md
+# has carried two ABI-3 rows since v9.4.0, so every later header change matched
+# one of them and exited 0 announcing "records the additive review" -- naming a
+# review of an entirely different release. A v9.5.0 that edited an existing
+# inline function body, a genuine Tier B break, would have sailed through: the
+# layout snapshot cannot see an inline-body edit, and this was the only other
+# gate.
+#
+# Keying on the release version alone does not fix it either. A header change
+# that does not ALSO bump the version leaves $version_now at the previous
+# release, which by construction already has a row. So the row must additionally
+# account for the headers actually touched -- which is what the "headers changed"
+# column of doc/abi_reviews.md is for, and why that column is load-bearing rather
+# than decorative.
 #
 # See doc/abi.md for the tiers.
 #
@@ -41,7 +59,11 @@ read_abi() {  # read_abi <ref|WORKTREE>
     else
         text=$(git show "$ref:$abi_header" 2>/dev/null || true)
     fi
-    printf '%s\n' "$text" | sed -n 's/^#define[[:space:]]\+MESHIOPLUSPLUS_ABI_VERSION[[:space:]]\+\([0-9]\+\).*/\1/p' | head -1
+    # `sed -nE`, not `sed -n` with `\+`: `\+` is a GNU extension that BSD sed
+    # (macOS) reads as a literal plus, so the pattern silently matched nothing
+    # there and the script died with "cannot parse MESHIOPLUSPLUS_ABI_VERSION".
+    # -E/ERE is understood by GNU, BSD and busybox alike.
+    printf '%s\n' "$text" | sed -nE 's/^#define[[:space:]]+MESHIOPLUSPLUS_ABI_VERSION[[:space:]]+([0-9]+).*/\1/p' | head -1
 }
 
 base=${1:-}
@@ -101,13 +123,69 @@ if [ "$abi_before" != "$abi_now" ]; then
 fi
 
 # Unchanged ABI + changed headers => the change must have been reviewed as
-# additive, and that review must be recorded against this ABI version.
-if [ -f "$reviews" ] && grep -qE "^\|[[:space:]]*${abi_now}[[:space:]]*\|" "$reviews"; then
-    if grep -qE "^\|[[:space:]]*${abi_now}[[:space:]]*\|.*\|" "$reviews"; then
+# additive, and that review must be recorded against THIS release and name THESE
+# headers. See the header comment for why neither key alone is enough.
+version_now=$(sed -nE 's/^[[:space:]]*VERSION[[:space:]]+([0-9][0-9.]*)[[:space:]]*$/\1/p' \
+              CMakeLists.txt | head -1)
+if [ -z "$version_now" ]; then
+    echo "check-abi-version: ERROR: cannot parse the project VERSION from CMakeLists.txt" >&2
+    exit 1
+fi
+
+# Rows for (this ABI, this release). Field-splitting on `|` with awk rather than
+# one in-column regex: the release cell is free text, and matching a version
+# inside it with grep needs an escaping dance that is easy to get subtly wrong.
+# A release matches as a whole token, with or without the `v` prefix, so both
+# "v9.4.1" and "9.4.1" read correctly and "9.4.10" does not match "9.4.1".
+rows=$(awk -F'|' -v abi="$abi_now" -v ver="$version_now" '
+    /^[[:space:]]*\|/ {
+        field = $2
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", field)
+        if (field != abi) next
+        n = split($3, toks, /[^0-9A-Za-z.]+/)
+        for (i = 1; i <= n; i++) {
+            tok = toks[i]
+            sub(/^v/, "", tok)
+            if (tok == ver) { print; next }
+        }
+    }' "$reviews" 2>/dev/null || true)
+
+if [ -n "$rows" ]; then
+    # Every changed header must be accounted for by name. Paths are recorded
+    # relative to the include root, the way doc/abi_reviews.md already writes
+    # them (`formats/exodus.hpp`, not the full src/cpp/include/... path).
+    missing=""
+    for header in $changed; do
+        rel=${header#"$header_dir/"}
+        if ! printf '%s\n' "$rows" | grep -qF "$rel"; then
+            missing="$missing $rel"
+        fi
+    done
+
+    if [ -z "$missing" ]; then
         echo "check-abi-version: OK (headers changed, ABI held at ${abi_now}, and"
-        echo "                      ${reviews} records the additive review)."
+        echo "                      ${reviews} reviews them for v${version_now})."
         exit 0
     fi
+
+    cat >&2 <<EOF
+
+check-abi-version: FAILED
+
+  ${reviews} has a row for ABI ${abi_now} / v${version_now}, but it does not
+  account for every installed header that changed since ${base}:
+$(printf '    %s\n' $missing)
+
+  Either name them in that row -- having checked each one is Tier C by
+  doc/abi.md's criterion, i.e. that it cannot affect an already-compiled
+  consumer -- or bump MESHIOPLUSPLUS_ABI_VERSION in ${abi_header} if any of them
+  was in fact a Tier A layout change or a Tier B inline-body/default-argument
+  change.
+
+  Not a rubber stamp: getting this wrong ships silent memory corruption to
+  every C++ consumer that trusts the ABI number instead of the version pin.
+EOF
+    exit 1
 fi
 
 cat >&2 <<EOF
@@ -116,7 +194,10 @@ check-abi-version: FAILED
 
   Installed headers changed between ${base} and HEAD, but
   MESHIOPLUSPLUS_ABI_VERSION is still ${abi_now} and ${reviews} records no
-  review for it.
+  review for ABI ${abi_now} / v${version_now}.
+
+  (A row for ABI ${abi_now} against some *other* release does not count. The
+  review has to be of this change.)
 
   Read doc/abi.md and decide which this was:
 
@@ -127,8 +208,9 @@ check-abi-version: FAILED
 
     Tier C (purely additive: a NEW inline function, constexpr, type,
     declaration or header, or an appended enumerator)
-        -> add a row to ${reviews} for ABI ${abi_now} naming the headers
-           and why the change cannot affect an already-compiled consumer.
+        -> add a row to ${reviews} for ABI ${abi_now} / v${version_now},
+           naming every header above and why the change cannot affect an
+           already-compiled consumer.
 
   Not a rubber stamp: getting this wrong ships silent memory corruption to
   every C++ consumer that trusts the ABI number instead of the version pin.

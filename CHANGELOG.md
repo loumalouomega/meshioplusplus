@@ -8,6 +8,23 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.4.1 (2026-07-28)
+
+- **Fixed: `tools/check-abi-version.sh`'s review gate passed vacuously.** It matched any row of
+  `doc/abi_reviews.md` whose first column was the current ABI version, and two ABI-3 rows have
+  existed since v9.4.0 — so from v9.5.0 onwards *every* header change that held the ABI would
+  have matched one of them and exited 0 reporting "records the additive review" about a review
+  of a different release. That left Tier B (an edit to the body of an existing `inline`
+  function) with no gate at all, since `tests/cpp/test_abi_layout.cpp` provably cannot see one.
+  The lookup is now keyed on the ABI version **and** the release version in `CMakeLists.txt`,
+  **and** requires every changed header to be named in the matching row — keying on the release
+  alone is not enough either, because a header change that skips the version bump still finds
+  the previous release's row. `doc/abi_reviews.md`'s `headers changed` column is therefore
+  load-bearing, and its contract text (which described the old, weaker behaviour) is corrected.
+  `tests/python/test_check_abi_version.py` drives the real script over a throwaway git
+  repository and asserts it *fires* — the guard this script never had, and the same lesson the
+  backend guard learned in v9.1.0. `MESHIOPLUSPLUS_ABI_VERSION` is unaffected and stays 3.
+
 ## v9.4.0 (2026-07-27)
 
 The C++ ABI contract becomes explicit, machine-checkable, and no coarser than the code
