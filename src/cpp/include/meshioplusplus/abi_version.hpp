@@ -52,7 +52,8 @@
  *  |-----|--------------------|------------------------------------------------|
  *  | 1   | v9.0.0             | (baseline)                                     |
  *  | 2   | v9.1.0             | `GeometricalEntity`, `ModelPart`, `MdpaInfo`, … |
- *  | 3   | v9.2.0 .. v9.4.0   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
+ *  | 3   | v9.2.0 .. v9.4.1   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
+ *  | 4   | v9.5.0             | `RefineOptions` gained selection/closure fields |
  *
  * ### This is the ONE place the number is written
  *
@@ -71,4 +72,4 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 3
+#define MESHIOPLUSPLUS_ABI_VERSION 4
