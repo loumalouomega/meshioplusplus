@@ -1703,3 +1703,346 @@ def test_names_encoding_a_timestep_defer_to_python():
             # Grouped under one field -- the signature of the Python writer
             # actually having handled this, not the C++ one.
             assert list(f["CHA"].keys()) == ["Temperature"]
+
+
+# --------------------------------------------------------------------------- #
+# Named regions (v9.6.0): families/GRO group names attach as `.regions`, one  #
+# per group name, on both read (med_attach_point_regions/                    #
+# med_attach_cell_regions) and write (med_point_regions_to_tags/              #
+# med_cell_regions_to_tags, only when the mesh carries no native              #
+# point_tags/cell_tags -- native data always wins). See doc/regions.md and    #
+# tests/python/test_region_roundtrip.py for the cross-format matrix entry.    #
+# --------------------------------------------------------------------------- #
+
+
+def test_reference_file_regions_match_families(tmp_path):
+    """cylinder.med's regions must mirror its `point_tags`/`cell_tags`
+    exactly -- same group names, same membership -- since both are derived
+    from the same FAS family tables."""
+    this_dir = pathlib.Path(__file__).resolve().parent
+    filename = this_dir / "meshes" / "med" / "cylinder.med"
+    mesh = meshioplusplus.read(filename)
+
+    point_region_names = {r.name for r in mesh.regions if r.kind == "point"}
+    cell_region_names = {r.name for r in mesh.regions if r.kind == "cell"}
+    assert point_region_names == {"Side", "Top"}
+    assert cell_region_names == {
+        "Top circle",
+        "Top",
+        "Top and down",
+        "A",
+        "B",
+        "C",
+    }
+
+    # point_sets/cell_sets are compat views over the same regions.
+    assert set(mesh.point_sets) == point_region_names
+    assert set(mesh.cell_sets) == cell_region_names
+    for r in mesh.regions:
+        if r.kind == "point":
+            np.testing.assert_array_equal(mesh.point_sets[r.name], r.entries)
+
+
+def test_cpp_regions_match_python_fallback(tmp_path):
+    """The C++ reader's regions and the pure-Python fallback reader's
+    point_sets/cell_sets-derived regions must describe the same groups for
+    the same file."""
+    from meshioplusplus.med._med import read as _py_read
+
+    this_dir = pathlib.Path(__file__).resolve().parent
+    filename = this_dir / "meshes" / "med" / "cylinder.med"
+
+    cpp_mesh = meshioplusplus.med.read(filename)
+    py_mesh = _py_read(filename)
+
+    assert set(cpp_mesh.point_sets) == set(py_mesh.point_sets)
+    for name in cpp_mesh.point_sets:
+        np.testing.assert_array_equal(
+            np.sort(cpp_mesh.point_sets[name]), np.sort(py_mesh.point_sets[name])
+        )
+    assert set(cpp_mesh.cell_sets) == set(py_mesh.cell_sets)
+    for name in cpp_mesh.cell_sets:
+        for cpp_block, py_block in zip(cpp_mesh.cell_sets[name], py_mesh.cell_sets[name]):
+            np.testing.assert_array_equal(np.sort(cpp_block), np.sort(py_block))
+
+
+def test_regions_only_mesh_write_synthesizes_families_via_cpp(tmp_path):
+    """A mesh carrying only named regions (no native `point_tags`/
+    `cell_tags`, e.g. one read from Abaqus) used to write silently with no
+    groups at all through the C++ path: `mesh.point_tags`/`cell_tags` were
+    empty, so neither `FAM` nor `FAS` were written, and nothing about the
+    write ever raised to trigger the Python `_ensure_med_families`
+    bridging. The C++ writer now synthesizes families from `.regions`
+    directly."""
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_hdf5__", False):
+        pytest.skip("core built without HDF5")
+
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        [("triangle", [[0, 1, 2]])],
+    )
+    mesh.point_sets = {"corner": np.array([0])}
+    mesh.cell_sets = {"skin": [np.array([0])]}
+    assert "point_tags" not in mesh.point_data
+    assert "cell_tags" not in mesh.cell_data
+
+    path = tmp_path / "regions_only.med"
+    # Bypass the shim entirely: a direct _core.med_write call with no
+    # point_tags/cell_tags (exactly what the shim passes for a mesh with no
+    # native family data) must not silently drop the sets.
+    core.med_write(str(path), mesh, {}, {}, [], "mesh", "", "", "", {}, {}, "4.1.0")
+
+    back = meshioplusplus.med.read(path)
+    assert "corner" in back.point_sets
+    np.testing.assert_array_equal(back.point_sets["corner"], [0])
+    assert "skin" in back.cell_sets
+    np.testing.assert_array_equal(back.cell_sets["skin"][0], [0])
+
+
+def test_cpp_synthesized_families_match_ensure_med_families(tmp_path):
+    """The C++ writer's region->family synthesis
+    (`med_point_regions_to_tags`/`med_cell_regions_to_tags`) must produce
+    the exact same family ids and group names as the Python fallback's
+    `_ensure_med_families` for the same mesh -- both implement the same
+    first-encounter combo algorithm."""
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_hdf5__", False):
+        pytest.skip("core built without HDF5")
+    from meshioplusplus.med._med import write as _py_write
+
+    mesh = meshioplusplus.Mesh(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 1.0],
+        ],
+        [("tetra", [[0, 1, 2, 4], [0, 2, 3, 4]])],
+        regions=[
+            meshioplusplus.Region("A", "point", [0]),
+            meshioplusplus.Region("B", "point", [0, 3]),
+            meshioplusplus.Region("solid", "cell", [0, 1]),
+        ],
+    )
+
+    cpp_path = tmp_path / "cpp.med"
+    py_path = tmp_path / "py.med"
+    meshioplusplus.med.write(cpp_path, mesh)  # C++ synthesis path
+    _py_write(py_path, mesh)  # Python `_ensure_med_families` path
+
+    def dump_families(f, section):
+        fas = f[f"FAS/mesh/{section}"]
+        out = {}
+        for gname, grp in fas.items():
+            if gname == "FAMILLE_ZERO":
+                continue
+            num = int(grp.attrs["NUM"])
+            if "GRO" in grp:
+                nom = grp["GRO"]["NOM"][()]
+                names = sorted(
+                    "".join(chr(c) for c in row).strip().rstrip("\x00") for row in nom
+                )
+            else:
+                names = []
+            out[gname] = (num, tuple(names))
+        return out
+
+    with h5py.File(cpp_path, "r") as fc, h5py.File(py_path, "r") as fp:
+        assert dump_families(fc, "NOEUD") == dump_families(fp, "NOEUD")
+        assert dump_families(fc, "ELEME") == dump_families(fp, "ELEME")
+
+
+def test_multi_group_family_creates_multiple_regions(tmp_path):
+    """A single point/cell belonging to several regions must create one
+    family per unique *combination* of names, and each name must still
+    resolve to its own region on read."""
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        [("triangle", [[0, 1, 2], [0, 2, 3]])],
+        regions=[
+            meshioplusplus.Region("A", "cell", [0]),
+            meshioplusplus.Region("B", "cell", [0, 1]),  # cell 0 in A and B
+        ],
+    )
+    path = tmp_path / "multi_group.med"
+    meshioplusplus.med.write(path, mesh)
+    back = meshioplusplus.med.read(path)
+
+    np.testing.assert_array_equal(back.cell_sets["A"][0], [0])
+    np.testing.assert_array_equal(back.cell_sets["B"][0], [0, 1])
+    # Two distinct combinations (A+B) and (B alone) -> two families.
+    with h5py.File(path, "r") as f:
+        families = [g for g in f["FAS/mesh/ELEME"] if g != "FAMILLE_ZERO"]
+        assert len(families) == 2
+
+
+def test_side_regions_are_dropped_with_a_warning(tmp_path):
+    """MED has no facet-group concept; a `Side` region must be dropped
+    rather than silently corrupting a `Point`/`Cell` family, and it must
+    not prevent the other regions from being written."""
+    mesh = meshioplusplus.Mesh(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 1.0],
+        ],
+        [("tetra", [[0, 1, 2, 4], [0, 2, 3, 4]])],
+        regions=[
+            meshioplusplus.Region("solid", "cell", [0, 1]),
+            meshioplusplus.Region("wall", "side", [[0, 1], [1, 3]], dim=2),
+        ],
+    )
+    path = tmp_path / "side_regions.med"
+    meshioplusplus.med.write(path, mesh)
+
+    back = meshioplusplus.med.read(path)
+    assert "solid" in back.cell_sets
+    assert not any(r.kind == "side" for r in back.regions)
+
+
+# --------------------------------------------------------------------------- #
+# Global numbering (v9.6.0): the optional `NUM` datasets Salome/Code_Aster/    #
+# Kratos write, carried as `point_data`/`cell_data["med:num"]`. Cell `NUM`    #
+# is only carried when *every* block has it; absent NUM changes nothing.      #
+# --------------------------------------------------------------------------- #
+
+
+def test_reference_file_num_matches_h5py_ground_truth():
+    """cylinder.med carries `NUM` on `NOE` and every `MAI` block; reading it
+    must expose the exact same values as `med:num`."""
+    this_dir = pathlib.Path(__file__).resolve().parent
+    filename = this_dir / "meshes" / "med" / "cylinder.med"
+
+    with h5py.File(filename, "r") as f:
+        step = next(iter(f["ENS_MAA"]["Cylinder"].values()))
+        expected_point_num = step["NOE"]["NUM"][()]
+        expected_cell_num_by_type = {name: grp["NUM"][()] for name, grp in step["MAI"].items()}
+
+    from meshioplusplus.med._med import meshio_to_med_type
+
+    mesh = meshioplusplus.read(filename)
+    np.testing.assert_array_equal(mesh.point_data["med:num"], expected_point_num)
+
+    assert "med:num" in mesh.cell_data
+    for cell_block, num in zip(mesh.cells, mesh.cell_data["med:num"]):
+        med_type = meshio_to_med_type[cell_block.type]
+        np.testing.assert_array_equal(num, expected_cell_num_by_type[med_type])
+
+
+def test_med_num_roundtrip(tmp_path):
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    mesh.point_data["med:num"] = np.arange(1, len(mesh.points) + 1, dtype=np.int32)
+    mesh.cell_data["med:num"] = [
+        np.arange(100, 100 + len(cb.data), dtype=np.int32) for cb in mesh.cells
+    ]
+
+    path = tmp_path / "num_roundtrip.med"
+    meshioplusplus.med.write(path, mesh)
+    back = meshioplusplus.med.read(path)
+
+    np.testing.assert_array_equal(back.point_data["med:num"], mesh.point_data["med:num"])
+    for a, b in zip(back.cell_data["med:num"], mesh.cell_data["med:num"]):
+        np.testing.assert_array_equal(a, b)
+
+    # med:num must not leak into CHA as an ordinary field.
+    with h5py.File(path, "r") as f:
+        assert "CHA" not in f
+
+
+def test_no_med_num_writes_no_num_dataset(tmp_path):
+    """A mesh with no `med:num` must not gain a `NUM` dataset anywhere --
+    the feature costs an existing file nothing."""
+    path = tmp_path / "no_num.med"
+    meshioplusplus.med.write(path, helpers.tri_mesh)
+
+    found = []
+    with h5py.File(path, "r") as f:
+        f.visititems(
+            lambda name, obj: found.append(name)
+            if isinstance(obj, h5py.Dataset) and name.rsplit("/", 1)[-1] == "NUM"
+            else None
+        )
+    assert found == []
+
+
+def test_partial_cell_num_is_ignored(tmp_path):
+    """Cell `NUM` present on only some blocks is not a mesh-wide global
+    numbering; it must be dropped (with a warning), not fabricated or
+    partially reported."""
+    from meshioplusplus._mesh import CellBlock
+
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    )
+    cells = [
+        CellBlock("triangle", np.array([[0, 1, 2]])),
+        CellBlock("tetra", np.array([[0, 1, 2, 3]])),
+    ]
+    mesh = meshioplusplus.Mesh(points, cells)
+    mesh.cell_data["med:num"] = [np.array([10], dtype=np.int32), np.array([20], dtype=np.int32)]
+
+    path = tmp_path / "partial_num.med"
+    meshioplusplus.med.write(path, mesh)
+
+    step = "-0000000000000000001-0000000000000000001"
+    with h5py.File(path, "a") as f:
+        del f["ENS_MAA"]["mesh"][step]["MAI"]["TR3"]["NUM"]
+
+    back = meshioplusplus.med.read(path)
+    assert "med:num" not in back.cell_data
+    assert len(back.cells) == 2
+
+
+# --------------------------------------------------------------------------- #
+# MED version check (v9.6.0): a file written by a MED major version newer     #
+# than 4 must be rejected with a clear, named error -- twinned in C++ and     #
+# Python so neither silently misreads it after the other declines.            #
+# --------------------------------------------------------------------------- #
+
+
+def test_newer_med_version_is_rejected_by_both_paths(tmp_path):
+    from meshioplusplus._exceptions import ReadError
+    from meshioplusplus.med._med import read as _py_read
+
+    path = tmp_path / "newer.med"
+    meshioplusplus.med.write(path, helpers.tri_mesh)
+    with h5py.File(path, "a") as f:
+        f["INFOS_GENERALES"].attrs.modify("MAJ", 5)
+
+    with pytest.raises(ReadError, match="newer than the MED 4.1"):
+        meshioplusplus.med.read(path)  # C++ path when built with HDF5
+    with pytest.raises(ReadError, match="newer than the MED 4.1"):
+        _py_read(path)  # Python path directly
+
+
+def test_older_med_version_still_reads(tmp_path):
+    """Only a *newer* major version is rejected -- the repo's own fixtures
+    include MED 3.x files (see cylinder.med) that must keep reading."""
+    path = tmp_path / "older.med"
+    meshioplusplus.med.write(path, helpers.tri_mesh)
+    with h5py.File(path, "a") as f:
+        f["INFOS_GENERALES"].attrs.modify("MAJ", 3)
+
+    mesh = meshioplusplus.med.read(path)
+    assert len(mesh.points) == len(helpers.tri_mesh.points)
+
+
+# --------------------------------------------------------------------------- #
+# Type table extras (v9.6.0)                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_line4_roundtrip(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        [("line4", [[0, 1, 2, 3]])],
+    )
+    path = tmp_path / "line4.med"
+    meshioplusplus.med.write(path, mesh)
+    back = meshioplusplus.med.read(path)
+    assert back.cells[0].type == "line4"
+    np.testing.assert_array_equal(back.cells[0].data, mesh.cells[0].data)
