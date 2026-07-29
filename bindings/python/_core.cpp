@@ -1319,16 +1319,49 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
         meshioplusplus::write_gmsh22(path, cpp, binary);
     });
-    m.def("gmsh41_write", [](const std::string& path, py::object pymesh, bool binary) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-        meshioplusplus::write_gmsh41(path, cpp, binary);
-    });
+    m.def(
+        "gmsh41_write",
+        [](const std::string& path, py::object pymesh, bool binary, py::object bounding_entities) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            // The $Entities bounding entities cannot live on the C++ Mesh (they
+            // are signed entity tags, not indices), so the shim hands them over
+            // separately -- the read path's GmshInfo channel, in reverse.
+            meshioplusplus::GmshInfo info;
+            if (!bounding_entities.is_none()) {
+                for (py::handle blk : py::cast<py::sequence>(bounding_entities)) {
+                    std::vector<std::int32_t> tags;
+                    if (!blk.is_none()) {
+                        // forcecast: the shim may hand over a list or any
+                        // integer-dtype array, not necessarily int32.
+                        auto arr = py::cast<py::array_t<std::int32_t, py::array::forcecast>>(blk);
+                        tags.assign(arr.data(), arr.data() + arr.size());
+                    }
+                    info.mBoundingEntities.push_back(std::move(tags));
+                }
+            }
+            meshioplusplus::write_gmsh41(path, cpp, binary, info);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary"),
+        py::arg("bounding_entities") = py::none());
     m.def(
         "gmsh_read",
         [](const std::string& path, bool points_only, py::object arrays) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_gmsh(path, core_read_options(points_only, arrays)));
+            meshioplusplus::GmshInfo info;
+            py::object pymesh = meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_gmsh(path, info, core_read_options(points_only, arrays)));
+            // The 4.1 $Entities bounding entities are signed entity tags, not
+            // cell indices, so they ride the GmshInfo side channel and land in
+            // cell_sets here -- where the Mesh's own predicate routes them to
+            // the verbatim passthrough, exactly as the Python reference's do.
+            if (!info.mBoundingEntities.empty()) {
+                py::list blocks;
+                for (const auto& tags : info.mBoundingEntities)
+                    blocks.append(py::array_t<std::int32_t>(static_cast<py::ssize_t>(tags.size()),
+                                                            tags.data()));
+                pymesh.attr("cell_sets")["gmsh:bounding_entities"] = std::move(blocks);
+            }
+            return pymesh;
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
