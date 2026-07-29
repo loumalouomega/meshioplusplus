@@ -366,7 +366,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"exodus", [](const std::string& path,
                       const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); }},
 #endif
-        {"gmsh", meshioplusplus::read_gmsh},
+        // A lambda, not `&read_gmsh`: the GmshInfo overload makes the bare name
+        // ambiguous (the exodus/mdpa story again). The info is dropped here, so
+        // the flat bindings see no `$Entities` bounding entities.
+        {"gmsh", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_gmsh(path, opts); }},
         // mdpa honours mLenient rather than the narrowing options -- the same
         // "options-aware is several capabilities, not one" note as exodus. This
         // entry is what makes `--lenient` reach the C API, Fortran, Julia, R,
