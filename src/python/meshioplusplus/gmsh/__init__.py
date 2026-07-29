@@ -31,8 +31,8 @@ def read(filename, points_only=False, arrays=None):
 def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
     """Write a Gmsh .msh file.
 
-    Uses the C++ core for format version 2.2 (ascii or binary) on non-periodic
-    meshes; otherwise falls back to the reference Python writer.
+    Uses the C++ core for format versions 2.2 and 4.1 (ascii or binary) on
+    non-periodic meshes; otherwise falls back to the reference Python writer.
     """
     if (
         float_fmt == ".16e"
@@ -45,9 +45,17 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
                 return
             except Exception:
                 pass
-        elif fmt_version == "4.1" and "gmsh:dim_tags" not in mesh.point_data:
+        elif fmt_version == "4.1":
             try:
-                _core.gmsh41_write(str(filename), mesh, binary)
+                # Bounding entities are signed entity tags, so they live in
+                # cell_sets rather than on the C++ Mesh and are handed over
+                # separately (the read path's GmshInfo channel, in reverse).
+                _core.gmsh41_write(
+                    str(filename),
+                    mesh,
+                    binary,
+                    mesh.cell_sets.get("gmsh:bounding_entities"),
+                )
                 return
             except Exception:
                 pass
