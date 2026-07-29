@@ -15113,6 +15113,31 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
  * so it converges to uniform refinement of the whole edge-connected component.
  * It is the always-works baseline and the test oracle, not the adaptivity mode.
  *
+ * `RefineClosure::Balanced` does not close at all: it **keeps the hanging
+ * nodes** and only enforces 2:1 balance, which is what an adaptive-mesh-
+ * refinement code normally means by "propagate". A cell is split fully or not
+ * at all -- there are no transitional templates -- and a cell is drawn in only
+ * when a neighbour would otherwise end up more than one level finer than it:
+ *
+ *     refine C  =>  C's level rises by one
+ *     D must refine  <=>  some entity D shares has an incident cell whose
+ *                         post-refinement level exceeds D's by more than one
+ *
+ * On a mesh of uniform level that condition is satisfied nowhere, so refining
+ * one cell propagates to **nothing** -- 64 hexahedra become 71, against 125
+ * under `RedGreen` and 512 under `Propagate`. Balancing only bites once levels
+ * differ, i.e. from the second adaptive pass onwards, and even then it reaches
+ * one level-ring rather than the whole mesh. The `refine:level` array is what
+ * makes that well defined across passes, and reading it back is why the array
+ * is *maintained* rather than replicated.
+ *
+ * The price is stated rather than hidden: the result is **1-irregular and not
+ * conforming**. Every constrained node is reported in the `refine:hanging`
+ * `point_data` array (see `kRefineHangingName`) so a solver can eliminate it;
+ * the conformity guarantees below apply to the other two closures only, and
+ * `extract_surface`, `decimate` and anything else assuming a conforming mesh
+ * will treat a hanging node as a genuine boundary.
+ *
  * A cell with two *adjacent* bisected edges on one face has a remnant
  * quadrilateral there that needs a diagonal, and the neighbour across that face
  * must choose the same one. The choice is therefore made from the **global node
@@ -15160,16 +15185,32 @@ inline constexpr const char* kRefineParentCellName = "refine:parent_cell";
 /// successive passes accumulate.
 inline constexpr const char* kRefineLevelName = "refine:level";
 
+/// The Int64 `point_data` array `RefineClosure::Balanced` attaches: `1` for a
+/// **hanging** (constrained) node, `0` otherwise. A hanging node is one that
+/// exists on an entity of a cell that does not reference it -- the mid-edge node
+/// a refined cell created on an edge its unrefined neighbour still spans whole.
+/// Only `Balanced` produces any; the other closures leave none by construction
+/// and do not attach the array.
+inline constexpr const char* kRefineHangingName = "refine:hanging";
+
 /// How `refine` resolves the hanging nodes a partial refinement leaves behind.
 enum class RefineClosure {
     /// Promote a cell's split-edge mask to the smallest *admissible* superset,
     /// so an affected neighbour is split transitionally rather than fully. Keeps
-    /// the extra refinement local. The default.
+    /// the extra refinement local, and the output is conforming. The default.
     RedGreen = 0,
-    /// Promote any non-empty mask straight to a full split. Always conforming
-    /// and defined for every cell type, but **not local**: it converges to
-    /// uniform refinement of the whole edge-connected component.
+    /// Promote any non-empty mask straight to a full split. Conforming and
+    /// defined for every cell type, but **not local**: it converges to uniform
+    /// refinement of the whole edge-connected component.
     Propagate = 1,
+    /// Do not close at all: **keep the hanging nodes** and merely enforce 2:1
+    /// balance, refining a cell only when a neighbour would otherwise end up
+    /// more than one level finer. The output is 1-irregular and **NOT
+    /// conforming** -- the constrained nodes are reported in `refine:hanging`
+    /// for a solver to eliminate. This is the classic adaptive-mesh-refinement
+    /// meaning of "propagate", and the only mode whose cost is bounded by the
+    /// selection rather than by the mesh.
+    Balanced = 2,
 };
 
 /// The comparison in `RefineOptions`' `cell_data` predicate selector.
@@ -15183,8 +15224,8 @@ enum class RefineCompare {
 };
 
 /**
- * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`, or
- * `"propagate"` / `"red"`.
+ * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`,
+ * `"propagate"` / `"red"`, or `"balanced"` / `"2:1"`.
  * @param rName The name; empty means the default (`RedGreen`).
  * @throws std::invalid_argument naming every accepted value.
  */
@@ -63979,6 +64020,7 @@ Mesh attach_quality(const Mesh& rMesh) {
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -64237,7 +64279,92 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
     // split, and the promotion of a full mask is itself.
     std::vector<std::uint16_t> masks(total_cells, 0);
     std::vector<char> split(entities.size(), 0);
-    if (pRedSeed == nullptr) {
+    // Balanced needs the per-cell level up front rather than at emit time: the
+    // whole rule is a comparison between neighbours' levels.
+    const std::vector<std::int64_t> base_levels = refine_read_levels(rMesh, descs);
+    if (pRedSeed != nullptr && Closure == RefineClosure::Balanced) {
+        // 2:1 balance. A cell is split fully or not at all -- no transitional
+        // templates -- and is drawn in only when a neighbour would otherwise end
+        // up more than one level finer. Marking a cell only ever raises a post
+        // level, so the rule is monotone and its least fixed point is unique: as
+        // with the mask closure, determinism here is a property of the
+        // formulation rather than of the traversal.
+        //
+        // Adjacency is by shared NODE, not by shared edge entity. That is not a
+        // stylistic choice: across a hanging interface the coarse cell spans a
+        // whole edge while the fine cell has only half of it, so the two are
+        // *different* entities and an edge-keyed rule is blind to exactly the
+        // coarse/fine adjacency it exists to police. The corner nodes are what
+        // the two still share. (It is also the stronger, standard "corner
+        // balance", so a diagonal neighbour counts too.)
+        std::vector<char> red(*pRedSeed);
+        const auto level_of = [&](std::size_t c) {
+            return base_levels.empty() ? std::int64_t{0} : base_levels[c];
+        };
+        for (;;) {
+            // Per input point, the largest post-refinement level among the cells
+            // that touch it.
+            std::vector<std::int64_t> node_max(num_points,
+                                               std::numeric_limits<std::int64_t>::min());
+            {
+                std::size_t bi = 0;
+                for (const auto cb : rMesh.CellRange()) {
+                    const RefineBlockDesc& d = descs[bi++];
+                    const NDArray& conn = cb.Conn();
+                    const std::size_t npc = cb.NodesPerCell();
+                    for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                        const std::size_t g = d.mFirstCell + c;
+                        const std::int64_t post = level_of(g) + (red[g] ? 1 : 0);
+                        for (std::size_t n = 0; n < npc; ++n) {
+                            const std::int64_t p = detail::read_int(conn, c * npc + n);
+                            if (p >= 0 && p < static_cast<std::int64_t>(num_points)) {
+                                std::int64_t& m = node_max[static_cast<std::size_t>(p)];
+                                m = std::max(m, post);
+                            }
+                        }
+                    }
+                }
+            }
+            bool changed = false;
+            std::size_t bi = 0;
+            for (const auto cb : rMesh.CellRange()) {
+                const RefineBlockDesc& d = descs[bi++];
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                    const std::size_t g = d.mFirstCell + c;
+                    if (red[g])
+                        continue;
+                    for (std::size_t n = 0; n < npc; ++n) {
+                        const std::int64_t p = detail::read_int(conn, c * npc + n);
+                        if (p >= 0 && p < static_cast<std::int64_t>(num_points) &&
+                            node_max[static_cast<std::size_t>(p)] > level_of(g) + 1) {
+                            red[g] = 1;
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!changed)
+                break;
+        }
+        // Only the fully split cells create nodes; an unrefined neighbour keeps
+        // its whole shape and simply acquires hanging nodes on its edges.
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const RefineBlockDesc& d = descs[b];
+            const std::size_t nedges = d.mpEdges->size();
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                const std::size_t g = d.mFirstCell + c;
+                if (!red[g])
+                    continue;
+                masks[g] = d.mFullMask;
+                const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                for (std::size_t k = 0; k < nedges; ++k)
+                    split[static_cast<std::size_t>(entity_of_slot[slot0 + k])] = 1;
+            }
+        }
+    } else if (pRedSeed == nullptr) {
         for (std::size_t b = 0; b < nblocks; ++b)
             std::fill(masks.begin() + static_cast<std::ptrdiff_t>(descs[b].mFirstCell),
                       masks.begin() +
@@ -64339,6 +64466,39 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 continue;
             node_of_entity[e] = static_cast<std::int64_t>(num_points + kept_entities.size());
             kept_entities.push_back(static_cast<std::int64_t>(e));
+        }
+    }
+
+    // Hanging nodes: a new node is constrained exactly when some emitted cell is
+    // incident to its entity but does not reference it -- the mid-edge node a
+    // split cell created on an edge its unsplit neighbour still spans whole. The
+    // rule is stated over entities rather than per closure, so it stays correct
+    // if another mode ever leaves some; RedGreen and Propagate leave none, which
+    // a test asserts rather than assumes.
+    std::vector<char> hanging(num_points + kept_entities.size(), 0);
+    std::size_t num_hanging = 0;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const RefineBlockDesc& d = descs[b];
+        for (std::size_t c = 0; c < d.mNumCells; ++c) {
+            const std::uint16_t mask = masks[d.mFirstCell + c];
+            const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+            for (std::size_t s = 0; s < d.mSlotsPerCell; ++s) {
+                // A slot this cell's own template resolves is referenced, not
+                // hanging: edge slot k iff bit k is set, face slot f iff all of
+                // that face's edges are.
+                const bool referenced = s < d.mpEdges->size()
+                                            ? ((mask >> s) & 1u) != 0
+                                            : (mask & d.mFaceEdgeMasks[s - d.mpEdges->size()]) ==
+                                                  d.mFaceEdgeMasks[s - d.mpEdges->size()];
+                if (referenced)
+                    continue;
+                const std::int64_t node =
+                    node_of_entity[static_cast<std::size_t>(entity_of_slot[slot0 + s])];
+                if (node >= 0 && !hanging[static_cast<std::size_t>(node)]) {
+                    hanging[static_cast<std::size_t>(node)] = 1;
+                    ++num_hanging;
+                }
+            }
         }
     }
 
@@ -64538,7 +64698,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
     }
 
     // --- phase 8: cell_data gathered parent -> children ----------------------
-    const std::vector<std::int64_t> base_levels = refine_read_levels(rMesh, descs);
+    // base_levels was hoisted above: the Balanced closure compares levels.
     for (const std::string& name : rMesh.CellDataNames()) {
         if (name == kRefineLevelName)
             continue;  // recomputed below, never replicated
@@ -64586,6 +64746,19 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
             blocks.push_back(std::move(a));
         }
         out.AddCellData(kRefineLevelName, std::move(blocks));
+    }
+
+    // refine:hanging -- the constrained nodes a Balanced pass leaves behind. Only
+    // attached when there are any, so the conforming closures are unaffected.
+    if (num_hanging > 0) {
+        NDArray flags = NDArray::Uninit(DType::Int64, {num_points_out, 1});
+        std::int64_t* dst = flags.As<std::int64_t>();
+        std::fill(dst, dst + num_points_out, static_cast<std::int64_t>(0));
+        for (std::size_t i = 0; i < hanging.size(); ++i)
+            dst[i] = hanging[i] ? 1 : 0;
+        out.AddPointData(kRefineHangingName, std::move(flags));
+        log::info("refine: the balanced closure left {} hanging node(s); see '{}'.", num_hanging,
+                  kRefineHangingName);
     }
 
     for (const std::string& name : rMesh.FieldDataNames())
@@ -64830,8 +65003,10 @@ RefineClosure refine_closure_from_name(const std::string& rName) {
         return RefineClosure::RedGreen;
     if (rName == "propagate" || rName == "red")
         return RefineClosure::Propagate;
+    if (rName == "balanced" || rName == "2:1")
+        return RefineClosure::Balanced;
     throw std::invalid_argument("refine: unknown closure '" + rName +
-                                "' (expected 'redgreen'/'green' or 'propagate')");
+                                "' (expected 'redgreen'/'green', 'propagate' or 'balanced')");
 }
 
 RefineCompare refine_compare_from_name(const std::string& rName) {
