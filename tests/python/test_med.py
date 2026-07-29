@@ -1762,7 +1762,9 @@ def test_cpp_regions_match_python_fallback(tmp_path):
         )
     assert set(cpp_mesh.cell_sets) == set(py_mesh.cell_sets)
     for name in cpp_mesh.cell_sets:
-        for cpp_block, py_block in zip(cpp_mesh.cell_sets[name], py_mesh.cell_sets[name]):
+        for cpp_block, py_block in zip(
+            cpp_mesh.cell_sets[name], py_mesh.cell_sets[name]
+        ):
             np.testing.assert_array_equal(np.sort(cpp_block), np.sort(py_block))
 
 
@@ -1920,7 +1922,9 @@ def test_reference_file_num_matches_h5py_ground_truth():
     with h5py.File(filename, "r") as f:
         step = next(iter(f["ENS_MAA"]["Cylinder"].values()))
         expected_point_num = step["NOE"]["NUM"][()]
-        expected_cell_num_by_type = {name: grp["NUM"][()] for name, grp in step["MAI"].items()}
+        expected_cell_num_by_type = {
+            name: grp["NUM"][()] for name, grp in step["MAI"].items()
+        }
 
     from meshioplusplus.med._med import meshio_to_med_type
 
@@ -1944,7 +1948,9 @@ def test_med_num_roundtrip(tmp_path):
     meshioplusplus.med.write(path, mesh)
     back = meshioplusplus.med.read(path)
 
-    np.testing.assert_array_equal(back.point_data["med:num"], mesh.point_data["med:num"])
+    np.testing.assert_array_equal(
+        back.point_data["med:num"], mesh.point_data["med:num"]
+    )
     for a, b in zip(back.cell_data["med:num"], mesh.cell_data["med:num"]):
         np.testing.assert_array_equal(a, b)
 
@@ -1962,9 +1968,11 @@ def test_no_med_num_writes_no_num_dataset(tmp_path):
     found = []
     with h5py.File(path, "r") as f:
         f.visititems(
-            lambda name, obj: found.append(name)
-            if isinstance(obj, h5py.Dataset) and name.rsplit("/", 1)[-1] == "NUM"
-            else None
+            lambda name, obj: (
+                found.append(name)
+                if isinstance(obj, h5py.Dataset) and name.rsplit("/", 1)[-1] == "NUM"
+                else None
+            )
         )
     assert found == []
 
@@ -1983,7 +1991,10 @@ def test_partial_cell_num_is_ignored(tmp_path):
         CellBlock("tetra", np.array([[0, 1, 2, 3]])),
     ]
     mesh = meshioplusplus.Mesh(points, cells)
-    mesh.cell_data["med:num"] = [np.array([10], dtype=np.int32), np.array([20], dtype=np.int32)]
+    mesh.cell_data["med:num"] = [
+        np.array([10], dtype=np.int32),
+        np.array([20], dtype=np.int32),
+    ]
 
     path = tmp_path / "partial_num.med"
     meshioplusplus.med.write(path, mesh)
