@@ -150,7 +150,8 @@ has no hanging nodes; a higher-order cell, a `pyramid`, or a ragged block throws
 a catchable `Error`. The optional fourth argument selects a **subset** to refine
 — `{cells, region, array, compare, value, closure, recordLevels}`, at most one
 selector — in which case the hanging nodes that leaves are resolved by the
-closure and the output is still conforming; the `convertSurfaceOps` pipeline op
+closure and, for `'redgreen'` and `'propagate'`, the output is still conforming
+(`'balanced'` deliberately keeps them and reports each in `refine:hanging`); the `convertSurfaceOps` pipeline op
 `{op: 'refine', ...}` takes the same fields, where the comparison is spelled
 `compare` because `op` is the step's own discriminant. Partitioning is exposed as `partition(mesh, nparts, method,
 imbalance, mode, seed, recordIds, ghostLayers, weightsKey)` → an array of

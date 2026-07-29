@@ -138,6 +138,10 @@ refusing. With none, every cell is refined.
 | `region="hot"` | a `Cell` region selects its own cells; a `Point` region selects every cell with **any** node in it; a `Side` region is an error, since a facet is not a cell |
 | `where="quality:skewness > 0.7"` | a threshold on a scalar `cell_data` array, spelled `NAME OP VALUE` with `OP` one of `<`, `<=`, `>`, `>=`, `==`, `!=` |
 
+The **closure** then decides what happens to everything the selection touched:
+`"redgreen"` (default) and `"propagate"` both return a conforming mesh;
+`"balanced"` keeps the hanging nodes and only enforces 2:1 balance.
+
 A **non-finite** cell value never matches a predicate. That is deliberate rather
 than incidental: [`compute_quality`](/quality) reports `NaN` where a metric does
 not apply — `scaled_jacobian` is `NaN` for a quadrilateral in 3-D, for instance —
@@ -202,6 +206,47 @@ promoted in turn and the cascade reaches the whole edge-connected component. On 
 connected mesh it *is* the uniform refinement. It ships as the always-works
 baseline and as the test oracle — not as an adaptivity mode.
 
+### `closure="balanced"` — keep the hanging nodes
+
+The third option does not close at all. It splits a cell fully or not at all —
+there are no transitional templates — and only enforces **2:1 balance**, drawing
+a cell in when a neighbour would otherwise end up more than one level finer:
+
+> refine `C` ⟹ `C`'s level rises by one
+> `D` must refine ⟺ some cell sharing a **node** with `D` would end up more than
+> one level above `D`
+
+Adjacency is by shared *node*, not by shared edge, and that is not a detail:
+across a hanging interface the coarse cell spans a whole edge while the fine cell
+has only half of it, so the two are *different* entities and an edge-keyed rule
+would be blind to exactly the coarse/fine adjacency it exists to police. (It is
+also the stronger, standard "corner balance", so a diagonal neighbour counts.)
+
+On a mesh of uniform level that condition holds nowhere, so refining one cell
+propagates to **nothing**:
+
+| 4×4×4 block, one cell selected | cells |
+|---|---|
+| `redgreen` | 125 |
+| `propagate` | 512 (= uniform) |
+| **`balanced`** | **71** (= 64 − 1 + 8) |
+
+Balancing only bites once levels differ — from the second adaptive pass onwards —
+and even then it reaches one ring of neighbours rather than the whole mesh. This
+is what an adaptive-mesh-refinement code normally means by "propagate", and the
+only mode whose cost is bounded by the selection rather than by the mesh.
+
+The price is stated rather than hidden: the result is **1-irregular and not
+conforming**. Every constrained node is reported in the Int64 `refine:hanging`
+`point_data` array (`1` = hanging), so a solver can eliminate it — the array
+marks *exactly* the constrained nodes, edge midpoints and quad-face centres
+alike, neither a superset nor a subset. The conformity guarantees below apply to
+the other two closures only, and `extract_surface`, `decimate` and anything else
+assuming a conforming mesh will treat a hanging node as a genuine boundary.
+
+`refine:level` is what makes the rule well defined across passes, which is
+another reason that array is *maintained* rather than replicated.
+
 ### One choice made from global node ids
 
 A cell with two *adjacent* split edges on one face leaves a quadrilateral remnant
@@ -242,8 +287,9 @@ With `levels > 1` and a selector, level *k* refines the children of level
 
 ### Invariants
 
-- The output is **conforming**: no hanging nodes, and no facet shared by more
-  than two cells.
+- The output is **conforming** under `redgreen` and `propagate`: no hanging
+  nodes, and no facet shared by more than two cells. Under `balanced` it is
+  1-irregular by design, and `refine:hanging` marks every constrained node.
 - Every selected cell is fully split; every other cell is either untouched or
   minimally split by the closure.
 - New nodes are the **mean of their entity's corners**, which is
@@ -288,6 +334,7 @@ meshioplusplus refine in.msh out.vtu --cells 12,13,44 --record-levels
 meshioplusplus refine in.msh out.vtu --region hot
 meshioplusplus refine in.msh out.vtu --where "quality:scaled_jacobian < 0.3"
 meshioplusplus refine in.msh out.vtu --cells 12 --closure propagate
+meshioplusplus refine in.msh out.vtu --cells 12 --closure balanced --record-levels
 ```
 
 See the [CLI reference](/cli).

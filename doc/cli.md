@@ -519,7 +519,7 @@ meshioplusplus refine [options] INFILE OUTFILE
 | `--cells i,j,k` | Refine only these global (block-major) cells |
 | `--region NAME` | Refine a named region (a cell region selects its cells, a point region every cell touching it; a side region is an error) |
 | `--where "EXPR"` | Refine the cells satisfying a threshold on a scalar cell_data array, e.g. `"quality:scaled_jacobian < 0.3"` |
-| `--closure redgreen\|propagate` | How to resolve hanging nodes (default `redgreen`) |
+| `--closure redgreen\|propagate\|balanced` | How to resolve hanging nodes (default `redgreen`) |
 | `--record-levels` | Attach `refine:level` cell_data of each cell's refinement depth |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
@@ -528,6 +528,10 @@ cell is refined. `--closure redgreen` keeps the extra refinement local — a sin
 refined quadrilateral costs one row of a structured grid, a hexahedron one dual
 sheet. `--closure propagate` is defined for every cell type but reaches the whole
 edge-connected component, so on a connected mesh it *is* the uniform refinement.
+`--closure balanced` does not close at all: it keeps the hanging nodes and only
+enforces 2:1 balance, so the output is **not conforming** (the constrained nodes
+are listed in `refine:hanging`) but the cost is bounded by the selection — one
+cell of a 4×4×4 block costs 7 extra cells, against 61 and 448.
 
 One level splits a `triangle`/`quad` into 4 and a `tetra`/`wedge`/`hexahedron`
 into 8, inserting nodes at edge, quad-face and body midpoints. Those nodes are

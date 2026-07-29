@@ -136,7 +136,7 @@ no upload, no round trip:
 | **Quality** | attaches per-cell shape metrics ([mesh quality](/mesh_quality)) so you can colour by them |
 | **Clean** | welds coincident points, drops degenerate and duplicate cells ([clean](/clean)) |
 | **Smooth** | Laplacian or Taubin relaxation ([smoothing](/smooth)) |
-| **Refine** | subdivision ([refine](/refine)) — every cell, or only those satisfying a threshold on a cell array, with the hanging nodes that leaves resolved conformingly |
+| **Refine** | subdivision ([refine](/refine)) — every cell, or only those satisfying a threshold on a cell array; the closure selector chooses whether the hanging nodes that leaves are resolved (conforming) or kept under 2:1 balance |
 | **Partition** | decomposes into balanced parts and colours by part ([partitioning](/partition)) |
 | **Section** | the planar cross-section — the actual intersection with a plane ([slice](/slice)) |
 | **Isosurface** | the level set of a `point_data` field ([isosurface](/isosurface)) |
