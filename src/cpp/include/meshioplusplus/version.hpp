@@ -30,7 +30,8 @@
  *  |----------|-----------|
  *  | what did I **compile against**? | the macros here (and `MIO_VERSION_*` in the C header) |
  *  | what am I **running against**?  | `mio_version()`, a runtime call into the linked library |
- *  | are my headers **binary-compatible** with that library? | `MESHIOPLUSPLUS_ABI_VERSION` plus the link-time sentinel in `detail/abi_version_check.hpp` |
+ *  | are my headers **binary-compatible** with that library? | `MESHIOPLUSPLUS_ABI_VERSION` plus
+ * the link-time sentinel in `detail/abi_version_check.hpp` |
  *
  * With a shared library the first two genuinely can differ, which is the whole
  * reason both exist. Use these macros to decide what to *compile*, and
@@ -74,17 +75,17 @@
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
 /// The release version as one ordered integer: `major*10000 + minor*100 + patch`.
-#define MESHIOPLUSPLUS_VERSION                                                            \
-    (MESHIOPLUSPLUS_VERSION_MAJOR * 10000 + MESHIOPLUSPLUS_VERSION_MINOR * 100 +           \
+#define MESHIOPLUSPLUS_VERSION                                                   \
+    (MESHIOPLUSPLUS_VERSION_MAJOR * 10000 + MESHIOPLUSPLUS_VERSION_MINOR * 100 + \
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
 #define MESHIOPLUSPLUS_VERSION_STRING "9.6.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
-#define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch)                              \
+#define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
     (MESHIOPLUSPLUS_VERSION >= ((major) * 10000 + (minor) * 100 + (patch)))
 
 /// Whether the headers being compiled against are older than `major.minor.patch`.
-#define MESHIOPLUSPLUS_VERSION_BEFORE(major, minor, patch)                                \
+#define MESHIOPLUSPLUS_VERSION_BEFORE(major, minor, patch) \
     (!MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch))
