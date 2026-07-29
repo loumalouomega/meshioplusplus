@@ -8,6 +8,56 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.7.0 (2026-07-29)
+
+**Gmsh MSH 4.1 `$Entities` is supported by the C++ core**, in both directions. Until now
+`read_gmsh` threw `Gmsh $Entities not supported by the C++ reader` on sight of the section —
+which is the *first* section of every file Gmsh 4.1 writes, so in practice **no real 4.1 file
+was readable** from WASM, the C API, Fortran, Julia, R or the native CLI. Python never saw it:
+its shim catches any exception and silently re-reads with the pure-Python reference reader, so
+the gap was invisible from the one surface that had a fallback. Additive: a mesh with no
+`gmsh:dim_tags` writes byte-identical 4.1 output, and 2.2 is untouched.
+
+### Formats
+
+- **Gmsh 4.1 `$Entities` (read).** The section is parsed in ascii and binary, at both `size_t`
+  widths real files use (`example/example.msh` is a `4.1 0 4` file). This is not merely "stop
+  throwing": `$Entities` is the **only** place 4.1 records physical-group membership — an
+  `$Elements` block names an `(entityDim, entityTag)` pair and the physical tag lives on the
+  entity — so it is also what makes `cell_data["gmsh:physical"]`, and therefore every named
+  [region](doc/regions.md), exist for 4.1 at all. Regions now carry the group's real dimension
+  and tag rather than the `-1` placeholders a set-derived region has.
+
+  A file that tags *some* entities gets one `gmsh:physical` array per cell block, with `0`
+  (gmsh's "no physical group") for the untagged ones. This deliberately differs from the Python
+  reference, which omits the untagged blocks and thereby leaves `gmsh:physical` shorter than
+  `mesh.cells` — a shape the uniform mesh API cannot represent. A file that tags *nothing*
+  (like `example/example.msh`) still gets no `gmsh:physical` key at all.
+
+- **Gmsh 4.1 `$Entities` (write).** `write_gmsh41` emits `$Entities` and splits `$Nodes` into
+  one block per entity whenever the mesh carries `point_data["gmsh:dim_tags"]`, so **4.1 now
+  round-trips physical-group membership** — previously only `gmsh22` could, and only from
+  Python. ASCII output is byte-identical to the pure-Python reference writer. Without
+  `gmsh:dim_tags` there is no entity structure to describe, and the previous single-block
+  output is emitted unchanged. The entity set is the union of the node entities and the cell
+  entities, not just the former: a straight curve whose only nodes are its endpoints owns none
+  of its own yet still carries elements (`example/example.msh` has six), and taking only node
+  entities would drop their tags.
+
+- **`GmshInfo` side channel** (`formats/gmsh.hpp`), the `MedInfo`/`ExodusInfo` pattern: it
+  carries the `$Entities` bounding-entity tags, which are **signed** (the sign is the
+  boundary's orientation) and so cannot be a `Region`. `read_gmsh(path, GmshInfo&, opts)` and
+  `write_gmsh41(path, mesh, binary, const GmshInfo&)` are new overloads; the existing
+  signatures are unchanged. In Python they surface as `cell_sets["gmsh:bounding_entities"]`
+  exactly as the reference reader's do. The shared registry passes none, so the flat bindings
+  do not see them — a documented gap, not a silent loss. Note the overloads make `&read_gmsh` /
+  `&write_gmsh41` ambiguous as bare function pointers: a compile error, never silent.
+
+- **Gmsh 4.1 metadata without a full read.** `read_gmsh_metadata` no longer declines on
+  `$Entities`; it parses that section and `$PhysicalNames` (both small, both ahead of
+  `$Elements`) so a summary reports `gmsh:physical` and the named regions — with entry counts —
+  from block headers alone. 2.2 still falls back to a full read, as before.
+
 ## v9.6.0 (2026-07-29)
 
 MED gains **named regions**, promoting it into the Phase-1 round-trip formats alongside gmsh and
