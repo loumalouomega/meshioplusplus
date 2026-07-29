@@ -110,7 +110,8 @@ report.
 
 `extract_surface`, `extract_skin`, `reorder` (reports bandwidth before/after),
 `clean`, `crop` (bbox or half-space), `slice`, `isosurface`, `transform`,
-`convert_cells`, `refine`, `decimate`, `smooth`, `merge` (N inputs), `split`
+`convert_cells`, `refine` (uniform, or a subset via `cells`/`region`/`where`
+with a conforming `closure`), `decimate`, `smooth`, `merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
 `interpolate` (source → target field transfer). Parameters mirror the Python
 API / CLI one-to-one; operations that produce reports (`clean`, `decimate`,

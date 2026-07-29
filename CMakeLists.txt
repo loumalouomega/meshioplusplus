@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 9.4.1
+  VERSION 9.6.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -41,6 +41,38 @@ set(MESHIOPLUSPLUS_ABI_VERSION ${CMAKE_MATCH_1})
 unset(_mio_abi_version_line)
 message(STATUS "meshio++: C++ ABI version: ${MESHIOPLUSPLUS_ABI_VERSION} "
                "(release ${PROJECT_VERSION})")
+
+# ---------------------------------------------------------------------------
+# The RELEASE version is repeated as preprocessor macros in two installed
+# headers, so a consumer can feature-detect without running CMake (the
+# single-header amalgamation, pkg-config, a hand-written makefile). They are
+# hand-written for exactly the reason abi_version.hpp is, and verified here so
+# the duplication cannot silently drift: a bump that misses one is a
+# configure-time error rather than a wrong answer at run time. The C header's
+# MIO_VERSION_* twins are pinned to the C++ ones by a static_assert in
+# bindings/c/c_api.cpp.
+# ---------------------------------------------------------------------------
+function(_mio_check_version_header path prefix)
+  foreach(_part MAJOR MINOR PATCH)
+    file(STRINGS "${path}" _line REGEX "^#define[ \t]+${prefix}_VERSION_${_part}[ \t]+[0-9]+")
+    if(NOT _line MATCHES "${prefix}_VERSION_${_part}[ \t]+([0-9]+)")
+      message(FATAL_ERROR "meshio++: could not parse ${prefix}_VERSION_${_part} out of ${path}")
+    endif()
+    set(_got_${_part} ${CMAKE_MATCH_1})
+  endforeach()
+  set(_got "${_got_MAJOR}.${_got_MINOR}.${_got_PATCH}")
+  if(NOT _got VERSION_EQUAL PROJECT_VERSION)
+    message(FATAL_ERROR
+      "meshio++: ${path} says ${prefix} version ${_got}, but project() says "
+      "${PROJECT_VERSION}. Bump every version file together -- see the "
+      "\"Version bumps\" section of CLAUDE.md.")
+  endif()
+endfunction()
+
+_mio_check_version_header(
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/meshioplusplus/version.hpp" MESHIOPLUSPLUS)
+_mio_check_version_header(
+  "${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include/meshioplusplus/meshioplusplus.h" MIO)
 
 # Hoisted to the top (it used to be included inside the C API block): the C++
 # core's usage requirements are collected with an $<INSTALL_INTERFACE:> pointing

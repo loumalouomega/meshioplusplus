@@ -18,8 +18,10 @@
 
 /**
  * @file refine.hpp
- * @brief Uniform mesh refinement: subdivide every cell into congruent children
- * of the **same** cell type, interpolating `point_data` onto the new nodes.
+ * @brief Mesh refinement: subdivide cells into congruent children of the
+ * **same** cell type, interpolating `point_data` onto the new nodes. Either
+ * every cell (uniform) or a selected subset with a conforming closure
+ * (selective / adaptive).
  *
  * This is the resolution-increasing counterpart to the resolution-preserving
  * `convert_cells` and the resolution-reducing `crop`/`clean`. One level applies
@@ -62,8 +64,100 @@
  * of the geometry, not of this implementation.
  *
  * **Block structure is preserved 1:1**: the output has exactly
- * `NumCellBlocks()` blocks, in input order, which is what keeps the
- * one-array-per-block `cell_data` invariant trivially correct.
+ * `NumCellBlocks()` blocks, in input order, and each keeps its input cell
+ * type, which is what keeps the one-array-per-block `cell_data` invariant
+ * trivially correct. That holds in selective mode too -- see below.
+ *
+ * ### Selective (adaptive) refinement
+ *
+ * With a selector set (`mCells`, `mRegion` or the `mPredicateArray` predicate)
+ * only the selected cells get the full template above -- they are *red* -- and
+ * the hanging nodes that leaves on the interface are resolved by a **closure**,
+ * so the output is still a valid conforming mesh. Setting no selector is the
+ * uniform behaviour, byte-identical to a build without this feature.
+ *
+ * The whole thing is one table-driven rule rather than three loosely coupled
+ * features. Each cell type has a set of **admissible** split-edge masks -- the
+ * subsets of its edges for which a same-type subdivision template exists (see
+ * `detail/refine_templates.hpp`). A cell's mask is whatever its neighbours have
+ * bisected; if that mask is not admissible it is *promoted* to the smallest
+ * admissible superset, which bisects more edges, which may promote further. The
+ * admissible sets are closed under intersection, so "smallest admissible
+ * superset" is well defined and the promotion is a monotone idempotent closure
+ * operator -- and the global fixed point is therefore **unique and independent
+ * of iteration order**, which is why determinism across backends and thread
+ * counts is a property of the formulation rather than a convention.
+ *
+ * Every new node's existence is likewise *derived* from the split-edge set,
+ * never tabulated: an edge carries a node iff it is split, a quad face carries
+ * a centre iff **all four** of its edges are split, and a hexahedron carries a
+ * body node iff **all twelve** are. Two cells sharing an entity see the same
+ * edges and so reach the same answer, which is what makes conformity structural
+ * rather than something the tests merely sample. When every edge is split these
+ * rules reduce exactly to the uniform templates above.
+ *
+ * `RefineClosure::RedGreen` (the default) promotes to the smallest admissible
+ * superset, which keeps the extra refinement local. Per type:
+ *
+ *  - `line`, `triangle`: every mask is admissible -- a triangle with 1 bisected
+ *    edge splits into 2, with 2 into 3, with 3 into 4. Nothing propagates.
+ *  - `quad`: the admissible masks are the two *opposite* edge pairs and the
+ *    full split, so a single bisected edge promotes to its opposite pair and
+ *    splits into 2 quads. A pentagon or heptagon cannot be partitioned into
+ *    quadrilaterals at all (`4Q = B + 2I` forbids an odd boundary count), so
+ *    this is the finest possible type-preserving answer; the bisection then
+ *    travels along one row of a structured grid and stops at the boundary.
+ *  - `hexahedron`: the admissible masks are unions of its three parallel edge
+ *    classes -- 1, 2, 2, 2, 4, 4, 4 or 8 children -- so refinement propagates
+ *    through one dual sheet rather than the whole block.
+ *  - `wedge`: its six triangle edges form one class and its three verticals
+ *    another -- 1, 2, 4 or 8 children.
+ *  - `tetra`: every mask up to two edges is admissible, as are the four
+ *    face-triples; anything else promotes to the full 8-way split. (Three
+ *    edges meeting at a common vertex are deliberately *not* admissible: each
+ *    of the three incident faces would then hit the ambiguous two-edge case.)
+ *
+ * `RefineClosure::Propagate` instead promotes any non-empty mask straight to a
+ * full split. It is always conforming and defined for every cell type, but it
+ * is **not local** -- every edge-neighbour of a red cell becomes red in turn,
+ * so it converges to uniform refinement of the whole edge-connected component.
+ * It is the always-works baseline and the test oracle, not the adaptivity mode.
+ *
+ * `RefineClosure::Balanced` does not close at all: it **keeps the hanging
+ * nodes** and only enforces 2:1 balance, which is what an adaptive-mesh-
+ * refinement code normally means by "propagate". A cell is split fully or not
+ * at all -- there are no transitional templates -- and a cell is drawn in only
+ * when a neighbour would otherwise end up more than one level finer than it:
+ *
+ *     refine C  =>  C's level rises by one
+ *     D must refine  <=>  some entity D shares has an incident cell whose
+ *                         post-refinement level exceeds D's by more than one
+ *
+ * On a mesh of uniform level that condition is satisfied nowhere, so refining
+ * one cell propagates to **nothing** -- 64 hexahedra become 71, against 125
+ * under `RedGreen` and 512 under `Propagate`. Balancing only bites once levels
+ * differ, i.e. from the second adaptive pass onwards, and even then it reaches
+ * one level-ring rather than the whole mesh. The `refine:level` array is what
+ * makes that well defined across passes, and reading it back is why the array
+ * is *maintained* rather than replicated.
+ *
+ * The price is stated rather than hidden: the result is **1-irregular and not
+ * conforming**. Every constrained node is reported in the `refine:hanging`
+ * `point_data` array (see `kRefineHangingName`) so a solver can eliminate it;
+ * the conformity guarantees below apply to the other two closures only, and
+ * `extract_surface`, `decimate` and anything else assuming a conforming mesh
+ * will treat a hanging node as a genuine boundary.
+ *
+ * A cell with two *adjacent* bisected edges on one face has a remnant
+ * quadrilateral there that needs a diagonal, and the neighbour across that face
+ * must choose the same one. The choice is therefore made from the **global node
+ * ids** -- the diagonal starting at whichever of the two surviving corners has
+ * the smaller id -- never from the template's local numbering, which two
+ * differently-oriented neighbours would disagree about.
+ *
+ * Green cells are **not undone** before a later red refinement, so repeated
+ * selective passes over the same region degrade element quality without bound.
+ * `refine:level` plus `mCellMaps` is the hierarchy a future green-undo needs.
  *
  * Constructs that would break the same-type contract raise rather than guess:
  * higher-order cells (`tetra10`, ...; linearize first), `pyramid` (whose
@@ -82,6 +176,8 @@
  */
 
 // System includes
+#include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
@@ -91,17 +187,115 @@
 
 namespace meshioplusplus {
 
+/// The `cell_data` array `RefineOptions::mRecordParentIds` attaches.
+inline constexpr const char* kRefineParentCellName = "refine:parent_cell";
+
+/// The Int64 `cell_data` array recording each cell's refinement depth: `0` for
+/// a cell no red split ever touched, incremented once per red split. A green
+/// (transitional) child inherits its parent's level unchanged, because a green
+/// split is a closure, not a refinement. The name is **reserved**: if the input
+/// already carries it, `refine` updates it rather than replicating it, so
+/// successive passes accumulate.
+inline constexpr const char* kRefineLevelName = "refine:level";
+
+/// The Int64 `point_data` array `RefineClosure::Balanced` attaches: `1` for a
+/// **hanging** (constrained) node, `0` otherwise. A hanging node is one that
+/// exists on an entity of a cell that does not reference it -- the mid-edge node
+/// a refined cell created on an edge its unrefined neighbour still spans whole.
+/// Only `Balanced` produces any; the other closures leave none by construction
+/// and do not attach the array.
+inline constexpr const char* kRefineHangingName = "refine:hanging";
+
+/// How `refine` resolves the hanging nodes a partial refinement leaves behind.
+enum class RefineClosure {
+    /// Promote a cell's split-edge mask to the smallest *admissible* superset,
+    /// so an affected neighbour is split transitionally rather than fully. Keeps
+    /// the extra refinement local, and the output is conforming. The default.
+    RedGreen = 0,
+    /// Promote any non-empty mask straight to a full split. Conforming and
+    /// defined for every cell type, but **not local**: it converges to uniform
+    /// refinement of the whole edge-connected component.
+    Propagate = 1,
+    /// Do not close at all: **keep the hanging nodes** and merely enforce 2:1
+    /// balance, refining a cell only when a neighbour would otherwise end up
+    /// more than one level finer. The output is 1-irregular and **NOT
+    /// conforming** -- the constrained nodes are reported in `refine:hanging`
+    /// for a solver to eliminate. This is the classic adaptive-mesh-refinement
+    /// meaning of "propagate", and the only mode whose cost is bounded by the
+    /// selection rather than by the mesh.
+    Balanced = 2,
+};
+
+/// The comparison in `RefineOptions`' `cell_data` predicate selector.
+enum class RefineCompare {
+    Less = 0,
+    LessEqual = 1,
+    Greater = 2,
+    GreaterEqual = 3,
+    Equal = 4,
+    NotEqual = 5,
+};
+
+/**
+ * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`,
+ * `"propagate"` / `"red"`, or `"balanced"` / `"2:1"`.
+ * @param rName The name; empty means the default (`RedGreen`).
+ * @throws std::invalid_argument naming every accepted value.
+ */
+MESHIOPLUSPLUS_API RefineClosure refine_closure_from_name(const std::string& rName);
+
+/**
+ * @brief Parse a comparison operator (`"<"`, `"<="`, `">"`, `">="`, `"=="`,
+ * `"!="`; `"="` is accepted as `"=="`).
+ * @throws std::invalid_argument naming every accepted value.
+ */
+MESHIOPLUSPLUS_API RefineCompare refine_compare_from_name(const std::string& rName);
+
 /// Options for `refine`.
 struct RefineOptions {
     /// How many times to apply the subdivision templates. `0` (or less) returns
     /// an unchanged clone; `n` multiplies the cell count of a supported block
-    /// by `children_per_cell^n`.
+    /// by `children_per_cell^n` when no selector is set. With a selector, level
+    /// `k > 1` refines the children of level `k - 1`'s red cells; green and
+    /// untouched cells are not re-refined.
     int mLevels = 1;
     /// Attach an Int64 `refine:parent_cell` `cell_data` array recording, per
     /// output cell, the index of the **original** input cell it descends from
     /// *within its own block* (blocks correspond 1:1). Across several levels
     /// this is the original ancestor, not the immediate parent.
     bool mRecordParentIds = false;
+
+    // --- selective refinement ------------------------------------------------
+    // At most ONE of the three selectors below may be set. Two is an error
+    // rather than a precedence rule: silently ignoring a selector the caller
+    // asked for is the failure mode worth refusing. All empty = uniform.
+
+    /// Explicit **global block-major** cell indices to refine (the numbering
+    /// `detail/cell_index.hpp` owns and named `Cell` regions use). Canonicalized
+    /// (sorted, de-duplicated) before use; an out-of-range index is an error.
+    std::vector<std::int64_t> mCells;
+    /// Name of a region to refine. A `Cell` region selects its own cells; a
+    /// `Point` region selects every cell with **any** node in it. A `Side`
+    /// region is not a selector and is an error -- it names facets, and turning
+    /// facets into cells is a policy decision this operation does not make
+    /// silently.
+    std::string mRegion;
+    /// Name of a scalar numeric `cell_data` array to threshold (`""` = unused).
+    /// Composes directly with `attach_quality`, e.g.
+    /// `quality:scaled_jacobian < 0.3`. Deliberately a single comparison and
+    /// not a second `data_calc` expression grammar.
+    std::string mPredicateArray;
+    /// The predicate's comparison.
+    RefineCompare mPredicateOp = RefineCompare::Less;
+    /// The predicate's right-hand side. A non-finite cell value never matches.
+    double mPredicateValue = 0.0;
+    /// How to resolve hanging nodes. Ignored when no selector is set (every
+    /// cell is then red and no closure is needed).
+    RefineClosure mClosure = RefineClosure::RedGreen;
+    /// Attach the Int64 `refine:level` `cell_data` array (see
+    /// `kRefineLevelName`). An input that already carries it is updated
+    /// whatever this flag says; the flag only controls *creating* it.
+    bool mRecordLevels = false;
 };
 
 /// The result of `refine`: the refined mesh plus the index maps.
@@ -115,18 +309,24 @@ struct RefineResult {
     /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> the
     /// index of its **first** child in the corresponding output block. A cell's
     /// children are contiguous, so cell `c` owns
-    /// `[map[c], c + 1 < n ? map[c + 1] : num_cells_out)`.
+    /// `[map[c], c + 1 < n ? map[c + 1] : num_cells_out)`. In selective mode a
+    /// cell may have a single child (itself, unrefined), so the run length
+    /// varies -- the map is still monotone and every entry non-negative.
     std::vector<NDArray> mCellMaps;
 };
 
 /**
- * @brief Uniformly refine a mesh, subdividing every cell into same-type
- * children.
+ * @brief Refine a mesh, subdividing cells into same-type children.
  * @param rMesh The mesh to refine (unchanged).
- * @param rOptions Level count and parent-id recording.
+ * @param rOptions Level count, cell selection, closure and bookkeeping. With no
+ *   selector set this is the uniform refinement of every cell.
  * @return The refined mesh and its point/cell index maps.
  * @throws std::invalid_argument on a higher-order, `pyramid`, or ragged cell
- *   block, none of which can be subdivided into same-type children.
+ *   block, none of which can be subdivided into same-type children; on more
+ *   than one selector being set; on an out-of-range cell index; on an unknown
+ *   region, or a `Side` region used as a selector; and on a predicate array
+ *   that is missing, does not cover every block, is not scalar, or holds a
+ *   non-finite value.
  */
 MESHIOPLUSPLUS_API RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
 

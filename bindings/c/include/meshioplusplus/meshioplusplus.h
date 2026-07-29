@@ -192,7 +192,45 @@ typedef struct mio_region_info {
  * Version / build introspection
  * --------------------------------------------------------------------- */
 
-/** @return the meshio++ version string, e.g. "6.1.0" (static storage). */
+/*
+ * The RELEASE version as compile-time macros, so a consumer can feature-detect
+ * with the preprocessor:
+ *
+ *     #if MIO_VERSION_AT_LEAST(9, 5, 0)
+ *         mio_refine_ex(mesh, &opts);      // new in 9.5.0
+ *     #else
+ *         mio_refine(mesh, 1, 0);
+ *     #endif
+ *
+ * These describe the header you COMPILED against. mio_version() below reports
+ * the library you actually LINKED against, and with a shared library the two can
+ * genuinely differ -- which is why both exist. (A third question, "are my
+ * headers binary-compatible with that library", is answered by the ABI version
+ * and its link-time sentinel; see doc/abi.md.)
+ *
+ * MIO_VERSION is major*10000 + minor*100 + patch, so it orders exactly like the
+ * release and can be compared directly when the macro is not expressive enough.
+ * These are static_asserted against the C++ MESHIOPLUSPLUS_VERSION_* macros in
+ * c_api.cpp, and CMake hard-fails at configure time if either disagrees with
+ * project(... VERSION ...), so the copies cannot drift.
+ */
+#define MIO_VERSION_MAJOR 9
+#define MIO_VERSION_MINOR 6
+#define MIO_VERSION_PATCH 0
+#define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
+
+/** Whether the header being compiled against is at least major.minor.patch. */
+#define MIO_VERSION_AT_LEAST(major, minor, patch) \
+    (MIO_VERSION >= ((major) * 10000 + (minor) * 100 + (patch)))
+
+/** Whether the header being compiled against is older than major.minor.patch. */
+#define MIO_VERSION_BEFORE(major, minor, patch) (!MIO_VERSION_AT_LEAST(major, minor, patch))
+
+/**
+ * @return the meshio++ version string of the LINKED library, e.g. "9.6.0"
+ *         (static storage). Compare with the MIO_VERSION_* macros above, which
+ *         describe the header this call was compiled against.
+ */
 MIO_API const char* mio_version(void);
 
 /** @return the compile-time mesh backend: "meshio", "native", or "kratos"
@@ -861,12 +899,85 @@ MIO_API mio_status mio_convert_cells_result_cell_map(const mio_convert_cells_res
 /** Free a convert-cells result (and the mesh it still owns). */
 MIO_API void mio_convert_cells_result_free(mio_convert_cells_result* result);
 
+/** How mio_refine_ex resolves the hanging nodes a partial refinement leaves. */
+typedef enum mio_refine_closure {
+    MIO_REFINE_CLOSURE_REDGREEN = 0,  /**< promote to the smallest admissible mask (local) */
+    MIO_REFINE_CLOSURE_PROPAGATE = 1, /**< promote straight to a full split (spreads) */
+    /**
+     * Do not close at all: KEEP the hanging nodes and only enforce 2:1 balance.
+     * The output is 1-irregular and NOT conforming; the constrained nodes are
+     * reported in the refine:hanging point_data array.
+     */
+    MIO_REFINE_CLOSURE_BALANCED = 2
+} mio_refine_closure;
+
+/** The comparison a mio_refine_opts predicate selector applies. */
+typedef enum mio_refine_compare {
+    MIO_REFINE_LT = 0,
+    MIO_REFINE_LE = 1,
+    MIO_REFINE_GT = 2,
+    MIO_REFINE_GE = 3,
+    MIO_REFINE_EQ = 4,
+    MIO_REFINE_NE = 5
+} mio_refine_compare;
+
 /**
- * Uniformly refine a mesh, subdividing every cell into same-type children
- * (line -> 2, triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8,
- * hexahedron -> 8). New nodes sit at edge / quad-face / body midpoints and are
- * shared between neighbouring cells, so the refined mesh has no hanging nodes.
+ * Options for mio_refine_ex: which cells to refine and how to close up after.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always zero-initialize through
+ * mio_refine_opts_init() rather than by hand, so fields added later default
+ * sensibly in code compiled against an older header.
+ *
+ * All zero means "refine every cell once", i.e. exactly mio_refine(mesh, 1, 0).
+ * At most ONE of `cells`, `region` and `predicate_array` may be given; two is an
+ * error rather than a precedence rule.
+ */
+typedef struct mio_refine_opts {
+    /** Global (block-major) indices of the cells to refine; NULL for none. */
+    const int64_t* cells;
+    /** Length of `cells`; ignored when `cells` is NULL. */
+    int64_t num_cells;
+    /**
+     * Name of a region to refine, or NULL/"" for none. A cell region selects its
+     * own cells; a point region selects every cell with ANY node in it; a side
+     * region is an error, since a facet is not a cell.
+     */
+    const char* region;
+    /**
+     * Name of a scalar numeric cell_data array to threshold, or NULL/"" for
+     * none. A non-finite cell value never matches.
+     */
+    const char* predicate_array;
+    /** The predicate's right-hand side. */
+    double predicate_value;
+    /** How many times to apply the templates; 0 or less is an unchanged clone. */
+    int32_t levels;
+    /** Nonzero to attach the refine:parent_cell cell_data array. */
+    int32_t record_parent_ids;
+    /** Nonzero to attach the refine:level cell_data array. */
+    int32_t record_levels;
+    /** A mio_refine_closure. */
+    int32_t closure;
+    /** A mio_refine_compare. */
+    int32_t predicate_op;
+    int32_t reserved_pad; /**< must be zero; keeps the int64 tail aligned */
+    int64_t reserved[6];  /**< must be zero; room for additive growth */
+} mio_refine_opts;
+
+/** Zero-initialize refine options (every field its default). */
+MIO_API void mio_refine_opts_init(mio_refine_opts* opts);
+
+/**
+ * Refine a mesh, subdividing every cell into same-type children (line -> 2,
+ * triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8, hexahedron -> 8). New nodes
+ * sit at edge / quad-face / body midpoints and are shared between neighbouring
+ * cells, so the refined mesh has no hanging nodes.
  * point_sets/cell_sets are not carried across the C ABI.
+ *
+ * This is mio_refine_ex with every option at its default; use that to refine a
+ * SUBSET of the cells instead.
  * @param levels             how many times to apply the templates; 0 or less
  *                           returns an unchanged clone.
  * @param record_parent_ids  nonzero to attach a refine:parent_cell cell_data
@@ -877,6 +988,23 @@ MIO_API void mio_convert_cells_result_free(mio_convert_cells_result* result);
  *         blocks have no same-type subdivision and all fail.
  */
 MIO_API mio_refine_result* mio_refine(const mio_mesh* mesh, int levels, int record_parent_ids);
+
+/**
+ * Refine a mesh with a cell selection and a conforming closure.
+ *
+ * With no selector set this is mio_refine. With one, only the selected cells get
+ * the full template and the hanging nodes that leaves are resolved by the
+ * closure, so the output is still a conforming mesh — see doc/refine.md for the
+ * per-cell-type support matrix.
+ * @param mesh  the mesh to refine (unchanged).
+ * @param opts  the options, or NULL for every default.
+ * @return a result handle (free with mio_refine_result_free), or NULL on
+ *         failure — including more than one selector, an out-of-range cell
+ *         index, an unknown region, a side region used as a selector, and a
+ *         predicate array that is missing, does not cover every block or is not
+ *         scalar.
+ */
+MIO_API mio_refine_result* mio_refine_ex(const mio_mesh* mesh, const mio_refine_opts* opts);
 
 /**
  * Borrow the refined mesh. Owned by the result: valid until

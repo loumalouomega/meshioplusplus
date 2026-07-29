@@ -18,6 +18,9 @@
 // System includes
 #include <cstddef>
 #include <cstdint>
+#include <array>
+#include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -29,6 +32,8 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/refine_templates.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -406,5 +411,691 @@ TEST(Refine, NumberingIsStableAcrossRepeatedRuns) {
         mt::expect_points_close(first.mMesh, again.mMesh, 0.0);
     }
 }
+
+// --- selective refinement ----------------------------------------------------
+
+namespace selective {
+
+using meshioplusplus::CellType;
+using meshioplusplus::RefineClosure;
+namespace d = meshioplusplus::detail;
+
+RefineOptions cells_opt(std::vector<std::int64_t> cells,
+                        RefineClosure closure = RefineClosure::RedGreen) {
+    RefineOptions o;
+    o.mCells = std::move(cells);
+    o.mClosure = closure;
+    return o;
+}
+
+// The three conformity oracles. They catch different things and none of them is
+// redundant. Each is written as a *counting* function so that
+// `TheConformityOraclesActuallyFire` below can assert it reports a mesh that is
+// genuinely non-conforming -- an oracle nobody tests for firing is exactly how a
+// guard ships inert.
+
+// (1) No facet may be shared by more than two cells.
+std::size_t count_overshared_facets(const Mesh& rMesh) {
+    std::map<std::set<std::int64_t>, int> counts;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType type = meshioplusplus::cell_type_from_name(std::string(cb.Type()));
+        const std::size_t npc = cb.NodesPerCell();
+        const std::int64_t* conn = cb.Conn().As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            if (meshioplusplus::cell_type_dimension(type) == 3) {
+                for (const d::CellFaceDef& f : d::cell_faces(type)) {
+                    std::set<std::int64_t> key;
+                    for (std::size_t i = 0; i < f.mNumCorners; ++i)
+                        key.insert(conn[c * npc + f.mNodes[i]]);
+                    ++counts[key];
+                }
+            } else if (meshioplusplus::cell_type_dimension(type) == 2) {
+                for (std::size_t i = 0; i < npc; ++i)
+                    ++counts[{conn[c * npc + i], conn[c * npc + (i + 1) % npc]}];
+            }
+        }
+    }
+    std::size_t bad = 0;
+    for (const auto& [facet, count] : counts)
+        bad += count > 2 ? 1 : 0;
+    return bad;
+}
+
+// (2) The one that actually finds a hanging node. A hanging node leaves one big
+// facet on one side and two small ones on the other, so (1) still passes with
+// every count at 1. Instead: no output node may sit exactly at the midpoint of
+// an output cell's edge. New nodes are order-independent corner means, so the
+// comparison is exact rather than approximate.
+std::size_t count_hanging_nodes(const Mesh& rMesh) {
+    std::size_t hanging = 0;
+    const std::size_t dim = rMesh.PointDim();
+    const double* p = rMesh.Points().As<double>();
+    std::map<std::array<double, 3>, std::int64_t> at;
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
+        std::array<double, 3> key{0, 0, 0};
+        for (std::size_t k = 0; k < dim && k < 3; ++k)
+            key[k] = p[i * dim + k];
+        at.emplace(key, static_cast<std::int64_t>(i));
+    }
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType type = meshioplusplus::cell_type_from_name(std::string(cb.Type()));
+        const std::size_t npc = cb.NodesPerCell();
+        const std::int64_t* conn = cb.Conn().As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            for (const d::CellEdgePair& e : d::cell_refine_edges(type)) {
+                const std::int64_t u = conn[c * npc + e[0]];
+                const std::int64_t v = conn[c * npc + e[1]];
+                std::array<double, 3> mid{0, 0, 0};
+                for (std::size_t k = 0; k < dim && k < 3; ++k)
+                    mid[k] = (p[static_cast<std::size_t>(u) * dim + k] +
+                              p[static_cast<std::size_t>(v) * dim + k]) *
+                             0.5;
+                if (at.find(mid) != at.end())
+                    ++hanging;
+            }
+        }
+    }
+    return hanging;
+}
+
+// (3) A conforming refinement does not move the boundary. compute_stats reports
+// "area of 2D cells + boundary area of 3D cells", so for a VOLUME mesh an
+// unmatched interior facet counts as boundary and the number jumps. On a surface
+// mesh the same call only re-checks area conservation, which is worth having but
+// is not a conformity test -- (2) is the one that carries that weight in 2D.
+void expect_boundary_preserved(const Mesh& rIn, const Mesh& rOut) {
+    EXPECT_NEAR(compute_stats(rOut).mTotalArea, compute_stats(rIn).mTotalArea, 1e-12);
+}
+
+void expect_conforming(const Mesh& rIn, const Mesh& rOut) {
+    EXPECT_EQ(count_overshared_facets(rOut), 0u) << "a facet is shared by more than two cells";
+    EXPECT_EQ(count_hanging_nodes(rOut), 0u) << "the mesh has hanging nodes";
+    expect_boundary_preserved(rIn, rOut);
+}
+
+// An n x n grid of quadrilaterals over the unit square.
+Mesh quad_grid(std::size_t n) {
+    std::vector<std::vector<double>> pts;
+    for (std::size_t j = 0; j <= n; ++j)
+        for (std::size_t i = 0; i <= n; ++i)
+            pts.push_back({static_cast<double>(i), static_cast<double>(j), 0.0});
+    std::vector<std::vector<std::int64_t>> cells;
+    for (std::size_t j = 0; j < n; ++j) {
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::int64_t a = static_cast<std::int64_t>(j * (n + 1) + i);
+            cells.push_back({a, a + 1, a + static_cast<std::int64_t>(n) + 2,
+                             a + static_cast<std::int64_t>(n) + 1});
+        }
+    }
+    return mt::make_mesh(std::move(pts), "quad", std::move(cells));
+}
+
+// Two triangles per cell of an n x n grid.
+Mesh tri_grid(std::size_t n) {
+    std::vector<std::vector<double>> pts;
+    for (std::size_t j = 0; j <= n; ++j)
+        for (std::size_t i = 0; i <= n; ++i)
+            pts.push_back({static_cast<double>(i), static_cast<double>(j), 0.0});
+    std::vector<std::vector<std::int64_t>> cells;
+    for (std::size_t j = 0; j < n; ++j) {
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::int64_t a = static_cast<std::int64_t>(j * (n + 1) + i);
+            const std::int64_t b = a + 1;
+            const std::int64_t cc = a + static_cast<std::int64_t>(n) + 2;
+            const std::int64_t dd = a + static_cast<std::int64_t>(n) + 1;
+            cells.push_back({a, b, cc});
+            cells.push_back({a, cc, dd});
+        }
+    }
+    return mt::make_mesh(std::move(pts), "triangle", std::move(cells));
+}
+
+// An n x n x n grid of hexahedra.
+Mesh hex_grid(std::size_t n) {
+    const std::size_t s = n + 1;
+    std::vector<std::vector<double>> pts;
+    for (std::size_t k = 0; k < s; ++k)
+        for (std::size_t j = 0; j < s; ++j)
+            for (std::size_t i = 0; i < s; ++i)
+                pts.push_back(
+                    {static_cast<double>(i), static_cast<double>(j), static_cast<double>(k)});
+    const auto id = [s](std::size_t i, std::size_t j, std::size_t k) {
+        return static_cast<std::int64_t>((k * s + j) * s + i);
+    };
+    std::vector<std::vector<std::int64_t>> cells;
+    for (std::size_t k = 0; k < n; ++k)
+        for (std::size_t j = 0; j < n; ++j)
+            for (std::size_t i = 0; i < n; ++i)
+                cells.push_back({id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
+                                 id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1),
+                                 id(i, j + 1, k + 1)});
+    return mt::make_mesh(std::move(pts), "hexahedron", std::move(cells));
+}
+
+// A conformity oracle that cannot fail proves nothing, so build the two failure
+// modes by hand and check that each is reported.
+TEST(RefineSelective, TheConformityOraclesActuallyFire) {
+    // A hanging node: the left quadrilateral is split in two across its mid
+    // height, its right-hand neighbour is not, so node 7 at (1, 0.5) sits
+    // exactly on the neighbour's edge (1, 4).
+    Mesh hanging = mt::make_mesh({{0, 0, 0},
+                                  {1, 0, 0},
+                                  {2, 0, 0},
+                                  {0, 1, 0},
+                                  {1, 1, 0},
+                                  {2, 1, 0},
+                                  {0, 0.5, 0},
+                                  {1, 0.5, 0}},
+                                 "quad", {{0, 1, 7, 6}, {6, 7, 4, 3}, {1, 2, 5, 4}});
+    EXPECT_EQ(count_hanging_nodes(hanging), 1u) << "the hanging-node oracle is inert";
+    EXPECT_EQ(count_overshared_facets(hanging), 0u)
+        << "and it is the only oracle that sees this failure -- facet counting cannot";
+
+    // Three triangles meeting at one edge: a non-manifold configuration the
+    // facet counter is the one that sees.
+    Mesh overshared = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}},
+                                    "triangle", {{0, 1, 2}, {0, 1, 3}, {0, 1, 4}});
+    EXPECT_EQ(count_overshared_facets(overshared), 1u) << "the facet oracle is inert";
+}
+
+TEST(RefineSelective, NoSelectorIsTheUniformRefinement) {
+    Mesh m = mt::tri_quad_mesh();
+    const RefineResult uniform = refine(m, opts(1));
+    RefineOptions o;  // every field default: no selector at all
+    const RefineResult same = refine(m, o);
+    ASSERT_EQ(same.mMesh.NumCellBlocks(), uniform.mMesh.NumCellBlocks());
+    for (std::size_t b = 0; b < uniform.mMesh.NumCellBlocks(); ++b)
+        EXPECT_EQ(rows_of(same.mMesh, b), rows_of(uniform.mMesh, b));
+    mt::expect_points_close(uniform.mMesh, same.mMesh, 0.0);
+}
+
+TEST(RefineSelective, ASelectorThatMatchesNothingLeavesTheMeshAlone) {
+    Mesh m = mt::tri_quad_mesh();
+    RefineOptions o;
+    o.mPredicateArray = "";
+    o.mCells = {};
+    // An empty cell list is "no selector", so use a predicate no cell satisfies.
+    Mesh tagged = mt::tri_quad_mesh();
+    std::vector<meshioplusplus::NDArray> blocks;
+    std::size_t b = 0;
+    for (const auto cb : tagged.CellRange()) {
+        (void)b;
+        NDArray a = NDArray::Uninit(meshioplusplus::DType::Float64, {cb.NumCells(), 1});
+        std::fill(a.As<double>(), a.As<double>() + cb.NumCells(), 5.0);
+        blocks.push_back(std::move(a));
+    }
+    tagged.AddCellData("score", std::move(blocks));
+    RefineOptions p;
+    p.mPredicateArray = "score";
+    p.mPredicateOp = meshioplusplus::RefineCompare::Less;
+    p.mPredicateValue = 1.0;
+    const RefineResult res = refine(tagged, p);
+    EXPECT_EQ(res.mMesh.NumPoints(), tagged.NumPoints());
+    for (std::size_t i = 0; i < tagged.NumCellBlocks(); ++i)
+        EXPECT_EQ(res.mMesh.Cells(i).NumCells(), tagged.Cells(i).NumCells());
+}
+
+TEST(RefineSelective, OneTriangleGreensItsNeighboursConformingly) {
+    Mesh m = tri_grid(3);
+    const std::size_t before = m.Cells(0).NumCells();
+    const RefineResult res = refine(m, cells_opt({8}));
+    expect_conforming(m, res.mMesh);
+    // The selected triangle becomes 4; its three edge-neighbours are split
+    // transitionally rather than fully, and nothing else is touched.
+    EXPECT_GT(res.mMesh.Cells(0).NumCells(), before);
+    EXPECT_LT(res.mMesh.Cells(0).NumCells(), before + 12);
+    EXPECT_EQ(res.mCellMaps.size(), 1u);
+    const std::int64_t* map = res.mCellMaps[0].As<std::int64_t>();
+    EXPECT_EQ(map[8 + 1] - map[8], 4) << "the selected cell must get the full 1-to-4 split";
+}
+
+// The test that pins the anisotropic quadrilateral rule. Promoting a single
+// split edge to its opposite pair confines the extra refinement to one row, so
+// the cost is O(n) rather than the O(n^2) of full propagation.
+TEST(RefineSelective, OneQuadRefinesOneRowNotTheWholeGrid) {
+    const std::size_t n = 8;
+    Mesh m = quad_grid(n);
+    const std::size_t before = m.Cells(0).NumCells();  // 64
+    const RefineResult res = refine(m, cells_opt({27}));
+    expect_conforming(m, res.mMesh);
+    EXPECT_EQ(std::string(res.mMesh.Cells(0).Type()), "quad") << "green quads stay quads";
+    // The selected cell contributes 4; its row and column each contribute one
+    // extra cell per member. Full propagation would give 4 * 64 = 256.
+    EXPECT_LT(res.mMesh.Cells(0).NumCells(), before + 6 * n);
+    EXPECT_GT(res.mMesh.Cells(0).NumCells(), before);
+}
+
+TEST(RefineSelective, OneHexRefinesSheetsNotTheWholeBlock) {
+    const std::size_t n = 4;
+    Mesh m = hex_grid(n);
+    const std::size_t before = m.Cells(0).NumCells();  // 64
+    const RefineResult res = refine(m, cells_opt({21}));
+    expect_conforming(m, res.mMesh);
+    EXPECT_EQ(std::string(res.mMesh.Cells(0).Type()), "hexahedron");
+    // Three sheets of n*n cells split in two, plus the selected cell's own
+    // 8-way split. Full propagation would give 8 * 64 = 512.
+    EXPECT_LT(res.mMesh.Cells(0).NumCells(), before + 4 * n * n);
+}
+
+TEST(RefineSelective, OneTetraGreensItsNeighboursConformingly) {
+    Mesh m = mt::tet_mesh();
+    const RefineResult res = refine(m, cells_opt({0}));
+    expect_conforming(m, res.mMesh);
+    EXPECT_EQ(std::string(res.mMesh.Cells(0).Type()), "tetra");
+}
+
+// Propagation is the oracle: on a connected mesh it must reproduce the uniform
+// refinement exactly, which is both the correctness check and the honest
+// statement of what that mode costs.
+TEST(RefineSelective, PropagateReproducesUniformRefinement) {
+    // Built one at a time rather than in a range-for over a braced list: the
+    // KRATOS Mesh is deliberately not copy-constructible.
+    const auto check = [](Mesh m) {
+        const RefineResult uniform = refine(m, opts(1));
+        const RefineResult propagated = refine(m, cells_opt({0}, RefineClosure::Propagate));
+        ASSERT_EQ(propagated.mMesh.NumCellBlocks(), uniform.mMesh.NumCellBlocks());
+        for (std::size_t b = 0; b < uniform.mMesh.NumCellBlocks(); ++b)
+            EXPECT_EQ(rows_of(propagated.mMesh, b), rows_of(uniform.mMesh, b));
+        mt::expect_points_close(uniform.mMesh, propagated.mMesh, 0.0);
+    };
+    check(tri_grid(3));
+    check(quad_grid(3));
+    check(hex_grid(2));
+}
+
+// --- the balanced closure: 2:1 balance, hanging nodes kept -------------------
+
+// The largest level difference between two cells sharing a NODE. Node adjacency,
+// not edge adjacency: across a hanging interface the coarse cell spans a whole
+// edge while the fine cell has only half of it, so an edge-keyed check is blind
+// to exactly the coarse/fine adjacency 2:1 balance exists to police.
+std::int64_t max_level_gap(const Mesh& rMesh) {
+    const NDArray& levels = rMesh.CellData("refine:level", 0);
+    std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> range;
+    std::size_t c0 = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t npc = cb.NodesPerCell();
+        const std::int64_t* conn = cb.Conn().As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            const std::int64_t lv = meshioplusplus::detail::read_int(levels, c0 + c);
+            for (std::size_t n = 0; n < npc; ++n) {
+                auto it = range.find(conn[c * npc + n]);
+                if (it == range.end())
+                    range.emplace(conn[c * npc + n], std::make_pair(lv, lv));
+                else {
+                    it->second.first = std::min(it->second.first, lv);
+                    it->second.second = std::max(it->second.second, lv);
+                }
+            }
+        }
+        c0 += cb.NumCells();
+    }
+    std::int64_t gap = 0;
+    for (const auto& [node, lohi] : range)
+        gap = std::max(gap, lohi.second - lohi.first);
+    return gap;
+}
+
+TEST(RefineSelective, BalancedKeepsHangingNodesInsteadOfClosing) {
+    Mesh m = hex_grid(4);
+    RefineOptions o = cells_opt({21}, RefineClosure::Balanced);
+    o.mRecordLevels = true;
+    const RefineResult res = refine(m, o);
+    // One cell split into 8, every other cell untouched: 64 - 1 + 8.
+    EXPECT_EQ(res.mMesh.Cells(0).NumCells(), 71u);
+    // Deliberately NOT conforming -- and it says so.
+    EXPECT_GT(count_hanging_nodes(res.mMesh), 0u);
+    EXPECT_TRUE(res.mMesh.HasPointData("refine:hanging"));
+    EXPECT_LE(max_level_gap(res.mMesh), 1);
+}
+
+TEST(RefineSelective, TheConformingClosuresLeaveNoHangingArray) {
+    Mesh m = hex_grid(3);
+    for (RefineClosure closure : {RefineClosure::RedGreen, RefineClosure::Propagate}) {
+        RefineOptions o = cells_opt({13}, closure);
+        o.mRecordLevels = true;
+        const RefineResult res = refine(m, o);
+        EXPECT_EQ(count_hanging_nodes(res.mMesh), 0u);
+        EXPECT_FALSE(res.mMesh.HasPointData("refine:hanging"));
+    }
+}
+
+TEST(RefineSelective, BalancedDoesNotPropagateOnAMeshOfUniformLevel) {
+    // The whole point: with every cell at the same level, refining one puts
+    // nothing else out of balance, so nothing else is touched.
+    const auto check = [](Mesh m, std::int64_t selected, std::size_t children) {
+        const std::size_t before = m.Cells(0).NumCells();
+        RefineOptions o = cells_opt({selected}, RefineClosure::Balanced);
+        o.mRecordLevels = true;
+        const RefineResult res = refine(m, o);
+        EXPECT_EQ(res.mMesh.Cells(0).NumCells(), before - 1 + children);
+        EXPECT_LE(max_level_gap(res.mMesh), 1);
+    };
+    check(tri_grid(4), 8, 4);
+    check(quad_grid(5), 7, 4);
+    check(hex_grid(4), 21, 8);
+}
+
+TEST(RefineSelective, BalancedDrawsInNeighboursThatWouldFallTwoLevelsBehind) {
+    Mesh m = hex_grid(4);
+    RefineOptions first_opts = cells_opt({21}, RefineClosure::Balanced);
+    first_opts.mRecordLevels = true;
+    const RefineResult first = refine(m, first_opts);
+
+    // Refining a level-1 child would leave its level-0 neighbours two levels
+    // coarser, so balancing must promote them -- and only them.
+    const NDArray& levels = first.mMesh.CellData("refine:level", 0);
+    std::int64_t child = -1;
+    for (std::size_t i = 0; i < levels.Size() && child < 0; ++i)
+        if (meshioplusplus::detail::read_int(levels, i) == 1)
+            child = static_cast<std::int64_t>(i);
+    ASSERT_GE(child, 0);
+
+    RefineOptions second_opts = cells_opt({child}, RefineClosure::Balanced);
+    second_opts.mRecordLevels = true;
+    const RefineResult second = refine(first.mMesh, second_opts);
+    const std::size_t grew = second.mMesh.Cells(0).NumCells() - first.mMesh.Cells(0).NumCells();
+    EXPECT_GT(grew, 7u) << "balancing must have drawn in cells beyond the selected one";
+    EXPECT_LT(grew, 7u * 30u) << "and must stay local, not reach the whole mesh";
+    EXPECT_LE(max_level_gap(second.mMesh), 1);
+}
+
+TEST(RefineSelective, BalancedIsFarCheaperThanPropagate) {
+    Mesh m = hex_grid(3);
+    const RefineResult balanced = refine(m, cells_opt({13}, RefineClosure::Balanced));
+    const RefineResult propagated = refine(m, cells_opt({13}, RefineClosure::Propagate));
+    EXPECT_LT(balanced.mMesh.Cells(0).NumCells() * 4, propagated.mMesh.Cells(0).NumCells());
+}
+
+TEST(RefineSelective, TwoSuccessivePassesStayConforming) {
+    Mesh m = tri_grid(4);
+    const RefineResult first = refine(m, cells_opt({10}));
+    expect_conforming(m, first.mMesh);
+    const RefineResult second = refine(first.mMesh, cells_opt({0}));
+    expect_conforming(first.mMesh, second.mMesh);
+}
+
+TEST(RefineSelective, MultipleLevelsRefineTheChildrenOfTheRedCells) {
+    Mesh m = tri_grid(3);
+    RefineOptions o = cells_opt({4});
+    o.mLevels = 2;
+    o.mRecordLevels = true;
+    const RefineResult res = refine(m, o);
+    expect_conforming(m, res.mMesh);
+    ASSERT_TRUE(res.mMesh.HasCellData("refine:level"));
+    const NDArray& lv = res.mMesh.CellData("refine:level", 0);
+    std::int64_t max_level = 0;
+    for (std::size_t i = 0; i < lv.Size(); ++i)
+        max_level = std::max(max_level, meshioplusplus::detail::read_int(lv, i));
+    EXPECT_EQ(max_level, 2) << "the selected cell's descendants must reach level 2";
+}
+
+// --- refine:level ------------------------------------------------------------
+
+TEST(RefineSelective, LevelsAreNotRecordedUnlessAsked) {
+    Mesh m = tri_grid(2);
+    EXPECT_FALSE(refine(m, cells_opt({0})).mMesh.HasCellData("refine:level"));
+}
+
+TEST(RefineSelective, GreenChildrenInheritTheirParentsLevel) {
+    Mesh m = tri_grid(3);
+    RefineOptions o = cells_opt({8});
+    o.mRecordLevels = true;
+    const RefineResult res = refine(m, o);
+    ASSERT_TRUE(res.mMesh.HasCellData("refine:level"));
+    const NDArray& lv = res.mMesh.CellData("refine:level", 0);
+    const std::int64_t* map = res.mCellMaps[0].As<std::int64_t>();
+    // The selected cell's four children are level 1 ...
+    for (std::int64_t c = map[8]; c < map[9]; ++c)
+        EXPECT_EQ(meshioplusplus::detail::read_int(lv, static_cast<std::size_t>(c)), 1);
+    // ... while a green neighbour's children stay at level 0: a transitional
+    // split is a closure, not a refinement.
+    std::size_t green_children = 0;
+    for (std::size_t p = 0; p < res.mCellMaps[0].Size(); ++p) {
+        if (p == 8)
+            continue;
+        const std::int64_t lo = map[p];
+        const std::int64_t hi = p + 1 < res.mCellMaps[0].Size()
+                                    ? map[p + 1]
+                                    : static_cast<std::int64_t>(res.mMesh.Cells(0).NumCells());
+        if (hi - lo <= 1)
+            continue;
+        ++green_children;
+        for (std::int64_t c = lo; c < hi; ++c)
+            EXPECT_EQ(meshioplusplus::detail::read_int(lv, static_cast<std::size_t>(c)), 0);
+    }
+    EXPECT_GT(green_children, 0u) << "the selection must have produced green cells to check";
+}
+
+TEST(RefineSelective, AnExistingLevelArrayAccumulatesRatherThanReplicating) {
+    Mesh m = tri_grid(3);
+    RefineOptions o = cells_opt({4});
+    o.mRecordLevels = true;
+    const RefineResult first = refine(m, o);
+    // The second pass sees the array and must UPDATE it, not replicate it -- the
+    // flag only controls creating it.
+    RefineOptions second = cells_opt({0});
+    const RefineResult res = refine(first.mMesh, second);
+    ASSERT_TRUE(res.mMesh.HasCellData("refine:level"));
+    const NDArray& lv = res.mMesh.CellData("refine:level", 0);
+    std::int64_t max_level = 0;
+    for (std::size_t i = 0; i < lv.Size(); ++i)
+        max_level = std::max(max_level, meshioplusplus::detail::read_int(lv, i));
+    EXPECT_GE(max_level, 1);
+}
+
+// --- selectors ---------------------------------------------------------------
+
+TEST(RefineSelective, CellRegionSelectsTheSameCellsAsAnIndexList) {
+    Mesh a = tri_grid(3);
+    Mesh b = tri_grid(3);
+    NDArray entries = NDArray::Uninit(meshioplusplus::DType::Int64, {2});
+    entries.As<std::int64_t>()[0] = 4;
+    entries.As<std::int64_t>()[1] = 9;
+    b.AddRegion(
+        meshioplusplus::Region("hot", meshioplusplus::RegionKind::Cell, std::move(entries)));
+
+    const RefineResult by_index = refine(a, cells_opt({4, 9}));
+    RefineOptions o;
+    o.mRegion = "hot";
+    const RefineResult by_region = refine(b, o);
+    EXPECT_EQ(rows_of(by_index.mMesh, 0), rows_of(by_region.mMesh, 0));
+}
+
+TEST(RefineSelective, PointRegionSelectsEveryCellTouchingIt) {
+    Mesh m = tri_grid(3);
+    NDArray entries = NDArray::Uninit(meshioplusplus::DType::Int64, {1});
+    entries.As<std::int64_t>()[0] = 0;  // the corner node
+    m.AddRegion(
+        meshioplusplus::Region("corner", meshioplusplus::RegionKind::Point, std::move(entries)));
+    RefineOptions o;
+    o.mRegion = "corner";
+    const RefineResult res = refine(m, o);
+    expect_conforming(m, res.mMesh);
+    EXPECT_GT(res.mMesh.Cells(0).NumCells(), m.Cells(0).NumCells());
+}
+
+TEST(RefineSelective, PredicateSelectsByCellData) {
+    Mesh m = tri_grid(3);
+    const std::size_t n = m.Cells(0).NumCells();
+    NDArray score = NDArray::Uninit(meshioplusplus::DType::Float64, {n, 1});
+    for (std::size_t c = 0; c < n; ++c)
+        score.As<double>()[c] = c == 5 ? 0.1 : 0.9;
+    std::vector<NDArray> blocks;
+    blocks.push_back(std::move(score));
+    m.AddCellData("quality:scaled_jacobian", std::move(blocks));
+
+    RefineOptions o;
+    o.mPredicateArray = "quality:scaled_jacobian";
+    o.mPredicateOp = meshioplusplus::RefineCompare::Less;
+    o.mPredicateValue = 0.3;
+    const RefineResult by_pred = refine(m, o);
+    const RefineResult by_index = refine(m, cells_opt({5}));
+    EXPECT_EQ(rows_of(by_pred.mMesh, 0), rows_of(by_index.mMesh, 0));
+}
+
+// compute_quality reports NaN where a metric does not apply, so a predicate over
+// `quality:*` on a mixed mesh is the headline use case. Rejecting the array
+// would break it; a non-finite value simply never matches.
+TEST(RefineSelective, NonFiniteCellValuesNeverMatchAndAreNotAnError) {
+    Mesh m = tri_grid(2);
+    const std::size_t n = m.Cells(0).NumCells();
+    NDArray score = NDArray::Uninit(meshioplusplus::DType::Float64, {n, 1});
+    for (std::size_t c = 0; c < n; ++c)
+        score.As<double>()[c] = std::numeric_limits<double>::quiet_NaN();
+    std::vector<NDArray> blocks;
+    blocks.push_back(std::move(score));
+    m.AddCellData("q", std::move(blocks));
+    RefineOptions o;
+    o.mPredicateArray = "q";
+    o.mPredicateOp = meshioplusplus::RefineCompare::Less;
+    o.mPredicateValue = 1.0;
+    const RefineResult res = refine(m, o);
+    EXPECT_EQ(res.mMesh.Cells(0).NumCells(), n) << "no cell should have been selected";
+}
+
+// --- validation --------------------------------------------------------------
+
+TEST(RefineSelective, TwoSelectorsRaise) {
+    Mesh m = tri_grid(2);
+    RefineOptions o;
+    o.mCells = {0};
+    o.mRegion = "anything";
+    EXPECT_THROW(refine(m, o), std::invalid_argument);
+}
+
+TEST(RefineSelective, AnOutOfRangeCellIndexRaises) {
+    Mesh m = tri_grid(2);
+    EXPECT_THROW(refine(m, cells_opt({1000})), std::invalid_argument);
+    EXPECT_THROW(refine(m, cells_opt({-1})), std::invalid_argument);
+}
+
+TEST(RefineSelective, AnUnknownRegionRaises) {
+    Mesh m = tri_grid(2);
+    RefineOptions o;
+    o.mRegion = "nope";
+    EXPECT_THROW(refine(m, o), std::invalid_argument);
+}
+
+TEST(RefineSelective, ASideRegionIsNotASelector) {
+    Mesh m = mt::tet_mesh();
+    NDArray entries = NDArray::Uninit(meshioplusplus::DType::Int64, {1, 2});
+    entries.As<std::int64_t>()[0] = 0;
+    entries.As<std::int64_t>()[1] = 0;
+    m.AddRegion(
+        meshioplusplus::Region("wall", meshioplusplus::RegionKind::Side, std::move(entries)));
+    RefineOptions o;
+    o.mRegion = "wall";
+    EXPECT_THROW(refine(m, o), std::invalid_argument);
+}
+
+TEST(RefineSelective, AMissingOrVectorPredicateArrayRaises) {
+    Mesh m = tri_grid(2);
+    RefineOptions o;
+    o.mPredicateArray = "absent";
+    EXPECT_THROW(refine(m, o), std::invalid_argument);
+
+    const std::size_t n = m.Cells(0).NumCells();
+    NDArray vec = NDArray::Uninit(meshioplusplus::DType::Float64, {n, 3});
+    std::fill(vec.As<double>(), vec.As<double>() + vec.Size(), 1.0);
+    std::vector<NDArray> blocks;
+    blocks.push_back(std::move(vec));
+    m.AddCellData("v", std::move(blocks));
+    RefineOptions p;
+    p.mPredicateArray = "v";
+    EXPECT_THROW(refine(m, p), std::invalid_argument);
+}
+
+TEST(RefineSelective, ClosureAndComparisonNamesParse) {
+    using meshioplusplus::refine_closure_from_name;
+    using meshioplusplus::refine_compare_from_name;
+    EXPECT_EQ(refine_closure_from_name(""), RefineClosure::RedGreen);
+    EXPECT_EQ(refine_closure_from_name("green"), RefineClosure::RedGreen);
+    EXPECT_EQ(refine_closure_from_name("redgreen"), RefineClosure::RedGreen);
+    EXPECT_EQ(refine_closure_from_name("propagate"), RefineClosure::Propagate);
+    EXPECT_EQ(refine_closure_from_name("balanced"), RefineClosure::Balanced);
+    EXPECT_EQ(refine_closure_from_name("2:1"), RefineClosure::Balanced);
+    EXPECT_THROW(refine_closure_from_name("blue"), std::invalid_argument);
+    EXPECT_EQ(refine_compare_from_name("<"), meshioplusplus::RefineCompare::Less);
+    EXPECT_EQ(refine_compare_from_name(">="), meshioplusplus::RefineCompare::GreaterEqual);
+    EXPECT_EQ(refine_compare_from_name("!="), meshioplusplus::RefineCompare::NotEqual);
+    EXPECT_THROW(refine_compare_from_name("~="), std::invalid_argument);
+}
+
+// --- data and regions through a selective pass -------------------------------
+
+TEST(RefineSelective, CellDataIsGatheredNotBlindlyRepeated) {
+    Mesh m = tri_grid(2);
+    const std::size_t n = m.Cells(0).NumCells();
+    NDArray tag = NDArray::Uninit(meshioplusplus::DType::Int64, {n, 1});
+    for (std::size_t c = 0; c < n; ++c)
+        tag.As<std::int64_t>()[c] = static_cast<std::int64_t>(c);
+    std::vector<NDArray> blocks;
+    blocks.push_back(std::move(tag));
+    m.AddCellData("tag", std::move(blocks));
+
+    const RefineResult res = refine(m, cells_opt({3}));
+    const NDArray& out = res.mMesh.CellData("tag", 0);
+    const std::int64_t* map = res.mCellMaps[0].As<std::int64_t>();
+    for (std::size_t p = 0; p < n; ++p) {
+        const std::int64_t lo = map[p];
+        const std::int64_t hi =
+            p + 1 < n ? map[p + 1] : static_cast<std::int64_t>(res.mMesh.Cells(0).NumCells());
+        for (std::int64_t c = lo; c < hi; ++c)
+            EXPECT_EQ(meshioplusplus::detail::read_int(out, static_cast<std::size_t>(c)),
+                      static_cast<std::int64_t>(p));
+    }
+}
+
+TEST(RefineSelective, PointDataStaysExactForALinearField) {
+    Mesh m = tri_grid(3);
+    NDArray f = NDArray::Uninit(meshioplusplus::DType::Float64, {m.NumPoints(), 1});
+    const double* p = m.Points().As<double>();
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        f.As<double>()[i] = 3.0 * p[i * 3] + 5.0 * p[i * 3 + 1] + 1.0;
+    m.AddPointData("f", std::move(f));
+
+    const RefineResult res = refine(m, cells_opt({5}));
+    const NDArray& out = res.mMesh.PointData("f");
+    const double* q = res.mMesh.Points().As<double>();
+    for (std::size_t i = 0; i < res.mMesh.NumPoints(); ++i)
+        EXPECT_NEAR(out.As<double>()[i], 3.0 * q[i * 3] + 5.0 * q[i * 3 + 1] + 1.0, 1e-12);
+}
+
+TEST(RefineSelective, RegionsExpandToTheChildren) {
+    Mesh m = tri_grid(2);
+    NDArray entries = NDArray::Uninit(meshioplusplus::DType::Int64, {1});
+    entries.As<std::int64_t>()[0] = 3;
+    m.AddRegion(
+        meshioplusplus::Region("patch", meshioplusplus::RegionKind::Cell, std::move(entries)));
+    const RefineResult res = refine(m, cells_opt({3}));
+    const std::size_t idx = res.mMesh.FindRegion("patch", meshioplusplus::RegionKind::Cell);
+    ASSERT_NE(idx, Mesh::npos);
+    EXPECT_EQ(res.mMesh.Region(idx).NumEntries(), 4u) << "the refined cell's four children";
+}
+
+TEST(RefineSelective, RecordParentIdsStillNamesTheOriginalAncestor) {
+    Mesh m = tri_grid(2);
+    RefineOptions o = cells_opt({3});
+    o.mRecordParentIds = true;
+    const RefineResult res = refine(m, o);
+    ASSERT_TRUE(res.mMesh.HasCellData("refine:parent_cell"));
+    const NDArray& parents = res.mMesh.CellData("refine:parent_cell", 0);
+    const std::int64_t* map = res.mCellMaps[0].As<std::int64_t>();
+    for (std::int64_t c = map[3]; c < map[4]; ++c)
+        EXPECT_EQ(meshioplusplus::detail::read_int(parents, static_cast<std::size_t>(c)), 3);
+}
+
+TEST(RefineSelective, SelectiveNumberingIsStableAcrossRepeatedRuns) {
+    Mesh m = quad_grid(5);
+    const RefineResult first = refine(m, cells_opt({7, 18}));
+    for (int run = 0; run < 5; ++run) {
+        const RefineResult again = refine(m, cells_opt({7, 18}));
+        ASSERT_EQ(rows_of(again.mMesh, 0), rows_of(first.mMesh, 0)) << "run " << run;
+        mt::expect_points_close(first.mMesh, again.mMesh, 0.0);
+    }
+}
+
+}  // namespace selective
 
 }  // namespace

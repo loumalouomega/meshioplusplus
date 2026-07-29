@@ -437,9 +437,22 @@ def _register_operations(server: FastMCP) -> None:
         output_format: Optional[str] = None,
         levels: int = 1,
         record_parent_ids: bool = False,
+        cells: Optional[List[int]] = None,
+        region: Optional[str] = None,
+        where: Optional[str] = None,
+        closure: str = "redgreen",
+        record_levels: bool = False,
     ) -> dict:
-        """Uniformly refine: subdivide every cell into congruent same-type
-        children, `levels` times."""
+        """Refine: subdivide cells into congruent same-type children, `levels`
+        times. With no selector every cell is refined; give at most one of
+        `cells` (global block-major indices), `region` (a cell region selects its
+        cells, a point region every cell touching it) or `where` (a threshold on
+        a scalar cell_data array, e.g. "quality:scaled_jacobian < 0.3") and only
+        those are, with the resulting hanging nodes resolved by `closure` —
+        "redgreen" keeps that local, "propagate" reaches the whole connected
+        component, and "balanced" keeps the hanging nodes and only enforces 2:1
+        balance (the output is then NOT conforming; the constrained nodes are
+        reported in refine:hanging). `record_levels` attaches refine:level."""
         return _guard(
             _tools.tool_refine,
             input_path=input_path,
@@ -448,6 +461,11 @@ def _register_operations(server: FastMCP) -> None:
             output_format=output_format,
             levels=levels,
             record_parent_ids=record_parent_ids,
+            cells=cells,
+            region=region,
+            where=where,
+            closure=closure,
+            record_levels=record_levels,
         )
 
     @server.tool()

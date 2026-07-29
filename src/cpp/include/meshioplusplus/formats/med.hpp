@@ -37,8 +37,20 @@
  * transpose).
  *
  * **What the C++ path handles** (matching the Python output byte-for-byte):
- * points, point/cell tags, families with `GRO` group names, mesh-level
- * metadata (`mesh_name`/`description`/`unit_time`/`unit_coords`/
+ * points, point/cell tags, families with `GRO` group names, **named regions**
+ * derived from those families (one `Region` per group name — `Point` from
+ * `NOEUD`, `Cell` from `ELEME`, `dim`/`tag` left unspecified since a name may
+ * span several family ids; see `med_attach_point_regions`/
+ * `med_attach_cell_regions` in `med.cpp` and doc/regions.md) and, on write,
+ * synthesized back into families when the mesh carries no native
+ * `point_tags`/`cell_tags` of its own (`med_point_regions_to_tags`/
+ * `med_cell_regions_to_tags` — native data always wins, so a MED→MED round
+ * trip is unaffected), an optional **`INFOS_GENERALES` version check**
+ * (a file written by MED major version > 4 is rejected with a named error
+ * instead of an obscure structural one further down), optional **`NUM`**
+ * global point/cell numbering (`point_data`/`cell_data["med:num"]`; cell
+ * `NUM` is only carried when *every* block has it), mesh-level metadata
+ * (`mesh_name`/`description`/`unit_time`/`unit_coords`/
  * `point_tag_groups`/`cell_tag_groups`, all carried via #MedInfo), the
  * fixed node-orientation permutations for linear 3D types (`tetra`,
  * `pyramid`, `wedge`, `hexahedron` — see `_med_node_perm` in
@@ -50,16 +62,18 @@
  *
  * **What always falls back to Python** (the C++ functions `throw` and the
  * `meshioplusplus.med` shim catches and retries with the pure-Python/h5py
- * implementation): any file/mesh carrying `CHA` **fields** (MED-4.1
- * bitmask attributes, `field_data["med:field_units"]`/`["med:step_meta"]`,
- * and multi-timestep field-name grouping are Python-only), the
- * `gmsh:physical`→family **bridging** performed on write, non-default
- * **profiles** / `ELGA` support, and **multi-mesh** files
- * (`read_med_multi`/`write_med_multi`, which have no C++ equivalent at
- * all). Quadratic 3D types (`tetra10`, `hexahedron20`, `pyramid13`,
- * `wedge15`) share the linear types' orientation convention but have no
- * implemented corners+midpoints permutation yet — they round-trip
- * unconverted (a warning is logged the first time one is seen).
+ * implementation): a `CHA` **field** past the single-timestep, no-profile,
+ * no-units common case (MED-4.1 bitmask attributes,
+ * `field_data["med:field_units"]`/`["med:step_meta"]`, and multi-timestep
+ * field-name grouping are Python-only — see `read_cha_fields`/
+ * `write_cha_nodal_field`/`write_cha_cell_field`), the `gmsh:physical`→family
+ * **bridging** performed on write, non-default **profiles** / `ELGA`
+ * support, and **multi-mesh** files (`read_med_multi`/`write_med_multi`,
+ * which have no C++ equivalent at all). Quadratic 3D types (`tetra10`,
+ * `hexahedron20`, `pyramid13`, `wedge15`) share the linear types' orientation
+ * convention but have no implemented corners+midpoints permutation yet —
+ * they round-trip unconverted (a warning is logged the first time one is
+ * seen); see doc/formats/med.md for the planned fix.
  */
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -140,21 +154,26 @@ struct MedInfo {
  * Reads points (un-transposing the Fortran-ordered `COO` dataset), the
  * `MAI` cell blocks in HDF5 creation order, per-point/per-cell `FAM` tag
  * arrays (exposed as `point_data["point_tags"]`/`cell_data["cell_tags"]`),
- * family/group names from `FAS` (searched first under the mesh's own
- * time-step group, then at the top level), mesh-level metadata, the fixed
- * node-orientation permutation for linear 3D types, and ragged
- * `POG`/`POG2` polygon blocks (materialized as a copied `list`-like ragged
- * `CellBlock` since they cannot be represented as a rectangular NDArray
- * without loss).
+ * optional `NUM` global numbering (`point_data`/`cell_data["med:num"]`, cell
+ * `NUM` only when every block has it), family/group names from `FAS`
+ * (searched first under the mesh's own time-step group, then at the top
+ * level) — attached additionally as named `Point`/`Cell` regions, one per
+ * group name (see `med_attach_point_regions`/`med_attach_cell_regions`) —
+ * mesh-level metadata, the fixed node-orientation permutation for linear 3D
+ * types, and ragged `POG`/`POG2` polygon blocks (materialized as a copied
+ * `list`-like ragged `CellBlock` since they cannot be represented as a
+ * rectangular NDArray without loss).
  *
  * @param rPath filesystem path to the .med file to read
  * @param rInfo output side-channel struct populated with tags, families,
  *        and mesh-level metadata (see #MedInfo)
  * @return the read Mesh (points, cells, point_data["point_tags"],
- *         cell_data["cell_tags"], arbitrary named point/cell data from
- *         `CHA` fields except those excluded below)
- * @throws ReadError — on any `CHA` field, non-default profile, `ELGA`
- *         support, or multi-mesh file; on malformed/unsupported HDF5
+ *         cell_data["cell_tags"], named regions, arbitrary named point/cell
+ *         data from `CHA` fields except those excluded below)
+ * @throws ReadError — on a file written by MED major version > 4; on a `CHA`
+ *         field past the single-timestep/no-profile/no-units common case
+ *         (units, multi-timestep metadata, a named profile, or ELNO/ELGA
+ *         support); on multi-mesh files; on malformed/unsupported HDF5
  *         layout. Callers (the Python shim) catch this and retry with the
  *         pure-Python/h5py reader.
  */
@@ -169,11 +188,18 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  * (Fortran-order-flattened) and one `MAI/<MED type>` group per cell block
  * (rejecting up front with `WriteError` if two blocks share a MED type,
  * since MED cannot represent that), `FAS` family definitions built from
- * `rInfo.mPointTags`/`rInfo.mCellTags` (a family with no groups omits `GRO`
- * entirely), and the fixed node-orientation permutation applied to linear
- * 3D cell types before writing `NOD`. Ragged `polygon`/`polygon2` blocks
- * are written as `POG`/`POG2` CSR data. Family names longer than 80 bytes
- * after `latin-1` encoding raise `WriteError` rather than truncating.
+ * `rInfo.mPointTags`/`rInfo.mCellTags` — or, when the mesh carries no native
+ * `point_tags`/`cell_tags` of its own, synthesized from any `Point`/`Cell`
+ * regions the mesh carries (`med_point_regions_to_tags`/
+ * `med_cell_regions_to_tags`; native data always wins, so a MED→MED round
+ * trip through this writer is unaffected; `Side` regions have no MED
+ * equivalent and are dropped with a warning) — a family with no groups omits
+ * `GRO` entirely, and the fixed node-orientation permutation applied to
+ * linear 3D cell types before writing `NOD`. Optional `NUM` global numbering
+ * is written when `point_data`/`cell_data["med:num"]` is present. Ragged
+ * `polygon`/`polygon2` blocks are written as `POG`/`POG2` CSR data. Family
+ * names longer than 80 bytes after `latin-1` encoding raise `WriteError`
+ * rather than truncating.
  *
  * @param rPath filesystem path to the .med file to create/overwrite
  * @param rMesh the mesh to write
@@ -183,13 +209,13 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  * @param rMedVersion the `MAJ.MIN.REL` triple written to
  *        `INFOS_GENERALES` (default `"4.1.0"`)
  * @throws WriteError — if the mesh carries `CHA`-worthy fields (any
- *         point_data/cell_data beyond `point_tags`/`cell_tags` that this
- *         path doesn't handle), `gmsh:physical` bridging is needed, two
- *         cell blocks share one MED type, or a family name exceeds 80
- *         bytes. Callers (the Python shim) catch this and retry with the
- *         pure-Python/h5py writer.
+ *         point_data/cell_data beyond `point_tags`/`cell_tags`/`med:num`
+ *         that this path doesn't handle), `gmsh:physical` bridging is
+ *         needed, two cell blocks share one MED type, or a family name
+ *         exceeds 80 bytes. Callers (the Python shim) catch this and retry
+ *         with the pure-Python/h5py writer.
  * @note point_data/cell_data keys produced/consumed: `"point_tags"`,
- *       `"cell_tags"`.
+ *       `"cell_tags"`, `"med:num"`.
  */
 MESHIOPLUSPLUS_API void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion = "4.1.0");

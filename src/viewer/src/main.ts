@@ -408,7 +408,10 @@ async function boot(): Promise<void> {
                 result.meta.numCells,
                 // Only point arrays: a cell field is piecewise constant and has
                 // no level set, so isosurface would reject it by name.
-                result.meta.pointDataNames ?? []
+                result.meta.pointDataNames ?? [],
+                // Cell arrays drive refine's predicate, which wants exactly the
+                // piecewise-constant fields isosurface cannot use.
+                result.meta.cellDataNames ?? []
             );
             opsPanel.setAvailable(true);
             show($('convert-section'));

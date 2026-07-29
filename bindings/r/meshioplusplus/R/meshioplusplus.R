@@ -701,9 +701,33 @@ mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE) {
 }
 
 #' @rdname mio_extract_surface
+#' @param cells global (block-major) **1-based** cell indices to refine. At most
+#'   one of `cells`, `region` and `where_array` may be given; with none, every
+#'   cell is refined.
+#' @param region name of a region to refine. A cell region selects its own cells;
+#'   a point region selects every cell with any node in it; a side region is an
+#'   error.
+#' @param where_array name of a scalar `cell_data` array to threshold, with
+#'   `where_op` one of `"<"`, `"<="`, `">"`, `">="`, `"=="`, `"!="` and
+#'   `where_value` the right-hand side. A non-finite value never matches.
+#' @param where_op,where_value the predicate's comparison and threshold.
+#' @param closure how to resolve the hanging nodes a partial refinement leaves:
+#'   `"redgreen"` (default) keeps the extra refinement local, `"propagate"` is
+#'   defined for every cell type but converges to uniform refinement of the whole
+#'   edge-connected component, and `"balanced"` keeps the hanging nodes and only
+#'   enforces 2:1 balance (the output is then **not** conforming; the constrained
+#'   nodes come back in `refine:hanging`).
+#' @param record_levels attach the `refine:level` `cell_data` array.
 #' @export
-mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE) {
-  .Call(R_mio_refine, mesh, as.integer(levels), isTRUE(record_parent_ids))
+mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
+                       cells = NULL, region = NULL, where_array = NULL,
+                       where_op = "<", where_value = 0,
+                       closure = "redgreen", record_levels = FALSE) {
+  .Call(
+    R_mio_refine, mesh, as.integer(levels), isTRUE(record_parent_ids),
+    cells, region, where_array, where_op, as.numeric(where_value),
+    closure, isTRUE(record_levels)
+  )
 }
 
 #' @rdname mio_extract_surface

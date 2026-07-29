@@ -8,6 +8,144 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.6.0 (2026-07-29)
+
+MED gains **named regions**, promoting it into the Phase-1 round-trip formats alongside gmsh and
+Abaqus. Also closes a real silent-data-loss bug on the write path, adds optional `NUM` global
+numbering, and rejects files from a newer MED data model with a clear error. Additive: a mesh
+with no regions/`med:num` and a file with `INFOS_GENERALES` `MAJ` ≤ 4 write and read exactly as
+before.
+
+### Build / introspection
+
+- **Fixed: the `mcp` extra was unbounded and broke against the SDK's 2.0.0.** `mcp>=1.2` let a
+  fresh install resolve 2.0.0, which removed `mcp.server.fastmcp` (replaced by a different
+  `mcp.server.mcpserver` API), so importing the server raised `ModuleNotFoundError`. Now
+  `mcp>=1.2,<2`. Only a fresh, non-editable `pip install ".[mcp]"` shows this — an existing
+  environment keeps whatever 1.x it already had — which is why it surfaced in CI rather than
+  locally. The pure tool layer imports no SDK and was never affected; porting to the 2.x server
+  API is tracked separately.
+
+- **Compile-time version macros**, so a consumer can feature-detect with the preprocessor the way
+  MMG's `MMG_VERSION_GE` allows. `<meshioplusplus/version.hpp>` defines
+  `MESHIOPLUSPLUS_VERSION_MAJOR`/`_MINOR`/`_PATCH`, the ordered integer
+  `MESHIOPLUSPLUS_VERSION` (`major*10000 + minor*100 + patch`),
+  `MESHIOPLUSPLUS_VERSION_STRING`, and `MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch)` /
+  `_BEFORE(...)`; the C header carries the same set as `MIO_VERSION_*`. Until now the release
+  version was reachable only at *run* time (`mio_version()`), at configure time (CMake /
+  pkg-config), or as the deliberately-different ABI counter — none of which can guard a `#if`.
+  The two are complementary, not redundant: the macros describe the header you compiled against
+  and the call describes the library you linked, which for a shared build can differ.
+  Hand-written rather than `configure_file`d for the same reason `abi_version.hpp` is — the
+  single-header amalgamation, pkg-config and hand-written makefiles never run CMake — and
+  gated so the duplication cannot drift: `CMakeLists.txt` parses both headers and fails at
+  configure time if either disagrees with `project(... VERSION ...)`, and a `static_assert` in
+  `c_api.cpp` pins the C macros to the C++ ones.
+
+### Formats
+
+- **MED ↔ named regions.** `FAS`/`GRO` family group names attach as one `Region` per group name
+  (`Point` from `NOEUD`, `Cell` — global block-major indices — from `ELEME`) on read, alongside
+  the existing `point_tags`/`cell_tags` representation, which is unaffected. On write, when the
+  mesh carries no native `point_tags`/`cell_tags` of its own, families are synthesized from
+  `Point`/`Cell` regions instead — one family per unique combination of region names an entity
+  belongs to, node ids positive from `+1`, element ids negative from `-1` (mirroring the Python
+  fallback's `_ensure_med_families`). This closes a real bug: a regions-only mesh (e.g. read from
+  Abaqus, with no native MED tags) written through the C++ path used to silently produce a file
+  with **no** groups at all, because nothing about the write ever raised to trigger the Python
+  bridging. `Side` regions have no MED equivalent and are dropped with a warning. No binding
+  change was needed — regions already cross every binding generically. See
+  [`doc/formats/med.md`](doc/formats/med.md#named-regions).
+- **MED global numbering.** The optional `NUM` datasets Salome/Code_Aster/Kratos write are now
+  read/written as `point_data`/`cell_data["med:num"]`. Cell `NUM` is only carried when *every*
+  cell block has it — a partial array is not a mesh-wide numbering, and is dropped with a
+  warning rather than fabricated.
+- **MED version check.** Both the C++ reader and the Python fallback now check
+  `INFOS_GENERALES`'s `MAJ` attribute and reject (with the same named `ReadError`) a file written
+  by a MED major version newer than 4, instead of failing later with an unrelated structural
+  error. Older majors are unaffected.
+- MED gains `line4` ↔ `SE4` in its cell-type table (no orientation permutation).
+
+## v9.5.0 (2026-07-28)
+
+`refine` grows from uniform-only to **selective (adaptive) refinement with a conforming
+closure** — refine a chosen subset of cells and get back a valid mesh with no hanging nodes,
+which is the workflow FEM adaptivity actually needs. Additive: with no selector set the output
+is byte-identical to v9.4.1's, which the whole pre-existing refine suite guards.
+
+### Mesh operations
+
+- **`refine` takes a cell selection.** At most one of an explicit list of global (block-major)
+  cell indices, a **region** name (a `Cell` region selects its cells, a `Point` region every
+  cell with any node in it; a `Side` region is an error — a facet is not a cell), or a trivial
+  **`cell_data` predicate** (`quality:scaled_jacobian < 0.3`, which composes directly with
+  `attach_quality`). Setting two is an error rather than a precedence rule. A non-finite cell
+  value never matches a predicate, deliberately: `compute_quality` reports NaN where a metric
+  does not apply, so rejecting such an array would break the headline use case.
+- **A conforming closure, driven by one derived rule.** Everything follows from which *edges*
+  carry a new node: a quad face gets a centre iff all four of its edges are split, a hexahedron
+  a body node iff all twelve are, and a cell's subdivision is the template for its own
+  split-edge mask. Two cells sharing an entity read the same edges, so conformity is
+  **structural** rather than something the tests merely sample — and with every edge split the
+  rules collapse into the old uniform templates, which is what makes uniform output
+  byte-identical.
+- **`RefineClosure::RedGreen` (default) promotes an affected cell's mask to the smallest
+  *admissible* superset.** The admissible sets are closed under intersection, so that promotion
+  is a monotone idempotent closure operator and its mesh-wide fixed point is unique and
+  independent of the order cells are visited in — determinism follows from the algebra rather
+  than from a traversal convention. Per type: every mask is admissible for `line` and
+  `triangle`; a `quad` takes either *opposite* edge pair or the full split (a quadrangulation
+  of an n-gon satisfies `4Q = B + 2I`, so one or three split edges have no all-quad subdivision
+  at any number of interior nodes), so refinement travels along one row rather than the whole
+  grid; a `hexahedron` takes unions of its three parallel edge classes, so it travels through
+  one dual sheet; a `wedge` splits its triangles, its verticals, or both; a `tetra` takes any
+  mask up to two edges plus the four face-triples.
+- **`RefineClosure::Propagate` promotes any non-empty mask straight to a full split.** Always
+  conforming and defined for every cell type, but **not local**: it converges to uniform
+  refinement of the whole edge-connected component. It ships as the always-works baseline and
+  as the test oracle, documented as such.
+- **`RefineClosure::Balanced` does not close at all**, keeping the hanging nodes and merely
+  enforcing 2:1 balance — the classic adaptive-mesh-refinement meaning of "propagate", and the
+  only mode whose cost is bounded by the selection rather than by the mesh. A cell is split
+  fully or not at all, and is drawn in only when some cell sharing a **node** with it would end
+  up more than one level above it. Node adjacency rather than edge adjacency is load-bearing:
+  across a hanging interface the coarse cell spans a whole edge while the fine cell has half of
+  it, so the two are different entities and an edge-keyed rule is blind to exactly the
+  coarse/fine adjacency it polices. On a mesh of uniform level nothing propagates — one cell of
+  a 4×4×4 hexahedral block costs 64 → **71** cells, against 125 under `RedGreen` and 512 under
+  `Propagate` — and balancing only bites from the second adaptive pass onwards. The output is
+  therefore **1-irregular and not conforming**; every constrained node (edge midpoints and
+  quad-face centres alike) is reported in the new Int64 `refine:hanging` `point_data` array,
+  which is attached only when there are any, so the conforming closures are unaffected.
+- **`refine:level`** (opt-in `record_levels`): the Int64 per-cell refinement depth, `0` for a
+  cell no full split touched and `+1` per full split, with a transitional child inheriting its
+  parent's level because a green split is a closure, not a refinement. The name is reserved —
+  an input already carrying it is **updated** rather than replicated, so successive passes
+  accumulate, and that is the one observable change to an existing behaviour.
+- With `levels > 1` and a selector, level *k* refines the children of level *k−1*'s fully split
+  cells. Green cells are **not undone** before a later refinement, so repeated selective passes
+  over the same region degrade element quality — documented in `doc/refine.md`, with
+  `refine:level` plus `mCellMaps` noted as the hierarchy a future green-undo needs.
+
+### Surfaces
+
+- Exposed everywhere `refine` already was: pybind kwargs, **`mio_refine_ex` + `mio_refine_opts`**
+  on the C ABI (`mio_read_opts`' append-only reserved-tail discipline; `mio_refine` is unchanged
+  and delegates), optional arguments on Fortran/Julia/R, a fourth `options` argument on the WASM
+  `refine` plus the `convertSurfaceOps` pipeline op, and
+  `refine … [--cells i,j,k | --region NAME | --where "q < 0.3"] [--closure redgreen|propagate]
+  [--record-levels]` in **both** CLIs. The browser viewer's Refine chip gains the predicate and
+  closure controls.
+- The pure-numpy reference implements all of it and stays a byte-for-byte twin, pinned by
+  `tests/python/test_refine.py::test_cpp_matches_python_selective` across both closures and two
+  levels; its subdivision tables are checked against the C++ ones through a new
+  `_core.refine_mask_table` export rather than transcribed.
+
+### C++ ABI
+
+- **`MESHIOPLUSPLUS_ABI_VERSION` 3 → 4.** `RefineOptions` gained data members, which is a layout
+  change to a type consumers can name. `COMPONENTS C` is unaffected and stays `SOVERSION 0`.
+
 ## v9.4.1 (2026-07-28)
 
 - **Fixed: `tools/check-abi-version.sh`'s review gate passed vacuously.** It matched any row of

@@ -49,6 +49,17 @@ export type OpSpec =
     | {
           op: 'refine';
           levels: number;
+          /**
+           * Refine only the cells satisfying a threshold on a scalar cell_data
+           * array, resolving the hanging nodes that leaves with `closure`.
+           * Empty `array` means "every cell" — the uniform refinement.
+           */
+          array: string;
+          /** `compare`, not `op`: `op` is this union's own discriminant. */
+          compare: '<' | '>';
+          value: number;
+          closure: 'redgreen' | 'propagate' | 'balanced';
+          recordLevels: boolean;
       }
     | {
           op: 'partition';
@@ -176,7 +187,15 @@ export const OP_DEFAULTS: { [K in OpName]: Extract<OpSpec, { op: K }> } = {
         mu: -0.34,
         fixBoundary: true,
     },
-    refine: { op: 'refine', levels: 1 },
+    refine: {
+        op: 'refine',
+        levels: 1,
+        array: '',
+        compare: '<',
+        value: 0,
+        closure: 'redgreen',
+        recordLevels: false,
+    },
     partition: { op: 'partition', nparts: 4, method: 'auto' },
     section: {
         op: 'section',
@@ -197,7 +216,9 @@ export function describeOp(spec: OpSpec): string {
         case 'smooth':
             return `smooth · ${spec.method} · ${spec.iterations}`;
         case 'refine':
-            return `refine · ${spec.levels}×`;
+            return spec.array
+                ? `refine · ${spec.array} ${spec.compare} ${spec.value}`
+                : `refine · ${spec.levels}×`;
         case 'partition':
             return `partition · ${spec.nparts} · ${spec.method}`;
         case 'section': {

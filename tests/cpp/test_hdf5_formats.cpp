@@ -33,6 +33,7 @@
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/region.hpp"
 
 using meshioplusplus::detail::read_double;  // NOLINT
 namespace h5 = meshioplusplus::h5;
@@ -236,6 +237,209 @@ TEST(Med, FieldsDeferToPythonWhenTimestepMetadataIsNonDefault) {
 
     meshioplusplus::MedInfo info;
     EXPECT_THROW(meshioplusplus::read_med(p, info), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, Regions) {
+    // Point and Cell regions attach on read (med_attach_point_regions/
+    // med_attach_cell_regions) and, when the mesh carries no native
+    // point_tags/cell_tags, synthesize families on write
+    // (med_point_regions_to_tags/med_cell_regions_to_tags).
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tet_mesh();  // 2 tetra, 5 points
+
+    meshioplusplus::NDArray pts(meshioplusplus::DType::Int64, {2});
+    pts.As<std::int64_t>()[0] = 0;
+    pts.As<std::int64_t>()[1] = 3;
+    m.AddRegion(meshioplusplus::Region("clamped", meshioplusplus::RegionKind::Point,
+                                       std::move(pts)));
+
+    meshioplusplus::NDArray cells(meshioplusplus::DType::Int64, {1});
+    cells.As<std::int64_t>()[0] = 0;
+    m.AddRegion(
+        meshioplusplus::Region("solid", meshioplusplus::RegionKind::Cell, std::move(cells)));
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+
+    ASSERT_TRUE(out.HasRegion("clamped", meshioplusplus::RegionKind::Point));
+    const meshioplusplus::Region& rp =
+        out.Region(out.FindRegion("clamped", meshioplusplus::RegionKind::Point));
+    ASSERT_EQ(rp.NumEntries(), 2u);
+    EXPECT_EQ(rp.Entries()[0], 0);
+    EXPECT_EQ(rp.Entries()[1], 3);
+
+    ASSERT_TRUE(out.HasRegion("solid", meshioplusplus::RegionKind::Cell));
+    const meshioplusplus::Region& rc =
+        out.Region(out.FindRegion("solid", meshioplusplus::RegionKind::Cell));
+    ASSERT_EQ(rc.NumEntries(), 1u);
+    EXPECT_EQ(rc.Entries()[0], 0);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, RegionsSideDroppedWithWarning) {
+    // A Side region has no MED equivalent; it must be dropped without
+    // preventing Point/Cell regions in the same mesh from being written.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tet_mesh();
+
+    meshioplusplus::NDArray cells(meshioplusplus::DType::Int64, {2});
+    cells.As<std::int64_t>()[0] = 0;
+    cells.As<std::int64_t>()[1] = 1;
+    m.AddRegion(
+        meshioplusplus::Region("solid", meshioplusplus::RegionKind::Cell, std::move(cells)));
+
+    meshioplusplus::NDArray sides(meshioplusplus::DType::Int64, {1, 2});
+    sides.As<std::int64_t>()[0] = 0;
+    sides.As<std::int64_t>()[1] = 1;
+    m.AddRegion(
+        meshioplusplus::Region("wall", meshioplusplus::RegionKind::Side, std::move(sides)));
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+
+    EXPECT_TRUE(out.HasRegion("solid", meshioplusplus::RegionKind::Cell));
+    EXPECT_FALSE(out.HasRegion("wall", meshioplusplus::RegionKind::Side));
+    EXPECT_EQ(out.NumRegions(), 1u);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, RegionsPrecedenceNativeTagsWin) {
+    // A mesh that already carries point_tags/cell_tags (the MED-read shape)
+    // must write exactly that, ignoring any Region -- native data wins.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tri_mesh();
+    const std::size_t ntri = m.Cells(0).NumCells();
+    meshioplusplus::NDArray tag(meshioplusplus::DType::Int64, {ntri});
+    for (std::size_t i = 0; i < ntri; ++i)
+        tag.As<std::int64_t>()[i] = -1;
+    m.AddCellData("cell_tags", {std::move(tag)});
+
+    meshioplusplus::NDArray region_cells(meshioplusplus::DType::Int64, {1});
+    region_cells.As<std::int64_t>()[0] = 0;
+    m.AddRegion(meshioplusplus::Region("should_be_ignored", meshioplusplus::RegionKind::Cell,
+                                       std::move(region_cells)));
+
+    meshioplusplus::MedInfo win;
+    win.mCellTags[-1] = {"native"};
+    win.mCellTagGroups[-1] = "FAM_-1_native";
+    meshioplusplus::write_med(p, m, win);
+
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+    EXPECT_TRUE(out.HasRegion("native", meshioplusplus::RegionKind::Cell));
+    EXPECT_FALSE(out.HasRegion("should_be_ignored", meshioplusplus::RegionKind::Cell));
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, GlobalNumbers) {
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tri_mesh();
+
+    meshioplusplus::NDArray point_num(meshioplusplus::DType::Int32, {m.NumPoints()});
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        point_num.As<std::int32_t>()[i] = static_cast<std::int32_t>(10 + i);
+    m.AddPointData("med:num", std::move(point_num));
+
+    const std::size_t ntri = m.Cells(0).NumCells();
+    meshioplusplus::NDArray cell_num(meshioplusplus::DType::Int32, {ntri});
+    for (std::size_t i = 0; i < ntri; ++i)
+        cell_num.As<std::int32_t>()[i] = static_cast<std::int32_t>(100 + i);
+    m.AddCellData("med:num", {std::move(cell_num)});
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+
+    ASSERT_TRUE(out.HasPointData("med:num"));
+    const meshioplusplus::NDArray& pn = out.PointData("med:num");
+    ASSERT_EQ(pn.Size(), m.NumPoints());
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        EXPECT_EQ(meshioplusplus::detail::read_int(pn, i), 10 + static_cast<std::int64_t>(i));
+
+    ASSERT_TRUE(out.HasCellData("med:num"));
+    const meshioplusplus::NDArray& cn = out.CellData("med:num", 0);
+    ASSERT_EQ(cn.Size(), ntri);
+    for (std::size_t i = 0; i < ntri; ++i)
+        EXPECT_EQ(meshioplusplus::detail::read_int(cn, i), 100 + static_cast<std::int64_t>(i));
+
+    // med:num must not have leaked into CHA as an ordinary field.
+    h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+    EXPECT_FALSE(h5::exists(f, "CHA"));
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, NoGlobalNumbersWritesNoNumDataset) {
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::write_med(p, mt::tri_mesh(), meshioplusplus::MedInfo{});
+
+    h5::SilenceErrors silence;
+    h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+    h5::Hid noe = h5::open_group(f, "ENS_MAA/mesh/-0000000000000000001-0000000000000000001/NOE");
+    EXPECT_FALSE(h5::exists(noe, "NUM"));
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, NewerVersionRejected) {
+    // A file whose INFOS_GENERALES declares a MED major version newer than
+    // 4 must be rejected with a named diagnosis rather than an obscure
+    // structural error further down.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::write_med(p, mt::tri_mesh(), meshioplusplus::MedInfo{});
+
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid infos = h5::open_group(f, "INFOS_GENERALES");
+        h5::Hid a(H5Aopen(infos, "MAJ", H5P_DEFAULT), H5Aclose);
+        std::int64_t five = 5;
+        H5Awrite(a, H5T_NATIVE_INT64, &five);
+    }
+
+    meshioplusplus::MedInfo info;
+    try {
+        meshioplusplus::read_med(p, info);
+        FAIL() << "expected a ReadError";
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("newer than the MED 4.1"), std::string::npos);
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, OlderVersionStillReads) {
+    // Only a *newer* major version is rejected -- MED 3.x files (like the
+    // Python test suite's cylinder.med fixture) must keep reading.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::write_med(p, mt::tri_mesh(), meshioplusplus::MedInfo{});
+
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid infos = h5::open_group(f, "INFOS_GENERALES");
+        h5::Hid a(H5Aopen(infos, "MAJ", H5P_DEFAULT), H5Aclose);
+        std::int64_t three = 3;
+        H5Awrite(a, H5T_NATIVE_INT64, &three);
+    }
+
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+    EXPECT_EQ(out.NumPoints(), mt::tri_mesh().NumPoints());
+
     std::error_code ec;
     std::filesystem::remove(p, ec);
 }

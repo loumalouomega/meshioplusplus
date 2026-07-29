@@ -158,6 +158,27 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_refine_opts`. Field order and types are ABI and
+    !> must match bindings/c/include/meshioplusplus/meshioplusplus.h exactly;
+    !> `reserved` is padding for additive growth and must stay zero.
+    !>
+    !> All zero (plus `levels = 1`) means "refine every cell once". At most ONE
+    !> of `cells`, `region` and `predicate_array` may be given.
+    type, bind(c) :: mio_refine_opts_t
+        type(c_ptr) :: cells = c_null_ptr
+        integer(c_int64_t) :: num_cells = 0
+        type(c_ptr) :: region = c_null_ptr
+        type(c_ptr) :: predicate_array = c_null_ptr
+        real(c_double) :: predicate_value = 0.0_c_double
+        integer(c_int32_t) :: levels = 1
+        integer(c_int32_t) :: record_parent_ids = 0
+        integer(c_int32_t) :: record_levels = 0
+        integer(c_int32_t) :: closure = 0
+        integer(c_int32_t) :: predicate_op = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
     !> Interop mirror of C `mio_xdmf_series_opts`. Field order and types are ABI
     !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h exactly;
     !> `reserved` is padding for additive growth and must stay zero.
@@ -735,6 +756,18 @@ module meshioplusplus
             type(c_ptr), value :: h
             integer(c_int), value :: levels
             integer(c_int), value :: record_parent_ids
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_refine_opts_init(opts) bind(c, name="mio_refine_opts_init")
+            import :: mio_refine_opts_t
+            type(mio_refine_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_refine_ex(h, opts) bind(c, name="mio_refine_ex") result(r)
+            import :: c_ptr, mio_refine_opts_t
+            type(c_ptr), value :: h
+            type(mio_refine_opts_t), intent(in) :: opts
             type(c_ptr) :: r
         end function
 
@@ -2284,25 +2317,113 @@ contains
     !> output-point mapping, 1-based (the identity: refinement never prunes).
     !> Higher-order cells, pyramids and ragged blocks have no same-type
     !> subdivision and fail.
-    function mesh_refine(self, levels, record_parent_ids, point_map, stat, errmsg) result(out)
+    !> The `mio_refine_compare` code for an operator spelling, or -1 if unknown.
+    function refine_compare_code(op) result(code)
+        character(*), intent(in) :: op
+        integer(c_int32_t) :: code
+        select case (trim(op))
+        case ('<', 'lt'); code = 0
+        case ('<=', 'le'); code = 1
+        case ('>', 'gt'); code = 2
+        case ('>=', 'ge'); code = 3
+        case ('==', '=', 'eq'); code = 4
+        case ('/=', '!=', 'ne'); code = 5
+        case default; code = -1
+        end select
+    end function
+
+    !> The `mio_refine_closure` code for a closure name, or -1 if unknown.
+    function refine_closure_code(name) result(code)
+        character(*), intent(in) :: name
+        integer(c_int32_t) :: code
+        select case (trim(name))
+        case ('', 'redgreen', 'red-green', 'green'); code = 0
+        case ('propagate', 'red'); code = 1
+        case ('balanced', '2:1'); code = 2
+        case default; code = -1
+        end select
+    end function
+
+    function mesh_refine(self, levels, record_parent_ids, point_map, stat, errmsg, &
+                         cells, region, where_array, where_op, where_value, closure, &
+                         record_levels) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in), optional :: levels
         logical, intent(in), optional :: record_parent_ids
         integer(int64), allocatable, intent(out), optional :: point_map(:)
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        !> Global (block-major) 1-BASED indices of the cells to refine. Shifted
+        !> to the C API's 0-based numbering inside.
+        integer(int64), intent(in), optional :: cells(:)
+        !> Name of a region to refine. A cell region selects its own cells; a
+        !> point region selects every cell with ANY node in it; a side region is
+        !> an error. At most one of cells/region/where_array may be given.
+        character(*), intent(in), optional :: region
+        !> Name of a scalar cell_data array to threshold, with `where_op` one of
+        !> '<', '<=', '>', '>=', '==', '!='. A non-finite value never matches.
+        character(*), intent(in), optional :: where_array
+        character(*), intent(in), optional :: where_op
+        real(real64), intent(in), optional :: where_value
+        !> 'redgreen' (default, local, conforming), 'propagate' (conforming but
+        !> spreads to the whole edge-connected component) or 'balanced' (keeps
+        !> the hanging nodes and only enforces 2:1 balance -- NOT conforming).
+        character(*), intent(in), optional :: closure
+        !> Attach the refine:level cell_data array.
+        logical, intent(in), optional :: record_levels
         type(mio_mesh) :: out
         type(c_ptr) :: res, cdata
-        integer(c_int) :: clevels, crec, s, dt
+        integer(c_int) :: s, dt
         integer(c_int64_t) :: nlen
         integer(c_int64_t), pointer :: fp(:)
-        clevels = 1_c_int
-        if (present(levels)) clevels = int(levels, c_int)
-        crec = 0
+        type(mio_refine_opts_t) :: opts
+        ! NUL-terminated copies must outlive the call, so they are held here
+        ! rather than built inline; c_loc needs them contiguous and TARGET.
+        character(kind=c_char, len=STRBUF_LEN), target :: region_buf, array_buf
+        integer(c_int64_t), allocatable, target :: cell_ids(:)
+
+        call c_mio_refine_opts_init(opts)
+        if (present(levels)) opts%levels = int(levels, c_int32_t)
         if (present(record_parent_ids)) then
-            if (record_parent_ids) crec = 1
+            if (record_parent_ids) opts%record_parent_ids = 1
         end if
-        res = c_mio_refine(self%handle, clevels, crec)
+        if (present(record_levels)) then
+            if (record_levels) opts%record_levels = 1
+        end if
+        if (present(cells)) then
+            allocate (cell_ids(max(size(cells), 1)))
+            cell_ids = 0_c_int64_t
+            if (size(cells) > 0) cell_ids(1:size(cells)) = int(cells, c_int64_t) - 1_c_int64_t
+            opts%cells = c_loc(cell_ids(1))
+            opts%num_cells = int(size(cells), c_int64_t)
+        end if
+        if (present(region)) then
+            region_buf = trim(region)//c_null_char
+            opts%region = c_loc(region_buf(1:1))
+        end if
+        if (present(where_array)) then
+            array_buf = trim(where_array)//c_null_char
+            opts%predicate_array = c_loc(array_buf(1:1))
+        end if
+        if (present(where_value)) opts%predicate_value = real(where_value, c_double)
+        if (present(where_op)) then
+            opts%predicate_op = refine_compare_code(where_op)
+            if (opts%predicate_op < 0) then
+                call handle_failure('refine', "unknown comparison '"//trim(where_op)//"'", &
+                                    stat, errmsg)
+                return
+            end if
+        end if
+        if (present(closure)) then
+            opts%closure = refine_closure_code(closure)
+            if (opts%closure < 0) then
+                call handle_failure('refine', "unknown closure '"//trim(closure)//"'", &
+                                    stat, errmsg)
+                return
+            end if
+        end if
+
+        res = c_mio_refine_ex(self%handle, opts)
         if (.not. c_associated(res)) then
             call handle_failure('refine', mio_error_message(), stat, errmsg)
             return

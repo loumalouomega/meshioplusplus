@@ -6,10 +6,10 @@ declares what each format keeps and what it loses. The table is the point: it
 makes the lossiness executable documentation rather than prose that drifts, and
 a format that silently starts or stops carrying a kind fails here.
 
-Phase 1 maps Gmsh and Abaqus. Exodus reads regions (element blocks, node sets
-and side sets) but does not yet write them, so it is a **read-only** entry
+Phase 1 maps Gmsh, Abaqus and MED. Exodus reads regions (element blocks, node
+sets and side sets) but does not yet write them, so it is a **read-only** entry
 recorded below rather than a row here -- this matrix is a round-trip table, and
-a format that cannot write cannot round-trip. MED, UNV, Ansys, OpenFOAM and XDMF
+a format that cannot write cannot round-trip. UNV, Ansys, OpenFOAM and XDMF
 are deferred entirely. See ``doc/regions.md``.
 """
 
@@ -18,6 +18,13 @@ import pytest
 from numpy.testing import assert_array_equal
 
 import meshioplusplus
+
+try:
+    import h5py  # noqa: F401
+
+    _HAS_H5PY = True
+except ImportError:
+    _HAS_H5PY = False
 
 
 def fixture_mesh():
@@ -72,6 +79,20 @@ MATRIX = [
         "side-set concept, so point and side regions are dropped. (A gmsh "
         "dimension-0 group tags `vertex` cells, which is a cell region.)",
         id="gmsh22",
+    ),
+    pytest.param(
+        "med",
+        ".med",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "A MED family (FAS/NOEUD or FAS/ELEME) is a named group of nodes or "
+        "elements, so point and cell regions map directly -- one family per "
+        "unique combination of region names an entity belongs to. A family "
+        "id is per-combination rather than per-name, and a name may span "
+        "several ids, so the format-native `tag` is not carried. MED has no "
+        "facet-group concept, so side regions are dropped.",
+        marks=pytest.mark.skipif(not _HAS_H5PY, reason="h5py not installed"),
+        id="med",
     ),
 ]
 
@@ -158,7 +179,6 @@ def test_side_regions_are_the_new_capability():
 # Deferred to Phase 2 — recorded so the gap is explicit, not forgotten.        #
 # --------------------------------------------------------------------------- #
 PHASE_2 = {
-    "med": "families and groups (absorbing the MedInfo side channel)",
     "unv": "groups (absorbing UnvInfo)",
     "ansysInp": "components (absorbing AnsysInfo)",
     "openfoam": "boundary patches, which are face groups (side regions)",

@@ -167,7 +167,10 @@ def main(argv=None):
 
     parser = subparsers.add_parser(
         "refine",
-        help="Uniformly refine (subdivide every cell into same-type children)",
+        help=(
+            "Refine (subdivide cells into same-type children), every cell or a "
+            "selected subset with a conforming closure"
+        ),
     )
     _refine.add_args(parser)
     parser.set_defaults(func=_refine.refine_cmd)

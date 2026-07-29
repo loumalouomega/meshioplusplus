@@ -40,6 +40,55 @@ test('refine multiplies the cells', async ({ page }) => {
     expect((await state(page)).numCells).toBe(before * 4);
 });
 
+/** Open Refine, fill its predicate controls, and apply. */
+async function applyRefinePredicate(page, { array, compare, value }) {
+    // Open the accordion by setting `open` rather than clicking the summary:
+    // clicking toggles, so a helper that runs after another op has already
+    // opened it would close it again.
+    await page.evaluate(() => {
+        document.querySelector('#op-refine-apply')?.closest('details')?.setAttribute('open', '');
+    });
+    await page.locator('#op-refine-array').selectOption(array);
+    await page.locator('#op-refine-compare').selectOption(compare);
+    await page.locator('#op-refine-value').fill(String(value));
+    await page.locator('#op-refine-apply').click();
+    await expect.poll(() => page.evaluate(() => window.__viewerState.status)).toBe('ready');
+}
+
+test('refine with a predicate refines only the matching cells', async ({ page }) => {
+    // The assertions are about the WIRING, not about any sample's quality
+    // distribution: a threshold nothing satisfies must leave the mesh alone, and
+    // one everything satisfies must give the uniform refinement. Anything in
+    // between depends on the sample and would be a flaky test.
+    await openSample(page, 'Cube (surface)');
+    const before = (await state(page)).numCells;
+
+    // quality first, so the predicate has a metric to threshold: composing the
+    // two is what makes adaptive refinement usable from the browser.
+    // `aspect_ratio`, not `scaled_jacobian`: compute_quality reports NaN where a
+    // metric does not apply (and it does not for a quadrilateral in 3-D), and a
+    // non-finite value deliberately never matches a predicate.
+    await applyOp(page, 'Quality', 'op-quality-apply');
+    expect((await state(page)).arrays).toContain('quality:aspect_ratio');
+
+    await applyRefinePredicate(page, {
+        array: 'quality:aspect_ratio',
+        compare: '<',
+        value: -1,
+    });
+    expect((await state(page)).numCells).toBe(before);
+
+    // Undo the no-op refine, then threshold above every possible value.
+    await page.locator('#ops-undo').click();
+    await expect.poll(() => page.evaluate(() => window.__viewerState.status)).toBe('ready');
+    await applyRefinePredicate(page, {
+        array: 'quality:aspect_ratio',
+        compare: '<',
+        value: 99,
+    });
+    expect((await state(page)).numCells).toBe(before * 4);
+});
+
 test('smooth moves nodes without changing the counts', async ({ page }) => {
     await openSample(page, 'Wave (point data)');
     const before = await state(page);

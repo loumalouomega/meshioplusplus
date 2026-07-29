@@ -131,6 +131,26 @@ struct _CReadOpts
     reserved::NTuple{4,Int64}
 end
 
+"""
+Mirror of C `mio_refine_opts`. Field order, types and the trailing `reserved`
+padding are ABI: they must match `meshioplusplus.h` exactly. Always build one
+through [`refine`](@ref) rather than by hand.
+"""
+struct _CRefineOpts
+    cells::Ptr{Int64}
+    num_cells::Int64
+    region::Cstring
+    predicate_array::Cstring
+    predicate_value::Cdouble
+    levels::Int32
+    record_parent_ids::Int32
+    record_levels::Int32
+    closure::Int32
+    predicate_op::Int32
+    reserved_pad::Int32
+    reserved::NTuple{6,Int64}
+end
+
 """Mirror of C `mio_stats_report`."""
 struct _CStatsReport
     num_points::Int64
@@ -180,6 +200,8 @@ function _check_abi_layout()
         error("meshio++: mio_stats_report layout mismatch ($(sizeof(_CStatsReport)) bytes)")
     sizeof(_CRegionInfo) == 32 ||
         error("meshio++: mio_region_info layout mismatch ($(sizeof(_CRegionInfo)) bytes)")
+    sizeof(_CRefineOpts) == 112 ||
+        error("meshio++: mio_refine_opts layout mismatch ($(sizeof(_CRefineOpts)) bytes)")
     nothing
 end
 

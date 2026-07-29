@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "9.4.1"
+version = "9.6.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -69,7 +69,15 @@ interop = ["pyvista>=0.44", "trimesh>=4.0", "pyarrow>=14"]
 # in `all` for the same reason as the interop extras. Note the `mcp` SDK
 # itself requires Python >= 3.10 while the package floor stays 3.8 -- the pure
 # tool layer works everywhere, only running the server needs this extra.
-mcp = ["mcp>=1.2"]
+#
+# Upper-bounded at <2 deliberately: the SDK's 2.0.0 removed `mcp.server.fastmcp`
+# outright, replacing it with a different server API (`mcp.server.mcpserver`), so
+# `_server.py`'s `from mcp.server.fastmcp import FastMCP` raises ModuleNotFound
+# there. The bound is not caution about an unseen release -- it was an unbounded
+# `>=1.2` that let CI resolve 2.0.0 and fail. Porting to the 2.x API is a
+# separate piece of work; until then this pins the SDK the server is written
+# against. The pure tool layer (`_tools.py`) imports no SDK and is unaffected.
+mcp = ["mcp>=1.2,<2"]
 all = [
     "netCDF4",
     "h5py",  # CGNS, H5M, MED, XDMF formats

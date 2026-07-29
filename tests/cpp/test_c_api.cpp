@@ -35,6 +35,8 @@
 // External includes
 #include <gtest/gtest.h>
 
+#include "meshioplusplus/version.hpp"
+
 // Project includes
 #include "meshioplusplus/meshioplusplus.h"
 
@@ -78,6 +80,32 @@ TEST(CApi, VersionAndBackend) {
     EXPECT_STRNE(mio_version(), "");
     const std::string backend = mio_mesh_backend();
     EXPECT_TRUE(backend == "meshio" || backend == "native" || backend == "kratos") << backend;
+}
+
+// The compile-time macros describe the HEADER; mio_version() describes the
+// linked LIBRARY. With a shared build the two genuinely can differ, which is why
+// both exist -- but in this build they are the same artifact, so they must agree,
+// and that is what catches a version file bumped without its twin.
+TEST(CApi, CompileTimeVersionMatchesTheLinkedLibrary) {
+    const std::string expected = std::to_string(MIO_VERSION_MAJOR) + "." +
+                                 std::to_string(MIO_VERSION_MINOR) + "." +
+                                 std::to_string(MIO_VERSION_PATCH);
+    EXPECT_EQ(std::string(mio_version()), expected);
+    EXPECT_EQ(std::string(MESHIOPLUSPLUS_VERSION_STRING), expected);
+
+    // The feature-detection macros are what consumers actually write.
+    EXPECT_TRUE(MIO_VERSION_AT_LEAST(MIO_VERSION_MAJOR, MIO_VERSION_MINOR, MIO_VERSION_PATCH));
+    EXPECT_FALSE(MIO_VERSION_BEFORE(MIO_VERSION_MAJOR, MIO_VERSION_MINOR, MIO_VERSION_PATCH));
+    EXPECT_TRUE(MIO_VERSION_AT_LEAST(1, 0, 0));
+    EXPECT_FALSE(MIO_VERSION_AT_LEAST(MIO_VERSION_MAJOR + 1, 0, 0));
+    // Ordering must not break across a component boundary: 9.6.0 is after 9.5.99.
+    EXPECT_TRUE(MESHIOPLUSPLUS_VERSION_AT_LEAST(9, 5, 0));
+    EXPECT_TRUE(MESHIOPLUSPLUS_VERSION > (9 * 10000 + 5 * 100 + 99));
+
+    // selective refinement landed in 9.5.0; this is the shape a consumer writes.
+#if MIO_VERSION_AT_LEAST(9, 5, 0)
+    EXPECT_NE(&mio_refine_ex, nullptr);
+#endif
 }
 
 TEST(CApi, FormatAvailability) {
@@ -1266,6 +1294,76 @@ TEST(CApi, RefineHexIntoEight) {
     EXPECT_EQ(mio_mesh_num_points(owned), 27);
     mio_mesh_free(owned);
     mio_refine_result_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RefineExWithDefaultsMatchesMioRefine) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    // A NULL options pointer and a zero-initialized struct must both reproduce
+    // mio_refine(mesh, 1, 0) exactly -- the append-only-tail contract.
+    mio_refine_opts opts;
+    mio_refine_opts_init(&opts);
+    mio_refine_result* a = mio_refine(m, 1, 0);
+    mio_refine_result* b = mio_refine_ex(m, &opts);
+    mio_refine_result* c = mio_refine_ex(m, nullptr);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(mio_refine_result_mesh(a)), 27);
+    EXPECT_EQ(mio_mesh_num_points(mio_refine_result_mesh(b)), 27);
+    EXPECT_EQ(mio_mesh_num_points(mio_refine_result_mesh(c)), 27);
+    mio_refine_result_free(a);
+    mio_refine_result_free(b);
+    mio_refine_result_free(c);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RefineExSelectsASubsetAndClosesUp) {
+    // A 3 x 3 grid of quadrilaterals; refine the middle one only.
+    std::vector<double> pts;
+    for (int j = 0; j <= 3; ++j)
+        for (int i = 0; i <= 3; ++i) {
+            pts.push_back(i);
+            pts.push_back(j);
+            pts.push_back(0);
+        }
+    std::vector<std::int64_t> conn;
+    for (int j = 0; j < 3; ++j)
+        for (int i = 0; i < 3; ++i) {
+            const std::int64_t a = j * 4 + i;
+            conn.insert(conn.end(), {a, a + 1, a + 5, a + 4});
+        }
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 16, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 9, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    const std::int64_t selected[] = {4};
+    mio_refine_opts opts;
+    mio_refine_opts_init(&opts);
+    opts.cells = selected;
+    opts.num_cells = 1;
+    opts.record_levels = 1;
+    mio_refine_result* r = mio_refine_ex(m, &opts);
+    ASSERT_NE(r, nullptr);
+    std::int64_t num_cells = 0, npc = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(mio_refine_result_mesh(r), 0, &num_cells, &npc, nullptr),
+              MIO_OK);
+    // More than the input, far fewer than the 36 a uniform refinement gives.
+    EXPECT_GT(num_cells, 9);
+    EXPECT_LT(num_cells, 36);
+    EXPECT_EQ(npc, 4) << "green quadrilaterals stay quadrilaterals";
+    mio_refine_result_free(r);
+
+    // Two selectors at once is an error, reported rather than thrown.
+    opts.region = "anything";
+    EXPECT_EQ(mio_refine_ex(m, &opts), nullptr);
+    EXPECT_NE(mio_last_error(), nullptr);
     mio_mesh_free(m);
 }
 

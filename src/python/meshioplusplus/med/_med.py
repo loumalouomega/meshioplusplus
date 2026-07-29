@@ -18,6 +18,7 @@ meshio_to_med_type = {
     "vertex": "PO1",
     "line": "SE2",
     "line3": "SE3",
+    "line4": "SE4",
     "triangle": "TR3",
     "triangle6": "TR6",
     "triangle7": "TR7",
@@ -365,10 +366,30 @@ def _ensure_med_families(mesh):
     return out
 
 
+def _check_med_version(f, filename):
+    """Refuse a file written by a MED major version newer than the 4.x data
+    model this reader implements, with a clear diagnosis -- twinned with the
+    C++ reader's identical check (`read_med` in med.cpp) so a file rejected
+    by one is rejected by the other and never silently misread by whichever
+    path is tried second."""
+    info = f.get("INFOS_GENERALES")
+    if info is None or "MAJ" not in info.attrs:
+        return
+    maj = int(info.attrs["MAJ"])
+    if maj > 4:
+        minor = int(info.attrs.get("MIN", 0))
+        release = int(info.attrs.get("REL", 0))
+        raise ReadError(
+            f"MED file '{filename}' was written by MED {maj}.{minor}.{release}, "
+            "newer than the MED 4.1 data model this reader implements"
+        )
+
+
 def read(filename):
     import h5py
 
     f = h5py.File(filename, "r")
+    _check_med_version(f, filename)
 
     # Mesh ensemble
     mesh_ensemble = f["ENS_MAA"]
@@ -413,6 +434,11 @@ def read(filename):
         tags = mesh["NOE"]["FAM"][()]
         point_data["point_tags"] = tags  # replacing previous "point_tags"
 
+    # Global point numbering (NUM) -- optional; Salome/Code_Aster/Kratos
+    # write it, mirrors the C++ reader's identical handling.
+    if "NUM" in mesh["NOE"]:
+        point_data["med:num"] = mesh["NOE"]["NUM"][()]
+
     # Information for point tags
     point_tags = {}
     point_tag_groups = {}
@@ -431,6 +457,8 @@ def read(filename):
     cells = []
     cell_types = []
     med_cells = mesh["MAI"]
+    cell_num_blocks = []
+    num_blocks_with_num = 0
     for med_cell_type, med_cell_type_group in med_cells.items():
         cell_type = med_to_meshio_type[med_cell_type]
         cell_types.append(cell_type)
@@ -453,6 +481,24 @@ def read(filename):
             if "cell_tags" not in cell_data:
                 cell_data["cell_tags"] = []
             cell_data["cell_tags"].append(tags)
+
+        # Global cell numbering (NUM) -- optional, and only carried when
+        # *every* block has it (a partial NUM array is not a mesh-wide
+        # numbering); mirrors the C++ reader's identical rule.
+        if "NUM" in med_cell_type_group:
+            cell_num_blocks.append(med_cell_type_group["NUM"][()])
+            num_blocks_with_num += 1
+        else:
+            cell_num_blocks.append(None)
+
+    if num_blocks_with_num > 0:
+        if num_blocks_with_num == len(cell_types):
+            cell_data["med:num"] = cell_num_blocks
+        else:
+            warn(
+                f"MED: cell NUM is present on only {num_blocks_with_num} of "
+                f"{len(cell_types)} cell blocks; ignoring 'med:num' for this mesh."
+            )
 
     # Information for cell tags
     cell_tags = {}
@@ -755,18 +801,28 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
         family.attrs.create("CGT", 1)
         family.attrs.create("NBR", len(mesh.points))
 
+    # Global point numbering (NUM) -- optional, written only when present.
+    if "med:num" in mesh.point_data:
+        num = nodes_group.create_dataset("NUM", data=mesh.point_data["med:num"])
+        num.attrs.create("CGT", 1)
+        num.attrs.create("NBR", len(mesh.points))
+
     # Cells (mailles in French)
     cells_by_type = {}
     cell_tags_by_type = {}
+    cell_num_by_type = {}
 
     for k, cell_block in enumerate(mesh.cells):
         cell_type = cell_block.type
         if cell_type not in cells_by_type:
             cells_by_type[cell_type] = []
             cell_tags_by_type[cell_type] = []
+            cell_num_by_type[cell_type] = []
         cells_by_type[cell_type].append(cell_block.data)
         if "cell_tags" in mesh.cell_data:
             cell_tags_by_type[cell_type].append(mesh.cell_data["cell_tags"][k])
+        if "med:num" in mesh.cell_data:
+            cell_num_by_type[cell_type].append(mesh.cell_data["med:num"][k])
     cells_group = time_step.create_group("MAI")
     cells_group.attrs.create("CGT", 1)
     for cell_type, cells_list in cells_by_type.items():
@@ -806,6 +862,13 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
             family.attrs.create("CGT", 1)
             family.attrs.create("NBR", n_merged)
 
+        # Global cell numbering (NUM) -- optional, written only when present.
+        if cell_num_by_type.get(cell_type):
+            merged_num = np.concatenate(cell_num_by_type[cell_type])
+            num = med_cells.create_dataset("NUM", data=merged_num)
+            num.attrs.create("CGT", 1)
+            num.attrs.create("NBR", n_merged)
+
     # Families (FAS group)
     fas = f.create_group("FAS", track_order=True)
     families = fas.create_group(mesh_name, track_order=True)
@@ -831,8 +894,10 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
         pass
 
     # Fields (CHA group)
-    has_point_data = any(k != "point_tags" for k in mesh.point_data)
-    has_cell_data = any(k not in ("cell_tags", "gmsh:physical") for k in mesh.cell_data)
+    has_point_data = any(k not in ("point_tags", "med:num") for k in mesh.point_data)
+    has_cell_data = any(
+        k not in ("cell_tags", "gmsh:physical", "med:num") for k in mesh.cell_data
+    )
 
     if not has_point_data and not has_cell_data:
         f.close()
@@ -847,7 +912,7 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
     # Nodal fields
     nodal_groups = defaultdict(list)
     for name, data in mesh.point_data.items():
-        if name == "point_tags":
+        if name in ("point_tags", "med:num"):
             continue
         base, idx, pdt = _parse_med_field_name(name)
         nodal_groups[base].append((idx, pdt, data))
@@ -919,7 +984,7 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
     # Cell data grouped by base field name for multi-timestep support
     cell_groups = defaultdict(list)
     for name, d in mesh.cell_data.items():
-        if name in ("cell_tags", "gmsh:physical"):
+        if name in ("cell_tags", "gmsh:physical", "med:num"):
             continue
         base, idx, pdt_orig = _parse_med_field_name(name)
         for cell, data in zip(mesh.cells, d):

@@ -111,6 +111,7 @@ inserting, removing or reordering one invalidates them.
 | **gmsh 2.2** | ❌ | ✅ | ❌ | ✅ | A physical group is a named, tagged, per-dimension group of *elements*. No node-set and no side-set concept. |
 | **gmsh 4.1** | ❌ | names only | ❌ | ✅ | The writer emits `$PhysicalNames` but no `$Entities`, so membership has nowhere to go. Write 2.2 for a full round-trip. |
 | **exodus** | 📖 | 📖 | 📖 | ✅ | **Read only** (v8.6.0): element blocks → `cell`, node sets → `point`, side sets → `side`, each tagged with its `eb_prop1`/`ns_prop1`/`ss_prop1` id. The writer emits neither `eb_names` nor side sets, so nothing written comes back. See [`doc/formats/exodus.md`](./formats/exodus.md#named-regions). |
+| **med** | ✅ | ✅ | ❌ | ❌ | A MED family (`FAS/NOEUD`/`FAS/ELEME`) is a named group of nodes/elements — one region per group *name*, a multi-group family contributing to all of its names. A family id is per unique *combination* of names rather than per name, and a name may span several ids, so the format-native `tag` is not carried. MED has no facet-group concept, so side regions are dropped. See [`doc/formats/med.md`](./formats/med.md#named-regions). |
 
 📖 = read only. Exodus is a region *source* rather than a round-trip target, so
 it is recorded in `tests/python/test_region_roundtrip.py`'s `READ_ONLY_REGIONS`
@@ -118,12 +119,11 @@ rather than as a row in the round-trip matrix — that matrix writes and reads
 back, and a format that cannot write cannot round-trip.
 
 Deferred to Phase 2, and listed in `tests/python/test_region_roundtrip.py` so
-the gap stays on the record: **MED** (families and groups, absorbing the
-`MedInfo` side channel), **UNV** and **Ansys** (absorbing `UnvInfo`/`AnsysInfo`),
-**OpenFOAM** (boundary patches, which are face groups and therefore side
-regions), **XDMF** (Sets), and **VTU/VTP** — which have no native set concept at
-all, so a convention has to be chosen and documented rather than invented
-silently. Exodus's **writer** belongs on this list too.
+the gap stays on the record: **UNV** and **Ansys** (absorbing
+`UnvInfo`/`AnsysInfo`), **OpenFOAM** (boundary patches, which are face groups
+and therefore side regions), **XDMF** (Sets), and **VTU/VTP** — which have no
+native set concept at all, so a convention has to be chosen and documented
+rather than invented silently. Exodus's **writer** belongs on this list too.
 
 ### Gmsh precedence
 
@@ -268,7 +268,12 @@ walks the tree back into the same flattened names.
 `.` is **reserved** and cannot appear in a segment: `ModelPart::FullName()` joins
 ancestors with it. A region name containing one is left on the mesh but not
 materialized as a SubModelPart, with a warning — the same treatment `Side`
-regions already get.
+regions already get. This is the exact interaction MED's own Kratos
+`MedApplication` runs into: it uses `.` as *its* group-name nesting separator
+when writing MED family names from Kratos, so a MED file carrying such a name
+round-trips its region unaffected through every mesh backend except KRATOS's
+SubModelPart materialization, which — per this rule — leaves it flat with a
+warning rather than guessing at the intended nesting.
 
 One thing a SubModelPart cannot carry back is a region's `mDim`/`mTag`: it stores
 a name and member ids and nothing else. A region reconstructed from one reports

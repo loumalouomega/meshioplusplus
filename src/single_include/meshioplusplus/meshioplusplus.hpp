@@ -70,7 +70,8 @@
  *  |-----|--------------------|------------------------------------------------|
  *  | 1   | v9.0.0             | (baseline)                                     |
  *  | 2   | v9.1.0             | `GeometricalEntity`, `ModelPart`, `MdpaInfo`, … |
- *  | 3   | v9.2.0 .. v9.4.0   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
+ *  | 3   | v9.2.0 .. v9.4.1   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
+ *  | 4   | v9.5.0             | `RefineOptions` gained selection/closure fields |
  *
  * ### This is the ONE place the number is written
  *
@@ -89,7 +90,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 3
+#define MESHIOPLUSPLUS_ABI_VERSION 4
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -7584,6 +7585,151 @@ MESHIOPLUSPLUS_API NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::si
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/refine_templates.hpp =====
+/**
+ * @file refine_templates.hpp
+ * @brief The per-cell-type subdivision templates `operations/refine.hpp` uses,
+ * indexed by which of the cell's edges are **split**.
+ *
+ * This is the sibling of `detail/cell_subdivision.hpp`: that header owns the
+ * *order* of a cell's edges and quad faces, this one owns what to emit once you
+ * know which of them carry a new node. It exists separately from `refine.cpp`
+ * because the tables have properties worth asserting directly
+ * (`tests/cpp/test_refine_templates.cpp`) rather than only sampling through a
+ * refined mesh, and because the Python reference implementation is pinned
+ * against them across the `_core` boundary.
+ *
+ * ### The mask
+ *
+ * A cell's state is a bitmask over `cell_refine_edges(Type)`: bit `k` is set iff
+ * edge `k` carries a new mid-edge node. Local node ids in a template address the
+ * same flat per-cell space `refine.cpp` already builds:
+ *
+ *     [0, num_corners)             the parent's own corner nodes
+ *     [num_corners, +num_edges)    one per edge, cell_refine_edges() order
+ *     [.., +num_quad_faces)        one per quad face, cell_refine_quad_faces() order
+ *     [.., +1)                     the body centre (hexahedron only)
+ *
+ * which coincides with each type's own full-Lagrange numbering (`line3`,
+ * `triangle6`, `quad9`, `tetra10`, `wedge18`, `hexahedron27`). A template only
+ * ever references a slot whose entity actually exists for its mask -- an edge
+ * slot only when that bit is set, a face-centre slot only when all four of that
+ * face's edges are set, the body only on the full mask. That correspondence is
+ * a *derived* rule, not a tabulated one: see `refine.hpp`.
+ *
+ * ### Admissibility and promotion
+ *
+ * Not every mask has a same-type subdivision. The **admissible** masks per type
+ * are chosen so that the set is closed under intersection and contains the full
+ * mask -- a Moore family -- which is exactly what makes "the smallest admissible
+ * superset of `m`" well defined. `refine_promote_mask` is that closure operator:
+ * monotone and idempotent, so the mesh-wide fixed point it drives is unique and
+ * independent of the order cells are visited in. Determinism across mesh
+ * backends and thread counts follows from the algebra rather than from a
+ * convention about traversal.
+ *
+ *  | type         | admissible masks                                   | children       |
+ *  |--------------|----------------------------------------------------|----------------|
+ *  | `line`       | all 2                                              | 1, 2           |
+ *  | `triangle`   | all 8                                              | 1, 2, 3, 4     |
+ *  | `quad`       | none, either opposite pair, all                    | 1, 2, 2, 4     |
+ *  | `tetra`      | none, 6 singles, all 15 pairs, 4 face-triples, all  | 1, 2, 3/4, 4, 8|
+ *  | `wedge`      | none, the 6 triangle edges, the 3 verticals, all   | 1, 4, 2, 8     |
+ *  | `hexahedron` | unions of the 3 parallel edge classes (8 of them)  | 1, 2, 2, 2, 4, 4, 4, 8 |
+ *
+ * The quadrilateral row is forced, not chosen: a quadrangulation of an `n`-gon
+ * satisfies `4Q = B + 2I`, so an odd boundary count is impossible and a quad
+ * with one or three split edges has *no* all-quad subdivision at any number of
+ * interior nodes. The tetrahedron's three-edges-at-a-common-vertex mask is
+ * excluded deliberately: it would put the ambiguous two-edge case on all three
+ * incident faces at once.
+ *
+ * ### The one choice made from global ids
+ *
+ * A face with two *adjacent* split edges has a remnant quadrilateral needing a
+ * diagonal, and the cell on the other side of that face must pick the same one.
+ * The template therefore stores **both** variants plus the two local corner ids
+ * `mTieA`/`mTieB` that decide between them: use `mChildrenAlt` when the global
+ * node id at `mTieB` is smaller than the one at `mTieA`. Since the rule reduces
+ * to "the diagonal starting at the smaller-id surviving corner", two neighbours
+ * that number the face differently still agree. Both variants always have the
+ * same child count, so a caller can size its output before resolving the tie.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One `(cell type, split-edge mask)` subdivision.
+struct RefineMaskTemplate {
+    /// The children, each a list of local node ids (see the file comment).
+    /// Empty exactly when the mask is not admissible.
+    std::vector<std::vector<std::uint8_t>> mChildren;
+    /// The other diagonal, or empty when this mask makes no such choice.
+    std::vector<std::vector<std::uint8_t>> mChildrenAlt;
+    /// Local **corner** ids deciding between the two variants: use
+    /// `mChildrenAlt` when the global node id at `mTieB` is smaller than the one
+    /// at `mTieA`. Meaningless unless `HasVariant()`.
+    std::uint8_t mTieA = 0;
+    std::uint8_t mTieB = 0;
+
+    /// Whether this mask has a same-type subdivision at all.
+    bool IsAdmissible() const { return !mChildren.empty(); }
+    /// Whether resolving this template needs the global-id tie-break.
+    bool HasVariant() const { return !mChildrenAlt.empty(); }
+    /// The child count, the same for both variants.
+    std::size_t NumChildren() const { return mChildren.size(); }
+};
+
+/**
+ * @brief Whether `refine` has subdivision templates for a cell type.
+ * @param Type The cell type to query.
+ * @return `true` for `line`, `triangle`, `quad`, `tetra`, `wedge`,
+ *   `hexahedron`; `false` for every higher-order type, `pyramid` and the rest.
+ */
+MESHIOPLUSPLUS_API bool refine_type_supported(CellType Type);
+
+/**
+ * @brief The mask with every edge of a cell type split (its uniform, "red"
+ * refinement), or `0` for an unsupported type.
+ * @param Type The cell type to query.
+ */
+MESHIOPLUSPLUS_API std::uint16_t refine_full_mask(CellType Type);
+
+/**
+ * @brief The smallest admissible superset of a split-edge mask.
+ *
+ * Monotone and idempotent, so iterating it over a mesh converges to a unique
+ * fixed point regardless of the order cells are visited in.
+ *
+ * @param Type The cell type.
+ * @param Mask The edges currently split, as a bitmask over
+ *   `cell_refine_edges(Type)`.
+ * @param Propagate When `true`, any non-empty mask promotes straight to the
+ *   full split instead (`RefineClosure::Propagate`).
+ * @return The promoted mask, or `0` for an unsupported type.
+ */
+MESHIOPLUSPLUS_API std::uint16_t refine_promote_mask(CellType Type, std::uint16_t Mask,
+                                                     bool Propagate);
+
+/**
+ * @brief The subdivision for one `(type, mask)` pair.
+ * @param Type The cell type.
+ * @param Mask An **admissible** mask (call `refine_promote_mask` first).
+ * @return Reference to the process-wide template. A non-admissible mask, or an
+ *   unsupported type, yields a template whose `IsAdmissible()` is `false`.
+ */
+MESHIOPLUSPLUS_API const RefineMaskTemplate& refine_mask_template(CellType Type,
+                                                                  std::uint16_t Mask);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/refine_templates.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/region_remap.hpp =====
 /**
  * @file detail/region_remap.hpp
@@ -10415,8 +10561,20 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
  * transpose).
  *
  * **What the C++ path handles** (matching the Python output byte-for-byte):
- * points, point/cell tags, families with `GRO` group names, mesh-level
- * metadata (`mesh_name`/`description`/`unit_time`/`unit_coords`/
+ * points, point/cell tags, families with `GRO` group names, **named regions**
+ * derived from those families (one `Region` per group name — `Point` from
+ * `NOEUD`, `Cell` from `ELEME`, `dim`/`tag` left unspecified since a name may
+ * span several family ids; see `med_attach_point_regions`/
+ * `med_attach_cell_regions` in `med.cpp` and doc/regions.md) and, on write,
+ * synthesized back into families when the mesh carries no native
+ * `point_tags`/`cell_tags` of its own (`med_point_regions_to_tags`/
+ * `med_cell_regions_to_tags` — native data always wins, so a MED→MED round
+ * trip is unaffected), an optional **`INFOS_GENERALES` version check**
+ * (a file written by MED major version > 4 is rejected with a named error
+ * instead of an obscure structural one further down), optional **`NUM`**
+ * global point/cell numbering (`point_data`/`cell_data["med:num"]`; cell
+ * `NUM` is only carried when *every* block has it), mesh-level metadata
+ * (`mesh_name`/`description`/`unit_time`/`unit_coords`/
  * `point_tag_groups`/`cell_tag_groups`, all carried via #MedInfo), the
  * fixed node-orientation permutations for linear 3D types (`tetra`,
  * `pyramid`, `wedge`, `hexahedron` — see `_med_node_perm` in
@@ -10428,16 +10586,18 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
  *
  * **What always falls back to Python** (the C++ functions `throw` and the
  * `meshioplusplus.med` shim catches and retries with the pure-Python/h5py
- * implementation): any file/mesh carrying `CHA` **fields** (MED-4.1
- * bitmask attributes, `field_data["med:field_units"]`/`["med:step_meta"]`,
- * and multi-timestep field-name grouping are Python-only), the
- * `gmsh:physical`→family **bridging** performed on write, non-default
- * **profiles** / `ELGA` support, and **multi-mesh** files
- * (`read_med_multi`/`write_med_multi`, which have no C++ equivalent at
- * all). Quadratic 3D types (`tetra10`, `hexahedron20`, `pyramid13`,
- * `wedge15`) share the linear types' orientation convention but have no
- * implemented corners+midpoints permutation yet — they round-trip
- * unconverted (a warning is logged the first time one is seen).
+ * implementation): a `CHA` **field** past the single-timestep, no-profile,
+ * no-units common case (MED-4.1 bitmask attributes,
+ * `field_data["med:field_units"]`/`["med:step_meta"]`, and multi-timestep
+ * field-name grouping are Python-only — see `read_cha_fields`/
+ * `write_cha_nodal_field`/`write_cha_cell_field`), the `gmsh:physical`→family
+ * **bridging** performed on write, non-default **profiles** / `ELGA`
+ * support, and **multi-mesh** files (`read_med_multi`/`write_med_multi`,
+ * which have no C++ equivalent at all). Quadratic 3D types (`tetra10`,
+ * `hexahedron20`, `pyramid13`, `wedge15`) share the linear types' orientation
+ * convention but have no implemented corners+midpoints permutation yet —
+ * they round-trip unconverted (a warning is logged the first time one is
+ * seen); see doc/formats/med.md for the planned fix.
  */
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -10516,21 +10676,26 @@ struct MedInfo {
  * Reads points (un-transposing the Fortran-ordered `COO` dataset), the
  * `MAI` cell blocks in HDF5 creation order, per-point/per-cell `FAM` tag
  * arrays (exposed as `point_data["point_tags"]`/`cell_data["cell_tags"]`),
- * family/group names from `FAS` (searched first under the mesh's own
- * time-step group, then at the top level), mesh-level metadata, the fixed
- * node-orientation permutation for linear 3D types, and ragged
- * `POG`/`POG2` polygon blocks (materialized as a copied `list`-like ragged
- * `CellBlock` since they cannot be represented as a rectangular NDArray
- * without loss).
+ * optional `NUM` global numbering (`point_data`/`cell_data["med:num"]`, cell
+ * `NUM` only when every block has it), family/group names from `FAS`
+ * (searched first under the mesh's own time-step group, then at the top
+ * level) — attached additionally as named `Point`/`Cell` regions, one per
+ * group name (see `med_attach_point_regions`/`med_attach_cell_regions`) —
+ * mesh-level metadata, the fixed node-orientation permutation for linear 3D
+ * types, and ragged `POG`/`POG2` polygon blocks (materialized as a copied
+ * `list`-like ragged `CellBlock` since they cannot be represented as a
+ * rectangular NDArray without loss).
  *
  * @param rPath filesystem path to the .med file to read
  * @param rInfo output side-channel struct populated with tags, families,
  *        and mesh-level metadata (see #MedInfo)
  * @return the read Mesh (points, cells, point_data["point_tags"],
- *         cell_data["cell_tags"], arbitrary named point/cell data from
- *         `CHA` fields except those excluded below)
- * @throws ReadError — on any `CHA` field, non-default profile, `ELGA`
- *         support, or multi-mesh file; on malformed/unsupported HDF5
+ *         cell_data["cell_tags"], named regions, arbitrary named point/cell
+ *         data from `CHA` fields except those excluded below)
+ * @throws ReadError — on a file written by MED major version > 4; on a `CHA`
+ *         field past the single-timestep/no-profile/no-units common case
+ *         (units, multi-timestep metadata, a named profile, or ELNO/ELGA
+ *         support); on multi-mesh files; on malformed/unsupported HDF5
  *         layout. Callers (the Python shim) catch this and retry with the
  *         pure-Python/h5py reader.
  */
@@ -10545,11 +10710,18 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  * (Fortran-order-flattened) and one `MAI/<MED type>` group per cell block
  * (rejecting up front with `WriteError` if two blocks share a MED type,
  * since MED cannot represent that), `FAS` family definitions built from
- * `rInfo.mPointTags`/`rInfo.mCellTags` (a family with no groups omits `GRO`
- * entirely), and the fixed node-orientation permutation applied to linear
- * 3D cell types before writing `NOD`. Ragged `polygon`/`polygon2` blocks
- * are written as `POG`/`POG2` CSR data. Family names longer than 80 bytes
- * after `latin-1` encoding raise `WriteError` rather than truncating.
+ * `rInfo.mPointTags`/`rInfo.mCellTags` — or, when the mesh carries no native
+ * `point_tags`/`cell_tags` of its own, synthesized from any `Point`/`Cell`
+ * regions the mesh carries (`med_point_regions_to_tags`/
+ * `med_cell_regions_to_tags`; native data always wins, so a MED→MED round
+ * trip through this writer is unaffected; `Side` regions have no MED
+ * equivalent and are dropped with a warning) — a family with no groups omits
+ * `GRO` entirely, and the fixed node-orientation permutation applied to
+ * linear 3D cell types before writing `NOD`. Optional `NUM` global numbering
+ * is written when `point_data`/`cell_data["med:num"]` is present. Ragged
+ * `polygon`/`polygon2` blocks are written as `POG`/`POG2` CSR data. Family
+ * names longer than 80 bytes after `latin-1` encoding raise `WriteError`
+ * rather than truncating.
  *
  * @param rPath filesystem path to the .med file to create/overwrite
  * @param rMesh the mesh to write
@@ -10559,13 +10731,13 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  * @param rMedVersion the `MAJ.MIN.REL` triple written to
  *        `INFOS_GENERALES` (default `"4.1.0"`)
  * @throws WriteError — if the mesh carries `CHA`-worthy fields (any
- *         point_data/cell_data beyond `point_tags`/`cell_tags` that this
- *         path doesn't handle), `gmsh:physical` bridging is needed, two
- *         cell blocks share one MED type, or a family name exceeds 80
- *         bytes. Callers (the Python shim) catch this and retry with the
- *         pure-Python/h5py writer.
+ *         point_data/cell_data beyond `point_tags`/`cell_tags`/`med:num`
+ *         that this path doesn't handle), `gmsh:physical` bridging is
+ *         needed, two cell blocks share one MED type, or a family name
+ *         exceeds 80 bytes. Callers (the Python shim) catch this and retry
+ *         with the pure-Python/h5py writer.
  * @note point_data/cell_data keys produced/consumed: `"point_tags"`,
- *       `"cell_tags"`.
+ *       `"cell_tags"`, `"med:num"`.
  */
 MESHIOPLUSPLUS_API void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion = "4.1.0");
@@ -14836,8 +15008,10 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
 // ===== begin src/cpp/include/meshioplusplus/operations/refine.hpp =====
 /**
  * @file refine.hpp
- * @brief Uniform mesh refinement: subdivide every cell into congruent children
- * of the **same** cell type, interpolating `point_data` onto the new nodes.
+ * @brief Mesh refinement: subdivide cells into congruent children of the
+ * **same** cell type, interpolating `point_data` onto the new nodes. Either
+ * every cell (uniform) or a selected subset with a conforming closure
+ * (selective / adaptive).
  *
  * This is the resolution-increasing counterpart to the resolution-preserving
  * `convert_cells` and the resolution-reducing `crop`/`clean`. One level applies
@@ -14880,8 +15054,100 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
  * of the geometry, not of this implementation.
  *
  * **Block structure is preserved 1:1**: the output has exactly
- * `NumCellBlocks()` blocks, in input order, which is what keeps the
- * one-array-per-block `cell_data` invariant trivially correct.
+ * `NumCellBlocks()` blocks, in input order, and each keeps its input cell
+ * type, which is what keeps the one-array-per-block `cell_data` invariant
+ * trivially correct. That holds in selective mode too -- see below.
+ *
+ * ### Selective (adaptive) refinement
+ *
+ * With a selector set (`mCells`, `mRegion` or the `mPredicateArray` predicate)
+ * only the selected cells get the full template above -- they are *red* -- and
+ * the hanging nodes that leaves on the interface are resolved by a **closure**,
+ * so the output is still a valid conforming mesh. Setting no selector is the
+ * uniform behaviour, byte-identical to a build without this feature.
+ *
+ * The whole thing is one table-driven rule rather than three loosely coupled
+ * features. Each cell type has a set of **admissible** split-edge masks -- the
+ * subsets of its edges for which a same-type subdivision template exists (see
+ * `detail/refine_templates.hpp`). A cell's mask is whatever its neighbours have
+ * bisected; if that mask is not admissible it is *promoted* to the smallest
+ * admissible superset, which bisects more edges, which may promote further. The
+ * admissible sets are closed under intersection, so "smallest admissible
+ * superset" is well defined and the promotion is a monotone idempotent closure
+ * operator -- and the global fixed point is therefore **unique and independent
+ * of iteration order**, which is why determinism across backends and thread
+ * counts is a property of the formulation rather than a convention.
+ *
+ * Every new node's existence is likewise *derived* from the split-edge set,
+ * never tabulated: an edge carries a node iff it is split, a quad face carries
+ * a centre iff **all four** of its edges are split, and a hexahedron carries a
+ * body node iff **all twelve** are. Two cells sharing an entity see the same
+ * edges and so reach the same answer, which is what makes conformity structural
+ * rather than something the tests merely sample. When every edge is split these
+ * rules reduce exactly to the uniform templates above.
+ *
+ * `RefineClosure::RedGreen` (the default) promotes to the smallest admissible
+ * superset, which keeps the extra refinement local. Per type:
+ *
+ *  - `line`, `triangle`: every mask is admissible -- a triangle with 1 bisected
+ *    edge splits into 2, with 2 into 3, with 3 into 4. Nothing propagates.
+ *  - `quad`: the admissible masks are the two *opposite* edge pairs and the
+ *    full split, so a single bisected edge promotes to its opposite pair and
+ *    splits into 2 quads. A pentagon or heptagon cannot be partitioned into
+ *    quadrilaterals at all (`4Q = B + 2I` forbids an odd boundary count), so
+ *    this is the finest possible type-preserving answer; the bisection then
+ *    travels along one row of a structured grid and stops at the boundary.
+ *  - `hexahedron`: the admissible masks are unions of its three parallel edge
+ *    classes -- 1, 2, 2, 2, 4, 4, 4 or 8 children -- so refinement propagates
+ *    through one dual sheet rather than the whole block.
+ *  - `wedge`: its six triangle edges form one class and its three verticals
+ *    another -- 1, 2, 4 or 8 children.
+ *  - `tetra`: every mask up to two edges is admissible, as are the four
+ *    face-triples; anything else promotes to the full 8-way split. (Three
+ *    edges meeting at a common vertex are deliberately *not* admissible: each
+ *    of the three incident faces would then hit the ambiguous two-edge case.)
+ *
+ * `RefineClosure::Propagate` instead promotes any non-empty mask straight to a
+ * full split. It is always conforming and defined for every cell type, but it
+ * is **not local** -- every edge-neighbour of a red cell becomes red in turn,
+ * so it converges to uniform refinement of the whole edge-connected component.
+ * It is the always-works baseline and the test oracle, not the adaptivity mode.
+ *
+ * `RefineClosure::Balanced` does not close at all: it **keeps the hanging
+ * nodes** and only enforces 2:1 balance, which is what an adaptive-mesh-
+ * refinement code normally means by "propagate". A cell is split fully or not
+ * at all -- there are no transitional templates -- and a cell is drawn in only
+ * when a neighbour would otherwise end up more than one level finer than it:
+ *
+ *     refine C  =>  C's level rises by one
+ *     D must refine  <=>  some entity D shares has an incident cell whose
+ *                         post-refinement level exceeds D's by more than one
+ *
+ * On a mesh of uniform level that condition is satisfied nowhere, so refining
+ * one cell propagates to **nothing** -- 64 hexahedra become 71, against 125
+ * under `RedGreen` and 512 under `Propagate`. Balancing only bites once levels
+ * differ, i.e. from the second adaptive pass onwards, and even then it reaches
+ * one level-ring rather than the whole mesh. The `refine:level` array is what
+ * makes that well defined across passes, and reading it back is why the array
+ * is *maintained* rather than replicated.
+ *
+ * The price is stated rather than hidden: the result is **1-irregular and not
+ * conforming**. Every constrained node is reported in the `refine:hanging`
+ * `point_data` array (see `kRefineHangingName`) so a solver can eliminate it;
+ * the conformity guarantees below apply to the other two closures only, and
+ * `extract_surface`, `decimate` and anything else assuming a conforming mesh
+ * will treat a hanging node as a genuine boundary.
+ *
+ * A cell with two *adjacent* bisected edges on one face has a remnant
+ * quadrilateral there that needs a diagonal, and the neighbour across that face
+ * must choose the same one. The choice is therefore made from the **global node
+ * ids** -- the diagonal starting at whichever of the two surviving corners has
+ * the smaller id -- never from the template's local numbering, which two
+ * differently-oriented neighbours would disagree about.
+ *
+ * Green cells are **not undone** before a later red refinement, so repeated
+ * selective passes over the same region degrade element quality without bound.
+ * `refine:level` plus `mCellMaps` is the hierarchy a future green-undo needs.
  *
  * Constructs that would break the same-type contract raise rather than guess:
  * higher-order cells (`tetra10`, ...; linearize first), `pyramid` (whose
@@ -14900,23 +15166,123 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
  */
 
 // System includes
+#include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
 
+/// The `cell_data` array `RefineOptions::mRecordParentIds` attaches.
+inline constexpr const char* kRefineParentCellName = "refine:parent_cell";
+
+/// The Int64 `cell_data` array recording each cell's refinement depth: `0` for
+/// a cell no red split ever touched, incremented once per red split. A green
+/// (transitional) child inherits its parent's level unchanged, because a green
+/// split is a closure, not a refinement. The name is **reserved**: if the input
+/// already carries it, `refine` updates it rather than replicating it, so
+/// successive passes accumulate.
+inline constexpr const char* kRefineLevelName = "refine:level";
+
+/// The Int64 `point_data` array `RefineClosure::Balanced` attaches: `1` for a
+/// **hanging** (constrained) node, `0` otherwise. A hanging node is one that
+/// exists on an entity of a cell that does not reference it -- the mid-edge node
+/// a refined cell created on an edge its unrefined neighbour still spans whole.
+/// Only `Balanced` produces any; the other closures leave none by construction
+/// and do not attach the array.
+inline constexpr const char* kRefineHangingName = "refine:hanging";
+
+/// How `refine` resolves the hanging nodes a partial refinement leaves behind.
+enum class RefineClosure {
+    /// Promote a cell's split-edge mask to the smallest *admissible* superset,
+    /// so an affected neighbour is split transitionally rather than fully. Keeps
+    /// the extra refinement local, and the output is conforming. The default.
+    RedGreen = 0,
+    /// Promote any non-empty mask straight to a full split. Conforming and
+    /// defined for every cell type, but **not local**: it converges to uniform
+    /// refinement of the whole edge-connected component.
+    Propagate = 1,
+    /// Do not close at all: **keep the hanging nodes** and merely enforce 2:1
+    /// balance, refining a cell only when a neighbour would otherwise end up
+    /// more than one level finer. The output is 1-irregular and **NOT
+    /// conforming** -- the constrained nodes are reported in `refine:hanging`
+    /// for a solver to eliminate. This is the classic adaptive-mesh-refinement
+    /// meaning of "propagate", and the only mode whose cost is bounded by the
+    /// selection rather than by the mesh.
+    Balanced = 2,
+};
+
+/// The comparison in `RefineOptions`' `cell_data` predicate selector.
+enum class RefineCompare {
+    Less = 0,
+    LessEqual = 1,
+    Greater = 2,
+    GreaterEqual = 3,
+    Equal = 4,
+    NotEqual = 5,
+};
+
+/**
+ * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`,
+ * `"propagate"` / `"red"`, or `"balanced"` / `"2:1"`.
+ * @param rName The name; empty means the default (`RedGreen`).
+ * @throws std::invalid_argument naming every accepted value.
+ */
+MESHIOPLUSPLUS_API RefineClosure refine_closure_from_name(const std::string& rName);
+
+/**
+ * @brief Parse a comparison operator (`"<"`, `"<="`, `">"`, `">="`, `"=="`,
+ * `"!="`; `"="` is accepted as `"=="`).
+ * @throws std::invalid_argument naming every accepted value.
+ */
+MESHIOPLUSPLUS_API RefineCompare refine_compare_from_name(const std::string& rName);
+
 /// Options for `refine`.
 struct RefineOptions {
     /// How many times to apply the subdivision templates. `0` (or less) returns
     /// an unchanged clone; `n` multiplies the cell count of a supported block
-    /// by `children_per_cell^n`.
+    /// by `children_per_cell^n` when no selector is set. With a selector, level
+    /// `k > 1` refines the children of level `k - 1`'s red cells; green and
+    /// untouched cells are not re-refined.
     int mLevels = 1;
     /// Attach an Int64 `refine:parent_cell` `cell_data` array recording, per
     /// output cell, the index of the **original** input cell it descends from
     /// *within its own block* (blocks correspond 1:1). Across several levels
     /// this is the original ancestor, not the immediate parent.
     bool mRecordParentIds = false;
+
+    // --- selective refinement ------------------------------------------------
+    // At most ONE of the three selectors below may be set. Two is an error
+    // rather than a precedence rule: silently ignoring a selector the caller
+    // asked for is the failure mode worth refusing. All empty = uniform.
+
+    /// Explicit **global block-major** cell indices to refine (the numbering
+    /// `detail/cell_index.hpp` owns and named `Cell` regions use). Canonicalized
+    /// (sorted, de-duplicated) before use; an out-of-range index is an error.
+    std::vector<std::int64_t> mCells;
+    /// Name of a region to refine. A `Cell` region selects its own cells; a
+    /// `Point` region selects every cell with **any** node in it. A `Side`
+    /// region is not a selector and is an error -- it names facets, and turning
+    /// facets into cells is a policy decision this operation does not make
+    /// silently.
+    std::string mRegion;
+    /// Name of a scalar numeric `cell_data` array to threshold (`""` = unused).
+    /// Composes directly with `attach_quality`, e.g.
+    /// `quality:scaled_jacobian < 0.3`. Deliberately a single comparison and
+    /// not a second `data_calc` expression grammar.
+    std::string mPredicateArray;
+    /// The predicate's comparison.
+    RefineCompare mPredicateOp = RefineCompare::Less;
+    /// The predicate's right-hand side. A non-finite cell value never matches.
+    double mPredicateValue = 0.0;
+    /// How to resolve hanging nodes. Ignored when no selector is set (every
+    /// cell is then red and no closure is needed).
+    RefineClosure mClosure = RefineClosure::RedGreen;
+    /// Attach the Int64 `refine:level` `cell_data` array (see
+    /// `kRefineLevelName`). An input that already carries it is updated
+    /// whatever this flag says; the flag only controls *creating* it.
+    bool mRecordLevels = false;
 };
 
 /// The result of `refine`: the refined mesh plus the index maps.
@@ -14930,18 +15296,24 @@ struct RefineResult {
     /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> the
     /// index of its **first** child in the corresponding output block. A cell's
     /// children are contiguous, so cell `c` owns
-    /// `[map[c], c + 1 < n ? map[c + 1] : num_cells_out)`.
+    /// `[map[c], c + 1 < n ? map[c + 1] : num_cells_out)`. In selective mode a
+    /// cell may have a single child (itself, unrefined), so the run length
+    /// varies -- the map is still monotone and every entry non-negative.
     std::vector<NDArray> mCellMaps;
 };
 
 /**
- * @brief Uniformly refine a mesh, subdividing every cell into same-type
- * children.
+ * @brief Refine a mesh, subdividing cells into same-type children.
  * @param rMesh The mesh to refine (unchanged).
- * @param rOptions Level count and parent-id recording.
+ * @param rOptions Level count, cell selection, closure and bookkeeping. With no
+ *   selector set this is the uniform refinement of every cell.
  * @return The refined mesh and its point/cell index maps.
  * @throws std::invalid_argument on a higher-order, `pyramid`, or ragged cell
- *   block, none of which can be subdivided into same-type children.
+ *   block, none of which can be subdivided into same-type children; on more
+ *   than one selector being set; on an out-of-range cell index; on an unknown
+ *   region, or a `Side` region used as a selector; and on a predicate array
+ *   that is missing, does not cover every block, is not scalar, or holds a
+ *   non-finite value.
  */
 MESHIOPLUSPLUS_API RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
 
@@ -16281,6 +16653,81 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/skin.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/version.hpp =====
+/**
+ * @file version.hpp
+ * @brief The **release** version, as compile-time macros, so a consumer can
+ * feature-detect with the preprocessor.
+ *
+ * ### Which version am I looking at?
+ *
+ * meshio++ answers three different questions with three different mechanisms,
+ * and they are not interchangeable:
+ *
+ *  | question | mechanism |
+ *  |----------|-----------|
+ *  | what did I **compile against**? | the macros here (and `MIO_VERSION_*` in the C header) |
+ *  | what am I **running against**?  | `mio_version()`, a runtime call into the linked library |
+ *  | are my headers **binary-compatible** with that library? | `MESHIOPLUSPLUS_ABI_VERSION` plus
+ * the link-time sentinel in `detail/abi_version_check.hpp` |
+ *
+ * With a shared library the first two genuinely can differ, which is the whole
+ * reason both exist. Use these macros to decide what to *compile*, and
+ * `mio_version()` to report what a user is actually running.
+ *
+ * ### Feature detection
+ *
+ * @code
+ * #include <meshioplusplus/version.hpp>
+ *
+ * #if MESHIOPLUSPLUS_VERSION_AT_LEAST(9, 5, 0)
+ *     options.mCells = {12, 13};      // selective refinement, new in 9.5.0
+ * #endif
+ * @endcode
+ *
+ * The encoded `MESHIOPLUSPLUS_VERSION` integer is `major * 10000 + minor * 100 +
+ * patch`, so it orders exactly like the release does and can be compared
+ * directly when the macro is not expressive enough.
+ *
+ * ### Why hand-written rather than generated
+ *
+ * The same reason `abi_version.hpp` is: a consumer that never runs CMake -- the
+ * [single-header amalgamation](/single_header), pkg-config, a hand-written
+ * makefile -- must still be able to read it, and a `configure_file`d header
+ * living in the build tree would reach none of them. `CMakeLists.txt` therefore
+ * *parses* this file and hard-fails at configure time if it disagrees with
+ * `project(... VERSION ...)`, so the duplication cannot silently drift; the C
+ * header's `MIO_VERSION_*` twins are pinned by a `static_assert` in
+ * `bindings/c/c_api.cpp`.
+ *
+ * @note Bumping the release means editing this file too -- see the "Version
+ * bumps" section of `CLAUDE.md`. Forgetting is a configure-time error, not a
+ * wrong answer.
+ */
+
+/// Major component of the release version.
+#define MESHIOPLUSPLUS_VERSION_MAJOR 9
+/// Minor component of the release version.
+#define MESHIOPLUSPLUS_VERSION_MINOR 6
+/// Patch component of the release version.
+#define MESHIOPLUSPLUS_VERSION_PATCH 0
+
+/// The release version as one ordered integer: `major*10000 + minor*100 + patch`.
+#define MESHIOPLUSPLUS_VERSION                                                   \
+    (MESHIOPLUSPLUS_VERSION_MAJOR * 10000 + MESHIOPLUSPLUS_VERSION_MINOR * 100 + \
+     MESHIOPLUSPLUS_VERSION_PATCH)
+
+/// The release version as a string literal, e.g. `"9.6.0"`.
+#define MESHIOPLUSPLUS_VERSION_STRING "9.6.0"
+
+/// Whether the headers being compiled against are at least `major.minor.patch`.
+#define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
+    (MESHIOPLUSPLUS_VERSION >= ((major) * 10000 + (minor) * 100 + (patch)))
+
+/// Whether the headers being compiled against are older than `major.minor.patch`.
+#define MESHIOPLUSPLUS_VERSION_BEFORE(major, minor, patch) \
+    (!MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch))
+// ===== end src/cpp/include/meshioplusplus/version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/vtk_common.hpp =====
 /**
  * @file vtk_common.hpp
@@ -33603,6 +34050,413 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/projection.cpp =====
+// ===== begin src/cpp/src/detail/refine_templates.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+using RtplChildren = std::vector<std::vector<std::uint8_t>>;
+
+/// Everything one cell type contributes: the mask-indexed template table and
+/// the promotion table derived from it.
+struct RtplTypeTable {
+    std::uint8_t mNumCorners = 0;
+    std::uint8_t mNumEdges = 0;
+    std::uint16_t mFullMask = 0;
+    std::vector<RefineMaskTemplate> mMasks;  ///< size 1 << mNumEdges
+    std::vector<std::uint16_t> mPromote;     ///< size 1 << mNumEdges
+};
+
+const RefineMaskTemplate& rtpl_empty_template() {
+    static const RefineMaskTemplate empty;
+    return empty;
+}
+
+/// The index of edge `(a, b)` in a type's `cell_refine_edges` table.
+std::uint8_t rtpl_edge_index(const std::vector<CellEdgePair>& rEdges, std::uint8_t a,
+                             std::uint8_t b) {
+    for (std::size_t k = 0; k < rEdges.size(); ++k) {
+        if ((rEdges[k][0] == a && rEdges[k][1] == b) || (rEdges[k][0] == b && rEdges[k][1] == a))
+            return static_cast<std::uint8_t>(k);
+    }
+    return static_cast<std::uint8_t>(rEdges.size());  // unreachable for a well-formed table
+}
+
+/// Fill the promotion table from the definition: the intersection of every
+/// admissible mask containing `m`. Closure under intersection (asserted by the
+/// tests) is what makes that intersection itself admissible, hence the *least*
+/// admissible superset.
+void rtpl_build_promote(RtplTypeTable& rTable) {
+    const std::size_t n = rTable.mMasks.size();
+    std::vector<std::uint16_t> admissible;
+    for (std::size_t m = 0; m < n; ++m) {
+        if (rTable.mMasks[m].IsAdmissible())
+            admissible.push_back(static_cast<std::uint16_t>(m));
+    }
+    rTable.mPromote.assign(n, rTable.mFullMask);
+    for (std::size_t m = 0; m < n; ++m) {
+        std::uint16_t acc = rTable.mFullMask;
+        for (std::uint16_t a : admissible) {
+            if ((a & m) == m)
+                acc = static_cast<std::uint16_t>(acc & a);
+        }
+        rTable.mPromote[m] = acc;
+    }
+}
+
+// --- the 2D and prismatic tables (hand-written) -------------------------------
+
+RtplTypeTable rtpl_line_table() {
+    RtplTypeTable t;
+    t.mNumCorners = 2;
+    t.mNumEdges = 1;
+    t.mFullMask = 0b1;
+    t.mMasks.resize(2);
+    // line3 layout: 2 = mid(0,1).
+    t.mMasks[0b0].mChildren = RtplChildren{{0, 1}};
+    t.mMasks[0b1].mChildren = RtplChildren{{0, 2}, {2, 1}};
+    rtpl_build_promote(t);
+    return t;
+}
+
+RtplTypeTable rtpl_triangle_table() {
+    RtplTypeTable t;
+    t.mNumCorners = 3;
+    t.mNumEdges = 3;
+    t.mFullMask = 0b111;
+    t.mMasks.resize(8);
+    // triangle6 layout: 3 = m(0,1), 4 = m(1,2), 5 = m(2,0).
+    t.mMasks[0b000].mChildren = RtplChildren{{0, 1, 2}};
+    // One split edge: cut from its midpoint to the opposite corner.
+    t.mMasks[0b001].mChildren = RtplChildren{{0, 3, 2}, {3, 1, 2}};
+    t.mMasks[0b010].mChildren = RtplChildren{{0, 1, 4}, {0, 4, 2}};
+    t.mMasks[0b100].mChildren = RtplChildren{{0, 1, 5}, {5, 1, 2}};
+    // Two split edges: they share a corner `b`, which is cut off as its own
+    // triangle; the remnant quadrilateral (a, m_ab, m_bc, c) takes the diagonal
+    // starting at whichever of the two surviving corners a, c has the smaller
+    // GLOBAL node id. mChildren is "from a"; mTieA = a, mTieB = c.
+    {
+        RefineMaskTemplate& m = t.mMasks[0b011];  // corner 1 cut; a = 0, c = 2
+        m.mChildren = RtplChildren{{3, 1, 4}, {0, 3, 4}, {0, 4, 2}};
+        m.mChildrenAlt = RtplChildren{{3, 1, 4}, {0, 3, 2}, {3, 4, 2}};
+        m.mTieA = 0;
+        m.mTieB = 2;
+    }
+    {
+        RefineMaskTemplate& m = t.mMasks[0b110];  // corner 2 cut; a = 1, c = 0
+        m.mChildren = RtplChildren{{4, 2, 5}, {1, 4, 5}, {1, 5, 0}};
+        m.mChildrenAlt = RtplChildren{{4, 2, 5}, {1, 4, 0}, {4, 5, 0}};
+        m.mTieA = 1;
+        m.mTieB = 0;
+    }
+    {
+        RefineMaskTemplate& m = t.mMasks[0b101];  // corner 0 cut; a = 2, c = 1
+        m.mChildren = RtplChildren{{5, 0, 3}, {2, 5, 3}, {2, 3, 1}};
+        m.mChildrenAlt = RtplChildren{{5, 0, 3}, {2, 5, 1}, {5, 3, 1}};
+        m.mTieA = 2;
+        m.mTieB = 1;
+    }
+    // The standard 1-to-4 split; the central child keeps the parent's winding.
+    t.mMasks[0b111].mChildren = RtplChildren{{0, 3, 5}, {3, 1, 4}, {5, 4, 2}, {3, 4, 5}};
+    rtpl_build_promote(t);
+    return t;
+}
+
+RtplTypeTable rtpl_quad_table() {
+    RtplTypeTable t;
+    t.mNumCorners = 4;
+    t.mNumEdges = 4;
+    t.mFullMask = 0b1111;
+    t.mMasks.resize(16);
+    // quad9 layout: 4..7 = edge mids (edges 01, 12, 23, 30), 8 = face centre.
+    // Only the two OPPOSITE pairs are admissible besides none and all: a
+    // quadrangulation of an n-gon satisfies 4Q = B + 2I, so the pentagon left by
+    // one split edge and the heptagon left by three cannot be filled with
+    // quadrilaterals at any number of interior nodes.
+    t.mMasks[0b0000].mChildren = RtplChildren{{0, 1, 2, 3}};
+    t.mMasks[0b0101].mChildren = RtplChildren{{0, 4, 6, 3}, {4, 1, 2, 6}};
+    t.mMasks[0b1010].mChildren = RtplChildren{{0, 1, 5, 7}, {7, 5, 2, 3}};
+    t.mMasks[0b1111].mChildren =
+        RtplChildren{{0, 4, 8, 7}, {4, 1, 5, 8}, {8, 5, 2, 6}, {7, 8, 6, 3}};
+    rtpl_build_promote(t);
+    return t;
+}
+
+RtplTypeTable rtpl_wedge_table() {
+    RtplTypeTable t;
+    t.mNumCorners = 6;
+    t.mNumEdges = 9;
+    t.mFullMask = 0b111111111;
+    t.mMasks.resize(512);
+    // wedge18 layout: 6..8 bottom-triangle mids, 9..11 top-triangle mids,
+    // 12..14 vertical mids, 15..17 quad-face centres. The six triangle edges
+    // form one class and the three verticals another.
+    constexpr std::uint16_t tri = 0b000111111;
+    constexpr std::uint16_t vert = 0b111000000;
+    t.mMasks[0].mChildren = RtplChildren{{0, 1, 2, 3, 4, 5}};
+    // Triangles split, full height: the 1-to-4 triangle split extruded.
+    t.mMasks[tri].mChildren = RtplChildren{
+        {0, 6, 8, 3, 9, 11}, {6, 1, 7, 9, 4, 10}, {8, 7, 2, 11, 10, 5}, {6, 7, 8, 9, 10, 11}};
+    // Verticals split only: two stacked wedges.
+    t.mMasks[vert].mChildren = RtplChildren{{0, 1, 2, 12, 13, 14}, {12, 13, 14, 3, 4, 5}};
+    // Everything split: the mid-level triangle's edge midpoints ARE the three
+    // quad-face centres, which is why a wedge needs no body node.
+    t.mMasks[t.mFullMask].mChildren =
+        RtplChildren{{0, 6, 8, 12, 15, 17},   {6, 1, 7, 15, 13, 16},  {8, 7, 2, 17, 16, 14},
+                     {6, 7, 8, 15, 16, 17},   {12, 15, 17, 3, 9, 11}, {15, 13, 16, 9, 4, 10},
+                     {17, 16, 14, 11, 10, 5}, {15, 16, 17, 9, 10, 11}};
+    rtpl_build_promote(t);
+    return t;
+}
+
+RtplTypeTable rtpl_hexahedron_table() {
+    RtplTypeTable t;
+    t.mNumCorners = 8;
+    t.mNumEdges = 12;
+    t.mFullMask = 0xFFF;
+    t.mMasks.resize(4096);
+    // hexahedron27 layout: 8..19 edge mids (bottom ring, top ring, verticals),
+    // 20..25 face centres (the four sides, then bottom, then top), 26 body.
+    // The twelve edges fall into three parallel classes; the admissible masks
+    // are their eight unions, so a refinement travels through one dual sheet
+    // rather than the whole block.
+    constexpr std::uint16_t x = 0b000001010101;  // edges 01, 23, 45, 67
+    constexpr std::uint16_t y = 0b000010101010;  // edges 12, 30, 56, 74
+    constexpr std::uint16_t z = 0b111100000000;  // the four verticals
+    t.mMasks[0].mChildren = RtplChildren{{0, 1, 2, 3, 4, 5, 6, 7}};
+    t.mMasks[x].mChildren = RtplChildren{{0, 8, 10, 3, 4, 12, 14, 7}, {8, 1, 2, 10, 12, 5, 6, 14}};
+    t.mMasks[y].mChildren = RtplChildren{{0, 1, 9, 11, 4, 5, 13, 15}, {11, 9, 2, 3, 15, 13, 6, 7}};
+    t.mMasks[z].mChildren =
+        RtplChildren{{0, 1, 2, 3, 16, 17, 18, 19}, {16, 17, 18, 19, 4, 5, 6, 7}};
+    // Two classes split: the two faces perpendicular to the untouched direction
+    // have all four of their edges split and so carry a centre; no body node.
+    t.mMasks[x | y].mChildren = RtplChildren{{0, 8, 24, 11, 4, 12, 25, 15},
+                                             {8, 1, 9, 24, 12, 5, 13, 25},
+                                             {24, 9, 2, 10, 25, 13, 6, 14},
+                                             {11, 24, 10, 3, 15, 25, 14, 7}};
+    t.mMasks[x | z].mChildren = RtplChildren{{0, 8, 10, 3, 16, 20, 22, 19},
+                                             {8, 1, 2, 10, 20, 17, 18, 22},
+                                             {16, 20, 22, 19, 4, 12, 14, 7},
+                                             {20, 17, 18, 22, 12, 5, 6, 14}};
+    t.mMasks[y | z].mChildren = RtplChildren{{0, 1, 9, 11, 16, 17, 21, 23},
+                                             {11, 9, 2, 3, 23, 21, 18, 19},
+                                             {16, 17, 21, 23, 4, 5, 13, 15},
+                                             {23, 21, 18, 19, 15, 13, 6, 7}};
+    // Everything split: rows follow the parent's own parametric (i,j,k) order
+    // over the 3x3x3 lattice, so orientation is preserved by construction.
+    t.mMasks[t.mFullMask].mChildren =
+        RtplChildren{{0, 8, 24, 11, 16, 20, 26, 23},  {8, 1, 9, 24, 20, 17, 21, 26},
+                     {11, 24, 10, 3, 23, 26, 22, 19}, {24, 9, 2, 10, 26, 21, 18, 22},
+                     {16, 20, 26, 23, 4, 12, 25, 15}, {20, 17, 21, 26, 12, 5, 13, 25},
+                     {23, 26, 22, 19, 15, 25, 14, 7}, {26, 21, 18, 22, 25, 13, 6, 14}};
+    rtpl_build_promote(t);
+    return t;
+}
+
+// --- the tetrahedron table (generated) ---------------------------------------
+
+/// The 12 even permutations of `{0,1,2,3}`, in lexicographic order. Even, so
+/// each preserves a tetrahedron's orientation -- which is what lets a
+/// representative's positively-wound children be relabelled rather than
+/// re-derived.
+const std::vector<std::array<std::uint8_t, 4>>& rtpl_even_perms() {
+    static const std::vector<std::array<std::uint8_t, 4>> perms = [] {
+        std::vector<std::array<std::uint8_t, 4>> out;
+        std::array<std::uint8_t, 4> v{0, 1, 2, 3};
+        do {
+            int inversions = 0;
+            for (std::size_t i = 0; i < 4; ++i)
+                for (std::size_t j = i + 1; j < 4; ++j)
+                    if (v[i] > v[j])
+                        ++inversions;
+            if (inversions % 2 == 0)
+                out.push_back(v);
+        } while (std::next_permutation(v.begin(), v.end()));
+        return out;
+    }();
+    return perms;
+}
+
+/// Relabel one local node id under a corner permutation: a corner maps through
+/// the permutation, an edge slot to the slot of the permuted edge.
+std::uint8_t rtpl_map_local(const std::array<std::uint8_t, 4>& rSigma,
+                            const std::vector<CellEdgePair>& rEdges, std::uint8_t NumCorners,
+                            std::uint8_t Local) {
+    if (Local < NumCorners)
+        return rSigma[Local];
+    const std::uint8_t k = static_cast<std::uint8_t>(Local - NumCorners);
+    return static_cast<std::uint8_t>(
+        NumCorners + rtpl_edge_index(rEdges, rSigma[rEdges[k][0]], rSigma[rEdges[k][1]]));
+}
+
+std::uint16_t rtpl_map_mask(const std::array<std::uint8_t, 4>& rSigma,
+                            const std::vector<CellEdgePair>& rEdges, std::uint16_t Mask) {
+    std::uint16_t out = 0;
+    for (std::size_t k = 0; k < rEdges.size(); ++k) {
+        if (Mask & (1u << k))
+            out = static_cast<std::uint16_t>(
+                out | (1u << rtpl_edge_index(rEdges, rSigma[rEdges[k][0]], rSigma[rEdges[k][1]])));
+    }
+    return out;
+}
+
+RtplChildren rtpl_map_children(const std::array<std::uint8_t, 4>& rSigma,
+                               const std::vector<CellEdgePair>& rEdges, std::uint8_t NumCorners,
+                               const RtplChildren& rChildren) {
+    RtplChildren out;
+    out.reserve(rChildren.size());
+    for (const std::vector<std::uint8_t>& child : rChildren) {
+        std::vector<std::uint8_t> row;
+        row.reserve(child.size());
+        for (std::uint8_t local : child)
+            row.push_back(rtpl_map_local(rSigma, rEdges, NumCorners, local));
+        out.push_back(std::move(row));
+    }
+    return out;
+}
+
+RtplTypeTable rtpl_tetra_table() {
+    RtplTypeTable t;
+    t.mNumCorners = 4;
+    t.mNumEdges = 6;
+    t.mFullMask = 0b111111;
+    t.mMasks.resize(64);
+
+    const std::vector<CellEdgePair>& edges = cell_refine_edges(CellType::Tetra);
+    // tetra10 layout: 4 = m(0,1), 5 = m(1,2), 6 = m(0,2), 7 = m(0,3),
+    // 8 = m(1,3), 9 = m(2,3).
+    const auto bit = [&](std::uint8_t a, std::uint8_t b) {
+        return static_cast<std::uint16_t>(1u << rtpl_edge_index(edges, a, b));
+    };
+
+    // Six orbit representatives. Everything else in the admissible set is one of
+    // these relabelled by an even permutation.
+    std::vector<std::pair<std::uint16_t, RefineMaskTemplate>> reps;
+
+    {  // no split edge
+        RefineMaskTemplate m;
+        m.mChildren = RtplChildren{{0, 1, 2, 3}};
+        reps.emplace_back(0, std::move(m));
+    }
+    {  // one split edge (0,1): cut the tetrahedron in half through m(0,1)
+        RefineMaskTemplate m;
+        m.mChildren = RtplChildren{{0, 4, 2, 3}, {4, 1, 2, 3}};
+        reps.emplace_back(bit(0, 1), std::move(m));
+    }
+    {  // two ADJACENT split edges (0,1) and (1,2), meeting at corner 1. Corner
+        // 1 becomes its own tetrahedron; the remnant quadrilateral on face
+        // (0,1,2) is coned to corner 3 across whichever diagonal starts at the
+        // smaller-id surviving corner. mChildren is "from corner 0".
+        RefineMaskTemplate m;
+        m.mChildren = RtplChildren{{4, 1, 5, 3}, {0, 4, 5, 3}, {0, 5, 2, 3}};
+        m.mChildrenAlt = RtplChildren{{4, 1, 5, 3}, {0, 4, 2, 3}, {4, 5, 2, 3}};
+        m.mTieA = 0;
+        m.mTieB = 2;
+        reps.emplace_back(static_cast<std::uint16_t>(bit(0, 1) | bit(1, 2)), std::move(m));
+    }
+    {  // two OPPOSITE split edges (0,1) and (2,3): four tetrahedra around the
+        // interior segment m(0,1)-m(2,3), one per edge of the equator.
+        RefineMaskTemplate m;
+        m.mChildren = RtplChildren{{4, 9, 2, 0}, {4, 9, 1, 2}, {4, 9, 3, 1}, {4, 9, 0, 3}};
+        reps.emplace_back(static_cast<std::uint16_t>(bit(0, 1) | bit(2, 3)), std::move(m));
+    }
+    {  // three split edges sharing face (0,1,2): that face takes the 1-to-4
+        // triangle split and each sub-triangle is coned to corner 3.
+        RefineMaskTemplate m;
+        m.mChildren = RtplChildren{{0, 4, 6, 3}, {4, 1, 5, 3}, {6, 5, 2, 3}, {4, 5, 6, 3}};
+        reps.emplace_back(static_cast<std::uint16_t>(bit(0, 1) | bit(1, 2) | bit(0, 2)),
+                          std::move(m));
+    }
+    {  // every edge split: four corner tetrahedra (each a half-scale homothety
+        // about its own vertex), then the residual octahedron split along the
+        // fixed interior diagonal 4-9 with the remaining ring 6->7->8->5.
+        RefineMaskTemplate m;
+        m.mChildren = RtplChildren{{0, 4, 6, 7}, {4, 1, 5, 8}, {6, 5, 2, 9}, {7, 8, 9, 3},
+                                   {4, 9, 6, 7}, {4, 9, 7, 8}, {4, 9, 8, 5}, {4, 9, 5, 6}};
+        reps.emplace_back(t.mFullMask, std::move(m));
+    }
+
+    for (const auto& [rep_mask, rep] : reps) {
+        for (const std::array<std::uint8_t, 4>& sigma : rtpl_even_perms()) {
+            const std::uint16_t mask = rtpl_map_mask(sigma, edges, rep_mask);
+            if (t.mMasks[mask].IsAdmissible())
+                continue;  // first permutation reaching a mask wins -- deterministic
+            RefineMaskTemplate out;
+            out.mChildren = rtpl_map_children(sigma, edges, t.mNumCorners, rep.mChildren);
+            if (rep.HasVariant()) {
+                out.mChildrenAlt = rtpl_map_children(sigma, edges, t.mNumCorners, rep.mChildrenAlt);
+                out.mTieA = sigma[rep.mTieA];
+                out.mTieB = sigma[rep.mTieB];
+            }
+            t.mMasks[mask] = std::move(out);
+        }
+    }
+
+    rtpl_build_promote(t);
+    return t;
+}
+
+const std::unordered_map<CellType, RtplTypeTable>& rtpl_tables() {
+    static const std::unordered_map<CellType, RtplTypeTable> tables = [] {
+        std::unordered_map<CellType, RtplTypeTable> t;
+        t.emplace(CellType::Line, rtpl_line_table());
+        t.emplace(CellType::Triangle, rtpl_triangle_table());
+        t.emplace(CellType::Quad, rtpl_quad_table());
+        t.emplace(CellType::Tetra, rtpl_tetra_table());
+        t.emplace(CellType::Wedge, rtpl_wedge_table());
+        t.emplace(CellType::Hexahedron, rtpl_hexahedron_table());
+        return t;
+    }();
+    return tables;
+}
+
+const RtplTypeTable* rtpl_find(CellType Type) {
+    const auto& tables = rtpl_tables();
+    auto it = tables.find(Type);
+    return it == tables.end() ? nullptr : &it->second;
+}
+
+}  // namespace
+
+bool refine_type_supported(CellType Type) {
+    return rtpl_find(Type) != nullptr;
+}
+
+std::uint16_t refine_full_mask(CellType Type) {
+    const RtplTypeTable* t = rtpl_find(Type);
+    return t == nullptr ? std::uint16_t{0} : t->mFullMask;
+}
+
+std::uint16_t refine_promote_mask(CellType Type, std::uint16_t Mask, bool Propagate) {
+    const RtplTypeTable* t = rtpl_find(Type);
+    if (t == nullptr)
+        return 0;
+    const std::uint16_t mask = static_cast<std::uint16_t>(Mask & t->mFullMask);
+    if (Propagate)
+        return mask == 0 ? std::uint16_t{0} : t->mFullMask;
+    return t->mPromote[mask];
+}
+
+const RefineMaskTemplate& refine_mask_template(CellType Type, std::uint16_t Mask) {
+    const RtplTypeTable* t = rtpl_find(Type);
+    if (t == nullptr || Mask >= t->mMasks.size())
+        return rtpl_empty_template();
+    return t->mMasks[Mask];
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/refine_templates.cpp =====
 // ===== begin src/cpp/src/detail/region_remap.cpp =====
 #include <cstddef>
 #include <cstdint>
@@ -44131,6 +44985,8 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -44150,11 +45006,11 @@ namespace {
 
 const std::unordered_map<std::string, std::string>& meshio_to_med() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"vertex", "PO1"},       {"line", "SE2"},      {"line3", "SE3"},     {"triangle", "TR3"},
-        {"triangle6", "TR6"},    {"triangle7", "TR7"}, {"quad", "QU4"},      {"quad8", "QU8"},
-        {"quad9", "QU9"},        {"tetra", "TE4"},     {"tetra10", "T10"},   {"hexahedron", "HE8"},
-        {"hexahedron20", "H20"}, {"pyramid", "PY5"},   {"pyramid13", "P13"}, {"wedge", "PE6"},
-        {"wedge15", "P15"},      {"polygon", "POG"},   {"polygon2", "POG2"}};
+        {"vertex", "PO1"},       {"line", "SE2"},      {"line3", "SE3"},     {"line4", "SE4"},
+        {"triangle", "TR3"},     {"triangle6", "TR6"}, {"triangle7", "TR7"}, {"quad", "QU4"},
+        {"quad8", "QU8"},        {"quad9", "QU9"},     {"tetra", "TE4"},     {"tetra10", "T10"},
+        {"hexahedron", "HE8"},   {"hexahedron20", "H20"}, {"pyramid", "PY5"}, {"pyramid13", "P13"},
+        {"wedge", "PE6"},        {"wedge15", "P15"},   {"polygon", "POG"},   {"polygon2", "POG2"}};
     return m;
 }
 
@@ -44507,6 +45363,200 @@ void write_families(hid_t fm_group, const std::map<std::int64_t, std::vector<std
     }
 }
 
+// ---- named regions <-> families (see doc/regions.md) ----
+//
+// Read direction: derive one Region per group *name* from the family tables
+// already read into `rInfo` plus the per-point/per-cell tag id arrays
+// already on `rMesh`. Mirrors `_families_to_point_sets`/`_families_to_cell_sets`
+// in `_med.py` exactly, including their asymmetry: a point family with zero
+// matching points is skipped entirely (no region at all), while a cell
+// family always creates its named region -- even empty -- because that is
+// what the Python readers have always done and C++/Python outputs must
+// keep matching.
+void med_attach_point_regions(Mesh& rMesh, const MedInfo& rInfo) {
+    if (rInfo.mPointTags.empty() || !rMesh.HasPointData("point_tags"))
+        return;
+    const NDArray& fam = rMesh.PointData("point_tags");
+    std::map<std::string, std::vector<std::int64_t>> by_name;
+    for (const auto& kv : rInfo.mPointTags) {
+        const std::int64_t fid = kv.first;
+        const std::vector<std::string>& names = kv.second;
+        std::vector<std::int64_t> matches;
+        for (std::size_t i = 0; i < fam.Size(); ++i)
+            if (detail::read_int(fam, i) == fid)
+                matches.push_back(static_cast<std::int64_t>(i));
+        if (matches.empty())
+            continue;  // a family matching no point contributes no region --
+                       // even one already seen under this name.
+        for (const auto& name : names) {
+            std::vector<std::int64_t>& dst = by_name[name];
+            dst.insert(dst.end(), matches.begin(), matches.end());
+        }
+    }
+    for (auto& kv : by_name) {
+        NDArray arr = NDArray::Uninit(DType::Int64, {kv.second.size()});
+        std::copy(kv.second.begin(), kv.second.end(), arr.As<std::int64_t>());
+        rMesh.AddRegion(meshioplusplus::Region(kv.first, RegionKind::Point, std::move(arr)));
+    }
+}
+
+void med_attach_cell_regions(Mesh& rMesh, const MedInfo& rInfo) {
+    if (rInfo.mCellTags.empty() || !rMesh.HasCellData("cell_tags"))
+        return;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::int64_t total = detail::total_cells(bases);
+    std::map<std::string, std::vector<std::int64_t>> by_name;
+    // Every name named by any family gets a region, even an empty one --
+    // this loop runs regardless of whether that family matches any cell.
+    for (const auto& kv : rInfo.mCellTags)
+        for (const auto& name : kv.second)
+            by_name.try_emplace(name);
+    for (const auto& kv : rInfo.mCellTags) {
+        const std::int64_t fid = kv.first;
+        const std::vector<std::string>& names = kv.second;
+        if (names.empty())
+            continue;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const NDArray& fam = rMesh.CellData("cell_tags", b);
+            for (std::size_t i = 0; i < fam.Size(); ++i) {
+                if (detail::read_int(fam, i) != fid)
+                    continue;
+                const std::int64_t g = detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
+                if (g < 0 || g >= total)
+                    continue;
+                for (const auto& name : names)
+                    by_name[name].push_back(g);
+            }
+        }
+    }
+    for (auto& kv : by_name) {
+        NDArray arr = NDArray::Uninit(DType::Int64, {kv.second.size()});
+        std::copy(kv.second.begin(), kv.second.end(), arr.As<std::int64_t>());
+        rMesh.AddRegion(meshioplusplus::Region(kv.first, RegionKind::Cell, std::move(arr)));
+    }
+}
+
+// Write direction: synthesize a per-point/per-cell family id array plus the
+// family/group-name tables from Point/Cell regions -- a C++ port of
+// `_ensure_med_families`'s combo logic in `_med.py`, matched step for step so
+// both writers produce byte-identical FAS/FAM output for the same input
+// mesh: one family per unique combination of region names a point/cell
+// belongs to, ids assigned in first-encounter order scanning points (then
+// cells) ascending, node families positive from +1, element families
+// negative from -1. Only called when the mesh carries no native point_tags/
+// cell_tags of its own -- native data always wins (see doc/regions.md), so a
+// MED->MED round trip through this writer is unaffected.
+bool med_point_regions_to_tags(const Mesh& rMesh, NDArray& rFamArray,
+                               std::map<std::int64_t, std::vector<std::string>>& rTags,
+                               std::map<std::int64_t, std::string>& rGroupNames) {
+    const std::size_t n_points = rMesh.NumPoints();
+    std::vector<std::set<std::string>> groups(n_points);
+    bool any = false;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Point)
+            continue;
+        any = true;
+        const std::int64_t* e = r.Entries();
+        for (std::size_t k = 0; k < r.NumEntries(); ++k)
+            if (e[k] >= 0 && static_cast<std::size_t>(e[k]) < n_points)
+                groups[static_cast<std::size_t>(e[k])].insert(r.mName);
+    }
+    if (!any)
+        return false;
+
+    rFamArray = NDArray(DType::Int32, {n_points});
+    std::int32_t* fam = rFamArray.As<std::int32_t>();
+    std::fill(fam, fam + n_points, 0);
+    std::map<std::set<std::string>, std::int64_t> combo_to_fam;
+    std::int64_t next_fam = 1;  // node families: positive (MED spec)
+    for (std::size_t i = 0; i < n_points; ++i) {
+        if (groups[i].empty())
+            continue;
+        auto it = combo_to_fam.find(groups[i]);
+        std::int64_t fid;
+        if (it == combo_to_fam.end()) {
+            fid = next_fam++;
+            combo_to_fam.emplace(groups[i], fid);
+            rTags[fid] = std::vector<std::string>(groups[i].begin(), groups[i].end());
+            rGroupNames[fid] = "FAM_" + std::to_string(fid);
+        } else {
+            fid = it->second;
+        }
+        fam[i] = static_cast<std::int32_t>(fid);
+    }
+    return true;
+}
+
+bool med_cell_regions_to_tags(const Mesh& rMesh, std::vector<NDArray>& rFamBlocks,
+                              std::map<std::int64_t, std::vector<std::string>>& rTags,
+                              std::map<std::int64_t, std::string>& rGroupNames) {
+    bool any = false;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        if (rMesh.Region(i).mKind == RegionKind::Cell)
+            any = true;
+    if (!any)
+        return false;
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::int64_t total = detail::total_cells(bases);
+    std::vector<std::set<std::string>> groups(static_cast<std::size_t>(total));
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell)
+            continue;
+        const std::int64_t* e = r.Entries();
+        for (std::size_t k = 0; k < r.NumEntries(); ++k)
+            if (e[k] >= 0 && e[k] < total)
+                groups[static_cast<std::size_t>(e[k])].insert(r.mName);
+    }
+
+    std::map<std::set<std::string>, std::int64_t> combo_to_fam;
+    std::int64_t next_fam = -1;  // element families: negative (MED spec)
+    std::vector<std::int32_t> flat(static_cast<std::size_t>(total), 0);
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        if (groups[g].empty())
+            continue;
+        auto it = combo_to_fam.find(groups[g]);
+        std::int64_t fid;
+        if (it == combo_to_fam.end()) {
+            fid = next_fam--;
+            combo_to_fam.emplace(groups[g], fid);
+            rTags[fid] = std::vector<std::string>(groups[g].begin(), groups[g].end());
+            rGroupNames[fid] = "FAM_" + std::to_string(fid);
+        } else {
+            fid = it->second;
+        }
+        flat[g] = static_cast<std::int32_t>(fid);
+    }
+
+    rFamBlocks.reserve(rMesh.NumCellBlocks());
+    for (std::size_t b = 0; b + 1 < bases.size(); ++b) {
+        const std::size_t n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
+        NDArray block(DType::Int32, {n});
+        std::int32_t* dst = block.As<std::int32_t>();
+        for (std::size_t c = 0; c < n; ++c)
+            dst[c] = flat[static_cast<std::size_t>(bases[b]) + c];
+        rFamBlocks.push_back(std::move(block));
+    }
+    return true;
+}
+
+// A `Side` region has no MED equivalent (a facet is not a node or an
+// element): warn and drop, like the KRATOS-backend precedent for region
+// names MED-adjacent formats cannot represent structurally.
+void med_warn_side_regions_dropped(const Mesh& rMesh) {
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        if (rMesh.Region(i).mKind == RegionKind::Side)
+            ++n;
+    if (n > 0)
+        log::warn(
+            "MED: {} side region(s) have no MED equivalent (a facet is not a node or an "
+            "element) and were not written.",
+            n);
+}
+
 // --- CHA (field) reading: the mirror image of write_cha_*, same scope -----
 //
 // Accepts only the exact shape write_med's CHA writer produces: one timestep
@@ -44630,6 +45680,26 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
+    // MED data-model version: a file written by a MED major version newer
+    // than the 4.x layout this reader implements gets a clear diagnosis
+    // instead of an obscure "missing NOE/COO"-style structural error further
+    // down. Older majors (the repo's own fixtures include MED 3.x files)
+    // read exactly as before -- only *newer* is rejected.
+    if (h5::exists(f, "INFOS_GENERALES")) {
+        h5::Hid infos = h5::open_group(f, "INFOS_GENERALES");
+        if (h5::has_attr(infos, "MAJ")) {
+            std::int64_t maj = h5::read_attr_int(infos, "MAJ");
+            if (maj > 4) {
+                std::int64_t min = h5::has_attr(infos, "MIN") ? h5::read_attr_int(infos, "MIN") : 0;
+                std::int64_t rel = h5::has_attr(infos, "REL") ? h5::read_attr_int(infos, "REL") : 0;
+                throw ReadError(detail::format_compat(
+                    "MED file '{}' was written by MED {}.{}.{}, newer than the MED 4.1 "
+                    "data model this reader implements",
+                    rPath, maj, min, rel));
+            }
+        }
+    }
+
     h5::Hid ens = h5::open_group(f, "ENS_MAA");
     std::vector<std::string> meshes = h5::group_links(ens);
     if (meshes.size() != 1)
@@ -44676,6 +45746,11 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
     if (h5::exists(noe, "FAM"))
         mesh.AddPointData("point_tags", h5::read_dataset(noe, "FAM"));
 
+    // Global point numbering (NUM) -- optional; Salome/Code_Aster/Kratos
+    // write it, this reader has ignored it entirely until now.
+    if (h5::exists(noe, "NUM"))
+        mesh.AddPointData("med:num", h5::read_dataset(noe, "NUM"));
+
     // Families info
     h5::Hid fas = h5::exists(data_grp, "FAS") ? h5::open_group(data_grp, "FAS") : h5::Hid();
     if (!fas.Valid()) {
@@ -44692,6 +45767,8 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
     h5::Hid mai = h5::open_group(data_grp, "MAI");
     std::vector<NDArray> cell_tag_blocks;
     bool any_cell_tags = false;
+    std::vector<NDArray> cell_num_blocks;
+    std::size_t num_blocks_with_num = 0;
     // Cell-block order is significant (aligns cell_data / cell_sets); iterate in
     // HDF5 creation order to match the Python (h5py track_order) reader.
     for (const std::string& med_type : h5::group_links_crt(mai)) {
@@ -44738,17 +45815,46 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
             cell_tag_blocks.push_back(h5::read_dataset(g, "FAM"));
             any_cell_tags = true;
         }
+
+        // Global cell numbering (NUM) -- optional, and only carried when
+        // *every* block has it: a partial NUM array cannot be a mesh-wide
+        // "global" numbering, and fabricating the missing entries (as the
+        // Kratos MedApplication does with iota) would be a wrong answer, not
+        // an honest gap.
+        if (h5::exists(g, "NUM")) {
+            cell_num_blocks.push_back(h5::read_dataset(g, "NUM"));
+            ++num_blocks_with_num;
+        } else {
+            cell_num_blocks.emplace_back();
+        }
     }
     if (any_cell_tags) {
         if (cell_tag_blocks.size() != mesh.NumCellBlocks())
             throw ReadError("MED: partial cell tags handled by Python fallback");
         mesh.AddCellData("cell_tags", std::move(cell_tag_blocks));
     }
+    if (num_blocks_with_num > 0) {
+        if (num_blocks_with_num == mesh.NumCellBlocks()) {
+            mesh.AddCellData("med:num", std::move(cell_num_blocks));
+        } else {
+            log::warn(
+                "MED: cell NUM is present on only {} of {} cell blocks; ignoring "
+                "'med:num' for this mesh.",
+                num_blocks_with_num, mesh.NumCellBlocks());
+        }
+    }
 
     if (h5::exists(fas, "ELEME")) {
         h5::Hid eleme = h5::open_group(fas, "ELEME");
         read_families(eleme, rInfo.mCellTags, rInfo.mCellTagGroups);
     }
+
+    // Named regions derived from the family tables just read, one per group
+    // name (see doc/regions.md). Kept independent of point_tags/cell_tags:
+    // both representations are populated and neither is derived from the
+    // other on this path.
+    med_attach_point_regions(mesh, rInfo);
+    med_attach_cell_regions(mesh, rInfo);
 
     // Fields (CHA): the single-timestep, default-profile common case is read
     // directly (see read_cha_fields); anything past that scope -- the
@@ -44788,6 +45894,35 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         for (std::size_t j = i + 1; j < rMesh.NumCellBlocks(); ++j)
             if (rMesh.Cells(i).Type() == rMesh.Cells(j).Type())
                 throw WriteError("MED files cannot have two sections of the same cell type.");
+
+    // Named regions -> families (see doc/regions.md): only synthesized when
+    // the mesh carries no native point_tags/cell_tags of its own -- a mesh
+    // read from MED (or built with them directly) writes exactly as before.
+    NDArray synth_point_fam;
+    std::map<std::int64_t, std::vector<std::string>> synth_point_tags;
+    std::map<std::int64_t, std::string> synth_point_group_names;
+    const bool synthesized_point =
+        !rMesh.HasPointData("point_tags") &&
+        med_point_regions_to_tags(rMesh, synth_point_fam, synth_point_tags, synth_point_group_names);
+
+    std::vector<NDArray> synth_cell_fam_blocks;
+    std::map<std::int64_t, std::vector<std::string>> synth_cell_tags;
+    std::map<std::int64_t, std::string> synth_cell_group_names;
+    const bool synthesized_cell =
+        !rMesh.HasCellData("cell_tags") &&
+        med_cell_regions_to_tags(rMesh, synth_cell_fam_blocks, synth_cell_tags, synth_cell_group_names);
+
+    if (synthesized_point || synthesized_cell)
+        med_warn_side_regions_dropped(rMesh);
+
+    const std::map<std::int64_t, std::vector<std::string>>& point_tags =
+        synthesized_point ? synth_point_tags : rInfo.mPointTags;
+    const std::map<std::int64_t, std::string>& point_tag_groups =
+        synthesized_point ? synth_point_group_names : rInfo.mPointTagGroups;
+    const std::map<std::int64_t, std::vector<std::string>>& cell_tags =
+        synthesized_cell ? synth_cell_tags : rInfo.mCellTags;
+    const std::map<std::int64_t, std::string>& cell_tag_groups =
+        synthesized_cell ? synth_cell_group_names : rInfo.mCellTagGroups;
 
     // Parse med_version -> MAJ.MIN.REL (default 4.1.0 on error).
     int maj = 4, min = 1, rel = 0;
@@ -44867,9 +46002,17 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         h5::write_attr_int(d, "CGT", 1);
         h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(rMesh.NumPoints()));
     }
-    if (rMesh.HasPointData("point_tags")) {
-        h5::write_dataset(noe, "FAM", rMesh.PointData("point_tags"));
+    if (rMesh.HasPointData("point_tags") || synthesized_point) {
+        const NDArray& point_fam =
+            rMesh.HasPointData("point_tags") ? rMesh.PointData("point_tags") : synth_point_fam;
+        h5::write_dataset(noe, "FAM", point_fam);
         h5::Hid d(H5Dopen2(noe, "FAM", H5P_DEFAULT), H5Dclose);
+        h5::write_attr_int(d, "CGT", 1);
+        h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(rMesh.NumPoints()));
+    }
+    if (rMesh.HasPointData("med:num")) {
+        h5::write_dataset(noe, "NUM", rMesh.PointData("med:num"));
+        h5::Hid d(H5Dopen2(noe, "NUM", H5P_DEFAULT), H5Dclose);
         h5::write_attr_int(d, "CGT", 1);
         h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(rMesh.NumPoints()));
     }
@@ -44877,7 +46020,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     // Cells
     h5::Hid mai = h5::create_group(time_step, "MAI");
     h5::write_attr_int(mai, "CGT", 1);
-    const bool has_cell_tags = rMesh.HasCellData("cell_tags");
+    const bool has_cell_num = rMesh.HasCellData("med:num");
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
         const auto cb = rMesh.Cells(k);
         auto it = meshio_to_med().find(cb.Type());
@@ -44922,9 +46065,20 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
         }
-        if (has_cell_tags && k < rMesh.CellDataNumBlocks("cell_tags")) {
+        if (rMesh.HasCellData("cell_tags") && k < rMesh.CellDataNumBlocks("cell_tags")) {
             h5::write_dataset(g, "FAM", rMesh.CellData("cell_tags", k));
             h5::Hid d(H5Dopen2(g, "FAM", H5P_DEFAULT), H5Dclose);
+            h5::write_attr_int(d, "CGT", 1);
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
+        } else if (synthesized_cell && k < synth_cell_fam_blocks.size()) {
+            h5::write_dataset(g, "FAM", synth_cell_fam_blocks[k]);
+            h5::Hid d(H5Dopen2(g, "FAM", H5P_DEFAULT), H5Dclose);
+            h5::write_attr_int(d, "CGT", 1);
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
+        }
+        if (has_cell_num && k < rMesh.CellDataNumBlocks("med:num")) {
+            h5::write_dataset(g, "NUM", rMesh.CellData("med:num", k));
+            h5::Hid d(H5Dopen2(g, "NUM", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
         }
@@ -44935,36 +46089,36 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     h5::Hid families = h5::create_group(fas, mesh_name);
     h5::Hid family_zero = h5::create_group(families, "FAMILLE_ZERO");
     h5::write_attr_int(family_zero, "NUM", 0);
-    if (!rInfo.mPointTags.empty()) {
+    if (!point_tags.empty()) {
         h5::Hid node = h5::create_group(families, "NOEUD");
-        write_families(node, rInfo.mPointTags, rInfo.mPointTagGroups);
+        write_families(node, point_tags, point_tag_groups);
     }
-    if (!rInfo.mCellTags.empty()) {
+    if (!cell_tags.empty()) {
         h5::Hid element = h5::create_group(families, "ELEME");
-        write_families(element, rInfo.mCellTags, rInfo.mCellTagGroups);
+        write_families(element, cell_tags, cell_tag_groups);
     }
 
     // Fields (CHA) -- single-timestep common case only; see the guard above
     // and write_cha_nodal_field/write_cha_cell_field's own doc comments.
     bool has_point_fields = false;
     for (const auto& name : rMesh.PointDataNames())
-        if (name != "point_tags") {
+        if (name != "point_tags" && name != "med:num") {
             has_point_fields = true;
             break;
         }
     bool has_cell_fields = false;
     for (const auto& name : rMesh.CellDataNames())
-        if (name != "cell_tags") {
+        if (name != "cell_tags" && name != "med:num") {
             has_cell_fields = true;
             break;
         }
     if (has_point_fields || has_cell_fields) {
         h5::Hid cha = h5::create_group(f, "CHA");
         for (const auto& name : rMesh.PointDataNames())
-            if (name != "point_tags")
+            if (name != "point_tags" && name != "med:num")
                 write_cha_nodal_field(cha, mesh_name, name, rMesh.PointData(name));
         for (const auto& name : rMesh.CellDataNames())
-            if (name != "cell_tags")
+            if (name != "cell_tags" && name != "med:num")
                 write_cha_cell_field(cha, mesh_name, name, rMesh);
     }
 }
@@ -62940,6 +64094,8 @@ Mesh attach_quality(const Mesh& rMesh) {
 // ===== begin src/cpp/src/operations/refine.cpp =====
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <limits>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -62955,105 +64111,6 @@ Mesh attach_quality(const Mesh& rMesh) {
 namespace meshioplusplus {
 
 namespace {
-
-// --- templates ---------------------------------------------------------------
-
-// One cell type's subdivision template.
-//
-// Local node ids in `mChildren` address a single flat space per parent cell:
-//   [0, mNumCorners)                          the parent's own corner nodes
-//   [mNumCorners, +num_edges)                 one node per edge, in
-//                                             cell_refine_edges() order
-//   [.., +num_quad_faces)                     one node per quad face, in
-//                                             cell_refine_quad_faces() order
-//   [.., +1) when mHasBody                    the body centre
-//
-// That layout is not arbitrary: it coincides exactly with each type's own
-// meshio/VTK full-Lagrange node numbering (line3, triangle6, quad9, tetra10,
-// wedge18, hexahedron27), which is what makes the tables below readable against
-// the reference elements.
-struct RefineTemplate {
-    CellType mType;
-    std::uint8_t mNumCorners;
-    bool mHasBody;
-    std::vector<std::vector<std::uint8_t>> mChildren;
-};
-
-const std::unordered_map<CellType, RefineTemplate>& refine_table() {
-    static const std::unordered_map<CellType, RefineTemplate> table = [] {
-        std::unordered_map<CellType, RefineTemplate> t;
-        // line3 layout: 2 = mid(0,1).
-        t[CellType::Line] = {CellType::Line, 2, false, {{0, 2}, {2, 1}}};
-        // triangle6 layout: 3 = m(0,1), 4 = m(1,2), 5 = m(2,0). The central
-        // child keeps the parent's winding.
-        t[CellType::Triangle] = {
-            CellType::Triangle, 3, false, {{0, 3, 5}, {3, 1, 4}, {5, 4, 2}, {3, 4, 5}}};
-        // quad9 layout: 4..7 = edge mids, 8 = face centre. Each parent corner
-        // stays in its own slot, which is what preserves the winding.
-        t[CellType::Quad] = {
-            CellType::Quad, 4, false, {{0, 4, 8, 7}, {4, 1, 5, 8}, {8, 5, 2, 6}, {7, 8, 6, 3}}};
-        // tetra10 layout: 4=m(0,1) 5=m(1,2) 6=m(0,2) 7=m(0,3) 8=m(1,3) 9=m(2,3).
-        // Four corner tetrahedra (each a half-scale homothety of the parent
-        // about its own vertex), then the residual octahedron split along the
-        // fixed interior diagonal 4-9 with the remaining ring 6->7->8->5. All
-        // eight children have exactly one eighth of the parent's volume.
-        t[CellType::Tetra] = {CellType::Tetra,
-                              4,
-                              false,
-                              {
-                                  {0, 4, 6, 7},
-                                  {4, 1, 5, 8},
-                                  {6, 5, 2, 9},
-                                  {7, 8, 9, 3},
-                                  {4, 9, 6, 7},
-                                  {4, 9, 7, 8},
-                                  {4, 9, 8, 5},
-                                  {4, 9, 5, 6},
-                              }};
-        // wedge18 layout: 6..8 bottom-triangle mids, 9..11 top-triangle mids,
-        // 12..14 vertical mids, 15..17 quad-face centres. A wedge refines as
-        // "triangle 1-to-4 split x 2 vertical levels", and the mid-level
-        // triangle's three edge midpoints ARE the three quad-face centres --
-        // which is why a wedge needs no body node.
-        t[CellType::Wedge] = {CellType::Wedge,
-                              6,
-                              false,
-                              {
-                                  {0, 6, 8, 12, 15, 17},
-                                  {6, 1, 7, 15, 13, 16},
-                                  {8, 7, 2, 17, 16, 14},
-                                  {6, 7, 8, 15, 16, 17},
-                                  {12, 15, 17, 3, 9, 11},
-                                  {15, 13, 16, 9, 4, 10},
-                                  {17, 16, 14, 11, 10, 5},
-                                  {15, 16, 17, 9, 10, 11},
-                              }};
-        // hexahedron27 layout: 8..19 edge mids, 20..25 face centres, 26 body.
-        // Rows follow the parent's own parametric (i,j,k) ordering over the
-        // 3x3x3 lattice, so orientation is preserved by construction.
-        t[CellType::Hexahedron] = {CellType::Hexahedron,
-                                   8,
-                                   true,
-                                   {
-                                       {0, 8, 24, 11, 16, 20, 26, 23},
-                                       {8, 1, 9, 24, 20, 17, 21, 26},
-                                       {11, 24, 10, 3, 23, 26, 22, 19},
-                                       {24, 9, 2, 10, 26, 21, 18, 22},
-                                       {16, 20, 26, 23, 4, 12, 25, 15},
-                                       {20, 17, 21, 26, 12, 5, 13, 25},
-                                       {23, 26, 22, 19, 15, 25, 14, 7},
-                                       {26, 21, 18, 22, 25, 13, 6, 14},
-                                   }};
-        return t;
-    }();
-    return table;
-}
-
-const RefineTemplate* refine_template(CellType Type) {
-    const auto& table = refine_table();
-    auto it = table.find(Type);
-    return it == table.end() ? nullptr : &it->second;
-}
 
 // --- new-node keys -----------------------------------------------------------
 
@@ -63089,13 +64146,20 @@ RefineNodeKey refine_face_key(std::int64_t p, std::int64_t q, std::int64_t r, st
 
 // Everything one input block contributes to the shared slot buffer.
 struct RefineBlockDesc {
-    const RefineTemplate* mpTpl = nullptr;
+    CellType mType = CellType::Custom;
     const std::vector<detail::CellEdgePair>* mpEdges = nullptr;
     const std::vector<detail::CellQuadFace>* mpFaces = nullptr;
+    // Per quad face, the bits of the four edges bounding it: that face carries a
+    // centre node exactly when all of them are split. Derived here once per
+    // block from cell_refine_edges/cell_refine_quad_faces rather than tabulated,
+    // so the two tables stay the only owners of the orderings.
+    std::vector<std::uint16_t> mFaceEdgeMasks;
+    std::uint8_t mNumCorners = 0;
+    std::uint16_t mFullMask = 0;
     std::size_t mNumCells = 0;
     std::size_t mSlotsPerCell = 0;
     std::size_t mFirstSlot = 0;  // into the flat edge+face key buffer
-    std::size_t mFirstBody = 0;  // into the body-centre range
+    std::size_t mFirstCell = 0;  // this block's base in the global cell numbering
 };
 
 // Reject, by name, every construct that cannot yield same-type children.
@@ -63105,7 +64169,7 @@ void refine_check_block(const Mesh::CellView& rBlock) {
             "refine: cannot refine ragged cell block '" + std::string(rBlock.Type()) +
             "' (polygon/polyhedron blocks have no same-type subdivision template)");
     const CellType type = cell_type_from_name(std::string(rBlock.Type()));
-    if (refine_template(type) != nullptr)
+    if (detail::refine_type_supported(type))
         return;
     if (type == CellType::Pyramid)
         throw std::invalid_argument(
@@ -63114,6 +64178,27 @@ void refine_check_block(const Mesh::CellView& rBlock) {
     throw std::invalid_argument("refine: cannot refine cell type '" + cell_type_name(type) +
                                 "' into same-type children (higher-order cells have no same-type "
                                 "subdivision template; linearize the mesh first)");
+}
+
+// The edge-bit mask of each quadrilateral face of a cell type.
+std::vector<std::uint16_t> refine_face_edge_masks(CellType Type) {
+    const std::vector<detail::CellEdgePair>& edges = detail::cell_refine_edges(Type);
+    const std::vector<detail::CellQuadFace>& faces = detail::cell_refine_quad_faces(Type);
+    std::vector<std::uint16_t> out(faces.size(), 0);
+    for (std::size_t f = 0; f < faces.size(); ++f) {
+        for (std::size_t i = 0; i < 4; ++i) {
+            const std::uint8_t a = faces[f][i];
+            const std::uint8_t b = faces[f][(i + 1) % 4];
+            for (std::size_t k = 0; k < edges.size(); ++k) {
+                if ((edges[k][0] == a && edges[k][1] == b) ||
+                    (edges[k][0] == b && edges[k][1] == a)) {
+                    out[f] = static_cast<std::uint16_t>(out[f] | (1u << k));
+                    break;
+                }
+            }
+        }
+    }
+    return out;
 }
 
 // The identity Int64 map [0, n).
@@ -63133,33 +64218,73 @@ NDArray refine_int64_vector(const std::vector<std::int64_t>& rValues) {
     return a;
 }
 
+// --- refine:level ------------------------------------------------------------
+
+// The per-cell refinement depth already recorded on a mesh, or an empty vector
+// when it carries none. A malformed array is ignored with a warning rather than
+// rejected: it is this operation's own bookkeeping, not user input, and
+// refusing to refine because of it would be a worse answer than recomputing it.
+std::vector<std::int64_t> refine_read_levels(const Mesh& rMesh,
+                                             const std::vector<RefineBlockDesc>& rDescs) {
+    if (!rMesh.HasCellData(kRefineLevelName))
+        return {};
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(kRefineLevelName) != nblocks) {
+        log::warn("refine: ignoring '{}': it does not cover every cell block.", kRefineLevelName);
+        return {};
+    }
+    std::vector<std::int64_t> levels;
+    levels.reserve(rDescs.empty() ? 0 : rDescs.back().mFirstCell + rDescs.back().mNumCells);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const NDArray& a = rMesh.CellData(kRefineLevelName, b);
+        if (detail::rows(a) != rDescs[b].mNumCells ||
+            (rDescs[b].mNumCells != 0 && a.Size() / rDescs[b].mNumCells != 1)) {
+            log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
+                      kRefineLevelName, b);
+            return {};
+        }
+        for (std::size_t c = 0; c < rDescs[b].mNumCells; ++c)
+            levels.push_back(detail::read_int(a, c));
+    }
+    return levels;
+}
+
 // --- one refinement level ----------------------------------------------------
 
-RefineResult refine_once(const Mesh& rMesh) {
+// Refine `rMesh` once. `pRedSeed` is a per-global-cell flag choosing the cells
+// to split fully; `nullptr` means every cell (the uniform path, which skips the
+// closure entirely). `pOutRedChildren`, when given, receives the same flag for
+// the OUTPUT cells -- set on the children of a fully-split parent -- which is
+// what the next level uses as its own seed.
+RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
+                         RefineClosure Closure, bool RecordLevels,
+                         std::vector<char>* pOutRedChildren) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     const std::size_t num_points = rMesh.NumPoints();
+    const bool propagate = Closure == RefineClosure::Propagate;
 
-    // --- pre-scan: validate, size the shared slot buffer and the body range ---
+    // --- phase 0: validate, size the shared slot buffer ----------------------
     std::vector<RefineBlockDesc> descs(nblocks);
     std::size_t total_slots = 0;
-    std::size_t total_bodies = 0;
+    std::size_t total_cells = 0;
     {
         std::size_t bi = 0;
         for (const auto cb : rMesh.CellRange()) {
             refine_check_block(cb);
             const CellType type = cell_type_from_name(std::string(cb.Type()));
             RefineBlockDesc& d = descs[bi];
-            d.mpTpl = refine_template(type);
+            d.mType = type;
             d.mpEdges = &detail::cell_refine_edges(type);
             d.mpFaces = &detail::cell_refine_quad_faces(type);
+            d.mFaceEdgeMasks = refine_face_edge_masks(type);
+            d.mNumCorners = static_cast<std::uint8_t>(cell_type_num_nodes(type));
+            d.mFullMask = detail::refine_full_mask(type);
             d.mNumCells = cb.NumCells();
             d.mSlotsPerCell = d.mpEdges->size() + d.mpFaces->size();
             d.mFirstSlot = total_slots;
+            d.mFirstCell = total_cells;
             total_slots += d.mNumCells * d.mSlotsPerCell;
-            if (d.mpTpl->mHasBody) {
-                d.mFirstBody = total_bodies;
-                total_bodies += d.mNumCells;
-            }
+            total_cells += d.mNumCells;
             ++bi;
         }
     }
@@ -63198,36 +64323,282 @@ RefineResult refine_once(const Mesh& rMesh) {
     }
 
     // --- phase 2: dedup in stored order (SERIAL -> deterministic) ------------
-    // This pass is the determinism pin: ids are handed out by a single sweep
+    // This pass is the determinism pin: entities are numbered by a single sweep
     // over the slot buffer, whose order is a pure function of (block, cell,
-    // slot). It must never become a concurrent insert.
-    std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> node_id;
-    node_id.reserve(total_slots * 2);
-    std::vector<RefineNodeKey> new_nodes;
-    std::vector<std::int64_t> slot_id(total_slots);
-    for (std::size_t i = 0; i < total_slots; ++i) {
-        auto it = node_id.find(keys[i]);
-        if (it == node_id.end()) {
-            const std::int64_t id = static_cast<std::int64_t>(num_points + new_nodes.size());
-            node_id.emplace(keys[i], id);
-            new_nodes.push_back(keys[i]);
-            slot_id[i] = id;
-        } else {
-            slot_id[i] = it->second;
+    // slot). It must never become a concurrent insert. Note it numbers
+    // ENTITIES, not points -- which of them earn a node is decided in phase 4,
+    // and the point ids are handed out in this same first-seen order there.
+    std::vector<RefineNodeKey> entities;
+    std::vector<std::int64_t> entity_of_slot(total_slots);
+    {
+        std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> entity_id;
+        entity_id.reserve(total_slots * 2);
+        for (std::size_t i = 0; i < total_slots; ++i) {
+            auto it = entity_id.find(keys[i]);
+            if (it == entity_id.end()) {
+                const std::int64_t id = static_cast<std::int64_t>(entities.size());
+                entity_id.emplace(keys[i], id);
+                entities.push_back(keys[i]);
+                entity_of_slot[i] = id;
+            } else {
+                entity_of_slot[i] = it->second;
+            }
         }
     }
     keys.clear();
-    keys.shrink_to_fit();  // phase 4 needs only slot_id; halves peak memory
-    node_id.clear();
+    keys.shrink_to_fit();  // nothing downstream needs the per-slot keys
+
+    // --- phase 3: the split-edge set and its closure -------------------------
+    // `masks[c]` is the promoted split-edge mask of cell c. Uniform refinement
+    // short-circuits the whole fixed point: every cell is red, every edge is
+    // split, and the promotion of a full mask is itself.
+    std::vector<std::uint16_t> masks(total_cells, 0);
+    std::vector<char> split(entities.size(), 0);
+    // Balanced needs the per-cell level up front rather than at emit time: the
+    // whole rule is a comparison between neighbours' levels.
+    const std::vector<std::int64_t> base_levels = refine_read_levels(rMesh, descs);
+    if (pRedSeed != nullptr && Closure == RefineClosure::Balanced) {
+        // 2:1 balance. A cell is split fully or not at all -- no transitional
+        // templates -- and is drawn in only when a neighbour would otherwise end
+        // up more than one level finer. Marking a cell only ever raises a post
+        // level, so the rule is monotone and its least fixed point is unique: as
+        // with the mask closure, determinism here is a property of the
+        // formulation rather than of the traversal.
+        //
+        // Adjacency is by shared NODE, not by shared edge entity. That is not a
+        // stylistic choice: across a hanging interface the coarse cell spans a
+        // whole edge while the fine cell has only half of it, so the two are
+        // *different* entities and an edge-keyed rule is blind to exactly the
+        // coarse/fine adjacency it exists to police. The corner nodes are what
+        // the two still share. (It is also the stronger, standard "corner
+        // balance", so a diagonal neighbour counts too.)
+        std::vector<char> red(*pRedSeed);
+        const auto level_of = [&](std::size_t c) {
+            return base_levels.empty() ? std::int64_t{0} : base_levels[c];
+        };
+        for (;;) {
+            // Per input point, the largest post-refinement level among the cells
+            // that touch it.
+            std::vector<std::int64_t> node_max(num_points,
+                                               std::numeric_limits<std::int64_t>::min());
+            {
+                std::size_t bi = 0;
+                for (const auto cb : rMesh.CellRange()) {
+                    const RefineBlockDesc& d = descs[bi++];
+                    const NDArray& conn = cb.Conn();
+                    const std::size_t npc = cb.NodesPerCell();
+                    for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                        const std::size_t g = d.mFirstCell + c;
+                        const std::int64_t post = level_of(g) + (red[g] ? 1 : 0);
+                        for (std::size_t n = 0; n < npc; ++n) {
+                            const std::int64_t p = detail::read_int(conn, c * npc + n);
+                            if (p >= 0 && p < static_cast<std::int64_t>(num_points)) {
+                                std::int64_t& m = node_max[static_cast<std::size_t>(p)];
+                                m = std::max(m, post);
+                            }
+                        }
+                    }
+                }
+            }
+            bool changed = false;
+            std::size_t bi = 0;
+            for (const auto cb : rMesh.CellRange()) {
+                const RefineBlockDesc& d = descs[bi++];
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                    const std::size_t g = d.mFirstCell + c;
+                    if (red[g])
+                        continue;
+                    for (std::size_t n = 0; n < npc; ++n) {
+                        const std::int64_t p = detail::read_int(conn, c * npc + n);
+                        if (p >= 0 && p < static_cast<std::int64_t>(num_points) &&
+                            node_max[static_cast<std::size_t>(p)] > level_of(g) + 1) {
+                            red[g] = 1;
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!changed)
+                break;
+        }
+        // Only the fully split cells create nodes; an unrefined neighbour keeps
+        // its whole shape and simply acquires hanging nodes on its edges.
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const RefineBlockDesc& d = descs[b];
+            const std::size_t nedges = d.mpEdges->size();
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                const std::size_t g = d.mFirstCell + c;
+                if (!red[g])
+                    continue;
+                masks[g] = d.mFullMask;
+                const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                for (std::size_t k = 0; k < nedges; ++k)
+                    split[static_cast<std::size_t>(entity_of_slot[slot0 + k])] = 1;
+            }
+        }
+    } else if (pRedSeed == nullptr) {
+        for (std::size_t b = 0; b < nblocks; ++b)
+            std::fill(masks.begin() + static_cast<std::ptrdiff_t>(descs[b].mFirstCell),
+                      masks.begin() +
+                          static_cast<std::ptrdiff_t>(descs[b].mFirstCell + descs[b].mNumCells),
+                      descs[b].mFullMask);
+        std::fill(split.begin(), split.end(), static_cast<char>(1));
+    } else {
+        // Seed: every edge of every selected cell.
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const RefineBlockDesc& d = descs[b];
+            const std::size_t nedges = d.mpEdges->size();
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                if (!(*pRedSeed)[d.mFirstCell + c])
+                    continue;
+                const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                for (std::size_t k = 0; k < nedges; ++k)
+                    split[static_cast<std::size_t>(entity_of_slot[slot0 + k])] = 1;
+            }
+        }
+        // Closure. `refine_promote_mask` is monotone and idempotent, so this
+        // converges to a unique fixed point no matter what order cells are
+        // visited in; the serial union below is what makes the *number* of
+        // sweeps reproducible too. Bounded by the entity count, since bits are
+        // only ever set.
+        std::vector<std::uint16_t> promoted(total_cells, 0);
+        for (;;) {
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const RefineBlockDesc& d = descs[b];
+                if (d.mNumCells == 0)
+                    continue;
+                const std::size_t nedges = d.mpEdges->size();
+                const CellType type = d.mType;
+                parallel_for(d.mNumCells, [&](std::size_t c) {
+                    const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                    std::uint16_t mask = 0;
+                    for (std::size_t k = 0; k < nedges; ++k) {
+                        if (split[static_cast<std::size_t>(entity_of_slot[slot0 + k])])
+                            mask = static_cast<std::uint16_t>(mask | (1u << k));
+                    }
+                    promoted[d.mFirstCell + c] = detail::refine_promote_mask(type, mask, propagate);
+                });
+            }
+            bool changed = false;
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const RefineBlockDesc& d = descs[b];
+                const std::size_t nedges = d.mpEdges->size();
+                for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                    const std::uint16_t mask = promoted[d.mFirstCell + c];
+                    if (mask == 0)
+                        continue;
+                    const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                    for (std::size_t k = 0; k < nedges; ++k) {
+                        if (!(mask & (1u << k)))
+                            continue;
+                        char& s = split[static_cast<std::size_t>(entity_of_slot[slot0 + k])];
+                        if (!s) {
+                            s = 1;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if (!changed)
+                break;
+        }
+        masks = std::move(promoted);
+    }
+
+    // --- phase 4: which entities earn a node, and their point ids ------------
+    // An edge entity earns one iff it is split; a quad-face entity iff all four
+    // of the bounding edges are. Both cells sharing an entity evaluate the same
+    // predicate over the same edges, so they cannot disagree -- that is the
+    // conformity argument, and it is why nothing here is tabulated per template.
+    std::vector<std::int64_t> node_of_entity(entities.size(), -1);
+    std::vector<std::int64_t> kept_entities;  // entity index, in id order
+    {
+        std::vector<char> needs(entities.size(), 0);
+        for (std::size_t e = 0; e < entities.size(); ++e)
+            needs[e] = entities[e][0] < 0 ? split[e] : 0;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const RefineBlockDesc& d = descs[b];
+            const std::size_t nedges = d.mpEdges->size();
+            const std::size_t nfaces = d.mpFaces->size();
+            if (nfaces == 0 || d.mNumCells == 0)
+                continue;
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                const std::uint16_t mask = masks[d.mFirstCell + c];
+                const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+                for (std::size_t f = 0; f < nfaces; ++f) {
+                    const std::uint16_t need = d.mFaceEdgeMasks[f];
+                    if ((mask & need) == need)
+                        needs[static_cast<std::size_t>(entity_of_slot[slot0 + nedges + f])] = 1;
+                }
+            }
+        }
+        kept_entities.reserve(entities.size());
+        for (std::size_t e = 0; e < entities.size(); ++e) {
+            if (!needs[e])
+                continue;
+            node_of_entity[e] = static_cast<std::int64_t>(num_points + kept_entities.size());
+            kept_entities.push_back(static_cast<std::int64_t>(e));
+        }
+    }
+
+    // Hanging nodes: a new node is constrained exactly when some emitted cell is
+    // incident to its entity but does not reference it -- the mid-edge node a
+    // split cell created on an edge its unsplit neighbour still spans whole. The
+    // rule is stated over entities rather than per closure, so it stays correct
+    // if another mode ever leaves some; RedGreen and Propagate leave none, which
+    // a test asserts rather than assumes.
+    std::vector<char> hanging(num_points + kept_entities.size(), 0);
+    std::size_t num_hanging = 0;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const RefineBlockDesc& d = descs[b];
+        for (std::size_t c = 0; c < d.mNumCells; ++c) {
+            const std::uint16_t mask = masks[d.mFirstCell + c];
+            const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
+            for (std::size_t s = 0; s < d.mSlotsPerCell; ++s) {
+                // A slot this cell's own template resolves is referenced, not
+                // hanging: edge slot k iff bit k is set, face slot f iff all of
+                // that face's edges are.
+                const bool referenced = s < d.mpEdges->size()
+                                            ? ((mask >> s) & 1u) != 0
+                                            : (mask & d.mFaceEdgeMasks[s - d.mpEdges->size()]) ==
+                                                  d.mFaceEdgeMasks[s - d.mpEdges->size()];
+                if (referenced)
+                    continue;
+                const std::int64_t node =
+                    node_of_entity[static_cast<std::size_t>(entity_of_slot[slot0 + s])];
+                if (node >= 0 && !hanging[static_cast<std::size_t>(node)]) {
+                    hanging[static_cast<std::size_t>(node)] = 1;
+                    ++num_hanging;
+                }
+            }
+        }
+    }
 
     // Body centres are unique per cell and so need no dedup, but their ids only
-    // become known once the deduped range is closed.
-    const std::size_t body_base = num_points + new_nodes.size();
+    // become known once the deduped range is closed. Only a fully split
+    // hexahedron has one.
+    const std::size_t body_base = num_points + kept_entities.size();
+    std::vector<std::int64_t> body_of_cell(total_cells, -1);
+    std::size_t total_bodies = 0;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const RefineBlockDesc& d = descs[b];
+        if (d.mType != CellType::Hexahedron)
+            continue;
+        for (std::size_t c = 0; c < d.mNumCells; ++c) {
+            if (masks[d.mFirstCell + c] != d.mFullMask)
+                continue;
+            body_of_cell[d.mFirstCell + c] = static_cast<std::int64_t>(body_base + total_bodies);
+            ++total_bodies;
+        }
+    }
     const std::size_t num_points_out = body_base + total_bodies;
 
     Mesh out;
 
-    // --- phase 3: points -----------------------------------------------------
+    // --- phase 5: points -----------------------------------------------------
     // A new node's coordinate is the mean of its entity's corners. The mean is
     // order-independent, so two neighbours sharing an entity compute
     // bit-identical coordinates from the same sorted key -- no tie-break rule.
@@ -63236,8 +64607,8 @@ RefineResult refine_once(const Mesh& rMesh) {
         const std::size_t dim = detail::cols(points);
         NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points_out, dim});
         std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
-        parallel_for_bw(new_nodes.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = new_nodes[i];
+        parallel_for_bw(kept_entities.size(), [&](std::size_t i) {
+            const RefineNodeKey& key = entities[static_cast<std::size_t>(kept_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
             const double inv = 1.0 / static_cast<double>(4 - first);
             for (std::size_t k = 0; k < dim; ++k) {
@@ -63252,14 +64623,16 @@ RefineResult refine_once(const Mesh& rMesh) {
             std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
                 const RefineBlockDesc& d = descs[bi++];
-                if (!d.mpTpl->mHasBody || d.mNumCells == 0)
+                if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
                     continue;
                 const NDArray& conn = cb.Conn();
                 const std::size_t npc = cb.NodesPerCell();
-                const std::size_t ncorners = d.mpTpl->mNumCorners;
+                const std::size_t ncorners = d.mNumCorners;
                 const double inv = 1.0 / static_cast<double>(ncorners);
                 parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                    const std::size_t dst = body_base + d.mFirstBody + c;
+                    const std::int64_t body = body_of_cell[d.mFirstCell + c];
+                    if (body < 0)
+                        return;
                     for (std::size_t k = 0; k < dim; ++k) {
                         double sum = 0.0;
                         for (std::size_t n = 0; n < ncorners; ++n) {
@@ -63267,7 +64640,8 @@ RefineResult refine_once(const Mesh& rMesh) {
                                 static_cast<std::size_t>(detail::read_int(conn, c * npc + n));
                             sum += detail::read_double(points, p * dim + k);
                         }
-                        detail::write_double(new_points, dst * dim + k, sum * inv);
+                        detail::write_double(new_points, static_cast<std::size_t>(body) * dim + k,
+                                             sum * inv);
                     }
                 });
             }
@@ -63275,52 +64649,77 @@ RefineResult refine_once(const Mesh& rMesh) {
         out.AssignPoints(std::move(new_points));
     }
 
-    // --- phase 4: child connectivity ----------------------------------------
+    // --- phase 6: child counts, then connectivity ----------------------------
+    // A cell's child count depends on its mask, so the first-child map is a
+    // serial ascending prefix sum rather than a constant stride. It stays
+    // monotone with every entry non-negative and every run contiguous, which is
+    // what keeps detail/region_remap.hpp's FirstChild contract valid.
     std::vector<NDArray> cell_maps;
     cell_maps.reserve(nblocks);
+    std::vector<std::vector<std::int64_t>> parent_of_child(nblocks);
+    std::vector<std::vector<char>> red_child(nblocks);
     {
         std::size_t bi = 0;
         for (const auto cb : rMesh.CellRange()) {
-            const RefineBlockDesc& d = descs[bi++];
-            const RefineTemplate& tpl = *d.mpTpl;
-            const std::size_t nchildren = tpl.mChildren.size();
-            const std::size_t out_npc = tpl.mChildren[0].size();
+            const std::size_t b = bi++;
+            const RefineBlockDesc& d = descs[b];
+            const std::size_t out_npc = static_cast<std::size_t>(cell_type_num_nodes(d.mType));
             const NDArray& conn = cb.Conn();
             const std::size_t npc = cb.NodesPerCell();
             const std::size_t nedges = d.mpEdges->size();
             const std::size_t nfaces = d.mpFaces->size();
-            const std::size_t ncorners = tpl.mNumCorners;
+            const std::size_t ncorners = d.mNumCorners;
 
-            NDArray out_conn = NDArray::Uninit(DType::Int64, {d.mNumCells * nchildren, out_npc});
+            std::vector<std::int64_t> first_child(d.mNumCells);
+            std::size_t total_children = 0;
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                first_child[c] = static_cast<std::int64_t>(total_children);
+                total_children +=
+                    detail::refine_mask_template(d.mType, masks[d.mFirstCell + c]).NumChildren();
+            }
+            parent_of_child[b].resize(total_children);
+            red_child[b].resize(total_children);
+
+            NDArray out_conn = NDArray::Uninit(DType::Int64, {total_children, out_npc});
             std::int64_t* dst = out_conn.As<std::int64_t>();
             parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                // Resolve the parent's local node space once per cell.
+                // Resolve the parent's local node space once per cell. A slot
+                // whose entity earned no node stays -1; a template never
+                // references one, by construction of the node rules in phase 4.
                 std::int64_t local[27];
                 for (std::size_t n = 0; n < ncorners; ++n)
                     local[n] = detail::read_int(conn, c * npc + n);
                 const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
                 for (std::size_t s = 0; s < nedges + nfaces; ++s)
-                    local[ncorners + s] = slot_id[slot0 + s];
-                if (tpl.mHasBody)
-                    local[ncorners + nedges + nfaces] =
-                        static_cast<std::int64_t>(body_base + d.mFirstBody + c);
-                for (std::size_t k = 0; k < nchildren; ++k) {
-                    const std::vector<std::uint8_t>& child = tpl.mChildren[k];
-                    std::int64_t* row = dst + (c * nchildren + k) * out_npc;
+                    local[ncorners + s] =
+                        node_of_entity[static_cast<std::size_t>(entity_of_slot[slot0 + s])];
+                local[ncorners + nedges + nfaces] = body_of_cell[d.mFirstCell + c];
+
+                const std::uint16_t mask = masks[d.mFirstCell + c];
+                const detail::RefineMaskTemplate& tpl = detail::refine_mask_template(d.mType, mask);
+                // The one choice made from GLOBAL node ids rather than the
+                // template's local numbering, so that the cell across the
+                // affected face resolves it the same way.
+                const bool alt = tpl.HasVariant() && local[tpl.mTieB] < local[tpl.mTieA];
+                const std::vector<std::vector<std::uint8_t>>& children =
+                    alt ? tpl.mChildrenAlt : tpl.mChildren;
+                const bool is_red = mask == d.mFullMask && mask != 0;
+                for (std::size_t k = 0; k < children.size(); ++k) {
+                    const std::vector<std::uint8_t>& child = children[k];
+                    const std::size_t row_index = static_cast<std::size_t>(first_child[c]) + k;
+                    std::int64_t* row = dst + row_index * out_npc;
                     for (std::size_t n = 0; n < out_npc; ++n)
                         row[n] = local[child[n]];
+                    parent_of_child[b][row_index] = static_cast<std::int64_t>(c);
+                    red_child[b][row_index] = is_red ? 1 : 0;
                 }
             });
-            out.AddCellBlock(cell_type_name(tpl.mType), std::move(out_conn));
-
-            std::vector<std::int64_t> first_child(d.mNumCells);
-            for (std::size_t c = 0; c < d.mNumCells; ++c)
-                first_child[c] = static_cast<std::int64_t>(c * nchildren);
+            out.AddCellBlock(cell_type_name(d.mType), std::move(out_conn));
             cell_maps.push_back(refine_int64_vector(first_child));
         }
     }
 
-    // --- phase 5: point_data -------------------------------------------------
+    // --- phase 7: point_data -------------------------------------------------
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
         if (detail::rows(a) != num_points) {
@@ -63332,8 +64731,8 @@ RefineResult refine_once(const Mesh& rMesh) {
         shape[0] = num_points_out;
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
-        parallel_for_bw(new_nodes.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = new_nodes[i];
+        parallel_for_bw(kept_entities.size(), [&](std::size_t i) {
+            const RefineNodeKey& key = entities[static_cast<std::size_t>(kept_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
             const double inv = 1.0 / static_cast<double>(4 - first);
             for (std::size_t k = 0; k < ncomp; ++k) {
@@ -63347,14 +64746,16 @@ RefineResult refine_once(const Mesh& rMesh) {
             std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
                 const RefineBlockDesc& d = descs[bi++];
-                if (!d.mpTpl->mHasBody || d.mNumCells == 0)
+                if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
                     continue;
                 const NDArray& conn = cb.Conn();
                 const std::size_t npc = cb.NodesPerCell();
-                const std::size_t ncorners = d.mpTpl->mNumCorners;
+                const std::size_t ncorners = d.mNumCorners;
                 const double inv = 1.0 / static_cast<double>(ncorners);
                 parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                    const std::size_t dst = body_base + d.mFirstBody + c;
+                    const std::int64_t body = body_of_cell[d.mFirstCell + c];
+                    if (body < 0)
+                        return;
                     for (std::size_t k = 0; k < ncomp; ++k) {
                         double sum = 0.0;
                         for (std::size_t n = 0; n < ncorners; ++n) {
@@ -63362,7 +64763,8 @@ RefineResult refine_once(const Mesh& rMesh) {
                                 static_cast<std::size_t>(detail::read_int(conn, c * npc + n));
                             sum += detail::read_double(a, p * ncomp + k);
                         }
-                        detail::write_double(b, dst * ncomp + k, sum * inv);
+                        detail::write_double(b, static_cast<std::size_t>(body) * ncomp + k,
+                                             sum * inv);
                     }
                 });
             }
@@ -63370,8 +64772,11 @@ RefineResult refine_once(const Mesh& rMesh) {
         out.AddPointData(name, std::move(b));
     }
 
-    // --- phase 6: cell_data replicated parent -> children --------------------
+    // --- phase 8: cell_data gathered parent -> children ----------------------
+    // base_levels was hoisted above: the Balanced closure compares levels.
     for (const std::string& name : rMesh.CellDataNames()) {
+        if (name == kRefineLevelName)
+            continue;  // recomputed below, never replicated
         const std::size_t ndata = rMesh.CellDataNumBlocks(name);
         std::vector<NDArray> blocks;
         blocks.reserve(ndata);
@@ -63382,22 +64787,64 @@ RefineResult refine_once(const Mesh& rMesh) {
                 blocks.push_back(detail::data_owned_copy(a));
                 continue;
             }
-            const std::size_t nchildren = descs[b].mpTpl->mChildren.size();
+            const std::vector<std::int64_t>& parents = parent_of_child[b];
             std::vector<std::size_t> shape = a.Shape();
-            shape[0] = in_rows * nchildren;
+            shape[0] = parents.size();
             const std::size_t row_bytes = a.Nbytes() / in_rows;
-            NDArray replicated = NDArray::Uninit(a.Dtype(), std::move(shape));
+            NDArray gathered = NDArray::Uninit(a.Dtype(), std::move(shape));
             const std::byte* src = a.Data();
-            std::byte* dst = replicated.Data();
-            parallel_for_bw(in_rows * nchildren, [&](std::size_t i) {
-                std::memcpy(dst + i * row_bytes, src + (i / nchildren) * row_bytes, row_bytes);
+            std::byte* dst = gathered.Data();
+            parallel_for_bw(parents.size(), [&](std::size_t i) {
+                std::memcpy(dst + i * row_bytes,
+                            src + static_cast<std::size_t>(parents[i]) * row_bytes, row_bytes);
             });
-            blocks.push_back(std::move(replicated));
+            blocks.push_back(std::move(gathered));
         }
         out.AddCellData(name, std::move(blocks));
     }
+
+    // refine:level. Red children increment; green and untouched cells inherit,
+    // because a green split is a closure, not a refinement.
+    if (RecordLevels || !base_levels.empty()) {
+        std::vector<NDArray> blocks;
+        blocks.reserve(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const std::vector<std::int64_t>& parents = parent_of_child[b];
+            NDArray a = NDArray::Uninit(DType::Int64, {parents.size(), 1});
+            std::int64_t* dst = a.As<std::int64_t>();
+            for (std::size_t i = 0; i < parents.size(); ++i) {
+                const std::size_t parent =
+                    descs[b].mFirstCell + static_cast<std::size_t>(parents[i]);
+                const std::int64_t base = base_levels.empty() ? 0 : base_levels[parent];
+                dst[i] = base + (red_child[b][i] ? 1 : 0);
+            }
+            blocks.push_back(std::move(a));
+        }
+        out.AddCellData(kRefineLevelName, std::move(blocks));
+    }
+
+    // refine:hanging -- the constrained nodes a Balanced pass leaves behind. Only
+    // attached when there are any, so the conforming closures are unaffected.
+    if (num_hanging > 0) {
+        NDArray flags = NDArray::Uninit(DType::Int64, {num_points_out, 1});
+        std::int64_t* dst = flags.As<std::int64_t>();
+        std::fill(dst, dst + num_points_out, static_cast<std::int64_t>(0));
+        for (std::size_t i = 0; i < hanging.size(); ++i)
+            dst[i] = hanging[i] ? 1 : 0;
+        out.AddPointData(kRefineHangingName, std::move(flags));
+        log::info("refine: the balanced closure left {} hanging node(s); see '{}'.", num_hanging,
+                  kRefineHangingName);
+    }
+
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    if (pOutRedChildren != nullptr) {
+        pOutRedChildren->clear();
+        for (std::size_t b = 0; b < nblocks; ++b)
+            pOutRedChildren->insert(pOutRedChildren->end(), red_child[b].begin(),
+                                    red_child[b].end());
+    }
 
     RefineResult res;
     res.mMesh = std::move(out);
@@ -63455,7 +64902,7 @@ void refine_attach_parent_ids(RefineResult& rResult) {
         }
         blocks.push_back(std::move(a));
     }
-    rResult.mMesh.AddCellData("refine:parent_cell", std::move(blocks));
+    rResult.mMesh.AddCellData(kRefineParentCellName, std::move(blocks));
 }
 
 // Cells the next level would produce, for the pre-flight size warning.
@@ -63464,22 +64911,204 @@ std::size_t refine_projected_cells(const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange()) {
         if (cb.IsRagged())
             continue;
-        const RefineTemplate* tpl = refine_template(cell_type_from_name(std::string(cb.Type())));
-        total += cb.NumCells() * (tpl == nullptr ? 1 : tpl->mChildren.size());
+        const CellType type = cell_type_from_name(std::string(cb.Type()));
+        const std::size_t children =
+            detail::refine_mask_template(type, detail::refine_full_mask(type)).NumChildren();
+        total += cb.NumCells() * (children == 0 ? 1 : children);
     }
     return total;
+}
+
+// --- selection ---------------------------------------------------------------
+
+bool refine_has_selector(const RefineOptions& rOptions) {
+    return !rOptions.mCells.empty() || !rOptions.mRegion.empty() ||
+           !rOptions.mPredicateArray.empty();
+}
+
+bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
+    // A non-finite value never matches. compute_quality deliberately reports NaN
+    // where a metric does not apply, so a predicate over `quality:*` on a mixed
+    // mesh is the headline use case -- rejecting the array would break it.
+    if (!std::isfinite(Value))
+        return false;
+    switch (Op) {
+        case RefineCompare::Less:
+            return Value < Rhs;
+        case RefineCompare::LessEqual:
+            return Value <= Rhs;
+        case RefineCompare::Greater:
+            return Value > Rhs;
+        case RefineCompare::GreaterEqual:
+            return Value >= Rhs;
+        case RefineCompare::Equal:
+            return Value == Rhs;
+        case RefineCompare::NotEqual:
+            return Value != Rhs;
+    }
+    return false;
+}
+
+std::string refine_region_names(const Mesh& rMesh) {
+    std::string names;
+    for (const std::string& n : rMesh.RegionNames()) {
+        if (!names.empty())
+            names += ", ";
+        names += "'" + n + "'";
+    }
+    return names.empty() ? "none" : names;
+}
+
+// Resolve the selector into a per-global-cell red flag. Only called when
+// `refine_has_selector`, so "no selector" and "a selector that matched nothing"
+// stay distinguishable -- the latter is a legitimate request for an unchanged
+// mesh, not a silent fall-through to refining everything.
+std::vector<char> refine_resolve_selection(const Mesh& rMesh, const RefineOptions& rOptions) {
+    const int num_set = (rOptions.mCells.empty() ? 0 : 1) + (rOptions.mRegion.empty() ? 0 : 1) +
+                        (rOptions.mPredicateArray.empty() ? 0 : 1);
+    if (num_set > 1)
+        throw std::invalid_argument(
+            "refine: set at most one cell selector -- cells, region or predicate array -- but " +
+            std::to_string(num_set) + " were given");
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::int64_t ncells = detail::total_cells(bases);
+    std::vector<char> red(static_cast<std::size_t>(ncells), 0);
+
+    if (!rOptions.mCells.empty()) {
+        for (std::int64_t g : rOptions.mCells) {
+            if (g < 0 || g >= ncells)
+                throw std::invalid_argument("refine: cell index " + std::to_string(g) +
+                                            " is out of range; the mesh has " +
+                                            std::to_string(ncells) + " cells");
+            red[static_cast<std::size_t>(g)] = 1;  // duplicates collapse here
+        }
+        return red;
+    }
+
+    if (!rOptions.mRegion.empty()) {
+        std::size_t idx = rMesh.FindRegion(rOptions.mRegion, RegionKind::Cell);
+        if (idx != Mesh::npos) {
+            const Region& region = rMesh.Region(idx);
+            const std::int64_t* entries = region.Entries();
+            for (std::size_t i = 0; i < region.NumEntries(); ++i) {
+                const std::int64_t g = entries[i];
+                if (g >= 0 && g < ncells)
+                    red[static_cast<std::size_t>(g)] = 1;
+            }
+            return red;
+        }
+        idx = rMesh.FindRegion(rOptions.mRegion, RegionKind::Point);
+        if (idx != Mesh::npos) {
+            const Region& region = rMesh.Region(idx);
+            std::vector<char> in_region(rMesh.NumPoints(), 0);
+            const std::int64_t* entries = region.Entries();
+            for (std::size_t i = 0; i < region.NumEntries(); ++i) {
+                const std::int64_t p = entries[i];
+                if (p >= 0 && p < static_cast<std::int64_t>(rMesh.NumPoints()))
+                    in_region[static_cast<std::size_t>(p)] = 1;
+            }
+            // A cell is selected when ANY of its nodes is in the region. "All"
+            // would select nothing at all for a point set describing a surface.
+            std::size_t b = 0;
+            for (const auto cb : rMesh.CellRange()) {
+                const std::size_t base = static_cast<std::size_t>(bases[b++]);
+                if (cb.IsRagged())
+                    continue;  // rejected by refine_check_block later, by name
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                    for (std::size_t n = 0; n < npc; ++n) {
+                        const std::int64_t p = detail::read_int(conn, c * npc + n);
+                        if (p >= 0 && p < static_cast<std::int64_t>(in_region.size()) &&
+                            in_region[static_cast<std::size_t>(p)]) {
+                            red[base + c] = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            return red;
+        }
+        if (rMesh.FindRegion(rOptions.mRegion, RegionKind::Side) != Mesh::npos)
+            throw std::invalid_argument(
+                "refine: region '" + rOptions.mRegion +
+                "' is a side region; a facet is not a cell, so it cannot select what to refine "
+                "(use a cell or point region)");
+        throw std::invalid_argument("refine: no region named '" + rOptions.mRegion +
+                                    "' (available: " + refine_region_names(rMesh) + ")");
+    }
+
+    const std::string& name = rOptions.mPredicateArray;
+    if (!rMesh.HasCellData(name))
+        throw std::invalid_argument("refine: " +
+                                    data_unknown_key_message(rMesh, DataLocation::Cell, name));
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(name) != nblocks)
+        throw std::invalid_argument("refine: cell_data '" + name +
+                                    "' does not cover every cell block");
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& a = rMesh.CellData(name, b);
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+        ++b;
+        if (detail::rows(a) != cb.NumCells())
+            throw std::invalid_argument("refine: cell_data '" + name + "' has " +
+                                        std::to_string(detail::rows(a)) + " rows on a block of " +
+                                        std::to_string(cb.NumCells()) + " cells");
+        if (cb.NumCells() != 0 && data_num_components(a) != 1)
+            throw std::invalid_argument("refine: cell_data '" + name +
+                                        "' must be scalar (one value per cell) to be used as a "
+                                        "refinement predicate");
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            if (refine_compare_value(detail::read_double(a, c), rOptions.mPredicateOp,
+                                     rOptions.mPredicateValue))
+                red[base + c] = 1;
+        }
+    }
+    return red;
 }
 
 }  // namespace
 
 // --- public API --------------------------------------------------------------
 
+RefineClosure refine_closure_from_name(const std::string& rName) {
+    if (rName.empty() || rName == "redgreen" || rName == "red-green" || rName == "green")
+        return RefineClosure::RedGreen;
+    if (rName == "propagate" || rName == "red")
+        return RefineClosure::Propagate;
+    if (rName == "balanced" || rName == "2:1")
+        return RefineClosure::Balanced;
+    throw std::invalid_argument("refine: unknown closure '" + rName +
+                                "' (expected 'redgreen'/'green', 'propagate' or 'balanced')");
+}
+
+RefineCompare refine_compare_from_name(const std::string& rName) {
+    if (rName == "<" || rName == "lt")
+        return RefineCompare::Less;
+    if (rName == "<=" || rName == "le")
+        return RefineCompare::LessEqual;
+    if (rName == ">" || rName == "gt")
+        return RefineCompare::Greater;
+    if (rName == ">=" || rName == "ge")
+        return RefineCompare::GreaterEqual;
+    if (rName == "==" || rName == "=" || rName == "eq")
+        return RefineCompare::Equal;
+    if (rName == "!=" || rName == "ne")
+        return RefineCompare::NotEqual;
+    throw std::invalid_argument("refine: unknown comparison '" + rName +
+                                "' (expected '<', '<=', '>', '>=', '==' or '!=')");
+}
+
 namespace {
 
 // Carry the input's named regions onto the output. The cell map is FirstChild:
-// a parent's children occupy a contiguous run. Side regions are dropped — a
-// child cell is a new cell of a subdivided topology, so its facets have no
-// correspondence with the parent's. See detail/region_remap.hpp.
+// a parent's children occupy a contiguous run -- of length 1 for a cell the
+// selection left untouched, which is still a run and still non-negative. Side
+// regions are dropped: a child cell is a new cell of a subdivided topology, so
+// its facets have no correspondence with the parent's. See
+// detail/region_remap.hpp.
 void refine_carry_regions(const Mesh& rIn, RefineResult& rRes) {
     detail::RegionRemap rmap;
     rmap.pPointMap = &rRes.mPointMap;
@@ -63492,6 +65121,14 @@ void refine_carry_regions(const Mesh& rIn, RefineResult& rRes) {
 }  // namespace
 
 RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
+    // Resolve (and validate) the selection against the INPUT mesh, before the
+    // level loop: a selector names input cells, and level k > 1 refines the
+    // children of level k - 1's red cells rather than re-resolving it.
+    const bool selective = refine_has_selector(rOptions);
+    std::vector<char> seed;
+    if (selective)
+        seed = refine_resolve_selection(rMesh, rOptions);
+
     if (rOptions.mLevels <= 0) {
         RefineResult res;
         res.mMesh = detail::clone_mesh(rMesh);
@@ -63506,17 +65143,27 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     }
 
     // Refinement is exponential in `levels`; the failure mode at depth is a
-    // bad_alloc rather than a wrong answer, so say so before it happens.
-    static constexpr std::size_t refine_warn_cells = 20'000'000;
-    if (refine_projected_cells(rMesh) > refine_warn_cells)
-        log::warn("refine: one level of this mesh yields ~{} cells; {} level(s) requested.",
-                  refine_projected_cells(rMesh), rOptions.mLevels);
+    // bad_alloc rather than a wrong answer, so say so before it happens. Only
+    // meaningful for the uniform path -- a selection's growth is bounded by the
+    // closure, which is exactly what cannot be predicted from the cell count.
+    if (!selective) {
+        static constexpr std::size_t refine_warn_cells = 20'000'000;
+        const std::size_t projected = refine_projected_cells(rMesh);
+        if (projected > refine_warn_cells)
+            log::warn("refine: one level of this mesh yields ~{} cells; {} level(s) requested.",
+                      projected, rOptions.mLevels);
+    }
 
-    RefineResult acc = refine_once(rMesh);
+    std::vector<char> next_seed;
+    RefineResult acc = refine_once(rMesh, selective ? &seed : nullptr, rOptions.mClosure,
+                                   rOptions.mRecordLevels, selective ? &next_seed : nullptr);
     for (int level = 1; level < rOptions.mLevels; ++level) {
-        RefineResult next = refine_once(acc.mMesh);  // borrows acc.mMesh
-        refine_compose_maps(acc, next);              // reads next's maps first
-        acc.mMesh = std::move(next.mMesh);           // sequenced after
+        const std::vector<char> current = std::move(next_seed);
+        RefineResult next =
+            refine_once(acc.mMesh, selective ? &current : nullptr, rOptions.mClosure,
+                        rOptions.mRecordLevels, selective ? &next_seed : nullptr);
+        refine_compose_maps(acc, next);     // reads next's maps first
+        acc.mMesh = std::move(next.mMesh);  // sequenced after
     }
     if (rOptions.mRecordParentIds)
         refine_attach_parent_ids(acc);
@@ -66419,7 +68066,12 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"hmf", meshioplusplus::read_hmf},
         {"med",
          [](const std::string& path) {
-             meshioplusplus::MedInfo info;  // families/tags side channel dropped in v1
+             // The family-id maps/link names/mesh metadata in MedInfo are
+             // still dropped here, but group *names* are not lost: read_med
+             // attaches them as named regions directly on the Mesh (see
+             // med_attach_point_regions/med_attach_cell_regions in med.cpp),
+             // so they reach WASM/C API/Fortran through this path too.
+             meshioplusplus::MedInfo info;
              return meshioplusplus::read_med(path, info);
          }},
 #endif
@@ -66535,7 +68187,13 @@ const std::map<std::string, WriteFn>& registry_writers() {
                    const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
         {"med",
          [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::MedInfo info;  // families/tags side channel dropped in v1
+             // No point_tags/cell_tags to hand over here (they live in the
+             // dropped MedInfo), but write_med synthesizes them from any
+             // Point/Cell regions the mesh carries (see
+             // med_point_regions_to_tags/med_cell_regions_to_tags in
+             // med.cpp), so a mesh converted from e.g. Abaqus through this
+             // registry path still carries its named groups into the file.
+             meshioplusplus::MedInfo info;
              meshioplusplus::write_med(p, mm, info);
          }},
 #endif

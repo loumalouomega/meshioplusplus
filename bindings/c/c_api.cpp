@@ -85,6 +85,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/version.hpp"
 #include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/skin.hpp"
 
@@ -390,6 +391,15 @@ extern "C" {
 /* ------------------------------------------------------------------ */
 /* Version / build introspection                                       */
 /* ------------------------------------------------------------------ */
+
+// The C header repeats the release version as preprocessor macros so consumers
+// can feature-detect; these pin them to the C++ ones, so the two copies cannot
+// drift. (CMake separately hard-fails if either disagrees with the project
+// version.) Same technique as the mio_cell_type / CellType static_asserts.
+static_assert(MIO_VERSION_MAJOR == MESHIOPLUSPLUS_VERSION_MAJOR &&
+                  MIO_VERSION_MINOR == MESHIOPLUSPLUS_VERSION_MINOR &&
+                  MIO_VERSION_PATCH == MESHIOPLUSPLUS_VERSION_PATCH,
+              "MIO_VERSION_* drifted from MESHIOPLUSPLUS_VERSION_*");
 
 const char* mio_version(void) {
     return MIO_VERSION_STRING;
@@ -1183,19 +1193,91 @@ void mio_convert_cells_result_free(mio_convert_cells_result* result) {
     delete result;
 }
 
+// The two flat enums duplicate the C++ ones across the ABI, so drift is a
+// compile error rather than a wrong answer -- the mio_region_kind pattern.
+static_assert(static_cast<int>(meshioplusplus::RefineClosure::RedGreen) ==
+                  MIO_REFINE_CLOSURE_REDGREEN,
+              "mio_refine_closure drifted from RefineClosure");
+static_assert(static_cast<int>(meshioplusplus::RefineClosure::Propagate) ==
+                  MIO_REFINE_CLOSURE_PROPAGATE,
+              "mio_refine_closure drifted from RefineClosure");
+static_assert(static_cast<int>(meshioplusplus::RefineClosure::Balanced) ==
+                  MIO_REFINE_CLOSURE_BALANCED,
+              "mio_refine_closure drifted from RefineClosure");
+static_assert(static_cast<int>(meshioplusplus::RefineCompare::Less) == MIO_REFINE_LT &&
+                  static_cast<int>(meshioplusplus::RefineCompare::LessEqual) == MIO_REFINE_LE &&
+                  static_cast<int>(meshioplusplus::RefineCompare::Greater) == MIO_REFINE_GT &&
+                  static_cast<int>(meshioplusplus::RefineCompare::GreaterEqual) == MIO_REFINE_GE &&
+                  static_cast<int>(meshioplusplus::RefineCompare::Equal) == MIO_REFINE_EQ &&
+                  static_cast<int>(meshioplusplus::RefineCompare::NotEqual) == MIO_REFINE_NE,
+              "mio_refine_compare drifted from RefineCompare");
+
+// The size is ABI: the Fortran and Julia mirrors of this struct hard-code it,
+// and the Julia binding checks it at load. Pinning it here makes a field added
+// outside the `reserved` tail a compile error rather than silent corruption.
+static_assert(sizeof(mio_refine_opts) == 112, "mio_refine_opts grew outside its reserved tail");
+
+void mio_refine_opts_init(mio_refine_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_refine_opts{};  // value-initialized: all zero == refine everything once
+    opts->levels = 1;
+}
+
+namespace {
+
+/// Translate the flat option struct into the core's RefineOptions.
+meshioplusplus::RefineOptions capi_refine_options(const mio_refine_opts& rOpts) {
+    meshioplusplus::RefineOptions options;
+    options.mLevels = rOpts.levels;
+    options.mRecordParentIds = rOpts.record_parent_ids != 0;
+    options.mRecordLevels = rOpts.record_levels != 0;
+    if (rOpts.cells != nullptr && rOpts.num_cells > 0)
+        options.mCells.assign(rOpts.cells, rOpts.cells + rOpts.num_cells);
+    if (rOpts.region != nullptr)
+        options.mRegion = rOpts.region;
+    if (rOpts.predicate_array != nullptr)
+        options.mPredicateArray = rOpts.predicate_array;
+    options.mPredicateValue = rOpts.predicate_value;
+    if (rOpts.closure < 0 || rOpts.closure > MIO_REFINE_CLOSURE_BALANCED)
+        throw meshioplusplus::ReadError("meshio++: refine: unknown closure " +
+                                        std::to_string(rOpts.closure));
+    options.mClosure = static_cast<meshioplusplus::RefineClosure>(rOpts.closure);
+    if (rOpts.predicate_op < 0 || rOpts.predicate_op > MIO_REFINE_NE)
+        throw meshioplusplus::ReadError("meshio++: refine: unknown comparison " +
+                                        std::to_string(rOpts.predicate_op));
+    options.mPredicateOp = static_cast<meshioplusplus::RefineCompare>(rOpts.predicate_op);
+    return options;
+}
+
+mio_refine_result* capi_refine(const mio_mesh* pMesh,
+                               const meshioplusplus::RefineOptions& rOptions) {
+    if (!pMesh)
+        throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+    meshioplusplus::RefineResult r = meshioplusplus::refine(pMesh->mMesh, rOptions);
+    auto* out = new mio_refine_result{};
+    out->mMesh = mio_mesh{std::move(r.mMesh)};
+    out->mPointMap = std::move(r.mPointMap);
+    out->mCellMaps = std::move(r.mCellMaps);
+    return out;
+}
+
+}  // namespace
+
 mio_refine_result* mio_refine(const mio_mesh* mesh, int levels, int record_parent_ids) {
     return guarded_ptr(static_cast<mio_refine_result*>(nullptr), [&]() -> mio_refine_result* {
-        if (!mesh)
-            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
         meshioplusplus::RefineOptions options;
         options.mLevels = levels;
         options.mRecordParentIds = record_parent_ids != 0;
-        meshioplusplus::RefineResult r = meshioplusplus::refine(mesh->mMesh, options);
-        auto* out = new mio_refine_result{};
-        out->mMesh = mio_mesh{std::move(r.mMesh)};
-        out->mPointMap = std::move(r.mPointMap);
-        out->mCellMaps = std::move(r.mCellMaps);
-        return out;
+        return capi_refine(mesh, options);
+    });
+}
+
+mio_refine_result* mio_refine_ex(const mio_mesh* mesh, const mio_refine_opts* opts) {
+    return guarded_ptr(static_cast<mio_refine_result*>(nullptr), [&]() -> mio_refine_result* {
+        if (opts == nullptr)
+            return capi_refine(mesh, meshioplusplus::RefineOptions{});
+        return capi_refine(mesh, capi_refine_options(*opts));
     });
 }
 

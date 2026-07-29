@@ -672,10 +672,24 @@ def tool_refine(
     output_format=None,
     levels=1,
     record_parent_ids=False,
+    cells=None,
+    region=None,
+    where=None,
+    closure="redgreen",
+    record_levels=False,
 ):
-    """Uniformly subdivide every cell into same-type children."""
+    """Subdivide cells into same-type children, all or a selected subset."""
     mesh = _load(input_path, input_format)
-    out = refine(mesh, levels=levels, record_parent_ids=record_parent_ids)
+    out = refine(
+        mesh,
+        levels=levels,
+        record_parent_ids=record_parent_ids,
+        cells=cells,
+        region=region,
+        where=where,
+        closure=closure,
+        record_levels=record_levels,
+    )
     return _result(_store(out, output_path, output_format), out)
 
 

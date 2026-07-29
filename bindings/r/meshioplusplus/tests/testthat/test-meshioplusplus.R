@@ -275,6 +275,30 @@ test_that("refine reports 1-based maps with a 0 sentinel", {
   mio_release(cc$mesh)
 })
 
+test_that("selective refine closes up conformingly", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  # `cells` is 1-based here, like every index array this binding takes, and is
+  # shifted to the C API's 0-based numbering inside.
+  sel <- mio_refine(m, cells = c(1), record_levels = TRUE)
+  expect_gt(mio_num_cells(sel$mesh), mio_num_cells(m))
+  expect_lt(mio_num_cells(sel$mesh), 16) # not the uniform 8-per-cell
+  expect_true("refine:level" %in% mio_cell_data_names(sel$mesh))
+  mio_release(sel$mesh)
+
+  # Propagation is the always-works baseline: on a connected mesh it reaches
+  # every cell, which is exactly the uniform refinement.
+  prop <- mio_refine(m, cells = c(1), closure = "propagate")
+  expect_equal(mio_num_cells(prop$mesh), 16)
+  mio_release(prop$mesh)
+
+  # At most one selector, and both enum names are validated.
+  expect_error(mio_refine(m, cells = c(1), region = "anything"))
+  expect_error(mio_refine(m, closure = "blue"))
+  expect_error(mio_refine(m, where_array = "q", where_op = "~="))
+})
+
 test_that("split and partition pieces own their handles", {
   m <- fixture()
   on.exit(mio_release(m))

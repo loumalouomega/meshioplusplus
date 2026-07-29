@@ -136,6 +136,28 @@
               ><span>levels</span>
               <input type="number" id="op-refine-levels" value="1" min="1" max="3"
             /></label>
+            <label class="row"
+              ><span>where</span>
+              <select id="op-refine-array">
+                <option value="">every cell</option>
+              </select></label
+            >
+            <label class="row"
+              ><span>is</span>
+              <select id="op-refine-compare">
+                <option value="&lt;">&lt;</option>
+                <option value="&gt;">&gt;</option>
+              </select>
+              <input type="number" id="op-refine-value" value="0" step="any"
+            /></label>
+            <label class="row"
+              ><span>closure</span>
+              <select id="op-refine-closure">
+                <option value="redgreen">red-green (local)</option>
+                <option value="propagate">propagate (uniform)</option>
+                <option value="balanced">balanced (hanging nodes)</option>
+              </select></label
+            >
             <p class="hint" id="op-refine-note"></p>
             <button type="button" id="op-refine-apply">Apply</button>
           </details>

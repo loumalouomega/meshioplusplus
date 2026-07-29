@@ -516,20 +516,73 @@ function convert_cells(m::Mesh, mode::AbstractString; record_parent_ids::Bool=fa
     end
 end
 
-"""
-    refine(mesh; levels=1, record_parent_ids=false) -> (; mesh, point_map, cell_maps)
+const _REFINE_CLOSURES = Dict("" => Int32(0), "redgreen" => Int32(0), "red-green" => Int32(0),
+                              "green" => Int32(0), "propagate" => Int32(1), "red" => Int32(1),
+                              "balanced" => Int32(2), "2:1" => Int32(2))
 
-Uniformly subdivide every cell into same-type children (line → 2, triangle →
-4, quad → 4, tetra → 8, wedge → 8, hexahedron → 8), sharing the new
-edge/face/body nodes so the result has no hanging nodes.
+const _REFINE_COMPARES = Dict("<" => Int32(0), "lt" => Int32(0), "<=" => Int32(1),
+                              "le" => Int32(1), ">" => Int32(2), "gt" => Int32(2),
+                              ">=" => Int32(3), "ge" => Int32(3), "==" => Int32(4),
+                              "=" => Int32(4), "eq" => Int32(4), "!=" => Int32(5),
+                              "ne" => Int32(5))
+
+"""
+    refine(mesh; levels=1, record_parent_ids=false, cells=nothing, region="",
+           where_array="", where_op="<", where_value=0.0, closure="redgreen",
+           record_levels=false)
+        -> (; mesh, point_map, cell_maps)
+
+Subdivide cells into same-type children (line → 2, triangle → 4, quad → 4,
+tetra → 8, wedge → 8, hexahedron → 8), sharing the new edge/face/body nodes so
+the result has no hanging nodes.
+
+With no selector every cell is refined. Give at most **one** of `cells` (global,
+block-major, **1-based** indices), `region` (a cell region selects its own cells;
+a point region every cell with any node in it; a side region is an error) or
+`where_array` + `where_op` + `where_value` (a threshold on a scalar `cell_data`
+array), and only those cells are refined — the hanging nodes that leaves are
+resolved by `closure`, so the output is still conforming. `"redgreen"` keeps the
+extra refinement local; `"propagate"` is always available for every cell type but
+converges to uniform refinement of the whole edge-connected component;
+`"balanced"` keeps the hanging nodes and only enforces 2:1 balance, so the output
+is **not conforming** but the cost is bounded by the selection (the constrained
+nodes come back in `refine:hanging`).
 
 Higher-order cells, pyramids and ragged blocks have no same-type subdivision
 and fail by name. See `doc/refine.md`.
 """
-function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false)
-    result = _check_ptr(ccall(_sym(:mio_refine), Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Cint),
-                              _handle(m), Cint(levels),
-                              record_parent_ids ? Cint(1) : Cint(0)))
+function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
+                cells=nothing, region::AbstractString="",
+                where_array::AbstractString="", where_op::AbstractString="<",
+                where_value::Real=0.0, closure::AbstractString="redgreen",
+                record_levels::Bool=false)
+    closure_code = get(_REFINE_CLOSURES, String(closure)) do
+        throw(ArgumentError("refine: unknown closure '$closure' " *
+                            "(expected 'redgreen'/'green', 'propagate' or 'balanced')"))
+    end
+    compare_code = get(_REFINE_COMPARES, String(where_op)) do
+        throw(ArgumentError("refine: unknown comparison '$where_op' " *
+                            "(expected '<', '<=', '>', '>=', '==' or '!=')"))
+    end
+    # 1-based on this side, 0-based across the ABI -- the binding's standing rule
+    # for every index array.
+    ids = cells === nothing ? Int64[] : Vector{Int64}(vec(collect(cells))) .- Int64(1)
+    region_c = Vector{UInt8}(codeunits(String(region)))
+    push!(region_c, 0x00)
+    array_c = Vector{UInt8}(codeunits(String(where_array)))
+    push!(array_c, 0x00)
+    result = GC.@preserve ids region_c array_c begin
+        opts = _CRefineOpts(isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
+                            Int64(length(ids)),
+                            Cstring(pointer(region_c)), Cstring(pointer(array_c)),
+                            Cdouble(where_value), Int32(levels),
+                            record_parent_ids ? Int32(1) : Int32(0),
+                            record_levels ? Int32(1) : Int32(0),
+                            closure_code, compare_code, Int32(0),
+                            (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+        _check_ptr(ccall(_sym(:mio_refine_ex), Ptr{Cvoid},
+                         (Ptr{Cvoid}, Ref{_CRefineOpts}), _handle(m), Ref(opts)))
+    end
     try
         pm = _result_map(result, :mio_refine_result_point_map)
         cm = _result_cell_maps(result, :mio_refine_result_num_cell_maps,
