@@ -164,7 +164,10 @@ def test_metadata_reports_regions_when_the_mesh_carries_them(tmp_path):
     meshioplusplus.write(path, mesh, file_format="gmsh22")
 
     meta = meshioplusplus.read_metadata(path, file_format="gmsh")
-    assert meta["fell_back_to_full_read"] is True  # gmsh 4.1/2.2 always does
+    # 2.2 stores a type per element, so there is no cheap header-only summary to
+    # give and it always falls back. (4.1 does have one, and reports its regions
+    # natively -- see test_gmsh_41_metadata_reports_regions_without_a_full_read.)
+    assert meta["fell_back_to_full_read"] is True
     assert meta["regions"] == [
         {"name": "solid", "kind": "cell", "dim": 3, "tag": 7, "num_entries": 2}
     ]
@@ -214,3 +217,23 @@ def test_cli_info_fast_reports_fallback(tmp_path, capsys):
 
     main(["info", "--fast", str(_write(tmp_path, "stl"))])
     assert "read in full" in capsys.readouterr().out
+
+
+def test_gmsh_41_metadata_reports_regions_without_a_full_read():
+    # $Entities and $PhysicalNames are both small and both sit ahead of
+    # $Elements, so a 4.1 summary can name the physical groups -- and count
+    # their cells -- from block headers alone. It must agree with a real read:
+    # a summary that named different groups would be worse than none.
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    path = str(root / "tests/python/meshes/msh/insulated-4.1.msh")
+
+    meta = meshioplusplus.read_metadata(path)
+    assert meta["fell_back_to_full_read"] is False
+    assert "gmsh:physical" in meta["cell_data_names"]
+
+    mesh = meshioplusplus.read(path)
+    assert sorted(
+        (r["name"], r["dim"], r["tag"], r["num_entries"]) for r in meta["regions"]
+    ) == sorted((r.name, r.dim, r.tag, len(r.entries)) for r in mesh.regions)
