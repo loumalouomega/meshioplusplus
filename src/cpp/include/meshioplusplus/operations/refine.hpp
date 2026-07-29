@@ -123,6 +123,31 @@
  * so it converges to uniform refinement of the whole edge-connected component.
  * It is the always-works baseline and the test oracle, not the adaptivity mode.
  *
+ * `RefineClosure::Balanced` does not close at all: it **keeps the hanging
+ * nodes** and only enforces 2:1 balance, which is what an adaptive-mesh-
+ * refinement code normally means by "propagate". A cell is split fully or not
+ * at all -- there are no transitional templates -- and a cell is drawn in only
+ * when a neighbour would otherwise end up more than one level finer than it:
+ *
+ *     refine C  =>  C's level rises by one
+ *     D must refine  <=>  some entity D shares has an incident cell whose
+ *                         post-refinement level exceeds D's by more than one
+ *
+ * On a mesh of uniform level that condition is satisfied nowhere, so refining
+ * one cell propagates to **nothing** -- 64 hexahedra become 71, against 125
+ * under `RedGreen` and 512 under `Propagate`. Balancing only bites once levels
+ * differ, i.e. from the second adaptive pass onwards, and even then it reaches
+ * one level-ring rather than the whole mesh. The `refine:level` array is what
+ * makes that well defined across passes, and reading it back is why the array
+ * is *maintained* rather than replicated.
+ *
+ * The price is stated rather than hidden: the result is **1-irregular and not
+ * conforming**. Every constrained node is reported in the `refine:hanging`
+ * `point_data` array (see `kRefineHangingName`) so a solver can eliminate it;
+ * the conformity guarantees below apply to the other two closures only, and
+ * `extract_surface`, `decimate` and anything else assuming a conforming mesh
+ * will treat a hanging node as a genuine boundary.
+ *
  * A cell with two *adjacent* bisected edges on one face has a remnant
  * quadrilateral there that needs a diagonal, and the neighbour across that face
  * must choose the same one. The choice is therefore made from the **global node
@@ -173,16 +198,32 @@ inline constexpr const char* kRefineParentCellName = "refine:parent_cell";
 /// successive passes accumulate.
 inline constexpr const char* kRefineLevelName = "refine:level";
 
+/// The Int64 `point_data` array `RefineClosure::Balanced` attaches: `1` for a
+/// **hanging** (constrained) node, `0` otherwise. A hanging node is one that
+/// exists on an entity of a cell that does not reference it -- the mid-edge node
+/// a refined cell created on an edge its unrefined neighbour still spans whole.
+/// Only `Balanced` produces any; the other closures leave none by construction
+/// and do not attach the array.
+inline constexpr const char* kRefineHangingName = "refine:hanging";
+
 /// How `refine` resolves the hanging nodes a partial refinement leaves behind.
 enum class RefineClosure {
     /// Promote a cell's split-edge mask to the smallest *admissible* superset,
     /// so an affected neighbour is split transitionally rather than fully. Keeps
-    /// the extra refinement local. The default.
+    /// the extra refinement local, and the output is conforming. The default.
     RedGreen = 0,
-    /// Promote any non-empty mask straight to a full split. Always conforming
-    /// and defined for every cell type, but **not local**: it converges to
-    /// uniform refinement of the whole edge-connected component.
+    /// Promote any non-empty mask straight to a full split. Conforming and
+    /// defined for every cell type, but **not local**: it converges to uniform
+    /// refinement of the whole edge-connected component.
     Propagate = 1,
+    /// Do not close at all: **keep the hanging nodes** and merely enforce 2:1
+    /// balance, refining a cell only when a neighbour would otherwise end up
+    /// more than one level finer. The output is 1-irregular and **NOT
+    /// conforming** -- the constrained nodes are reported in `refine:hanging`
+    /// for a solver to eliminate. This is the classic adaptive-mesh-refinement
+    /// meaning of "propagate", and the only mode whose cost is bounded by the
+    /// selection rather than by the mesh.
+    Balanced = 2,
 };
 
 /// The comparison in `RefineOptions`' `cell_data` predicate selector.
@@ -196,8 +237,8 @@ enum class RefineCompare {
 };
 
 /**
- * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`, or
- * `"propagate"` / `"red"`.
+ * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`,
+ * `"propagate"` / `"red"`, or `"balanced"` / `"2:1"`.
  * @param rName The name; empty means the default (`RedGreen`).
  * @throws std::invalid_argument naming every accepted value.
  */
