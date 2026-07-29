@@ -703,6 +703,110 @@ TEST(RefineSelective, PropagateReproducesUniformRefinement) {
     check(hex_grid(2));
 }
 
+// --- the balanced closure: 2:1 balance, hanging nodes kept -------------------
+
+// The largest level difference between two cells sharing a NODE. Node adjacency,
+// not edge adjacency: across a hanging interface the coarse cell spans a whole
+// edge while the fine cell has only half of it, so an edge-keyed check is blind
+// to exactly the coarse/fine adjacency 2:1 balance exists to police.
+std::int64_t max_level_gap(const Mesh& rMesh) {
+    const NDArray& levels = rMesh.CellData("refine:level", 0);
+    std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> range;
+    std::size_t c0 = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t npc = cb.NodesPerCell();
+        const std::int64_t* conn = cb.Conn().As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            const std::int64_t lv = meshioplusplus::detail::read_int(levels, c0 + c);
+            for (std::size_t n = 0; n < npc; ++n) {
+                auto it = range.find(conn[c * npc + n]);
+                if (it == range.end())
+                    range.emplace(conn[c * npc + n], std::make_pair(lv, lv));
+                else {
+                    it->second.first = std::min(it->second.first, lv);
+                    it->second.second = std::max(it->second.second, lv);
+                }
+            }
+        }
+        c0 += cb.NumCells();
+    }
+    std::int64_t gap = 0;
+    for (const auto& [node, lohi] : range)
+        gap = std::max(gap, lohi.second - lohi.first);
+    return gap;
+}
+
+TEST(RefineSelective, BalancedKeepsHangingNodesInsteadOfClosing) {
+    Mesh m = hex_grid(4);
+    RefineOptions o = cells_opt({21}, RefineClosure::Balanced);
+    o.mRecordLevels = true;
+    const RefineResult res = refine(m, o);
+    // One cell split into 8, every other cell untouched: 64 - 1 + 8.
+    EXPECT_EQ(res.mMesh.Cells(0).NumCells(), 71u);
+    // Deliberately NOT conforming -- and it says so.
+    EXPECT_GT(count_hanging_nodes(res.mMesh), 0u);
+    EXPECT_TRUE(res.mMesh.HasPointData("refine:hanging"));
+    EXPECT_LE(max_level_gap(res.mMesh), 1);
+}
+
+TEST(RefineSelective, TheConformingClosuresLeaveNoHangingArray) {
+    Mesh m = hex_grid(3);
+    for (RefineClosure closure : {RefineClosure::RedGreen, RefineClosure::Propagate}) {
+        RefineOptions o = cells_opt({13}, closure);
+        o.mRecordLevels = true;
+        const RefineResult res = refine(m, o);
+        EXPECT_EQ(count_hanging_nodes(res.mMesh), 0u);
+        EXPECT_FALSE(res.mMesh.HasPointData("refine:hanging"));
+    }
+}
+
+TEST(RefineSelective, BalancedDoesNotPropagateOnAMeshOfUniformLevel) {
+    // The whole point: with every cell at the same level, refining one puts
+    // nothing else out of balance, so nothing else is touched.
+    const auto check = [](Mesh m, std::int64_t selected, std::size_t children) {
+        const std::size_t before = m.Cells(0).NumCells();
+        RefineOptions o = cells_opt({selected}, RefineClosure::Balanced);
+        o.mRecordLevels = true;
+        const RefineResult res = refine(m, o);
+        EXPECT_EQ(res.mMesh.Cells(0).NumCells(), before - 1 + children);
+        EXPECT_LE(max_level_gap(res.mMesh), 1);
+    };
+    check(tri_grid(4), 8, 4);
+    check(quad_grid(5), 7, 4);
+    check(hex_grid(4), 21, 8);
+}
+
+TEST(RefineSelective, BalancedDrawsInNeighboursThatWouldFallTwoLevelsBehind) {
+    Mesh m = hex_grid(4);
+    RefineOptions first_opts = cells_opt({21}, RefineClosure::Balanced);
+    first_opts.mRecordLevels = true;
+    const RefineResult first = refine(m, first_opts);
+
+    // Refining a level-1 child would leave its level-0 neighbours two levels
+    // coarser, so balancing must promote them -- and only them.
+    const NDArray& levels = first.mMesh.CellData("refine:level", 0);
+    std::int64_t child = -1;
+    for (std::size_t i = 0; i < levels.Size() && child < 0; ++i)
+        if (meshioplusplus::detail::read_int(levels, i) == 1)
+            child = static_cast<std::int64_t>(i);
+    ASSERT_GE(child, 0);
+
+    RefineOptions second_opts = cells_opt({child}, RefineClosure::Balanced);
+    second_opts.mRecordLevels = true;
+    const RefineResult second = refine(first.mMesh, second_opts);
+    const std::size_t grew = second.mMesh.Cells(0).NumCells() - first.mMesh.Cells(0).NumCells();
+    EXPECT_GT(grew, 7u) << "balancing must have drawn in cells beyond the selected one";
+    EXPECT_LT(grew, 7u * 30u) << "and must stay local, not reach the whole mesh";
+    EXPECT_LE(max_level_gap(second.mMesh), 1);
+}
+
+TEST(RefineSelective, BalancedIsFarCheaperThanPropagate) {
+    Mesh m = hex_grid(3);
+    const RefineResult balanced = refine(m, cells_opt({13}, RefineClosure::Balanced));
+    const RefineResult propagated = refine(m, cells_opt({13}, RefineClosure::Propagate));
+    EXPECT_LT(balanced.mMesh.Cells(0).NumCells() * 4, propagated.mMesh.Cells(0).NumCells());
+}
+
 TEST(RefineSelective, TwoSuccessivePassesStayConforming) {
     Mesh m = tri_grid(4);
     const RefineResult first = refine(m, cells_opt({10}));
@@ -909,6 +1013,8 @@ TEST(RefineSelective, ClosureAndComparisonNamesParse) {
     EXPECT_EQ(refine_closure_from_name("green"), RefineClosure::RedGreen);
     EXPECT_EQ(refine_closure_from_name("redgreen"), RefineClosure::RedGreen);
     EXPECT_EQ(refine_closure_from_name("propagate"), RefineClosure::Propagate);
+    EXPECT_EQ(refine_closure_from_name("balanced"), RefineClosure::Balanced);
+    EXPECT_EQ(refine_closure_from_name("2:1"), RefineClosure::Balanced);
     EXPECT_THROW(refine_closure_from_name("blue"), std::invalid_argument);
     EXPECT_EQ(refine_compare_from_name("<"), meshioplusplus::RefineCompare::Less);
     EXPECT_EQ(refine_compare_from_name(">="), meshioplusplus::RefineCompare::GreaterEqual);
