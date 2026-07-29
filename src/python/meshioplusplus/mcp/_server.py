@@ -450,7 +450,9 @@ def _register_operations(server: FastMCP) -> None:
         a scalar cell_data array, e.g. "quality:scaled_jacobian < 0.3") and only
         those are, with the resulting hanging nodes resolved by `closure` —
         "redgreen" keeps that local, "propagate" reaches the whole connected
-        component. `record_levels` attaches refine:level."""
+        component, and "balanced" keeps the hanging nodes and only enforces 2:1
+        balance (the output is then NOT conforming; the constrained nodes are
+        reported in refine:hanging). `record_levels` attaches refine:level."""
         return _guard(
             _tools.tool_refine,
             input_path=input_path,
