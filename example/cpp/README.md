@@ -46,11 +46,13 @@ centred on a deformation rather than a domain corner) it throughout.
 ## `example.vtu`, not `example/example.msh`
 
 The input here is [`example.vtu`](example.vtu), not the original
-`example/example.msh`: Gmsh 4.1's `$Entities` section (present in that file)
-is a documented gap in meshio++'s **C++** reader -- the Python bindings paper
-over it with a pure-Python fallback that a C++-only kernel does not have (see
-CLAUDE.md's native-CLI section, "documented gaps vs the Python CLI"). It was
-pre-converted once, from the repo root, with the Python bindings:
+`example/example.msh`. That was originally because Gmsh 4.1's `$Entities`
+section (present in that file) was a gap in meshio++'s **C++** reader, which
+the Python bindings papered over with a fallback a C++-only kernel does not
+have. **Since v9.7.0 the C++ reader handles `$Entities`**, so the `.msh` could
+now be read directly; the `.vtu` is kept because these notebooks are committed
+with outputs and re-deriving them is a separate change. It was pre-converted
+once, from the repo root, with the Python bindings:
 
 ```sh
 .venv/bin/python3 -c "

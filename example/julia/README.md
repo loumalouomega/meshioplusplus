@@ -35,8 +35,10 @@ Julia), since meshio++'s own colormap tables aren't reachable from the C API eit
 The input here is [`example.vtu`](example.vtu), copied verbatim from [`../cpp/example.vtu`](../cpp/example.vtu)
 (both are Git-LFS-tracked, so this costs no meaningful repo size) rather than reading `example/example.msh`
 directly: this binding sits on the same **C++ reader** as the C++ notebooks, and Gmsh 4.1's `$Entities`
-section (present in the original file) is a documented gap there — Python's fallback isn't available with
-no Python involved. See [`../cpp/README.md`](../cpp/README.md) for how it was produced.
+section (present in the original file) was a gap there until v9.7.0 — Python's fallback isn't available with
+no Python involved. The C++ reader handles `$Entities` now, so the `.msh` would work; the `.vtu` is kept
+because these notebooks are committed with outputs. See [`../cpp/README.md`](../cpp/README.md) for how it
+was produced.
 
 ## Setting up the kernel
 
