@@ -85,6 +85,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/version.hpp"
 #include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/skin.hpp"
 
@@ -390,6 +391,15 @@ extern "C" {
 /* ------------------------------------------------------------------ */
 /* Version / build introspection                                       */
 /* ------------------------------------------------------------------ */
+
+// The C header repeats the release version as preprocessor macros so consumers
+// can feature-detect; these pin them to the C++ ones, so the two copies cannot
+// drift. (CMake separately hard-fails if either disagrees with the project
+// version.) Same technique as the mio_cell_type / CellType static_asserts.
+static_assert(MIO_VERSION_MAJOR == MESHIOPLUSPLUS_VERSION_MAJOR &&
+                  MIO_VERSION_MINOR == MESHIOPLUSPLUS_VERSION_MINOR &&
+                  MIO_VERSION_PATCH == MESHIOPLUSPLUS_VERSION_PATCH,
+              "MIO_VERSION_* drifted from MESHIOPLUSPLUS_VERSION_*");
 
 const char* mio_version(void) {
     return MIO_VERSION_STRING;
