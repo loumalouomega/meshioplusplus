@@ -16,6 +16,24 @@ numbering, and rejects files from a newer MED data model with a clear error. Add
 with no regions/`med:num` and a file with `INFOS_GENERALES` `MAJ` ≤ 4 write and read exactly as
 before.
 
+### Build / introspection
+
+- **Compile-time version macros**, so a consumer can feature-detect with the preprocessor the way
+  MMG's `MMG_VERSION_GE` allows. `<meshioplusplus/version.hpp>` defines
+  `MESHIOPLUSPLUS_VERSION_MAJOR`/`_MINOR`/`_PATCH`, the ordered integer
+  `MESHIOPLUSPLUS_VERSION` (`major*10000 + minor*100 + patch`),
+  `MESHIOPLUSPLUS_VERSION_STRING`, and `MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch)` /
+  `_BEFORE(...)`; the C header carries the same set as `MIO_VERSION_*`. Until now the release
+  version was reachable only at *run* time (`mio_version()`), at configure time (CMake /
+  pkg-config), or as the deliberately-different ABI counter — none of which can guard a `#if`.
+  The two are complementary, not redundant: the macros describe the header you compiled against
+  and the call describes the library you linked, which for a shared build can differ.
+  Hand-written rather than `configure_file`d for the same reason `abi_version.hpp` is — the
+  single-header amalgamation, pkg-config and hand-written makefiles never run CMake — and
+  gated so the duplication cannot drift: `CMakeLists.txt` parses both headers and fails at
+  configure time if either disagrees with `project(... VERSION ...)`, and a `static_assert` in
+  `c_api.cpp` pins the C macros to the C++ ones.
+
 ### Formats
 
 - **MED ↔ named regions.** `FAS`/`GRO` family group names attach as one `Region` per group name
