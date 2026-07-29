@@ -627,7 +627,7 @@ def test_mask_tables_match_the_cpp_core():
 @pytest.mark.parametrize(
     "factory,n,selected", [(_tri_grid, 3, 8), (_quad_grid, 4, 5), (_hex_grid, 3, 13)]
 )
-@pytest.mark.parametrize("closure", ["redgreen", "propagate"])
+@pytest.mark.parametrize("closure", ["redgreen", "propagate", "balanced"])
 @pytest.mark.parametrize("levels", [1, 2])
 def test_cpp_matches_python_selective(factory, n, selected, closure, levels):
     """Byte-identical across the C++-core/numpy-fallback boundary, selective too."""
@@ -647,3 +647,126 @@ def test_cpp_matches_python_selective(factory, n, selected, closure, levels):
     assert np.array_equal(np.asarray(got.points), np.asarray(want.points))
     for a, b in zip(got.cell_data["refine:level"], want.cell_data["refine:level"]):
         assert np.array_equal(np.asarray(a).reshape(-1), np.asarray(b).reshape(-1))
+
+
+# --------------------------------------------------------------------------- #
+# the balanced closure: 2:1 balance, hanging nodes kept                        #
+# --------------------------------------------------------------------------- #
+def _max_level_gap(mesh):
+    """Largest level difference between two cells sharing a NODE (the 2:1 rule).
+
+    Node adjacency, not edge adjacency: across a hanging interface the coarse
+    cell spans a whole edge while the fine cell has only half of it, so the two
+    are different entities and an edge-keyed check is blind to exactly the
+    coarse/fine adjacency 2:1 balance exists to police.
+    """
+    levels = np.concatenate(
+        [np.asarray(a).reshape(-1) for a in mesh.cell_data["refine:level"]]
+    )
+    npts = len(mesh.points)
+    lo = np.full(npts, 1 << 30, dtype=np.int64)
+    hi = np.full(npts, -(1 << 30), dtype=np.int64)
+    base = 0
+    for cb in mesh.cells:
+        data = np.asarray(cb.data)
+        for c in range(len(data)):
+            np.minimum.at(lo, data[c], levels[base + c])
+            np.maximum.at(hi, data[c], levels[base + c])
+        base += len(data)
+    seen = hi > -(1 << 30)
+    return int((hi[seen] - lo[seen]).max())
+
+
+def _hanging_node_ids(mesh):
+    """The DISTINCT constrained nodes: a node on some cell's edge midpoint OR at
+    the centre of one of its quadrilateral faces.
+
+    The face centres matter as much as the edge midpoints: a split face leaves
+    one on a neighbour that still spans the face whole, and a solver has to
+    constrain it too.
+    """
+    from meshioplusplus._refine_templates import EDGES, QUAD_FACES
+
+    points = np.asarray(mesh.points)
+    at = {tuple(p): i for i, p in enumerate(points)}
+    out = set()
+    for cb in mesh.cells:
+        data = np.asarray(cb.data)
+        for a, b in EDGES[cb.type]:
+            for m in (points[data[:, a]] + points[data[:, b]]) * 0.5:
+                hit = at.get(tuple(m))
+                if hit is not None:
+                    out.add(hit)
+        for face in QUAD_FACES[cb.type]:
+            centres = sum(points[data[:, i]] for i in face) / 4.0
+            for m in centres:
+                hit = at.get(tuple(m))
+                if hit is not None:
+                    out.add(hit)
+    return out
+
+
+def test_balanced_keeps_hanging_nodes_instead_of_closing():
+    mesh = _hex_grid(4)
+    out = refine(mesh, cells=[21], closure="balanced", record_levels=True)
+    # One cell split into 8, every other cell untouched: 64 - 1 + 8.
+    assert len(out.cells[0].data) == 71
+    assert out.cells[0].type == "hexahedron"
+    # It is deliberately NOT conforming, and says so in refine:hanging.
+    assert _count_hanging_nodes(out) > 0
+    assert "refine:hanging" in out.point_data
+    # refine:hanging must mark EXACTLY the constrained nodes -- not a superset
+    # (which would over-constrain a solver) and not a subset (which would leave
+    # a crack).
+    flags = np.asarray(out.point_data["refine:hanging"]).reshape(-1)
+    assert set(np.flatnonzero(flags).tolist()) == _hanging_node_ids(out)
+
+
+def test_the_conforming_closures_leave_no_hanging_array():
+    mesh = _hex_grid(3)
+    for closure in ("redgreen", "propagate"):
+        out = refine(mesh, cells=[13], closure=closure, record_levels=True)
+        _assert_conforming(out)
+        assert "refine:hanging" not in out.point_data
+
+
+def test_balanced_does_not_propagate_on_a_mesh_of_uniform_level():
+    # The whole point: on a mesh where every cell is at the same level, refining
+    # one cell puts nothing else out of balance, so nothing else is touched.
+    for factory, n, sel in [(_tri_grid, 4, 8), (_quad_grid, 5, 7), (_hex_grid, 4, 21)]:
+        mesh = factory(n)
+        before = len(mesh.cells[0].data)
+        out = refine(mesh, cells=[sel], closure="balanced", record_levels=True)
+        children = {"triangle": 4, "quad": 4, "hexahedron": 8}[mesh.cells[0].type]
+        assert len(out.cells[0].data) == before - 1 + children
+        assert _max_level_gap(out) <= 1
+
+
+def test_balanced_draws_in_neighbours_that_would_fall_two_levels_behind():
+    mesh = _hex_grid(4)
+    first = refine(mesh, cells=[21], closure="balanced", record_levels=True)
+    levels = np.asarray(first.cell_data["refine:level"][0]).reshape(-1)
+
+    # Refining a level-1 child would leave its level-0 neighbours two levels
+    # coarser, so balancing must promote them -- and only them.
+    child = int(np.flatnonzero(levels == 1)[0])
+    second = refine(first, cells=[child], closure="balanced", record_levels=True)
+    grew = len(second.cells[0].data) - len(first.cells[0].data)
+    assert grew > 7, "balancing must have drawn in cells beyond the selected one"
+    assert grew < 7 * 30, "and must stay local, not reach the whole mesh"
+    assert _max_level_gap(second) <= 1
+    assert set(np.asarray(second.cell_data["refine:level"][0]).reshape(-1)) == {0, 1, 2}
+
+
+def test_balanced_is_far_cheaper_than_propagate():
+    mesh = _hex_grid(3)
+    balanced = refine(mesh, cells=[13], closure="balanced")
+    propagated = refine(mesh, cells=[13], closure="propagate")
+    assert len(balanced.cells[0].data) < len(propagated.cells[0].data) / 4
+
+
+def test_balanced_parses_by_name():
+    mesh = _tri_grid(2)
+    a = refine(mesh, cells=[0], closure="balanced")
+    b = refine(mesh, cells=[0], closure="2:1")
+    assert np.array_equal(np.asarray(a.cells[0].data), np.asarray(b.cells[0].data))
