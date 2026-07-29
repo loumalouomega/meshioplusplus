@@ -133,7 +133,12 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"hmf", meshioplusplus::read_hmf},
         {"med",
          [](const std::string& path) {
-             meshioplusplus::MedInfo info;  // families/tags side channel dropped in v1
+             // The family-id maps/link names/mesh metadata in MedInfo are
+             // still dropped here, but group *names* are not lost: read_med
+             // attaches them as named regions directly on the Mesh (see
+             // med_attach_point_regions/med_attach_cell_regions in med.cpp),
+             // so they reach WASM/C API/Fortran through this path too.
+             meshioplusplus::MedInfo info;
              return meshioplusplus::read_med(path, info);
          }},
 #endif
@@ -249,7 +254,13 @@ const std::map<std::string, WriteFn>& registry_writers() {
                    const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
         {"med",
          [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::MedInfo info;  // families/tags side channel dropped in v1
+             // No point_tags/cell_tags to hand over here (they live in the
+             // dropped MedInfo), but write_med synthesizes them from any
+             // Point/Cell regions the mesh carries (see
+             // med_point_regions_to_tags/med_cell_regions_to_tags in
+             // med.cpp), so a mesh converted from e.g. Abaqus through this
+             // registry path still carries its named groups into the file.
+             meshioplusplus::MedInfo info;
              meshioplusplus::write_med(p, mm, info);
          }},
 #endif
