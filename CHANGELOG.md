@@ -8,6 +8,38 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.6.0 (2026-07-29)
+
+MED gains **named regions**, promoting it into the Phase-1 round-trip formats alongside gmsh and
+Abaqus. Also closes a real silent-data-loss bug on the write path, adds optional `NUM` global
+numbering, and rejects files from a newer MED data model with a clear error. Additive: a mesh
+with no regions/`med:num` and a file with `INFOS_GENERALES` `MAJ` ≤ 4 write and read exactly as
+before.
+
+### Formats
+
+- **MED ↔ named regions.** `FAS`/`GRO` family group names attach as one `Region` per group name
+  (`Point` from `NOEUD`, `Cell` — global block-major indices — from `ELEME`) on read, alongside
+  the existing `point_tags`/`cell_tags` representation, which is unaffected. On write, when the
+  mesh carries no native `point_tags`/`cell_tags` of its own, families are synthesized from
+  `Point`/`Cell` regions instead — one family per unique combination of region names an entity
+  belongs to, node ids positive from `+1`, element ids negative from `-1` (mirroring the Python
+  fallback's `_ensure_med_families`). This closes a real bug: a regions-only mesh (e.g. read from
+  Abaqus, with no native MED tags) written through the C++ path used to silently produce a file
+  with **no** groups at all, because nothing about the write ever raised to trigger the Python
+  bridging. `Side` regions have no MED equivalent and are dropped with a warning. No binding
+  change was needed — regions already cross every binding generically. See
+  [`doc/formats/med.md`](doc/formats/med.md#named-regions).
+- **MED global numbering.** The optional `NUM` datasets Salome/Code_Aster/Kratos write are now
+  read/written as `point_data`/`cell_data["med:num"]`. Cell `NUM` is only carried when *every*
+  cell block has it — a partial array is not a mesh-wide numbering, and is dropped with a
+  warning rather than fabricated.
+- **MED version check.** Both the C++ reader and the Python fallback now check
+  `INFOS_GENERALES`'s `MAJ` attribute and reject (with the same named `ReadError`) a file written
+  by a MED major version newer than 4, instead of failing later with an unrelated structural
+  error. Older majors are unaffected.
+- MED gains `line4` ↔ `SE4` in its cell-type table (no orientation permutation).
+
 ## v9.5.0 (2026-07-28)
 
 `refine` grows from uniform-only to **selective (adaptive) refinement with a conforming
