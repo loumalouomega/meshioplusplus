@@ -482,6 +482,8 @@ static int refine_closure_code(const char *name) {
         return MIO_REFINE_CLOSURE_REDGREEN;
     if (strcmp(name, "propagate") == 0 || strcmp(name, "red") == 0)
         return MIO_REFINE_CLOSURE_PROPAGATE;
+    if (strcmp(name, "balanced") == 0 || strcmp(name, "2:1") == 0)
+        return MIO_REFINE_CLOSURE_BALANCED;
     return -1;
 }
 
