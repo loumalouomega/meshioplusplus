@@ -517,7 +517,8 @@ function convert_cells(m::Mesh, mode::AbstractString; record_parent_ids::Bool=fa
 end
 
 const _REFINE_CLOSURES = Dict("" => Int32(0), "redgreen" => Int32(0), "red-green" => Int32(0),
-                              "green" => Int32(0), "propagate" => Int32(1), "red" => Int32(1))
+                              "green" => Int32(0), "propagate" => Int32(1), "red" => Int32(1),
+                              "balanced" => Int32(2), "2:1" => Int32(2))
 
 const _REFINE_COMPARES = Dict("<" => Int32(0), "lt" => Int32(0), "<=" => Int32(1),
                               "le" => Int32(1), ">" => Int32(2), "gt" => Int32(2),
@@ -542,7 +543,10 @@ a point region every cell with any node in it; a side region is an error) or
 array), and only those cells are refined — the hanging nodes that leaves are
 resolved by `closure`, so the output is still conforming. `"redgreen"` keeps the
 extra refinement local; `"propagate"` is always available for every cell type but
-converges to uniform refinement of the whole edge-connected component.
+converges to uniform refinement of the whole edge-connected component;
+`"balanced"` keeps the hanging nodes and only enforces 2:1 balance, so the output
+is **not conforming** but the cost is bounded by the selection (the constrained
+nodes come back in `refine:hanging`).
 
 Higher-order cells, pyramids and ragged blocks have no same-type subdivision
 and fail by name. See `doc/refine.md`.
@@ -554,7 +558,7 @@ function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
                 record_levels::Bool=false)
     closure_code = get(_REFINE_CLOSURES, String(closure)) do
         throw(ArgumentError("refine: unknown closure '$closure' " *
-                            "(expected 'redgreen'/'green' or 'propagate')"))
+                            "(expected 'redgreen'/'green', 'propagate' or 'balanced')"))
     end
     compare_code = get(_REFINE_COMPARES, String(where_op)) do
         throw(ArgumentError("refine: unknown comparison '$where_op' " *
