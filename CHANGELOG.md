@@ -78,6 +78,19 @@ is byte-identical to v9.4.1's, which the whole pre-existing refine suite guards.
   conforming and defined for every cell type, but **not local**: it converges to uniform
   refinement of the whole edge-connected component. It ships as the always-works baseline and
   as the test oracle, documented as such.
+- **`RefineClosure::Balanced` does not close at all**, keeping the hanging nodes and merely
+  enforcing 2:1 balance — the classic adaptive-mesh-refinement meaning of "propagate", and the
+  only mode whose cost is bounded by the selection rather than by the mesh. A cell is split
+  fully or not at all, and is drawn in only when some cell sharing a **node** with it would end
+  up more than one level above it. Node adjacency rather than edge adjacency is load-bearing:
+  across a hanging interface the coarse cell spans a whole edge while the fine cell has half of
+  it, so the two are different entities and an edge-keyed rule is blind to exactly the
+  coarse/fine adjacency it polices. On a mesh of uniform level nothing propagates — one cell of
+  a 4×4×4 hexahedral block costs 64 → **71** cells, against 125 under `RedGreen` and 512 under
+  `Propagate` — and balancing only bites from the second adaptive pass onwards. The output is
+  therefore **1-irregular and not conforming**; every constrained node (edge midpoints and
+  quad-face centres alike) is reported in the new Int64 `refine:hanging` `point_data` array,
+  which is attached only when there are any, so the conforming closures are unaffected.
 - **`refine:level`** (opt-in `record_levels`): the Int64 per-cell refinement depth, `0` for a
   cell no full split touched and `+1` per full split, with a transitional child inheriting its
   parent's level because a green split is a closure, not a refinement. The name is reserved —
