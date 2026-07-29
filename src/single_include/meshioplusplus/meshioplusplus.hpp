@@ -9984,8 +9984,9 @@ MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
  * with a 4-byte endianness-detection integer `1` for binary) is read first
  * and picks the reader: `"2"`/`"2.2"` -> the 2.2 path, `"4"`/`"4.1"` -> the
  * 4.1 path. The C++ reader (@ref read_gmsh) handles **versions 2.2 and 4.1
- * only** — version 4.0 (which needs `$Entities`) and `$Periodic` records
- * always throw and defer to the Python reader (see
+ * only** — version 4.0 (whose `$Entities` layout differs: 6 bounding-box
+ * doubles even for points, and no bounding-entity lists) and `$Periodic`
+ * records always throw and defer to the Python reader (see
  * doc/formats/gmsh.md#quirks-limitations).
  *
  * **Version 2.2**: `$PhysicalNames`; `$Nodes` (ascii `id x y z` rows, or
@@ -9999,9 +10000,14 @@ MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
  * entityTag parametric numNodesInBlock` followed by a node-tag list then a
  * matching coordinate list (tags may be sparse/out of order, requiring a
  * tag->index remap); `$Elements` likewise groups per entity block, with rows
- * of `elementTag node1..nodeK`. `point_data["gmsh:dim_tags"]` (an `(N,2)`
- * `(entity_dim, entity_tag)` array) and `cell_sets["gmsh:bounding_entities"]`
- * are v4.1-only concepts.
+ * of `elementTag node1..nodeK`. `$Entities` maps each `(entityDim, entityTag)`
+ * to its physical tags and to the entities bounding it — it is the **only**
+ * place 4.1 records physical-group membership, so `cell_data["gmsh:physical"]`
+ * (and therefore every named region) comes from there rather than from the
+ * element rows the way 2.2 does. `point_data["gmsh:dim_tags"]` (an `(N,2)`
+ * `(entity_dim, entity_tag)` array) and the bounding entities (@ref GmshInfo,
+ * surfacing in Python as `cell_sets["gmsh:bounding_entities"]`) are
+ * v4.1-only concepts.
  *
  * Five element types need a node-order permutation between Gmsh and
  * meshio++ (`tetra10`, `hexahedron20`, `hexahedron27`, `wedge15`,
@@ -10016,11 +10022,38 @@ MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
  */
 
 // System includes
+#include <cstdint>
 #include <string>
+#include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
+
+/**
+ * @brief Gmsh data that has no place on a `Mesh` (the `MedInfo`/`ExodusInfo`
+ *        side-channel pattern).
+ *
+ * A reader overload fills one, a writer overload consumes one, and the shared
+ * registry -- and therefore every flat binding (WASM, C API, Fortran, Julia,
+ * R) -- passes none: a documented gap, not a silent loss.
+ */
+struct MESHIOPLUSPLUS_API GmshInfo {
+    /**
+     * @brief Format 4.1 `$Entities` bounding-entity tags, one entry per cell
+     *        block (the tags of the entity that block belongs to).
+     *
+     * These are the boundary of the block's geometric entity, one dimension
+     * down, and the tags are **signed** -- the sign carries the boundary's
+     * orientation. That is why they cannot be a @ref Region (whose entries are
+     * sorted non-negative indices) and why they need this channel at all. On
+     * the Python side they surface as `cell_sets["gmsh:bounding_entities"]`.
+     *
+     * Empty for dimension-0 blocks (points have no boundary) and for files
+     * with no `$Entities` section at all.
+     */
+    std::vector<std::vector<std::int32_t>> mBoundingEntities;
+};
 
 /**
  * @brief Write `mesh` to `path` as a Gmsh 2.2 .msh file (ascii or binary).
@@ -10046,24 +10079,42 @@ MESHIOPLUSPLUS_API void write_gmsh22(const std::string& rPath, const Mesh& rMesh
 /**
  * @brief Write `mesh` to `path` as a Gmsh 4.1 .msh file (ascii or binary).
  *
- * Intended for meshes without entity information (no
- * `point_data["gmsh:dim_tags"]`); `$Entities` is not emitted, so more than
- * one cell type cannot be written this way (Gmsh 4.1 requires `$Entities`
- * to disambiguate cell-to-entity assignment for mixed meshes).
+ * When the mesh carries `point_data["gmsh:dim_tags"]`, a full `$Entities`
+ * section is emitted (one entity per unique `(dim, tag)` node pair, its
+ * physical tag taken from the cell block living on it) and `$Nodes` is split
+ * into one block per entity — which is what makes physical-group *membership*
+ * survive a 4.1 round-trip. Without `gmsh:dim_tags` there is no entity
+ * structure to describe, so no `$Entities` is written and `$Nodes` is a single
+ * block, byte for byte as before.
+ *
+ * Entity bounding boxes are written as zeros (as the Python reference writer
+ * does); gmsh recomputes them on load.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
  * @param binary write node/element bodies as binary (`true`) or ASCII
  *        (`false`)
- * @throws WriteError if `mesh` has more than one cell type (since
- *         `$Entities` is never emitted here) or a cell block's type has no
- *         Gmsh type-code mapping
- * @note the shim only attempts this C++ path when `float_fmt == ".16e"`, no
- *       `gmsh_periodic`, and no `gmsh:dim_tags` in `point_data` — any v4.1
- *       write carrying `gmsh:dim_tags` or periodic data always goes through
- *       Python instead
+ * @throws WriteError if a cell block's type has no Gmsh type-code mapping, an
+ *         entity dimension is outside 0..3, or two cell blocks claim the same
+ *         `(dim, entity tag)` — that entity would have no single physical tag
+ * @note this overload writes no bounding entities; use the @ref GmshInfo
+ *       overload to carry them
+ * @note the shim only attempts this C++ path when `float_fmt == ".16e"` and
+ *       the mesh has no `gmsh_periodic`
  */
 MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary);
+
+/**
+ * @brief Write a Gmsh 4.1 .msh file, including the `$Entities` bounding
+ *        entities.
+ *
+ * Identical to @ref write_gmsh41(const std::string&, const Mesh&, bool) except
+ * that each entity's bounding-entity list is taken from
+ * `rInfo.mBoundingEntities` (indexed by cell block). Entries beyond the block
+ * count, and dimension-0 entities, are ignored.
+ */
+MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                     const GmshInfo& rInfo);
 
 /**
  * @brief Read a Gmsh .msh file (versions 2.2 and 4.1 only).
@@ -10075,17 +10126,37 @@ MESHIOPLUSPLUS_API void write_gmsh41(const std::string& rPath, const Mesh& rMesh
  *
  * @param rPath filesystem path to read
  * @return the read Mesh, with `cell_data["gmsh:physical"]`/
- *         `cell_data["gmsh:geometrical"]` from the first two element tags,
- *         `point_data["gmsh:dim_tags"]` and `cell_sets["gmsh:bounding_entities"]`
- *         (v4.1 only), and `field_data` from `$PhysicalNames`
+ *         `cell_data["gmsh:geometrical"]` (2.2: the first two element tags;
+ *         4.1: the block's entity tag and its `$Entities` physical tag, the
+ *         latter present only when the file tags any entity at all, and 0 for
+ *         the untagged blocks), `point_data["gmsh:dim_tags"]` (v4.1 only),
+ *         `field_data` from `$PhysicalNames`, and one `Cell` region per named
+ *         physical group
  * @throws ReadError for anything not handled by the C++ path — version not
- *         2.2/4.1 (e.g. 4.0, which needs `$Entities`), `$Periodic` records,
+ *         2.2/4.1 (4.0's `$Entities` layout differs), `$Periodic` records,
  *         a Gmsh element type outside the curated type-code subset, or
  *         parametric nodes — so the Python reader can take over
  * @note the C++ reader never populates `mesh.gmsh_periodic`; only the
  *       Python fallback does, for files containing `$Periodic`
+ * @note this overload discards the `$Entities` bounding-entity tags; use the
+ *       @ref GmshInfo overload to keep them
  */
 MESHIOPLUSPLUS_API Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Read a Gmsh .msh file, keeping the data that has no place on a `Mesh`.
+ *
+ * Identical to @ref read_gmsh(const std::string&, const ReadOptions&) except
+ * that `rInfo` receives the format 4.1 `$Entities` bounding-entity tags.
+ *
+ * @param rPath filesystem path to read
+ * @param rInfo receives the side-channel data (cleared of nothing — append-only
+ *        into whatever the caller passes)
+ * @param rOpts selective-read options
+ * @return the read Mesh
+ */
+MESHIOPLUSPLUS_API Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo,
+                                  const ReadOptions& rOpts = {});
 
 /**
  * @brief Summarize a `.msh` without reading its node coordinates or connectivity.
@@ -16708,7 +16779,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 6
+#define MESHIOPLUSPLUS_VERSION_MINOR 7
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -16718,7 +16789,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.6.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.7.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -41718,6 +41789,7 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -42208,10 +42280,94 @@ struct E41 {
     std::string mType;
     std::size_t mN = 0;
     std::size_t mCount = 0;
+    int mEntityDim = 0;
     int mEntityTag = 0;
+    std::int32_t mPhysicalTag = 0;  // 0 == gmsh's "no physical group"
+    std::vector<std::int32_t> mBounding;
     NDArray mConn;  // (count, n) Int64, 0-based gmsh node ids; moved into the
                     // cell block directly when the tag remap is the identity.
 };
+
+/**
+ * @brief `$Entities` physical tags and bounding entities.
+ *
+ * Both arrays are indexed `[0..3]` by entity **dimension** -- which the section
+ * never states, being implicit in its ordering (points, curves, surfaces,
+ * volumes) -- and then keyed by entity tag.
+ *
+ * `$Entities` is the only place format 4.1 records physical-group membership:
+ * an `$Elements` block names an `(entityDim, entityTag)` pair and the physical
+ * tag lives on the entity, so without this section a 4.1 file has no
+ * `gmsh:physical` and therefore no named regions.
+ */
+struct GmshEntities41 {
+    std::array<std::unordered_map<std::int32_t, std::vector<std::int32_t>>, 4> mPhysical;
+    std::array<std::unordered_map<std::int32_t, std::vector<std::int32_t>>, 4> mBounding;
+    /// Whether any entity in the file carries a physical tag at all.
+    bool mAnyPhysical = false;
+};
+
+/**
+ * @brief Parse `$Entities` (format 4.1).
+ *
+ * Layout, per dimension `d`, after the four `size_t` per-dimension counts:
+ * `tag(int32)`, a bounding box of **3** doubles for `d == 0` and **6**
+ * otherwise (discarded -- the reader has nowhere to put it and gmsh recomputes
+ * it), `numPhysicalTags(size_t)` then that many `int32`, and for `d > 0`
+ * `numBounding(size_t)` then that many `int32`. Bounding-entity tags are
+ * **signed**: the sign carries the boundary's orientation.
+ *
+ * Deliberately serial -- the section is tiny next to `$Nodes`/`$Elements` and
+ * the work is hash-map inserts.
+ */
+GmshEntities41 read_entities_41(GmshCursor& rCur, bool is_ascii, int data_size) {
+    auto rd_size = [&]() -> std::int64_t {
+        return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
+    };
+    auto rd_int = [&]() -> std::int32_t {
+        return is_ascii ? static_cast<std::int32_t>(rCur.next_int()) : rCur.read_i32();
+    };
+    auto skip_dbl = [&](int n) {
+        if (is_ascii) {
+            // The ascii body is a whitespace token stream, so the coordinates
+            // still have to be consumed even though they are thrown away.
+            for (int i = 0; i < n; ++i)
+                rCur.next_double();
+        } else {
+            rCur.mPos += static_cast<std::size_t>(n) * 8;
+        }
+    };
+
+    GmshEntities41 out;
+    std::array<std::int64_t, 4> counts{};
+    for (int d = 0; d < 4; ++d)
+        counts[static_cast<std::size_t>(d)] = rd_size();
+
+    for (int d = 0; d < 4; ++d) {
+        const std::size_t dz = static_cast<std::size_t>(d);
+        for (std::int64_t i = 0; i < counts[dz]; ++i) {
+            const std::int32_t tag = rd_int();
+            skip_dbl(d == 0 ? 3 : 6);  // bounding box
+            const std::int64_t num_phys = rd_size();
+            if (num_phys > 0) {
+                std::vector<std::int32_t> phys(static_cast<std::size_t>(num_phys));
+                for (std::int64_t k = 0; k < num_phys; ++k)
+                    phys[static_cast<std::size_t>(k)] = rd_int();
+                out.mAnyPhysical = true;
+                out.mPhysical[dz].emplace(tag, std::move(phys));
+            }
+            if (d > 0) {
+                const std::int64_t num_bnd = rd_size();
+                std::vector<std::int32_t> bnd(static_cast<std::size_t>(num_bnd));
+                for (std::int64_t k = 0; k < num_bnd; ++k)
+                    bnd[static_cast<std::size_t>(k)] = rd_int();
+                out.mBounding[dz].emplace(tag, std::move(bnd));
+            }
+        }
+    }
+    rCur.skip_to_end("Entities");
+    return out;
+}
 
 void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoints,
                    std::vector<std::int64_t>& rTags,
@@ -42266,7 +42422,16 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
     rCur.skip_to_end("Nodes");
 }
 
-void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vector<E41>& rBlocks) {
+/**
+ * @brief Parse `$Elements` (format 4.1).
+ *
+ * @param pEntities the file's `$Entities`, or `nullptr` when it had none. Real
+ *        gmsh files always emit `$Entities` first, so resolving each block's
+ *        physical tag inline is safe -- the same section ordering the Python
+ *        reference assumes.
+ */
+void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vector<E41>& rBlocks,
+                      const GmshEntities41* pEntities) {
     auto rd_size = [&]() -> std::int64_t {
         return is_ascii ? rCur.next_int() : static_cast<std::int64_t>(rCur.read_uint(data_size));
     };
@@ -42282,7 +42447,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
     const auto& nnpc = num_nodes_per_cell();
 
     for (std::int64_t b = 0; b < num_blocks; ++b) {
-        rd_int();  // entity dim
+        int entity_dim = rd_int();
         int entity_tag = rd_int();
         int etype = rd_int();
         std::int64_t num_ele = rd_size();
@@ -42295,7 +42460,22 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
         blk.mType = it->second;
         blk.mN = n;
         blk.mCount = static_cast<std::size_t>(num_ele);
+        blk.mEntityDim = entity_dim;
         blk.mEntityTag = entity_tag;
+        if (pEntities && entity_dim >= 0 && entity_dim < 4) {
+            const std::size_t dz = static_cast<std::size_t>(entity_dim);
+            auto pit = pEntities->mPhysical[dz].find(entity_tag);
+            // Only the first physical tag: a gmsh entity may carry several, but
+            // one cell_data column can hold one. The Python reference makes the
+            // same choice.
+            if (pit != pEntities->mPhysical[dz].end() && !pit->second.empty())
+                blk.mPhysicalTag = pit->second[0];
+            if (entity_dim > 0) {
+                auto bit = pEntities->mBounding[dz].find(entity_tag);
+                if (bit != pEntities->mBounding[dz].end())
+                    blk.mBounding = bit->second;
+            }
+        }
         const std::size_t nez = static_cast<std::size_t>(num_ele);
         blk.mConn = NDArray(DType::Int64, {nez, n});
         std::int64_t* dst = blk.mConn.As<std::int64_t>();
@@ -42327,11 +42507,14 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
     rCur.skip_to_end("Elements");
 }
 
-Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const ReadOptions& rOpts) {
+Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const ReadOptions& rOpts,
+                      GmshInfo* pInfo) {
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<std::array<std::int64_t, 2>> dim_tags;
     std::vector<E41> eblocks;
+    GmshEntities41 entities;
+    bool have_entities = false;
     std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
 
     while (!rCur.eof()) {
@@ -42343,12 +42526,14 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         std::string env = gmsh_trim(line.substr(1));
         if (env == "PhysicalNames")
             read_physical_names(rCur, field_data);
-        else if (env == "Entities")
-            throw ReadError("Gmsh $Entities not supported by the C++ reader");
-        else if (env == "Nodes")
+        else if (env == "Entities") {
+            entities = read_entities_41(rCur, is_ascii, data_size);
+            have_entities = true;
+        } else if (env == "Nodes")
             read_nodes_41(rCur, is_ascii, data_size, points, point_tags, dim_tags);
         else if (env == "Elements")
-            read_elements_41(rCur, is_ascii, data_size, eblocks);
+            read_elements_41(rCur, is_ascii, data_size, eblocks,
+                             have_entities ? &entities : nullptr);
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
@@ -42402,7 +42587,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         mesh.AddPointData("gmsh:dim_tags", std::move(dt));
     }
 
-    std::vector<NDArray> geom_blocks;
+    std::vector<NDArray> geom_blocks, physical_blocks;
     for (auto& b : eblocks) {
         const std::vector<int>& perm = gmsh_to_meshio_perm(b.mType);
         const int* prm = perm.empty() ? nullptr : perm.data();
@@ -42436,6 +42621,19 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         const std::int32_t etag = b.mEntityTag;
         parallel_for_bw(b.mCount, [&](std::size_t r) { gep[r] = etag; });
         geom_blocks.push_back(std::move(ge));
+
+        // One array per block whenever the file tags anything at all, with 0
+        // (gmsh's "no physical group") for the untagged blocks. Emitting only
+        // the tagged ones -- what the Python reference does -- would leave
+        // gmsh:physical shorter than mesh.cells, which the uniform mesh API
+        // cannot express and gmsh_attach_regions rejects.
+        if (entities.mAnyPhysical) {
+            NDArray ph(DType::Int32, {b.mCount});
+            std::int32_t* php = ph.As<std::int32_t>();
+            const std::int32_t ptag = b.mPhysicalTag;
+            parallel_for_bw(b.mCount, [&](std::size_t r) { php[r] = ptag; });
+            physical_blocks.push_back(std::move(ph));
+        }
     }
 
     for (auto& kv : cell_data_raw) {
@@ -42447,8 +42645,18 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         }
         mesh.AddCellData(kv.first, std::move(per_block));
     }
+    if (!physical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:physical"))
+        mesh.AddCellData("gmsh:physical", std::move(physical_blocks));
     if (!geom_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
         mesh.AddCellData("gmsh:geometrical", std::move(geom_blocks));
+
+    // Bounding entities are signed (the sign carries orientation), so they
+    // cannot be a Region -- they ride the side channel instead, like MedInfo.
+    if (pInfo && have_entities) {
+        pInfo->mBoundingEntities.reserve(eblocks.size());
+        for (const auto& b : eblocks)
+            pInfo->mBoundingEntities.push_back(b.mBounding);
+    }
 
     gmsh_attach_regions(mesh);
 
@@ -42469,6 +42677,9 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
 struct GmshMeta41 {
     std::size_t mNumPoints = 0;
     std::vector<CellBlockInfo> mBlocks;
+    /// Per block, its `$Elements` `(entityDim, entityTag)` -- what resolves the
+    /// block's physical group against `$Entities`.
+    std::vector<std::pair<int, std::int32_t>> mBlockEntities;
     std::vector<std::string> mPointDataNames;
     std::vector<std::string> mCellDataNames;
     bool mHasDimTags = false;
@@ -42528,17 +42739,18 @@ void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshM
         gmsh_finish_line(rCur);
 
     for (std::int64_t b = 0; b < num_blocks; ++b) {
-        int etype = 0;
+        int etype = 0, entity_dim = 0;
+        std::int32_t entity_tag = 0;
         std::int64_t num_ele = 0;
         if (is_ascii) {
-            rCur.next_int();  // entity dim
-            rCur.next_int();  // entity tag
+            entity_dim = static_cast<int>(rCur.next_int());
+            entity_tag = static_cast<std::int32_t>(rCur.next_int());
             etype = static_cast<int>(rCur.next_int());
             num_ele = rCur.next_int();
             gmsh_finish_line(rCur);
         } else {
-            rCur.read_i32();  // entity dim
-            rCur.read_i32();  // entity tag
+            entity_dim = rCur.read_i32();
+            entity_tag = rCur.read_i32();
             etype = rCur.read_i32();
             num_ele = static_cast<std::int64_t>(rCur.read_uint(data_size));
         }
@@ -42554,6 +42766,7 @@ void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshM
         info.mNumCells = static_cast<std::size_t>(num_ele < 0 ? 0 : num_ele);
         info.mNodesPerCell = n;
         rMeta.mBlocks.push_back(std::move(info));
+        rMeta.mBlockEntities.emplace_back(entity_dim, entity_tag);
 
         // Skip the block's connectivity: one line per element (ascii) or
         // num_ele * (tag + n nodes) fixed-width integers (binary).
@@ -42585,6 +42798,11 @@ std::string gmsh_scan_data_name(GmshCursor& rCur, const std::string& rTag) {
 }  // namespace
 
 Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
+    GmshInfo unused;
+    return read_gmsh(rPath, unused, rOpts);
+}
+
+Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOpts) {
     // Memory-mapped where that pays (see detail/file_source.hpp), copied
     // otherwise. The source is function-local: every parsed value is copied
     // into owning mesh storage below, so nothing in the returned Mesh points
@@ -42610,7 +42828,7 @@ Mesh read_gmsh(const std::string& rPath, const ReadOptions& rOpts) {
     cur.skip_to_end("MeshFormat");
 
     if (version == "4.1" || version == "4")
-        return read_gmsh41_body(cur, is_ascii, data_size, rOpts);
+        return read_gmsh41_body(cur, is_ascii, data_size, rOpts, &rInfo);
     if (version.rfind("2", 0) != 0)
         throw ReadError("C++ Gmsh reader handles versions 2.2 and 4.1 only");
 
@@ -42780,6 +42998,112 @@ void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, c
     rOs << "$End" << pTag << "\n";
 }
 
+/// One geometric entity on the 4.1 write path: the nodes it owns and, when one
+/// exists, the cell block that supplies its physical tag and bounding entities.
+struct GmshWriteEntity41 {
+    int mDim = 0;
+    std::int32_t mTag = 0;
+    std::vector<std::int64_t> mNodes;  // ascending point indices
+    std::size_t mCellBlock = static_cast<std::size_t>(-1);
+};
+
+/**
+ * @brief Partition the points into 4.1 entity blocks and pair each with its
+ *        cell block.
+ *
+ * The entity set is the **union** of the node entities (from
+ * `point_data["gmsh:dim_tags"]`) and the cell-block entities (from
+ * `cell_data["gmsh:geometrical"]`). Node entities are nearly a superset — gmsh
+ * assigns one to every object needed to describe the geometry — but not quite:
+ * a straight curve whose only nodes are its two endpoints has its nodes on the
+ * *points*, so it owns none of its own while still carrying line elements
+ * (`example/example.msh` has six such curves). Taking the union is what keeps
+ * their physical tags and bounding entities from being dropped; gmsh is happy
+ * with an entity that has no `$Nodes` block.
+ *
+ * Sorting the unique `(dim, tag)` pairs lexicographically is what makes the
+ * per-dimension counts and the points/curves/surfaces/volumes emission order
+ * agree by construction, so `$Entities` and `$Nodes` cannot disagree.
+ *
+ * @return one entry per entity, or an empty vector when the mesh carries no
+ *         `gmsh:dim_tags` (the caller then writes its single legacy block and
+ *         no `$Entities` at all).
+ * @throws WriteError on an entity dimension above 3, or on two cell blocks
+ *         claiming the same `(dim, entity tag)` — the entity would then have
+ *         no single physical tag to write.
+ */
+std::vector<GmshWriteEntity41> gmsh_entity_blocks_41(
+    const Mesh& rMesh, const std::function<int(const std::string&)>& rCellDim) {
+    std::vector<GmshWriteEntity41> out;
+    if (!rMesh.HasPointData("gmsh:dim_tags"))
+        return out;
+    const NDArray& dt = rMesh.PointData("gmsh:dim_tags");
+    const std::size_t n = rMesh.NumPoints();
+    if (n == 0)
+        return out;
+    // Normally an (N, 2) array, but the flat bindings (WASM, C API) carry data
+    // arrays without a shape, so the same values arrive as a bare 2N-long row.
+    // Both describe one (dim, tag) pair per point; refusing the flat one would
+    // silently drop $Entities on exactly the surfaces this exists to serve.
+    const std::size_t stride = dt.Shape().size() >= 2 ? dt.Shape()[1] : dt.Size() / n;
+    if (stride < 2 || dt.Size() < n * stride)
+        return out;
+
+    // Per-block entity keys, needed both for the union below and for the
+    // pairing pass afterwards.
+    const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
+    std::vector<std::pair<int, std::int32_t>> cell_keys(rMesh.NumCellBlocks());
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+        std::int32_t etag = 0;
+        if (has_geometrical && ci < rMesh.CellDataNumBlocks("gmsh:geometrical") &&
+            rMesh.CellData("gmsh:geometrical", ci).Size() > 0)
+            etag = static_cast<std::int32_t>(
+                detail::read_int(rMesh.CellData("gmsh:geometrical", ci), 0));
+        cell_keys[ci] = {rCellDim(std::string(rMesh.Cells(ci).Type())), etag};
+    }
+
+    // Unique (dim, tag) pairs, sorted. Serial: the entity count is tiny next to
+    // the node count, and a deterministic order is the whole point.
+    std::vector<std::pair<int, std::int32_t>> keys(n);
+    for (std::size_t i = 0; i < n; ++i)
+        keys[i] = {static_cast<int>(detail::read_int(dt, i * stride + 0)),
+                   static_cast<std::int32_t>(detail::read_int(dt, i * stride + 1))};
+    std::vector<std::pair<int, std::int32_t>> uniq = keys;
+    uniq.insert(uniq.end(), cell_keys.begin(), cell_keys.end());
+    std::sort(uniq.begin(), uniq.end());
+    uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+    for (const auto& k : uniq) {
+        if (k.first < 0 || k.first > 3)
+            throw WriteError("Gmsh 4.1 writer: entity dimension " + std::to_string(k.first) +
+                             " is outside 0..3");
+    }
+
+    std::map<std::pair<int, std::int32_t>, std::size_t> index;
+    out.reserve(uniq.size());
+    for (const auto& k : uniq) {
+        index.emplace(k, out.size());
+        GmshWriteEntity41 e;
+        e.mDim = k.first;
+        e.mTag = k.second;
+        out.push_back(std::move(e));
+    }
+    // Ascending node ids per entity, which is what the reader's tag->row remap
+    // expects to see and what keeps the output stable.
+    for (std::size_t i = 0; i < n; ++i)
+        out[index.at(keys[i])].mNodes.push_back(static_cast<std::int64_t>(i));
+
+    // Pair each entity with the cell block living on it.
+    for (std::size_t ci = 0; ci < cell_keys.size(); ++ci) {
+        const std::size_t ei = index.at(cell_keys[ci]);
+        if (out[ei].mCellBlock != static_cast<std::size_t>(-1))
+            throw WriteError("Gmsh 4.1 writer: two cell blocks share entity (dim " +
+                             std::to_string(out[ei].mDim) + ", tag " +
+                             std::to_string(out[ei].mTag) + ")");
+        out[ei].mCellBlock = ci;
+    }
+    return out;
+}
+
 }  // namespace
 
 void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
@@ -42940,6 +43264,10 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
 }
 
 void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    write_gmsh41(rPath, rMesh, binary, GmshInfo{});
+}
+
+void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary, const GmshInfo& rInfo) {
     std::ofstream os(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -42972,50 +43300,184 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
     write_physical_names(os, rMesh);
 
-    // Nodes: a single entity block (no $Entities is emitted).
-    int node_dim = rMesh.NumCellBlocks() == 0 ? 0 : cell_dim(rMesh.Cells(0).Type());
-    os << "$Nodes\n";
-    if (binary) {
-        put_u64(1);
-        put_u64(num_points);
-        put_u64(1);
-        put_u64(num_points);
-        put_i32(node_dim);
-        put_i32(0);
-        put_i32(0);
-        put_u64(num_points);
-        // Node tags 1..num_points and the (3-padded) coords, each as one write
-        // instead of a stream call per scalar (native endianness).
-        std::vector<std::uint64_t> ntags(num_points);
-        for (std::size_t i = 0; i < num_points; ++i)
-            ntags[i] = i + 1;
-        os.write(reinterpret_cast<const char*>(ntags.data()),
-                 static_cast<std::streamsize>(num_points * 8));
-        std::vector<double> cbuf(num_points * 3, 0.0);
-        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
-            const T* src = points.As<T>();
-            parallel_for_bw(num_points, [&](std::size_t i) {
-                for (std::size_t c = 0; c < dim && c < 3; ++c)
-                    cbuf[i * 3 + c] = static_cast<double>(src[i * dim + c]);
-            });
-        });
-        os.write(reinterpret_cast<const char*>(cbuf.data()),
-                 static_cast<std::streamsize>(num_points * 3 * 8));
-        os << '\n';
-    } else {
-        os << "1 " << num_points << " 1 " << num_points << "\n";
-        os << node_dim << " 0 0 " << num_points << "\n";
-        for (std::size_t i = 0; i < num_points; ++i)
-            os << (i + 1) << "\n";
-        // 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
-        char buf[128];
-        for (std::size_t i = 0; i < num_points; ++i) {
-            double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
-            double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
-            double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
-            os << buf;
+    // The 3-padded coordinates of one point, formatted the one way both the
+    // single-block and per-entity paths use.
+    auto put_coords_ascii = [&](std::size_t i) {
+        char buf[128];  // 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
+        double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
+        double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
+        double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
+        std::snprintf(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
+        os << buf;
+    };
+
+    const std::vector<GmshWriteEntity41> entities = gmsh_entity_blocks_41(rMesh, cell_dim);
+
+    // $Entities, and with it the per-entity $Nodes blocks, only when the mesh
+    // says which entity each node belongs to. Without that the legacy
+    // single-block output below is emitted byte for byte as before.
+    if (!entities.empty()) {
+        const bool has_physical = rMesh.HasCellData("gmsh:physical");
+        std::array<std::size_t, 4> per_dim{};
+        for (const auto& e : entities)
+            ++per_dim[static_cast<std::size_t>(e.mDim)];
+
+        os << "$Entities\n";
+        if (binary) {
+            for (int d = 0; d < 4; ++d)
+                put_u64(per_dim[static_cast<std::size_t>(d)]);
+        } else {
+            os << per_dim[0] << " " << per_dim[1] << " " << per_dim[2] << " " << per_dim[3] << "\n";
         }
+        for (const auto& e : entities) {
+            const bool paired = e.mCellBlock != static_cast<std::size_t>(-1);
+            // The bounding box is written as zeros, matching the Python
+            // reference writer: recovering a real one would mean a min/max pass
+            // over each entity's points, and gmsh recomputes it on load anyway.
+            std::int32_t ptag = 0;
+            bool has_ptag = false;
+            if (paired && has_physical && e.mCellBlock < rMesh.CellDataNumBlocks("gmsh:physical") &&
+                rMesh.CellData("gmsh:physical", e.mCellBlock).Size() > 0) {
+                ptag = static_cast<std::int32_t>(
+                    detail::read_int(rMesh.CellData("gmsh:physical", e.mCellBlock), 0));
+                has_ptag = true;
+            }
+            const std::vector<std::int32_t>* bounds = nullptr;
+            if (paired && e.mDim > 0 && e.mCellBlock < rInfo.mBoundingEntities.size() &&
+                !rInfo.mBoundingEntities[e.mCellBlock].empty())
+                bounds = &rInfo.mBoundingEntities[e.mCellBlock];
+
+            if (binary) {
+                put_i32(e.mTag);
+                for (int k = 0; k < (e.mDim == 0 ? 3 : 6); ++k)
+                    put_f64(0.0);
+                put_u64(has_ptag ? 1u : 0u);
+                if (has_ptag)
+                    put_i32(ptag);
+                if (e.mDim > 0) {
+                    put_u64(bounds ? bounds->size() : 0u);
+                    if (bounds)
+                        for (std::int32_t b : *bounds)
+                            put_i32(b);
+                }
+            } else {
+                os << e.mTag << " ";
+                os << (e.mDim == 0 ? "0 0 0 " : "0 0 0 0 0 0 ");
+                if (has_ptag)
+                    os << "1 " << ptag << " ";
+                else
+                    os << "0 ";
+                if (e.mDim > 0) {
+                    if (bounds) {
+                        os << bounds->size() << " ";
+                        for (std::int32_t b : *bounds)
+                            os << b << " ";
+                        os << "\n";
+                    } else {
+                        os << "0\n";
+                    }
+                } else {
+                    os << "\n";
+                }
+            }
+        }
+        if (binary)
+            os << '\n';
+        os << "$EndEntities\n";
+    }
+
+    os << "$Nodes\n";
+    if (entities.empty()) {
+        // Legacy path: one entity block covering every node.
+        int node_dim = rMesh.NumCellBlocks() == 0 ? 0 : cell_dim(rMesh.Cells(0).Type());
+        if (binary) {
+            put_u64(1);
+            put_u64(num_points);
+            put_u64(1);
+            put_u64(num_points);
+            put_i32(node_dim);
+            put_i32(0);
+            put_i32(0);
+            put_u64(num_points);
+            // Node tags 1..num_points and the (3-padded) coords, each as one write
+            // instead of a stream call per scalar (native endianness).
+            std::vector<std::uint64_t> ntags(num_points);
+            for (std::size_t i = 0; i < num_points; ++i)
+                ntags[i] = i + 1;
+            os.write(reinterpret_cast<const char*>(ntags.data()),
+                     static_cast<std::streamsize>(num_points * 8));
+            std::vector<double> cbuf(num_points * 3, 0.0);
+            detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
+                const T* src = points.As<T>();
+                parallel_for_bw(num_points, [&](std::size_t i) {
+                    for (std::size_t c = 0; c < dim && c < 3; ++c)
+                        cbuf[i * 3 + c] = static_cast<double>(src[i * dim + c]);
+                });
+            });
+            os.write(reinterpret_cast<const char*>(cbuf.data()),
+                     static_cast<std::streamsize>(num_points * 3 * 8));
+            os << '\n';
+        } else {
+            os << "1 " << num_points << " 1 " << num_points << "\n";
+            os << node_dim << " 0 0 " << num_points << "\n";
+            for (std::size_t i = 0; i < num_points; ++i)
+                os << (i + 1) << "\n";
+            for (std::size_t i = 0; i < num_points; ++i)
+                put_coords_ascii(i);
+        }
+    } else {
+        // One block per entity that owns nodes -- an entity may own none (see
+        // gmsh_entity_blocks_41), and an empty block would be legal but is not
+        // what the reference writer emits. Node tags stay the global 1-based
+        // point ids, so each block's list is sparse: exactly the case the
+        // reader's tag->row remap exists for.
+        std::size_t num_node_blocks = 0;
+        for (const auto& e : entities)
+            if (!e.mNodes.empty())
+                ++num_node_blocks;
+        if (binary) {
+            put_u64(num_node_blocks);
+            put_u64(num_points);
+            put_u64(1);
+            put_u64(num_points);
+        } else {
+            os << num_node_blocks << " " << num_points << " 1 " << num_points << "\n";
+        }
+        for (const auto& e : entities) {
+            if (e.mNodes.empty())
+                continue;
+            const std::size_t nb = e.mNodes.size();
+            if (binary) {
+                put_i32(e.mDim);
+                put_i32(e.mTag);
+                put_i32(0);  // parametric
+                put_u64(nb);
+                std::vector<std::uint64_t> ntags(nb);
+                for (std::size_t i = 0; i < nb; ++i)
+                    ntags[i] = static_cast<std::uint64_t>(e.mNodes[i]) + 1;
+                os.write(reinterpret_cast<const char*>(ntags.data()),
+                         static_cast<std::streamsize>(nb * 8));
+                std::vector<double> cbuf(nb * 3, 0.0);
+                detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
+                    const T* src = points.As<T>();
+                    parallel_for_bw(nb, [&](std::size_t i) {
+                        const std::size_t p = static_cast<std::size_t>(e.mNodes[i]);
+                        for (std::size_t c = 0; c < dim && c < 3; ++c)
+                            cbuf[i * 3 + c] = static_cast<double>(src[p * dim + c]);
+                    });
+                });
+                os.write(reinterpret_cast<const char*>(cbuf.data()),
+                         static_cast<std::streamsize>(nb * 3 * 8));
+            } else {
+                os << e.mDim << " " << e.mTag << " 0 " << nb << "\n";
+                for (std::size_t i = 0; i < nb; ++i)
+                    os << (e.mNodes[i] + 1) << "\n";
+                for (std::size_t i = 0; i < nb; ++i)
+                    put_coords_ascii(static_cast<std::size_t>(e.mNodes[i]));
+            }
+        }
+        if (binary)
+            os << '\n';
     }
     os << "$EndNodes\n";
 
@@ -43151,6 +43613,11 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
         throw ReadError("Gmsh: only format 4.1 has a header-only metadata path");
 
     GmshMeta41 meta;
+    GmshEntities41 entities;
+    // $PhysicalNames and $Entities are both small and both precede $Elements,
+    // so a summary can report gmsh:physical and the named regions without ever
+    // touching a coordinate or a connectivity row.
+    std::unordered_map<std::string, NDArray> field_data;
     while (!cur.eof()) {
         const std::string line = cur.next_nonblank();
         if (line.empty())
@@ -43162,11 +43629,15 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
             gmsh_scan_nodes_41(cur, is_ascii, data_size, meta);
         else if (env == "Elements")
             gmsh_scan_elements_41(cur, is_ascii, data_size, meta);
+        else if (env == "PhysicalNames")
+            read_physical_names(cur, field_data);
+        else if (env == "Entities")
+            entities = read_entities_41(cur, is_ascii, data_size);
         else if (env == "NodeData")
             meta.mPointDataNames.push_back(gmsh_scan_data_name(cur, "NodeData"));
         else if (env == "ElementData")
             meta.mCellDataNames.push_back(gmsh_scan_data_name(cur, "ElementData"));
-        else if (env == "Entities" || env == "Periodic")
+        else if (env == "Periodic")
             throw ReadError("Gmsh $" + env + " not supported by the C++ reader");
         else
             cur.skip_to_end(env);
@@ -43182,10 +43653,55 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
     // list them too or it would disagree with a real read.
     if (meta.mHasDimTags)
         out.mPointDataNames.push_back("gmsh:dim_tags");
-    if (!out.mCellBlocks.empty())
+    if (!out.mCellBlocks.empty()) {
         out.mCellDataNames.push_back("gmsh:geometrical");
+        if (entities.mAnyPhysical)
+            out.mCellDataNames.push_back("gmsh:physical");
+    }
     std::sort(out.mPointDataNames.begin(), out.mPointDataNames.end());
     std::sort(out.mCellDataNames.begin(), out.mCellDataNames.end());
+
+    // Named regions, counted from the block headers alone. gmsh_attach_regions
+    // groups by (physical tag, block topological dimension), so this does too --
+    // a summary that disagreed with a real read would be worse than none.
+    if (entities.mAnyPhysical && !field_data.empty()) {
+        std::map<std::pair<std::int64_t, int>, std::string> names;
+        for (const auto& kv : field_data) {
+            if (kv.second.Size() < 2)
+                continue;
+            names.emplace(std::make_pair(detail::read_int(kv.second, 0),
+                                         static_cast<int>(detail::read_int(kv.second, 1))),
+                          kv.first);
+        }
+        std::map<std::pair<std::int64_t, int>, std::size_t> counts;
+        for (std::size_t b = 0; b < out.mCellBlocks.size() && b < meta.mBlockEntities.size(); ++b) {
+            const auto& [edim, etag] = meta.mBlockEntities[b];
+            if (edim < 0 || edim >= 4)
+                continue;
+            const auto pit = entities.mPhysical[static_cast<std::size_t>(edim)].find(etag);
+            if (pit == entities.mPhysical[static_cast<std::size_t>(edim)].end() ||
+                pit->second.empty())
+                continue;
+            int dim = cell_type_dimension(cell_type_from_name(out.mCellBlocks[b].mType));
+            if (dim < 0) {
+                const auto tit = topological_dimension().find(out.mCellBlocks[b].mType);
+                dim = tit != topological_dimension().end() ? tit->second : -1;
+            }
+            counts[{pit->second[0], dim}] += out.mCellBlocks[b].mNumCells;
+        }
+        for (const auto& [key, name] : names) {
+            const auto cit = counts.find(key);
+            if (cit == counts.end())
+                continue;
+            RegionSummary rs;
+            rs.mName = name;
+            rs.mKind = RegionKind::Cell;
+            rs.mDim = key.second;
+            rs.mTag = key.first;
+            rs.mNumEntries = cit->second;
+            out.mRegions.push_back(std::move(rs));
+        }
+    }
 
     out.mHasBBox = false;  // would require decoding the coordinates
     return out;
@@ -68299,7 +68815,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"exodus", [](const std::string& path,
                       const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); }},
 #endif
-        {"gmsh", meshioplusplus::read_gmsh},
+        // A lambda, not `&read_gmsh`: the GmshInfo overload makes the bare name
+        // ambiguous (the exodus/mdpa story again). The info is dropped here, so
+        // the flat bindings see no `$Entities` bounding entities.
+        {"gmsh", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_gmsh(path, opts); }},
         // mdpa honours mLenient rather than the narrowing options -- the same
         // "options-aware is several capabilities, not one" note as exodus. This
         // entry is what makes `--lenient` reach the C API, Fortran, Julia, R,
