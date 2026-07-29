@@ -928,7 +928,7 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(writers.includes('gmsh22') && !readers.includes('gmsh22'));
 });
 
-step('gmsh22 round-trips named Cell region membership; gmsh (4.1) does not', () => {
+step('gmsh22 round-trips a region-only mesh; gmsh (4.1) needs entity structure', () => {
     const tagged = {
         ...tet,
         regions: [{ name: 'solid', kind: 'cell', dim: 3, tag: 7, entries: Int32Array.from([0]) }],
@@ -939,12 +939,65 @@ step('gmsh22 round-trips named Cell region membership; gmsh (4.1) does not', () 
     assert.equal(back22.regions[0].name, 'solid');
     assert.deepEqual(Array.from(back22.regions[0].entries), [0]);
 
-    // The default "gmsh" (4.1) writer only carries the physical NAME, not
-    // per-element membership -- the documented format gap this entry works
-    // around by making the round-trip-capable writer selectable at all.
+    // 4.1 records membership in $Entities, which describes the *geometry* --
+    // so it can only be written for a mesh that says which entity each node
+    // belongs to (gmsh:dim_tags). This mesh came from another format and has
+    // none, so no $Entities is emitted and only the name survives. A file that
+    // does carry the structure round-trips: see the next step.
     m.writeMesh('/regions41.msh', tagged, 'gmsh');
     const back41 = m.readMesh('/regions41.msh', 'gmsh');
     assert.equal(back41.regions.length, 0);
+});
+
+step('gmsh 4.1 $Entities: physical groups read, and survive a 4.1 round-trip', () => {
+    // A real gmsh 4.1 file: $Entities carries the physical tags, so it is the
+    // only thing standing between a mesher's own output and this build. It
+    // used to throw outright, which made every 4.1 file unreadable here.
+    // The unit square as two triangles; surface 1 -> tag 7 "plate", curve 1 ->
+    // tag 8 "bottom", curve 2 deliberately untagged.
+    const msh = [
+        '$MeshFormat', '4.1 0 8', '$EndMeshFormat',
+        '$PhysicalNames', '2', '1 8 "bottom"', '2 7 "plate"', '$EndPhysicalNames',
+        '$Entities', '4 2 1 0',
+        '1 0 0 0 0', '2 1 0 0 0', '3 1 1 0 0', '4 0 1 0 0',
+        '1 0 0 0 1 0 0 1 8 2 1 -2',
+        '2 1 0 0 1 1 0 0 2 2 -3',
+        '1 0 0 0 1 1 0 1 7 2 1 2',
+        '$EndEntities',
+        '$Nodes', '3 4 1 4',
+        '0 1 0 1', '1', '0 0 0',
+        '0 2 0 1', '2', '1 0 0',
+        '2 1 0 2', '3', '4', '1 1 0', '0 1 0',
+        '$EndNodes',
+        '$Elements', '3 4 1 5',
+        '1 1 1 1', '1 1 2',
+        '1 2 1 1', '2 2 3',
+        '2 1 2 2', '4 1 2 3', '5 1 3 4',
+        '$EndElements', '',
+    ].join('\n');
+    m.FS.writeFile('/entities.msh', msh);
+
+    const mesh = m.readMesh('/entities.msh', 'gmsh');
+    assert.equal(mesh.points.length / 3, 4);
+    assert.deepEqual(mesh.cells.map((c) => c.type), ['line', 'line', 'triangle']);
+    const names = mesh.regions.map((r) => r.name).sort();
+    assert.deepEqual(names, ['bottom', 'plate']);
+    const plate = mesh.regions.find((r) => r.name === 'plate');
+    assert.equal(plate.dim, 2);
+    assert.equal(plate.tag, 7);
+    // Global block-major cell indices: the two lines are 0 and 1, so the
+    // surface's two triangles are 2 and 3.
+    assert.deepEqual(Array.from(plate.entries), [2, 3]);
+
+    // And back out as 4.1: the entity structure rides along, so membership
+    // survives -- which before $Entities was written only gmsh22 could do.
+    m.writeMesh('/entities-rt.msh', mesh, 'gmsh');
+    const back = m.readMesh('/entities-rt.msh', 'gmsh');
+    assert.deepEqual(back.regions.map((r) => r.name).sort(), ['bottom', 'plate']);
+    const plateBack = back.regions.find((r) => r.name === 'plate');
+    assert.equal(plateBack.dim, 2);
+    assert.equal(plateBack.tag, 7);
+    assert.deepEqual(Array.from(plateBack.entries), [2, 3]);
 });
 
 step('convertSurface turns a volume mesh into its renderable boundary', () => {
