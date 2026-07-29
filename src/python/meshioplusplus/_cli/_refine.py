@@ -67,12 +67,13 @@ def add_args(parser):
     parser.add_argument(
         "--closure",
         type=str,
-        choices=("redgreen", "propagate"),
+        choices=("redgreen", "propagate", "balanced"),
         default="redgreen",
         help=(
             "how to resolve hanging nodes: redgreen keeps the extra refinement "
             "local (default), propagate works for every cell type but reaches "
-            "the whole edge-connected component"
+            "the whole edge-connected component, balanced KEEPS the hanging "
+            "nodes and only enforces 2:1 balance (output is not conforming)"
         ),
     )
     parser.add_argument(

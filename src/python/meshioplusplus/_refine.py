@@ -65,6 +65,10 @@ PARENT_CELL_NAME = "refine:parent_cell"
 #: replicated, so successive passes accumulate.
 LEVEL_NAME = "refine:level"
 
+#: The Int64 ``point_data`` array the balanced closure attaches: ``1`` for a
+#: hanging (constrained) node, ``0`` otherwise.
+HANGING_NAME = "refine:hanging"
+
 
 # --------------------------------------------------------------------------- #
 # validation                                                                   #
@@ -215,7 +219,7 @@ def _read_levels(mesh, blocks):
     return np.concatenate(out) if out else np.empty(0, dtype=np.int64)
 
 
-def _refine_once_py(mesh, red_seed=None, propagate=False, record_levels=False):
+def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False):
     n = len(mesh.points)
     blocks = [(cb.type, np.asarray(cb.data)) for cb in mesh.cells]
     for cell_type, data in blocks:
@@ -258,7 +262,52 @@ def _refine_once_py(mesh, red_seed=None, propagate=False, record_levels=False):
     # --- phase 3: the split-edge set and its closure
     masks = np.zeros(total_cells, dtype=np.int64)
     split = np.zeros(len(entities), dtype=bool)
-    if red_seed is None:
+    base_levels = _read_levels(mesh, blocks)
+    if red_seed is not None and closure == "balanced":
+        # 2:1 balance. A cell is split fully or not at all -- no transitional
+        # templates -- and is drawn in only when a neighbour would otherwise end
+        # up more than one level finer. Adjacency is by shared NODE, not by
+        # shared edge: across a hanging interface the coarse cell spans a whole
+        # edge while the fine cell has only half of it, so the two are different
+        # entities and an edge-keyed rule is blind to exactly the coarse/fine
+        # adjacency it exists to police.
+        red = np.asarray(red_seed, dtype=bool).copy()
+        levels = (
+            np.zeros(total_cells, dtype=np.int64)
+            if base_levels is None
+            else base_levels
+        )
+        while True:
+            node_max = np.full(len(mesh.points), np.iinfo(np.int64).min, dtype=np.int64)
+            for b, (_, data) in enumerate(blocks):
+                lo, hi = first_cell[b], first_cell[b] + len(data)
+                post = levels[lo:hi] + red[lo:hi].astype(np.int64)
+                np.maximum.at(node_max, data, post[:, None])
+            changed = False
+            for b, (_, data) in enumerate(blocks):
+                lo = first_cell[b]
+                for c in range(len(data)):
+                    g = lo + c
+                    if red[g]:
+                        continue
+                    if node_max[data[c]].max() > levels[g] + 1:
+                        red[g] = True
+                        changed = True
+            if not changed:
+                break
+        # Only the fully split cells create nodes; an unrefined neighbour keeps
+        # its whole shape and simply acquires hanging nodes on its edges.
+        for b, (cell_type, data) in enumerate(blocks):
+            nedges = len(EDGES[cell_type])
+            nslots = nedges + len(QUAD_FACES[cell_type])
+            for c in range(len(data)):
+                g = first_cell[b] + c
+                if not red[g]:
+                    continue
+                masks[g] = FULL_MASK[cell_type]
+                s0 = first_slot[b] + c * nslots
+                split[entity_of_slot[s0 : s0 + nedges]] = True
+    elif red_seed is None:
         for b, (cell_type, data) in enumerate(blocks):
             masks[first_cell[b] : first_cell[b] + len(data)] = FULL_MASK[cell_type]
         split[:] = True
@@ -285,7 +334,7 @@ def _refine_once_py(mesh, red_seed=None, propagate=False, record_levels=False):
                         if split[entity_of_slot[s0 + k]]:
                             mask |= 1 << k
                     promoted[first_cell[b] + c] = promote_mask(
-                        cell_type, mask, propagate
+                        cell_type, mask, closure == "propagate"
                     )
             changed = False
             for b, (cell_type, data) in enumerate(blocks):
@@ -328,6 +377,30 @@ def _refine_once_py(mesh, red_seed=None, propagate=False, record_levels=False):
     kept = [e for e in range(len(entities)) if needs[e]]
     for i, e in enumerate(kept):
         node_of_entity[e] = n + i
+
+    # A new node is hanging exactly when some emitted cell is incident to its
+    # entity but does not reference it. Stated over entities rather than per
+    # closure, so it stays correct if another mode ever leaves some.
+    hanging = np.zeros(n + len(kept), dtype=bool)
+    for b, (cell_type, data) in enumerate(blocks):
+        edges = EDGES[cell_type]
+        faces = QUAD_FACES[cell_type]
+        nslots = len(edges) + len(faces)
+        face_masks = [face_edge_mask(cell_type, f) for f in faces]
+        for c in range(len(data)):
+            mask = int(masks[first_cell[b] + c])
+            s0 = first_slot[b] + c * nslots
+            for sl in range(nslots):
+                if sl < len(edges):
+                    referenced = bool(mask >> sl & 1)
+                else:
+                    need = face_masks[sl - len(edges)]
+                    referenced = mask & need == need
+                if referenced:
+                    continue
+                node = node_of_entity[entity_of_slot[s0 + sl]]
+                if node >= 0:
+                    hanging[node] = True
 
     body_base = n + len(kept)
     body_of_cell = np.full(total_cells, -1, dtype=np.int64)
@@ -429,7 +502,7 @@ def _refine_once_py(mesh, red_seed=None, propagate=False, record_levels=False):
         point_data[key] = _extend(value)
 
     # --- phase 8: cell_data gathered parent -> children
-    base_levels = _read_levels(mesh, blocks)
+    # base_levels was hoisted above: the balanced closure compares levels.
     cell_data = {}
     for key, blk in mesh.cell_data.items():
         if key == LEVEL_NAME:
@@ -460,6 +533,11 @@ def _refine_once_py(mesh, red_seed=None, propagate=False, record_levels=False):
             levels_out.append(base + red_child[b].astype(np.int64))
         cell_data[LEVEL_NAME] = levels_out
 
+    if hanging.any():
+        point_data[HANGING_NAME] = np.concatenate(
+            [hanging.astype(np.int64), np.zeros(n_out - len(hanging), dtype=np.int64)]
+        ).reshape(-1, 1)
+
     out = Mesh(
         out_points,
         new_cells,
@@ -479,7 +557,7 @@ def _refine_py(
     levels,
     record_parent_ids,
     red_seed=None,
-    propagate=False,
+    closure="redgreen",
     record_levels=False,
 ):
     if levels <= 0:
@@ -497,7 +575,7 @@ def _refine_py(
         cell_maps = [np.arange(len(cb.data), dtype=np.int64) for cb in mesh.cells]
     else:
         out, point_map, cell_maps, next_seed = _refine_once_py(
-            mesh, red_seed, propagate, record_levels
+            mesh, red_seed, closure, record_levels
         )
         for _ in range(levels - 1):
             # Level k > 1 refines the children of level k - 1's red cells; green
@@ -505,7 +583,7 @@ def _refine_py(
             out, next_pm, next_cm, next_seed = _refine_once_py(
                 out,
                 next_seed if red_seed is not None else None,
-                propagate,
+                closure,
                 record_levels,
             )
             point_map = next_pm[point_map]
@@ -610,7 +688,10 @@ def refine(
         split-edge mask to the smallest admissible superset, keeping the extra
         refinement local; ``"propagate"`` promotes it straight to a full split,
         which is always conforming but converges to uniform refinement of the
-        whole connected component.
+        whole connected component; ``"balanced"`` does not close at all, keeping
+        the hanging nodes and only enforcing 2:1 balance, which makes the output
+        **non-conforming** but bounds the cost by the selection (the constrained
+        nodes are reported in ``refine:hanging``).
     :param record_levels: attach the int64 ``refine:level`` ``cell_data`` array
         (0 for a cell no full split touched, +1 per full split; a transitional
         child inherits its parent's level). An input already carrying it is
@@ -623,7 +704,7 @@ def refine(
     """
     levels = int(levels)
     predicate_array, predicate_op, predicate_value = _parse_where(where)
-    propagate = closure_from_name(closure)
+    closure = closure_from_name(closure)
     selective = cells is not None or bool(region) or bool(predicate_array)
 
     out = None
@@ -668,7 +749,7 @@ def refine(
             levels,
             record_parent_ids,
             red_seed,
-            propagate,
+            closure,
             record_levels,
         )
 

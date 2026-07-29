@@ -434,14 +434,19 @@ def promote_mask(cell_type, mask, propagate=False):
 
 
 def closure_from_name(name):
-    """Parse a closure name into the ``propagate`` boolean."""
+    """Parse a closure name into its canonical spelling.
+
+    Returns one of ``"redgreen"``, ``"propagate"`` or ``"balanced"``.
+    """
     if name in ("", "redgreen", "red-green", "green"):
-        return False
+        return "redgreen"
     if name in ("propagate", "red"):
-        return True
+        return "propagate"
+    if name in ("balanced", "2:1"):
+        return "balanced"
     raise ValueError(
         f"refine: unknown closure '{name}' "
-        "(expected 'redgreen'/'green' or 'propagate')"
+        "(expected 'redgreen'/'green', 'propagate' or 'balanced')"
     )
 
 
