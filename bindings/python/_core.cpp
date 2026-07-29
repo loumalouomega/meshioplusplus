@@ -1669,7 +1669,12 @@ finalizes.
 
     // MED/Salome writer / reader (.med). point_tags/cell_tags are custom Mesh
     // attributes and med:nom is a list of string-lists, so they travel outside
-    // the Mesh conversion layer.
+    // the Mesh conversion layer. Named regions (FAS/GRO group names) need no
+    // such plumbing here -- write_med/read_med attach/consult them on the
+    // Mesh directly (see med_attach_point_regions/med_attach_cell_regions and
+    // med_point_regions_to_tags/med_cell_regions_to_tags in med.cpp), so they
+    // already cross this binding through py_to_mesh/mesh_to_py's existing
+    // `.regions` handling like every other format.
     m.def("med_write",
           [](const std::string& path, py::object pymesh,
              std::map<std::int64_t, std::vector<std::string>> point_tags,
