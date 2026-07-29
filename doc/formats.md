@@ -176,7 +176,7 @@ meshioplusplus.med.write(filename, mesh,
 )
 ```
 
-MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_med_multi` read/write files containing several meshes — see [`med.md`](./formats/med.md).
+MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_med_multi` read/write files containing several meshes — see [`med.md`](./formats/med.md). Since v9.6.0 MED is also a Phase-1 [named region](./regions.md) format (`FAS`/`GRO` group names ↔ `Point`/`Cell` regions, no side regions), carries the optional `NUM` global numbering as `point_data`/`cell_data["med:num"]`, and rejects a file written by a newer MED major version with a named error.
 
 ### AnsysInp (`.cdb`, `.inp`)
 
@@ -223,7 +223,7 @@ meshioplusplus.flac3d.write(filename, mesh,
 
 ### Abaqus (`.inp`)
 
-Abaqus is one of the two Phase-1 [named region](./regions.md) formats, and the only one that can express a **side set**: `*NSET` → point regions, `*ELSET` → cell regions and `*SURFACE, TYPE=ELEMENT` → side regions, in both the C++ core and the Python reference. Abaqus names its groups but has no integer id for them, so a region's `tag` is not preserved. Face identifiers (`S1`..`S6`) are remapped to meshio++'s own facet numbering — the two differ, and the per-type table is spelled out in [Named regions](./regions.md#abaqus-face-identifiers).
+Abaqus is one of the three Phase-1 [named region](./regions.md) formats (with gmsh and MED), and the only one that can express a **side set**: `*NSET` → point regions, `*ELSET` → cell regions and `*SURFACE, TYPE=ELEMENT` → side regions, in both the C++ core and the Python reference. Abaqus names its groups but has no integer id for them, so a region's `tag` is not preserved. Face identifiers (`S1`..`S6`) are remapped to meshio++'s own facet numbering — the two differ, and the per-type table is spelled out in [Named regions](./regions.md#abaqus-face-identifiers).
 
 `meshioplusplus.abaqus.write(filename, mesh)` — no extra options.
 
