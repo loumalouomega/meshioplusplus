@@ -171,6 +171,34 @@ See the [C API's package-manager notes](/c_api#package-managers-conan-vcpkg) for
 * Names under `detail/` are installed (the public headers need them) but are **not** a stable API.
 * `KratosMesh::InvalidateBlocks()`'s rebuild cannot recover a SubModelPart's *nesting* (regions are flat) or a region's `mDim`/`mTag`, which a SubModelPart has nowhere to store — see [mesh backends](/cpp_backends).
 
+## Which version am I compiled against?
+
+`<meshioplusplus/version.hpp>` carries the **release** version as preprocessor
+macros, so you can feature-detect without running CMake:
+
+```cpp
+#include <meshioplusplus/version.hpp>
+
+#if MESHIOPLUSPLUS_VERSION_AT_LEAST(9, 5, 0)
+    options.mCells = {12, 13};   // selective refinement, new in 9.5.0
+#endif
+```
+
+`MESHIOPLUSPLUS_VERSION` is the same thing as one ordered integer
+(`major * 10000 + minor * 100 + patch`), for comparisons the macro cannot
+express, and `MESHIOPLUSPLUS_VERSION_STRING` is the `"9.6.0"` literal.
+
+Three questions, three mechanisms — they are not interchangeable:
+
+| question | mechanism |
+|---|---|
+| what did I **compile** against? | `MESHIOPLUSPLUS_VERSION_*` (C: `MIO_VERSION_*`) |
+| what am I **running** against? | `mio_version()`, a call into the linked library |
+| are my headers **binary-compatible** with it? | `MESHIOPLUSPLUS_ABI_VERSION` + the link-time sentinel |
+
+With a shared library the first two genuinely can differ, which is why both
+exist: compile against the macros, report `mio_version()`.
+
 ## Versioning: what to pin
 
 The two installed components make **different** compatibility promises, and the
