@@ -299,7 +299,8 @@ export class OpsPanel {
                 value: Number($<HTMLInputElement>('op-refine-value').value) || 0,
                 closure: $<HTMLSelectElement>('op-refine-closure').value as
                     | 'redgreen'
-                    | 'propagate',
+                    | 'propagate'
+                    | 'balanced',
             });
         });
     }

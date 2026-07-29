@@ -58,7 +58,7 @@ export type OpSpec =
           /** `compare`, not `op`: `op` is this union's own discriminant. */
           compare: '<' | '>';
           value: number;
-          closure: 'redgreen' | 'propagate';
+          closure: 'redgreen' | 'propagate' | 'balanced';
           recordLevels: boolean;
       }
     | {
