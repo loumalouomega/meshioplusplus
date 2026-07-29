@@ -1191,6 +1191,9 @@ static_assert(static_cast<int>(meshioplusplus::RefineClosure::RedGreen) ==
 static_assert(static_cast<int>(meshioplusplus::RefineClosure::Propagate) ==
                   MIO_REFINE_CLOSURE_PROPAGATE,
               "mio_refine_closure drifted from RefineClosure");
+static_assert(static_cast<int>(meshioplusplus::RefineClosure::Balanced) ==
+                  MIO_REFINE_CLOSURE_BALANCED,
+              "mio_refine_closure drifted from RefineClosure");
 static_assert(static_cast<int>(meshioplusplus::RefineCompare::Less) == MIO_REFINE_LT &&
                   static_cast<int>(meshioplusplus::RefineCompare::LessEqual) == MIO_REFINE_LE &&
                   static_cast<int>(meshioplusplus::RefineCompare::Greater) == MIO_REFINE_GT &&
@@ -1226,7 +1229,7 @@ meshioplusplus::RefineOptions capi_refine_options(const mio_refine_opts& rOpts) 
     if (rOpts.predicate_array != nullptr)
         options.mPredicateArray = rOpts.predicate_array;
     options.mPredicateValue = rOpts.predicate_value;
-    if (rOpts.closure < 0 || rOpts.closure > MIO_REFINE_CLOSURE_PROPAGATE)
+    if (rOpts.closure < 0 || rOpts.closure > MIO_REFINE_CLOSURE_BALANCED)
         throw meshioplusplus::ReadError("meshio++: refine: unknown closure " +
                                         std::to_string(rOpts.closure));
     options.mClosure = static_cast<meshioplusplus::RefineClosure>(rOpts.closure);

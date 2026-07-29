@@ -864,7 +864,13 @@ MIO_API void mio_convert_cells_result_free(mio_convert_cells_result* result);
 /** How mio_refine_ex resolves the hanging nodes a partial refinement leaves. */
 typedef enum mio_refine_closure {
     MIO_REFINE_CLOSURE_REDGREEN = 0,  /**< promote to the smallest admissible mask (local) */
-    MIO_REFINE_CLOSURE_PROPAGATE = 1  /**< promote straight to a full split (spreads) */
+    MIO_REFINE_CLOSURE_PROPAGATE = 1, /**< promote straight to a full split (spreads) */
+    /**
+     * Do not close at all: KEEP the hanging nodes and only enforce 2:1 balance.
+     * The output is 1-irregular and NOT conforming; the constrained nodes are
+     * reported in the refine:hanging point_data array.
+     */
+    MIO_REFINE_CLOSURE_BALANCED = 2
 } mio_refine_closure;
 
 /** The comparison a mio_refine_opts predicate selector applies. */
