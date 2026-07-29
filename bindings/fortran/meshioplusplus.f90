@@ -2339,6 +2339,7 @@ contains
         select case (trim(name))
         case ('', 'redgreen', 'red-green', 'green'); code = 0
         case ('propagate', 'red'); code = 1
+        case ('balanced', '2:1'); code = 2
         case default; code = -1
         end select
     end function
@@ -2364,8 +2365,9 @@ contains
         character(*), intent(in), optional :: where_array
         character(*), intent(in), optional :: where_op
         real(real64), intent(in), optional :: where_value
-        !> 'redgreen' (default, local) or 'propagate' (spreads to the whole
-        !> edge-connected component).
+        !> 'redgreen' (default, local, conforming), 'propagate' (conforming but
+        !> spreads to the whole edge-connected component) or 'balanced' (keeps
+        !> the hanging nodes and only enforces 2:1 balance -- NOT conforming).
         character(*), intent(in), optional :: closure
         !> Attach the refine:level cell_data array.
         logical, intent(in), optional :: record_levels
