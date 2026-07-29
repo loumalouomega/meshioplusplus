@@ -18,6 +18,14 @@ before.
 
 ### Build / introspection
 
+- **Fixed: the `mcp` extra was unbounded and broke against the SDK's 2.0.0.** `mcp>=1.2` let a
+  fresh install resolve 2.0.0, which removed `mcp.server.fastmcp` (replaced by a different
+  `mcp.server.mcpserver` API), so importing the server raised `ModuleNotFoundError`. Now
+  `mcp>=1.2,<2`. Only a fresh, non-editable `pip install ".[mcp]"` shows this — an existing
+  environment keeps whatever 1.x it already had — which is why it surfaced in CI rather than
+  locally. The pure tool layer imports no SDK and was never affected; porting to the 2.x server
+  API is tracked separately.
+
 - **Compile-time version macros**, so a consumer can feature-detect with the preprocessor the way
   MMG's `MMG_VERSION_GE` allows. `<meshioplusplus/version.hpp>` defines
   `MESHIOPLUSPLUS_VERSION_MAJOR`/`_MINOR`/`_PATCH`, the ordered integer
