@@ -35,6 +35,8 @@
 // External includes
 #include <gtest/gtest.h>
 
+#include "meshioplusplus/version.hpp"
+
 // Project includes
 #include "meshioplusplus/meshioplusplus.h"
 
@@ -78,6 +80,32 @@ TEST(CApi, VersionAndBackend) {
     EXPECT_STRNE(mio_version(), "");
     const std::string backend = mio_mesh_backend();
     EXPECT_TRUE(backend == "meshio" || backend == "native" || backend == "kratos") << backend;
+}
+
+// The compile-time macros describe the HEADER; mio_version() describes the
+// linked LIBRARY. With a shared build the two genuinely can differ, which is why
+// both exist -- but in this build they are the same artifact, so they must agree,
+// and that is what catches a version file bumped without its twin.
+TEST(CApi, CompileTimeVersionMatchesTheLinkedLibrary) {
+    const std::string expected = std::to_string(MIO_VERSION_MAJOR) + "." +
+                                 std::to_string(MIO_VERSION_MINOR) + "." +
+                                 std::to_string(MIO_VERSION_PATCH);
+    EXPECT_EQ(std::string(mio_version()), expected);
+    EXPECT_EQ(std::string(MESHIOPLUSPLUS_VERSION_STRING), expected);
+
+    // The feature-detection macros are what consumers actually write.
+    EXPECT_TRUE(MIO_VERSION_AT_LEAST(MIO_VERSION_MAJOR, MIO_VERSION_MINOR, MIO_VERSION_PATCH));
+    EXPECT_FALSE(MIO_VERSION_BEFORE(MIO_VERSION_MAJOR, MIO_VERSION_MINOR, MIO_VERSION_PATCH));
+    EXPECT_TRUE(MIO_VERSION_AT_LEAST(1, 0, 0));
+    EXPECT_FALSE(MIO_VERSION_AT_LEAST(MIO_VERSION_MAJOR + 1, 0, 0));
+    // Ordering must not break across a component boundary: 9.6.0 is after 9.5.99.
+    EXPECT_TRUE(MESHIOPLUSPLUS_VERSION_AT_LEAST(9, 5, 0));
+    EXPECT_TRUE(MESHIOPLUSPLUS_VERSION > (9 * 10000 + 5 * 100 + 99));
+
+    // selective refinement landed in 9.5.0; this is the shape a consumer writes.
+#if MIO_VERSION_AT_LEAST(9, 5, 0)
+    EXPECT_NE(&mio_refine_ex, nullptr);
+#endif
 }
 
 TEST(CApi, FormatAvailability) {
