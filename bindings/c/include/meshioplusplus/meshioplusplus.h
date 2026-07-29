@@ -192,7 +192,45 @@ typedef struct mio_region_info {
  * Version / build introspection
  * --------------------------------------------------------------------- */
 
-/** @return the meshio++ version string, e.g. "6.1.0" (static storage). */
+/*
+ * The RELEASE version as compile-time macros, so a consumer can feature-detect
+ * with the preprocessor:
+ *
+ *     #if MIO_VERSION_AT_LEAST(9, 5, 0)
+ *         mio_refine_ex(mesh, &opts);      // new in 9.5.0
+ *     #else
+ *         mio_refine(mesh, 1, 0);
+ *     #endif
+ *
+ * These describe the header you COMPILED against. mio_version() below reports
+ * the library you actually LINKED against, and with a shared library the two can
+ * genuinely differ -- which is why both exist. (A third question, "are my
+ * headers binary-compatible with that library", is answered by the ABI version
+ * and its link-time sentinel; see doc/abi.md.)
+ *
+ * MIO_VERSION is major*10000 + minor*100 + patch, so it orders exactly like the
+ * release and can be compared directly when the macro is not expressive enough.
+ * These are static_asserted against the C++ MESHIOPLUSPLUS_VERSION_* macros in
+ * c_api.cpp, and CMake hard-fails at configure time if either disagrees with
+ * project(... VERSION ...), so the copies cannot drift.
+ */
+#define MIO_VERSION_MAJOR 9
+#define MIO_VERSION_MINOR 6
+#define MIO_VERSION_PATCH 0
+#define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
+
+/** Whether the header being compiled against is at least major.minor.patch. */
+#define MIO_VERSION_AT_LEAST(major, minor, patch) \
+    (MIO_VERSION >= ((major) * 10000 + (minor) * 100 + (patch)))
+
+/** Whether the header being compiled against is older than major.minor.patch. */
+#define MIO_VERSION_BEFORE(major, minor, patch) (!MIO_VERSION_AT_LEAST(major, minor, patch))
+
+/**
+ * @return the meshio++ version string of the LINKED library, e.g. "9.6.0"
+ *         (static storage). Compare with the MIO_VERSION_* macros above, which
+ *         describe the header this call was compiled against.
+ */
 MIO_API const char* mio_version(void);
 
 /** @return the compile-time mesh backend: "meshio", "native", or "kratos"
