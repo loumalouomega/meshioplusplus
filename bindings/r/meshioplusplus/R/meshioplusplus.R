@@ -714,7 +714,9 @@ mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE) {
 #' @param closure how to resolve the hanging nodes a partial refinement leaves:
 #'   `"redgreen"` (default) keeps the extra refinement local, `"propagate"` is
 #'   defined for every cell type but converges to uniform refinement of the whole
-#'   edge-connected component.
+#'   edge-connected component, and `"balanced"` keeps the hanging nodes and only
+#'   enforces 2:1 balance (the output is then **not** conforming; the constrained
+#'   nodes come back in `refine:hanging`).
 #' @param record_levels attach the `refine:level` `cell_data` array.
 #' @export
 mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
