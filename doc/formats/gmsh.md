@@ -58,7 +58,7 @@ Five element types need a node-order permutation between Gmsh and meshio++ (ever
 
 - `cell_data["gmsh:physical"]`, `cell_data["gmsh:geometrical"]` — the first two element tags (also recognized as `"cell_tags"` on write).
 - `point_data["gmsh:dim_tags"]` — v4.1 only, an `(N, 2)` int array of `(entity_dim, entity_tag)` per node.
-- `cell_sets["gmsh:bounding_entities"]` — v4.1 only.
+- `cell_sets["gmsh:bounding_entities"]` — v4.1 only. Signed entity tags (the sign is the boundary's orientation), so these are *not* cell indices and cannot be a [region](../regions.md); they take the `cell_sets` verbatim passthrough. In C++ they ride the `GmshInfo` side channel (see below).
 - `field_data[name] = [phys_num, phys_dim]` — from `$PhysicalNames`.
 - Arbitrary `point_data`/`cell_data` from `$NodeData`/`$ElementData`.
 - `mesh.gmsh_periodic` — a mesh-level attribute (not a data-dict key) holding `[dim, (slave_tag, master_tag), affine_or_None, node_pairs]` per periodic relation, from `$Periodic`.
@@ -68,10 +68,13 @@ Five element types need a node-order permutation between Gmsh and meshio++ (ever
 - Version strings are normalized: `"2"` → 2.2, `"4"` → 4.1.
 - Gmsh can't distinguish a `(n,)` shape from `(n,1)` for post-processing data; the reader squeezes single-component arrays to 1D.
 - Elements in v4.0/4.1 are addressed by **node tag**, not array position — the most structurally distinctive quirk of this format relative to nearly every other one meshio++ supports.
-- v4.1 write requires `gmsh:dim_tags` in `point_data` to emit more than one cell type; without it, only a single cell type can be written (`WriteError` otherwise).
+- **v4.1 physical-group membership lives in `$Entities`, not on the elements.** A 4.1 `$Elements` block names an `(entityDim, entityTag)` pair and the physical tag hangs off the entity, so a file whose `$Entities` is missing or unread has geometry but no `gmsh:physical` and no named groups — unlike 2.2, where each element carries its own tag. Writing 4.1 therefore needs `point_data["gmsh:dim_tags"]` (which says what entity each node belongs to) for membership to survive; without it no `$Entities` is emitted and only the group *names* are written, via `$PhysicalNames`. Use `gmsh22` to round-trip a mesh that has regions but no entity structure.
+- A 4.1 file that tags only *some* entities yields `gmsh:physical` for every cell block, `0` (gmsh's "no physical group") on the untagged ones. The pure-Python reference instead omits the untagged blocks, which leaves `gmsh:physical` shorter than `mesh.cells`; the C++ core cannot represent that (one array per block is a uniform-API invariant) and does not reproduce it. A file that tags *nothing* gets no `gmsh:physical` key at all on either path.
 - `$Periodic` record layout differs across all three versions (e.g. v4.0 binary uses a *negative* node count as a sentinel meaning "an affine transform follows", then reads a fixed 16 floats for that transform).
 - The C++ type table covers up through `hexahedron125`/`tetra286`(sic — the exact upper bound is a curated subset, not the full ~110-entry Python table); a file referencing a higher-order type outside that subset falls back to Python transparently.
-- The C++ shim always tries the C++ reader first, falling back to Python on any exception. On write, C++ is only attempted for `float_fmt == ".16e"`, no `gmsh_periodic`, and (`fmt_version == "2.2"`) or (`"4.1"` with no `gmsh:dim_tags`) — meaning v4.0 write, and any v4.1 write carrying `gmsh:dim_tags` or periodic data, always go through Python.
+- The C++ shim always tries the C++ reader first, falling back to Python on any exception. On write, C++ is attempted for `float_fmt == ".16e"`, no `gmsh_periodic`, and `fmt_version` of `"2.2"` or `"4.1"` — so v4.0 writes and any periodic mesh still go through Python. (Before v9.7.0 a v4.1 write carrying `gmsh:dim_tags` did too, because the C++ writer could not emit `$Entities`.)
+- **`$Periodic` is still C++-unsupported** in both directions: reading a file with one throws and defers to Python, which is why a periodic mesh never reaches the C++ writer. There is no Python to defer to in the flat bindings, so a periodic 4.1 file remains unreadable from WASM / C / Fortran / Julia / R / the native CLI.
+- C++ consumers that want the bounding entities call the `GmshInfo` overloads — `read_gmsh(path, GmshInfo&, opts)` and `write_gmsh41(path, mesh, binary, const GmshInfo&)` (the `MedInfo`/`ExodusInfo` pattern). The shared registry passes none, so the flat bindings drop them: a documented gap, not a silent loss. Adding those overloads also makes `&read_gmsh` / `&write_gmsh41` ambiguous as bare function pointers — a compile error, never silent.
 
 ## Notes
 

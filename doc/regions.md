@@ -109,7 +109,7 @@ inserting, removing or reordering one invalidates them.
 |--------|:---:|:---:|:---:|:---:|-------|
 | **abaqus** | ✅ | ✅ | ✅ | ❌ | `*NSET` / `*ELSET` / `*SURFACE`. Abaqus names its groups but has no integer id for them. |
 | **gmsh 2.2** | ❌ | ✅ | ❌ | ✅ | A physical group is a named, tagged, per-dimension group of *elements*. No node-set and no side-set concept. |
-| **gmsh 4.1** | ❌ | names only | ❌ | ✅ | The writer emits `$PhysicalNames` but no `$Entities`, so membership has nowhere to go. Write 2.2 for a full round-trip. |
+| **gmsh 4.1** | ❌ | ✅ | ❌ | ✅ | Membership lives in `$Entities`, which describes the *geometry* — so it round-trips (since v9.7.0) for a mesh that says which entity each node belongs to, i.e. one carrying `point_data["gmsh:dim_tags"]`, as any mesh read from a 4.1 file does. A mesh that came from another format has no entity structure to write, so no `$Entities` is emitted and only the group *names* survive; write 2.2 for that case. |
 | **exodus** | 📖 | 📖 | 📖 | ✅ | **Read only** (v8.6.0): element blocks → `cell`, node sets → `point`, side sets → `side`, each tagged with its `eb_prop1`/`ns_prop1`/`ss_prop1` id. The writer emits neither `eb_names` nor side sets, so nothing written comes back. See [`doc/formats/exodus.md`](./formats/exodus.md#named-regions). |
 | **med** | ✅ | ✅ | ❌ | ❌ | A MED family (`FAS/NOEUD`/`FAS/ELEME`) is a named group of nodes/elements — one region per group *name*, a multi-group family contributing to all of its names. A family id is per unique *combination* of names rather than per name, and a name may span several ids, so the format-native `tag` is not carried. MED has no facet-group concept, so side regions are dropped. See [`doc/formats/med.md`](./formats/med.md#named-regions). |
 
@@ -228,8 +228,12 @@ Two things build directly on the model above, both added in v8.7.0:
   themselves**. Populated from whatever's already on an in-memory mesh, so it
   costs nothing extra whenever the summary came from a fallback read (every
   format lacking a native metadata path, plus Exodus, which always falls
-  back); empty on a native metadata path (VTU/VTP/XDMF/Gmsh 4.1), since none
-  of those currently map regions at all. This is what lets a caller build a
+  back); empty on the VTU/VTP/XDMF native metadata paths, since none of those
+  map regions at all. **Gmsh 4.1's native path does report them** (since
+  v9.7.0): `$Entities` and `$PhysicalNames` are both small and both precede
+  `$Elements`, so the group names, dimensions, tags and entry counts come out
+  of the block headers alone, and the summary agrees with a real read.
+  This is what lets a caller build a
   SubModelPart tree — or just decide whether it's worth reading the mesh at
   all — without paying for a full read first.
 - **`meshioplusplus regions FILE`** (both CLIs) lists the same summary
