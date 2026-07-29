@@ -312,7 +312,7 @@ export type SmoothMethod = 'laplacian' | 'taubin';
  * cell type, but it converges to uniform refinement of the whole edge-connected
  * component.
  */
-export type RefineClosure = 'redgreen' | 'green' | 'propagate' | 'red';
+export type RefineClosure = 'redgreen' | 'green' | 'propagate' | 'red' | 'balanced' | '2:1';
 
 /** The comparison a `refine` predicate selector applies. */
 export type RefineCompare = '<' | '<=' | '>' | '>=' | '==' | '!=';
