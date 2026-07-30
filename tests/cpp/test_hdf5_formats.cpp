@@ -242,8 +242,8 @@ TEST(Med, Regions) {
     meshioplusplus::NDArray pts(meshioplusplus::DType::Int64, {2});
     pts.As<std::int64_t>()[0] = 0;
     pts.As<std::int64_t>()[1] = 3;
-    m.AddRegion(meshioplusplus::Region("clamped", meshioplusplus::RegionKind::Point,
-                                       std::move(pts)));
+    m.AddRegion(
+        meshioplusplus::Region("clamped", meshioplusplus::RegionKind::Point, std::move(pts)));
 
     meshioplusplus::NDArray cells(meshioplusplus::DType::Int64, {1});
     cells.As<std::int64_t>()[0] = 0;
@@ -286,8 +286,7 @@ TEST(Med, RegionsSideDroppedWithWarning) {
     meshioplusplus::NDArray sides(meshioplusplus::DType::Int64, {1, 2});
     sides.As<std::int64_t>()[0] = 0;
     sides.As<std::int64_t>()[1] = 1;
-    m.AddRegion(
-        meshioplusplus::Region("wall", meshioplusplus::RegionKind::Side, std::move(sides)));
+    m.AddRegion(meshioplusplus::Region("wall", meshioplusplus::RegionKind::Side, std::move(sides)));
 
     meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
     meshioplusplus::MedInfo info;
@@ -339,8 +338,8 @@ TEST(Med, GmshPhysicalGroupsBecomeFamilies) {
     // "group_<id>", with id 0 meaning "no group".
     std::string p = mt::temp_path(".med");
     meshioplusplus::Mesh m;
-    m.AssignPoints(mt::points_from(
-        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
+    m.AssignPoints(
+        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
     m.AddCellBlock("quad", mt::conn_from({{0, 1, 2, 3}, {1, 4, 5, 2}}));
 
     // Cell 0 tagged 7 (named "surf" via field_data), cell 1 tagged 0 (no group).
@@ -398,15 +397,15 @@ TEST(Med, GmshPhysicalSkipsIdAlreadyANamedCellRegion) {
     // path, even for a cell the existing region does not itself cover.
     std::string p = mt::temp_path(".med");
     meshioplusplus::Mesh m;
-    m.AssignPoints(mt::points_from(
-        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
+    m.AssignPoints(
+        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
     m.AddCellBlock("quad", mt::conn_from({{0, 1, 2, 3}, {1, 4, 5, 2}}));
 
     // "surf" already exists as a Cell region, covering only cell 1.
     meshioplusplus::NDArray region_cells(meshioplusplus::DType::Int64, {1});
     region_cells.As<std::int64_t>()[0] = 1;
-    m.AddRegion(meshioplusplus::Region("surf", meshioplusplus::RegionKind::Cell,
-                                       std::move(region_cells)));
+    m.AddRegion(
+        meshioplusplus::Region("surf", meshioplusplus::RegionKind::Cell, std::move(region_cells)));
 
     // Cell 0 is tagged 7, and field_data maps 7 -> "surf" too.
     meshioplusplus::NDArray phys(meshioplusplus::DType::Int64, {2});

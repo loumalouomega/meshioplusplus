@@ -212,8 +212,7 @@ TEST(Cgns, LegacyRead) {
         h5::Hid base = h5::create_group(f, "Base");
         h5::Hid zone = h5::create_group(base, "Zone1");
         h5::Hid coords = h5::create_group(zone, "GridCoordinates");
-        const std::vector<std::vector<double>> xyz = {
-            {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        const std::vector<std::vector<double>> xyz = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
         for (int c = 0; c < 3; ++c) {
             h5::Hid g = h5::create_group(coords, c == 0   ? "CoordinateX"
                                                  : c == 1 ? "CoordinateY"
@@ -339,13 +338,12 @@ TEST(Cgns, BadConnectivitySizeThrows) {
 TEST(CgnsOrdering, Hexahedron27FaceCentresMatchSidsGeometry) {
     const std::vector<P3> corners = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
                                      {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
-    const std::vector<std::array<int, 2>> edges = {{0, 1}, {1, 2}, {2, 3}, {3, 0},
-                                                    {4, 5}, {5, 6}, {6, 7}, {7, 4},
-                                                    {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    const std::vector<std::array<int, 2>> edges = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                                                   {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
     // meshio/VTK hexahedron27 mid-face order (vtkTriQuadraticHexahedron):
     // 20=(0,4,7,3), 21=(1,2,6,5), 22=(0,1,5,4), 23=(3,7,6,2), 24=bottom, 25=top.
-    const std::vector<std::vector<int>> faces = {
-        {0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4}, {3, 7, 6, 2}, {0, 3, 2, 1}, {4, 5, 6, 7}};
+    const std::vector<std::vector<int>> faces = {{0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4},
+                                                 {3, 7, 6, 2}, {0, 3, 2, 1}, {4, 5, 6, 7}};
 
     std::vector<P3> pts = corners;
     for (const auto& e : edges)
@@ -381,7 +379,7 @@ TEST(CgnsOrdering, Hexahedron27FaceCentresMatchSidsGeometry) {
                                    18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26};
     for (int c = 0; c < 27; ++c)
         EXPECT_EQ(meshioplusplus::detail::read_int(raw, static_cast<std::size_t>(c)),
-                 perm[static_cast<std::size_t>(c)] + 1)
+                  perm[static_cast<std::size_t>(c)] + 1)
             << "CGNS column " << c;
 
     std::error_code ec;
@@ -406,7 +404,7 @@ TEST(CgnsOrdering, Hexahedron20EdgeMidpointsMatchSidsGeometry) {
 
     std::vector<P3> meshio_pts = corners;
     for (const auto& e :
-        meshioplusplus::detail::cell_refine_edges(meshioplusplus::CellType::Hexahedron))
+         meshioplusplus::detail::cell_refine_edges(meshioplusplus::CellType::Hexahedron))
         meshio_pts.push_back(cgns_mid(corners[e[0]], corners[e[1]]));
     ASSERT_EQ(meshio_pts.size(), 20u);
 
@@ -453,9 +451,8 @@ TEST(CgnsOrdering, PermutationsAreInvolutions) {
     // exercise read_cgns at all) and check p[p[c]] == c mathematically,
     // which is a necessary (though not sufficient) correctness precondition
     // for reusing one array both ways.
-    for (const auto& [type, npc] :
-        std::vector<std::pair<std::string, int>>{{"wedge15", 15}, {"wedge18", 18},
-                                                  {"hexahedron20", 20}, {"hexahedron27", 27}}) {
+    for (const auto& [type, npc] : std::vector<std::pair<std::string, int>>{
+             {"wedge15", 15}, {"wedge18", 18}, {"hexahedron20", 20}, {"hexahedron27", 27}}) {
         meshioplusplus::Mesh m;
         std::vector<std::vector<double>> pts(static_cast<std::size_t>(npc),
                                              std::vector<double>{0, 0, 0});
@@ -483,8 +480,7 @@ TEST(CgnsOrdering, PermutationsAreInvolutions) {
             }
         }
         ASSERT_FALSE(section_name.empty()) << type;
-        h5::Hid conn_grp =
-            h5::open_group(f, "Base/Zone1/" + section_name + "/ElementConnectivity");
+        h5::Hid conn_grp = h5::open_group(f, "Base/Zone1/" + section_name + "/ElementConnectivity");
         meshioplusplus::NDArray raw = h5::read_dataset(conn_grp, " data");
         ASSERT_EQ(static_cast<int>(raw.Size()), npc) << type;
 
