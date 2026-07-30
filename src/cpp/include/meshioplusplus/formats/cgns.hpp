@@ -44,6 +44,14 @@
  * load-bearing: cgnslib's `has_child`/`has_data` iterate creation order with
  * no name-order fallback.
  *
+ * Since v9.9.0 the zone also carries `FlowSolution_t` nodes for point/cell
+ * data — `GridLocation` `Vertex` for `point_data`, `CellCenter` for
+ * `cell_data`, one `DataArray_t` per scalar. CGNS has no component concept
+ * (no `NumberOfComponents` in the SIDS), so a k-component array is split into
+ * `<name>_0..<name>_{k-1}` and re-joined on read; `cell_data` needs every
+ * block at the zone's `CellDim`, and solutions are read only for a
+ * single-zone file. See doc/formats/cgns.md's "Data mapping".
+ *
  * A file with no `CGNSBase_t` node (the pre-v9.8.0 layout, or upstream
  * meshio's own writer) is still read via a legacy fallback path that
  * reproduces the old reader's exact behavior and messages, so no existing
