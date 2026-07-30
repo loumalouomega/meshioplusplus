@@ -17,6 +17,7 @@ exact name.
 
 import numpy as np
 
+from .._common import num_nodes_per_cell
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
 
@@ -54,8 +55,33 @@ _CGNS_TYPES = {
         "HEXA_27",
         19,
         [
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15,
-            24, 22, 21, 23, 20, 25, 26,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            16,
+            17,
+            18,
+            19,
+            12,
+            13,
+            14,
+            15,
+            24,
+            22,
+            21,
+            23,
+            20,
+            25,
+            26,
         ],
     ),
     # PYRA_13's code (21) is non-monotonic -- appended after MIXED in the
@@ -64,11 +90,33 @@ _CGNS_TYPES = {
 }
 _CODE_TO_TYPE = {code: name for name, (_cgns_name, code, _perm) in _CGNS_TYPES.items()}
 _CODE_TO_CGNS_NAME = {
-    2: "NODE", 3: "BAR_2", 4: "BAR_3", 5: "TRI_3", 6: "TRI_6", 7: "QUAD_4", 8: "QUAD_8",
-    9: "QUAD_9", 10: "TETRA_4", 11: "TETRA_10", 12: "PYRA_5", 13: "PYRA_14",
-    14: "PENTA_6", 15: "PENTA_15", 16: "PENTA_18", 17: "HEXA_8", 18: "HEXA_20",
-    19: "HEXA_27", 20: "MIXED", 21: "PYRA_13", 22: "NGON_n", 23: "NFACE_n",
-    24: "BAR_4", 26: "TRI_10", 28: "QUAD_16", 30: "TETRA_20", 36: "PENTA_40",
+    2: "NODE",
+    3: "BAR_2",
+    4: "BAR_3",
+    5: "TRI_3",
+    6: "TRI_6",
+    7: "QUAD_4",
+    8: "QUAD_8",
+    9: "QUAD_9",
+    10: "TETRA_4",
+    11: "TETRA_10",
+    12: "PYRA_5",
+    13: "PYRA_14",
+    14: "PENTA_6",
+    15: "PENTA_15",
+    16: "PENTA_18",
+    17: "HEXA_8",
+    18: "HEXA_20",
+    19: "HEXA_27",
+    20: "MIXED",
+    21: "PYRA_13",
+    22: "NGON_n",
+    23: "NFACE_n",
+    24: "BAR_4",
+    26: "TRI_10",
+    28: "QUAD_16",
+    30: "TETRA_20",
+    36: "PENTA_40",
     39: "HEXA_64",
 }
 
@@ -174,7 +222,16 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
     # compute CellDim = the max topological dimension over all blocks.
     cell_dim = 0
     for cb in mesh.cells:
-        if isinstance(cb.data, list):  # ragged (polygon/polyhedron)
+        # polygon/polyhedron* blocks are always ragged in the C++ core (see
+        # CellBlock::mPolygonRows/mPolyhedronRows in the MESHIO backend)
+        # regardless of whether this particular block happens to be uniform
+        # -- checked by type name, not by whether `.data` is a Python list,
+        # since a uniform polygon block is stored as a plain ndarray.
+        if (
+            cb.type == "polygon"
+            or cb.type == "polygon2"
+            or cb.type.startswith("polyhedron")
+        ):
             raise WriteError(
                 f"CGNS: cell type '{cb.type}' is a ragged block; CGNS has no "
                 "fixed-size representation for it (MIXED/NGON_n/NFACE_n "
@@ -221,9 +278,7 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
 
     base = _create_group(f, "Base")
     _write_node_attrs(base, "Base", "CGNSBase_t", "I4")
-    base.create_dataset(
-        " data", data=np.array([cgns_cell_dim, phys_dim], dtype="<i4")
-    )
+    base.create_dataset(" data", data=np.array([cgns_cell_dim, phys_dim], dtype="<i4"))
 
     wide = n_points > np.iinfo(np.int32).max or n_cells_at_dim > np.iinfo(np.int32).max
     zone_np_dt = np.dtype("<i8") if wide else np.dtype("<i4")
@@ -290,7 +345,9 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
         flat = permuted.reshape(-1)
 
         ec = _create_group(sect, "ElementConnectivity")
-        _write_node_attrs(ec, "ElementConnectivity", "DataArray_t", _type_code(out_dtype))
+        _write_node_attrs(
+            ec, "ElementConnectivity", "DataArray_t", _type_code(out_dtype)
+        )
         kwargs = dict(gzip_kwargs)
         if kwargs and flat.size:
             kwargs["chunks"] = flat.shape
@@ -364,7 +421,9 @@ def _read_spec(f):
                 )
 
         coords = zone["GridCoordinates"]
-        axes = [ax for ax in ("CoordinateX", "CoordinateY", "CoordinateZ") if ax in coords]
+        axes = [
+            ax for ax in ("CoordinateX", "CoordinateY", "CoordinateZ") if ax in coords
+        ]
         if not axes:
             raise ReadError(f"CGNS: zone '{zname}' has no GridCoordinates")
         point_dim_out = max(2, len(axes))
@@ -426,15 +485,8 @@ def _read_spec(f):
                     f"ElementRange [{first}, {last}]"
                 )
             nc = last - first + 1
-            npc = None
-            for _n, (_cn, _cd, _p) in _CGNS_TYPES.items():
-                pass
-            npc = {v[0]: k for k, v in _CGNS_TYPES.items()}  # unused, silence lints
-
             flat = np.asarray(s["ElementConnectivity"][" data"][()]).reshape(-1)
-            from .._mesh import topological_dimension as _td  # noqa: F401
-
-            expected_npc = _num_nodes(meshio_type)
+            expected_npc = num_nodes_per_cell[meshio_type]
             if flat.size != nc * expected_npc:
                 raise ReadError(
                     f"CGNS: section '{sname}' declares {nc} elements of "
@@ -453,15 +505,11 @@ def _read_spec(f):
     if not point_chunks:
         raise ReadError(f"CGNS: base '{base_name}' has no Unstructured zones")
     points = (
-        point_chunks[0] if len(point_chunks) == 1 else np.concatenate(point_chunks, axis=0)
+        point_chunks[0]
+        if len(point_chunks) == 1
+        else np.concatenate(point_chunks, axis=0)
     )
     return Mesh(points, cells)
-
-
-def _num_nodes(meshio_type):
-    from .._common import num_nodes_per_cell
-
-    return num_nodes_per_cell[meshio_type]
 
 
 def _read_legacy(f):
