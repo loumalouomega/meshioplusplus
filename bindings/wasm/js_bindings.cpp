@@ -63,6 +63,7 @@
 
 // System includes
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -185,6 +186,16 @@ val ndarray_to_int32_array(const NDArray& rA) {
  * `Mesh`'s structure (points, a list of cell blocks, cell_data as one array
  * per block) for consistency with the rest of meshio++.
  *
+ * Data arrays are flat, and a flat typed array carries no shape, so each of
+ * the three data maps has a sibling `point_data_components` /
+ * `cell_data_components` / `field_data_components` object giving the
+ * per-entity width of any array that is not a scalar (the same device
+ * `xdmfSeriesWriteDataArrays`' `components` argument uses). An array absent
+ * from its `*_components` object has one component; only multi-component
+ * arrays get an entry, so a scalar-only mesh emits three empty objects.
+ * Before v9.9.0 there was no such metadata and every array round-tripped as
+ * a scalar, silently reshaping an `(n,3)` vector field to `(3n,1)`.
+ *
  * @throws meshioplusplus::ReadError if any cell block is ragged (polygon/
  *   polyhedron with varying node counts) -- not supported by the v1 JS API.
  */
@@ -246,24 +257,50 @@ val mesh_to_val(const Mesh& rMesh) {
     }
     out.set("cells", cells);
 
+    // Data arrays cross as flat Float64Arrays, with the per-array component
+    // count carried alongside in a sibling `*_components` object -- a flat
+    // typed array has no shape of its own, exactly the rationale
+    // `xdmfSeriesWriteDataArrays`' own `components` argument already states.
+    // An entry is written ONLY for a genuinely multi-component array, so a
+    // scalar-only mesh emits the same three empty objects it always did and
+    // no existing consumer sees a new key. `val_to_mesh` reads them back.
     val point_data = val::object();
-    for (const auto& name : rMesh.PointDataNames())
-        point_data.set(name, ndarray_to_float64_array(rMesh.PointData(name)));
+    val point_data_components = val::object();
+    for (const auto& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        point_data.set(name, ndarray_to_float64_array(a));
+        if (cols_of(a) > 1)
+            point_data_components.set(name, static_cast<double>(cols_of(a)));
+    }
     out.set("point_data", point_data);
+    out.set("point_data_components", point_data_components);
 
     val cell_data = val::object();
+    val cell_data_components = val::object();
     for (const auto& name : rMesh.CellDataNames()) {
         val blocks = val::array();
         for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
             blocks.call<void>("push", ndarray_to_float64_array(rMesh.CellData(name, b)));
         cell_data.set(name, blocks);
+        // The component count is a property of the ARRAY, not of one block:
+        // the uniform mesh API guarantees every block of a named cell_data
+        // array agrees on its trailing dimensions, so block 0 speaks for all.
+        if (rMesh.CellDataNumBlocks(name) > 0 && cols_of(rMesh.CellData(name, 0)) > 1)
+            cell_data_components.set(name, static_cast<double>(cols_of(rMesh.CellData(name, 0))));
     }
     out.set("cell_data", cell_data);
+    out.set("cell_data_components", cell_data_components);
 
     val field_data = val::object();
-    for (const auto& name : rMesh.FieldDataNames())
-        field_data.set(name, ndarray_to_float64_array(rMesh.FieldData(name)));
+    val field_data_components = val::object();
+    for (const auto& name : rMesh.FieldDataNames()) {
+        const NDArray& a = rMesh.FieldData(name);
+        field_data.set(name, ndarray_to_float64_array(a));
+        if (cols_of(a) > 1)
+            field_data_components.set(name, static_cast<double>(cols_of(a)));
+    }
     out.set("field_data", field_data);
+    out.set("field_data_components", field_data_components);
 
     // Named regions (doc/regions.md) ride on the mesh object itself rather than
     // through a function of their own, so `readMesh` / `writeMesh` / `convert`
@@ -309,14 +346,61 @@ std::vector<std::string> js_object_keys(const val& rObj) {
 }
 
 /**
+ * @brief The declared component count for data array `rName`, or 1.
+ *
+ * A missing/null/undefined container, or a name absent from it, means "one
+ * component" -- so a caller who never heard of `*_components` keeps exactly
+ * the pre-v9.9.0 1-D behaviour. Same null-tolerant lookup idiom as
+ * `xdmf_series_write_data_arrays_js`, which has carried an explicit
+ * `components` argument since the time-series binding landed.
+ */
+std::size_t js_components_of(const val& rComponents, const std::string& rName) {
+    if (rComponents.isNull() || rComponents.isUndefined())
+        return 1;
+    const val k = rComponents[rName];
+    if (k.isUndefined() || k.isNull())
+        return 1;
+    const double v = k.as<double>();
+    if (!(v >= 1.0) || v != std::floor(v))
+        throw meshioplusplus::WriteError(
+            "meshio++ (wasm): data array '" + rName +
+            "' declares a non-integer or non-positive component count");
+    return static_cast<std::size_t>(v);
+}
+
+/**
+ * @brief The `(rows, k)` shape for a flat JS data array of `rLen` values.
+ *
+ * `k == 1` yields a 1-D `{rLen}` shape rather than `{rLen, 1}`: the two are
+ * indistinguishable to `detail::cols()` (which reports 1 for both) but the
+ * 1-D form is what every pre-v9.9.0 caller produced, so keeping it makes the
+ * scalar path byte-identical rather than merely equivalent.
+ */
+std::vector<std::size_t> js_data_shape(std::size_t rLen, std::size_t k, const std::string& rName) {
+    if (k <= 1)
+        return {rLen};
+    if (rLen % k != 0)
+        throw meshioplusplus::WriteError(
+            "meshio++ (wasm): data array '" + rName + "' has length " + std::to_string(rLen) +
+            ", which is not a multiple of its declared " + std::to_string(k) + " components");
+    return {rLen / k, k};
+}
+
+/**
  * @brief Convert a plain JS mesh object (see `mesh_to_val`'s shape) into a C++
  * `Mesh`, for `writeMesh`/`convert`.
  *
+ * The optional `*_components` objects are honoured symmetrically with
+ * `mesh_to_val`, so a mesh obtained from `readMesh` re-enters C++ with every
+ * array's shape intact. Omitting them (or the whole object) means every array
+ * is a scalar, which is what every pre-v9.9.0 caller expressed.
+ *
  * @throws meshioplusplus::WriteError on malformed input (points/cell-block
- *   lengths not divisible by their declared dim/nodesPerCell). Ragged cell
- *   blocks cannot be constructed through this API at all (there is no way to
- *   express them in the flat typed-array shape) -- mirrors
- *   `py_to_mesh`'s `allow_ragged=false` default.
+ *   lengths not divisible by their declared dim/nodesPerCell, a data array's
+ *   length not divisible by its declared component count, or a non-positive
+ *   /non-integer component count). Ragged cell blocks cannot be constructed
+ *   through this API at all (there is no way to express them in the flat
+ *   typed-array shape) -- mirrors `py_to_mesh`'s `allow_ragged=false` default.
  */
 Mesh val_to_mesh(const val& rObj) {
     Mesh mesh;
@@ -388,34 +472,53 @@ Mesh val_to_mesh(const val& rObj) {
         }
     }
 
+    // Data arrays, with their component counts taken from the optional
+    // sibling `*_components` objects (see `mesh_to_val`, which emits them).
+    // Absent => 1 component, i.e. exactly the pre-v9.9.0 flat-1-D behaviour,
+    // which is what keeps every existing caller working unchanged.
     if (rObj.hasOwnProperty("point_data")) {
         val pd = rObj["point_data"];
+        val comps = rObj.hasOwnProperty("point_data_components") ? rObj["point_data_components"]
+                                                                 : val::undefined();
         for (const std::string& name : js_object_keys(pd)) {
             val arr = pd[name];
+            const std::size_t len = arr["length"].as<std::size_t>();
             mesh.AddPointData(name,
-                              float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
+                              float64_ndarray_from_val(
+                                  arr, js_data_shape(len, js_components_of(comps, name), name)));
         }
     }
     if (rObj.hasOwnProperty("cell_data")) {
         val cd = rObj["cell_data"];
+        val comps = rObj.hasOwnProperty("cell_data_components") ? rObj["cell_data_components"]
+                                                                : val::undefined();
         for (const std::string& name : js_object_keys(cd)) {
             val blocks_val = cd[name];
             auto nb = blocks_val["length"].as<unsigned>();
+            // One component count per ARRAY, applied to every block -- the
+            // uniform mesh API requires the blocks of one named cell_data
+            // array to agree on their trailing dimensions.
+            const std::size_t k = js_components_of(comps, name);
             std::vector<NDArray> blocks;
             blocks.reserve(nb);
             for (unsigned b = 0; b < nb; ++b) {
                 val arr = blocks_val[b];
-                blocks.push_back(float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
+                const std::size_t len = arr["length"].as<std::size_t>();
+                blocks.push_back(float64_ndarray_from_val(arr, js_data_shape(len, k, name)));
             }
             mesh.AddCellData(name, std::move(blocks));
         }
     }
     if (rObj.hasOwnProperty("field_data")) {
         val fd = rObj["field_data"];
+        val comps = rObj.hasOwnProperty("field_data_components") ? rObj["field_data_components"]
+                                                                 : val::undefined();
         for (const std::string& name : js_object_keys(fd)) {
             val arr = fd[name];
+            const std::size_t len = arr["length"].as<std::size_t>();
             mesh.AddFieldData(name,
-                              float64_ndarray_from_val(arr, {arr["length"].as<std::size_t>()}));
+                              float64_ndarray_from_val(
+                                  arr, js_data_shape(len, js_components_of(comps, name), name)));
         }
     }
     // Named regions (see `mesh_to_val`). `dim`/`tag` default to -1, meaning

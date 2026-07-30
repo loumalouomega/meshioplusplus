@@ -496,3 +496,112 @@ def test_perilab_reference_file_cpp_matches_python(perilab_file):
         )
 
     assert key(cpp.regions) == key(py.regions)
+
+
+# ---------------------------------------------------------------------------- #
+# v9.9.0: the three things this writer used to drop -- ordinary cell_data,       #
+# block names, and the time value. Both writers must agree, so every case is     #
+# parametrized over both and read back with both readers.                       #
+# ---------------------------------------------------------------------------- #
+
+
+def _two_block_mesh():
+    """Two same-type blocks, so a per-block element variable has real structure."""
+    return meshioplusplus.Mesh(
+        np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [2.0, 0.0, 0.0],
+            ]
+        ),
+        [
+            ("triangle", np.array([[0, 1, 2]])),
+            ("triangle", np.array([[0, 2, 3], [1, 4, 2]])),
+        ],
+    )
+
+
+@pytest.mark.parametrize("writer", _writers())
+@pytest.mark.parametrize("reader", _readers())
+def test_cell_data_round_trips_as_element_variables(reader, writer, tmp_path):
+    """The regression: this writer emitted no `vals_elem_var` at all."""
+    mesh = _two_block_mesh()
+    mesh.cell_data["material"] = [
+        np.array([7.0]),
+        np.array([8.0, 9.0]),
+    ]
+    out = tmp_path / "ev.exo"
+    writer(out, mesh)
+
+    back = reader(out)
+    assert "material" in back.cell_data, "ordinary cell_data was dropped"
+    values = back.cell_data["material"]
+    assert len(values) == len(mesh.cells)
+    assert values[0].ravel().tolist() == [7.0]
+    assert values[1].ravel().tolist() == [8.0, 9.0]
+
+
+@pytest.mark.parametrize("writer", _writers())
+@pytest.mark.parametrize("reader", _readers())
+def test_multi_component_cell_data_round_trips(reader, writer, tmp_path):
+    """A vector cell field: trailing dims become extra netCDF dimensions."""
+    mesh = _two_block_mesh()
+    mesh.cell_data["stress"] = [
+        np.array([[0.0, 1.0, 2.0]]),
+        np.array([[3.0, 4.0, 5.0], [6.0, 7.0, 8.0]]),
+    ]
+    out = tmp_path / "vec.exo"
+    writer(out, mesh)
+
+    back = reader(out)
+    values = back.cell_data["stress"]
+    assert values[0].shape == (1, 3)
+    assert values[1].shape == (2, 3)
+    assert values[0].tolist() == [[0.0, 1.0, 2.0]]
+    assert values[1].tolist() == [[3.0, 4.0, 5.0], [6.0, 7.0, 8.0]]
+
+
+@pytest.mark.parametrize("writer", _writers())
+@pytest.mark.parametrize("reader", _readers())
+def test_block_names_round_trip_through_cell_regions(reader, writer, tmp_path):
+    """A block name used to come back as the reader's synthetic "Block N"."""
+    from meshioplusplus._regions import Region
+
+    mesh = _two_block_mesh()
+    mesh.regions = [
+        Region("inner", "cell", np.array([0]), dim=2),
+        Region("outer", "cell", np.array([1, 2]), dim=2),
+    ]
+    out = tmp_path / "named.exo"
+    writer(out, mesh)
+
+    back = reader(out)
+    names = {r.name for r in back.regions if r.kind == "cell"}
+    assert "inner" in names and "outer" in names, f"got {names}"
+
+
+@pytest.mark.parametrize("writer", _writers())
+@pytest.mark.parametrize("reader", _readers())
+def test_time_value_comes_from_field_data(reader, writer, tmp_path):
+    """`time_whole` was hard-coded 0, so a labelled frame lost its time."""
+    mesh = _two_block_mesh()
+    mesh.field_data["exodus:time"] = np.array([2.5])
+    out = tmp_path / "t.exo"
+    writer(out, mesh)
+
+    with netCDF4.Dataset(out) as nc:
+        assert float(nc.variables["time_whole"][0]) == pytest.approx(2.5)
+
+    # And it comes back as `exodus:time`, so a frame survives a round trip.
+    back = reader(out)
+    assert back.field_data["exodus:time"].ravel()[0] == pytest.approx(2.5)
+
+
+def test_a_region_less_mesh_still_writes_no_eb_names(tmp_path):
+    """`eb_names` is written only when a block actually has a name."""
+    py_exodus.write(tmp_path / "plain.exo", _two_block_mesh())
+    with netCDF4.Dataset(tmp_path / "plain.exo") as nc:
+        assert "eb_names" not in nc.variables

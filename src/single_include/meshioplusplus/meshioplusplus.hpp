@@ -71,7 +71,8 @@
  *  | 1   | v9.0.0             | (baseline)                                     |
  *  | 2   | v9.1.0             | `GeometricalEntity`, `ModelPart`, `MdpaInfo`, … |
  *  | 3   | v9.2.0 .. v9.4.1   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
- *  | 4   | v9.5.0             | `RefineOptions` gained selection/closure fields |
+ *  | 4   | v9.5.0 .. v9.8.0   | `RefineOptions` gained selection/closure fields |
+ *  | 5   | v9.9.0             | `MedInfo` gained four lenient-read fields       |
  *
  * ### This is the ONE place the number is written
  *
@@ -90,7 +91,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 4
+#define MESHIOPLUSPLUS_ABI_VERSION 5
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -9351,6 +9352,14 @@ MESHIOPLUSPLUS_API Mesh read_avsucd(const std::string& rPath);
  * load-bearing: cgnslib's `has_child`/`has_data` iterate creation order with
  * no name-order fallback.
  *
+ * Since v9.9.0 the zone also carries `FlowSolution_t` nodes for point/cell
+ * data — `GridLocation` `Vertex` for `point_data`, `CellCenter` for
+ * `cell_data`, one `DataArray_t` per scalar. CGNS has no component concept
+ * (no `NumberOfComponents` in the SIDS), so a k-component array is split into
+ * `<name>_0..<name>_{k-1}` and re-joined on read; `cell_data` needs every
+ * block at the zone's `CellDim`, and solutions are read only for a
+ * single-zone file. See doc/formats/cgns.md's "Data mapping".
+ *
  * A file with no `CGNSBase_t` node (the pre-v9.8.0 layout, or upstream
  * meshio's own writer) is still read via a legacy fallback path that
  * reproduces the old reader's exact behavior and messages, so no existing
@@ -10703,6 +10712,8 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
 #include <cstdint>
 #include <map>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -10764,6 +10775,43 @@ struct MedInfo {
      * families, mirroring Python `mesh.cell_tag_groups`; same defaulting
      * behavior as `point_tag_groups`. */
     std::map<std::int64_t, std::string> mCellTagGroups;
+
+    // --- populated only under ReadOptions::mLenient (see read_med) ----------
+    /**
+     * @brief What `ReadOptions::mLenient` skipped, in the order it was met.
+     *
+     * Mirrors `MdpaInfo::mSkippedConstructs`. Empty after a strict read, since
+     * a strict read either represents everything or throws. Each entry names
+     * the field and the construct, e.g.
+     * `"field 'v' on a named profile"`.
+     */
+    std::vector<std::string> mSkippedConstructs;
+    /**
+     * @brief `field name -> (UNI, UNT)` — a field's physical and time unit.
+     *
+     * The C++ `Mesh` has nowhere to put these (they are strings, and
+     * `NDArray` has no string dtype; Python carries them as the dict-valued
+     * `field_data["med:field_units"]`, which cannot cross any binding). Under
+     * `mLenient` they are read here rather than thrown on, so a caller with no
+     * Python fallback gets the field values *and* can still see its units.
+     */
+    std::map<std::string, std::pair<std::string, std::string>> mFieldUnits;
+    /**
+     * @brief `field name -> (NDT, NOR, PDT)` of the step actually read.
+     *
+     * Recorded whenever it is not the write-side default `(1, -1, 0.0)`, i.e.
+     * exactly when a strict read would have declined. Python's counterpart is
+     * the dict-valued `field_data["med:step_meta"]`.
+     */
+    std::map<std::string, std::tuple<std::int64_t, std::int64_t, double>> mStepMeta;
+    /**
+     * @brief `field name -> the PDT of every timestep the field carries`.
+     *
+     * Always filled (one entry per `CHA` field), so a caller can discover
+     * what `ReadOptions::mTimeStep` may select before issuing the request —
+     * the same reason `MeshMetadata::mTimeValues` exists for exodus.
+     */
+    std::map<std::string, std::vector<double>> mFieldTimeValues;
 };
 
 /**
@@ -10797,6 +10845,46 @@ struct MedInfo {
  *         pure-Python/h5py reader.
  */
 MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
+
+/**
+ * @brief `read_med` with read options — the overload that makes a MED file
+ *        with enhanced `CHA` fields readable where there is no Python.
+ *
+ * Two options change anything here; the narrowing ones (`mPointsOnly`,
+ * `mDataArrays`, `mMmap`) are applied by the Python layer after any read, as
+ * for every other format.
+ *
+ * **`mLenient`** downgrades every `CHA` decline listed under the plain
+ * overload to a `log::warn` plus a recorded entry in
+ * `MedInfo::mSkippedConstructs`, so the mesh, its tags/families/regions and
+ * every *representable* field still come back. Units and non-default step
+ * metadata are not skipped but **read into** `MedInfo::mFieldUnits` /
+ * `mStepMeta`; only a construct with no representation at all (a named
+ * profile, an ELNO/ELGA support, a field mixing nodal and cell support) causes
+ * that one field to be dropped. This is the same mechanism, and the same
+ * rationale, as `ReadOptions::mLenient` for MDPA: strict is what the Python
+ * shim uses (so it still falls back and the Python surface is unchanged),
+ * lenient is the only way a real Salome/Code_Aster file reads at all from the
+ * C API, Fortran, Julia, R, WASM or the native CLI.
+ *
+ * **`mTimeStep`** selects which timestep of a multi-step field to read
+ * (0 = first, negative counts from the end), resolved per field via
+ * `ResolveTimeStep`. A *non-default* `mTimeStep` is honoured whether or not
+ * `mLenient` is set — it is an explicit request, and no Python behaviour
+ * depends on it. With the default step and no `mLenient`, a multi-step field
+ * still throws, exactly as before. Every field's available step times are
+ * reported in `MedInfo::mFieldTimeValues` regardless.
+ *
+ * @param rPath filesystem path to the .med file to read
+ * @param rInfo output side-channel struct (see #MedInfo)
+ * @param rOptions read options; only `mLenient` and `mTimeStep` are consulted
+ * @return the read Mesh
+ * @throws ReadError as the plain overload, minus whatever `mLenient` and
+ *         `mTimeStep` cover; a `mTimeStep` out of range throws naming the
+ *         field and its step count rather than clamping.
+ */
+MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo,
+                                 const ReadOptions& rOptions);
 
 /**
  * @brief Write a Mesh to a MED (.med) HDF5 file, handling the
@@ -10837,7 +10925,7 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  *       `"cell_tags"`, `"med:num"`.
  */
 MESHIOPLUSPLUS_API void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
-               const std::string& rMedVersion = "4.1.0");
+                                  const std::string& rMedVersion = "4.1.0");
 
 }  // namespace meshioplusplus
 
@@ -16805,7 +16893,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 8
+#define MESHIOPLUSPLUS_VERSION_MINOR 9
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -16815,7 +16903,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.8.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.9.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -32155,31 +32243,27 @@ const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
         {CT::Quad8, 4, 8, {0, 3, 2, 1, 11, 10, 9, 8}},
         {CT::Quad8, 4, 8, {4, 5, 6, 7, 12, 13, 14, 15}},
     };
-    // VTK face-center numbering: 20=(0,1,5,4), 21=(1,2,6,5), 22=(2,3,7,6),
-    // 23=(3,0,4,7), 24=bottom (0,1,2,3), 25=top (4,5,6,7); 26 = body center.
+    // Mid-face numbering, from vtkTriQuadraticHexahedron::Faces (the authority
+    // meshio's hexahedron27 ordering is copied from verbatim -- meshio applies
+    // no permutation to this type): 20=(0,4,7,3) x-min, 21=(1,2,6,5) x-max,
+    // 22=(0,1,5,4) y-min, 23=(3,7,6,2) y-max, 24=bottom (0,3,2,1),
+    // 25=top (4,5,6,7); 26 = body center.
     //
-    // KNOWN DEFECT (found while deriving CGNS's HEXA_27 node permutation in
-    // v9.8.0, not fixed here): the real vtkTriQuadraticHexahedron::Faces
-    // table is 20=(0,4,7,3), 21=(1,2,6,5), 22=(0,1,5,4), 23=(3,7,6,2) — this
-    // table's 20/22/23 are a permuted 3-cycle of that. Affects
-    // extract_surface/skin's quad9 mid-face node for hexahedron27 (never a
-    // wrong topology, just a wrong quadratic mid-face position). Left
-    // unchanged here because `cell_refine_quad_faces` in cell_subdivision.cpp
-    // (used by the `refine` operation's internal full-Lagrange-style
-    // indexing scheme, see refine_templates.cpp's rtpl_hexahedron_table) is
-    // keyed against this exact table via the CellSubdivision.
-    // QuadFacesAgreeWithCellFaces test, and refine's mask logic assigns
-    // geometric meaning (which pair of faces is "perpendicular to the
-    // untouched axis") to specific absolute node indices 20-23 -- fixing
-    // this table requires updating that mask logic in lockstep to avoid
-    // silently mis-refining hexahedra, which is out of scope for the CGNS
-    // work that found it. See doc/formats/cgns.md's HEXA_27 note; the CGNS
-    // permutation is derived from a corrected table local to that code.
+    // Corrected in v9.9.0: 20/22/23 were previously a permuted 3-cycle of the
+    // real VTK table, which put extract_surface/extract_skin's quad9 mid-face
+    // node at the wrong position for hexahedron27 (never a wrong topology --
+    // facet keying uses corners only -- just a wrong quadratic node). Fixed
+    // in lockstep with `cell_refine_quad_faces` (cell_subdivision.cpp) and
+    // `rtpl_hexahedron_table` (refine_templates.cpp) plus their Python twins,
+    // since refine derives node 20+k from the k-th quad-face row; see those
+    // files. The format layer (cgns.cpp's HEXA_27 permutation, gmsh.cpp's
+    // hexahedron27 perm) was already on this corrected convention, so this
+    // makes the codebase self-consistent rather than changing the convention.
     static const std::vector<CellFaceDef> hexahedron27 = {
-        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 23}},
+        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 20}},
         {CT::Quad9, 4, 9, {1, 2, 6, 5, 9, 18, 13, 17, 21}},
-        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 20}},
-        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 22}},
+        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 22}},
+        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 23}},
         {CT::Quad9, 4, 9, {0, 3, 2, 1, 11, 10, 9, 8, 24}},
         {CT::Quad9, 4, 9, {4, 5, 6, 7, 12, 13, 14, 15, 25}},
     };
@@ -32319,9 +32403,14 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type) {
     static const std::vector<CellQuadFace> empty = {};
     // quad9 node 8: the cell's own face.
     static const std::vector<CellQuadFace> quad = {{0, 1, 2, 3}};
-    // hexahedron27 nodes 20-25: the four side faces, then bottom, then top.
+    // hexahedron27 nodes 20-25, in cell_faces.hpp's own hexahedron27 order
+    // (vtkTriQuadraticHexahedron::Faces): x-min, x-max, y-min, y-max, bottom,
+    // top -- row k is node 20+k, which `CellSubdivision.
+    // QuadFacesAgreeWithCellFaces` enforces against that table. Reordered in
+    // v9.9.0 together with cell_faces.cpp's 20/22/23 correction and
+    // refine_templates.cpp's absolute-index references; see cell_faces.cpp.
     static const std::vector<CellQuadFace> hexahedron = {
-        {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}, {0, 1, 2, 3}, {4, 5, 6, 7},
+        {0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4}, {3, 7, 6, 2}, {0, 1, 2, 3}, {4, 5, 6, 7},
     };
     // wedge18 nodes 15-17: the three quad side faces (the two triangle faces
     // gain no node, which is why a wedge needs no body node either -- see
@@ -34341,7 +34430,16 @@ RtplTypeTable rtpl_hexahedron_table() {
     t.mFullMask = 0xFFF;
     t.mMasks.resize(4096);
     // hexahedron27 layout: 8..19 edge mids (bottom ring, top ring, verticals),
-    // 20..25 face centres (the four sides, then bottom, then top), 26 body.
+    // 20..25 face centres, 26 body. The face-centre indices are
+    // `cell_refine_quad_faces(Hexahedron)` row order, which since v9.9.0 is
+    // cell_faces.hpp's own hexahedron27 order (vtkTriQuadraticHexahedron):
+    // 20 = x-min (0,4,7,3), 21 = x-max (1,2,6,5), 22 = y-min (0,1,5,4),
+    // 23 = y-max (3,7,6,2), 24 = bottom, 25 = top. The absolute indices below
+    // were permuted by the same 3-cycle (20->22, 22->23, 23->20) in that
+    // release; they never escape `refine` (output blocks are 8-node), so the
+    // renumbering is internal apart from the order new face-centre points are
+    // appended in. See cell_faces.cpp for the full derivation.
+    //
     // The twelve edges fall into three parallel classes; the admissible masks
     // are their eight unions, so a refinement travels through one dual sheet
     // rather than the whole block.
@@ -34355,25 +34453,27 @@ RtplTypeTable rtpl_hexahedron_table() {
         RtplChildren{{0, 1, 2, 3, 16, 17, 18, 19}, {16, 17, 18, 19, 4, 5, 6, 7}};
     // Two classes split: the two faces perpendicular to the untouched direction
     // have all four of their edges split and so carry a centre; no body node.
+    // x|y -> bottom/top (24, 25); x|z -> the y-perpendicular pair (22, 23);
+    // y|z -> the x-perpendicular pair (21, 20).
     t.mMasks[x | y].mChildren = RtplChildren{{0, 8, 24, 11, 4, 12, 25, 15},
                                              {8, 1, 9, 24, 12, 5, 13, 25},
                                              {24, 9, 2, 10, 25, 13, 6, 14},
                                              {11, 24, 10, 3, 15, 25, 14, 7}};
-    t.mMasks[x | z].mChildren = RtplChildren{{0, 8, 10, 3, 16, 20, 22, 19},
-                                             {8, 1, 2, 10, 20, 17, 18, 22},
-                                             {16, 20, 22, 19, 4, 12, 14, 7},
-                                             {20, 17, 18, 22, 12, 5, 6, 14}};
-    t.mMasks[y | z].mChildren = RtplChildren{{0, 1, 9, 11, 16, 17, 21, 23},
-                                             {11, 9, 2, 3, 23, 21, 18, 19},
-                                             {16, 17, 21, 23, 4, 5, 13, 15},
-                                             {23, 21, 18, 19, 15, 13, 6, 7}};
+    t.mMasks[x | z].mChildren = RtplChildren{{0, 8, 10, 3, 16, 22, 23, 19},
+                                             {8, 1, 2, 10, 22, 17, 18, 23},
+                                             {16, 22, 23, 19, 4, 12, 14, 7},
+                                             {22, 17, 18, 23, 12, 5, 6, 14}};
+    t.mMasks[y | z].mChildren = RtplChildren{{0, 1, 9, 11, 16, 17, 21, 20},
+                                             {11, 9, 2, 3, 20, 21, 18, 19},
+                                             {16, 17, 21, 20, 4, 5, 13, 15},
+                                             {20, 21, 18, 19, 15, 13, 6, 7}};
     // Everything split: rows follow the parent's own parametric (i,j,k) order
     // over the 3x3x3 lattice, so orientation is preserved by construction.
     t.mMasks[t.mFullMask].mChildren =
-        RtplChildren{{0, 8, 24, 11, 16, 20, 26, 23},  {8, 1, 9, 24, 20, 17, 21, 26},
-                     {11, 24, 10, 3, 23, 26, 22, 19}, {24, 9, 2, 10, 26, 21, 18, 22},
-                     {16, 20, 26, 23, 4, 12, 25, 15}, {20, 17, 21, 26, 12, 5, 13, 25},
-                     {23, 26, 22, 19, 15, 25, 14, 7}, {26, 21, 18, 22, 25, 13, 6, 14}};
+        RtplChildren{{0, 8, 24, 11, 16, 22, 26, 20},  {8, 1, 9, 24, 22, 17, 21, 26},
+                     {11, 24, 10, 3, 20, 26, 23, 19}, {24, 9, 2, 10, 26, 21, 18, 23},
+                     {16, 22, 26, 20, 4, 12, 25, 15}, {22, 17, 21, 26, 12, 5, 13, 25},
+                     {20, 26, 23, 19, 15, 25, 14, 7}, {26, 21, 18, 23, 25, 13, 6, 14}};
     rtpl_build_promote(t);
     return t;
 }
@@ -38489,9 +38589,11 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -38787,6 +38889,135 @@ bool cgns_is_spec_layout(hid_t f) {
     return false;
 }
 
+// --- FlowSolution_t: point/cell data ----------------------------------------
+//
+// CGNS has NO component concept: one `DataArray_t` is one scalar, and there is
+// no `NumberOfComponents` anywhere in the SIDS. A k>1 meshio++ array is
+// therefore split into k sibling `DataArray_t` nodes suffixed `_0.._k-1` and
+// re-joined on read from a contiguous run -- a documented meshio++ convention
+// (see doc/formats/cgns.md), not something SIDS specifies.
+constexpr const char* kCgnsVertexSolution = "FlowSolution";
+constexpr const char* kCgnsCellSolution = "FlowSolutionCells";
+
+/// `<base>_<i>` for a component of a multi-component array, or `<base>` when
+/// the array is scalar. The single owner of the suffix convention.
+std::string cgns_component_name(const std::string& rBase, std::size_t k, std::size_t i) {
+    return k <= 1 ? rBase : rBase + "_" + std::to_string(i);
+}
+
+/// Write one `DataArray_t` holding component `i` of `rArr` (stride `k`).
+void cgns_write_solution_array(hid_t sol, const std::string& rName, const NDArray& rArr,
+                               std::size_t rows, std::size_t k, std::size_t i, int gzip_level) {
+    NDArray col(DType::Float64, {rows});
+    double* dst = col.As<double>();
+    for (std::size_t r = 0; r < rows; ++r)
+        dst[r] = detail::read_double(rArr, r * k + i);
+    h5::Hid g = cgns_create_group(sol, rName);
+    cgns_write_node_attrs(g, rName, "DataArray_t", "R8");
+    h5::write_dataset(g, " data", col, gzip_level);
+}
+
+/// The `FlowSolution_t` node plus its `GridLocation_t` child, or an invalid
+/// handle when the caller has nothing to write.
+h5::Hid cgns_create_solution(hid_t zone, const std::string& rName, const std::string& rLocation) {
+    h5::Hid sol = cgns_create_group(zone, rName);
+    cgns_write_node_attrs(sol, rName, "FlowSolution_t", "MT");
+    h5::Hid gl = cgns_create_group(sol, "GridLocation");
+    cgns_write_node_attrs(gl, "GridLocation", "GridLocation_t", "C1");
+    // Like ZoneType's payload: the declared length carries the string, with no
+    // trailing NUL.
+    h5::write_dataset(gl, " data", cgns_padded_int8(rLocation, rLocation.size()));
+    return sol;
+}
+
+/// Re-join a zone's `DataArray_t` children into meshio++ arrays, undoing the
+/// `_0.._k-1` split. Returns `name -> (rows, k)` interleaved Float64 arrays.
+/// `rExpectedRows` is `NVertex`/`NCell`; a mismatch is a `ReadError`.
+std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
+                                                                const std::string& rSolName,
+                                                                std::size_t expected_rows) {
+    // Collect the raw arrays in name order first; `group_links` is name-sorted,
+    // so a `_0.._k-1` run arrives contiguous and in component order for k < 10.
+    // For k >= 10 the lexicographic order would interleave, so components are
+    // placed by their parsed index rather than by arrival.
+    std::vector<std::string> raw_names;
+    for (const std::string& child : h5::group_links(sol)) {
+        if (cgns_is_reserved_name(child) || child == "GridLocation")
+            continue;
+        h5::Hid g = h5::open_group(sol, child);
+        if (!(h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == "DataArray_t"))
+            continue;
+        raw_names.push_back(child);
+    }
+
+    // Group by base name: a trailing `_<digits>` marks a component of a
+    // multi-component array, anything else is a scalar in its own right.
+    std::map<std::string, std::map<std::size_t, std::string>> components;
+    std::vector<std::string> base_order;
+    for (const std::string& n : raw_names) {
+        std::string base = n;
+        std::size_t idx = 0;
+        const std::size_t us = n.rfind('_');
+        if (us != std::string::npos && us + 1 < n.size() &&
+            n.find_first_not_of("0123456789", us + 1) == std::string::npos) {
+            base = n.substr(0, us);
+            idx = static_cast<std::size_t>(std::stoull(n.substr(us + 1)));
+        }
+        if (!components.count(base))
+            base_order.push_back(base);
+        components[base][idx] = n;
+    }
+
+    std::vector<std::pair<std::string, NDArray>> out;
+    for (const std::string& base : base_order) {
+        const std::map<std::size_t, std::string>& parts = components[base];
+        // A genuine multi-component array is a contiguous 0..k-1 run. Anything
+        // else (a lone `foo_7`, a gap) is treated as a scalar under its own
+        // literal name -- guessing would invent components.
+        bool contiguous = true;
+        std::size_t expect = 0;
+        for (const auto& kv : parts) {
+            if (kv.first != expect++)
+                contiguous = false;
+        }
+        const std::size_t k = parts.size();
+        if (!contiguous || (k == 1 && parts.begin()->first != 0)) {
+            for (const auto& kv : parts) {
+                h5::Hid g = h5::open_group(sol, kv.second);
+                NDArray a = h5::read_dataset(g, " data");
+                if (a.Size() != expected_rows)
+                    throw ReadError(detail::format_compat(
+                        "CGNS: '{}/{}' has {} values but the zone has {} entities at this "
+                        "GridLocation",
+                        rSolName, kv.second, a.Size(), expected_rows));
+                out.emplace_back(kv.second, std::move(a));
+            }
+            continue;
+        }
+
+        std::vector<NDArray> cols;
+        cols.reserve(k);
+        for (const auto& kv : parts) {
+            h5::Hid g = h5::open_group(sol, kv.second);
+            NDArray a = h5::read_dataset(g, " data");
+            if (a.Size() != expected_rows)
+                throw ReadError(detail::format_compat(
+                    "CGNS: '{}/{}' has {} values but the zone has {} entities at this "
+                    "GridLocation",
+                    rSolName, kv.second, a.Size(), expected_rows));
+            cols.push_back(std::move(a));
+        }
+        NDArray joined(DType::Float64, k > 1 ? std::vector<std::size_t>{expected_rows, k}
+                                             : std::vector<std::size_t>{expected_rows});
+        double* dst = joined.As<double>();
+        for (std::size_t i = 0; i < k; ++i)
+            for (std::size_t r = 0; r < expected_rows; ++r)
+                dst[r * k + i] = detail::read_double(cols[i], r);
+        out.emplace_back(base, std::move(joined));
+    }
+    return out;
+}
+
 }  // namespace
 
 void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
@@ -38973,6 +39204,96 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
         cgns_write_node_attrs(ec, "ElementConnectivity", "DataArray_t", cgns_type_code(out_dt));
         h5::write_dataset(ec, " data", conn, gzip_level);
     }
+
+    // FlowSolution_t: point_data at "Vertex", cell_data at "CellCenter".
+    // Names come from the sorted *DataNames() accessors, so output order is
+    // deterministic. field_data has no CGNS home (it is neither per-vertex nor
+    // per-cell) and is not written.
+    {
+        std::vector<std::string> pnames = rMesh.PointDataNames();
+        if (!pnames.empty()) {
+            h5::Hid sol = cgns_create_solution(zone, kCgnsVertexSolution, "Vertex");
+            for (const std::string& name : pnames) {
+                const NDArray& a = rMesh.PointData(name);
+                const std::size_t rows = detail::rows(a);
+                const std::size_t k = detail::cols(a);
+                if (rows != n_points) {
+                    log::warn(
+                        "CGNS: point_data '{}' has {} rows but the mesh has {} points; not "
+                        "written.",
+                        name, rows, n_points);
+                    continue;
+                }
+                for (std::size_t i = 0; i < k; ++i)
+                    cgns_write_solution_array(sol, cgns_component_name(name, k, i), a, rows, k, i,
+                                              gzip_level);
+            }
+        }
+    }
+    {
+        // A zone-wide CellCenter array has one value per zone cell, but
+        // meshio++'s cell_data is per BLOCK -- and only blocks at CellDim are
+        // zone cells. Concatenating block-major is therefore only well defined
+        // when every block is at CellDim; a mixed-dimension mesh (e.g. tets
+        // plus boundary triangles) has no way to distribute the array back
+        // across blocks on read without inventing values, so it is skipped
+        // with a warning rather than written wrongly.
+        bool all_at_cell_dim = rMesh.NumCellBlocks() > 0;
+        for (const auto cb : rMesh.CellRange())
+            if (cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) != cgns_cell_dim)
+                all_at_cell_dim = false;
+
+        std::vector<std::string> cnames = rMesh.CellDataNames();
+        if (!cnames.empty() && !all_at_cell_dim) {
+            log::warn(
+                "CGNS: this mesh mixes cell blocks of different topological dimensions, so a "
+                "zone-wide CellCenter FlowSolution cannot be distributed back across them; {} "
+                "cell_data array(s) not written.",
+                cnames.size());
+        } else if (!cnames.empty()) {
+            h5::Hid sol = cgns_create_solution(zone, kCgnsCellSolution, "CellCenter");
+            for (const std::string& name : cnames) {
+                if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks()) {
+                    log::warn("CGNS: cell_data '{}' covers {} of {} blocks; not written.", name,
+                              rMesh.CellDataNumBlocks(name), rMesh.NumCellBlocks());
+                    continue;
+                }
+                const std::size_t k = detail::cols(rMesh.CellData(name, 0));
+                std::size_t rows = 0;
+                bool consistent = true;
+                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                    const NDArray& d = rMesh.CellData(name, b);
+                    if (detail::cols(d) != k || detail::rows(d) != rMesh.Cells(b).NumCells())
+                        consistent = false;
+                    rows += detail::rows(d);
+                }
+                if (!consistent || rows != n_cells_at_dim) {
+                    log::warn(
+                        "CGNS: cell_data '{}' does not line up with the zone's cells; not "
+                        "written.",
+                        name);
+                    continue;
+                }
+                // Concatenate the blocks block-major into one interleaved
+                // (n_cells, k) buffer, then split it per component.
+                NDArray merged(DType::Float64, k > 1 ? std::vector<std::size_t>{rows, k}
+                                                     : std::vector<std::size_t>{rows});
+                double* dst = merged.As<double>();
+                std::size_t row = 0;
+                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                    const NDArray& d = rMesh.CellData(name, b);
+                    const std::size_t nb = detail::rows(d);
+                    for (std::size_t r = 0; r < nb; ++r)
+                        for (std::size_t i = 0; i < k; ++i)
+                            dst[(row + r) * k + i] = detail::read_double(d, r * k + i);
+                    row += nb;
+                }
+                for (std::size_t i = 0; i < k; ++i)
+                    cgns_write_solution_array(sol, cgns_component_name(name, k, i), merged, rows, k,
+                                              i, gzip_level);
+            }
+        }
+    }
 }
 
 Mesh read_cgns(const std::string& rPath) {
@@ -39007,6 +39328,19 @@ Mesh read_cgns(const std::string& rPath) {
     std::vector<NDArray> point_chunks;
     std::int64_t point_offset = 0;
     std::size_t point_dim_out = 3;
+
+    // FlowSolution_t is only read for a single-zone file: across several zones
+    // the point/cell arrays would have to be concatenated in exactly the order
+    // the zones happen to be listed in, and a solution present on only some
+    // zones has no defensible filler. Our own writer emits one zone.
+    std::size_t n_zones = 0;
+    for (const std::string& zname : h5::group_links(base)) {
+        if (cgns_is_reserved_name(zname))
+            continue;
+        h5::Hid z = h5::open_group(base, zname);
+        if (h5::has_attr(z, "label") && h5::read_attr_string(z, "label") == "Zone_t")
+            ++n_zones;
+    }
 
     for (const std::string& zname : h5::group_links(base)) {
         if (cgns_is_reserved_name(zname))
@@ -39061,6 +39395,10 @@ Mesh read_cgns(const std::string& rPath) {
             std::string mName;
             std::int64_t mFirst;
         };
+        // Cell counts of the blocks this zone contributes, in emission order --
+        // what a zone-wide CellCenter FlowSolution is split back across.
+        std::vector<std::size_t> zone_block_cells;
+
         std::vector<Sect> sects;
         for (const std::string& sname : h5::group_links(zone)) {
             if (cgns_is_reserved_name(sname))
@@ -39142,6 +39480,83 @@ Mesh read_cgns(const std::string& rPath) {
                 });
             }
             mesh.AddCellBlock(meshio_type, std::move(out));
+            zone_block_cells.push_back(nc);
+        }
+
+        // FlowSolution_t (see the writer): "Vertex" arrays become point_data,
+        // "CellCenter" arrays become cell_data split back across this zone's
+        // blocks in ElementRange order. GridLocation absent => "Vertex", the
+        // SIDS default.
+        if (n_zones == 1) {
+            std::size_t zone_total_cells = 0;
+            for (std::size_t c : zone_block_cells)
+                zone_total_cells += c;
+
+            for (const std::string& child : h5::group_links(zone)) {
+                if (cgns_is_reserved_name(child))
+                    continue;
+                h5::Hid sol = h5::open_group(zone, child);
+                if (!(h5::has_attr(sol, "label") &&
+                      h5::read_attr_string(sol, "label") == "FlowSolution_t"))
+                    continue;
+
+                std::string location = "Vertex";
+                if (h5::exists(sol, "GridLocation")) {
+                    h5::Hid gl = h5::open_group(sol, "GridLocation");
+                    if (h5::exists(gl, " data")) {
+                        NDArray raw = h5::read_dataset(gl, " data");
+                        std::string s(raw.Size(), '\0');
+                        for (std::size_t i = 0; i < raw.Size(); ++i)
+                            s[i] = static_cast<char>(detail::read_int(raw, i));
+                        while (!s.empty() && (s.back() == '\0' || s.back() == ' '))
+                            s.pop_back();
+                        location = s;
+                    }
+                }
+
+                if (location == "Vertex") {
+                    for (auto& [name, arr] : cgns_read_solution(sol, child, n_zone_points))
+                        mesh.AddPointData(name, std::move(arr));
+                } else if (location == "CellCenter") {
+                    for (auto& [name, arr] : cgns_read_solution(sol, child, zone_total_cells)) {
+                        // Split the zone-wide array back across the blocks.
+                        const std::size_t k = detail::cols(arr);
+                        std::vector<NDArray> blocks;
+                        blocks.reserve(zone_block_cells.size());
+                        std::size_t row = 0;
+                        for (std::size_t nb : zone_block_cells) {
+                            NDArray b(DType::Float64, k > 1 ? std::vector<std::size_t>{nb, k}
+                                                            : std::vector<std::size_t>{nb});
+                            double* dst = b.As<double>();
+                            for (std::size_t r = 0; r < nb; ++r)
+                                for (std::size_t i = 0; i < k; ++i)
+                                    dst[r * k + i] = detail::read_double(arr, (row + r) * k + i);
+                            row += nb;
+                            blocks.push_back(std::move(b));
+                        }
+                        mesh.AddCellData(name, std::move(blocks));
+                    }
+                } else {
+                    log::warn(
+                        "CGNS: FlowSolution '{}' has GridLocation '{}'; only Vertex and "
+                        "CellCenter are supported, so it was not read.",
+                        child, location);
+                }
+            }
+        } else if (n_zones > 1) {
+            for (const std::string& child : h5::group_links(zone)) {
+                if (cgns_is_reserved_name(child))
+                    continue;
+                h5::Hid sol = h5::open_group(zone, child);
+                if (h5::has_attr(sol, "label") &&
+                    h5::read_attr_string(sol, "label") == "FlowSolution_t") {
+                    log::warn(
+                        "CGNS: file has {} zones; FlowSolution '{}' on zone '{}' was not read "
+                        "(cross-zone field concatenation is not supported).",
+                        n_zones, child, zname);
+                    break;
+                }
+            }
         }
 
         point_offset += static_cast<std::int64_t>(n_zone_points);
@@ -39405,7 +39820,11 @@ Mesh read_dolfin(const std::string& rPath) {
     }
     mesh.AddCellBlock(cell_type, std::move(data));
 
-    // Cell data: sibling files "<stem>_<name>.xml".
+    // Point/cell data: sibling files "<stem>_<name>.xml". A `mesh_function`'s
+    // `dim` attribute is the topological dimension of the entities it is defined
+    // on, so `dim="0"` means *vertices* and anything else means cells -- that is
+    // the whole discriminator, which is why point data needs no new file
+    // convention. Twin of `_read_mesh_functions` in `_dolfin.py`.
     fs::path p(rPath);
     fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
     std::string stem = p.stem().string();
@@ -39440,9 +39859,13 @@ Mesh read_dolfin(const std::string& rPath) {
                 else
                     arr.As<std::int64_t>()[idx] = e.attribute("value").as_llong();
             }
-            std::vector<NDArray> blocks;
-            blocks.push_back(std::move(arr));
-            mesh.AddCellData(name, std::move(blocks));
+            if (mf.attribute("dim").as_int(-1) == 0) {
+                mesh.AddPointData(name, std::move(arr));
+            } else {
+                std::vector<NDArray> blocks;
+                blocks.push_back(std::move(arr));
+                mesh.AddCellData(name, std::move(blocks));
+            }
         }
     }
 
@@ -39531,31 +39954,60 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 
     fs::path p(rPath);
     std::string base = (p.parent_path() / p.stem()).string();
+
+    // One writer for both locations: a mesh function differs only in its `dim`.
+    auto write_mesh_function = [&](const std::string& rName, const NDArray& rArr, int Dim) {
+        const std::string fn = base + "_" + rName + ".xml";
+        std::ofstream cf(fn, std::ios::binary);
+        if (!cf)
+            throw WriteError("Could not open file for writing: " + fn);
+        const bool is_float = detail::is_float_dtype(rArr.Dtype());
+        const char* type = is_float ? "float" : "int";
+        const std::size_t sz = rArr.Shape().empty() ? 0 : rArr.Shape()[0];
+        cf << "<dolfin><mesh_function type=\"" << type << "\" dim=\"" << Dim << "\" size=\"" << sz
+           << "\">";
+        for (std::size_t k = 0; k < sz; ++k) {
+            cf << "<entity index=\"" << k << "\" value=\"";
+            if (is_float) {
+                std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(rArr, k));
+                cf << buf;
+            } else {
+                cf << detail::read_int(rArr, k);
+            }
+            cf << "\" />";
+        }
+        cf << "</mesh_function></dolfin>";
+    };
+
     for (const auto& name : rMesh.CellDataNames()) {
         const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
-        for (std::size_t bi = 0; bi < nblocks; ++bi) {
-            const NDArray& arr = rMesh.CellData(name, bi);
-            std::string fn = base + "_" + name + ".xml";
-            std::ofstream cf(fn, std::ios::binary);
-            if (!cf)
-                throw WriteError("Could not open file for writing: " + fn);
-            bool is_float = detail::is_float_dtype(arr.Dtype());
-            const char* type = is_float ? "float" : "int";
-            std::size_t sz = arr.Shape().empty() ? 0 : arr.Shape()[0];
-            cf << "<dolfin><mesh_function type=\"" << type << "\" dim=\"" << data_dim
-               << "\" size=\"" << sz << "\">";
-            for (std::size_t k = 0; k < sz; ++k) {
-                cf << "<entity index=\"" << k << "\" value=\"";
-                if (is_float) {
-                    std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(arr, k));
-                    cf << buf;
-                } else {
-                    cf << detail::read_int(arr, k);
-                }
-                cf << "\" />";
-            }
-            cf << "</mesh_function></dolfin>";
+        for (std::size_t bi = 0; bi < nblocks; ++bi)
+            write_mesh_function(name, rMesh.CellData(name, bi), data_dim);
+    }
+
+    // Point data, as `dim="0"` mesh functions -- vertices are the topological
+    // entities of dimension 0, so this is the format's own notion rather than a
+    // meshio++ convention. A name used by *both* locations would want the same
+    // sibling file, and cell data has always owned it, so the point array is
+    // skipped with a warning rather than silently clobbering it. Twin of the
+    // identical block in `_dolfin.py`.
+    for (const auto& name : rMesh.PointDataNames()) {
+        if (rMesh.HasCellData(name)) {
+            log::warn(
+                "DOLFIN: point_data '{}' collides with a cell_data array of the same name (both "
+                "want the same sibling file); not written.",
+                name);
+            continue;
         }
+        const NDArray& arr = rMesh.PointData(name);
+        if (detail::cols(arr) != 1 || arr.Shape().size() != 1) {
+            log::warn(
+                "DOLFIN: point_data '{}' is not scalar; a mesh function is one value per entity, "
+                "so it is not written.",
+                name);
+            continue;
+        }
+        write_mesh_function(name, arr, 0);
     }
 }
 
@@ -40809,6 +41261,41 @@ std::string exo_group_name(const std::vector<std::string>& rNames,
 // GLOBAL block-major cell indices and those only exist once the blocks are
 // ordered. The bases come from detail::block_bases -- the single owner of that
 // numbering -- rather than being re-derived here.
+/**
+ * @brief The inverse of `exo_add_regions`' element-block half: one name per
+ *        cell block, taken from the `Cell` region that covers exactly it.
+ *
+ * The read side gives every `connect{k}` a `Cell` region whose entries are the
+ * contiguous global range `[bases[k], bases[k+1])`, named from `eb_names`. So a
+ * region matching that range exactly is that block's name, and writing it back
+ * to `eb_names` is what makes a block name survive a round trip instead of
+ * being replaced by the synthetic `"Block N"` the reader falls back to. A block
+ * with no such region gets an empty name, which is exactly what SEACAS itself
+ * writes when it has none.
+ */
+std::vector<std::string> exo_block_names_from_regions(const Mesh& rMesh) {
+    std::vector<std::string> names(rMesh.NumCellBlocks());
+    if (rMesh.NumRegions() == 0)
+        return names;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell)
+            continue;
+        for (std::size_t k = 0; k + 1 < bases.size(); ++k) {
+            const std::size_t n = static_cast<std::size_t>(bases[k + 1] - bases[k]);
+            if (!names[k].empty() || r.NumEntries() != n || n == 0)
+                continue;
+            // Entries are canonical (sorted, de-duplicated), so "covers exactly
+            // this block" is a first/last check rather than a set comparison.
+            const std::int64_t* e = r.Entries();
+            if (e[0] == bases[k] && e[n - 1] == bases[k + 1] - 1)
+                names[k] = r.mName;
+        }
+    }
+    return names;
+}
+
 void exo_add_regions(Mesh& rMesh, const std::vector<std::string>& rBlockTypes,
                      const std::vector<std::string>& rEbNames,
                      const std::vector<std::int64_t>& rEbIds,
@@ -41179,28 +41666,53 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             if (name_i >= cell_data_names.size())
                 break;
             const std::string& name = cell_data_names[name_i++];
-            // concatenate in block order
-            std::size_t total = 0;
+            // concatenate in block order. The component count comes from the
+            // variable's own trailing dimensions -- this used to be hard-coded
+            // scalar (`{total}` then `{s}`), which silently truncated a
+            // multi-component element variable to its first component. Standard
+            // Exodus element variables are scalar per element, so no real
+            // SEACAS file exercised that; meshio++'s own writer emits the
+            // trailing dims (as the nodal path already did), so it does.
             DType dt = kv.second.begin()->second.Dtype();
+            std::size_t ncomp = 1;
+            {
+                const std::vector<std::size_t>& s0 = kv.second.begin()->second.Shape();
+                for (std::size_t d = 1; d < s0.size(); ++d)
+                    ncomp *= s0[d];
+            }
+            std::size_t total = 0;
             for (const auto& b : kv.second)
                 total += b.second.Shape().empty() ? 0 : b.second.Shape()[0];
-            NDArray all(dt, {total});
+            NDArray all(dt, ncomp > 1 ? std::vector<std::size_t>{total, ncomp}
+                                      : std::vector<std::size_t>{total});
             std::size_t off = 0;
             for (const auto& b : kv.second) {
                 std::memcpy(all.Data() + off, b.second.Data(), b.second.Nbytes());
                 off += b.second.Nbytes();
             }
             // split
+            const std::size_t row_bytes = ncomp * dtype_size(dt);
             std::vector<NDArray> out_blocks;
             std::size_t pos = 0;
             for (std::size_t s : sizes) {
-                NDArray blk(dt, {s});
-                std::memcpy(blk.Data(), all.Data() + pos * dtype_size(dt), s * dtype_size(dt));
+                NDArray blk(dt, ncomp > 1 ? std::vector<std::size_t>{s, ncomp}
+                                          : std::vector<std::size_t>{s});
+                std::memcpy(blk.Data(), all.Data() + pos * row_bytes, s * row_bytes);
                 pos += s;
                 out_blocks.push_back(std::move(blk));
             }
             mesh.AddCellData(name, std::move(out_blocks));
         }
+    }
+
+    // The time of the step actually returned, so the writer's
+    // `field_data["exodus:time"]` closes into a round trip rather than being
+    // write-only. `read_metadata` still owns the *whole* list of steps -- this
+    // is the one value this mesh is a snapshot at.
+    if (step < time_values.size()) {
+        NDArray tv(DType::Float64, {1});
+        *reinterpret_cast<double*>(tv.Data()) = time_values[step];
+        mesh.AddFieldData("exodus:time", std::move(tv));
     }
 
     return mesh;
@@ -41275,13 +41787,29 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     check(nc_def_dim(ncid, "four", 4, &d_four), "def four", true);
     check(nc_def_dim(ncid, "time_step", NC_UNLIMITED, &d_time), "def time_step", true);
 
-    // dummy time step
+    // The single time step this writer emits. A `Mesh` is one state, so one
+    // step is all there is to write; what changed in v9.9.0 is that its
+    // recorded time is no longer hard-coded to 0 -- `field_data["exodus:time"]`
+    // (the `<format>:<thing>` convention `med:num` established) supplies it, so
+    // a caller writing one frame of a transient solve can label it correctly.
+    // A genuine multi-step writer is a separate object with its own lifecycle,
+    // the shape `XdmfTimeSeriesWriter` already has; that remains a follow-up.
     {
         int var;
         check(nc_def_var(ncid, "time_whole", NC_FLOAT, 1, &d_time, &var), "def time_whole", true);
         std::size_t start = 0, count = 1;
-        float zero = 0.0f;
-        check(nc_put_vara_float(ncid, var, &start, &count, &zero), "time_whole", true);
+        float t = 0.0f;
+        if (rMesh.HasFieldData("exodus:time")) {
+            const NDArray& tv = rMesh.FieldData("exodus:time");
+            if (tv.Size() >= 1)
+                t = static_cast<float>(detail::read_double(tv, 0));
+            if (tv.Size() > 1)
+                log::warn(
+                    "Exodus: field_data[\"exodus:time\"] has {} values but this writer emits a "
+                    "single time step; using the first.",
+                    tv.Size());
+        }
+        check(nc_put_vara_float(ncid, var, &start, &count, &t), "time_whole", true);
     }
 
     // coor_names
@@ -41325,7 +41853,31 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
             check(nc_put_var_int(ncid, var, ids.data()), "eb_prop1", true);
     }
 
+    // eb_names, recovered from the Cell regions the reader derives from them.
+    // Written only when at least one block has a name; an all-blank array is
+    // what SEACAS emits when it has none, and omitting it keeps output for a
+    // region-less mesh byte-identical to pre-v9.9.0.
+    {
+        const std::vector<std::string> block_names = exo_block_names_from_regions(rMesh);
+        const bool any = std::any_of(block_names.begin(), block_names.end(),
+                                     [](const std::string& s) { return !s.empty(); });
+        if (any) {
+            int dims[2] = {d_blk, d_str};
+            int var;
+            check(nc_def_var(ncid, "eb_names", NC_CHAR, 2, dims, &var), "def eb_names", true);
+            for (std::size_t k = 0; k < block_names.size(); ++k) {
+                if (block_names[k].empty())
+                    continue;
+                std::size_t start[2] = {k, 0};
+                std::size_t count[2] = {1, std::min<std::size_t>(block_names[k].size(), 33)};
+                check(nc_put_vara_text(ncid, var, start, count, block_names[k].c_str()), "eb_names",
+                      true);
+            }
+        }
+    }
+
     // connectivity blocks
+    std::vector<int> block_elem_dims(rMesh.NumCellBlocks(), -1);
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
         const auto cb = rMesh.Cells(k);
         auto it = meshio_to_exodus().find(cb.Type());
@@ -41337,6 +41889,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         int d1, d2;
         check(nc_def_dim(ncid, dim1.c_str(), cb.NumCells(), &d1), "blk dim", true);
         check(nc_def_dim(ncid, dim2.c_str(), detail::cols(conn), &d2), "blk dim", true);
+        block_elem_dims[k] = d1;
         int dims[2] = {d1, d2};
         int var;
         std::string vname = "connect" + std::to_string(k + 1);
@@ -41379,7 +41932,14 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
             std::vector<const NDArray*> cols;
             for (const auto& full : att_names) {
                 const NDArray& arr = rMesh.CellData(full, k);
-                if (detail::cols(arr) != 1)
+                // Product of ALL trailing dims, not just `detail::cols()`:
+                // an `(n,1,3)` array has cols == 1 and would otherwise slip
+                // past and be silently truncated to its first component. This
+                // matches `_exodus.py`'s `prod(shape[1:]) != 1` twin.
+                std::size_t trailing = 1;
+                for (std::size_t d = 1; d < arr.Shape().size(); ++d)
+                    trailing *= arr.Shape()[d];
+                if (trailing != 1)
                     throw WriteError("Exodus: element attribute '" + full +
                                      "' must be scalar (one value per element)");
                 // A block whose values are all non-finite never carried this
@@ -41426,6 +41986,97 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
                 if (count[1] > 0)
                     check(nc_put_vara_text(ncid, name_var, start, count, names[c].c_str()),
                           "attrib_name", true);
+            }
+        }
+    }
+
+    // Cell data -> element variables (`name_elem_var` + one
+    // `vals_elem_var{j}eb{k}` per (variable, block)), new in v9.9.0: this
+    // writer previously emitted none at all, so every ordinary `cell_data`
+    // array was silently dropped while `point_data` round-tripped. The
+    // `kExodusAttributePrefix` arrays are excluded -- they are constant-in-time
+    // per-element *attributes* and already went out as `attrib{k}` above, which
+    // is a different Exodus concept and the reason that prefix has to be
+    // explicit.
+    {
+        const std::string prefix(kExodusAttributePrefix);
+        std::vector<std::string> var_names;
+        for (const auto& name : rMesh.CellDataNames())
+            if (name.rfind(prefix, 0) != 0)
+                var_names.push_back(name);
+
+        if (!var_names.empty()) {
+            int d_nev;
+            check(nc_def_dim(ncid, "num_elem_var", var_names.size(), &d_nev), "num_elem_var", true);
+            int name_var;
+            {
+                int dims[2] = {d_nev, d_str};
+                check(nc_def_var(ncid, "name_elem_var", NC_CHAR, 2, dims, &name_var),
+                      "def name_elem_var", true);
+            }
+            // The truth table: which variable exists on which block. Every
+            // cell_data array covers every block by the uniform API's own
+            // invariant, so it is all ones -- but real Exodus readers expect
+            // the variable to be present, so it is written rather than assumed.
+            {
+                int dims[2] = {d_blk, d_nev};
+                int tab;
+                check(nc_def_var(ncid, "elem_var_tab", NC_INT, 2, dims, &tab), "def elem_var_tab",
+                      true);
+                std::vector<int> ones(rMesh.NumCellBlocks() * var_names.size(), 1);
+                if (!ones.empty())
+                    check(nc_put_var_int(ncid, tab, ones.data()), "elem_var_tab", true);
+            }
+
+            for (std::size_t j = 0; j < var_names.size(); ++j) {
+                const std::string& name = var_names[j];
+                {
+                    std::size_t start[2] = {j, 0};
+                    std::size_t count[2] = {1, std::min<std::size_t>(name.size(), 33)};
+                    if (count[1] > 0)
+                        check(nc_put_vara_text(ncid, name_var, start, count, name.c_str()),
+                              "name_elem_var", true);
+                }
+                if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks()) {
+                    log::warn(
+                        "Exodus: cell_data '{}' covers {} of {} blocks; not written as an element "
+                        "variable.",
+                        name, rMesh.CellDataNumBlocks(name), rMesh.NumCellBlocks());
+                    continue;
+                }
+                for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+                    const NDArray& data = rMesh.CellData(name, k);
+                    // Trailing dims become extra netCDF dimensions, exactly as
+                    // the nodal-variable path above already does for a
+                    // multi-component point field -- so a vector cell field
+                    // round-trips through this reader (and the Python twin's,
+                    // which reshapes from the same dims) rather than being
+                    // dropped. Standard Exodus element variables are scalar
+                    // per element, so a k>1 array here is a meshio++ extension
+                    // of the same kind the nodal path already is.
+                    std::vector<int> dims = {d_time, block_elem_dims[k]};
+                    for (std::size_t i = 1; i < data.Shape().size(); ++i) {
+                        std::string dn = "dim_elem_var" + std::to_string(j) + "_" +
+                                         std::to_string(k) + "_" + std::to_string(i);
+                        int di;
+                        check(nc_def_dim(ncid, dn.c_str(), data.Shape()[i], &di), "cd dim", true);
+                        dims.push_back(di);
+                    }
+                    int var;
+                    std::string vname =
+                        "vals_elem_var" + std::to_string(j + 1) + "eb" + std::to_string(k + 1);
+                    check(nc_def_var(ncid, vname.c_str(), nc_type_of(data.Dtype()),
+                                     static_cast<int>(dims.size()), dims.data(), &var),
+                          "def vals_elem_var", true);
+                    check(nc_def_var_fill(ncid, var, NC_NOFILL, nullptr), "nofill", true);
+                    std::vector<std::size_t> startv(dims.size(), 0), countv;
+                    countv.push_back(1);
+                    for (std::size_t s : data.Shape())
+                        countv.push_back(s);
+                    if (data.Size() > 0)
+                        check(nc_put_vara(ncid, var, startv.data(), countv.data(), data.Data()),
+                              "vals_elem_var", true);
+                }
             }
         }
     }
@@ -46352,6 +47003,24 @@ constexpr const char* kProfile = "MED_NO_PROFILE_INTERNAL";
 // (n,) or (n, k), so a 3-D "per-node-within-cell" shape cannot even be
 // constructed here.
 
+// MED's `NOM` field attribute: 16 characters per component, concatenated.
+// A scalar field gets one blank 16-char slot (the historical output, kept
+// byte-identical); a k>1 field gets MED's own default component spelling
+// `V1..Vk`, each left-justified in 16 characters. Twin of `_med.py`'s
+// `_create_component_names` + its `f"{n:<16}"` join.
+std::string med_default_component_names(std::size_t ncomponents) {
+    if (ncomponents <= 1)
+        return std::string(16, ' ');
+    std::string out;
+    out.reserve(16 * ncomponents);
+    for (std::size_t i = 0; i < ncomponents; ++i) {
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%-16s", ("V" + std::to_string(i + 1)).c_str());
+        out += buf;
+    }
+    return out;
+}
+
 int med_field_type_code(DType dt) {
     switch (dt) {
         case DType::Float32:
@@ -46400,7 +47069,14 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
     h5::write_attr_int(field, "NCO", static_cast<std::int64_t>(ncomponents));
     write_attr_bytes(field, "UNI", "");
     write_attr_bytes(field, "UNT", "");
-    write_attr_bytes(field, "NOM", std::string(16, ' '));
+    // MED's NOM is 16 characters PER COMPONENT, not a fixed 16. With no
+    // component names to carry (the C++ Mesh has no `med:nom` channel -- see
+    // write_med's comment on lenient_field_data), generate MED's own default
+    // spelling `V1..Vk` for a multi-component field so a strict consumer
+    // (Salome/MEDCoupling) reads k names rather than one blank. A scalar
+    // field keeps the single 16-space string, so its bytes are unchanged.
+    // Twinned in `_med.py`'s `_create_component_names`.
+    write_attr_bytes(field, "NOM", med_default_component_names(ncomponents));
 
     char step_name[64];
     std::snprintf(step_name, sizeof(step_name), "%020lld%020lld", 1LL, -1LL);
@@ -46829,10 +47505,33 @@ void med_warn_side_regions_dropped(const Mesh& rMesh) {
 // Read one support subgroup's data ("CO" under its default-profile child),
 // reshaped to `(rows,)` for a scalar field or `(rows, ncomponents)` otherwise
 // -- the "1-D scalars stay 1-D" convention the rest of the core keeps.
-NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size_t rows) {
+/**
+ * @brief Decline a `CHA` construct, or (under `mLenient`) skip it.
+ *
+ * Mirrors `mdpa_reject_or_skip`. Returns `false` when the caller should drop
+ * the field and carry on, and only ever returns at all in lenient mode --
+ * strict always throws, which is what keeps the Python shim falling back and
+ * therefore the Python surface unchanged.
+ */
+void med_reject_or_skip(const std::string& rWhat, bool Lenient, MedInfo* pInfo) {
+    if (!Lenient)
+        throw ReadError("MED: " + rWhat +
+                        " is handled by Python fallback (set ReadOptions::mLenient to skip it "
+                        "instead)");
+    log::warn("MED: skipping {} (ReadOptions::mLenient)", rWhat);
+    if (pInfo)
+        pInfo->mSkippedConstructs.push_back(rWhat);
+}
+
+/// Whether a support subgroup names a real (non-default) profile, i.e. its
+/// `CO` covers a subset of the entities indexed by a separate list this reader
+/// does not resolve. The caller decides whether that is fatal or a skip.
+bool med_support_has_named_profile(hid_t support) {
     const std::string pfl = read_attr_bytes(support, "PFL");
-    if (!pfl.empty() && pfl != kProfile)
-        throw ReadError("MED: a field on a named profile is handled by Python fallback");
+    return !pfl.empty() && pfl != kProfile;
+}
+
+NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size_t rows) {
     h5::Hid profile = h5::open_group(support, kProfile);
     NDArray flat = h5::read_dataset(profile, "CO");
     const std::size_t k = ncomponents > 0 ? static_cast<std::size_t>(ncomponents) : 1;
@@ -46844,7 +47543,8 @@ NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size
     return out;
 }
 
-void read_cha_fields(hid_t cha, Mesh& rMesh) {
+void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rOptions,
+                     MedInfo* pInfo) {
     std::unordered_map<std::string, std::size_t> med_to_block;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         auto it = meshio_to_med().find(rMesh.Cells(b).Type());
@@ -46857,38 +47557,104 @@ void read_cha_fields(hid_t cha, Mesh& rMesh) {
         const std::int64_t ncomponents =
             h5::has_attr(field, "NCO") ? h5::read_attr_int(field, "NCO") : 1;
 
-        // Units are a real piece of information this reader does not carry
-        // (med:field_units is Python-only) -- declining rather than silently
-        // reading the file without them is what keeps this an honest gap
-        // instead of a silent loss on a round-trip through this reader.
-        if (!read_attr_bytes(field, "UNI").empty() || !read_attr_bytes(field, "UNT").empty())
-            throw ReadError("MED: field '" + field_name +
-                            "' declares units, handled by Python fallback");
+        // Units are a real piece of information the C++ Mesh cannot carry
+        // (they are strings; `med:field_units` is a Python-only dict-valued
+        // field_data convention). Strict declines rather than silently
+        // reading the file without them; lenient reads them into MedInfo, so
+        // nothing is lost even though nothing lands on the Mesh.
+        const std::string uni = read_attr_bytes(field, "UNI");
+        const std::string unt = read_attr_bytes(field, "UNT");
+        if (!uni.empty() || !unt.empty()) {
+            if (!Lenient)
+                throw ReadError("MED: field '" + field_name +
+                                "' declares units, handled by Python fallback (set "
+                                "ReadOptions::mLenient to read it and report the units in "
+                                "MedInfo::mFieldUnits instead)");
+            log::warn(
+                "MED: field '{}' declares units ('{}'/'{}'); reported in "
+                "MedInfo::mFieldUnits (ReadOptions::mLenient)",
+                field_name, uni, unt);
+            if (pInfo)
+                pInfo->mFieldUnits.emplace(field_name, std::make_pair(uni, unt));
+        }
 
+        // Every step this field carries, sorted by its group name -- which is
+        // the zero-padded (NDT, NOR) pair, so name order IS step order. Their
+        // PDTs go into MedInfo unconditionally, so a caller can see what
+        // `mTimeStep` may select before asking for it.
         std::vector<std::string> steps = h5::group_links(field);
-        if (steps.size() != 1)
-            throw ReadError("MED: multi-timestep field '" + field_name +
-                            "' is handled by Python fallback");
-        h5::Hid ts = h5::open_group(field, steps[0]);
+        std::sort(steps.begin(), steps.end());
+        if (steps.empty())
+            continue;  // a field group with no step carries nothing
+        if (pInfo) {
+            std::vector<double> times;
+            times.reserve(steps.size());
+            for (const std::string& s : steps) {
+                h5::Hid g = h5::open_group(field, s);
+                times.push_back(read_attr_double(g, "PDT"));
+            }
+            pInfo->mFieldTimeValues.emplace(field_name, std::move(times));
+        }
 
-        // Likewise: this reader has no med:step_meta side channel, so a
-        // timestep whose NDT/NOR/PDT are not the write-side default (1/-1/0)
-        // carries real information it cannot represent. Declining is
-        // deliberate -- silently reporting ndt=1 for a genuinely-tagged
-        // step 7 would be a wrong answer, not just an incomplete one.
-        if (h5::read_attr_int(ts, "NDT") != 1 || h5::read_attr_int(ts, "NOR") != -1 ||
-            read_attr_double(ts, "PDT") != 0.0)
-            throw ReadError("MED: field '" + field_name +
-                            "' has non-default timestep metadata, handled by Python fallback");
+        // Which step to read. An explicit non-default `mTimeStep` is honoured
+        // whether or not `mLenient` is set: it is a request, not a fallback,
+        // and no Python behaviour depends on it (the shim never passes one).
+        // With the default step, a multi-step field is still a strict decline.
+        std::size_t step_index = 0;
+        if (steps.size() != 1) {
+            if (rOptions.mTimeStep != 0) {
+                step_index = rOptions.ResolveTimeStep(steps.size());
+            } else if (!Lenient) {
+                throw ReadError("MED: multi-timestep field '" + field_name + "' has " +
+                                std::to_string(steps.size()) +
+                                " steps and is handled by Python fallback (set "
+                                "ReadOptions::mTimeStep to select one, or "
+                                "ReadOptions::mLenient to take the first)");
+            } else {
+                log::warn(
+                    "MED: field '{}' has {} timesteps; reading the first "
+                    "(ReadOptions::mLenient -- set mTimeStep to choose)",
+                    field_name, steps.size());
+                if (pInfo)
+                    pInfo->mSkippedConstructs.push_back("field '" + field_name + "' timesteps 2.." +
+                                                        std::to_string(steps.size()));
+            }
+        } else if (rOptions.mTimeStep != 0) {
+            step_index = rOptions.ResolveTimeStep(steps.size());
+        }
+        h5::Hid ts = h5::open_group(field, steps[step_index]);
+
+        // A step whose NDT/NOR/PDT are not the write-side default (1/-1/0)
+        // carries real information; silently reporting ndt=1 for a genuinely
+        // tagged step 7 would be a wrong answer, not just an incomplete one.
+        // Strict declines; lenient records it in MedInfo::mStepMeta.
+        const std::int64_t ndt = h5::read_attr_int(ts, "NDT");
+        const std::int64_t nor = h5::read_attr_int(ts, "NOR");
+        const double pdt = read_attr_double(ts, "PDT");
+        if (ndt != 1 || nor != -1 || pdt != 0.0) {
+            if (!Lenient && rOptions.mTimeStep == 0)
+                throw ReadError("MED: field '" + field_name +
+                                "' has non-default timestep metadata, handled by Python fallback "
+                                "(set ReadOptions::mLenient to read it and report the metadata in "
+                                "MedInfo::mStepMeta instead)");
+            if (pInfo)
+                pInfo->mStepMeta.emplace(field_name, std::make_tuple(ndt, nor, pdt));
+        }
 
         std::vector<std::string> supports = h5::group_links(ts);
         const bool is_nodal = std::find(supports.begin(), supports.end(), "NOE") != supports.end();
 
         if (is_nodal) {
-            if (supports.size() != 1)
-                throw ReadError("MED: field '" + field_name +
-                                "' mixes nodal and cell support (Python fallback)");
+            if (supports.size() != 1) {
+                med_reject_or_skip("field '" + field_name + "' mixes nodal and cell support",
+                                   Lenient, pInfo);
+                continue;
+            }
             h5::Hid noe = h5::open_group(ts, "NOE");
+            if (med_support_has_named_profile(noe)) {
+                med_reject_or_skip("field '" + field_name + "' on a named profile", Lenient, pInfo);
+                continue;
+            }
             rMesh.AddPointData(field_name,
                                read_cha_support_data(noe, ncomponents, rMesh.NumPoints()));
             continue;
@@ -46899,21 +47665,40 @@ void read_cha_fields(hid_t cha, Mesh& rMesh) {
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
             per_block.emplace_back(DType::Float64, std::vector<std::size_t>{0});
         std::vector<bool> filled(rMesh.NumCellBlocks(), false);
+        bool skip_field = false;
         for (const std::string& supp : supports) {
-            if (supp.rfind("MAI.", 0) != 0)
-                throw ReadError("MED: field '" + field_name + "' support '" + supp +
-                                "' is handled by Python fallback");
+            // Anything not "NOE"/"MAI.<type>" is an ELNO/ELGA support: one
+            // value per node-within-cell or per Gauss point, a 3-D shape the
+            // uniform mesh API's (n,)/(n,k) cell_data cannot hold at all --
+            // structurally unrepresentable, not merely unimplemented.
+            if (supp.rfind("MAI.", 0) != 0) {
+                med_reject_or_skip("field '" + field_name + "' support '" + supp +
+                                       "' (ELNO/ELGA data has no (n,)/(n,k) representation)",
+                                   Lenient, pInfo);
+                skip_field = true;
+                break;
+            }
             const std::string med_type = supp.substr(4);
             auto bit = med_to_block.find(med_type);
-            if (bit == med_to_block.end())
-                throw ReadError("MED: field '" + field_name +
-                                "' names a cell type with no "
-                                "matching block");
+            if (bit == med_to_block.end()) {
+                med_reject_or_skip("field '" + field_name + "' names cell type '" + med_type +
+                                       "' with no matching block",
+                                   Lenient, pInfo);
+                skip_field = true;
+                break;
+            }
             const std::size_t b = bit->second;
             h5::Hid grp = h5::open_group(ts, supp);
+            if (med_support_has_named_profile(grp)) {
+                med_reject_or_skip("field '" + field_name + "' on a named profile", Lenient, pInfo);
+                skip_field = true;
+                break;
+            }
             per_block[b] = read_cha_support_data(grp, ncomponents, rMesh.Cells(b).NumCells());
             filled[b] = true;
         }
+        if (skip_field)
+            continue;
         // A block with no support subgroup carries no data for this field --
         // AddCellData still needs exactly one array per block, so it gets an
         // appropriately-shaped empty/zero one (a documented gap: the reader
@@ -46935,7 +47720,11 @@ void read_cha_fields(hid_t cha, Mesh& rMesh) {
 
 }  // namespace
 
-Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
+// The single implementation behind both `read_med` overloads. `rOptions`
+// default-constructed reproduces the historical strict behaviour exactly,
+// which is what let the options overload land without touching any caller.
+namespace {
+Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -47070,9 +47859,14 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
             cell_types.push_back(it->second);
         }
 
+        // One entry per block, always -- a block with no `FAM` gets a
+        // placeholder filled in with family 0 below, so the array stays
+        // aligned with `mesh.cells`.
         if (h5::exists(g, "FAM")) {
             cell_tag_blocks.push_back(h5::read_dataset(g, "FAM"));
             any_cell_tags = true;
+        } else {
+            cell_tag_blocks.emplace_back();
         }
 
         // Global cell numbering (NUM) -- optional, and only carried when
@@ -47088,8 +47882,29 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
         }
     }
     if (any_cell_tags) {
-        if (cell_tag_blocks.size() != mesh.NumCellBlocks())
-            throw ReadError("MED: partial cell tags handled by Python fallback");
+        // A block the file left `FAM` off of belongs to no family, and MED
+        // spells "no family" as id **0** -- so filling those blocks with zeros
+        // is the file's own meaning, not a guess. This used to throw ("partial
+        // cell tags handled by Python fallback"), which made a perfectly
+        // ordinary Salome file unreadable wherever there is no Python; the
+        // Python reference meanwhile appended only the blocks that had a
+        // `FAM`, leaving `cell_data["cell_tags"]` *shorter* than `mesh.cells`
+        // and so violating the one-array-per-block invariant. Both now do
+        // this, so the two agree and both are well-formed.
+        bool any_filled = false;
+        for (std::size_t b = 0; b < cell_tag_blocks.size(); ++b) {
+            if (cell_tag_blocks[b].Size() != 0)
+                continue;
+            const std::size_t n = mesh.Cells(b).NumCells();
+            NDArray zeros(DType::Int32, {n});
+            std::memset(zeros.Data(), 0, zeros.Nbytes());
+            cell_tag_blocks[b] = std::move(zeros);
+            any_filled = true;
+        }
+        if (any_filled)
+            log::warn(
+                "MED: some cell blocks carry no FAM dataset; those cells are reported as family 0 "
+                "(MED's \"no family\").");
         mesh.AddCellData("cell_tags", std::move(cell_tag_blocks));
     }
     if (num_blocks_with_num > 0) {
@@ -47116,17 +47931,27 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
     med_attach_cell_regions(mesh, rInfo);
 
     // Fields (CHA): the single-timestep, default-profile common case is read
-    // directly (see read_cha_fields); anything past that scope -- the
-    // enhanced Python reader's med:field_units/med:step_meta multi-timestep
-    // metadata, a named profile, ELNO/ELGA support -- throws from inside it
-    // and defers the whole file to Python, exactly as the unconditional guard
-    // this replaced always did.
+    // directly (see read_cha_fields). Anything past that scope -- units,
+    // multi-timestep metadata, a named profile, ELNO/ELGA support -- throws
+    // from inside it under the default (strict) options and defers the whole
+    // file to Python; `ReadOptions::mLenient`/`mTimeStep` are what let a
+    // caller with no Python fallback read it anyway.
     if (h5::exists(f, "CHA")) {
         h5::Hid cha = h5::open_group(f, "CHA");
-        read_cha_fields(cha, mesh);
+        read_cha_fields(cha, mesh, rOptions.mLenient, rOptions, &rInfo);
     }
 
     return mesh;
+}
+
+}  // namespace
+
+Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
+    return med_read_impl(rPath, rInfo, ReadOptions{});
+}
+
+Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
+    return med_read_impl(rPath, rInfo, rOptions);
 }
 
 void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
@@ -47449,6 +48274,39 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             break;
         }
     if (has_point_fields || has_cell_fields) {
+        // A field's row count IS its entity count -- `write_cha_support`
+        // writes `NBR = rows(data)` and the reader validates that against
+        // `NumPoints()`/`NumCells()`, so a mis-shaped array (e.g. an (n,3)
+        // vector flattened to (3n,) by a caller that lost its component
+        // count) produces a file this very reader rejects. Catch it here,
+        // where the array and both counts can be named, rather than emitting
+        // an unreadable file and failing on the way back in.
+        for (const auto& name : rMesh.PointDataNames()) {
+            if (name == "point_tags" || name == "med:num")
+                continue;
+            const std::size_t rows = detail::rows(rMesh.PointData(name));
+            if (rows != rMesh.NumPoints())
+                throw WriteError(detail::format_compat(
+                    "MED: point_data '{}' has {} rows but the mesh has {} points; a "
+                    "multi-component field must be shaped (n_points, n_components), not "
+                    "flattened",
+                    name, rows, rMesh.NumPoints()));
+        }
+        for (const auto& name : rMesh.CellDataNames()) {
+            if (name == "cell_tags" || name == "med:num")
+                continue;
+            for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name) && b < rMesh.NumCellBlocks();
+                 ++b) {
+                const std::size_t rows = detail::rows(rMesh.CellData(name, b));
+                if (rows != rMesh.Cells(b).NumCells())
+                    throw WriteError(detail::format_compat(
+                        "MED: cell_data '{}' block {} has {} rows but that block has {} cells; a "
+                        "multi-component field must be shaped (n_cells, n_components), not "
+                        "flattened",
+                        name, b, rows, rMesh.Cells(b).NumCells()));
+            }
+        }
+
         h5::Hid cha = h5::create_group(f, "CHA");
         for (const auto& name : rMesh.PointDataNames())
             if (name != "point_tags" && name != "med:num")
@@ -69646,6 +70504,22 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // WASM and the native CLI with no per-binding code.
         {"mdpa", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
+        // instead of deferring the whole file to Python) and `mTimeStep`
+        // (select one step of a multi-step field) -- neither is a narrowing
+        // option, the same "options-aware is several capabilities, not one"
+        // note as exodus and mdpa. The `MedInfo` is dropped here exactly as
+        // the plain reader entry drops it, so the flat bindings get the mesh
+        // and its representable fields but not `mFieldUnits`/`mStepMeta`; that
+        // is a documented gap, not a silent loss, and it is strictly more than
+        // the hard failure they used to get. IWYU pragma: keep
+        {"med",
+         [](const std::string& path, const ReadOptions& opts) {
+             meshioplusplus::MedInfo info;
+             return meshioplusplus::read_med(path, info, opts);
+         }},
+#endif
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},

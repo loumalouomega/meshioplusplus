@@ -211,7 +211,16 @@ RtplTypeTable rtpl_hexahedron_table() {
     t.mFullMask = 0xFFF;
     t.mMasks.resize(4096);
     // hexahedron27 layout: 8..19 edge mids (bottom ring, top ring, verticals),
-    // 20..25 face centres (the four sides, then bottom, then top), 26 body.
+    // 20..25 face centres, 26 body. The face-centre indices are
+    // `cell_refine_quad_faces(Hexahedron)` row order, which since v9.9.0 is
+    // cell_faces.hpp's own hexahedron27 order (vtkTriQuadraticHexahedron):
+    // 20 = x-min (0,4,7,3), 21 = x-max (1,2,6,5), 22 = y-min (0,1,5,4),
+    // 23 = y-max (3,7,6,2), 24 = bottom, 25 = top. The absolute indices below
+    // were permuted by the same 3-cycle (20->22, 22->23, 23->20) in that
+    // release; they never escape `refine` (output blocks are 8-node), so the
+    // renumbering is internal apart from the order new face-centre points are
+    // appended in. See cell_faces.cpp for the full derivation.
+    //
     // The twelve edges fall into three parallel classes; the admissible masks
     // are their eight unions, so a refinement travels through one dual sheet
     // rather than the whole block.
@@ -225,25 +234,27 @@ RtplTypeTable rtpl_hexahedron_table() {
         RtplChildren{{0, 1, 2, 3, 16, 17, 18, 19}, {16, 17, 18, 19, 4, 5, 6, 7}};
     // Two classes split: the two faces perpendicular to the untouched direction
     // have all four of their edges split and so carry a centre; no body node.
+    // x|y -> bottom/top (24, 25); x|z -> the y-perpendicular pair (22, 23);
+    // y|z -> the x-perpendicular pair (21, 20).
     t.mMasks[x | y].mChildren = RtplChildren{{0, 8, 24, 11, 4, 12, 25, 15},
                                              {8, 1, 9, 24, 12, 5, 13, 25},
                                              {24, 9, 2, 10, 25, 13, 6, 14},
                                              {11, 24, 10, 3, 15, 25, 14, 7}};
-    t.mMasks[x | z].mChildren = RtplChildren{{0, 8, 10, 3, 16, 20, 22, 19},
-                                             {8, 1, 2, 10, 20, 17, 18, 22},
-                                             {16, 20, 22, 19, 4, 12, 14, 7},
-                                             {20, 17, 18, 22, 12, 5, 6, 14}};
-    t.mMasks[y | z].mChildren = RtplChildren{{0, 1, 9, 11, 16, 17, 21, 23},
-                                             {11, 9, 2, 3, 23, 21, 18, 19},
-                                             {16, 17, 21, 23, 4, 5, 13, 15},
-                                             {23, 21, 18, 19, 15, 13, 6, 7}};
+    t.mMasks[x | z].mChildren = RtplChildren{{0, 8, 10, 3, 16, 22, 23, 19},
+                                             {8, 1, 2, 10, 22, 17, 18, 23},
+                                             {16, 22, 23, 19, 4, 12, 14, 7},
+                                             {22, 17, 18, 23, 12, 5, 6, 14}};
+    t.mMasks[y | z].mChildren = RtplChildren{{0, 1, 9, 11, 16, 17, 21, 20},
+                                             {11, 9, 2, 3, 20, 21, 18, 19},
+                                             {16, 17, 21, 20, 4, 5, 13, 15},
+                                             {20, 21, 18, 19, 15, 13, 6, 7}};
     // Everything split: rows follow the parent's own parametric (i,j,k) order
     // over the 3x3x3 lattice, so orientation is preserved by construction.
     t.mMasks[t.mFullMask].mChildren =
-        RtplChildren{{0, 8, 24, 11, 16, 20, 26, 23},  {8, 1, 9, 24, 20, 17, 21, 26},
-                     {11, 24, 10, 3, 23, 26, 22, 19}, {24, 9, 2, 10, 26, 21, 18, 22},
-                     {16, 20, 26, 23, 4, 12, 25, 15}, {20, 17, 21, 26, 12, 5, 13, 25},
-                     {23, 26, 22, 19, 15, 25, 14, 7}, {26, 21, 18, 22, 25, 13, 6, 14}};
+        RtplChildren{{0, 8, 24, 11, 16, 22, 26, 20},  {8, 1, 9, 24, 22, 17, 21, 26},
+                     {11, 24, 10, 3, 20, 26, 23, 19}, {24, 9, 2, 10, 26, 21, 18, 23},
+                     {16, 22, 26, 20, 4, 12, 25, 15}, {22, 17, 21, 26, 12, 5, 13, 25},
+                     {20, 26, 23, 19, 15, 25, 14, 7}, {26, 21, 18, 23, 25, 13, 6, 14}};
     rtpl_build_promote(t);
     return t;
 }

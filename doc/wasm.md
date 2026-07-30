@@ -46,9 +46,10 @@ const vtp = meshio.FS.readFile("/solid.vtp");   // hand this to vtk.js
 ```
 
 Prefer it over `readMesh` → `extractSkin` → `writeMesh` for anything headed to
-a renderer: it never materializes a JS mesh, so **multi-component (vector and
-tensor) arrays survive** — the flat JS representation cannot carry them (see
-"Known v1 limitations" below).
+a renderer: it never materializes a JS mesh, so nothing is copied through the
+boundary at all, and multi-component arrays keep their exact dtype rather than
+being widened to `Float64` (they survive the object boundary too since v9.9.0,
+via `*_components` — see "The mesh object shape" — but at the cost of a copy).
 
 ### Applying operations first
 
@@ -66,7 +67,8 @@ console.log(report.steps, report.warnings);
 
 Prefer it over chaining the individual operation bindings (`clean`, `smooth`,
 …): each of those takes and returns a JS `Mesh`, so a pipeline built from them
-destroys every multi-component array on the first step. An **empty** pipeline
+copies the whole mesh across the boundary once per step (and, before v9.9.0,
+flattened every multi-component array on the first one). An **empty** pipeline
 is byte-identical to `convertSurface`, which is what lets a viewer use one code
 path for the plain and the post-operation display — and makes undo a replay of
 a shortened pipeline rather than a set of inverse operations.
@@ -92,10 +94,36 @@ Unlike the Python bindings (which hand numpy a zero-copy view straight into the 
   point_data?: { [name: string]: Float64Array },
   cell_data?: { [name: string]: Float64Array[] },   // one array per cell block
   field_data?: { [name: string]: Float64Array },
+
+  // Per-array component count, for any array that is not a scalar (v9.9.0).
+  point_data_components?: { [name: string]: number },
+  cell_data_components?:  { [name: string]: number },   // per ARRAY, not per block
+  field_data_components?: { [name: string]: number },
 }
 ```
 
 This deliberately mirrors the Python `Mesh`'s structure (points, a list of cell blocks, `cell_data` as one array per block). Cell connectivity is always `Int32Array` — the C++ core's connectivity dtype is Int64, but node/point counts for any mesh a browser can reasonably hold fit comfortably in 32 bits, and `Int32Array` is far more ergonomic in JS than `BigInt64Array`.
+
+### Multi-component (vector / tensor) data arrays
+
+Data arrays are flat, and **a flat typed array carries no shape** — the same problem `xdmfSeriesWriteDataArrays`' own `components` argument solves. Each of the three data maps therefore has a sibling `*_components` object giving the per-entity width of any array that is not a scalar:
+
+```js
+const mesh = {
+  points, dim: 3, cells,
+  point_data: { velocity: new Float64Array(n * 3) },   // interleaved
+  point_data_components: { velocity: 3 },
+};
+meshio.writeMesh('/out.med', mesh, 'med');
+const back = meshio.readMesh('/out.med', 'med');
+back.point_data_components.velocity;   // 3
+```
+
+- **An absent name means one component.** A caller that never sets `*_components` gets exactly the pre-v9.9.0 scalar behaviour, and `readMesh` only writes an entry for genuinely multi-component arrays — so a scalar-only mesh comes back with three empty objects and no existing consumer sees a new key.
+- **`cell_data_components` is one value per array, not per block**: every block of a named `cell_data` array must agree on its component count, which is the uniform mesh API's own invariant.
+- A length that is not a multiple of the declared count, or a non-positive/non-integer count, is a catchable `Error` naming the array.
+
+Before v9.9.0 there was no such metadata: an `(n,3)` array re-entered C++ as `(3n,1)`, so writing a vector field to MED produced a file the reader itself rejected (`"field data size does not match its declared shape"`), and every object-based operation silently passed the array through instead of gathering it, leaving stale values of the wrong length. The path-based `convert`/`convertSurface`/`convertSurfaceOps` calls were never affected, because they never materialize a JS mesh at all.
 
 **Ragged cell blocks** (polygon/polyhedron blocks with a varying node count per cell, e.g. MED Voronoi polygons or OpenFOAM general polyhedra) cross the boundary as flat CSR arrays instead of a single rectangular `data`/`nodesPerCell` pair, since embind has no efficient representation for a nested array of arrays:
 
@@ -295,7 +323,7 @@ const { readers, writers } = m.availableFormats();
 
 - **The `.wasm` is ~5.5 MB, up from ~2.3 MB** (the published npm tarball is ~1.8 MB, since the binary compresses about 3:1 and browsers fetch it compressed). libhdf5 and libnetcdf are statically linked, and they are real bytes. If you do not need these five formats, build your own artifact with `./build/configure-wasm.sh --without-hdf5 --build` (see below) — the JS API is identical and `availableFormats()` reports the smaller set.
 - **Breaking: `.xdmf` now writes an HDF companion file.** The registry's XDMF writer default follows the build, exactly as it does natively: with HDF5 present it emits `Format="HDF"` heavy data into a sibling `<base>.h5` and leaves only the XML skeleton in the `.xdmf`. A caller that used to pull one file out of the virtual filesystem must now pull **two**. Reading is unaffected (all three data formats are read).
-- **MED cannot write named fields here.** The C++ MED writer defers a mesh carrying `point_data`/`cell_data` to the Python reference writer (the MED-4.1 `CHA` field metadata is inspected byte-for-byte by tests), and this build has no Python to defer to — so it throws by name instead. MED geometry, `point_tags`/`cell_tags`, families (and, since v9.6.0, named regions and `point_data`/`cell_data["med:num"]` global numbering — neither is a `CHA` field, so neither is affected by this) are written normally. See [MED quirks](./formats/med.md#quirks-limitations).
+- **MED writes plain fields, but not the enhanced ones.** The C++ MED writer handles ordinary `point_data`/`cell_data` — the single-timestep `CHA` common case, including multi-component fields since v9.9.0 — so a field-carrying mesh writes fine here. What it cannot do is the constructs the Python reference writer alone implements (units, multi-timestep metadata, component names supplied via `med:nom`, named profiles, ELNO/ELGA), and this build has no Python to defer to, so those throw by name. MED geometry, `point_tags`/`cell_tags`, families, named regions and `med:num` global numbering are all written normally. See [MED quirks](./formats/med.md#quirks-limitations).
 - **`sniffFormat` still cannot identify them.** A plain HDF5 magic number says nothing about which of `med`/`cgns`/`h5m`/`hmf`/XDMF-HDF a file is, so the sniffer deliberately never claims it. Use the extension, or pass `format` explicitly.
 
 ### Ambiguous extensions
@@ -347,7 +375,7 @@ Under Node no headers are needed — Wasm threads use `worker_threads`. The thre
 - **No per-format write options.** Parameterized writers (binary vs ASCII, float format strings, gzip levels, VTK 4.2 vs 5.1) use a fixed default matching that format's own Python reference default (e.g. `vtu` writes binary+zlib, `stl` writes ASCII, `gmsh` writes the 4.1 binary format; `stl`/`ply` extract and write the boundary **skin** of a 3D volume mesh — the Python default, see [Skin extraction](./extract_skin.md) — and `svg`/`tikz` render 3D meshes with the default isometric camera). Per-call overrides may be added in a future release. The standalone `extractSkin` utility is not exposed to JS yet (documented follow-up).
 - **Named regions are carried** (since v8.1.0). They ride on the mesh object itself — `mesh.regions` is an array of `{ name, kind, dim, tag, entries }` — so `readMesh` / `writeMesh` / `convert` carry them with no extra call, and nothing new had to be forwarded by the wrapper. `kind` is `'point'`, `'cell'` (global block-major cell indices) or `'side'` (`(cell, facet)` pairs). The Phase-1 formats (gmsh, abaqus, and MED since v9.6.0 — one region per `FAS`/`GRO` group name) map onto them fully; Exodus reads but does not yet write them. See [Named regions](./regions.md).
 - **Remaining side-channel data isn't exposed.** `openfoam`'s cell-tag family names, and the `ansysInp`/`unv` set channels pending their Phase-2 region mapping (all carried through a C++ side-channel struct alongside the `Mesh`, mirroring the Python bindings' `AnsysInfo`/`OpenFoamInfo`), are not yet surfaced to JS.
-- **No multi-component data arrays.** `point_data`/`cell_data`/`field_data` cross the boundary as flat, shapeless `Float64Array`s (see "The mesh object shape" above) — there is no field carrying a per-array component count, so a 3-component vector or a 3×3 tensor is indistinguishable from N unrelated scalars on the way in. Every array, including through the [data operations](./data_operations.md), is therefore effectively scalar-only in the JS API; `norm(v)`-style expressions and vector/tensor-aware conditioning need the Python, C API, or Fortran bindings, all of which carry the shape. **This is why the path-based calls exist**: `convert` and `convertSurface` never build a JS mesh, so a file passing through them keeps its vector and tensor arrays intact.
+- **Data arrays are always `Float64`.** `point_data`/`cell_data`/`field_data` cross the boundary widened to `Float64Array` whatever their dtype in the file, so an integer material id comes back as a double. Multi-component (vector/tensor) arrays *are* supported since v9.9.0 via the `*_components` objects (see "The mesh object shape" above); before that they were flattened to N unrelated scalars in both directions. The path-based `convert`/`convertSurface` calls still avoid the boundary entirely, and so preserve dtypes as well as shapes.
 
 ## Building from source
 

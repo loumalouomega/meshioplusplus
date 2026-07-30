@@ -459,6 +459,8 @@ def read(filename):
     med_cells = mesh["MAI"]
     cell_num_blocks = []
     num_blocks_with_num = 0
+    cell_tag_blocks = []
+    any_cell_tags = False
     for med_cell_type, med_cell_type_group in med_cells.items():
         cell_type = med_to_meshio_type[med_cell_type]
         cell_types.append(cell_type)
@@ -475,12 +477,17 @@ def read(filename):
             data = _reorder_med_cells(cell_type, data)  # MED -> meshio order
             cells += [(cell_type, data)]
 
-        # Cell tags
+        # Cell tags. One entry per block, always: a block the file left `FAM`
+        # off of belongs to no family, and MED spells "no family" as id 0, so
+        # zeros are the file's own meaning rather than a guess. Appending only
+        # the blocks that *have* a FAM (as this did before v9.9.0) left
+        # `cell_data["cell_tags"]` shorter than `mesh.cells`, violating the
+        # one-array-per-block invariant; the C++ twin does the same thing now.
         if "FAM" in med_cell_type_group:
-            tags = med_cell_type_group["FAM"][()]
-            if "cell_tags" not in cell_data:
-                cell_data["cell_tags"] = []
-            cell_data["cell_tags"].append(tags)
+            cell_tag_blocks.append(np.asarray(med_cell_type_group["FAM"][()]))
+            any_cell_tags = True
+        else:
+            cell_tag_blocks.append(None)
 
         # Global cell numbering (NUM) -- optional, and only carried when
         # *every* block has it (a partial NUM array is not a mesh-wide
@@ -490,6 +497,21 @@ def read(filename):
             num_blocks_with_num += 1
         else:
             cell_num_blocks.append(None)
+
+    if any_cell_tags:
+        # Fill the blocks the file left `FAM` off of with family 0 -- see the
+        # comment at the append site. Twin of the C++ reader's identical pass.
+        n_missing = sum(1 for b in cell_tag_blocks if b is None)
+        if n_missing:
+            warn(
+                "MED: some cell blocks carry no FAM dataset; those cells are "
+                'reported as family 0 (MED\'s "no family").'
+            )
+            cell_tag_blocks = [
+                np.zeros(len(cells[i][1]), dtype=np.int32) if b is None else b
+                for i, b in enumerate(cell_tag_blocks)
+            ]
+        cell_data["cell_tags"] = cell_tag_blocks
 
     if num_blocks_with_num > 0:
         if num_blocks_with_num == len(cell_types):
@@ -941,12 +963,7 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
             field.attrs.create(
                 "UNT", units[1] if units[1] is not None else numpy_void_str
             )
-            nom = (
-                np.bytes_("".join(f"{n:<16}" for n in comp_name))
-                if comp_name
-                else np.bytes_(f"{'':<16}")
-            )
-            field.attrs.create("NOM", nom)
+            field.attrs.create("NOM", _nom_attr(comp_name, n_components))
         except ValueError:
             field = fields[base_name]
 
@@ -1011,12 +1028,7 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
             field.attrs.create("NCO", n_components)
             field.attrs.create("UNI", numpy_void_str)
             field.attrs.create("UNT", numpy_void_str)
-            nom = (
-                np.bytes_("".join(f"{n:<16}" for n in comp_name))
-                if comp_name
-                else np.bytes_(f"{'':<16}")
-            )
-            field.attrs.create("NOM", nom)
+            field.attrs.create("NOM", _nom_attr(comp_name, n_components))
         except ValueError:
             field = fields[base_name]
 
@@ -1097,15 +1109,7 @@ def _write_data(
         field.attrs.create("UNT", numpy_void_str)  # time unit
         n_components = 1 if data.ndim == 1 else data.shape[-1]
         field.attrs.create("NCO", n_components)  # number of components
-        # names = _create_component_names(n_components)
-        # field.attrs.create("NOM", np.bytes_("".join(f"{name:<16}" for name in names)))
-
-        if field_name:
-            field.attrs.create(
-                "NOM", np.bytes_("".join(f"{name:<16}" for name in field_name))
-            )
-        else:
-            field.attrs.create("NOM", np.bytes_(f"{'':<16}"))
+        field.attrs.create("NOM", _nom_attr(field_name, n_components))
 
         step = "0000000000000000000100000000000000000001"
         time_step = field.create_group(step)
@@ -1141,6 +1145,28 @@ def _write_data(
 
 def _create_component_names(n_components):
     return [f"V{(i + 1)}" for i in range(n_components)]
+
+
+def _nom_attr(comp_name, n_components):
+    """MED's ``NOM`` field attribute: 16 characters *per component*.
+
+    Explicit ``comp_name`` (from ``field_data["med:nom"]``) always wins.
+    Otherwise a multi-component field gets MED's own default spelling
+    ``V1..Vk`` so a strict consumer (Salome/MEDCoupling) reads k names rather
+    than one blank slot -- writing a fixed 16 spaces for a k>1 field, as every
+    writer here did before v9.9.0, is a deviation from the convention. A
+    scalar field keeps the single 16-space string, so its bytes are unchanged.
+
+    Twin of ``med_default_component_names`` in ``src/cpp/src/formats/med.cpp``;
+    the two must agree, since the C++ and Python writers are compared against
+    each other.
+    """
+    names = comp_name
+    if not names:
+        names = _create_component_names(n_components) if n_components > 1 else []
+    if not names:
+        return np.bytes_(f"{'':<16}")
+    return np.bytes_("".join(f"{n:<16}" for n in names))
 
 
 def _family_name(set_id, name):

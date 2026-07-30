@@ -38,6 +38,7 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
 
@@ -413,6 +414,41 @@ std::string exo_group_name(const std::vector<std::string>& rNames,
 // GLOBAL block-major cell indices and those only exist once the blocks are
 // ordered. The bases come from detail::block_bases -- the single owner of that
 // numbering -- rather than being re-derived here.
+/**
+ * @brief The inverse of `exo_add_regions`' element-block half: one name per
+ *        cell block, taken from the `Cell` region that covers exactly it.
+ *
+ * The read side gives every `connect{k}` a `Cell` region whose entries are the
+ * contiguous global range `[bases[k], bases[k+1])`, named from `eb_names`. So a
+ * region matching that range exactly is that block's name, and writing it back
+ * to `eb_names` is what makes a block name survive a round trip instead of
+ * being replaced by the synthetic `"Block N"` the reader falls back to. A block
+ * with no such region gets an empty name, which is exactly what SEACAS itself
+ * writes when it has none.
+ */
+std::vector<std::string> exo_block_names_from_regions(const Mesh& rMesh) {
+    std::vector<std::string> names(rMesh.NumCellBlocks());
+    if (rMesh.NumRegions() == 0)
+        return names;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell)
+            continue;
+        for (std::size_t k = 0; k + 1 < bases.size(); ++k) {
+            const std::size_t n = static_cast<std::size_t>(bases[k + 1] - bases[k]);
+            if (!names[k].empty() || r.NumEntries() != n || n == 0)
+                continue;
+            // Entries are canonical (sorted, de-duplicated), so "covers exactly
+            // this block" is a first/last check rather than a set comparison.
+            const std::int64_t* e = r.Entries();
+            if (e[0] == bases[k] && e[n - 1] == bases[k + 1] - 1)
+                names[k] = r.mName;
+        }
+    }
+    return names;
+}
+
 void exo_add_regions(Mesh& rMesh, const std::vector<std::string>& rBlockTypes,
                      const std::vector<std::string>& rEbNames,
                      const std::vector<std::int64_t>& rEbIds,
@@ -783,28 +819,53 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             if (name_i >= cell_data_names.size())
                 break;
             const std::string& name = cell_data_names[name_i++];
-            // concatenate in block order
-            std::size_t total = 0;
+            // concatenate in block order. The component count comes from the
+            // variable's own trailing dimensions -- this used to be hard-coded
+            // scalar (`{total}` then `{s}`), which silently truncated a
+            // multi-component element variable to its first component. Standard
+            // Exodus element variables are scalar per element, so no real
+            // SEACAS file exercised that; meshio++'s own writer emits the
+            // trailing dims (as the nodal path already did), so it does.
             DType dt = kv.second.begin()->second.Dtype();
+            std::size_t ncomp = 1;
+            {
+                const std::vector<std::size_t>& s0 = kv.second.begin()->second.Shape();
+                for (std::size_t d = 1; d < s0.size(); ++d)
+                    ncomp *= s0[d];
+            }
+            std::size_t total = 0;
             for (const auto& b : kv.second)
                 total += b.second.Shape().empty() ? 0 : b.second.Shape()[0];
-            NDArray all(dt, {total});
+            NDArray all(dt, ncomp > 1 ? std::vector<std::size_t>{total, ncomp}
+                                      : std::vector<std::size_t>{total});
             std::size_t off = 0;
             for (const auto& b : kv.second) {
                 std::memcpy(all.Data() + off, b.second.Data(), b.second.Nbytes());
                 off += b.second.Nbytes();
             }
             // split
+            const std::size_t row_bytes = ncomp * dtype_size(dt);
             std::vector<NDArray> out_blocks;
             std::size_t pos = 0;
             for (std::size_t s : sizes) {
-                NDArray blk(dt, {s});
-                std::memcpy(blk.Data(), all.Data() + pos * dtype_size(dt), s * dtype_size(dt));
+                NDArray blk(dt, ncomp > 1 ? std::vector<std::size_t>{s, ncomp}
+                                          : std::vector<std::size_t>{s});
+                std::memcpy(blk.Data(), all.Data() + pos * row_bytes, s * row_bytes);
                 pos += s;
                 out_blocks.push_back(std::move(blk));
             }
             mesh.AddCellData(name, std::move(out_blocks));
         }
+    }
+
+    // The time of the step actually returned, so the writer's
+    // `field_data["exodus:time"]` closes into a round trip rather than being
+    // write-only. `read_metadata` still owns the *whole* list of steps -- this
+    // is the one value this mesh is a snapshot at.
+    if (step < time_values.size()) {
+        NDArray tv(DType::Float64, {1});
+        *reinterpret_cast<double*>(tv.Data()) = time_values[step];
+        mesh.AddFieldData("exodus:time", std::move(tv));
     }
 
     return mesh;
@@ -879,13 +940,29 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
     check(nc_def_dim(ncid, "four", 4, &d_four), "def four", true);
     check(nc_def_dim(ncid, "time_step", NC_UNLIMITED, &d_time), "def time_step", true);
 
-    // dummy time step
+    // The single time step this writer emits. A `Mesh` is one state, so one
+    // step is all there is to write; what changed in v9.9.0 is that its
+    // recorded time is no longer hard-coded to 0 -- `field_data["exodus:time"]`
+    // (the `<format>:<thing>` convention `med:num` established) supplies it, so
+    // a caller writing one frame of a transient solve can label it correctly.
+    // A genuine multi-step writer is a separate object with its own lifecycle,
+    // the shape `XdmfTimeSeriesWriter` already has; that remains a follow-up.
     {
         int var;
         check(nc_def_var(ncid, "time_whole", NC_FLOAT, 1, &d_time, &var), "def time_whole", true);
         std::size_t start = 0, count = 1;
-        float zero = 0.0f;
-        check(nc_put_vara_float(ncid, var, &start, &count, &zero), "time_whole", true);
+        float t = 0.0f;
+        if (rMesh.HasFieldData("exodus:time")) {
+            const NDArray& tv = rMesh.FieldData("exodus:time");
+            if (tv.Size() >= 1)
+                t = static_cast<float>(detail::read_double(tv, 0));
+            if (tv.Size() > 1)
+                log::warn(
+                    "Exodus: field_data[\"exodus:time\"] has {} values but this writer emits a "
+                    "single time step; using the first.",
+                    tv.Size());
+        }
+        check(nc_put_vara_float(ncid, var, &start, &count, &t), "time_whole", true);
     }
 
     // coor_names
@@ -929,7 +1006,31 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
             check(nc_put_var_int(ncid, var, ids.data()), "eb_prop1", true);
     }
 
+    // eb_names, recovered from the Cell regions the reader derives from them.
+    // Written only when at least one block has a name; an all-blank array is
+    // what SEACAS emits when it has none, and omitting it keeps output for a
+    // region-less mesh byte-identical to pre-v9.9.0.
+    {
+        const std::vector<std::string> block_names = exo_block_names_from_regions(rMesh);
+        const bool any = std::any_of(block_names.begin(), block_names.end(),
+                                     [](const std::string& s) { return !s.empty(); });
+        if (any) {
+            int dims[2] = {d_blk, d_str};
+            int var;
+            check(nc_def_var(ncid, "eb_names", NC_CHAR, 2, dims, &var), "def eb_names", true);
+            for (std::size_t k = 0; k < block_names.size(); ++k) {
+                if (block_names[k].empty())
+                    continue;
+                std::size_t start[2] = {k, 0};
+                std::size_t count[2] = {1, std::min<std::size_t>(block_names[k].size(), 33)};
+                check(nc_put_vara_text(ncid, var, start, count, block_names[k].c_str()), "eb_names",
+                      true);
+            }
+        }
+    }
+
     // connectivity blocks
+    std::vector<int> block_elem_dims(rMesh.NumCellBlocks(), -1);
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
         const auto cb = rMesh.Cells(k);
         auto it = meshio_to_exodus().find(cb.Type());
@@ -941,6 +1042,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
         int d1, d2;
         check(nc_def_dim(ncid, dim1.c_str(), cb.NumCells(), &d1), "blk dim", true);
         check(nc_def_dim(ncid, dim2.c_str(), detail::cols(conn), &d2), "blk dim", true);
+        block_elem_dims[k] = d1;
         int dims[2] = {d1, d2};
         int var;
         std::string vname = "connect" + std::to_string(k + 1);
@@ -983,7 +1085,14 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
             std::vector<const NDArray*> cols;
             for (const auto& full : att_names) {
                 const NDArray& arr = rMesh.CellData(full, k);
-                if (detail::cols(arr) != 1)
+                // Product of ALL trailing dims, not just `detail::cols()`:
+                // an `(n,1,3)` array has cols == 1 and would otherwise slip
+                // past and be silently truncated to its first component. This
+                // matches `_exodus.py`'s `prod(shape[1:]) != 1` twin.
+                std::size_t trailing = 1;
+                for (std::size_t d = 1; d < arr.Shape().size(); ++d)
+                    trailing *= arr.Shape()[d];
+                if (trailing != 1)
                     throw WriteError("Exodus: element attribute '" + full +
                                      "' must be scalar (one value per element)");
                 // A block whose values are all non-finite never carried this
@@ -1030,6 +1139,97 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
                 if (count[1] > 0)
                     check(nc_put_vara_text(ncid, name_var, start, count, names[c].c_str()),
                           "attrib_name", true);
+            }
+        }
+    }
+
+    // Cell data -> element variables (`name_elem_var` + one
+    // `vals_elem_var{j}eb{k}` per (variable, block)), new in v9.9.0: this
+    // writer previously emitted none at all, so every ordinary `cell_data`
+    // array was silently dropped while `point_data` round-tripped. The
+    // `kExodusAttributePrefix` arrays are excluded -- they are constant-in-time
+    // per-element *attributes* and already went out as `attrib{k}` above, which
+    // is a different Exodus concept and the reason that prefix has to be
+    // explicit.
+    {
+        const std::string prefix(kExodusAttributePrefix);
+        std::vector<std::string> var_names;
+        for (const auto& name : rMesh.CellDataNames())
+            if (name.rfind(prefix, 0) != 0)
+                var_names.push_back(name);
+
+        if (!var_names.empty()) {
+            int d_nev;
+            check(nc_def_dim(ncid, "num_elem_var", var_names.size(), &d_nev), "num_elem_var", true);
+            int name_var;
+            {
+                int dims[2] = {d_nev, d_str};
+                check(nc_def_var(ncid, "name_elem_var", NC_CHAR, 2, dims, &name_var),
+                      "def name_elem_var", true);
+            }
+            // The truth table: which variable exists on which block. Every
+            // cell_data array covers every block by the uniform API's own
+            // invariant, so it is all ones -- but real Exodus readers expect
+            // the variable to be present, so it is written rather than assumed.
+            {
+                int dims[2] = {d_blk, d_nev};
+                int tab;
+                check(nc_def_var(ncid, "elem_var_tab", NC_INT, 2, dims, &tab), "def elem_var_tab",
+                      true);
+                std::vector<int> ones(rMesh.NumCellBlocks() * var_names.size(), 1);
+                if (!ones.empty())
+                    check(nc_put_var_int(ncid, tab, ones.data()), "elem_var_tab", true);
+            }
+
+            for (std::size_t j = 0; j < var_names.size(); ++j) {
+                const std::string& name = var_names[j];
+                {
+                    std::size_t start[2] = {j, 0};
+                    std::size_t count[2] = {1, std::min<std::size_t>(name.size(), 33)};
+                    if (count[1] > 0)
+                        check(nc_put_vara_text(ncid, name_var, start, count, name.c_str()),
+                              "name_elem_var", true);
+                }
+                if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks()) {
+                    log::warn(
+                        "Exodus: cell_data '{}' covers {} of {} blocks; not written as an element "
+                        "variable.",
+                        name, rMesh.CellDataNumBlocks(name), rMesh.NumCellBlocks());
+                    continue;
+                }
+                for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+                    const NDArray& data = rMesh.CellData(name, k);
+                    // Trailing dims become extra netCDF dimensions, exactly as
+                    // the nodal-variable path above already does for a
+                    // multi-component point field -- so a vector cell field
+                    // round-trips through this reader (and the Python twin's,
+                    // which reshapes from the same dims) rather than being
+                    // dropped. Standard Exodus element variables are scalar
+                    // per element, so a k>1 array here is a meshio++ extension
+                    // of the same kind the nodal path already is.
+                    std::vector<int> dims = {d_time, block_elem_dims[k]};
+                    for (std::size_t i = 1; i < data.Shape().size(); ++i) {
+                        std::string dn = "dim_elem_var" + std::to_string(j) + "_" +
+                                         std::to_string(k) + "_" + std::to_string(i);
+                        int di;
+                        check(nc_def_dim(ncid, dn.c_str(), data.Shape()[i], &di), "cd dim", true);
+                        dims.push_back(di);
+                    }
+                    int var;
+                    std::string vname =
+                        "vals_elem_var" + std::to_string(j + 1) + "eb" + std::to_string(k + 1);
+                    check(nc_def_var(ncid, vname.c_str(), nc_type_of(data.Dtype()),
+                                     static_cast<int>(dims.size()), dims.data(), &var),
+                          "def vals_elem_var", true);
+                    check(nc_def_var_fill(ncid, var, NC_NOFILL, nullptr), "nofill", true);
+                    std::vector<std::size_t> startv(dims.size(), 0), countv;
+                    countv.push_back(1);
+                    for (std::size_t s : data.Shape())
+                        countv.push_back(s);
+                    if (data.Size() > 0)
+                        check(nc_put_vara(ncid, var, startv.data(), countv.data(), data.Data()),
+                              "vals_elem_var", true);
+                }
             }
         }
     }

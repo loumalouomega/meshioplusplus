@@ -1652,6 +1652,78 @@ def test_cpp_writes_plain_point_and_cell_data():
         np.testing.assert_allclose(back.cell_data["stress"][0], [42.0, 43.0])
 
 
+def test_vector_field_round_trip(tmp_path):
+    """A genuine (n, 3) point field must keep its shape through a MED
+    round-trip, and its NOM must carry one 16-char slot per component (v9.9.0;
+    both writers previously wrote a single blank slot for any k)."""
+    import h5py
+
+    from meshioplusplus.med._med import write as _py_write_med
+
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    n = len(mesh.points)
+    mesh.point_data["velocity"] = np.arange(n * 3, dtype=np.float64).reshape(n, 3)
+
+    for writer, tag in ((meshioplusplus.med.write, "shim"), (_py_write_med, "python")):
+        p = tmp_path / f"vec_{tag}.med"
+        writer(p, mesh)
+        back = meshioplusplus.med.read(p)
+        assert back.point_data["velocity"].shape == (n, 3), tag
+        np.testing.assert_allclose(
+            back.point_data["velocity"], mesh.point_data["velocity"]
+        )
+        with h5py.File(p, "r") as f:
+            nom = bytes(f["CHA"]["velocity"].attrs["NOM"])
+        # 16 chars per component, not a fixed 16.
+        assert len(nom) == 48, (tag, len(nom), nom)
+        assert nom[:16].strip() == b"V1", (tag, nom)
+        assert nom[16:32].strip() == b"V2", (tag, nom)
+        assert nom[32:].strip() == b"V3", (tag, nom)
+
+
+def test_scalar_field_nom_is_still_one_blank_slot(tmp_path):
+    """The k == 1 NOM output is unchanged by the v9.9.0 per-component work."""
+    import h5py
+
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    mesh.point_data["temperature"] = np.arange(len(mesh.points), dtype=np.float64)
+    p = tmp_path / "scalar.med"
+    meshioplusplus.med.write(p, mesh)
+    with h5py.File(p, "r") as f:
+        nom = bytes(f["CHA"]["temperature"].attrs["NOM"])
+    assert nom == b" " * 16, nom
+
+
+def test_mis_shaped_field_is_rejected_on_write(tmp_path):
+    """The write-side guard: a field's row count IS its entity count. A
+    flattened (3n,) vector used to write NBR=3n against n points, producing a
+    file this very reader rejects."""
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_hdf5__", False):
+        pytest.skip("core built without HDF5")
+
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    n = len(mesh.points)
+    mesh.point_data["velocity"] = np.arange(n * 3, dtype=np.float64)
+    # Direct _core call: the shim would silently fall back to the Python
+    # writer, which reshapes rather than raising.
+    with pytest.raises(Exception, match="rows"):
+        core.med_write(
+            str(tmp_path / "bad.med"),
+            mesh,
+            {},
+            {},
+            [],
+            "mesh",
+            "",
+            "",
+            "",
+            {},
+            {},
+            "4.1.0",
+        )
+
+
 def test_cpp_matches_python_for_plain_fields():
     """The C++ and Python writers must agree on plain field values (though not
     on the bitmask, units, or component-name metadata the Python writer alone

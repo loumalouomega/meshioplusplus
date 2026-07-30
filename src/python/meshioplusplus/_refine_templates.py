@@ -63,11 +63,15 @@ QUAD_FACES = {
     "triangle": [],
     "tetra": [],
     "quad": [(0, 1, 2, 3)],
+    # Row k -> hexahedron27 node 20+k, in _skin.py's _CELL_FACES order
+    # (vtkTriQuadraticHexahedron): x-min, x-max, y-min, y-max, bottom, top.
+    # Reordered in v9.9.0 with the C++ twin detail/cell_subdivision.cpp; see
+    # detail/cell_faces.cpp for the derivation.
     "hexahedron": [
-        (0, 1, 5, 4),
+        (0, 4, 7, 3),
         (1, 2, 6, 5),
-        (2, 3, 7, 6),
-        (3, 0, 4, 7),
+        (0, 1, 5, 4),
+        (3, 7, 6, 2),
         (0, 1, 2, 3),
         (4, 5, 6, 7),
     ],
@@ -211,10 +215,17 @@ def _wedge_table():
 
 def _hexahedron_table():
     # hexahedron27 layout: 8..19 edge mids (bottom ring, top ring, verticals),
-    # 20..25 face centres (the four sides, then bottom, then top), 26 body. The
-    # twelve edges fall into three parallel classes; the admissible masks are
-    # their eight unions, so a refinement travels through one dual sheet rather
-    # than the whole block.
+    # 20..25 face centres, 26 body. The face-centre indices are QUAD_FACES
+    # ["hexahedron"] row order, which since v9.9.0 is _skin.py's _CELL_FACES
+    # order (vtkTriQuadraticHexahedron): 20 = x-min, 21 = x-max, 22 = y-min,
+    # 23 = y-max, 24 = bottom, 25 = top. The absolute indices below were
+    # permuted by the same 3-cycle (20->22, 22->23, 23->20) in that release;
+    # kept in exact sync with the C++ twin detail/refine_templates.cpp, which
+    # test_refine.py::test_mask_tables_match_the_cpp_core enforces.
+    #
+    # The twelve edges fall into three parallel classes; the admissible masks
+    # are their eight unions, so a refinement travels through one dual sheet
+    # rather than the whole block.
     x = 0b000001010101
     y = 0b000010101010
     z = 0b111100000000
@@ -238,10 +249,10 @@ def _hexahedron_table():
         x
         | z: (
             (
-                (0, 8, 10, 3, 16, 20, 22, 19),
-                (8, 1, 2, 10, 20, 17, 18, 22),
-                (16, 20, 22, 19, 4, 12, 14, 7),
-                (20, 17, 18, 22, 12, 5, 6, 14),
+                (0, 8, 10, 3, 16, 22, 23, 19),
+                (8, 1, 2, 10, 22, 17, 18, 23),
+                (16, 22, 23, 19, 4, 12, 14, 7),
+                (22, 17, 18, 23, 12, 5, 6, 14),
             ),
             (),
             0,
@@ -250,10 +261,10 @@ def _hexahedron_table():
         y
         | z: (
             (
-                (0, 1, 9, 11, 16, 17, 21, 23),
-                (11, 9, 2, 3, 23, 21, 18, 19),
-                (16, 17, 21, 23, 4, 5, 13, 15),
-                (23, 21, 18, 19, 15, 13, 6, 7),
+                (0, 1, 9, 11, 16, 17, 21, 20),
+                (11, 9, 2, 3, 20, 21, 18, 19),
+                (16, 17, 21, 20, 4, 5, 13, 15),
+                (20, 21, 18, 19, 15, 13, 6, 7),
             ),
             (),
             0,
@@ -263,14 +274,14 @@ def _hexahedron_table():
         | y
         | z: (
             (
-                (0, 8, 24, 11, 16, 20, 26, 23),
-                (8, 1, 9, 24, 20, 17, 21, 26),
-                (11, 24, 10, 3, 23, 26, 22, 19),
-                (24, 9, 2, 10, 26, 21, 18, 22),
-                (16, 20, 26, 23, 4, 12, 25, 15),
-                (20, 17, 21, 26, 12, 5, 13, 25),
-                (23, 26, 22, 19, 15, 25, 14, 7),
-                (26, 21, 18, 22, 25, 13, 6, 14),
+                (0, 8, 24, 11, 16, 22, 26, 20),
+                (8, 1, 9, 24, 22, 17, 21, 26),
+                (11, 24, 10, 3, 20, 26, 23, 19),
+                (24, 9, 2, 10, 26, 21, 18, 23),
+                (16, 22, 26, 20, 4, 12, 25, 15),
+                (22, 17, 21, 26, 12, 5, 13, 25),
+                (20, 26, 23, 19, 15, 25, 14, 7),
+                (26, 21, 18, 23, 25, 13, 6, 14),
             ),
             (),
             0,

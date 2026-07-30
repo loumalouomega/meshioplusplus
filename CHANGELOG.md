@@ -8,6 +8,166 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.9.0 (2026-07-30)
+
+**The WASM mesh object no longer loses a data array's component shape**, CGNS carries
+point/cell data, the `hexahedron27` face-centre defect v9.8.0 documented is fixed, and the
+three "handled by Python fallback" gaps that made MED, Exodus and DOLFIN lossy outside
+Python are closed. All came out of a downstream WASM consumer re-probing its workarounds
+against 9.8.0. Additive on the JS side (a bare `Float64Array` still means a scalar array, so
+every existing JS caller is unaffected); two user-visible changes are the *numbering* of
+refined hexahedra's face-centre points (same geometry — see the hexahedron27 entry) and
+**`MESHIOPLUSPLUS_ABI_VERSION` 4 → 5**, because `MedInfo` gained data members (Tier A).
+
+**Breaking (C++ ABI only):** `MedInfo` gained four fields, so its layout changed. A C++
+consumer that compiled against v9.8.0 headers and passes a `MedInfo&` must be recompiled —
+which the bumped `SOVERSION` (`libmeshioplusplus_core_*.so.5`) and
+`detail/abi_version_check.hpp` both enforce at link time rather than leaving to chance. The
+C ABI, Python, WASM, Fortran, Julia and R surfaces are all unaffected.
+
+### WASM / bindings
+
+- **Data-array component counts cross the boundary.** `point_data`/`cell_data`/`field_data`
+  crossed as flat, shapeless `Float64Array`s in *both* directions, so an `(n,3)` vector field
+  re-entered C++ as `(3n,1)`. Each map now has a sibling `point_data_components` /
+  `cell_data_components` / `field_data_components` object, `{name: k}`, following the
+  convention `xdmfSeriesWriteDataArrays`' own `components` argument already established
+  ("a flat typed array carries no shape"). An absent name means one component, and
+  `readMesh` writes an entry only for genuinely multi-component arrays, so scalar-only
+  output is unchanged. A length that is not a multiple of its declared count is a catchable
+  `Error` naming the array.
+
+  Two consequences that were the actual reported symptoms: **writing a vector field to MED
+  now works** (it previously produced a file the MED reader itself rejected with `"field
+  data size does not match its declared shape"` — `NCO=1`/`NBR=3n` against `n` points), and
+  **object-based operations no longer corrupt vector fields**. The C++ operations were never
+  at fault: `subset_gather_rows`, `refine`'s per-component interpolation and
+  `reorder_scatter_rows` all derive the row stride from the array's real trailing
+  dimensions. With a `(3n,)` array they simply failed their `rows == num_points` test and
+  took the pass-through branch, returning stale values of the wrong length. The path-based
+  `convert`/`convertSurface`/`convertSurfaceOps` calls never materialize a JS mesh and were
+  never affected — which is why the pre-existing "convertSurfaceOps keeps multi-component
+  data" smoke step passed throughout.
+
+### Formats
+
+- **CGNS reads and writes point/cell data** (`FlowSolution_t`), where a CGNS export
+  previously dropped every field silently. One `FlowSolution_t` per location
+  (`GridLocation` = `Vertex` / `CellCenter`; absent reads as `Vertex`, the SIDS default),
+  one `DataArray_t` per scalar. **CGNS has no component concept** — no
+  `NumberOfComponents` anywhere in the SIDS — so a k-component array is split into k
+  siblings named `<name>_0..<name>_{k-1}` and re-joined on read from a *contiguous* run; a
+  documented meshio++ convention, like `zstd` for VTU. `cell_data` is written only when
+  every cell block is at the zone's `CellDim` (a `CellCenter` array is per-zone, and there
+  is no way to distribute one back across blocks of differing dimension without inventing
+  values); a mixed-dimension mesh is warn-and-skipped. `FlowSolution_t` is read only for a
+  single-zone file. See [`doc/formats/cgns.md`](doc/formats/cgns.md#data-mapping).
+- **CGNS gained the external-validation layer** v9.8.0 recorded as a follow-up. `cgnslib`
+  is not in apt on a sudo-less machine but is on conda-forge, so: `cgnscheck` reports **zero
+  errors** on everything meshio++ writes, for every supported cell type (a new test, gated
+  on `shutil.which("cgnscheck")` — it skips with an actionable reason rather than silently
+  passing), and a reference `.cgns` **written end to end by cgnslib 4.5.2 itself** is
+  committed under `tests/python/meshes/cgns/` (Git LFS; `*.cgns` added to
+  `.gitattributes`) and read unconditionally by both readers.
+- **MED: a field's `NOM` now carries 16 characters per component**, not a fixed 16. Both
+  writers previously wrote one blank 16-char slot whatever the component count, which
+  deviates from MED's convention for any k>1 field; when no explicit `med:nom` names are
+  supplied, MED's own default spelling `V1..Vk` is generated. Fixed in the C++ **and**
+  Python writers together, so they do not diverge. A scalar field's bytes are unchanged.
+  Consequence: a k>1 field now reads back with `med:nom` populated where it previously came
+  back empty.
+- **MED: a mis-shaped field is rejected at write time.** A field's row count is its entity
+  count, and there was no write-side check at all — a flattened `(nk,)` vector wrote
+  `NBR = nk` against `n` points and produced a file this very reader rejects, so the failure
+  surfaced far from its cause. `write_med` now raises a `WriteError` naming the array and
+  both counts.
+- **Exodus:** the "element attribute must be scalar" guard now tests the product of *all*
+  trailing dimensions, matching its Python twin. A 3-D `(n,1,3)` array previously slipped
+  past (its `cols()` is 1) and was silently truncated to its first component. The ordinary
+  `(n,k)` vector case was already a correct, deliberate error and is unchanged.
+
+#### The three "handled by Python fallback" gaps
+
+Each of these threw `ReadError`/dropped data in the C++ core and was invisible from Python,
+where the shim's blanket `except Exception` silently swapped in the pure-Python reference.
+WASM, the C API, Fortran, Julia, R and the native CLI have no such fallback, so for them the
+construct was a hard failure or a silent loss.
+
+- **MED: `ReadOptions::mLenient` opens the whole Python-only surface**, following the
+  mechanism `mdpa` established in v9.1.0. Strict reads are **unchanged** (so the Python shim
+  still falls back and the Python surface is byte-identical), but a lenient read now gets
+  through a real Salome/Code_Aster file instead of failing on sight of it. Constructs that
+  can be *described* are read into `MedInfo` rather than merely skipped — a field's
+  `UNI`/`UNT` into `mFieldUnits`, a non-default `NDT`/`NOR`/`PDT` into `mStepMeta`, and every
+  step's `PDT` into `mFieldTimeValues`; the structurally unrepresentable ones (a named
+  `PFL` profile, an `ELNO`/`ELGA` support, a field mixing nodal and cell supports) drop that
+  one field with a warning recorded in `mSkippedConstructs` and keep the rest of the file.
+  ELNO/ELGA is *structurally* impossible, not merely unimplemented: the uniform mesh API's
+  `cell_data` is always `(n,)` or `(n,k)`, never a per-node-within-cell 3-D shape.
+- **MED honours `ReadOptions::mTimeStep`**, and MED is registered in
+  `registry_readers_ex()` — which is what makes the options reach WASM, the C API, Fortran,
+  Julia, R and both CLIs with no per-binding code. A multi-timestep field used to fail the
+  read outright; an explicit step now selects one (0-based, negative counts from the end,
+  the `ResolveTimeStep` contract exodus already uses). A non-default step is honoured
+  **without** `mLenient`, deliberately: it is a request the Python shim never makes, so no
+  Python behaviour depends on it.
+- **MED: a block with no `FAM` array reads as family 0** instead of failing the whole file.
+  MED spells "belongs to no family" as id 0, so this is the file's own meaning rather than a
+  guess. The Python twin was **also** wrong here in a different way — it appended nothing,
+  leaving `cell_tags` *shorter* than `mesh.cells`, which the uniform mesh API cannot hold —
+  and now zero-fills identically.
+- **Exodus writes ordinary `cell_data` as element variables.** `name_elem_var`,
+  the `elem_var_tab` truth table and one `vals_elem_var{j}eb{k}` per (variable, block): the
+  writer previously emitted none of it, so every `cell_data` array except the
+  `exodus:attr:`-prefixed ones was dropped while `point_data` round-tripped. Trailing
+  dimensions become extra netCDF dimensions exactly as the nodal path already does, so a
+  vector cell field survives. Both writers, both readers.
+- **Exodus writes `eb_names` from `Cell` regions**, the inverse of the element-block half of
+  the read path — a named block used to come back as the reader's synthetic `Block N`. Only
+  written when at least one block is actually named, so a region-less mesh's bytes are
+  unchanged.
+- **Exodus `time_whole` comes from `field_data["exodus:time"]`** instead of a hard-coded
+  `0.0`, and both readers now populate that key with the time of the step they returned — so
+  one frame of a transient solve keeps its label through a round trip. (A genuinely
+  multi-step Exodus *writer* is a stateful object like `XdmfTimeSeriesWriter` and remains a
+  follow-up; this is one mesh, one step, correctly labelled.)
+- **Fixed: a heap buffer overflow in the Exodus reader.** Assembling a cell_data array
+  allocated a scalar `{total}` buffer and then `memcpy`'d each block's full `Nbytes()` into
+  it, so a multi-component element variable wrote `n*k` bytes into `n` bytes' worth of space.
+  Pre-existing, but unreachable until this release's writer started emitting element
+  variables, and not reachable from any real SEACAS file (none carries a multi-component
+  element variable). `Exodus.MultiComponentCellDataRoundTrips` is the regression test.
+- **DOLFIN XML writes and reads `point_data`**, as `dim="0"` mesh functions. A
+  `mesh_function`'s `dim` attribute is the topological dimension of the entities it lives on,
+  so vertices are 0 — this is the format's own notion, not a meshio++ convention, and it is
+  the whole discriminator on read. `cell_data` already round-tripped through the same
+  `<stem>_<name>.xml` sibling-file mechanism and is untouched. A name used by both locations
+  wants the same file, so cell data keeps it and the point array is warn-skipped rather than
+  clobbering it; a non-scalar point array is warn-skipped too (a mesh function is one value
+  per entity).
+
+  **Not a defect, for the record:** DOLFIN XML's triangle/tetrahedron-only restriction is
+  correct by format — it is a simplicial format — and both writers already raise explicitly
+  rather than failing silently.
+
+### Operations
+
+- **Fixed: `hexahedron27`'s face-centre table**, whose defect v9.8.0 documented but
+  deliberately left in place. `detail/cell_faces.cpp` assigned mid-face nodes 20/22/23 as a
+  permuted 3-cycle of the real `vtkTriQuadraticHexahedron::Faces` order, putting
+  `extract_surface`/`extract_skin`'s quad9 mid-face node at the wrong position (never a
+  wrong topology — facet keying uses corners only). Corrected in lockstep across
+  `cell_faces.cpp`, `_skin.py`'s `_CELL_FACES`, `cell_subdivision.cpp`'s quad-face rows and
+  `refine_templates.cpp` + `_refine_templates.py`'s absolute 20–23 references, since
+  `refine` derives node `20+k` from the k-th quad-face row. The repo's format layer
+  (`cgns.cpp`, `gmsh.cpp`) was already on the corrected convention, so this makes the
+  codebase self-consistent rather than changing one.
+
+  **User-visible:** `refine` numbers new nodes in slot order, so the six face-centre points
+  of every refined hexahedron now get different **ids and coordinate order**. The geometry
+  is identical and no test pinned them (only node 26, the body centre, was pinned), but code
+  that cached point ids across versions will see the change.
+
 ## v9.8.0 (2026-07-29)
 
 **`convert(gmsh → med)` now works directly from every flat binding for real Gmsh 4.1

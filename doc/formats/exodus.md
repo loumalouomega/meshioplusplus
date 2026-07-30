@@ -32,15 +32,16 @@ meshioplusplus.read_metadata("run.exo")["time_values"]  # e.g. [0.0, 0.5, 1.0]
 
 Global attrs: `title`, `version=5.1f`, `api_version=5.1f`, `floating_point_word_size=8`. Dimensions: `num_nodes`, `num_dim`, `num_elem`, `num_el_blk`, `num_node_sets`, `len_string=33`, `len_line=81`, `four=4`, `time_step` (unlimited). Key variables:
 
-- `time_whole(time_step)` — a dummy single `0.0` timestep is always written.
+- `time_whole(time_step)` — one step. The writer takes its value from `field_data["exodus:time"]` (v9.9.0) and both readers set that key to the time of the step they returned, so one frame of a transient solve keeps its label. Absent, it is `0.0`.
 - `coor_names(num_dim, len_string)` — single-character `"X"`, `"Y"`, `"Z"`.
 - `coord(num_dim, num_nodes)` — transposed relative to meshio++'s `(n, dim)` layout — or, alternatively, separate `coordx`/`coordy`/`coordz(num_nodes)` variables (both styles are accepted on read).
 - `eb_prop1(num_el_blk)` — arbitrary distinct per-block ids (their exact values don't matter, only that they differ, per a ParaView requirement noted in the source).
 - `connect{k}(num_el_in_blk{k}, num_nod_per_el{k})` for `k = 1..num_el_blk`, with a text `elem_type` attribute; 1-based node indices. The attribute is trimmed of trailing NULs and spaces before the type lookup — see [Quirks](#quirks-limitations).
 - `attrib{k}(num_el_in_blk{k}, num_att_in_blk{k})` / `attrib_name{k}(num_att_in_blk{k}, len_string)` — per-element attributes, read and written as `cell_data` under the `exodus:attr:` prefix (see [Element attributes](#element-attributes)).
-- `name_nod_var`/`vals_nod_var{k}` — point-data names and values, sliced at the requested time step (see [Time steps](#time-steps)); the writer emits one dummy step.
+- `name_nod_var`/`vals_nod_var{k}` — point-data names and values, sliced at the requested time step (see [Time steps](#time-steps)); the writer emits one step.
+- `name_elem_var`/`elem_var_tab`/`vals_elem_var{j}eb{k}` — ordinary (non-attribute) `cell_data`, one variable × block array each, read and written since v9.9.0 (see [Data mapping](#data-mapping)).
 - `name_elem_var`/`vals_elem_var{idx}[eb{block}]` — cell data indexed by `(variable index, element block)`, later concatenated across blocks in block order and re-split by target cell-block size.
-- `eb_names(num_el_blk, len_string)` — element-block names, read into `Cell` regions.
+- `eb_names(num_el_blk, len_string)` — element-block names, read into `Cell` regions and, since v9.9.0, written back from them (see [Named regions](#named-regions)).
 - `ns_names`/`ns_prop1`/`node_ns{k}` — node sets, 1-based; read into `Point` regions.
 - `ss_names`/`ss_prop1`/`elem_ss{k}`/`side_ss{k}` — side sets; read into `Side` regions.
 - `info_records`/`qa_records` — free-text info strings, read into `mesh.info`.
@@ -71,7 +72,7 @@ in a per-element attribute (below).
 ## Data mapping
 
 - `point_data` — arbitrary names, with automatic recombination: names ending in `X`/`Y`/`Z` are checked for sibling `Y`/`Z` names and, if found, stacked into a 3-component vector; names ending `_R`/`_Z` are checked for a sibling and stacked into a 2-component vector.
-- `cell_data` — arbitrary names, split per cell block by node count.
+- `cell_data` — arbitrary names, split per cell block by node count. Written as element variables since v9.9.0 (`vals_elem_var{j}eb{k}`); before that, dropped.
 - `cell_data["exodus:attr:<NAME>"]` — per-element attributes (see [Element attributes](#element-attributes)).
 - `regions` — element blocks, node sets and side sets (see [Named regions](#named-regions)). `point_sets` is a compat view over the `Point` regions.
 - `mesh.info` — free-text strings from `info_records`/`qa_records`.
@@ -138,10 +139,17 @@ pins every entry against `detail/cell_faces.hpp` by node set. An unmappable
 `(cell type, side)` pair is skipped rather than stored pointing at the wrong
 face.
 
-**Reading only.** The writer still emits no `eb_names` and no side sets, so a
-region written here would not come back — Exodus is a region *source*, not a
-round-trip target. Recorded as such in `tests/python/test_region_roundtrip.py`'s
-`READ_ONLY_REGIONS`.
+**Element blocks round-trip since v9.9.0**; node sets and side sets are still
+read-only. The writer recovers `eb_names` by inverting the read path: a `Cell`
+region whose canonical entries are exactly the contiguous global range
+`[base_k, base_k+1)` *is* block `k`'s name. Entries are sorted and de-duplicated
+by `AddRegion`, so "covers exactly this block" is a first/last check rather than a
+set comparison. `eb_names` is written only when at least one block is actually
+named, so a region-less mesh's bytes are unchanged — and a block with no matching
+region gets `""`, which is what SEACAS itself writes.
+
+The writer still emits no node sets and no side sets, so a `Point` or `Side`
+region written here does not come back.
 
 ## Time steps
 
@@ -170,8 +178,10 @@ true and the option reaches every binding: `time_step=` in Python,
 - The point-data name recombination (`categorize()`) has a **deliberately preserved quirk**: the check for a paired variable uses Python truthiness on the found array index, so an index of exactly `0` is treated the same as "not found". This is a latent edge case in the reference implementation that the C++ port reproduces on purpose, rather than silently fixing — changing it would make the two implementations disagree on some inputs.
 - `qa_records`/`info_records` are **provenance strings**, and `NDArray` has no string dtype, so they cannot ride on the mesh. They travel in an `ExodusInfo` side-channel struct (the `MedInfo`/`OpenFoamInfo` pattern) that the pybind binding attaches as `mesh.info`. The **flat bindings** (C, Fortran, Julia, R, WASM) construct one and drop it — the same documented gap `MedInfo` already has.
 - Before v8.6.0 the C++ reader **threw** on `qa_records`, `info_records`, `ns_names` and `node_ns*`, routing the whole file to Python. Since every file SEACAS, Cubit or Sierra writes carries `qa_records`, that made Exodus entirely unreadable from **WASM**, which has no Python fallback to defer to. Fixed; see [Time steps](#time-steps) and [Named regions](#named-regions) for what those variables now produce.
-- The C++ writer does not support `mesh.point_sets` at all; the shim only attempts the C++ write path when `point_sets` is empty. It also emits no `eb_names` and no side sets, which is why regions are read-only here.
-- Neither writer emits `name_elem_var`/`vals_elem_var`, so ordinary (non-attribute) `cell_data` is **dropped on write** — a pre-existing gap that the element-attribute support does not change, and the reason the `exodus:attr:` prefix has to be explicit rather than "write every cell_data as an attribute".
+- The C++ writer does not support `mesh.point_sets` at all; the shim only attempts the C++ write path when `point_sets` is empty. It also emits no node sets and no side sets, which is why only element-block regions round-trip.
+- **Ordinary `cell_data` round-trips since v9.9.0** as element variables (`name_elem_var`, an all-ones `elem_var_tab` truth table, and one `vals_elem_var{j}eb{k}` per variable × block). Before that neither writer emitted any of it, so every `cell_data` array except the `exodus:attr:`-prefixed ones was silently dropped while `point_data` round-tripped. The prefix stays explicit for the same reason it always was: an attribute is a *different* Exodus concept (constant in time, one column per element), so "write every cell_data as an attribute" was never the right rule. Trailing dimensions become extra netCDF dimensions exactly as the nodal path already does, so a vector cell field survives — standard Exodus element variables are scalar per element, making a k>1 array a meshio++ extension of the same kind the nodal path already is.
+- **Fixed in v9.9.0: a heap buffer overflow in the C++ reader.** Assembling a `cell_data` array allocated a scalar `{total}` buffer and then `memcpy`'d each block's full `Nbytes()` into it, so a multi-component element variable wrote `n*k` bytes into `n` bytes of space. Pre-existing, but unreachable until this release's writer started emitting element variables, and not reachable from any real SEACAS file — none carries a multi-component element variable, which is exactly why a format's own writer is not a sufficient test oracle for its reader.
+- **One step per write.** A `Mesh` is one state, so the writer emits a single `time_step`; `field_data["exodus:time"]` labels it. A genuinely multi-step Exodus writer is a stateful object of the shape `XdmfTimeSeriesWriter` has and is a follow-up, not something a `(path, mesh)` writer can express.
 - A file with `num_dim = 2` (`coordx`/`coordy`, no `coordz`) reads back with **3-component** points whose `z` column is zero, on both paths. That is upstream meshio's behaviour and is kept.
 
 ## Notes

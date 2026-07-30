@@ -46,11 +46,13 @@ def _hex27_mesh():
         (2, 6),
         (3, 7),
     ]
+    # Nodes 20-25 in vtkTriQuadraticHexahedron::Faces order (x-min, x-max,
+    # y-min, y-max, bottom, top); corrected in v9.9.0 with _skin.py's table.
     face_centers = [
-        (0, 1, 5, 4),
+        (0, 4, 7, 3),
         (1, 2, 6, 5),
-        (2, 3, 7, 6),
-        (3, 0, 4, 7),
+        (0, 1, 5, 4),
+        (3, 7, 6, 2),
         (0, 1, 2, 3),
         (4, 5, 6, 7),
     ]

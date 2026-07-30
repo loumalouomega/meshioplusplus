@@ -304,6 +304,24 @@ constexpr const char* kProfile = "MED_NO_PROFILE_INTERNAL";
 // (n,) or (n, k), so a 3-D "per-node-within-cell" shape cannot even be
 // constructed here.
 
+// MED's `NOM` field attribute: 16 characters per component, concatenated.
+// A scalar field gets one blank 16-char slot (the historical output, kept
+// byte-identical); a k>1 field gets MED's own default component spelling
+// `V1..Vk`, each left-justified in 16 characters. Twin of `_med.py`'s
+// `_create_component_names` + its `f"{n:<16}"` join.
+std::string med_default_component_names(std::size_t ncomponents) {
+    if (ncomponents <= 1)
+        return std::string(16, ' ');
+    std::string out;
+    out.reserve(16 * ncomponents);
+    for (std::size_t i = 0; i < ncomponents; ++i) {
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%-16s", ("V" + std::to_string(i + 1)).c_str());
+        out += buf;
+    }
+    return out;
+}
+
 int med_field_type_code(DType dt) {
     switch (dt) {
         case DType::Float32:
@@ -352,7 +370,14 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
     h5::write_attr_int(field, "NCO", static_cast<std::int64_t>(ncomponents));
     write_attr_bytes(field, "UNI", "");
     write_attr_bytes(field, "UNT", "");
-    write_attr_bytes(field, "NOM", std::string(16, ' '));
+    // MED's NOM is 16 characters PER COMPONENT, not a fixed 16. With no
+    // component names to carry (the C++ Mesh has no `med:nom` channel -- see
+    // write_med's comment on lenient_field_data), generate MED's own default
+    // spelling `V1..Vk` for a multi-component field so a strict consumer
+    // (Salome/MEDCoupling) reads k names rather than one blank. A scalar
+    // field keeps the single 16-space string, so its bytes are unchanged.
+    // Twinned in `_med.py`'s `_create_component_names`.
+    write_attr_bytes(field, "NOM", med_default_component_names(ncomponents));
 
     char step_name[64];
     std::snprintf(step_name, sizeof(step_name), "%020lld%020lld", 1LL, -1LL);
@@ -781,10 +806,33 @@ void med_warn_side_regions_dropped(const Mesh& rMesh) {
 // Read one support subgroup's data ("CO" under its default-profile child),
 // reshaped to `(rows,)` for a scalar field or `(rows, ncomponents)` otherwise
 // -- the "1-D scalars stay 1-D" convention the rest of the core keeps.
-NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size_t rows) {
+/**
+ * @brief Decline a `CHA` construct, or (under `mLenient`) skip it.
+ *
+ * Mirrors `mdpa_reject_or_skip`. Returns `false` when the caller should drop
+ * the field and carry on, and only ever returns at all in lenient mode --
+ * strict always throws, which is what keeps the Python shim falling back and
+ * therefore the Python surface unchanged.
+ */
+void med_reject_or_skip(const std::string& rWhat, bool Lenient, MedInfo* pInfo) {
+    if (!Lenient)
+        throw ReadError("MED: " + rWhat +
+                        " is handled by Python fallback (set ReadOptions::mLenient to skip it "
+                        "instead)");
+    log::warn("MED: skipping {} (ReadOptions::mLenient)", rWhat);
+    if (pInfo)
+        pInfo->mSkippedConstructs.push_back(rWhat);
+}
+
+/// Whether a support subgroup names a real (non-default) profile, i.e. its
+/// `CO` covers a subset of the entities indexed by a separate list this reader
+/// does not resolve. The caller decides whether that is fatal or a skip.
+bool med_support_has_named_profile(hid_t support) {
     const std::string pfl = read_attr_bytes(support, "PFL");
-    if (!pfl.empty() && pfl != kProfile)
-        throw ReadError("MED: a field on a named profile is handled by Python fallback");
+    return !pfl.empty() && pfl != kProfile;
+}
+
+NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size_t rows) {
     h5::Hid profile = h5::open_group(support, kProfile);
     NDArray flat = h5::read_dataset(profile, "CO");
     const std::size_t k = ncomponents > 0 ? static_cast<std::size_t>(ncomponents) : 1;
@@ -796,7 +844,8 @@ NDArray read_cha_support_data(hid_t support, std::int64_t ncomponents, std::size
     return out;
 }
 
-void read_cha_fields(hid_t cha, Mesh& rMesh) {
+void read_cha_fields(hid_t cha, Mesh& rMesh, bool Lenient, const ReadOptions& rOptions,
+                     MedInfo* pInfo) {
     std::unordered_map<std::string, std::size_t> med_to_block;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         auto it = meshio_to_med().find(rMesh.Cells(b).Type());
@@ -809,38 +858,104 @@ void read_cha_fields(hid_t cha, Mesh& rMesh) {
         const std::int64_t ncomponents =
             h5::has_attr(field, "NCO") ? h5::read_attr_int(field, "NCO") : 1;
 
-        // Units are a real piece of information this reader does not carry
-        // (med:field_units is Python-only) -- declining rather than silently
-        // reading the file without them is what keeps this an honest gap
-        // instead of a silent loss on a round-trip through this reader.
-        if (!read_attr_bytes(field, "UNI").empty() || !read_attr_bytes(field, "UNT").empty())
-            throw ReadError("MED: field '" + field_name +
-                            "' declares units, handled by Python fallback");
+        // Units are a real piece of information the C++ Mesh cannot carry
+        // (they are strings; `med:field_units` is a Python-only dict-valued
+        // field_data convention). Strict declines rather than silently
+        // reading the file without them; lenient reads them into MedInfo, so
+        // nothing is lost even though nothing lands on the Mesh.
+        const std::string uni = read_attr_bytes(field, "UNI");
+        const std::string unt = read_attr_bytes(field, "UNT");
+        if (!uni.empty() || !unt.empty()) {
+            if (!Lenient)
+                throw ReadError("MED: field '" + field_name +
+                                "' declares units, handled by Python fallback (set "
+                                "ReadOptions::mLenient to read it and report the units in "
+                                "MedInfo::mFieldUnits instead)");
+            log::warn(
+                "MED: field '{}' declares units ('{}'/'{}'); reported in "
+                "MedInfo::mFieldUnits (ReadOptions::mLenient)",
+                field_name, uni, unt);
+            if (pInfo)
+                pInfo->mFieldUnits.emplace(field_name, std::make_pair(uni, unt));
+        }
 
+        // Every step this field carries, sorted by its group name -- which is
+        // the zero-padded (NDT, NOR) pair, so name order IS step order. Their
+        // PDTs go into MedInfo unconditionally, so a caller can see what
+        // `mTimeStep` may select before asking for it.
         std::vector<std::string> steps = h5::group_links(field);
-        if (steps.size() != 1)
-            throw ReadError("MED: multi-timestep field '" + field_name +
-                            "' is handled by Python fallback");
-        h5::Hid ts = h5::open_group(field, steps[0]);
+        std::sort(steps.begin(), steps.end());
+        if (steps.empty())
+            continue;  // a field group with no step carries nothing
+        if (pInfo) {
+            std::vector<double> times;
+            times.reserve(steps.size());
+            for (const std::string& s : steps) {
+                h5::Hid g = h5::open_group(field, s);
+                times.push_back(read_attr_double(g, "PDT"));
+            }
+            pInfo->mFieldTimeValues.emplace(field_name, std::move(times));
+        }
 
-        // Likewise: this reader has no med:step_meta side channel, so a
-        // timestep whose NDT/NOR/PDT are not the write-side default (1/-1/0)
-        // carries real information it cannot represent. Declining is
-        // deliberate -- silently reporting ndt=1 for a genuinely-tagged
-        // step 7 would be a wrong answer, not just an incomplete one.
-        if (h5::read_attr_int(ts, "NDT") != 1 || h5::read_attr_int(ts, "NOR") != -1 ||
-            read_attr_double(ts, "PDT") != 0.0)
-            throw ReadError("MED: field '" + field_name +
-                            "' has non-default timestep metadata, handled by Python fallback");
+        // Which step to read. An explicit non-default `mTimeStep` is honoured
+        // whether or not `mLenient` is set: it is a request, not a fallback,
+        // and no Python behaviour depends on it (the shim never passes one).
+        // With the default step, a multi-step field is still a strict decline.
+        std::size_t step_index = 0;
+        if (steps.size() != 1) {
+            if (rOptions.mTimeStep != 0) {
+                step_index = rOptions.ResolveTimeStep(steps.size());
+            } else if (!Lenient) {
+                throw ReadError("MED: multi-timestep field '" + field_name + "' has " +
+                                std::to_string(steps.size()) +
+                                " steps and is handled by Python fallback (set "
+                                "ReadOptions::mTimeStep to select one, or "
+                                "ReadOptions::mLenient to take the first)");
+            } else {
+                log::warn(
+                    "MED: field '{}' has {} timesteps; reading the first "
+                    "(ReadOptions::mLenient -- set mTimeStep to choose)",
+                    field_name, steps.size());
+                if (pInfo)
+                    pInfo->mSkippedConstructs.push_back("field '" + field_name + "' timesteps 2.." +
+                                                        std::to_string(steps.size()));
+            }
+        } else if (rOptions.mTimeStep != 0) {
+            step_index = rOptions.ResolveTimeStep(steps.size());
+        }
+        h5::Hid ts = h5::open_group(field, steps[step_index]);
+
+        // A step whose NDT/NOR/PDT are not the write-side default (1/-1/0)
+        // carries real information; silently reporting ndt=1 for a genuinely
+        // tagged step 7 would be a wrong answer, not just an incomplete one.
+        // Strict declines; lenient records it in MedInfo::mStepMeta.
+        const std::int64_t ndt = h5::read_attr_int(ts, "NDT");
+        const std::int64_t nor = h5::read_attr_int(ts, "NOR");
+        const double pdt = read_attr_double(ts, "PDT");
+        if (ndt != 1 || nor != -1 || pdt != 0.0) {
+            if (!Lenient && rOptions.mTimeStep == 0)
+                throw ReadError("MED: field '" + field_name +
+                                "' has non-default timestep metadata, handled by Python fallback "
+                                "(set ReadOptions::mLenient to read it and report the metadata in "
+                                "MedInfo::mStepMeta instead)");
+            if (pInfo)
+                pInfo->mStepMeta.emplace(field_name, std::make_tuple(ndt, nor, pdt));
+        }
 
         std::vector<std::string> supports = h5::group_links(ts);
         const bool is_nodal = std::find(supports.begin(), supports.end(), "NOE") != supports.end();
 
         if (is_nodal) {
-            if (supports.size() != 1)
-                throw ReadError("MED: field '" + field_name +
-                                "' mixes nodal and cell support (Python fallback)");
+            if (supports.size() != 1) {
+                med_reject_or_skip("field '" + field_name + "' mixes nodal and cell support",
+                                   Lenient, pInfo);
+                continue;
+            }
             h5::Hid noe = h5::open_group(ts, "NOE");
+            if (med_support_has_named_profile(noe)) {
+                med_reject_or_skip("field '" + field_name + "' on a named profile", Lenient, pInfo);
+                continue;
+            }
             rMesh.AddPointData(field_name,
                                read_cha_support_data(noe, ncomponents, rMesh.NumPoints()));
             continue;
@@ -851,21 +966,40 @@ void read_cha_fields(hid_t cha, Mesh& rMesh) {
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
             per_block.emplace_back(DType::Float64, std::vector<std::size_t>{0});
         std::vector<bool> filled(rMesh.NumCellBlocks(), false);
+        bool skip_field = false;
         for (const std::string& supp : supports) {
-            if (supp.rfind("MAI.", 0) != 0)
-                throw ReadError("MED: field '" + field_name + "' support '" + supp +
-                                "' is handled by Python fallback");
+            // Anything not "NOE"/"MAI.<type>" is an ELNO/ELGA support: one
+            // value per node-within-cell or per Gauss point, a 3-D shape the
+            // uniform mesh API's (n,)/(n,k) cell_data cannot hold at all --
+            // structurally unrepresentable, not merely unimplemented.
+            if (supp.rfind("MAI.", 0) != 0) {
+                med_reject_or_skip("field '" + field_name + "' support '" + supp +
+                                       "' (ELNO/ELGA data has no (n,)/(n,k) representation)",
+                                   Lenient, pInfo);
+                skip_field = true;
+                break;
+            }
             const std::string med_type = supp.substr(4);
             auto bit = med_to_block.find(med_type);
-            if (bit == med_to_block.end())
-                throw ReadError("MED: field '" + field_name +
-                                "' names a cell type with no "
-                                "matching block");
+            if (bit == med_to_block.end()) {
+                med_reject_or_skip("field '" + field_name + "' names cell type '" + med_type +
+                                       "' with no matching block",
+                                   Lenient, pInfo);
+                skip_field = true;
+                break;
+            }
             const std::size_t b = bit->second;
             h5::Hid grp = h5::open_group(ts, supp);
+            if (med_support_has_named_profile(grp)) {
+                med_reject_or_skip("field '" + field_name + "' on a named profile", Lenient, pInfo);
+                skip_field = true;
+                break;
+            }
             per_block[b] = read_cha_support_data(grp, ncomponents, rMesh.Cells(b).NumCells());
             filled[b] = true;
         }
+        if (skip_field)
+            continue;
         // A block with no support subgroup carries no data for this field --
         // AddCellData still needs exactly one array per block, so it gets an
         // appropriately-shaped empty/zero one (a documented gap: the reader
@@ -887,7 +1021,11 @@ void read_cha_fields(hid_t cha, Mesh& rMesh) {
 
 }  // namespace
 
-Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
+// The single implementation behind both `read_med` overloads. `rOptions`
+// default-constructed reproduces the historical strict behaviour exactly,
+// which is what let the options overload land without touching any caller.
+namespace {
+Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -1022,9 +1160,14 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
             cell_types.push_back(it->second);
         }
 
+        // One entry per block, always -- a block with no `FAM` gets a
+        // placeholder filled in with family 0 below, so the array stays
+        // aligned with `mesh.cells`.
         if (h5::exists(g, "FAM")) {
             cell_tag_blocks.push_back(h5::read_dataset(g, "FAM"));
             any_cell_tags = true;
+        } else {
+            cell_tag_blocks.emplace_back();
         }
 
         // Global cell numbering (NUM) -- optional, and only carried when
@@ -1040,8 +1183,29 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
         }
     }
     if (any_cell_tags) {
-        if (cell_tag_blocks.size() != mesh.NumCellBlocks())
-            throw ReadError("MED: partial cell tags handled by Python fallback");
+        // A block the file left `FAM` off of belongs to no family, and MED
+        // spells "no family" as id **0** -- so filling those blocks with zeros
+        // is the file's own meaning, not a guess. This used to throw ("partial
+        // cell tags handled by Python fallback"), which made a perfectly
+        // ordinary Salome file unreadable wherever there is no Python; the
+        // Python reference meanwhile appended only the blocks that had a
+        // `FAM`, leaving `cell_data["cell_tags"]` *shorter* than `mesh.cells`
+        // and so violating the one-array-per-block invariant. Both now do
+        // this, so the two agree and both are well-formed.
+        bool any_filled = false;
+        for (std::size_t b = 0; b < cell_tag_blocks.size(); ++b) {
+            if (cell_tag_blocks[b].Size() != 0)
+                continue;
+            const std::size_t n = mesh.Cells(b).NumCells();
+            NDArray zeros(DType::Int32, {n});
+            std::memset(zeros.Data(), 0, zeros.Nbytes());
+            cell_tag_blocks[b] = std::move(zeros);
+            any_filled = true;
+        }
+        if (any_filled)
+            log::warn(
+                "MED: some cell blocks carry no FAM dataset; those cells are reported as family 0 "
+                "(MED's \"no family\").");
         mesh.AddCellData("cell_tags", std::move(cell_tag_blocks));
     }
     if (num_blocks_with_num > 0) {
@@ -1068,17 +1232,27 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
     med_attach_cell_regions(mesh, rInfo);
 
     // Fields (CHA): the single-timestep, default-profile common case is read
-    // directly (see read_cha_fields); anything past that scope -- the
-    // enhanced Python reader's med:field_units/med:step_meta multi-timestep
-    // metadata, a named profile, ELNO/ELGA support -- throws from inside it
-    // and defers the whole file to Python, exactly as the unconditional guard
-    // this replaced always did.
+    // directly (see read_cha_fields). Anything past that scope -- units,
+    // multi-timestep metadata, a named profile, ELNO/ELGA support -- throws
+    // from inside it under the default (strict) options and defers the whole
+    // file to Python; `ReadOptions::mLenient`/`mTimeStep` are what let a
+    // caller with no Python fallback read it anyway.
     if (h5::exists(f, "CHA")) {
         h5::Hid cha = h5::open_group(f, "CHA");
-        read_cha_fields(cha, mesh);
+        read_cha_fields(cha, mesh, rOptions.mLenient, rOptions, &rInfo);
     }
 
     return mesh;
+}
+
+}  // namespace
+
+Mesh read_med(const std::string& rPath, MedInfo& rInfo) {
+    return med_read_impl(rPath, rInfo, ReadOptions{});
+}
+
+Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions) {
+    return med_read_impl(rPath, rInfo, rOptions);
 }
 
 void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
@@ -1401,6 +1575,39 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             break;
         }
     if (has_point_fields || has_cell_fields) {
+        // A field's row count IS its entity count -- `write_cha_support`
+        // writes `NBR = rows(data)` and the reader validates that against
+        // `NumPoints()`/`NumCells()`, so a mis-shaped array (e.g. an (n,3)
+        // vector flattened to (3n,) by a caller that lost its component
+        // count) produces a file this very reader rejects. Catch it here,
+        // where the array and both counts can be named, rather than emitting
+        // an unreadable file and failing on the way back in.
+        for (const auto& name : rMesh.PointDataNames()) {
+            if (name == "point_tags" || name == "med:num")
+                continue;
+            const std::size_t rows = detail::rows(rMesh.PointData(name));
+            if (rows != rMesh.NumPoints())
+                throw WriteError(detail::format_compat(
+                    "MED: point_data '{}' has {} rows but the mesh has {} points; a "
+                    "multi-component field must be shaped (n_points, n_components), not "
+                    "flattened",
+                    name, rows, rMesh.NumPoints()));
+        }
+        for (const auto& name : rMesh.CellDataNames()) {
+            if (name == "cell_tags" || name == "med:num")
+                continue;
+            for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name) && b < rMesh.NumCellBlocks();
+                 ++b) {
+                const std::size_t rows = detail::rows(rMesh.CellData(name, b));
+                if (rows != rMesh.Cells(b).NumCells())
+                    throw WriteError(detail::format_compat(
+                        "MED: cell_data '{}' block {} has {} rows but that block has {} cells; a "
+                        "multi-component field must be shaped (n_cells, n_components), not "
+                        "flattened",
+                        name, b, rows, rMesh.Cells(b).NumCells()));
+            }
+        }
+
         h5::Hid cha = h5::create_group(f, "CHA");
         for (const auto& name : rMesh.PointDataNames())
             if (name != "point_tags" && name != "med:num")

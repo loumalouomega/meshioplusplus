@@ -251,6 +251,29 @@ step('MED writes plain point_data/cell_data directly (the single-timestep common
     assert.deepEqual(Array.from(back.cell_data.material[0]), [7]);
 });
 
+step('med is an options-aware reader (lenient / timeStep reach it)', () => {
+    // v9.9.0 registered MED in `registry_readers_ex()`. That table is what
+    // carries ReadOptions to this build at all -- WASM has no Python fallback,
+    // so before it a multi-timestep or unit-carrying MED file was simply
+    // unreadable here, with no flag that could change that. Asserting through
+    // the *wrapper*, not Module.*, per this file's standing rule.
+    assert.equal(m.readerSupportsOptions('med'), true);
+
+    // And the options are actually honoured end to end. Our own writer emits
+    // the single-step shape, so `lenient` is a no-op on it and `timeStep: 0`
+    // is the only in-range step -- which is exactly the point: neither may
+    // change a well-formed read, and an out-of-range step must still fail.
+    m.writeMesh('/opts.med', tet, 'med');
+    const lenient = m.readMeshSelective('/opts.med', { format: 'med', lenient: true });
+    assert.deepEqual(Array.from(lenient.point_data.temperature), [1, 2, 3, 4]);
+    const first = m.readMeshSelective('/opts.med', { format: 'med', timeStep: 0 });
+    assert.deepEqual(Array.from(first.point_data.temperature), [1, 2, 3, 4]);
+    assert.throws(
+        () => m.readMeshSelective('/opts.med', { format: 'med', timeStep: 5 }),
+        /step/i,
+    );
+});
+
 step('xdmf writes an HDF companion file when HDF5 is available', () => {
     // The registry's xdmf writer default follows the build (registry.cpp): with
     // HDF5 linked in it emits Format="HDF" heavy data beside the XML, matching
@@ -277,12 +300,11 @@ step('malformed file raises a catchable Error, not a WASM abort', () => {
 // These act on the mesh's data arrays; the geometry must come through
 // untouched. `tetv` carries point_data.temperature and cell_data.material.
 //
-// The WASM mesh-object shape crosses point_data/cell_data/field_data as flat,
-// shapeless Float64Arrays (see js_bindings.cpp's mesh_to_val/val_to_mesh) --
-// there is no way to convey a per-array component count through this API, so
-// every array here is a plain scalar. A multi-component (vector/tensor) field
-// is a pre-existing, out-of-scope limitation of the whole WASM binding, not
-// something the data operations can work around.
+// The WASM mesh-object shape crosses point_data/cell_data/field_data as flat
+// Float64Arrays, with the per-array component count carried alongside in a
+// sibling `*_components` object (see js_bindings.cpp's mesh_to_val/val_to_mesh,
+// and the dedicated round-trip steps further down). The arrays here are plain
+// scalars, so they need no such entry -- an absent name means one component.
 
 const tetv = {
     points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
@@ -1072,6 +1094,93 @@ step('CGNS round-trips a surface-only (triangle) mesh', () => {
     assert.equal(back.cells.length, 1);
     assert.equal(back.cells[0].type, 'triangle');
     assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 0, 2, 3]);
+});
+
+// --- multi-component (vector/tensor) data across the object boundary --------
+//
+// Before v9.9.0 point_data/cell_data/field_data crossed as flat, SHAPELESS
+// Float64Arrays: an (n,3) vector field re-entered C++ as (3n,1), so MED refused
+// to read its own output ("field data size does not match its declared shape")
+// and every operation silently passed the array through untouched instead of
+// gathering it. The fix is the sibling `*_components` objects, which
+// `mesh_to_val` now emits and `val_to_mesh` now honours. Note these steps go
+// through the OBJECT entry points (writeMesh/readMesh/refine) on purpose --
+// convertSurfaceOps is path-in/path-out and never crossed the boundary at all,
+// which is why its own multi-component step passed even while this was broken.
+
+const vecMesh = {
+    points: new Float64Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+    dim: 3,
+    cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2, 0, 2, 3]), nodesPerCell: 3 }],
+    point_data: {
+        temperature: new Float64Array([1, 2, 3, 4]),
+        // 4 points x 3 components, interleaved.
+        velocity: new Float64Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+    },
+    point_data_components: { velocity: 3 },
+    cell_data: {
+        // 2 cells x 6 components.
+        stress: [new Float64Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])],
+    },
+    cell_data_components: { stress: 6 },
+};
+
+for (const [format, path] of [['med', '/vec.med'], ['vtu', '/vec.vtu']]) {
+    step(`${format}: a vector field survives a JS -> write -> read -> JS round trip`, () => {
+        m.writeMesh(path, vecMesh, format);
+        assert.ok(m.FS.stat(path).size > 0, `${path} is empty`);
+        const back = m.readMesh(path, format);
+
+        // The component counts come back, so the shape is not merely correct by
+        // accident of length -- a consumer can reconstruct the (n,3) view.
+        assert.equal(back.point_data_components.velocity, 3, 'velocity components');
+        assert.equal(back.cell_data_components.stress, 6, 'stress components');
+        // A scalar gets no entry at all: absent means one component.
+        assert.equal(back.point_data_components.temperature, undefined);
+
+        assert.deepEqual(
+            Array.from(back.point_data.velocity),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+        assert.deepEqual(
+            Array.from(back.cell_data.stress[0]),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+    });
+}
+
+step('a vector field survives an operation that changes the point count', () => {
+    // The silently-broken case: with a (3n,) array the operation's
+    // rows == num_points test failed, so it took the pass-through branch and
+    // returned the ORIGINAL 12 values against a refined point count.
+    const refined = m.refine(vecMesh, 1);
+    const nPoints = refined.points.length / 3;
+    assert.ok(nPoints > 4, `expected more than 4 points, got ${nPoints}`);
+    assert.equal(refined.point_data_components.velocity, 3);
+    // One value per point per component -- interpolated, so the length is what
+    // proves the gather ran rather than the array being handed back untouched.
+    assert.equal(refined.point_data.velocity.length, nPoints * 3);
+    // The four original points keep their exact values (refine appends).
+    assert.deepEqual(
+        Array.from(refined.point_data.velocity.slice(0, 12)),
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    );
+});
+
+step('a bad component count throws a catchable Error', () => {
+    const bad = {
+        ...vecMesh,
+        point_data_components: { velocity: 5 },  // 12 is not a multiple of 5
+    };
+    assert.throws(
+        () => m.writeMesh('/bad-components.vtu', bad, 'vtu'),
+        (err) => err instanceof Error && /components/.test(err.message),
+    );
+    assert.throws(
+        () => m.writeMesh('/bad-components.vtu', { ...vecMesh, point_data_components: { velocity: 0 } }, 'vtu'),
+        (err) => err instanceof Error,
+    );
 });
 
 step('convertSurface turns a volume mesh into its renderable boundary', () => {

@@ -78,13 +78,22 @@ def _read_mesh(filename):
     return points, cells, cell_type
 
 
-def _read_cell_data(filename):
+def _read_mesh_functions(filename):
+    """Read the sibling ``<stem>_<name>.xml`` mesh functions.
+
+    Returns ``(point_data, cell_data)``. A ``mesh_function``'s ``dim`` attribute
+    is the topological dimension of the entities it is defined on, so ``dim="0"``
+    means *vertices* and anything else means cells — which is the whole
+    discriminator, and why point data needs no new file convention. Twin of the
+    corresponding loop in ``src/cpp/src/formats/dolfin.cpp``.
+    """
     dolfin_type_to_numpy_type = {
         "int": np.dtype("int"),
         "float": np.dtype("float"),
         "uint": np.dtype("uint"),
     }
 
+    point_data = {}
     cell_data = {}
     dir_name = pathlib.Path(filename).resolve().parent
 
@@ -118,17 +127,20 @@ def _read_cell_data(filename):
             idx = int(child.attrib["index"])
             data[idx] = child.attrib["value"]
 
-        if name not in cell_data:
-            cell_data[name] = []
-        cell_data[name].append(data)
+        if int(mesh_function.attrib.get("dim", -1)) == 0:
+            point_data[name] = data
+        else:
+            if name not in cell_data:
+                cell_data[name] = []
+            cell_data[name].append(data)
 
-    return cell_data
+    return point_data, cell_data
 
 
 def read(filename):
     points, cells, _ = _read_mesh(filename)
-    cell_data = _read_cell_data(filename)
-    return Mesh(points, cells, cell_data=cell_data)
+    point_data, cell_data = _read_mesh_functions(filename)
+    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
 
 
 def _write_mesh(filename, points, cell_type, cells):
@@ -194,18 +206,18 @@ def _numpy_type_to_dolfin_type(dtype):
     raise WriteError("Could not convert NumPy data type to DOLFIN data type.")
 
 
-def _write_cell_data(filename, dim, cell_data):
+def _write_mesh_function(filename, dim, values):
     dolfin = ET.Element("dolfin", nsmap={"dolfin": "https://fenicsproject.org/"})
 
     mesh_function = ET.SubElement(
         dolfin,
         "mesh_function",
-        type=_numpy_type_to_dolfin_type(cell_data.dtype),
+        type=_numpy_type_to_dolfin_type(values.dtype),
         dim=str(dim),
-        size=str(len(cell_data)),
+        size=str(len(values)),
     )
 
-    for k, value in enumerate(cell_data):
+    for k, value in enumerate(values):
         ET.SubElement(mesh_function, "entity", index=str(k), value=str(value))
 
     tree = ET.ElementTree(dolfin)
@@ -227,9 +239,30 @@ def write(filename, mesh):
 
     _write_mesh(filename, mesh.points, cell_type, mesh.cells)
 
+    fname = os.path.splitext(filename)[0]
+    dim = 2 if mesh.points.shape[1] == 2 or all(mesh.points[:, 2] == 0) else 3
+
     for name, lst in mesh.cell_data.items():
         for data in lst:
-            fname = os.path.splitext(filename)[0]
-            cell_data_filename = f"{fname}_{name}.xml"
-            dim = 2 if mesh.points.shape[1] == 2 or all(mesh.points[:, 2] == 0) else 3
-            _write_cell_data(cell_data_filename, dim, np.array(data))
+            _write_mesh_function(f"{fname}_{name}.xml", dim, np.array(data))
+
+    # Point data, as `dim="0"` mesh functions -- vertices are the topological
+    # entities of dimension 0, so this is the format's own notion rather than a
+    # meshio++ convention. A name used by *both* locations would want the same
+    # sibling file, and cell data has always owned it, so the point array is
+    # skipped with a warning rather than silently clobbering it.
+    for name, data in mesh.point_data.items():
+        if name in mesh.cell_data:
+            warn(
+                f"DOLFIN: point_data '{name}' collides with a cell_data array of "
+                "the same name (both want the same sibling file); not written."
+            )
+            continue
+        values = np.asarray(data)
+        if values.ndim != 1:
+            warn(
+                f"DOLFIN: point_data '{name}' has {values.shape[1:]} components; "
+                "a mesh function is scalar per entity, so it is not written."
+            )
+            continue
+        _write_mesh_function(f"{fname}_{name}.xml", 0, values)

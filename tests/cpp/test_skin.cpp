@@ -100,8 +100,14 @@ std::map<std::string, SkinTestRefElement> skin_test_reference_elements() {
     const std::vector<std::array<int, 2>> hex_edges = {{0, 1}, {1, 2}, {2, 3}, {3, 0},
                                                        {4, 5}, {5, 6}, {6, 7}, {7, 4},
                                                        {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    // hexahedron27 nodes 20-25, in vtkTriQuadraticHexahedron::Faces order:
+    // x-min, x-max, y-min, y-max, bottom, top. Corrected in v9.9.0 alongside
+    // cell_faces.cpp's own table -- the geometric assertion in
+    // SkinFaceTables.OutwardWindingAndNodeCounts below (mNodes[8] must sit at
+    // the face's corner average) is only a real oracle if this agrees with the
+    // real VTK convention rather than with whatever the table happens to say.
     const std::vector<std::vector<int>> hex_face_centers = {
-        {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}, {0, 1, 2, 3}, {4, 5, 6, 7}};
+        {0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4}, {3, 7, 6, 2}, {0, 1, 2, 3}, {4, 5, 6, 7}};
     out["hexahedron"] = skin_test_ref(hex, {});
     out["hexahedron20"] = skin_test_ref(hex, hex_edges);
     // hexahedron27 additionally has the body center as node 26.

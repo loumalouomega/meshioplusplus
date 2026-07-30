@@ -377,6 +377,22 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // WASM and the native CLI with no per-binding code.
         {"mdpa", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
+        // instead of deferring the whole file to Python) and `mTimeStep`
+        // (select one step of a multi-step field) -- neither is a narrowing
+        // option, the same "options-aware is several capabilities, not one"
+        // note as exodus and mdpa. The `MedInfo` is dropped here exactly as
+        // the plain reader entry drops it, so the flat bindings get the mesh
+        // and its representable fields but not `mFieldUnits`/`mStepMeta`; that
+        // is a documented gap, not a silent loss, and it is strictly more than
+        // the hard failure they used to get. IWYU pragma: keep
+        {"med",
+         [](const std::string& path, const ReadOptions& opts) {
+             meshioplusplus::MedInfo info;
+             return meshioplusplus::read_med(path, info, opts);
+         }},
+#endif
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
