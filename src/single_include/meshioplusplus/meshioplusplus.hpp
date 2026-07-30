@@ -9351,6 +9351,14 @@ MESHIOPLUSPLUS_API Mesh read_avsucd(const std::string& rPath);
  * load-bearing: cgnslib's `has_child`/`has_data` iterate creation order with
  * no name-order fallback.
  *
+ * Since v9.9.0 the zone also carries `FlowSolution_t` nodes for point/cell
+ * data — `GridLocation` `Vertex` for `point_data`, `CellCenter` for
+ * `cell_data`, one `DataArray_t` per scalar. CGNS has no component concept
+ * (no `NumberOfComponents` in the SIDS), so a k-component array is split into
+ * `<name>_0..<name>_{k-1}` and re-joined on read; `cell_data` needs every
+ * block at the zone's `CellDim`, and solutions are read only for a
+ * single-zone file. See doc/formats/cgns.md's "Data mapping".
+ *
  * A file with no `CGNSBase_t` node (the pre-v9.8.0 layout, or upstream
  * meshio's own writer) is still read via a legacy fallback path that
  * reproduces the old reader's exact behavior and messages, so no existing
@@ -16805,7 +16813,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 8
+#define MESHIOPLUSPLUS_VERSION_MINOR 9
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -16815,7 +16823,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.8.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.9.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -32155,31 +32163,27 @@ const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
         {CT::Quad8, 4, 8, {0, 3, 2, 1, 11, 10, 9, 8}},
         {CT::Quad8, 4, 8, {4, 5, 6, 7, 12, 13, 14, 15}},
     };
-    // VTK face-center numbering: 20=(0,1,5,4), 21=(1,2,6,5), 22=(2,3,7,6),
-    // 23=(3,0,4,7), 24=bottom (0,1,2,3), 25=top (4,5,6,7); 26 = body center.
+    // Mid-face numbering, from vtkTriQuadraticHexahedron::Faces (the authority
+    // meshio's hexahedron27 ordering is copied from verbatim -- meshio applies
+    // no permutation to this type): 20=(0,4,7,3) x-min, 21=(1,2,6,5) x-max,
+    // 22=(0,1,5,4) y-min, 23=(3,7,6,2) y-max, 24=bottom (0,3,2,1),
+    // 25=top (4,5,6,7); 26 = body center.
     //
-    // KNOWN DEFECT (found while deriving CGNS's HEXA_27 node permutation in
-    // v9.8.0, not fixed here): the real vtkTriQuadraticHexahedron::Faces
-    // table is 20=(0,4,7,3), 21=(1,2,6,5), 22=(0,1,5,4), 23=(3,7,6,2) — this
-    // table's 20/22/23 are a permuted 3-cycle of that. Affects
-    // extract_surface/skin's quad9 mid-face node for hexahedron27 (never a
-    // wrong topology, just a wrong quadratic mid-face position). Left
-    // unchanged here because `cell_refine_quad_faces` in cell_subdivision.cpp
-    // (used by the `refine` operation's internal full-Lagrange-style
-    // indexing scheme, see refine_templates.cpp's rtpl_hexahedron_table) is
-    // keyed against this exact table via the CellSubdivision.
-    // QuadFacesAgreeWithCellFaces test, and refine's mask logic assigns
-    // geometric meaning (which pair of faces is "perpendicular to the
-    // untouched axis") to specific absolute node indices 20-23 -- fixing
-    // this table requires updating that mask logic in lockstep to avoid
-    // silently mis-refining hexahedra, which is out of scope for the CGNS
-    // work that found it. See doc/formats/cgns.md's HEXA_27 note; the CGNS
-    // permutation is derived from a corrected table local to that code.
+    // Corrected in v9.9.0: 20/22/23 were previously a permuted 3-cycle of the
+    // real VTK table, which put extract_surface/extract_skin's quad9 mid-face
+    // node at the wrong position for hexahedron27 (never a wrong topology --
+    // facet keying uses corners only -- just a wrong quadratic node). Fixed
+    // in lockstep with `cell_refine_quad_faces` (cell_subdivision.cpp) and
+    // `rtpl_hexahedron_table` (refine_templates.cpp) plus their Python twins,
+    // since refine derives node 20+k from the k-th quad-face row; see those
+    // files. The format layer (cgns.cpp's HEXA_27 permutation, gmsh.cpp's
+    // hexahedron27 perm) was already on this corrected convention, so this
+    // makes the codebase self-consistent rather than changing the convention.
     static const std::vector<CellFaceDef> hexahedron27 = {
-        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 23}},
+        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 20}},
         {CT::Quad9, 4, 9, {1, 2, 6, 5, 9, 18, 13, 17, 21}},
-        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 20}},
-        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 22}},
+        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 22}},
+        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 23}},
         {CT::Quad9, 4, 9, {0, 3, 2, 1, 11, 10, 9, 8, 24}},
         {CT::Quad9, 4, 9, {4, 5, 6, 7, 12, 13, 14, 15, 25}},
     };
@@ -32319,9 +32323,14 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type) {
     static const std::vector<CellQuadFace> empty = {};
     // quad9 node 8: the cell's own face.
     static const std::vector<CellQuadFace> quad = {{0, 1, 2, 3}};
-    // hexahedron27 nodes 20-25: the four side faces, then bottom, then top.
+    // hexahedron27 nodes 20-25, in cell_faces.hpp's own hexahedron27 order
+    // (vtkTriQuadraticHexahedron::Faces): x-min, x-max, y-min, y-max, bottom,
+    // top -- row k is node 20+k, which `CellSubdivision.
+    // QuadFacesAgreeWithCellFaces` enforces against that table. Reordered in
+    // v9.9.0 together with cell_faces.cpp's 20/22/23 correction and
+    // refine_templates.cpp's absolute-index references; see cell_faces.cpp.
     static const std::vector<CellQuadFace> hexahedron = {
-        {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}, {0, 1, 2, 3}, {4, 5, 6, 7},
+        {0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4}, {3, 7, 6, 2}, {0, 1, 2, 3}, {4, 5, 6, 7},
     };
     // wedge18 nodes 15-17: the three quad side faces (the two triangle faces
     // gain no node, which is why a wedge needs no body node either -- see
@@ -34341,7 +34350,16 @@ RtplTypeTable rtpl_hexahedron_table() {
     t.mFullMask = 0xFFF;
     t.mMasks.resize(4096);
     // hexahedron27 layout: 8..19 edge mids (bottom ring, top ring, verticals),
-    // 20..25 face centres (the four sides, then bottom, then top), 26 body.
+    // 20..25 face centres, 26 body. The face-centre indices are
+    // `cell_refine_quad_faces(Hexahedron)` row order, which since v9.9.0 is
+    // cell_faces.hpp's own hexahedron27 order (vtkTriQuadraticHexahedron):
+    // 20 = x-min (0,4,7,3), 21 = x-max (1,2,6,5), 22 = y-min (0,1,5,4),
+    // 23 = y-max (3,7,6,2), 24 = bottom, 25 = top. The absolute indices below
+    // were permuted by the same 3-cycle (20->22, 22->23, 23->20) in that
+    // release; they never escape `refine` (output blocks are 8-node), so the
+    // renumbering is internal apart from the order new face-centre points are
+    // appended in. See cell_faces.cpp for the full derivation.
+    //
     // The twelve edges fall into three parallel classes; the admissible masks
     // are their eight unions, so a refinement travels through one dual sheet
     // rather than the whole block.
@@ -34355,25 +34373,27 @@ RtplTypeTable rtpl_hexahedron_table() {
         RtplChildren{{0, 1, 2, 3, 16, 17, 18, 19}, {16, 17, 18, 19, 4, 5, 6, 7}};
     // Two classes split: the two faces perpendicular to the untouched direction
     // have all four of their edges split and so carry a centre; no body node.
+    // x|y -> bottom/top (24, 25); x|z -> the y-perpendicular pair (22, 23);
+    // y|z -> the x-perpendicular pair (21, 20).
     t.mMasks[x | y].mChildren = RtplChildren{{0, 8, 24, 11, 4, 12, 25, 15},
                                              {8, 1, 9, 24, 12, 5, 13, 25},
                                              {24, 9, 2, 10, 25, 13, 6, 14},
                                              {11, 24, 10, 3, 15, 25, 14, 7}};
-    t.mMasks[x | z].mChildren = RtplChildren{{0, 8, 10, 3, 16, 20, 22, 19},
-                                             {8, 1, 2, 10, 20, 17, 18, 22},
-                                             {16, 20, 22, 19, 4, 12, 14, 7},
-                                             {20, 17, 18, 22, 12, 5, 6, 14}};
-    t.mMasks[y | z].mChildren = RtplChildren{{0, 1, 9, 11, 16, 17, 21, 23},
-                                             {11, 9, 2, 3, 23, 21, 18, 19},
-                                             {16, 17, 21, 23, 4, 5, 13, 15},
-                                             {23, 21, 18, 19, 15, 13, 6, 7}};
+    t.mMasks[x | z].mChildren = RtplChildren{{0, 8, 10, 3, 16, 22, 23, 19},
+                                             {8, 1, 2, 10, 22, 17, 18, 23},
+                                             {16, 22, 23, 19, 4, 12, 14, 7},
+                                             {22, 17, 18, 23, 12, 5, 6, 14}};
+    t.mMasks[y | z].mChildren = RtplChildren{{0, 1, 9, 11, 16, 17, 21, 20},
+                                             {11, 9, 2, 3, 20, 21, 18, 19},
+                                             {16, 17, 21, 20, 4, 5, 13, 15},
+                                             {20, 21, 18, 19, 15, 13, 6, 7}};
     // Everything split: rows follow the parent's own parametric (i,j,k) order
     // over the 3x3x3 lattice, so orientation is preserved by construction.
     t.mMasks[t.mFullMask].mChildren =
-        RtplChildren{{0, 8, 24, 11, 16, 20, 26, 23},  {8, 1, 9, 24, 20, 17, 21, 26},
-                     {11, 24, 10, 3, 23, 26, 22, 19}, {24, 9, 2, 10, 26, 21, 18, 22},
-                     {16, 20, 26, 23, 4, 12, 25, 15}, {20, 17, 21, 26, 12, 5, 13, 25},
-                     {23, 26, 22, 19, 15, 25, 14, 7}, {26, 21, 18, 22, 25, 13, 6, 14}};
+        RtplChildren{{0, 8, 24, 11, 16, 22, 26, 20},  {8, 1, 9, 24, 22, 17, 21, 26},
+                     {11, 24, 10, 3, 20, 26, 23, 19}, {24, 9, 2, 10, 26, 21, 18, 23},
+                     {16, 22, 26, 20, 4, 12, 25, 15}, {22, 17, 21, 26, 12, 5, 13, 25},
+                     {20, 26, 23, 19, 15, 25, 14, 7}, {26, 21, 18, 23, 25, 13, 6, 14}};
     rtpl_build_promote(t);
     return t;
 }
@@ -38489,9 +38509,11 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -38787,6 +38809,135 @@ bool cgns_is_spec_layout(hid_t f) {
     return false;
 }
 
+// --- FlowSolution_t: point/cell data ----------------------------------------
+//
+// CGNS has NO component concept: one `DataArray_t` is one scalar, and there is
+// no `NumberOfComponents` anywhere in the SIDS. A k>1 meshio++ array is
+// therefore split into k sibling `DataArray_t` nodes suffixed `_0.._k-1` and
+// re-joined on read from a contiguous run -- a documented meshio++ convention
+// (see doc/formats/cgns.md), not something SIDS specifies.
+constexpr const char* kCgnsVertexSolution = "FlowSolution";
+constexpr const char* kCgnsCellSolution = "FlowSolutionCells";
+
+/// `<base>_<i>` for a component of a multi-component array, or `<base>` when
+/// the array is scalar. The single owner of the suffix convention.
+std::string cgns_component_name(const std::string& rBase, std::size_t k, std::size_t i) {
+    return k <= 1 ? rBase : rBase + "_" + std::to_string(i);
+}
+
+/// Write one `DataArray_t` holding component `i` of `rArr` (stride `k`).
+void cgns_write_solution_array(hid_t sol, const std::string& rName, const NDArray& rArr,
+                               std::size_t rows, std::size_t k, std::size_t i, int gzip_level) {
+    NDArray col(DType::Float64, {rows});
+    double* dst = col.As<double>();
+    for (std::size_t r = 0; r < rows; ++r)
+        dst[r] = detail::read_double(rArr, r * k + i);
+    h5::Hid g = cgns_create_group(sol, rName);
+    cgns_write_node_attrs(g, rName, "DataArray_t", "R8");
+    h5::write_dataset(g, " data", col, gzip_level);
+}
+
+/// The `FlowSolution_t` node plus its `GridLocation_t` child, or an invalid
+/// handle when the caller has nothing to write.
+h5::Hid cgns_create_solution(hid_t zone, const std::string& rName, const std::string& rLocation) {
+    h5::Hid sol = cgns_create_group(zone, rName);
+    cgns_write_node_attrs(sol, rName, "FlowSolution_t", "MT");
+    h5::Hid gl = cgns_create_group(sol, "GridLocation");
+    cgns_write_node_attrs(gl, "GridLocation", "GridLocation_t", "C1");
+    // Like ZoneType's payload: the declared length carries the string, with no
+    // trailing NUL.
+    h5::write_dataset(gl, " data", cgns_padded_int8(rLocation, rLocation.size()));
+    return sol;
+}
+
+/// Re-join a zone's `DataArray_t` children into meshio++ arrays, undoing the
+/// `_0.._k-1` split. Returns `name -> (rows, k)` interleaved Float64 arrays.
+/// `rExpectedRows` is `NVertex`/`NCell`; a mismatch is a `ReadError`.
+std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
+                                                                const std::string& rSolName,
+                                                                std::size_t expected_rows) {
+    // Collect the raw arrays in name order first; `group_links` is name-sorted,
+    // so a `_0.._k-1` run arrives contiguous and in component order for k < 10.
+    // For k >= 10 the lexicographic order would interleave, so components are
+    // placed by their parsed index rather than by arrival.
+    std::vector<std::string> raw_names;
+    for (const std::string& child : h5::group_links(sol)) {
+        if (cgns_is_reserved_name(child) || child == "GridLocation")
+            continue;
+        h5::Hid g = h5::open_group(sol, child);
+        if (!(h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == "DataArray_t"))
+            continue;
+        raw_names.push_back(child);
+    }
+
+    // Group by base name: a trailing `_<digits>` marks a component of a
+    // multi-component array, anything else is a scalar in its own right.
+    std::map<std::string, std::map<std::size_t, std::string>> components;
+    std::vector<std::string> base_order;
+    for (const std::string& n : raw_names) {
+        std::string base = n;
+        std::size_t idx = 0;
+        const std::size_t us = n.rfind('_');
+        if (us != std::string::npos && us + 1 < n.size() &&
+            n.find_first_not_of("0123456789", us + 1) == std::string::npos) {
+            base = n.substr(0, us);
+            idx = static_cast<std::size_t>(std::stoull(n.substr(us + 1)));
+        }
+        if (!components.count(base))
+            base_order.push_back(base);
+        components[base][idx] = n;
+    }
+
+    std::vector<std::pair<std::string, NDArray>> out;
+    for (const std::string& base : base_order) {
+        const std::map<std::size_t, std::string>& parts = components[base];
+        // A genuine multi-component array is a contiguous 0..k-1 run. Anything
+        // else (a lone `foo_7`, a gap) is treated as a scalar under its own
+        // literal name -- guessing would invent components.
+        bool contiguous = true;
+        std::size_t expect = 0;
+        for (const auto& kv : parts) {
+            if (kv.first != expect++)
+                contiguous = false;
+        }
+        const std::size_t k = parts.size();
+        if (!contiguous || (k == 1 && parts.begin()->first != 0)) {
+            for (const auto& kv : parts) {
+                h5::Hid g = h5::open_group(sol, kv.second);
+                NDArray a = h5::read_dataset(g, " data");
+                if (a.Size() != expected_rows)
+                    throw ReadError(detail::format_compat(
+                        "CGNS: '{}/{}' has {} values but the zone has {} entities at this "
+                        "GridLocation",
+                        rSolName, kv.second, a.Size(), expected_rows));
+                out.emplace_back(kv.second, std::move(a));
+            }
+            continue;
+        }
+
+        std::vector<NDArray> cols;
+        cols.reserve(k);
+        for (const auto& kv : parts) {
+            h5::Hid g = h5::open_group(sol, kv.second);
+            NDArray a = h5::read_dataset(g, " data");
+            if (a.Size() != expected_rows)
+                throw ReadError(detail::format_compat(
+                    "CGNS: '{}/{}' has {} values but the zone has {} entities at this "
+                    "GridLocation",
+                    rSolName, kv.second, a.Size(), expected_rows));
+            cols.push_back(std::move(a));
+        }
+        NDArray joined(DType::Float64, k > 1 ? std::vector<std::size_t>{expected_rows, k}
+                                             : std::vector<std::size_t>{expected_rows});
+        double* dst = joined.As<double>();
+        for (std::size_t i = 0; i < k; ++i)
+            for (std::size_t r = 0; r < expected_rows; ++r)
+                dst[r * k + i] = detail::read_double(cols[i], r);
+        out.emplace_back(base, std::move(joined));
+    }
+    return out;
+}
+
 }  // namespace
 
 void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
@@ -38973,6 +39124,96 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
         cgns_write_node_attrs(ec, "ElementConnectivity", "DataArray_t", cgns_type_code(out_dt));
         h5::write_dataset(ec, " data", conn, gzip_level);
     }
+
+    // FlowSolution_t: point_data at "Vertex", cell_data at "CellCenter".
+    // Names come from the sorted *DataNames() accessors, so output order is
+    // deterministic. field_data has no CGNS home (it is neither per-vertex nor
+    // per-cell) and is not written.
+    {
+        std::vector<std::string> pnames = rMesh.PointDataNames();
+        if (!pnames.empty()) {
+            h5::Hid sol = cgns_create_solution(zone, kCgnsVertexSolution, "Vertex");
+            for (const std::string& name : pnames) {
+                const NDArray& a = rMesh.PointData(name);
+                const std::size_t rows = detail::rows(a);
+                const std::size_t k = detail::cols(a);
+                if (rows != n_points) {
+                    log::warn(
+                        "CGNS: point_data '{}' has {} rows but the mesh has {} points; not "
+                        "written.",
+                        name, rows, n_points);
+                    continue;
+                }
+                for (std::size_t i = 0; i < k; ++i)
+                    cgns_write_solution_array(sol, cgns_component_name(name, k, i), a, rows, k, i,
+                                              gzip_level);
+            }
+        }
+    }
+    {
+        // A zone-wide CellCenter array has one value per zone cell, but
+        // meshio++'s cell_data is per BLOCK -- and only blocks at CellDim are
+        // zone cells. Concatenating block-major is therefore only well defined
+        // when every block is at CellDim; a mixed-dimension mesh (e.g. tets
+        // plus boundary triangles) has no way to distribute the array back
+        // across blocks on read without inventing values, so it is skipped
+        // with a warning rather than written wrongly.
+        bool all_at_cell_dim = rMesh.NumCellBlocks() > 0;
+        for (const auto cb : rMesh.CellRange())
+            if (cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) != cgns_cell_dim)
+                all_at_cell_dim = false;
+
+        std::vector<std::string> cnames = rMesh.CellDataNames();
+        if (!cnames.empty() && !all_at_cell_dim) {
+            log::warn(
+                "CGNS: this mesh mixes cell blocks of different topological dimensions, so a "
+                "zone-wide CellCenter FlowSolution cannot be distributed back across them; {} "
+                "cell_data array(s) not written.",
+                cnames.size());
+        } else if (!cnames.empty()) {
+            h5::Hid sol = cgns_create_solution(zone, kCgnsCellSolution, "CellCenter");
+            for (const std::string& name : cnames) {
+                if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks()) {
+                    log::warn("CGNS: cell_data '{}' covers {} of {} blocks; not written.", name,
+                              rMesh.CellDataNumBlocks(name), rMesh.NumCellBlocks());
+                    continue;
+                }
+                const std::size_t k = detail::cols(rMesh.CellData(name, 0));
+                std::size_t rows = 0;
+                bool consistent = true;
+                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                    const NDArray& d = rMesh.CellData(name, b);
+                    if (detail::cols(d) != k || detail::rows(d) != rMesh.Cells(b).NumCells())
+                        consistent = false;
+                    rows += detail::rows(d);
+                }
+                if (!consistent || rows != n_cells_at_dim) {
+                    log::warn(
+                        "CGNS: cell_data '{}' does not line up with the zone's cells; not "
+                        "written.",
+                        name);
+                    continue;
+                }
+                // Concatenate the blocks block-major into one interleaved
+                // (n_cells, k) buffer, then split it per component.
+                NDArray merged(DType::Float64, k > 1 ? std::vector<std::size_t>{rows, k}
+                                                     : std::vector<std::size_t>{rows});
+                double* dst = merged.As<double>();
+                std::size_t row = 0;
+                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                    const NDArray& d = rMesh.CellData(name, b);
+                    const std::size_t nb = detail::rows(d);
+                    for (std::size_t r = 0; r < nb; ++r)
+                        for (std::size_t i = 0; i < k; ++i)
+                            dst[(row + r) * k + i] = detail::read_double(d, r * k + i);
+                    row += nb;
+                }
+                for (std::size_t i = 0; i < k; ++i)
+                    cgns_write_solution_array(sol, cgns_component_name(name, k, i), merged, rows, k,
+                                              i, gzip_level);
+            }
+        }
+    }
 }
 
 Mesh read_cgns(const std::string& rPath) {
@@ -39007,6 +39248,19 @@ Mesh read_cgns(const std::string& rPath) {
     std::vector<NDArray> point_chunks;
     std::int64_t point_offset = 0;
     std::size_t point_dim_out = 3;
+
+    // FlowSolution_t is only read for a single-zone file: across several zones
+    // the point/cell arrays would have to be concatenated in exactly the order
+    // the zones happen to be listed in, and a solution present on only some
+    // zones has no defensible filler. Our own writer emits one zone.
+    std::size_t n_zones = 0;
+    for (const std::string& zname : h5::group_links(base)) {
+        if (cgns_is_reserved_name(zname))
+            continue;
+        h5::Hid z = h5::open_group(base, zname);
+        if (h5::has_attr(z, "label") && h5::read_attr_string(z, "label") == "Zone_t")
+            ++n_zones;
+    }
 
     for (const std::string& zname : h5::group_links(base)) {
         if (cgns_is_reserved_name(zname))
@@ -39061,6 +39315,10 @@ Mesh read_cgns(const std::string& rPath) {
             std::string mName;
             std::int64_t mFirst;
         };
+        // Cell counts of the blocks this zone contributes, in emission order --
+        // what a zone-wide CellCenter FlowSolution is split back across.
+        std::vector<std::size_t> zone_block_cells;
+
         std::vector<Sect> sects;
         for (const std::string& sname : h5::group_links(zone)) {
             if (cgns_is_reserved_name(sname))
@@ -39142,6 +39400,83 @@ Mesh read_cgns(const std::string& rPath) {
                 });
             }
             mesh.AddCellBlock(meshio_type, std::move(out));
+            zone_block_cells.push_back(nc);
+        }
+
+        // FlowSolution_t (see the writer): "Vertex" arrays become point_data,
+        // "CellCenter" arrays become cell_data split back across this zone's
+        // blocks in ElementRange order. GridLocation absent => "Vertex", the
+        // SIDS default.
+        if (n_zones == 1) {
+            std::size_t zone_total_cells = 0;
+            for (std::size_t c : zone_block_cells)
+                zone_total_cells += c;
+
+            for (const std::string& child : h5::group_links(zone)) {
+                if (cgns_is_reserved_name(child))
+                    continue;
+                h5::Hid sol = h5::open_group(zone, child);
+                if (!(h5::has_attr(sol, "label") &&
+                      h5::read_attr_string(sol, "label") == "FlowSolution_t"))
+                    continue;
+
+                std::string location = "Vertex";
+                if (h5::exists(sol, "GridLocation")) {
+                    h5::Hid gl = h5::open_group(sol, "GridLocation");
+                    if (h5::exists(gl, " data")) {
+                        NDArray raw = h5::read_dataset(gl, " data");
+                        std::string s(raw.Size(), '\0');
+                        for (std::size_t i = 0; i < raw.Size(); ++i)
+                            s[i] = static_cast<char>(detail::read_int(raw, i));
+                        while (!s.empty() && (s.back() == '\0' || s.back() == ' '))
+                            s.pop_back();
+                        location = s;
+                    }
+                }
+
+                if (location == "Vertex") {
+                    for (auto& [name, arr] : cgns_read_solution(sol, child, n_zone_points))
+                        mesh.AddPointData(name, std::move(arr));
+                } else if (location == "CellCenter") {
+                    for (auto& [name, arr] : cgns_read_solution(sol, child, zone_total_cells)) {
+                        // Split the zone-wide array back across the blocks.
+                        const std::size_t k = detail::cols(arr);
+                        std::vector<NDArray> blocks;
+                        blocks.reserve(zone_block_cells.size());
+                        std::size_t row = 0;
+                        for (std::size_t nb : zone_block_cells) {
+                            NDArray b(DType::Float64, k > 1 ? std::vector<std::size_t>{nb, k}
+                                                            : std::vector<std::size_t>{nb});
+                            double* dst = b.As<double>();
+                            for (std::size_t r = 0; r < nb; ++r)
+                                for (std::size_t i = 0; i < k; ++i)
+                                    dst[r * k + i] = detail::read_double(arr, (row + r) * k + i);
+                            row += nb;
+                            blocks.push_back(std::move(b));
+                        }
+                        mesh.AddCellData(name, std::move(blocks));
+                    }
+                } else {
+                    log::warn(
+                        "CGNS: FlowSolution '{}' has GridLocation '{}'; only Vertex and "
+                        "CellCenter are supported, so it was not read.",
+                        child, location);
+                }
+            }
+        } else if (n_zones > 1) {
+            for (const std::string& child : h5::group_links(zone)) {
+                if (cgns_is_reserved_name(child))
+                    continue;
+                h5::Hid sol = h5::open_group(zone, child);
+                if (h5::has_attr(sol, "label") &&
+                    h5::read_attr_string(sol, "label") == "FlowSolution_t") {
+                    log::warn(
+                        "CGNS: file has {} zones; FlowSolution '{}' on zone '{}' was not read "
+                        "(cross-zone field concatenation is not supported).",
+                        n_zones, child, zname);
+                    break;
+                }
+            }
         }
 
         point_offset += static_cast<std::int64_t>(n_zone_points);
@@ -41379,7 +41714,14 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
             std::vector<const NDArray*> cols;
             for (const auto& full : att_names) {
                 const NDArray& arr = rMesh.CellData(full, k);
-                if (detail::cols(arr) != 1)
+                // Product of ALL trailing dims, not just `detail::cols()`:
+                // an `(n,1,3)` array has cols == 1 and would otherwise slip
+                // past and be silently truncated to its first component. This
+                // matches `_exodus.py`'s `prod(shape[1:]) != 1` twin.
+                std::size_t trailing = 1;
+                for (std::size_t d = 1; d < arr.Shape().size(); ++d)
+                    trailing *= arr.Shape()[d];
+                if (trailing != 1)
                     throw WriteError("Exodus: element attribute '" + full +
                                      "' must be scalar (one value per element)");
                 // A block whose values are all non-finite never carried this
@@ -46352,6 +46694,24 @@ constexpr const char* kProfile = "MED_NO_PROFILE_INTERNAL";
 // (n,) or (n, k), so a 3-D "per-node-within-cell" shape cannot even be
 // constructed here.
 
+// MED's `NOM` field attribute: 16 characters per component, concatenated.
+// A scalar field gets one blank 16-char slot (the historical output, kept
+// byte-identical); a k>1 field gets MED's own default component spelling
+// `V1..Vk`, each left-justified in 16 characters. Twin of `_med.py`'s
+// `_create_component_names` + its `f"{n:<16}"` join.
+std::string med_default_component_names(std::size_t ncomponents) {
+    if (ncomponents <= 1)
+        return std::string(16, ' ');
+    std::string out;
+    out.reserve(16 * ncomponents);
+    for (std::size_t i = 0; i < ncomponents; ++i) {
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%-16s", ("V" + std::to_string(i + 1)).c_str());
+        out += buf;
+    }
+    return out;
+}
+
 int med_field_type_code(DType dt) {
     switch (dt) {
         case DType::Float32:
@@ -46400,7 +46760,14 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
     h5::write_attr_int(field, "NCO", static_cast<std::int64_t>(ncomponents));
     write_attr_bytes(field, "UNI", "");
     write_attr_bytes(field, "UNT", "");
-    write_attr_bytes(field, "NOM", std::string(16, ' '));
+    // MED's NOM is 16 characters PER COMPONENT, not a fixed 16. With no
+    // component names to carry (the C++ Mesh has no `med:nom` channel -- see
+    // write_med's comment on lenient_field_data), generate MED's own default
+    // spelling `V1..Vk` for a multi-component field so a strict consumer
+    // (Salome/MEDCoupling) reads k names rather than one blank. A scalar
+    // field keeps the single 16-space string, so its bytes are unchanged.
+    // Twinned in `_med.py`'s `_create_component_names`.
+    write_attr_bytes(field, "NOM", med_default_component_names(ncomponents));
 
     char step_name[64];
     std::snprintf(step_name, sizeof(step_name), "%020lld%020lld", 1LL, -1LL);
@@ -47449,6 +47816,39 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             break;
         }
     if (has_point_fields || has_cell_fields) {
+        // A field's row count IS its entity count -- `write_cha_support`
+        // writes `NBR = rows(data)` and the reader validates that against
+        // `NumPoints()`/`NumCells()`, so a mis-shaped array (e.g. an (n,3)
+        // vector flattened to (3n,) by a caller that lost its component
+        // count) produces a file this very reader rejects. Catch it here,
+        // where the array and both counts can be named, rather than emitting
+        // an unreadable file and failing on the way back in.
+        for (const auto& name : rMesh.PointDataNames()) {
+            if (name == "point_tags" || name == "med:num")
+                continue;
+            const std::size_t rows = detail::rows(rMesh.PointData(name));
+            if (rows != rMesh.NumPoints())
+                throw WriteError(detail::format_compat(
+                    "MED: point_data '{}' has {} rows but the mesh has {} points; a "
+                    "multi-component field must be shaped (n_points, n_components), not "
+                    "flattened",
+                    name, rows, rMesh.NumPoints()));
+        }
+        for (const auto& name : rMesh.CellDataNames()) {
+            if (name == "cell_tags" || name == "med:num")
+                continue;
+            for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name) && b < rMesh.NumCellBlocks();
+                 ++b) {
+                const std::size_t rows = detail::rows(rMesh.CellData(name, b));
+                if (rows != rMesh.Cells(b).NumCells())
+                    throw WriteError(detail::format_compat(
+                        "MED: cell_data '{}' block {} has {} rows but that block has {} cells; a "
+                        "multi-component field must be shaped (n_cells, n_components), not "
+                        "flattened",
+                        name, b, rows, rMesh.Cells(b).NumCells()));
+            }
+        }
+
         h5::Hid cha = h5::create_group(f, "CHA");
         for (const auto& name : rMesh.PointDataNames())
             if (name != "point_tags" && name != "med:num")
