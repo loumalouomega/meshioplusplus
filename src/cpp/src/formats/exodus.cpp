@@ -983,7 +983,14 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
             std::vector<const NDArray*> cols;
             for (const auto& full : att_names) {
                 const NDArray& arr = rMesh.CellData(full, k);
-                if (detail::cols(arr) != 1)
+                // Product of ALL trailing dims, not just `detail::cols()`:
+                // an `(n,1,3)` array has cols == 1 and would otherwise slip
+                // past and be silently truncated to its first component. This
+                // matches `_exodus.py`'s `prod(shape[1:]) != 1` twin.
+                std::size_t trailing = 1;
+                for (std::size_t d = 1; d < arr.Shape().size(); ++d)
+                    trailing *= arr.Shape()[d];
+                if (trailing != 1)
                     throw WriteError("Exodus: element attribute '" + full +
                                      "' must be scalar (one value per element)");
                 // A block whose values are all non-finite never carried this
