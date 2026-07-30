@@ -1,3 +1,4 @@
+<!--pytest-codeblocks:skipfile-->
 # CGNS reference fixtures
 
 ## `tri_quad_fields_cgnslib.cgns`
