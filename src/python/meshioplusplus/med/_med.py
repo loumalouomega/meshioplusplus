@@ -459,6 +459,8 @@ def read(filename):
     med_cells = mesh["MAI"]
     cell_num_blocks = []
     num_blocks_with_num = 0
+    cell_tag_blocks = []
+    any_cell_tags = False
     for med_cell_type, med_cell_type_group in med_cells.items():
         cell_type = med_to_meshio_type[med_cell_type]
         cell_types.append(cell_type)
@@ -475,12 +477,17 @@ def read(filename):
             data = _reorder_med_cells(cell_type, data)  # MED -> meshio order
             cells += [(cell_type, data)]
 
-        # Cell tags
+        # Cell tags. One entry per block, always: a block the file left `FAM`
+        # off of belongs to no family, and MED spells "no family" as id 0, so
+        # zeros are the file's own meaning rather than a guess. Appending only
+        # the blocks that *have* a FAM (as this did before v9.9.0) left
+        # `cell_data["cell_tags"]` shorter than `mesh.cells`, violating the
+        # one-array-per-block invariant; the C++ twin does the same thing now.
         if "FAM" in med_cell_type_group:
-            tags = med_cell_type_group["FAM"][()]
-            if "cell_tags" not in cell_data:
-                cell_data["cell_tags"] = []
-            cell_data["cell_tags"].append(tags)
+            cell_tag_blocks.append(np.asarray(med_cell_type_group["FAM"][()]))
+            any_cell_tags = True
+        else:
+            cell_tag_blocks.append(None)
 
         # Global cell numbering (NUM) -- optional, and only carried when
         # *every* block has it (a partial NUM array is not a mesh-wide
@@ -490,6 +497,21 @@ def read(filename):
             num_blocks_with_num += 1
         else:
             cell_num_blocks.append(None)
+
+    if any_cell_tags:
+        # Fill the blocks the file left `FAM` off of with family 0 -- see the
+        # comment at the append site. Twin of the C++ reader's identical pass.
+        n_missing = sum(1 for b in cell_tag_blocks if b is None)
+        if n_missing:
+            warn(
+                "MED: some cell blocks carry no FAM dataset; those cells are "
+                'reported as family 0 (MED\'s "no family").'
+            )
+            cell_tag_blocks = [
+                np.zeros(len(cells[i][1]), dtype=np.int32) if b is None else b
+                for i, b in enumerate(cell_tag_blocks)
+            ]
+        cell_data["cell_tags"] = cell_tag_blocks
 
     if num_blocks_with_num > 0:
         if num_blocks_with_num == len(cell_types):

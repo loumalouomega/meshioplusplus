@@ -12,6 +12,7 @@ import re
 import numpy as np
 
 from ..__about__ import __version__
+from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
 
@@ -355,11 +356,21 @@ def read(filename, time_step=0):  # noqa: C901
             )
         )
 
+    field_data = {}
+    # The time of the step actually returned, so the writer's
+    # `field_data["exodus:time"]` closes into a round trip rather than being
+    # write-only. `read_metadata` still owns the *whole* list of steps (below) --
+    # this is the one value this mesh is a snapshot at. Twin of the identical
+    # block at the end of the C++ reader.
+    if step < len(time_values):
+        field_data["exodus:time"] = np.array([float(time_values[step])])
+
     mesh = Mesh(
         points,
         cells,
         point_data=point_data,
         cell_data=cell_data,
+        field_data=field_data,
         info=info,
     )
     # Attached after construction rather than passed as `regions=`, so
@@ -585,12 +596,96 @@ numpy_to_exodus_dtype = {
 }
 
 
+def _block_names_from_regions(mesh):
+    """One name per cell block, from the ``Cell`` region covering exactly it.
+
+    The inverse of the reader's element-block half: it gives every ``connect{k}``
+    a ``Cell`` region whose entries are the contiguous global range
+    ``[base_k, base_k+1)``, named from ``eb_names``. A region matching that range
+    exactly is therefore that block's name. A block with no such region gets
+    ``""`` — which is what SEACAS itself writes when it has none. Twin of
+    ``exo_block_names_from_regions`` in the C++ writer.
+    """
+    names = ["" for _ in mesh.cells]
+    regions = getattr(mesh, "regions", None) or []
+    if not regions:
+        return names
+    bases = [0]
+    for cb in mesh.cells:
+        bases.append(bases[-1] + len(cb.data))
+    for r in regions:
+        if getattr(r, "kind", None) != "cell":
+            continue
+        entries = np.asarray(r.entries).ravel()
+        for k in range(len(mesh.cells)):
+            n = bases[k + 1] - bases[k]
+            if names[k] or n == 0 or entries.size != n:
+                continue
+            # Entries are canonical (sorted, de-duplicated), so "covers exactly
+            # this block" is a first/last check, not a set comparison.
+            if entries[0] == bases[k] and entries[-1] == bases[k + 1] - 1:
+                names[k] = r.name
+    return names
+
+
+def _write_element_variables(rootgrp, mesh):
+    """Write ordinary ``cell_data`` as Exodus element variables.
+
+    ``name_elem_var`` plus one ``vals_elem_var{j}eb{k}`` per (variable, block),
+    with the ``elem_var_tab`` truth table real Exodus readers expect. The
+    ``ATTRIBUTE_PREFIX`` arrays are excluded: those are constant-in-time
+    per-element *attributes* and already went out as ``attrib{k}``, a different
+    Exodus concept — which is exactly why that prefix has to be explicit.
+
+    Trailing dimensions become extra netCDF dimensions, as the nodal-variable
+    path already does, so a multi-component cell field round-trips rather than
+    being dropped. Standard Exodus element variables are scalar per element, so
+    a k>1 array here is a meshio++ extension of the same kind the nodal path is.
+    Twin of the C++ writer's identical block.
+    """
+    var_names = sorted(n for n in mesh.cell_data if not n.startswith(ATTRIBUTE_PREFIX))
+    if not var_names:
+        return
+
+    rootgrp.createDimension("num_elem_var", len(var_names))
+    name_var = rootgrp.createVariable(
+        "name_elem_var", "S1", ("num_elem_var", "len_string")
+    )
+    name_var.set_auto_mask(False)
+    tab = rootgrp.createVariable("elem_var_tab", "i4", ("num_el_blk", "num_elem_var"))
+    tab[:, :] = np.ones((len(mesh.cells), len(var_names)), dtype="i4")
+
+    for j, name in enumerate(var_names):
+        for i, ch in enumerate(name[:33]):
+            name_var[j, i] = ch.encode()
+        blocks = mesh.cell_data[name]
+        if len(blocks) != len(mesh.cells):
+            warn(
+                f"Exodus: cell_data '{name}' covers {len(blocks)} of "
+                f"{len(mesh.cells)} blocks; not written as an element variable."
+            )
+            continue
+        for k, arr in enumerate(blocks):
+            arr = np.asarray(arr)
+            dims = ["time_step", f"num_el_in_blk{k + 1}"]
+            for i, extent in enumerate(arr.shape[1:]):
+                dn = f"dim_elem_var{j}_{k}_{i}"
+                if dn not in rootgrp.dimensions:
+                    rootgrp.createDimension(dn, extent)
+                dims.append(dn)
+            dtype = numpy_to_exodus_dtype[arr.dtype.name]
+            data = rootgrp.createVariable(
+                f"vals_elem_var{j + 1}eb{k + 1}", dtype, tuple(dims), fill_value=False
+            )
+            data[0] = arr
+
+
 def _write_attributes(rootgrp, mesh):
     """Write ``cell_data`` under ``ATTRIBUTE_PREFIX`` back as ``attrib{k}``.
 
     Twin of the attribute block in ``write_exodus``. Everything else in
-    ``cell_data`` is left alone — this writer emits no ``vals_elem_var`` at all,
-    a separate pre-existing gap.
+    ``cell_data`` goes out as element variables — see
+    ``_write_element_variables``.
     """
     att_names = sorted(n for n in mesh.cell_data if n.startswith(ATTRIBUTE_PREFIX))
     if not att_names:
@@ -655,9 +750,25 @@ def write(filename, mesh):
         rootgrp.createDimension("four", 4)
         rootgrp.createDimension("time_step", None)
 
-        # dummy time step
+        # The single time step this writer emits -- a Mesh is one state. Its
+        # recorded time comes from `field_data["exodus:time"]` (the
+        # `<format>:<thing>` convention) rather than being hard-coded 0, so one
+        # frame of a transient solve can be labelled correctly. A genuine
+        # multi-step writer is a separate stateful object (the shape
+        # `XdmfTimeSeriesWriter` has) and remains a follow-up. Twin of the C++
+        # writer's identical block.
         data = rootgrp.createVariable("time_whole", "f4", ("time_step",))
-        data[:] = 0.0
+        t = 0.0
+        if "exodus:time" in mesh.field_data:
+            tv = np.asarray(mesh.field_data["exodus:time"]).ravel()
+            if tv.size >= 1:
+                t = float(tv[0])
+            if tv.size > 1:
+                warn(
+                    f'Exodus: field_data["exodus:time"] has {tv.size} values but '
+                    "this writer emits a single time step; using the first."
+                )
+        data[:] = t
 
         # points
         coor_names = rootgrp.createVariable(
@@ -681,6 +792,20 @@ def write(filename, mesh):
         data = rootgrp.createVariable("eb_prop1", "i4", "num_el_blk")
         for k in range(len(mesh.cells)):
             data[k] = k
+        # eb_names, recovered from the Cell regions the reader derives from
+        # them -- without this a block name comes back as the reader's synthetic
+        # "Block N". Written only when at least one block has a name, so output
+        # for a region-less mesh is unchanged. Twin of the C++ writer's
+        # `exo_block_names_from_regions`.
+        block_names = _block_names_from_regions(mesh)
+        if any(block_names):
+            names_var = rootgrp.createVariable(
+                "eb_names", "S1", ("num_el_blk", "len_string")
+            )
+            names_var.set_auto_mask(False)
+            for k, name in enumerate(block_names):
+                for i, ch in enumerate(name[:33]):
+                    names_var[k, i] = ch.encode()
         for k, cell_block in enumerate(mesh.cells):
             dim1 = f"num_el_in_blk{k + 1}"
             dim2 = f"num_nod_per_el{k + 1}"
@@ -693,6 +818,7 @@ def write(filename, mesh):
             data[:] = cell_block.data + 1
 
         _write_attributes(rootgrp, mesh)
+        _write_element_variables(rootgrp, mesh)
 
         # point data
         # The variable `name_nod_var` holds the names and indices of the node variables, the
