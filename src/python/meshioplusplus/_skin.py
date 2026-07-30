@@ -52,13 +52,14 @@ _CELL_FACES = {
         ("quad8", 4, (0, 3, 2, 1, 11, 10, 9, 8)),
         ("quad8", 4, (4, 5, 6, 7, 12, 13, 14, 15)),
     ],
-    # KNOWN DEFECT, kept in sync with the C++ twin (detail/cell_faces.cpp) --
-    # see its comment for why this isn't fixed here.
+    # Mid-face numbering follows vtkTriQuadraticHexahedron::Faces; corrected in
+    # v9.9.0 (20/22/23 were a permuted 3-cycle). Kept in sync with the C++ twin
+    # detail/cell_faces.cpp -- see its comment for the full derivation.
     "hexahedron27": [
-        ("quad9", 4, (0, 4, 7, 3, 16, 15, 19, 11, 23)),
+        ("quad9", 4, (0, 4, 7, 3, 16, 15, 19, 11, 20)),
         ("quad9", 4, (1, 2, 6, 5, 9, 18, 13, 17, 21)),
-        ("quad9", 4, (0, 1, 5, 4, 8, 17, 12, 16, 20)),
-        ("quad9", 4, (3, 7, 6, 2, 19, 14, 18, 10, 22)),
+        ("quad9", 4, (0, 1, 5, 4, 8, 17, 12, 16, 22)),
+        ("quad9", 4, (3, 7, 6, 2, 19, 14, 18, 10, 23)),
         ("quad9", 4, (0, 3, 2, 1, 11, 10, 9, 8, 24)),
         ("quad9", 4, (4, 5, 6, 7, 12, 13, 14, 15, 25)),
     ],

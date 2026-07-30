@@ -941,12 +941,7 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
             field.attrs.create(
                 "UNT", units[1] if units[1] is not None else numpy_void_str
             )
-            nom = (
-                np.bytes_("".join(f"{n:<16}" for n in comp_name))
-                if comp_name
-                else np.bytes_(f"{'':<16}")
-            )
-            field.attrs.create("NOM", nom)
+            field.attrs.create("NOM", _nom_attr(comp_name, n_components))
         except ValueError:
             field = fields[base_name]
 
@@ -1011,12 +1006,7 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
             field.attrs.create("NCO", n_components)
             field.attrs.create("UNI", numpy_void_str)
             field.attrs.create("UNT", numpy_void_str)
-            nom = (
-                np.bytes_("".join(f"{n:<16}" for n in comp_name))
-                if comp_name
-                else np.bytes_(f"{'':<16}")
-            )
-            field.attrs.create("NOM", nom)
+            field.attrs.create("NOM", _nom_attr(comp_name, n_components))
         except ValueError:
             field = fields[base_name]
 
@@ -1097,15 +1087,7 @@ def _write_data(
         field.attrs.create("UNT", numpy_void_str)  # time unit
         n_components = 1 if data.ndim == 1 else data.shape[-1]
         field.attrs.create("NCO", n_components)  # number of components
-        # names = _create_component_names(n_components)
-        # field.attrs.create("NOM", np.bytes_("".join(f"{name:<16}" for name in names)))
-
-        if field_name:
-            field.attrs.create(
-                "NOM", np.bytes_("".join(f"{name:<16}" for name in field_name))
-            )
-        else:
-            field.attrs.create("NOM", np.bytes_(f"{'':<16}"))
+        field.attrs.create("NOM", _nom_attr(field_name, n_components))
 
         step = "0000000000000000000100000000000000000001"
         time_step = field.create_group(step)
@@ -1141,6 +1123,28 @@ def _write_data(
 
 def _create_component_names(n_components):
     return [f"V{(i + 1)}" for i in range(n_components)]
+
+
+def _nom_attr(comp_name, n_components):
+    """MED's ``NOM`` field attribute: 16 characters *per component*.
+
+    Explicit ``comp_name`` (from ``field_data["med:nom"]``) always wins.
+    Otherwise a multi-component field gets MED's own default spelling
+    ``V1..Vk`` so a strict consumer (Salome/MEDCoupling) reads k names rather
+    than one blank slot -- writing a fixed 16 spaces for a k>1 field, as every
+    writer here did before v9.9.0, is a deviation from the convention. A
+    scalar field keeps the single 16-space string, so its bytes are unchanged.
+
+    Twin of ``med_default_component_names`` in ``src/cpp/src/formats/med.cpp``;
+    the two must agree, since the C++ and Python writers are compared against
+    each other.
+    """
+    names = comp_name
+    if not names:
+        names = _create_component_names(n_components) if n_components > 1 else []
+    if not names:
+        return np.bytes_(f"{'':<16}")
+    return np.bytes_("".join(f"{n:<16}" for n in names))
 
 
 def _family_name(set_id, name):

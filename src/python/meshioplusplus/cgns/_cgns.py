@@ -15,6 +15,8 @@ it is cgnslib's own ADF-over-HDF5 mapping (`#define D_DATA " data"` in
 exact name.
 """
 
+import warnings
+
 import numpy as np
 
 from .._common import num_nodes_per_cell
@@ -119,6 +121,100 @@ _CODE_TO_CGNS_NAME = {
     36: "PENTA_40",
     39: "HEXA_64",
 }
+
+
+# FlowSolution_t node names. CGNS has NO component concept -- one DataArray_t
+# is one scalar, with no NumberOfComponents anywhere in the SIDS -- so a k>1
+# meshio++ array is split into k siblings suffixed `_0.._k-1` and re-joined on
+# read. A documented meshio++ convention, not something SIDS specifies; see
+# doc/formats/cgns.md. Twin of cgns.cpp's kCgnsVertexSolution/kCgnsCellSolution.
+_VERTEX_SOLUTION = "FlowSolution"
+_CELL_SOLUTION = "FlowSolutionCells"
+
+
+def _component_name(base, k, i):
+    """``<base>_<i>`` for a component of a multi-component array, else ``<base>``.
+
+    The single owner of the suffix convention (C++ twin:
+    ``cgns_component_name``).
+    """
+    return base if k <= 1 else f"{base}_{i}"
+
+
+def _create_solution(zone, name, location):
+    """A ``FlowSolution_t`` node plus its ``GridLocation_t`` child."""
+    sol = _create_group(zone, name)
+    _write_node_attrs(sol, name, "FlowSolution_t", "MT")
+    gl = _create_group(sol, "GridLocation")
+    _write_node_attrs(gl, "GridLocation", "GridLocation_t", "C1")
+    # Like ZoneType's payload: the declared length carries the string, no NUL.
+    gl.create_dataset(
+        " data", data=np.frombuffer(_padded_bytes(location, len(location)), dtype="i1")
+    )
+    return sol
+
+
+def _write_solution_array(sol, name, col, gzip_kwargs):
+    """One ``DataArray_t`` holding a single scalar component."""
+    g = _create_group(sol, name)
+    _write_node_attrs(g, name, "DataArray_t", "R8")
+    col = np.ascontiguousarray(col, dtype="<f8")
+    kwargs = dict(gzip_kwargs)
+    if kwargs and col.size:
+        kwargs["chunks"] = col.shape
+    g.create_dataset(" data", data=col, **kwargs)
+
+
+def _read_solution(sol, sol_name, expected_rows):
+    """Re-join a ``FlowSolution_t``'s ``DataArray_t`` children, undoing the
+    ``_0.._k-1`` split. Returns a list of ``(name, (rows, k) array)`` pairs.
+
+    Twin of ``cgns_read_solution``: a genuine multi-component array is a
+    *contiguous* ``0..k-1`` run; anything else (a lone ``foo_7``, a gap) stays a
+    scalar under its own literal name, since guessing would invent components.
+    """
+    raw_names = [
+        child
+        for child in sol
+        if not child.startswith(" ")
+        and child != "GridLocation"
+        and _read_attr_str(sol[child], "label") == "DataArray_t"
+    ]
+
+    components = {}
+    base_order = []
+    for n in raw_names:
+        base, idx = n, 0
+        us = n.rfind("_")
+        if us != -1 and us + 1 < len(n) and n[us + 1 :].isdigit():
+            base, idx = n[:us], int(n[us + 1 :])
+        if base not in components:
+            base_order.append(base)
+            components[base] = {}
+        components[base][idx] = n
+
+    def _one(child):
+        a = np.asarray(sol[child][" data"][()], dtype=np.float64).reshape(-1)
+        if a.size != expected_rows:
+            raise ReadError(
+                f"CGNS: '{sol_name}/{child}' has {a.size} values but the zone has "
+                f"{expected_rows} entities at this GridLocation"
+            )
+        return a
+
+    out = []
+    for base in base_order:
+        parts = components[base]
+        idxs = sorted(parts)
+        contiguous = idxs == list(range(len(idxs)))
+        if not contiguous:
+            for i in idxs:
+                out.append((parts[i], _one(parts[i])))
+            continue
+        cols = [_one(parts[i]) for i in idxs]
+        k = len(cols)
+        out.append((base, cols[0] if k == 1 else np.stack(cols, axis=1)))
+    return out
 
 
 def _permute_conn(conn, perm, shift):
@@ -353,6 +449,76 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
             kwargs["chunks"] = flat.shape
         ec.create_dataset(" data", data=flat, **kwargs)
 
+    # FlowSolution_t: point_data at "Vertex", cell_data at "CellCenter". Twin of
+    # the C++ writer -- see cgns.cpp's own comment for why a k>1 array is split
+    # into `<name>_<i>` siblings (CGNS has no NumberOfComponents) and why a
+    # mixed-dimension mesh's cell_data cannot be written at all. field_data has
+    # no CGNS home and is not written.
+    if mesh.point_data:
+        sol = _create_solution(zone, _VERTEX_SOLUTION, "Vertex")
+        for name in sorted(mesh.point_data):
+            arr = np.asarray(mesh.point_data[name], dtype=np.float64)
+            rows = arr.shape[0] if arr.ndim else 0
+            k = int(np.prod(arr.shape[1:])) if arr.ndim > 1 else 1
+            if rows != n_points:
+                warnings.warn(
+                    f"CGNS: point_data '{name}' has {rows} rows but the mesh has "
+                    f"{n_points} points; not written.",
+                    stacklevel=2,
+                )
+                continue
+            flat2 = arr.reshape(rows, k)
+            for i in range(k):
+                _write_solution_array(
+                    sol, _component_name(name, k, i), flat2[:, i], gzip_kwargs
+                )
+
+    if mesh.cell_data:
+        all_at_cell_dim = len(mesh.cells) > 0 and all(
+            topological_dimension.get(cb.type, -1) == cgns_cell_dim for cb in mesh.cells
+        )
+        if not all_at_cell_dim:
+            warnings.warn(
+                "CGNS: this mesh mixes cell blocks of different topological dimensions, "
+                "so a zone-wide CellCenter FlowSolution cannot be distributed back "
+                f"across them; {len(mesh.cell_data)} cell_data array(s) not written.",
+                stacklevel=2,
+            )
+        else:
+            sol = _create_solution(zone, _CELL_SOLUTION, "CellCenter")
+            for name in sorted(mesh.cell_data):
+                blocks = mesh.cell_data[name]
+                if len(blocks) != len(mesh.cells):
+                    warnings.warn(
+                        f"CGNS: cell_data '{name}' covers {len(blocks)} of "
+                        f"{len(mesh.cells)} blocks; not written.",
+                        stacklevel=2,
+                    )
+                    continue
+                arrs = [np.asarray(b, dtype=np.float64) for b in blocks]
+                k = int(np.prod(arrs[0].shape[1:])) if arrs[0].ndim > 1 else 1
+                ok = all(
+                    (int(np.prod(a.shape[1:])) if a.ndim > 1 else 1) == k
+                    and a.shape[0] == len(cb.data)
+                    for a, cb in zip(arrs, mesh.cells)
+                )
+                merged = (
+                    np.concatenate([a.reshape(a.shape[0], k) for a in arrs], axis=0)
+                    if ok
+                    else None
+                )
+                if not ok or merged.shape[0] != n_cells_at_dim:
+                    warnings.warn(
+                        f"CGNS: cell_data '{name}' does not line up with the zone's "
+                        "cells; not written.",
+                        stacklevel=2,
+                    )
+                    continue
+                for i in range(k):
+                    _write_solution_array(
+                        sol, _component_name(name, k, i), merged[:, i], gzip_kwargs
+                    )
+
     f.close()
 
 
@@ -390,8 +556,6 @@ def _read_spec(f):
                 base_name = name
             n_bases += 1
     if n_bases > 1:
-        import warnings
-
         warnings.warn(
             f"CGNS: file has {n_bases} CGNSBase_t nodes; only the first "
             f"('{base_name}') is read.",
@@ -401,8 +565,19 @@ def _read_spec(f):
 
     point_chunks = []
     cells = []
+    point_data = {}
+    cell_data = {}
     point_offset = 0
     point_dim_out = 3
+
+    # FlowSolution_t is only read for a single-zone file -- see the C++ twin's
+    # comment: across zones the arrays would have to be concatenated in listing
+    # order and a solution on only some zones has no defensible filler.
+    n_zones = sum(
+        1
+        for z in base
+        if not z.startswith(" ") and _read_attr_str(base[z], "label") == "Zone_t"
+    )
 
     for zname in base:
         if zname.startswith(" "):
@@ -434,6 +609,10 @@ def _read_spec(f):
             if d < len(cols):
                 zpts[:, d] = cols[d]
         point_chunks.append(zpts)
+
+        # Cell counts of the blocks this zone contributes, in emission order --
+        # what a zone-wide CellCenter FlowSolution is split back across.
+        zone_block_cells = []
 
         sects = []
         for sname in zone:
@@ -499,6 +678,47 @@ def _read_spec(f):
             if point_offset:
                 conn = conn + point_offset
             cells.append((meshio_type, conn.astype(np.int64)))
+            zone_block_cells.append(nc)
+
+        # FlowSolution_t (see the writer). GridLocation absent => "Vertex", the
+        # SIDS default.
+        sol_names = [
+            child
+            for child in zone
+            if not child.startswith(" ")
+            and _read_attr_str(zone[child], "label") == "FlowSolution_t"
+        ]
+        if sol_names and n_zones > 1:
+            warnings.warn(
+                f"CGNS: file has {n_zones} zones; FlowSolution on zone '{zname}' was "
+                "not read (cross-zone field concatenation is not supported).",
+                stacklevel=2,
+            )
+        elif sol_names:
+            zone_total_cells = sum(zone_block_cells)
+            for child in sol_names:
+                sol = zone[child]
+                location = "Vertex"
+                if "GridLocation" in sol and " data" in sol["GridLocation"]:
+                    raw = np.asarray(sol["GridLocation"][" data"][()]).astype("i1")
+                    location = bytes(raw).decode("ascii", "ignore").strip("\0 ")
+                if location == "Vertex":
+                    for name, arr in _read_solution(sol, child, n_zone_points):
+                        point_data[name] = arr
+                elif location == "CellCenter":
+                    for name, arr in _read_solution(sol, child, zone_total_cells):
+                        # Split the zone-wide array back across the blocks.
+                        blocks, row = [], 0
+                        for nb in zone_block_cells:
+                            blocks.append(arr[row : row + nb])
+                            row += nb
+                        cell_data[name] = blocks
+                else:
+                    warnings.warn(
+                        f"CGNS: FlowSolution '{child}' has GridLocation '{location}'; "
+                        "only Vertex and CellCenter are supported, so it was not read.",
+                        stacklevel=2,
+                    )
 
         point_offset += n_zone_points
 
@@ -509,7 +729,7 @@ def _read_spec(f):
         if len(point_chunks) == 1
         else np.concatenate(point_chunks, axis=0)
     )
-    return Mesh(points, cells)
+    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
 
 
 def _read_legacy(f):
