@@ -82,9 +82,14 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type) {
     static const std::vector<CellQuadFace> empty = {};
     // quad9 node 8: the cell's own face.
     static const std::vector<CellQuadFace> quad = {{0, 1, 2, 3}};
-    // hexahedron27 nodes 20-25: the four side faces, then bottom, then top.
+    // hexahedron27 nodes 20-25, in cell_faces.hpp's own hexahedron27 order
+    // (vtkTriQuadraticHexahedron::Faces): x-min, x-max, y-min, y-max, bottom,
+    // top -- row k is node 20+k, which `CellSubdivision.
+    // QuadFacesAgreeWithCellFaces` enforces against that table. Reordered in
+    // v9.9.0 together with cell_faces.cpp's 20/22/23 correction and
+    // refine_templates.cpp's absolute-index references; see cell_faces.cpp.
     static const std::vector<CellQuadFace> hexahedron = {
-        {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}, {0, 1, 2, 3}, {4, 5, 6, 7},
+        {0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4}, {3, 7, 6, 2}, {0, 1, 2, 3}, {4, 5, 6, 7},
     };
     // wedge18 nodes 15-17: the three quad side faces (the two triangle faces
     // gain no node, which is why a wedge needs no body node either -- see

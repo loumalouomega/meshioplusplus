@@ -49,31 +49,27 @@ const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
         {CT::Quad8, 4, 8, {0, 3, 2, 1, 11, 10, 9, 8}},
         {CT::Quad8, 4, 8, {4, 5, 6, 7, 12, 13, 14, 15}},
     };
-    // VTK face-center numbering: 20=(0,1,5,4), 21=(1,2,6,5), 22=(2,3,7,6),
-    // 23=(3,0,4,7), 24=bottom (0,1,2,3), 25=top (4,5,6,7); 26 = body center.
+    // Mid-face numbering, from vtkTriQuadraticHexahedron::Faces (the authority
+    // meshio's hexahedron27 ordering is copied from verbatim -- meshio applies
+    // no permutation to this type): 20=(0,4,7,3) x-min, 21=(1,2,6,5) x-max,
+    // 22=(0,1,5,4) y-min, 23=(3,7,6,2) y-max, 24=bottom (0,3,2,1),
+    // 25=top (4,5,6,7); 26 = body center.
     //
-    // KNOWN DEFECT (found while deriving CGNS's HEXA_27 node permutation in
-    // v9.8.0, not fixed here): the real vtkTriQuadraticHexahedron::Faces
-    // table is 20=(0,4,7,3), 21=(1,2,6,5), 22=(0,1,5,4), 23=(3,7,6,2) — this
-    // table's 20/22/23 are a permuted 3-cycle of that. Affects
-    // extract_surface/skin's quad9 mid-face node for hexahedron27 (never a
-    // wrong topology, just a wrong quadratic mid-face position). Left
-    // unchanged here because `cell_refine_quad_faces` in cell_subdivision.cpp
-    // (used by the `refine` operation's internal full-Lagrange-style
-    // indexing scheme, see refine_templates.cpp's rtpl_hexahedron_table) is
-    // keyed against this exact table via the CellSubdivision.
-    // QuadFacesAgreeWithCellFaces test, and refine's mask logic assigns
-    // geometric meaning (which pair of faces is "perpendicular to the
-    // untouched axis") to specific absolute node indices 20-23 -- fixing
-    // this table requires updating that mask logic in lockstep to avoid
-    // silently mis-refining hexahedra, which is out of scope for the CGNS
-    // work that found it. See doc/formats/cgns.md's HEXA_27 note; the CGNS
-    // permutation is derived from a corrected table local to that code.
+    // Corrected in v9.9.0: 20/22/23 were previously a permuted 3-cycle of the
+    // real VTK table, which put extract_surface/extract_skin's quad9 mid-face
+    // node at the wrong position for hexahedron27 (never a wrong topology --
+    // facet keying uses corners only -- just a wrong quadratic node). Fixed
+    // in lockstep with `cell_refine_quad_faces` (cell_subdivision.cpp) and
+    // `rtpl_hexahedron_table` (refine_templates.cpp) plus their Python twins,
+    // since refine derives node 20+k from the k-th quad-face row; see those
+    // files. The format layer (cgns.cpp's HEXA_27 permutation, gmsh.cpp's
+    // hexahedron27 perm) was already on this corrected convention, so this
+    // makes the codebase self-consistent rather than changing the convention.
     static const std::vector<CellFaceDef> hexahedron27 = {
-        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 23}},
+        {CT::Quad9, 4, 9, {0, 4, 7, 3, 16, 15, 19, 11, 20}},
         {CT::Quad9, 4, 9, {1, 2, 6, 5, 9, 18, 13, 17, 21}},
-        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 20}},
-        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 22}},
+        {CT::Quad9, 4, 9, {0, 1, 5, 4, 8, 17, 12, 16, 22}},
+        {CT::Quad9, 4, 9, {3, 7, 6, 2, 19, 14, 18, 10, 23}},
         {CT::Quad9, 4, 9, {0, 3, 2, 1, 11, 10, 9, 8, 24}},
         {CT::Quad9, 4, 9, {4, 5, 6, 7, 12, 13, 14, 15, 25}},
     };
