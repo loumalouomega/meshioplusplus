@@ -201,6 +201,109 @@ TEST(Cgns, NodeLayout) {
     std::filesystem::remove(p, ec);
 }
 
+TEST(Cgns, FlowSolutionRoundTrip) {
+    // point_data at "Vertex", cell_data at "CellCenter" (v9.9.0). A k>1 array
+    // becomes k sibling DataArray_t nodes -- CGNS has no NumberOfComponents --
+    // and is re-joined on read.
+    std::string p = mt::temp_path(".cgns");
+    meshioplusplus::Mesh m = mt::tri_mesh();
+    const std::size_t np = m.NumPoints();
+    const std::size_t nc = m.Cells(0).NumCells();
+
+    meshioplusplus::NDArray temp(meshioplusplus::DType::Float64, {np});
+    for (std::size_t i = 0; i < np; ++i)
+        temp.As<double>()[i] = static_cast<double>(i) + 0.5;
+    m.AddPointData("temperature", std::move(temp));
+
+    meshioplusplus::NDArray vel(meshioplusplus::DType::Float64, {np, 3});
+    for (std::size_t i = 0; i < np * 3; ++i)
+        vel.As<double>()[i] = static_cast<double>(i) * 2.0;
+    m.AddPointData("velocity", std::move(vel));
+
+    meshioplusplus::NDArray mat(meshioplusplus::DType::Float64, {nc});
+    for (std::size_t i = 0; i < nc; ++i)
+        mat.As<double>()[i] = 7.0 + static_cast<double>(i);
+    m.AddCellData("material", {std::move(mat)});
+
+    meshioplusplus::write_cgns(p, m, -1);
+
+    // Raw node layout: the split component nodes really are DataArray_t under
+    // a FlowSolution_t whose GridLocation says Vertex/CellCenter.
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+        h5::Hid sol = h5::open_group(f, "Base/Zone1/FlowSolution");
+        EXPECT_EQ(h5::read_attr_string(sol, "label"), "FlowSolution_t");
+        h5::Hid gl = h5::open_group(sol, "GridLocation");
+        EXPECT_EQ(h5::read_attr_string(gl, "label"), "GridLocation_t");
+        meshioplusplus::NDArray loc = h5::read_dataset(gl, " data");
+        ASSERT_EQ(loc.Size(), 6u);  // "Vertex", no trailing NUL
+        for (const char* name : {"velocity_0", "velocity_1", "velocity_2", "temperature"}) {
+            ASSERT_TRUE(h5::exists(sol, name)) << name;
+            h5::Hid g = h5::open_group(sol, name);
+            EXPECT_EQ(h5::read_attr_string(g, "label"), "DataArray_t") << name;
+            EXPECT_EQ(h5::read_dataset(g, " data").Size(), np) << name;
+        }
+        EXPECT_FALSE(h5::exists(sol, "velocity"));  // split, not interleaved
+
+        h5::Hid csol = h5::open_group(f, "Base/Zone1/FlowSolutionCells");
+        h5::Hid cgl = h5::open_group(csol, "GridLocation");
+        EXPECT_EQ(h5::read_dataset(cgl, " data").Size(), 10u);  // "CellCenter"
+        EXPECT_TRUE(h5::exists(csol, "material"));
+    }
+
+    meshioplusplus::Mesh out = meshioplusplus::read_cgns(p);
+    ASSERT_TRUE(out.HasPointData("velocity"));
+    const meshioplusplus::NDArray& v = out.PointData("velocity");
+    ASSERT_EQ(v.Shape().size(), 2u);
+    EXPECT_EQ(v.Shape()[0], np);
+    EXPECT_EQ(v.Shape()[1], 3u);
+    for (std::size_t i = 0; i < np * 3; ++i)
+        EXPECT_DOUBLE_EQ(read_double(v, i), static_cast<double>(i) * 2.0);
+
+    ASSERT_TRUE(out.HasPointData("temperature"));
+    EXPECT_EQ(out.PointData("temperature").Shape().size(), 1u);  // stays 1-D
+    ASSERT_TRUE(out.HasCellData("material"));
+    ASSERT_EQ(out.CellDataNumBlocks("material"), 1u);
+    for (std::size_t i = 0; i < nc; ++i)
+        EXPECT_DOUBLE_EQ(read_double(out.CellData("material", 0), i), 7.0 + static_cast<double>(i));
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Cgns, CellDataSplitsBackAcrossBlocks) {
+    // A zone-wide CellCenter array is concatenated block-major on write and
+    // split back by each section's cell count on read.
+    std::string p = mt::temp_path(".cgns");
+    meshioplusplus::Mesh m = mt::tri_quad_mesh();  // triangle(2), quad(1), triangle(1)
+    std::vector<meshioplusplus::NDArray> blocks;
+    double v = 0.0;
+    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+        meshioplusplus::NDArray d(meshioplusplus::DType::Float64, {m.Cells(b).NumCells()});
+        for (std::size_t c = 0; c < m.Cells(b).NumCells(); ++c)
+            d.As<double>()[c] = v++;
+        blocks.push_back(std::move(d));
+    }
+    m.AddCellData("tag", std::move(blocks));
+
+    meshioplusplus::write_cgns(p, m, -1);
+    meshioplusplus::Mesh out = meshioplusplus::read_cgns(p);
+
+    ASSERT_EQ(out.NumCellBlocks(), 3u);
+    ASSERT_EQ(out.CellDataNumBlocks("tag"), 3u);
+    double expect = 0.0;
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        const meshioplusplus::NDArray& d = out.CellData("tag", b);
+        ASSERT_EQ(d.Size(), out.Cells(b).NumCells()) << b;
+        for (std::size_t c = 0; c < d.Size(); ++c)
+            EXPECT_DOUBLE_EQ(read_double(d, c), expect++);
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
 TEST(Cgns, LegacyRead) {
     // The pre-v9.8.0 layout: no node attributes at all, structurally
     // distinguished from the spec layout by the absence of a "label"

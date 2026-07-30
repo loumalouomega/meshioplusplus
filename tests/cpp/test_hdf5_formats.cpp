@@ -469,6 +469,101 @@ TEST(Med, SameTypeBlocksAreConsolidated) {
     std::filesystem::remove(p, ec);
 }
 
+TEST(Med, VectorFieldRoundTrip) {
+    // A genuine (n, 3) point field and an (n, 6) cell field. Before v9.9.0 a
+    // caller that lost its component count (notably the WASM boundary) handed
+    // in a flattened (3n,) array, which wrote NCO=1/NBR=3n and produced a file
+    // this reader rejects -- see Med.MisShapedFieldIsRejectedOnWrite.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tri_mesh();
+    const std::size_t np = m.NumPoints();
+    const std::size_t nc = m.Cells(0).NumCells();
+
+    meshioplusplus::NDArray vel(meshioplusplus::DType::Float64, {np, 3});
+    for (std::size_t i = 0; i < np * 3; ++i)
+        vel.As<double>()[i] = static_cast<double>(i) + 0.25;
+    m.AddPointData("velocity", std::move(vel));
+
+    meshioplusplus::NDArray stress(meshioplusplus::DType::Float64, {nc, 6});
+    for (std::size_t i = 0; i < nc * 6; ++i)
+        stress.As<double>()[i] = 100.0 + static_cast<double>(i);
+    m.AddCellData("stress", {std::move(stress)});
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+
+    ASSERT_TRUE(out.HasPointData("velocity"));
+    const meshioplusplus::NDArray& v = out.PointData("velocity");
+    ASSERT_EQ(v.Shape().size(), 2u);
+    EXPECT_EQ(v.Shape()[0], np);
+    EXPECT_EQ(v.Shape()[1], 3u);
+    for (std::size_t i = 0; i < np * 3; ++i)
+        EXPECT_DOUBLE_EQ(read_double(v, i), static_cast<double>(i) + 0.25);
+
+    ASSERT_TRUE(out.HasCellData("stress"));
+    const meshioplusplus::NDArray& s = out.CellData("stress", 0);
+    ASSERT_EQ(s.Shape().size(), 2u);
+    EXPECT_EQ(s.Shape()[0], nc);
+    EXPECT_EQ(s.Shape()[1], 6u);
+    for (std::size_t i = 0; i < nc * 6; ++i)
+        EXPECT_DOUBLE_EQ(read_double(s, i), 100.0 + static_cast<double>(i));
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, MisShapedFieldIsRejectedOnWrite) {
+    // The write-side guard added in v9.9.0. A field's row count IS its entity
+    // count; without this the writer emitted NBR=3n against n points and the
+    // failure only surfaced on the way back in, from a different function.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tri_mesh();
+    meshioplusplus::NDArray flat(meshioplusplus::DType::Float64, {m.NumPoints() * 3});
+    for (std::size_t i = 0; i < flat.Size(); ++i)
+        flat.As<double>()[i] = static_cast<double>(i);
+    m.AddPointData("velocity", std::move(flat));
+
+    EXPECT_THROW(meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{}),
+                 meshioplusplus::WriteError);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, VectorFieldWritesOneNomSlotPerComponent) {
+    // MED's NOM is 16 characters PER COMPONENT. A k>1 field with no names of
+    // its own gets MED's default `V1..Vk` spelling; a scalar keeps the single
+    // blank 16-char slot it always had.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tri_mesh();
+    meshioplusplus::NDArray vel(meshioplusplus::DType::Float64, {m.NumPoints(), 3});
+    for (std::size_t i = 0; i < vel.Size(); ++i)
+        vel.As<double>()[i] = static_cast<double>(i);
+    m.AddPointData("velocity", std::move(vel));
+    meshioplusplus::NDArray temp(meshioplusplus::DType::Float64, {m.NumPoints()});
+    for (std::size_t i = 0; i < temp.Size(); ++i)
+        temp.As<double>()[i] = static_cast<double>(i);
+    m.AddPointData("temperature", std::move(temp));
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+        h5::Hid vfield = h5::open_group(f, "CHA/velocity");
+        // read_attr_string trims trailing blanks, so compare on the tail name.
+        const std::string nom = h5::read_attr_string(vfield, "NOM");
+        EXPECT_EQ(nom.substr(0, 2), "V1");
+        EXPECT_NE(nom.find("V2"), std::string::npos);
+        EXPECT_NE(nom.find("V3"), std::string::npos);
+        h5::Hid sfield = h5::open_group(f, "CHA/temperature");
+        EXPECT_TRUE(h5::read_attr_string(sfield, "NOM").empty());  // one blank slot
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
 TEST(Med, GlobalNumbers) {
     std::string p = mt::temp_path(".med");
     meshioplusplus::Mesh m = mt::tri_mesh();
