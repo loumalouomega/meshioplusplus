@@ -304,6 +304,24 @@ constexpr const char* kProfile = "MED_NO_PROFILE_INTERNAL";
 // (n,) or (n, k), so a 3-D "per-node-within-cell" shape cannot even be
 // constructed here.
 
+// MED's `NOM` field attribute: 16 characters per component, concatenated.
+// A scalar field gets one blank 16-char slot (the historical output, kept
+// byte-identical); a k>1 field gets MED's own default component spelling
+// `V1..Vk`, each left-justified in 16 characters. Twin of `_med.py`'s
+// `_create_component_names` + its `f"{n:<16}"` join.
+std::string med_default_component_names(std::size_t ncomponents) {
+    if (ncomponents <= 1)
+        return std::string(16, ' ');
+    std::string out;
+    out.reserve(16 * ncomponents);
+    for (std::size_t i = 0; i < ncomponents; ++i) {
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%-16s", ("V" + std::to_string(i + 1)).c_str());
+        out += buf;
+    }
+    return out;
+}
+
 int med_field_type_code(DType dt) {
     switch (dt) {
         case DType::Float32:
@@ -352,7 +370,14 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
     h5::write_attr_int(field, "NCO", static_cast<std::int64_t>(ncomponents));
     write_attr_bytes(field, "UNI", "");
     write_attr_bytes(field, "UNT", "");
-    write_attr_bytes(field, "NOM", std::string(16, ' '));
+    // MED's NOM is 16 characters PER COMPONENT, not a fixed 16. With no
+    // component names to carry (the C++ Mesh has no `med:nom` channel -- see
+    // write_med's comment on lenient_field_data), generate MED's own default
+    // spelling `V1..Vk` for a multi-component field so a strict consumer
+    // (Salome/MEDCoupling) reads k names rather than one blank. A scalar
+    // field keeps the single 16-space string, so its bytes are unchanged.
+    // Twinned in `_med.py`'s `_create_component_names`.
+    write_attr_bytes(field, "NOM", med_default_component_names(ncomponents));
 
     char step_name[64];
     std::snprintf(step_name, sizeof(step_name), "%020lld%020lld", 1LL, -1LL);
@@ -1401,6 +1426,39 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             break;
         }
     if (has_point_fields || has_cell_fields) {
+        // A field's row count IS its entity count -- `write_cha_support`
+        // writes `NBR = rows(data)` and the reader validates that against
+        // `NumPoints()`/`NumCells()`, so a mis-shaped array (e.g. an (n,3)
+        // vector flattened to (3n,) by a caller that lost its component
+        // count) produces a file this very reader rejects. Catch it here,
+        // where the array and both counts can be named, rather than emitting
+        // an unreadable file and failing on the way back in.
+        for (const auto& name : rMesh.PointDataNames()) {
+            if (name == "point_tags" || name == "med:num")
+                continue;
+            const std::size_t rows = detail::rows(rMesh.PointData(name));
+            if (rows != rMesh.NumPoints())
+                throw WriteError(detail::format_compat(
+                    "MED: point_data '{}' has {} rows but the mesh has {} points; a "
+                    "multi-component field must be shaped (n_points, n_components), not "
+                    "flattened",
+                    name, rows, rMesh.NumPoints()));
+        }
+        for (const auto& name : rMesh.CellDataNames()) {
+            if (name == "cell_tags" || name == "med:num")
+                continue;
+            for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name) && b < rMesh.NumCellBlocks();
+                 ++b) {
+                const std::size_t rows = detail::rows(rMesh.CellData(name, b));
+                if (rows != rMesh.Cells(b).NumCells())
+                    throw WriteError(detail::format_compat(
+                        "MED: cell_data '{}' block {} has {} rows but that block has {} cells; a "
+                        "multi-component field must be shaped (n_cells, n_components), not "
+                        "flattened",
+                        name, b, rows, rMesh.Cells(b).NumCells()));
+            }
+        }
+
         h5::Hid cha = h5::create_group(f, "CHA");
         for (const auto& name : rMesh.PointDataNames())
             if (name != "point_tags" && name != "med:num")
