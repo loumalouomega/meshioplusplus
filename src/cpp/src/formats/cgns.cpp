@@ -17,24 +17,227 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <optional>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/formats/cgns.hpp"
+#include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/format_compat.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
 
-Mesh read_cgns(const std::string& rPath) {
-    h5::SilenceErrors silence;
-    h5::Hid f = h5::open_file_read(rPath);
+namespace {
 
+// --- node encoding: CGNS/ADF-over-HDF5's own convention, not an ad hoc one -
+//
+// Every CGNS node is an HDF5 group carrying four fixed attributes (name/
+// label/type/flags) plus, when it has a payload, a dataset literally named
+// " data" (leading space -- cgnslib's own ADFH.c: `#define D_DATA " data"`).
+// h5::write_attr_string (variable-length UTF-8) and MED's write_attr_bytes
+// (NULLPAD, size = strlen) both write the wrong encoding for this: CGNS uses
+// fixed-size (33/33/3 bytes) NULLTERM strings.
+
+void cgns_write_attr_str(hid_t loc, const std::string& rName, const std::string& rValue,
+                         std::size_t size) {
+    h5::Hid t(H5Tcopy(H5T_C_S1), H5Tclose);
+    H5Tset_size(t, size);
+    H5Tset_strpad(t, H5T_STR_NULLTERM);
+    h5::Hid space(H5Screate(H5S_SCALAR), H5Sclose);
+    h5::Hid a(H5Acreate2(loc, rName.c_str(), t, space, H5P_DEFAULT, H5P_DEFAULT), H5Aclose);
+    if (!a.Valid())
+        throw WriteError(detail::format_compat("CGNS: could not create attribute '{}'", rName));
+    std::string buf(size, '\0');
+    std::memcpy(buf.data(), rValue.data(), std::min(rValue.size(), size));
+    H5Awrite(a, t, buf.data());
+}
+
+void cgns_write_attr_flags(hid_t loc) {
+    hsize_t dim = 1;
+    h5::Hid space(H5Screate_simple(1, &dim, nullptr), H5Sclose);
+    h5::Hid a(H5Acreate2(loc, "flags", H5T_STD_I32LE, space, H5P_DEFAULT, H5P_DEFAULT), H5Aclose);
+    if (!a.Valid())
+        throw WriteError("CGNS: could not create 'flags' attribute");
+    std::int32_t v = 1;
+    H5Awrite(a, H5T_NATIVE_INT32, &v);
+}
+
+// The ADF two-character type code for a node's " data" payload dtype.
+std::string cgns_type_code(DType dt) {
+    switch (dt) {
+        case DType::Int32:
+            return "I4";
+        case DType::Int64:
+            return "I8";
+        case DType::Float32:
+            return "R4";
+        case DType::Float64:
+            return "R8";
+        default:
+            throw WriteError("CGNS: unsupported dtype for a CGNS node payload");
+    }
+}
+
+void cgns_write_node_attrs(hid_t loc, const std::string& rName, const std::string& rLabel,
+                           const std::string& rType) {
+    cgns_write_attr_str(loc, "name", rName, 33);
+    cgns_write_attr_str(loc, "label", rLabel, 33);
+    cgns_write_attr_str(loc, "type", rType, 3);
+    cgns_write_attr_flags(loc);
+}
+
+// The file and every group must track HDF5 link (and attribute) *creation*
+// order -- cgnslib's has_child/has_data (ADFH.c) iterate H5_INDEX_CRT_ORDER
+// with no name-order fallback, so a file created with the library defaults
+// (H5P_DEFAULT) is invisible to a real CGNS reader even though every node
+// and attribute is individually well-formed.
+
+h5::Hid cgns_create_file(const std::string& rPath) {
+    h5::Hid fcpl(H5Pcreate(H5P_FILE_CREATE), H5Pclose);
+    H5Pset_link_creation_order(fcpl, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED);
+    H5Pset_attr_creation_order(fcpl, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED);
+    hid_t f = H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, fcpl, H5P_DEFAULT);
+    if (f < 0)
+        throw WriteError(detail::format_compat("CGNS: could not create file '{}'", rPath));
+    return h5::Hid(f, H5Fclose);
+}
+
+h5::Hid cgns_create_group(hid_t loc, const std::string& rName) {
+    h5::Hid gcpl(H5Pcreate(H5P_GROUP_CREATE), H5Pclose);
+    H5Pset_link_creation_order(gcpl, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED);
+    H5Pset_attr_creation_order(gcpl, H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED);
+    hid_t g = H5Gcreate2(loc, rName.c_str(), H5P_DEFAULT, gcpl, H5P_DEFAULT);
+    if (g < 0)
+        throw WriteError(detail::format_compat("CGNS: could not create group '{}'", rName));
+    return h5::Hid(g, H5Gclose);
+}
+
+// A CHAR (ADF "C1") payload: `rS`'s bytes, zero-padded/truncated to exactly
+// `total` bytes (NOT necessarily NUL-terminated -- CGNS text data like
+// ZoneType's "Unstructured" carries no terminator, only its declared length).
+NDArray cgns_padded_int8(const std::string& rS, std::size_t total) {
+    NDArray out(DType::Int8, {total});
+    std::int8_t* dst = out.As<std::int8_t>();
+    std::memset(dst, 0, total);
+    std::memcpy(dst, rS.data(), std::min(rS.size(), total));
+    return out;
+}
+
+std::string cgns_hdf5_version_string() {
+    unsigned maj = 0, min = 0, rel = 0;
+    H5get_libversion(&maj, &min, &rel);
+    std::ostringstream os;
+    os << "HDF5 Version " << maj << "." << min << "." << rel;
+    return os.str();
+}
+
+// --- meshio++ <-> CGNS ElementType_t table ----------------------------------
+//
+// Derived from the SIDS element-numbering-conventions edge/face tables and
+// cross-checked against VTK's own CGNS translator tables (doc/formats/
+// cgns.md records the sources and the per-type derivation). Permutations are
+// involutions (a block swap), applied identically on read and write:
+// `dst[c] = src[p[c]]`, exactly `med_node_perm()`'s convention.
+//
+// Deliberately NOT here (a `WriteError`/`ReadError` names them instead of
+// guessing): the cubic/quartic Lagrange families (line4, triangle10, quad16,
+// tetra20, hexahedron64, ...), whose SIDS interior-node order is shown only
+// in image-only figures with no text source to verify against, and anything
+// ragged (polygon/polyhedron), which CGNS has no fixed-size representation
+// for at all (MIXED/NGON_n/NFACE_n sections are not written by meshio++).
+struct CgnsTypeInfo {
+    std::string mCgnsName;
+    int mCode;
+    std::vector<int> mPerm;  // empty = identity
+};
+
+const std::unordered_map<std::string, CgnsTypeInfo>& cgns_type_table() {
+    static const std::unordered_map<std::string, CgnsTypeInfo> m = {
+        {"vertex", {"NODE", 2, {}}},
+        {"line", {"BAR_2", 3, {}}},
+        {"line3", {"BAR_3", 4, {}}},
+        {"triangle", {"TRI_3", 5, {}}},
+        {"triangle6", {"TRI_6", 6, {}}},
+        {"quad", {"QUAD_4", 7, {}}},
+        {"quad8", {"QUAD_8", 8, {}}},
+        {"quad9", {"QUAD_9", 9, {}}},
+        {"tetra", {"TETRA_4", 10, {}}},
+        {"tetra10", {"TETRA_10", 11, {}}},
+        {"pyramid", {"PYRA_5", 12, {}}},
+        {"pyramid14", {"PYRA_14", 13, {}}},
+        {"wedge", {"PENTA_6", 14, {}}},
+        {"wedge15", {"PENTA_15", 15, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}}},
+        {"wedge18",
+         {"PENTA_18", 16, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}}},
+        {"hexahedron", {"HEXA_8", 17, {}}},
+        {"hexahedron20",
+         {"HEXA_20", 18, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}}},
+        {"hexahedron27", {"HEXA_27", 19, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 16, 17,
+                                          18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26}}},
+        // PYRA_13's code (21) is non-monotonic -- appended to ElementType_t
+        // after MIXED in the CGNS enum -- not a typo.
+        {"pyramid13", {"PYRA_13", 21, {}}},
+    };
+    return m;
+}
+
+const std::unordered_map<int, std::string>& cgns_code_to_meshio() {
+    static const std::unordered_map<int, std::string> m = [] {
+        std::unordered_map<int, std::string> out;
+        for (const auto& kv : cgns_type_table())
+            out.emplace(kv.second.mCode, kv.first);
+        return out;
+    }();
+    return m;
+}
+
+const std::unordered_map<int, std::string>& cgns_code_to_name() {
+    static const std::unordered_map<int, std::string> m = {
+        {2, "NODE"},      {3, "BAR_2"},     {4, "BAR_3"},    {5, "TRI_3"},     {6, "TRI_6"},
+        {7, "QUAD_4"},    {8, "QUAD_8"},    {9, "QUAD_9"},   {10, "TETRA_4"},  {11, "TETRA_10"},
+        {12, "PYRA_5"},   {13, "PYRA_14"},  {14, "PENTA_6"}, {15, "PENTA_15"}, {16, "PENTA_18"},
+        {17, "HEXA_8"},   {18, "HEXA_20"},  {19, "HEXA_27"}, {20, "MIXED"},    {21, "PYRA_13"},
+        {22, "NGON_n"},   {23, "NFACE_n"},  {24, "BAR_4"},   {26, "TRI_10"},   {28, "QUAD_16"},
+        {30, "TETRA_20"}, {36, "PENTA_40"}, {39, "HEXA_64"},
+    };
+    return m;
+}
+
+// Apply an optional column permutation and additive shift to an (n, k)
+// row-major connectivity array (CGNS is element-major/row-major, unlike
+// MED's Fortran storage, so no transpose is needed -- only the permutation).
+// Self-inverse (`p == p^-1` for every table entry above), so the same `pPerm`
+// serves both write (shift=+1) and read (shift=-1).
+NDArray cgns_permute_conn(const NDArray& rConn, std::size_t n, std::size_t k, std::int64_t shift,
+                          const std::vector<int>* pPerm) {
+    const int* p = (pPerm && pPerm->size() == k) ? pPerm->data() : nullptr;
+    NDArray out(rConn.Dtype(), {n, k});
+    detail::dispatch_dtype(rConn.Dtype(), [&]<class T>() {
+        const T* src = rConn.As<T>();
+        T* dst = out.As<T>();
+        const T s = static_cast<T>(shift);
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t c = 0; c < k; ++c) {
+                const std::size_t sc = p ? static_cast<std::size_t>(p[c]) : c;
+                dst[i * k + c] = static_cast<T>(src[i * k + sc] + s);
+            }
+        });
+    });
+    return out;
+}
+
+// --- legacy (pre-v9.8.0) layout: read-only, byte-for-byte the old reader ---
+Mesh cgns_read_legacy(hid_t f) {
     if (!h5::exists(f, "Base"))
         throw ReadError("Expected \"Base\" in file. Malformed CGNS?");
     h5::Hid base = h5::open_group(f, "Base");
@@ -77,7 +280,6 @@ Mesh read_cgns(const std::string& rPath) {
         throw ReadError("Can only read tetrahedra.");
 
     NDArray cells(flat.Dtype(), {static_cast<std::size_t>(idx_max), k});
-    // shift 1-based -> 0-based, preserving the stored integer dtype
     for (std::size_t i = 0; i < flat.Size(); ++i) {
         std::int64_t v = detail::read_int(flat, i) - 1;
         switch (cells.Dtype()) {
@@ -101,75 +303,410 @@ Mesh read_cgns(const std::string& rPath) {
     return mesh;
 }
 
+// Every reserved payload dataset this format writes (" data", " format",
+// " hdf5version") starts with a leading space by the ADF-over-HDF5
+// convention; no legitimate CGNS *node* (a group) is named that way, so this
+// is what lets group-enumeration loops below skip a location's own payload
+// dataset without mis-opening it as a group.
+bool cgns_is_reserved_name(const std::string& rName) {
+    return !rName.empty() && rName[0] == ' ';
+}
+
+// Whether the root has a child group whose "label" attribute is
+// "CGNSBase_t" -- the structural (not extension/version-based) discriminator
+// between the spec layout and the pre-v9.8.0 legacy one.
+bool cgns_is_spec_layout(hid_t f) {
+    for (const std::string& name : h5::group_links(f)) {
+        if (cgns_is_reserved_name(name))
+            continue;
+        h5::Hid g = h5::open_group(f, name);
+        if (h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == "CGNSBase_t")
+            return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     h5::SilenceErrors silence;
 
-    // Locate the tetra block (mirroring the Python writer, which only emits tetra).
-    std::optional<Mesh::CellView> tet;
-    for (const auto cb : rMesh.CellRange())
-        if (cb.Type() == "tetra") {
-            tet = cb;
-            break;
+    const std::size_t point_dim = rMesh.PointDim();
+    if (point_dim > 3)
+        throw WriteError(
+            detail::format_compat("CGNS: PhysicalDimension must be 1..3, got {}", point_dim));
+
+    // Validate every cell type up front (before any file is created) and
+    // compute CellDim = the max topological dimension over all blocks.
+    int cell_dim = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string ctype(cb.Type());
+        // polygon/polygon2/polyhedron* are always CGNS-unrepresentable
+        // (MIXED/NGON_n/NFACE_n, not written by meshio++), checked by type
+        // name -- NOT cb.IsRagged() -- because a *uniform* polygon block
+        // (every cell has the same node count) stores rectangularly and so
+        // is not, structurally, ragged; the message must still name the
+        // real reason rather than falling through to the generic
+        // "ordering not yet verified" one. cb.IsRagged() is kept as a
+        // backstop for any other genuinely ragged type.
+        if (ctype == "polygon" || ctype == "polygon2" || ctype.rfind("polyhedron", 0) == 0 ||
+            cb.IsRagged())
+            throw WriteError(detail::format_compat(
+                "CGNS: cell type '{}' is a ragged block; CGNS has no fixed-size representation "
+                "for it (MIXED/NGON_n/NFACE_n sections are not written by meshio++)",
+                ctype));
+        auto it = cgns_type_table().find(ctype);
+        if (it == cgns_type_table().end()) {
+            const CellType ct = cell_type_from_name(ctype);
+            if (ct != CellType::Custom)
+                throw WriteError(detail::format_compat(
+                    "CGNS: cell type '{}' maps to a CGNS ElementType_t but its CGNS node "
+                    "ordering is not yet verified in meshio++; refusing to write a guessed "
+                    "ordering",
+                    ctype));
+            throw WriteError(detail::format_compat(
+                "CGNS: cell type '{}' has no fixed-size CGNS ElementType_t equivalent", ctype));
         }
-
-    h5::Hid f = h5::create_file(rPath);
-    h5::Hid base = h5::create_group(f, "Base");
-    h5::Hid zone = h5::create_group(base, "Zone1");
-    h5::Hid coords = h5::create_group(zone, "GridCoordinates");
-
-    const NDArray& points = rMesh.Points();
-    const std::size_t n = rMesh.NumPoints();
-    const std::size_t d = rMesh.PointDim();
-
-    const char* names[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
-    for (int c = 0; c < 3; ++c) {
-        h5::Hid g = h5::create_group(coords, names[c]);
-        NDArray col(points.Dtype(), {n});
-        for (std::size_t i = 0; i < n; ++i) {
-            double v =
-                (static_cast<std::size_t>(c) < d) ? detail::read_double(points, i * d + c) : 0.0;
-            if (col.Dtype() == DType::Float32)
-                col.As<float>()[i] = static_cast<float>(v);
-            else
-                col.As<double>()[i] = v;
-        }
-        h5::write_dataset(g, " data", col, gzip_level);
+        const int d = cell_type_dimension(cell_type_from_name(ctype));
+        if (d > cell_dim)
+            cell_dim = d;
     }
 
-    h5::Hid elems = h5::create_group(zone, "GridElements");
-    h5::Hid rng = h5::create_group(elems, "ElementRange");
-    h5::Hid conn = h5::create_group(elems, "ElementConnectivity");
-    if (tet) {
-        const NDArray& tconn = tet->Conn();
-        const std::size_t nc = tet->NumCells();
-        const std::size_t k = detail::cols(tconn);
-        NDArray range(DType::Int64, {2});
-        range.As<std::int64_t>()[0] = 1;
-        range.As<std::int64_t>()[1] = static_cast<std::int64_t>(nc);
-        h5::write_dataset(rng, " data", range, gzip_level);
+    int phys_dim = static_cast<int>(std::max(point_dim, static_cast<std::size_t>(cell_dim)));
+    phys_dim = std::clamp(phys_dim, 1, 3);
+    const int cgns_cell_dim = cell_dim > 0 ? cell_dim : phys_dim;
 
-        NDArray flat(tconn.Dtype(), {nc * k});
-        for (std::size_t i = 0; i < nc * k; ++i) {
-            std::int64_t v = detail::read_int(tconn, i) + 1;
-            switch (flat.Dtype()) {
-                case DType::Int32:
-                    flat.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
-                    break;
-                case DType::Int64:
-                    flat.As<std::int64_t>()[i] = v;
-                    break;
-                case DType::UInt32:
-                    flat.As<std::uint32_t>()[i] = static_cast<std::uint32_t>(v);
-                    break;
-                case DType::UInt64:
-                    flat.As<std::uint64_t>()[i] = static_cast<std::uint64_t>(v);
-                    break;
-                default:
-                    throw WriteError("CGNS: unexpected connectivity dtype");
+    std::size_t n_cells_at_dim = 0;
+    for (const auto cb : rMesh.CellRange())
+        if (cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == cgns_cell_dim)
+            n_cells_at_dim += cb.NumCells();
+
+    h5::Hid f = cgns_create_file(rPath);
+    cgns_write_attr_str(f, "name", "HDF5 MotherNode", 33);
+    cgns_write_attr_str(f, "label", "Root Node of HDF5 File", 33);
+    cgns_write_attr_str(f, "type", "MT", 3);
+    h5::write_dataset(f, " format", cgns_padded_int8("IEEE_LITTLE_32", 15));
+    h5::write_dataset(f, " hdf5version", cgns_padded_int8(cgns_hdf5_version_string(), 33));
+
+    h5::Hid cgver = cgns_create_group(f, "CGNSLibraryVersion");
+    cgns_write_node_attrs(cgver, "CGNSLibraryVersion", "CGNSLibraryVersion_t", "R4");
+    NDArray ver(DType::Float32, {1});
+    ver.As<float>()[0] = 3.1f;
+    h5::write_dataset(cgver, " data", ver);
+
+    h5::Hid base = cgns_create_group(f, "Base");
+    cgns_write_node_attrs(base, "Base", "CGNSBase_t", "I4");
+    {
+        NDArray basedata(DType::Int32, {2});
+        basedata.As<std::int32_t>()[0] = cgns_cell_dim;
+        basedata.As<std::int32_t>()[1] = phys_dim;
+        h5::write_dataset(base, " data", basedata);
+    }
+
+    const std::size_t n_points = rMesh.NumPoints();
+    const bool wide = n_points > static_cast<std::size_t>(INT32_MAX) ||
+                      n_cells_at_dim > static_cast<std::size_t>(INT32_MAX);
+    const DType zone_dt = wide ? DType::Int64 : DType::Int32;
+
+    h5::Hid zone = cgns_create_group(base, "Zone1");
+    cgns_write_node_attrs(zone, "Zone1", "Zone_t", cgns_type_code(zone_dt));
+    {
+        NDArray zdata(zone_dt, {3, 1});
+        detail::dispatch_dtype(zone_dt, [&]<class T>() {
+            T* d = zdata.As<T>();
+            d[0] = static_cast<T>(n_points);
+            d[1] = static_cast<T>(n_cells_at_dim);
+            d[2] = static_cast<T>(0);
+        });
+        h5::write_dataset(zone, " data", zdata);
+    }
+
+    h5::Hid zt = cgns_create_group(zone, "ZoneType");
+    cgns_write_node_attrs(zt, "ZoneType", "ZoneType_t", "C1");
+    h5::write_dataset(zt, " data", cgns_padded_int8("Unstructured", 12));
+
+    h5::Hid coords = cgns_create_group(zone, "GridCoordinates");
+    cgns_write_node_attrs(coords, "GridCoordinates", "GridCoordinates_t", "MT");
+    {
+        const NDArray& points = rMesh.Points();
+        const DType coord_dt = points.Dtype() == DType::Float32 ? DType::Float32 : DType::Float64;
+        const char* names[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
+        const std::size_t n_coords = phys_dim >= 3 ? 3 : 2;
+        for (std::size_t c = 0; c < n_coords; ++c) {
+            h5::Hid g = cgns_create_group(coords, names[c]);
+            NDArray col(coord_dt, {n_points});
+            detail::dispatch_dtype(coord_dt, [&]<class T>() {
+                T* dst = col.As<T>();
+                parallel_for_bw(n_points, [&](std::size_t i) {
+                    dst[i] = static_cast<T>(
+                        (c < point_dim) ? detail::read_double(points, i * point_dim + c) : 0.0);
+                });
+            });
+            cgns_write_node_attrs(g, names[c], "DataArray_t", cgns_type_code(coord_dt));
+            h5::write_dataset(g, " data", col, gzip_level);
+        }
+    }
+
+    // Elements: one Elements_t section per meshio++ cell block, in mesh
+    // order, with contiguous non-overlapping 1-based ElementRanges. Unlike
+    // MED, sections of the same type are NOT consolidated -- CGNS has no
+    // "two sections, one type" restriction.
+    std::int64_t next = 1;
+    std::unordered_map<std::string, int> type_counts;
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+        const auto cb = rMesh.Cells(k);
+        const std::string ctype(cb.Type());
+        const CgnsTypeInfo& info = cgns_type_table().at(ctype);
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t nc = cb.NumCells();
+        if (nc == 0)
+            continue;  // a zero-length ElementRange is not representable
+
+        const std::int64_t first = next;
+        const std::int64_t last = next + static_cast<std::int64_t>(nc) - 1;
+        next = last + 1;
+
+        const int idx = ++type_counts[info.mCgnsName];
+        const std::string section_name = detail::format_compat("{}_{}", info.mCgnsName, idx);
+
+        h5::Hid sect = cgns_create_group(zone, section_name);
+        cgns_write_node_attrs(sect, section_name, "Elements_t", "I4");
+        {
+            NDArray sdata(DType::Int32, {2});
+            sdata.As<std::int32_t>()[0] = info.mCode;
+            sdata.As<std::int32_t>()[1] = 0;  // ElementSizeBoundary: unsorted
+            h5::write_dataset(sect, " data", sdata);
+        }
+
+        const bool section_wide =
+            (cb.Conn().Dtype() != DType::Int32) || (n_points > static_cast<std::size_t>(INT32_MAX));
+        const DType out_dt = section_wide ? DType::Int64 : DType::Int32;
+
+        h5::Hid rng = cgns_create_group(sect, "ElementRange");
+        cgns_write_node_attrs(rng, "ElementRange", "IndexRange_t", cgns_type_code(out_dt));
+        {
+            NDArray rdata(out_dt, {2});
+            detail::dispatch_dtype(out_dt, [&]<class T>() {
+                T* d = rdata.As<T>();
+                d[0] = static_cast<T>(first);
+                d[1] = static_cast<T>(last);
+            });
+            h5::write_dataset(rng, " data", rdata);
+        }
+
+        const std::vector<int>* perm = info.mPerm.empty() ? nullptr : &info.mPerm;
+        NDArray conn = cgns_permute_conn(cb.Conn(), nc, npc, +1, perm);
+        // Widen to the section's chosen dtype if it disagrees with Conn()'s.
+        if (conn.Dtype() != out_dt) {
+            NDArray widened(out_dt, {nc, npc});
+            detail::dispatch_dtype(out_dt, [&]<class T>() {
+                T* dst = widened.As<T>();
+                for (std::size_t i = 0; i < nc * npc; ++i)
+                    dst[i] = static_cast<T>(detail::read_int(conn, i));
+            });
+            conn = std::move(widened);
+        }
+        conn.Reshape({nc * npc});
+
+        h5::Hid ec = cgns_create_group(sect, "ElementConnectivity");
+        cgns_write_node_attrs(ec, "ElementConnectivity", "DataArray_t", cgns_type_code(out_dt));
+        h5::write_dataset(ec, " data", conn, gzip_level);
+    }
+}
+
+Mesh read_cgns(const std::string& rPath) {
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::open_file_read(rPath);
+
+    if (!cgns_is_spec_layout(f))
+        return cgns_read_legacy(f);
+
+    // Locate the first CGNSBase_t child of the root (structural, not by
+    // name); warn (never silently drop data) if there is more than one.
+    std::string base_name;
+    int n_bases = 0;
+    for (const std::string& name : h5::group_links(f)) {
+        if (cgns_is_reserved_name(name))
+            continue;
+        h5::Hid g = h5::open_group(f, name);
+        if (h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == "CGNSBase_t") {
+            if (n_bases == 0)
+                base_name = name;
+            ++n_bases;
+        }
+    }
+    if (n_bases > 1)
+        log::warn("CGNS: file has {} CGNSBase_t nodes; only the first ('{}') is read.", n_bases,
+                  base_name);
+
+    h5::Hid base = h5::open_group(f, base_name);
+
+    Mesh mesh;
+    NDArray points;  // accumulated across zones
+    std::vector<NDArray> point_chunks;
+    std::int64_t point_offset = 0;
+    std::size_t point_dim_out = 3;
+
+    for (const std::string& zname : h5::group_links(base)) {
+        if (cgns_is_reserved_name(zname))
+            continue;  // Base's own " data" payload ([CellDim, PhysDim])
+        h5::Hid zone = h5::open_group(base, zname);
+        if (!(h5::has_attr(zone, "label") && h5::read_attr_string(zone, "label") == "Zone_t"))
+            continue;
+
+        if (h5::exists(zone, "ZoneType")) {
+            h5::Hid zt = h5::open_group(zone, "ZoneType");
+            if (h5::exists(zt, " data")) {
+                NDArray raw = h5::read_dataset(zt, " data");
+                std::string zt_name(raw.Size(), '\0');
+                for (std::size_t i = 0; i < raw.Size(); ++i)
+                    zt_name[i] = static_cast<char>(detail::read_int(raw, i));
+                if (zt_name != "Unstructured")
+                    throw ReadError(detail::format_compat(
+                        "CGNS: zone '{}' has ZoneType '{}'; only Unstructured zones are "
+                        "supported.",
+                        zname, zt_name));
             }
         }
-        h5::write_dataset(conn, " data", flat, gzip_level);
+
+        h5::Hid coords = h5::open_group(zone, "GridCoordinates");
+        std::vector<std::string> axes;
+        for (const char* ax : {"CoordinateX", "CoordinateY", "CoordinateZ"})
+            if (h5::exists(coords, ax))
+                axes.push_back(ax);
+        if (axes.empty())
+            throw ReadError(detail::format_compat("CGNS: zone '{}' has no GridCoordinates", zname));
+        point_dim_out = std::max<std::size_t>(2, axes.size());
+
+        std::vector<NDArray> cols;
+        std::size_t n_zone_points = 0;
+        for (const std::string& ax : axes) {
+            h5::Hid g = h5::open_group(coords, ax);
+            NDArray c = h5::read_dataset(g, " data");
+            n_zone_points = c.Shape().empty() ? 0 : c.Shape()[0];
+            cols.push_back(std::move(c));
+        }
+        NDArray zpts(DType::Float64, {n_zone_points, point_dim_out});
+        double* pp = zpts.As<double>();
+        for (std::size_t i = 0; i < n_zone_points; ++i)
+            for (std::size_t d = 0; d < point_dim_out; ++d)
+                pp[i * point_dim_out + d] = d < cols.size() ? detail::read_double(cols[d], i) : 0.0;
+        point_chunks.push_back(std::move(zpts));
+
+        // Elements_t sections found by label (never by name), ordered
+        // ascending by ElementRange[0] -- reproduces write_cgns's own block
+        // order exactly and is immune to HDF5 iteration order.
+        struct Sect {
+            std::string mName;
+            std::int64_t mFirst;
+        };
+        std::vector<Sect> sects;
+        for (const std::string& sname : h5::group_links(zone)) {
+            if (cgns_is_reserved_name(sname))
+                continue;  // Zone1's own " data" payload ([NVertex, NCell, 0])
+            h5::Hid s = h5::open_group(zone, sname);
+            if (!(h5::has_attr(s, "label") && h5::read_attr_string(s, "label") == "Elements_t"))
+                continue;
+            h5::Hid rng = h5::open_group(s, "ElementRange");
+            NDArray range = h5::read_dataset(rng, " data");
+            if (range.Size() < 2)
+                throw ReadError(detail::format_compat(
+                    "CGNS: section '{}' has a malformed ElementRange", sname));
+            sects.push_back({sname, detail::read_int(range, 0)});
+        }
+        std::sort(sects.begin(), sects.end(),
+                  [](const Sect& a, const Sect& b) { return a.mFirst < b.mFirst; });
+
+        for (const Sect& sec : sects) {
+            h5::Hid s = h5::open_group(zone, sec.mName);
+            NDArray sdata = h5::read_dataset(s, " data");
+            if (sdata.Size() < 1)
+                throw ReadError(detail::format_compat(
+                    "CGNS: section '{}' has a malformed Elements_t descriptor", sec.mName));
+            const int code = static_cast<int>(detail::read_int(sdata, 0));
+
+            if (code == 20 || code == 22 || code == 23) {
+                const auto& names = cgns_code_to_name();
+                auto nit = names.find(code);
+                throw ReadError(detail::format_compat(
+                    "CGNS: element section '{}' has ElementType {} ({}); MIXED, NGON_n and "
+                    "NFACE_n sections are not supported.",
+                    sec.mName, nit != names.end() ? nit->second : "?", code));
+            }
+            const auto& code_map = cgns_code_to_meshio();
+            auto tit = code_map.find(code);
+            if (tit == code_map.end()) {
+                const auto& names = cgns_code_to_name();
+                auto nit = names.find(code);
+                if (nit != names.end())
+                    throw ReadError(detail::format_compat(
+                        "CGNS: element section '{}' has type {} ({}), whose node ordering is "
+                        "not yet verified in meshio++.",
+                        sec.mName, nit->second, code));
+                throw ReadError(detail::format_compat(
+                    "CGNS: element section '{}' has unknown ElementType code {}.", sec.mName,
+                    code));
+            }
+            const std::string& meshio_type = tit->second;
+            const CgnsTypeInfo& info = cgns_type_table().at(meshio_type);
+
+            h5::Hid rng = h5::open_group(s, "ElementRange");
+            NDArray range = h5::read_dataset(rng, " data");
+            const std::int64_t first = detail::read_int(range, 0);
+            const std::int64_t last = detail::read_int(range, 1);
+            if (last < first)
+                throw ReadError(detail::format_compat(
+                    "CGNS: section '{}' has an empty/overlapping ElementRange [{}, {}]", sec.mName,
+                    first, last));
+            const std::size_t nc = static_cast<std::size_t>(last - first + 1);
+            const std::size_t npc =
+                static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(meshio_type)));
+
+            h5::Hid conn = h5::open_group(s, "ElementConnectivity");
+            NDArray flat = h5::read_dataset(conn, " data");
+            if (flat.Size() != nc * npc)
+                throw ReadError(detail::format_compat(
+                    "CGNS: section '{}' declares {} elements of {} ({} nodes) but "
+                    "ElementConnectivity has {} entries",
+                    sec.mName, nc, info.mCgnsName, nc * npc, flat.Size()));
+
+            const std::vector<int>* perm = info.mPerm.empty() ? nullptr : &info.mPerm;
+            NDArray out = cgns_permute_conn(flat, nc, npc, -1, perm);
+            if (point_offset != 0) {
+                detail::dispatch_dtype(out.Dtype(), [&]<class T>() {
+                    T* d = out.As<T>();
+                    const T off = static_cast<T>(point_offset);
+                    for (std::size_t i = 0; i < nc * npc; ++i)
+                        d[i] = static_cast<T>(d[i] + off);
+                });
+            }
+            mesh.AddCellBlock(meshio_type, std::move(out));
+        }
+
+        point_offset += static_cast<std::int64_t>(n_zone_points);
     }
+
+    if (point_chunks.empty())
+        throw ReadError(
+            detail::format_compat("CGNS: base '{}' has no Unstructured zones", base_name));
+    if (point_chunks.size() == 1) {
+        mesh.AssignPoints(std::move(point_chunks.front()));
+    } else {
+        std::size_t total = 0;
+        for (const NDArray& c : point_chunks)
+            total += c.Shape()[0];
+        NDArray all(DType::Float64, {total, point_dim_out});
+        double* dst = all.As<double>();
+        std::size_t row = 0;
+        for (const NDArray& c : point_chunks) {
+            const double* src = c.As<double>();
+            const std::size_t n = c.Shape()[0];
+            std::memcpy(dst + row * point_dim_out, src, n * point_dim_out * sizeof(double));
+            row += n;
+        }
+        mesh.AssignPoints(std::move(all));
+    }
+    return mesh;
 }
 
 }  // namespace meshioplusplus
