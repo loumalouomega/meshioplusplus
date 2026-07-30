@@ -40,6 +40,8 @@ meshioplusplus.cgns.write("out.cgns", mesh, compression="gzip", compression_opts
         " data"                      # int32[2] = {ElementType_t code, 0}
         ElementRange/" data"         # IndexRange_t, {first, last} 1-based inclusive
         ElementConnectivity/" data"  # DataArray_t, flat 1-based, ROW-major (element-major)
+      FlowSolution/                  # FlowSolution_t, point_data (see "Data mapping")
+      FlowSolutionCells/             # FlowSolution_t, cell_data
 ```
 
 Every node carries CGNS's four standard attributes — `name`/`label`/`type` (fixed-length 33/33/3-byte NULTERM strings) and `flags` (a 1-element int32 array, not a scalar) — and the file and every group are created with HDF5 **link and attribute creation-order tracking**. This is load-bearing, not cosmetic: cgnslib's `has_child`/`has_data` (`ADFH.c`) iterate creation order with **no name-order fallback**, so a file written with the library's un-tracked defaults is structurally invisible to a real CGNS reader even though every node is individually well-formed. The Python writer sets this via h5py's `track_order=True` on `File(...)`/`create_group(...)`; the C++ writer sets `H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED` on the FCPL/GCPL directly.
@@ -67,7 +69,7 @@ Unlike MED, **sections of the same type are not consolidated** — every meshio+
 
 `PYRA_13`'s code (21) is non-monotonic — appended after `MIXED` (20) in the real CGNS `ElementType_t` enum, not a typo here.
 
-Permutations are derived from the SIDS element-numbering-conventions edge/face tables, cross-checked against VTK's own CGNS translator tables (`vtkCGNSReaderInternal.cxx`) and, for the hexahedron/wedge families, against the real `vtkWedge`/`vtkTriQuadraticHexahedron` node-ordering source directly — not against meshio++'s own `detail/cell_faces.cpp` (used for `extract_surface`/skin, a different concern with its own pre-existing, separately-tracked `hexahedron27` face-centre defect that this work found but did not fix, to avoid an unrelated risk to the `refine` operation's internal indexing scheme; see that file's comment). Two findings worth recording:
+Permutations are derived from the SIDS element-numbering-conventions edge/face tables, cross-checked against VTK's own CGNS translator tables (`vtkCGNSReaderInternal.cxx`) and, for the hexahedron/wedge families, against the real `vtkWedge`/`vtkTriQuadraticHexahedron` node-ordering source directly — not against meshio++'s own `detail/cell_faces.cpp`, which at the time carried a `hexahedron27` face-centre defect this work found (its 20/22/23 were a permuted 3-cycle of the real VTK table). That defect was **fixed in v9.9.0**, in lockstep with `cell_refine_quad_faces` and the `refine` templates plus their Python twins, so `cell_faces.cpp` is now on the same convention as this table. Two findings worth recording:
 
 - **`wedge` is identity** — meshio++'s wedge node order (0,1,2 bottom triangle; 3,4,5 top triangle) already matches SIDS's `PENTA_6` face-for-face. Do **not** apply the `{0,2,1,3,5,4}` flip `vtk_common.hpp`'s `meshio_to_vtk_order("wedge")` uses for VTK/VTU interop — that permutation exists for a *different* target convention (`vtkWedge`) and is wrong for CGNS.
 - **`hexahedron27`**'s mid-face order follows the real `vtkTriQuadraticHexahedron::Faces` table (`20=(0,4,7,3)`, `21=(1,2,6,5)`, `22=(0,1,5,4)`, `23=(3,7,6,2)`, `24`=bottom, `25`=top, `26`=body centre) mapped onto the SIDS face order `F1..F6 = (0,3,2,1)(0,1,5,4)(1,2,6,5)(2,3,7,6)(0,4,7,3)(4,5,6,7)`.
@@ -76,7 +78,56 @@ Permutations are derived from the SIDS element-numbering-conventions edge/face t
 
 ## Data mapping
 
-None — no point_data, cell_data, or field_data is read or written by this format.
+Since v9.9.0, `point_data` and `cell_data` round-trip through `FlowSolution_t`
+nodes; before that a CGNS export silently dropped every field.
+
+| meshio++ | CGNS |
+|---|---|
+| `point_data` | `FlowSolution` (`FlowSolution_t`), `GridLocation` = `Vertex` |
+| `cell_data` | `FlowSolutionCells` (`FlowSolution_t`), `GridLocation` = `CellCenter` |
+| `field_data` | — (neither per-vertex nor per-cell; not written) |
+
+Each array becomes one `DataArray_t` child, `R8`, with one value per vertex or
+per zone cell. On read, `GridLocation` is honoured (absent ⇒ `Vertex`, the SIDS
+default) and an array whose length disagrees with `NVertex`/`NCell` is a
+`ReadError` naming it.
+
+**Multi-component arrays are split, because CGNS has no component concept.**
+There is no `NumberOfComponents` anywhere in the SIDS — one `DataArray_t` is one
+scalar. A k-component meshio++ array is therefore written as k sibling nodes
+named `<name>_0 .. <name>_{k-1}` and re-joined on read from a *contiguous*
+`0..k-1` run. This is a documented meshio++ convention, not something SIDS
+specifies (the same class of deliberate extension as `zstd` for VTU). Anything
+that is not a contiguous run — a lone `foo_7`, a gap — stays a scalar under its
+own literal name, since guessing would invent components.
+
+```
+Zone1/
+  FlowSolution/            FlowSolution_t, MT
+    GridLocation/" data"   int8[6]  "Vertex"        (no trailing NUL)
+    temperature/" data"    R8, float64[NVertex]     (scalar: its own name)
+    velocity_0/" data"     R8, float64[NVertex]     (k=3: split into three)
+    velocity_1/" data"
+    velocity_2/" data"
+  FlowSolutionCells/       FlowSolution_t, MT
+    GridLocation/" data"   int8[10] "CellCenter"
+    material/" data"       R8, float64[NCell]
+```
+
+**`cell_data` needs a single-dimension mesh.** A `CellCenter` array is
+per-*zone*, but meshio++'s `cell_data` is per-*block* — and only blocks at
+`CellDim` are zone cells. Concatenating block-major is therefore only well
+defined when every block is at `CellDim`; for a mixed-dimension mesh (tets plus
+boundary triangles, say) there is no way to distribute the zone-wide array back
+across the blocks on read without inventing values, so `cell_data` is skipped
+with a warning rather than written wrongly. Geometry is unaffected. On read the
+array is split back by each section's cell count in `ElementRange` order.
+
+**`FlowSolution_t` is only read for a single-zone file.** Across several zones
+the arrays would have to be concatenated in whatever order the zones happen to
+be listed in, and a solution present on only some zones has no defensible
+filler; a multi-zone file's solutions are skipped with a warning. meshio++'s own
+writer always emits one zone.
 
 ## Quirks & limitations
 
@@ -85,9 +136,15 @@ None — no point_data, cell_data, or field_data is read or written by this form
 - Multiple `Unstructured` zones under one base are concatenated (points offset, blocks stay per-zone-per-section); a `Structured` zone raises `ReadError` rather than being silently dropped (the exact failure mode this rewrite otherwise removes); more than one `CGNSBase_t` node reads the first and `log::warn`s about the rest.
 - `CGNSLibraryVersion` is written as `3.1` — a judgement call, not a spec requirement: cgnslib rejects a file whose declared version exceeds the reading library's, so writing a low, self-consistent number (3.1 is when HDF5 became CGNS's default storage and `" hdf5version"` replaced the older `" version"` root dataset) is the compatible direction.
 - `" hdf5version"` records the **linked** HDF5 library's own version string (`H5get_libversion`) — this is why a byte-for-byte comparison between the C++ and h5py writers' output must exclude that one dataset (they routinely link different HDF5 builds); every other node is asserted byte-identical.
-- This remains a comparatively small subset of full CGNS/SIDS: no `FlowSolution_t` (point/cell data), no `BC_t` (boundary conditions), no structured zones, no `ZoneGridConnectivity_t`. What SIDS-compliance buys is that the geometry+topology this format *does* write is genuinely readable by other tools, not that the format is feature-complete.
+- This remains a subset of full CGNS/SIDS: `FlowSolution_t` covers `Vertex` and `CellCenter` only (no `IFaceCenter`/`EdgeCenter`, no `Rind` planes, no `DataClass_t`/`DimensionalUnits_t` metadata), and there is no `BC_t` (boundary conditions), no structured zones, no `ZoneGridConnectivity_t`, no `Family_t`. What SIDS-compliance buys is that what this format *does* write is genuinely readable by other tools, not that the format is feature-complete.
 
 ## Notes
 
 - Read/written through the C++ core when built with `MESHIO_WITH_HDF5`, otherwise through `h5py` — the Python module is a **structural twin** of the C++ writer (same node tree, same attribute encoding, same type/permutation table), not merely another implementation of the same idea; the two are compared byte-for-byte (except `" hdf5version"`) in `tests/python/test_cgns.py::test_structural_parity_with_cpp`.
-- **External validation, and its honest limits.** No `cgnslib`/`cgnscheck` binary was available in the environment this rewrite was developed in, so there is currently no reference `.cgns` file (from real cgnslib) committed under `tests/python/meshes/cgns/`, and no `cgnscheck`-gated test. What CI *can* verify: internal round-trip fidelity (write→read reproduces the input, across every supported type, multi-block, and 2-D points), that the two writers (C++/Python) agree byte-for-byte, and — the test that actually matters for the node-ordering tables — a **geometric** check (`tests/cpp/test_cgns.cpp`'s `CgnsOrdering` suite) that builds a reference element with nodes at their true SIDS-defined positions (corner/edge-midpoint/face-centre coordinates computed independently of the permutation tables) and asserts the raw file bytes place each node where SIDS says it belongs, plus a pure-computation check that every permutation table entry is a genuine mathematical involution. What CI **cannot** verify: that ParaView/cgnslib/VTK actually accept and render the output, or catch a semantically-plausible-but-wrong node ordering for a type no geometric test covers. Adding the missing reference-fixture and `cgnscheck` layers (committing a tiny cgnslib-produced `.cgns` under Git LFS, and an opt-in `cgnscheck`-gated test) is a documented follow-up, not done in this pass.
+- **External validation.** Four layers, added in v9.9.0 (the v9.8.0 rewrite had only the first two, which prove self-consistency and nothing more):
+  1. **Internal round-trip**: write→read reproduces the input across every supported type, multi-block, 2-D points and field data.
+  2. **Cross-writer parity**: the C++ and Python writers are compared byte-for-byte (excluding `" hdf5version"`, which records the *linked* HDF5 version and legitimately differs).
+  3. **Geometric ordering oracle** (`tests/cpp/test_cgns.cpp`'s `CgnsOrdering` suite): builds a reference element with nodes at their true SIDS-defined positions — computed independently of the permutation tables — and asserts the raw written bytes place each node where SIDS says it belongs, plus a pure-computation check that every table entry is a genuine involution. This is what catches a wrong permutation; a round trip through only our own reader and writer cannot, since a self-inverse permutation makes `read(write(m)) == m` even when the table is wrong.
+  4. **Real cgnslib**: a reference `.cgns` written end to end by **cgnslib 4.5.2** is committed under [`tests/python/meshes/cgns/`](../../tests/python/meshes/cgns/README.md) (Git LFS) and read unconditionally by both readers; and `test_cgnscheck_accepts_our_output` runs cgnslib's own conformance checker over what we write for every supported type. `cgnscheck` reports **zero errors**. It does report style *warnings* — no `Family_t` on the zone, no `DataClass_t` on the arrays, and "not a CGNS data-name identifier" for any field whose name is not one of SIDS's standard names (`Density`, `VelocityX`, …) — which are recommendations, not conformance failures; meshio++ preserves the caller's own field names rather than renaming them to fit SIDS's vocabulary.
+
+  Layer 4 is **opt-in**: `cgnscheck` is not a pip/apt dependency of this repo, so that test skips (with an explicit, actionable reason naming the conda-forge install) where the binary is absent — including in CI. The committed fixture in the same layer needs nothing external and always runs. What still cannot be verified anywhere: that ParaView actually *renders* the output, and a semantically-plausible-but-wrong ordering for a type no geometric test covers.
