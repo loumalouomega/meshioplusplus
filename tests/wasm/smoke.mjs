@@ -1000,6 +1000,80 @@ step('gmsh 4.1 $Entities: physical groups read, and survive a 4.1 round-trip', (
     assert.deepEqual(Array.from(plateBack.entries), [2, 3]);
 });
 
+step('gmsh 4.1 with physical groups converts straight to MED (no Python fallback)', () => {
+    // The exact downstream repro (CAD-Preview's Gmsh -> MED bridge): a real
+    // MSH 4.1 file with $PhysicalNames, one cell block per *entity* (so two
+    // "line" blocks here -- MED's own same-type restriction, which the
+    // gmsh:physical throw used to make unreachable together), converted
+    // straight through this build with no Python anywhere to fall back to.
+    const msh = [
+        '$MeshFormat', '4.1 0 8', '$EndMeshFormat',
+        '$PhysicalNames', '2', '1 8 "bottom"', '2 7 "plate"', '$EndPhysicalNames',
+        '$Entities', '4 2 1 0',
+        '1 0 0 0 0', '2 1 0 0 0', '3 1 1 0 0', '4 0 1 0 0',
+        '1 0 0 0 1 0 0 1 8 2 1 -2',
+        '2 1 0 0 1 1 0 0 2 2 -3',
+        '1 0 0 0 1 1 0 1 7 2 1 2',
+        '$EndEntities',
+        '$Nodes', '3 4 1 4',
+        '0 1 0 1', '1', '0 0 0',
+        '0 2 0 1', '2', '1 0 0',
+        '2 1 0 2', '3', '4', '1 1 0', '0 1 0',
+        '$EndNodes',
+        '$Elements', '3 4 1 5',
+        '1 1 1 1', '1 1 2',
+        '1 2 1 1', '2 2 3',
+        '2 1 2 2', '4 1 2 3', '5 1 3 4',
+        '$EndElements', '',
+    ].join('\n');
+    m.FS.writeFile('/plate.msh', msh);
+
+    // No throw: this used to be "MED: gmsh physical groups handled by
+    // Python fallback", fatal with no Python anywhere in this build.
+    m.convert('/plate.msh', '/plate.med');
+    assert.ok(m.FS.stat('/plate.med').size > 0, '/plate.med is empty');
+
+    const back = m.readMesh('/plate.med', 'med');
+    // Both "line" entities consolidated into ONE MED section rather than
+    // throwing "MED files cannot have two sections of the same cell type" --
+    // i.e. exactly two blocks survive (line, triangle), not three.
+    assert.deepEqual(back.cells.map((c) => c.type).sort(), ['line', 'triangle']);
+    const names = back.regions.map((r) => r.name).sort();
+    assert.deepEqual(names, ['bottom', 'plate']);
+});
+
+step('MED consolidates same-type blocks instead of rejecting them', () => {
+    // Isolates gap 2 from gap 1: two "triangle" blocks with no gmsh
+    // involvement at all, which used to throw
+    // "MED files cannot have two sections of the same cell type." up front.
+    const mesh = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0, 0]),
+        dim: 3,
+        cells: [
+            { type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 },
+            { type: 'triangle', data: new Int32Array([0, 2, 3, 1, 4, 2]), nodesPerCell: 3 },
+        ],
+    };
+    m.writeMesh('/two-tri.med', mesh, 'med');
+    const back = m.readMesh('/two-tri.med', 'med');
+    assert.equal(back.cells.length, 1);
+    assert.equal(back.cells[0].type, 'triangle');
+    assert.equal(back.cells[0].data.length, 9);  // 3 triangles total, consolidated
+});
+
+step('CGNS round-trips a surface-only (triangle) mesh', () => {
+    // Gap 3's exact repro: the pre-v9.8.0 writer only ever emitted the
+    // FIRST "tetra" block, so a triangle-only mesh wrote a file with empty
+    // ElementRange/ElementConnectivity groups -- readable by nothing,
+    // including this build's own reader.
+    m.writeMesh('/tri.cgns', tri2, 'cgns');
+    assert.ok(m.FS.stat('/tri.cgns').size > 0, '/tri.cgns is empty');
+    const back = m.readMesh('/tri.cgns', 'cgns');
+    assert.equal(back.cells.length, 1);
+    assert.equal(back.cells[0].type, 'triangle');
+    assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 0, 2, 3]);
+});
+
 step('convertSurface turns a volume mesh into its renderable boundary', () => {
     m.writeMesh('/cube.vtu', cube);
     m.convertSurface('/cube.vtu', '/cube-surf.vtp');

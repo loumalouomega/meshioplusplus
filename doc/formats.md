@@ -85,7 +85,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 meshio++ ships a C++ core (`meshioplusplus._core`, built with pybind11 + scikit-build-core). Most formats read and write through the C++ core with zero-copy numpy at the I/O boundary; each has a pure-Python fallback that is used automatically when the C++ path can't handle a file or when the extension was built without an optional dependency:
 
-- **HDF5** (`cgns`, `h5m`, `hmf`, `med`, and XDMF `data_format="HDF"`) — C++ when built with `MESHIOPLUSPLUS_WITH_HDF5`, otherwise `h5py`. For `med`, the C++ core covers the mesh-representation part (points, tags, families, metadata, node orientation, `POG` ragged polygons) and defers the field/bitmask/gmsh-bridging/multi-mesh constructs to the Python reference; see [`med.md`](./formats/med.md#quirks-limitations).
+- **HDF5** (`cgns`, `h5m`, `hmf`, `med`, and XDMF `data_format="HDF"`) — C++ when built with `MESHIOPLUSPLUS_WITH_HDF5`, otherwise `h5py`. For `med`, the C++ core covers the mesh-representation part (points, tags, families — including ones synthesized from named regions or `gmsh:physical`, same-type block consolidation — metadata, node orientation, `POG` ragged polygons) and defers the field/bitmask/multi-mesh constructs to the Python reference; see [`med.md`](./formats/med.md#quirks-limitations). `cgns` is a genuine CGNS/SIDS-compliant subset since v9.8.0 (readable by cgnslib/ParaView/VTK), covering the fixed-node-count element types; see [`cgns.md`](./formats/cgns.md).
 - **netCDF** (`exodus`) — C++ when built with `MESHIOPLUSPLUS_WITH_NETCDF`, otherwise `netCDF4`.
 - **zlib** (VTU zlib compression) — C++ when built with `MESHIOPLUSPLUS_WITH_ZLIB`, otherwise the Python stdlib.
 

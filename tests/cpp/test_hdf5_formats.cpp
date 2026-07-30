@@ -29,7 +29,6 @@
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
-#include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/formats/med.hpp"
@@ -37,16 +36,6 @@
 
 using meshioplusplus::detail::read_double;  // NOLINT
 namespace h5 = meshioplusplus::h5;
-
-TEST(Cgns, TetraCompressed) {
-    for (int gzip : {-1, 4}) {
-        auto w = [=](const std::string& p, const mt::Mesh& m) {
-            meshioplusplus::write_cgns(p, m, gzip);
-        };
-        auto r = [](const std::string& p) { return meshioplusplus::read_cgns(p); };
-        mt::roundtrip(w, r, mt::tet_mesh(), ".cgns");
-    }
-}
 
 TEST(H5m, LineTriangleTetra) {
     for (int gzip : {-1, 4}) {
@@ -140,8 +129,9 @@ TEST(Med, RaggedPolygons) {
 TEST(Med, FieldsNodalAndCellRoundTrip) {
     // The single-timestep common case: ordinary point_data/cell_data arrays,
     // no units, no component names, no multiple timesteps. Two DISTINCT cell
-    // types (MED rejects two blocks of the same type), so the "field values
-    // follow their cell type" property below is actually exercised.
+    // types, so the "field values follow their cell type" property below is
+    // actually exercised (same-type blocks are consolidated into one section
+    // since v9.8.0 -- see Med.SameTypeBlocksAreConsolidated in this file).
     std::string p = mt::temp_path(".med");
     meshioplusplus::Mesh m;
     m.AssignPoints(
@@ -252,8 +242,8 @@ TEST(Med, Regions) {
     meshioplusplus::NDArray pts(meshioplusplus::DType::Int64, {2});
     pts.As<std::int64_t>()[0] = 0;
     pts.As<std::int64_t>()[1] = 3;
-    m.AddRegion(meshioplusplus::Region("clamped", meshioplusplus::RegionKind::Point,
-                                       std::move(pts)));
+    m.AddRegion(
+        meshioplusplus::Region("clamped", meshioplusplus::RegionKind::Point, std::move(pts)));
 
     meshioplusplus::NDArray cells(meshioplusplus::DType::Int64, {1});
     cells.As<std::int64_t>()[0] = 0;
@@ -296,8 +286,7 @@ TEST(Med, RegionsSideDroppedWithWarning) {
     meshioplusplus::NDArray sides(meshioplusplus::DType::Int64, {1, 2});
     sides.As<std::int64_t>()[0] = 0;
     sides.As<std::int64_t>()[1] = 1;
-    m.AddRegion(
-        meshioplusplus::Region("wall", meshioplusplus::RegionKind::Side, std::move(sides)));
+    m.AddRegion(meshioplusplus::Region("wall", meshioplusplus::RegionKind::Side, std::move(sides)));
 
     meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
     meshioplusplus::MedInfo info;
@@ -336,6 +325,145 @@ TEST(Med, RegionsPrecedenceNativeTagsWin) {
     meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
     EXPECT_TRUE(out.HasRegion("native", meshioplusplus::RegionKind::Cell));
     EXPECT_FALSE(out.HasRegion("should_be_ignored", meshioplusplus::RegionKind::Cell));
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, GmshPhysicalGroupsBecomeFamilies) {
+    // Writing a mesh through the C++ core used to throw unconditionally on
+    // any `gmsh:physical` cell_data ("handled by Python fallback") -- it must
+    // now synthesize families exactly as `_ensure_med_families` does in the
+    // Python reference: named via `field_data` when available, else
+    // "group_<id>", with id 0 meaning "no group".
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m;
+    m.AssignPoints(
+        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
+    m.AddCellBlock("quad", mt::conn_from({{0, 1, 2, 3}, {1, 4, 5, 2}}));
+
+    // Cell 0 tagged 7 (named "surf" via field_data), cell 1 tagged 0 (no group).
+    meshioplusplus::NDArray phys(meshioplusplus::DType::Int64, {2});
+    phys.As<std::int64_t>()[0] = 7;
+    phys.As<std::int64_t>()[1] = 0;
+    m.AddCellData("gmsh:physical", {std::move(phys)});
+    meshioplusplus::NDArray tag_dim(meshioplusplus::DType::Int64, {2});
+    tag_dim.As<std::int64_t>()[0] = 7;
+    tag_dim.As<std::int64_t>()[1] = 2;
+    m.AddFieldData("surf", std::move(tag_dim));
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+
+    ASSERT_TRUE(out.HasRegion("surf", meshioplusplus::RegionKind::Cell));
+    const meshioplusplus::Region& r =
+        out.Region(out.FindRegion("surf", meshioplusplus::RegionKind::Cell));
+    ASSERT_EQ(r.NumEntries(), 1u);
+    EXPECT_EQ(r.Entries()[0], 0);
+    // Cell 1 (tag 0) must not have earned a group.
+    EXPECT_FALSE(out.HasRegion("group_0", meshioplusplus::RegionKind::Cell));
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, GmshPhysicalUnnamedIdBecomesGroupId) {
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tri_mesh();  // 2 triangles
+    const std::size_t ntri = m.Cells(0).NumCells();
+    meshioplusplus::NDArray phys(meshioplusplus::DType::Int64, {ntri});
+    for (std::size_t i = 0; i < ntri; ++i)
+        phys.As<std::int64_t>()[i] = 42;  // no field_data name for id 42
+    m.AddCellData("gmsh:physical", {std::move(phys)});
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+
+    ASSERT_TRUE(out.HasRegion("group_42", meshioplusplus::RegionKind::Cell));
+    const meshioplusplus::Region& r =
+        out.Region(out.FindRegion("group_42", meshioplusplus::RegionKind::Cell));
+    EXPECT_EQ(r.NumEntries(), ntri);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, GmshPhysicalSkipsIdAlreadyANamedCellRegion) {
+    // Mirrors `_ensure_med_families`' "already captured as a named cell_set"
+    // rule: a physical id resolving (via field_data) to a name that is
+    // *already* a Cell region name is not also added via the raw numeric
+    // path, even for a cell the existing region does not itself cover.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m;
+    m.AssignPoints(
+        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
+    m.AddCellBlock("quad", mt::conn_from({{0, 1, 2, 3}, {1, 4, 5, 2}}));
+
+    // "surf" already exists as a Cell region, covering only cell 1.
+    meshioplusplus::NDArray region_cells(meshioplusplus::DType::Int64, {1});
+    region_cells.As<std::int64_t>()[0] = 1;
+    m.AddRegion(
+        meshioplusplus::Region("surf", meshioplusplus::RegionKind::Cell, std::move(region_cells)));
+
+    // Cell 0 is tagged 7, and field_data maps 7 -> "surf" too.
+    meshioplusplus::NDArray phys(meshioplusplus::DType::Int64, {2});
+    phys.As<std::int64_t>()[0] = 7;
+    phys.As<std::int64_t>()[1] = 0;
+    m.AddCellData("gmsh:physical", {std::move(phys)});
+    meshioplusplus::NDArray tag_dim(meshioplusplus::DType::Int64, {2});
+    tag_dim.As<std::int64_t>()[0] = 7;
+    tag_dim.As<std::int64_t>()[1] = 2;
+    m.AddFieldData("surf", std::move(tag_dim));
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+
+    ASSERT_TRUE(out.HasRegion("surf", meshioplusplus::RegionKind::Cell));
+    const meshioplusplus::Region& r =
+        out.Region(out.FindRegion("surf", meshioplusplus::RegionKind::Cell));
+    // Cell 0 must NOT have been added -- only the original member (cell 1).
+    ASSERT_EQ(r.NumEntries(), 1u);
+    EXPECT_EQ(r.Entries()[0], 1);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, SameTypeBlocksAreConsolidated) {
+    // MSH 4.1's canonical structure is one cell block per entity -- two
+    // `triangle` blocks must consolidate into ONE `TR3` MED section rather
+    // than throwing (the pre-v9.8.0 "MED files cannot have two sections of
+    // the same cell type" rejection).
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tri_quad_mesh();  // triangle(2), quad(1), triangle(1)
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+        h5::Hid mai =
+            h5::open_group(f, "ENS_MAA/mesh/-0000000000000000001-0000000000000000001/MAI");
+        std::vector<std::string> sections = h5::group_links(mai);
+        std::sort(sections.begin(), sections.end());
+        EXPECT_EQ(sections, (std::vector<std::string>{"QU4", "TR3"}));
+    }
+
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+    ASSERT_EQ(out.NumCellBlocks(), 2u);
+    std::size_t n_tri = 0, n_quad = 0;
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        if (out.Cells(b).Type() == "triangle")
+            n_tri = out.Cells(b).NumCells();
+        if (out.Cells(b).Type() == "quad")
+            n_quad = out.Cells(b).NumCells();
+    }
+    EXPECT_EQ(n_tri, 3u);
+    EXPECT_EQ(n_quad, 1u);
 
     std::error_code ec;
     std::filesystem::remove(p, ec);

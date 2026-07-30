@@ -18,23 +18,36 @@
 
 /**
  * @file cgns.hpp
- * @brief CGNS (.cgns) C++ reader/writer — a minimal tetrahedra-only subset
- *        stored in HDF5, not the full CGNS/SIDS specification.
+ * @brief CGNS (.cgns) C++ reader/writer, a genuine CGNS/SIDS-compliant
+ *        unstructured-mesh subset stored in HDF5 (the ADF-over-HDF5 mapping
+ *        every real CGNS tool uses), readable by cgnslib/ParaView/VTK.
  *
- * On-disk layout: `Base/Zone1/GridCoordinates/{CoordinateX,Y,Z}/" data"` and
- * `Base/Zone1/GridElements/{ElementRange," "ElementConnectivity}/" data"`
- * (the leading-space dataset name `" data"` in every leaf group is this
- * implementation's own ad hoc convention, not part of the real CGNS/HDF5
- * spec, but shared identically between the Python and C++ writers).
- * `ElementRange` is `[1, n_cells]` (1-based inclusive) and
- * `ElementConnectivity` is flat 1-based tetra connectivity; `+-1` is applied
- * on read/write while preserving the connectivity array's original integer
- * dtype. This is the least complete format meshio++ supports: `tetra` is the
- * only cell type accepted or emitted, and no point_data/cell_data/field_data
- * is read or written at all. Compiled in only when
- * `MESHIOPLUSPLUS_HAS_HDF5` is defined; otherwise the Python `h5py` fallback
- * handles this format with identical on-disk behavior. See
- * doc/formats/cgns.md.
+ * Rewritten in v9.8.0 from a private tetrahedra-only encoding that wrote no
+ * CGNS node attributes at all and (for any non-tetra mesh) an HDF5 file its
+ * own reader rejected on read-back. **The `" data"` leading-space dataset
+ * name is not an ad hoc convention** — `#define D_DATA " data"` in cgnslib's
+ * own `ADFH.c` is the real ADF-over-HDF5 mapping every node's payload uses;
+ * the previous docs here and in doc/formats/cgns.md claiming otherwise were
+ * wrong. See doc/formats/cgns.md for the full on-disk layout, the supported/
+ * rejected cell-type table, and what CI can and cannot verify.
+ *
+ * On-disk tree (unstructured, one zone):
+ * `/` (root node attrs + `" format"`/`" hdf5version"`) -> `CGNSLibraryVersion`
+ * -> `Base` (`CGNSBase_t`, `" data"` = `[CellDim, PhysDim]`) -> `Zone1`
+ * (`Zone_t`, `" data"` shape `(3,1)` = `[NVertex, NCell, 0]`) -> `ZoneType`
+ * (`"Unstructured"`) + `GridCoordinates` (`CoordinateX`/`Y`/`Z`, the last
+ * only when `PhysDim == 3`) + one `Elements_t` section per meshio++ cell
+ * block (`ElementRange`/`ElementConnectivity`, 1-based, row-major/
+ * element-major unlike MED's Fortran order). Every node carries CGNS's four
+ * standard attributes (`name`/`label`/`type`/`flags`) and the file/every
+ * group is created with HDF5 link+attribute creation-order tracking, both
+ * load-bearing: cgnslib's `has_child`/`has_data` iterate creation order with
+ * no name-order fallback.
+ *
+ * A file with no `CGNSBase_t` node (the pre-v9.8.0 layout, or upstream
+ * meshio's own writer) is still read via a legacy fallback path that
+ * reproduces the old reader's exact behavior and messages, so no existing
+ * file becomes unreadable.
  */
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -49,39 +62,52 @@
 namespace meshioplusplus {
 
 /**
- * @brief Write `mesh` as a minimal CGNS/HDF5 file (tetrahedra only).
+ * @brief Write `mesh` as a CGNS/SIDS-compliant unstructured HDF5 file.
  *
- * Emits `Base/Zone1/GridCoordinates` (CoordinateX/Y/Z) and
- * `Base/Zone1/GridElements` (ElementRange = `[1,n]`, ElementConnectivity =
- * flat 1-based node ids), converting 0-based to 1-based indices while
- * preserving the connectivity array's integer dtype.
+ * Every cell block becomes its own `Elements_t` section (see the file
+ * comment for the full tree); `CellDim`/`PhysDim` and the zone's vertex/cell
+ * counts are derived from the mesh. Only the fixed-node-count types listed
+ * in doc/formats/cgns.md's type table are supported — anything else
+ * (`polygon`/`polyhedron*`, ragged blocks, or a type whose CGNS node
+ * ordering meshio++ does not yet implement) throws by name rather than
+ * writing a file with a guessed or silently dropped section.
  *
  * @param rPath filesystem path to write
- * @param rMesh the mesh to write — only its `"tetra"` cell block (if any) is
- *        emitted; any other cell type present is silently ignored, not
- *        warned
- * @param gzip_level HDF5 gzip compression level applied to every dataset
- *        (CoordinateX/Y/Z, ElementRange, ElementConnectivity); write-only —
- *        HDF5 decompresses transparently on read regardless of the level
- *        used to write
- * @throws WriteError if the connectivity array's dtype is unsupported
+ * @param rMesh the mesh to write — every cell block is emitted, in mesh
+ *        order, as its own section (multiple blocks of the same type stay
+ *        separate sections, unlike MED)
+ * @param gzip_level HDF5 gzip compression level applied to every dataset;
+ *        write-only, negative disables compression (the default)
+ * @throws WriteError for an unsupported/unverified-ordering cell type, a
+ *         ragged block, or `PointDim() > 3`
  */
 MESHIOPLUSPLUS_API void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level);
 
 /**
- * @brief Read a CGNS/HDF5 file written by @ref write_cgns (or a compatible
- *        file following the same minimal layout).
+ * @brief Read a CGNS/HDF5 file: either one written by @ref write_cgns (or
+ *        any other CGNS/SIDS-compliant unstructured-mesh writer covering
+ *        the same type table), or a pre-v9.8.0 meshio++/legacy file.
  *
- * Reads `Base/Zone1/GridCoordinates` and `GridElements`, converting 1-based
- * connectivity to 0-based.
+ * The spec path is selected by the presence of a root child node whose
+ * `label` attribute is `"CGNSBase_t"` — the discriminator is structural,
+ * never the file extension or a version number, and a file with neither
+ * shape is a `ReadError` naming both. Every `Unstructured` zone under the
+ * first `CGNSBase_t` is concatenated (a `Structured` zone is rejected rather
+ * than silently dropped); `Elements_t` sections are found by `label`, never
+ * by name, and ordered ascending by `ElementRange[0]` (which reproduces
+ * `write_cgns`'s own block order exactly). The point array's column count
+ * follows however many of `CoordinateX/Y/Z` the file actually has (at least
+ * 2) rather than always `(n,3)`, so a 2-D-authored file round-trips its
+ * point shape.
  *
  * @param rPath filesystem path to read
- * @return the read Mesh (points + one `"tetra"` cell block; no point_data/
- *         cell_data/field_data)
- * @throws ReadError if `"Base"` or `"Base/Zone1"` is missing ("Malformed
- *         CGNS?"), `ElementRange`/`ElementConnectivity` are malformed, the
- *         connectivity doesn't reshape to exactly 4 columns per cell ("Can
- *         only read tetrahedra."), or the connectivity dtype is unsupported
+ * @return the read Mesh (points + one cell block per section, in
+ *         `ElementRange`-sorted order; no point_data/cell_data/field_data)
+ * @throws ReadError if the file has neither a spec `CGNSBase_t` node nor the
+ *         legacy `Base/Zone1/GridElements` layout, a zone is `Structured`, a
+ *         section has a `MIXED`/`NGON_n`/`NFACE_n`/unknown/unverified-
+ *         ordering `ElementType`, or a section's connectivity size doesn't
+ *         match its declared element count
  */
 MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
 

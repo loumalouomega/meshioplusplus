@@ -52,6 +52,8 @@ _CELL_FACES = {
         ("quad8", 4, (0, 3, 2, 1, 11, 10, 9, 8)),
         ("quad8", 4, (4, 5, 6, 7, 12, 13, 14, 15)),
     ],
+    # KNOWN DEFECT, kept in sync with the C++ twin (detail/cell_faces.cpp) --
+    # see its comment for why this isn't fixed here.
     "hexahedron27": [
         ("quad9", 4, (0, 4, 7, 3, 16, 15, 19, 11, 23)),
         ("quad9", 4, (1, 2, 6, 5, 9, 18, 13, 17, 21)),

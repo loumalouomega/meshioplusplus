@@ -51,11 +51,11 @@ namespace {
 
 const std::unordered_map<std::string, std::string>& meshio_to_med() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"vertex", "PO1"},       {"line", "SE2"},      {"line3", "SE3"},     {"line4", "SE4"},
-        {"triangle", "TR3"},     {"triangle6", "TR6"}, {"triangle7", "TR7"}, {"quad", "QU4"},
-        {"quad8", "QU8"},        {"quad9", "QU9"},     {"tetra", "TE4"},     {"tetra10", "T10"},
-        {"hexahedron", "HE8"},   {"hexahedron20", "H20"}, {"pyramid", "PY5"}, {"pyramid13", "P13"},
-        {"wedge", "PE6"},        {"wedge15", "P15"},   {"polygon", "POG"},   {"polygon2", "POG2"}};
+        {"vertex", "PO1"},     {"line", "SE2"},         {"line3", "SE3"},     {"line4", "SE4"},
+        {"triangle", "TR3"},   {"triangle6", "TR6"},    {"triangle7", "TR7"}, {"quad", "QU4"},
+        {"quad8", "QU8"},      {"quad9", "QU9"},        {"tetra", "TE4"},     {"tetra10", "T10"},
+        {"hexahedron", "HE8"}, {"hexahedron20", "H20"}, {"pyramid", "PY5"},   {"pyramid13", "P13"},
+        {"wedge", "PE6"},      {"wedge15", "P15"},      {"polygon", "POG"},   {"polygon2", "POG2"}};
     return m;
 }
 
@@ -192,6 +192,104 @@ NDArray unflatten_f(const NDArray& rFlat, std::size_t n, std::size_t k, std::int
     return out;
 }
 
+// --- same-type cell block consolidation -------------------------------------
+//
+// MED cannot have two `MAI` sections of the same element type; MSH 4.1's
+// canonical structure is one cell block per *entity*, so this bites every
+// real 4.1 file. The Python reference does not reject -- it merges same-type
+// blocks (`_med.py:811-869`), which is the compatibility baseline these
+// mirror row for row: concatenate first, then do the one Fortran-order
+// flatten (or FAM/NUM row concatenation) that formerly ran per block.
+
+// Row-major (n_total, k) connectivity across `rBlockIdx`, promoting to Int64
+// only when the contributing blocks disagree on dtype (mirrors numpy's
+// concatenate upcasting; when they agree the merged array keeps that dtype,
+// same as a single un-consolidated block would).
+NDArray med_concat_conn_rows(const Mesh& rMesh, const std::vector<std::size_t>& rBlockIdx,
+                             std::size_t k) {
+    std::size_t n_total = 0;
+    for (std::size_t bi : rBlockIdx)
+        n_total += rMesh.Cells(bi).NumCells();
+    DType dt = rMesh.Cells(rBlockIdx[0]).Conn().Dtype();
+    for (std::size_t bi : rBlockIdx)
+        if (rMesh.Cells(bi).Conn().Dtype() != dt) {
+            dt = DType::Int64;
+            break;
+        }
+    NDArray out(dt, {n_total, k});
+    detail::dispatch_dtype(dt, [&]<class T>() {
+        T* dst = out.As<T>();
+        std::size_t row = 0;
+        for (std::size_t bi : rBlockIdx) {
+            const NDArray& conn = rMesh.Cells(bi).Conn();
+            const std::size_t nb = rMesh.Cells(bi).NumCells();
+            for (std::size_t i = 0; i < nb; ++i)
+                for (std::size_t c = 0; c < k; ++c)
+                    dst[(row + i) * k + c] = static_cast<T>(detail::read_int(conn, i * k + c));
+            row += nb;
+        }
+    });
+    return out;
+}
+
+// Flat 1-D concatenation of a per-block cell_data array (FAM / med:num)
+// across `rBlockIdx`. Assumes a consistent dtype across the contributing
+// blocks (the uniform mesh API's own invariant for a named cell_data array).
+//
+// Shape-preserving: `rName` may be a scalar array (cell_tags/med:num, always
+// one component -- shape (n_total,)) OR an arbitrary multi-component
+// cell_data array reached via write_cha_cell_field, which must keep its
+// column count (shape (n_total, k)) or every component past the first is
+// silently dropped.
+NDArray med_concat_cell_data_rows(const Mesh& rMesh, const std::string& rName,
+                                  const std::vector<std::size_t>& rBlockIdx) {
+    std::size_t n_total = 0;
+    for (std::size_t bi : rBlockIdx)
+        n_total += detail::rows(rMesh.CellData(rName, bi));
+    const NDArray& first = rMesh.CellData(rName, rBlockIdx[0]);
+    const DType dt = first.Dtype();
+    const std::size_t k = detail::cols(first);
+    NDArray out(dt,
+                k > 1 ? std::vector<std::size_t>{n_total, k} : std::vector<std::size_t>{n_total});
+    detail::dispatch_dtype(dt, [&]<class T>() {
+        T* dst = out.As<T>();
+        std::size_t row = 0;
+        for (std::size_t bi : rBlockIdx) {
+            const NDArray& d = rMesh.CellData(rName, bi);
+            const T* src = d.As<T>();
+            const std::size_t nb = detail::rows(d);
+            std::memcpy(dst + row * k, src, nb * k * sizeof(T));
+            row += nb;
+        }
+    });
+    return out;
+}
+
+// Same as med_concat_cell_data_rows, but over a standalone per-block
+// NDArray vector rather than the mesh's own cell_data (used for the
+// gmsh:physical/region-synthesized FAM blocks, which never reach the mesh).
+NDArray med_concat_ndarray_rows(const std::vector<NDArray>& rBlocks,
+                                const std::vector<std::size_t>& rBlockIdx) {
+    std::size_t n_total = 0;
+    for (std::size_t bi : rBlockIdx)
+        n_total += detail::rows(rBlocks[bi]);
+    const DType dt = rBlocks[rBlockIdx[0]].Dtype();
+    NDArray out(dt, {n_total});
+    detail::dispatch_dtype(dt, [&]<class T>() {
+        T* dst = out.As<T>();
+        std::size_t row = 0;
+        for (std::size_t bi : rBlockIdx) {
+            const NDArray& d = rBlocks[bi];
+            const T* src = d.As<T>();
+            const std::size_t nb = detail::rows(d);
+            for (std::size_t i = 0; i < nb; ++i)
+                dst[row + i] = src[i];
+            row += nb;
+        }
+    });
+    return out;
+}
+
 constexpr const char* kProfile = "MED_NO_PROFILE_INTERNAL";
 
 // --- CHA (field) writing: the single-timestep common case only -------------
@@ -305,15 +403,30 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
         }
     }
     h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, dt, ncomponents);
+
+    // Group blocks by MED type first: two blocks of the same type share one
+    // "MAI.<type>" support subgroup (mirrors the connectivity-writing loop's
+    // own consolidation -- two calls to write_cha_support with the same
+    // name would collide creating the group).
+    std::vector<std::string> type_order;
+    std::unordered_map<std::string, std::vector<std::size_t>> by_type;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-        const NDArray& d = rMesh.CellData(rName, b);
-        if (detail::rows(d) == 0)
-            continue;  // an empty block contributes no support subgroup
         auto it = meshio_to_med().find(rMesh.Cells(b).Type());
         if (it == meshio_to_med().end())
             continue;  // unsupported cell type; already reported by the
                        // connectivity-writing loop, which runs first
-        write_cha_support(ts, "MAI." + it->second, d);
+        if (!by_type.count(it->second))
+            type_order.push_back(it->second);
+        by_type[it->second].push_back(b);
+    }
+    for (const std::string& med_type : type_order) {
+        const std::vector<std::size_t>& idxs = by_type[med_type];
+        std::size_t n_total = 0;
+        for (std::size_t b : idxs)
+            n_total += detail::rows(rMesh.CellData(rName, b));
+        if (n_total == 0)
+            continue;  // no contributing block has rows for this array
+        write_cha_support(ts, "MAI." + med_type, med_concat_cell_data_rows(rMesh, rName, idxs));
     }
 }
 
@@ -466,7 +579,8 @@ void med_attach_cell_regions(Mesh& rMesh, const MedInfo& rInfo) {
             for (std::size_t i = 0; i < fam.Size(); ++i) {
                 if (detail::read_int(fam, i) != fid)
                     continue;
-                const std::int64_t g = detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
+                const std::int64_t g =
+                    detail::block_row_to_global(bases, b, static_cast<std::int64_t>(i));
                 if (g < 0 || g >= total)
                     continue;
                 for (const auto& name : names)
@@ -536,16 +650,22 @@ bool med_point_regions_to_tags(const Mesh& rMesh, NDArray& rFamArray,
 bool med_cell_regions_to_tags(const Mesh& rMesh, std::vector<NDArray>& rFamBlocks,
                               std::map<std::int64_t, std::vector<std::string>>& rTags,
                               std::map<std::int64_t, std::string>& rGroupNames) {
-    bool any = false;
+    bool has_cell_regions = false;
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         if (rMesh.Region(i).mKind == RegionKind::Cell)
-            any = true;
-    if (!any)
+            has_cell_regions = true;
+    const bool has_gmsh_physical = rMesh.HasCellData("gmsh:physical");
+    if (!has_cell_regions && !has_gmsh_physical)
         return false;
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::int64_t total = detail::total_cells(bases);
     std::vector<std::set<std::string>> groups(static_cast<std::size_t>(total));
+
+    // Named `Cell` regions -- this already covers every Gmsh 4.1 physical
+    // group that was matched in $PhysicalNames (see gmsh_attach_regions in
+    // gmsh.cpp, which derives exactly these regions from gmsh:physical +
+    // field_data on read).
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
         const meshioplusplus::Region& r = rMesh.Region(i);
         if (r.mKind != RegionKind::Cell)
@@ -554,6 +674,52 @@ bool med_cell_regions_to_tags(const Mesh& rMesh, std::vector<NDArray>& rFamBlock
         for (std::size_t k = 0; k < r.NumEntries(); ++k)
             if (e[k] >= 0 && e[k] < total)
                 groups[static_cast<std::size_t>(e[k])].insert(r.mName);
+    }
+
+    // Raw `gmsh:physical` ids, for ids NOT already exposed as a named `Cell`
+    // region (avoids a duplicate group when Gmsh 4.1 carried both). This is
+    // the C++ port of `_ensure_med_families`'s cell-side bridging in
+    // `_med.py`, kept step for step: the readable name is `field_data`'s
+    // name for that tag (first element only, no dim disambiguation -- unlike
+    // `gmsh_physical_names`'s `(tag, dim)` key -- matching the Python
+    // reference exactly), else `"group_<id>"`. Without this path a plain
+    // Gmsh 2.2/4.0 mesh, or an un-named Gmsh 4.1 group, would silently lose
+    // every physical tag on write.
+    //
+    // Known divergence from the Python reference: `field_data` there is
+    // iterated in insertion order (last duplicate tag wins); here
+    // `FieldDataNames()` is sorted, so a malformed mesh whose two group names
+    // share one tag can pick a different winner. Only reachable with such a
+    // mesh.
+    if (has_gmsh_physical) {
+        std::unordered_map<std::int64_t, std::string> id_to_name;
+        for (const auto& name : rMesh.FieldDataNames()) {
+            const NDArray& d = rMesh.FieldData(name);
+            if (d.Size() >= 1)
+                id_to_name[detail::read_int(d, 0)] = name;
+        }
+        const std::size_t nblocks =
+            std::min(rMesh.NumCellBlocks(), rMesh.CellDataNumBlocks("gmsh:physical"));
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& phys = rMesh.CellData("gmsh:physical", b);
+            const std::int64_t base = bases[b];
+            const std::size_t ncells = static_cast<std::size_t>(bases[b + 1] - bases[b]);
+            for (std::size_t c = 0; c < ncells && c < phys.Size(); ++c) {
+                const std::int64_t pid = detail::read_int(phys, c);
+                if (pid == 0)
+                    continue;  // family 0 -- no group
+                auto nit = id_to_name.find(pid);
+                std::string name;
+                if (nit != id_to_name.end()) {
+                    if (rMesh.HasRegion(nit->second, RegionKind::Cell))
+                        continue;  // already captured as a named Cell region
+                    name = nit->second;
+                } else {
+                    name = "group_" + std::to_string(pid);
+                }
+                groups[static_cast<std::size_t>(base) + c].insert(std::move(name));
+            }
+        }
     }
 
     std::map<std::set<std::string>, std::int64_t> combo_to_fam;
@@ -931,14 +1097,14 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     // here, never thrown). The guard therefore has to live where those
     // conventions actually exist -- the Python shim (`med/__init__.py`),
     // which checks `mesh.field_data` itself before ever calling in here.
-    if (rMesh.HasCellData("gmsh:physical"))
-        throw WriteError("MED: gmsh physical groups handled by Python fallback");
-
-    // MED cannot have two blocks of the same type.
-    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i)
-        for (std::size_t j = i + 1; j < rMesh.NumCellBlocks(); ++j)
-            if (rMesh.Cells(i).Type() == rMesh.Cells(j).Type())
-                throw WriteError("MED files cannot have two sections of the same cell type.");
+    //
+    // `gmsh:physical` used to be an unconditional throw here ("handled by
+    // Python fallback") -- but the information it carries is already
+    // representable natively: med_cell_regions_to_tags (below) now folds it,
+    // alongside any named `Cell` region, into the same family synthesis the
+    // v9.6.0 regions work added. See `"gmsh:physical"` in the two CHA
+    // skip-lists a few lines down -- it must never *also* be written as a
+    // numeric field.
 
     // Named regions -> families (see doc/regions.md): only synthesized when
     // the mesh carries no native point_tags/cell_tags of its own -- a mesh
@@ -948,14 +1114,15 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     std::map<std::int64_t, std::string> synth_point_group_names;
     const bool synthesized_point =
         !rMesh.HasPointData("point_tags") &&
-        med_point_regions_to_tags(rMesh, synth_point_fam, synth_point_tags, synth_point_group_names);
+        med_point_regions_to_tags(rMesh, synth_point_fam, synth_point_tags,
+                                  synth_point_group_names);
 
     std::vector<NDArray> synth_cell_fam_blocks;
     std::map<std::int64_t, std::vector<std::string>> synth_cell_tags;
     std::map<std::int64_t, std::string> synth_cell_group_names;
-    const bool synthesized_cell =
-        !rMesh.HasCellData("cell_tags") &&
-        med_cell_regions_to_tags(rMesh, synth_cell_fam_blocks, synth_cell_tags, synth_cell_group_names);
+    const bool synthesized_cell = !rMesh.HasCellData("cell_tags") &&
+                                  med_cell_regions_to_tags(rMesh, synth_cell_fam_blocks,
+                                                           synth_cell_tags, synth_cell_group_names);
 
     if (synthesized_point || synthesized_cell)
         med_warn_side_regions_dropped(rMesh);
@@ -1062,30 +1229,72 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(rMesh.NumPoints()));
     }
 
-    // Cells
+    // Cells. MED cannot have two sections of the same type -- MSH 4.1's
+    // canonical structure is one cell block per *entity*, so group blocks by
+    // type (first-seen order) and write one section per type, consolidating
+    // the contributing blocks' connectivity/FAM/NUM. Mirrors the Python
+    // reference's write-time merge (_med.py:811-869), which is why this
+    // never rejects a mesh the pre-v9.8.0 pairwise-type check used to.
     h5::Hid mai = h5::create_group(time_step, "MAI");
     h5::write_attr_int(mai, "CGT", 1);
     const bool has_cell_num = rMesh.HasCellData("med:num");
+    const bool has_native_cell_tags = rMesh.HasCellData("cell_tags");
+    const std::size_t native_tag_blocks =
+        has_native_cell_tags ? rMesh.CellDataNumBlocks("cell_tags") : 0;
+    const std::size_t num_blocks = has_cell_num ? rMesh.CellDataNumBlocks("med:num") : 0;
+
+    std::vector<std::string> cell_type_order;
+    std::unordered_map<std::string, std::vector<std::size_t>> blocks_by_type;
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
-        const auto cb = rMesh.Cells(k);
-        auto it = meshio_to_med().find(cb.Type());
-        if (it == meshio_to_med().end())
-            throw WriteError(detail::format_compat("MED: unsupported cell type {}", cb.Type()));
-        h5::Hid g = h5::create_group(mai, it->second);
+        const std::string ctype(rMesh.Cells(k).Type());
+        if (meshio_to_med().find(ctype) == meshio_to_med().end())
+            throw WriteError(detail::format_compat("MED: unsupported cell type {}", ctype));
+        if (!blocks_by_type.count(ctype))
+            cell_type_order.push_back(ctype);
+        blocks_by_type[ctype].push_back(k);
+    }
+
+    for (const std::string& ctype : cell_type_order) {
+        const std::vector<std::size_t>& idxs = blocks_by_type[ctype];
+        const bool is_ragged_type = (ctype == "polygon" || ctype == "polygon2");
+
+        // Blocks of the same type must agree on node count to be merged into
+        // one section -- unlike merge.cpp's grouping (keyed on Type() alone,
+        // trusting the first contributor), a disagreement here is a checked
+        // error rather than a silently truncated/garbled NOD array.
+        if (!is_ragged_type) {
+            const std::size_t npc = rMesh.Cells(idxs[0]).NodesPerCell();
+            for (std::size_t bi : idxs)
+                if (rMesh.Cells(bi).NodesPerCell() != npc)
+                    throw WriteError(detail::format_compat(
+                        "MED: cell type '{}' has blocks disagreeing on node count ({} vs {}); "
+                        "cannot consolidate into one section",
+                        ctype, npc, rMesh.Cells(bi).NodesPerCell()));
+        }
+
+        h5::Hid g = h5::create_group(mai, meshio_to_med().at(ctype));
         h5::write_attr_int(g, "CGT", 1);
         h5::write_attr_int(g, "CGS", 1);
         write_attr_bytes(g, "PFL", kProfile);
 
-        if (cb.Type() == "polygon" || cb.Type() == "polygon2") {
-            // Ragged: flat 1-based NOD + 1-based INN offsets.
+        std::size_t n_total = 0;
+        for (std::size_t bi : idxs)
+            n_total += rMesh.Cells(bi).NumCells();
+
+        if (is_ragged_type) {
+            // Ragged: flat 1-based NOD + 1-based INN offsets, concatenated
+            // across every contributing block in order.
             std::vector<std::int64_t> nod;
             std::vector<std::int64_t> inn = {1};
-            for (std::size_t i = 0; i < cb.NumCells(); ++i) {
-                const std::int64_t* row = cb.Row(i);
-                const std::size_t row_size = cb.RowSize(i);
-                for (std::size_t j = 0; j < row_size; ++j)
-                    nod.push_back(row[j] + 1);
-                inn.push_back(inn.back() + static_cast<std::int64_t>(row_size));
+            for (std::size_t bi : idxs) {
+                const auto cb = rMesh.Cells(bi);
+                for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+                    const std::int64_t* row = cb.Row(i);
+                    const std::size_t row_size = cb.RowSize(i);
+                    for (std::size_t j = 0; j < row_size; ++j)
+                        nod.push_back(row[j] + 1);
+                    inn.push_back(inn.back() + static_cast<std::int64_t>(row_size));
+                }
             }
             NDArray nod_a(DType::Int64, {nod.size()});
             for (std::size_t i = 0; i < nod.size(); ++i)
@@ -1097,35 +1306,69 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             h5::write_dataset(g, "INN", inn_a);
             h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);
-            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
         } else {
-            warn_unconverted_3d(cb.Type());
+            warn_unconverted_3d(ctype);
             // Fuse the meshio->MED node reorder with the Fortran transpose
-            // (shift +1) into a single pass (mirrors the read side).
-            auto pit = med_node_perm().find(cb.Type());
+            // (shift +1) into a single pass (mirrors the read side), over the
+            // concatenated connectivity of every contributing block.
+            auto pit = med_node_perm().find(ctype);
             const std::vector<int>* perm = (pit != med_node_perm().end()) ? &pit->second : nullptr;
-            NDArray nod = flatten_f(cb.Conn(), +1, perm);
+            NDArray conn = med_concat_conn_rows(rMesh, idxs, rMesh.Cells(idxs[0]).NodesPerCell());
+            NDArray nod = flatten_f(conn, +1, perm);
             h5::write_dataset(g, "NOD", nod);
             h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);
-            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
         }
-        if (rMesh.HasCellData("cell_tags") && k < rMesh.CellDataNumBlocks("cell_tags")) {
-            h5::write_dataset(g, "FAM", rMesh.CellData("cell_tags", k));
+
+        // FAM: native cell_tags wins when it covers every contributing block
+        // (the pre-existing per-block priority); else the synthesized
+        // regions/gmsh:physical families, which always cover every block by
+        // construction (synth_cell_fam_blocks has one entry per mesh block).
+        bool native_covers_all = has_native_cell_tags;
+        for (std::size_t bi : idxs)
+            if (bi >= native_tag_blocks) {
+                native_covers_all = false;
+                break;
+            }
+        if (native_covers_all) {
+            NDArray fam = med_concat_cell_data_rows(rMesh, "cell_tags", idxs);
+            h5::write_dataset(g, "FAM", fam);
             h5::Hid d(H5Dopen2(g, "FAM", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);
-            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
-        } else if (synthesized_cell && k < synth_cell_fam_blocks.size()) {
-            h5::write_dataset(g, "FAM", synth_cell_fam_blocks[k]);
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
+        } else if (has_native_cell_tags) {
+            log::warn(
+                "MED: cell type '{}' has 'cell_tags' covering only some of its blocks; FAM not "
+                "written for this section.",
+                ctype);
+        } else if (synthesized_cell) {
+            NDArray fam = med_concat_ndarray_rows(synth_cell_fam_blocks, idxs);
+            h5::write_dataset(g, "FAM", fam);
             h5::Hid d(H5Dopen2(g, "FAM", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);
-            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
         }
-        if (has_cell_num && k < rMesh.CellDataNumBlocks("med:num")) {
-            h5::write_dataset(g, "NUM", rMesh.CellData("med:num", k));
+
+        // NUM: same all-or-nothing rule as global numbering elsewhere.
+        bool num_covers_all = has_cell_num;
+        for (std::size_t bi : idxs)
+            if (bi >= num_blocks) {
+                num_covers_all = false;
+                break;
+            }
+        if (num_covers_all) {
+            NDArray num = med_concat_cell_data_rows(rMesh, "med:num", idxs);
+            h5::write_dataset(g, "NUM", num);
             h5::Hid d(H5Dopen2(g, "NUM", H5P_DEFAULT), H5Dclose);
             h5::write_attr_int(d, "CGT", 1);
-            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(cb.NumCells()));
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
+        } else if (has_cell_num) {
+            log::warn(
+                "MED: cell type '{}' has 'med:num' covering only some of its blocks; NUM not "
+                "written for this section.",
+                ctype);
         }
     }
 

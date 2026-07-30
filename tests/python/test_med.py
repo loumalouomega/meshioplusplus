@@ -1550,12 +1550,19 @@ def test_gmsh_physical_groups_written_as_med_families(tmp_path):
     meshioplusplus.write(filename, mesh)
     back = meshioplusplus.read(filename)
 
-    # every physical id became a group with the right cells
+    # every physical id became a group with the right cells. Looked up by
+    # CELL TYPE, not a fixed block index: MED reorders MAI blocks
+    # alphabetically by type code on read through the C++ path (see
+    # CLAUDE.md's "Note on med"), so block *position* does not survive a
+    # round-trip even though block *identity* (and therefore group
+    # membership) does.
     assert set(back.cell_sets) == {"group_100", "group_200", "group_300"}
-    # group_100 -> both quads (block 1); group_200/300 -> one line each (block 0)
-    np.testing.assert_array_equal(back.cell_sets["group_100"][1], [0, 1])
-    np.testing.assert_array_equal(back.cell_sets["group_200"][0], [0])
-    np.testing.assert_array_equal(back.cell_sets["group_300"][0], [1])
+    line_idx = [i for i, cb in enumerate(back.cells) if cb.type == "line"][0]
+    quad_idx = [i for i, cb in enumerate(back.cells) if cb.type == "quad"][0]
+    # group_100 -> both quads; group_200/300 -> one line each.
+    np.testing.assert_array_equal(back.cell_sets["group_100"][quad_idx], [0, 1])
+    np.testing.assert_array_equal(back.cell_sets["group_200"][line_idx], [0])
+    np.testing.assert_array_equal(back.cell_sets["group_300"][line_idx], [1])
 
 
 def test_gmsh_physical_groups_use_field_data_names(tmp_path):
