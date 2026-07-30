@@ -8,6 +8,94 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.9.0 (2026-07-30)
+
+**The WASM mesh object no longer loses a data array's component shape**, CGNS carries
+point/cell data, and the `hexahedron27` face-centre defect v9.8.0 documented is fixed. All
+three came out of a downstream WASM consumer re-probing its workarounds against 9.8.0.
+Additive: a bare `Float64Array` still means a scalar array, so every existing JS caller is
+unaffected; the one user-visible change is the *numbering* of refined hexahedra's
+face-centre points (same geometry — see the hexahedron27 entry).
+
+### WASM / bindings
+
+- **Data-array component counts cross the boundary.** `point_data`/`cell_data`/`field_data`
+  crossed as flat, shapeless `Float64Array`s in *both* directions, so an `(n,3)` vector field
+  re-entered C++ as `(3n,1)`. Each map now has a sibling `point_data_components` /
+  `cell_data_components` / `field_data_components` object, `{name: k}`, following the
+  convention `xdmfSeriesWriteDataArrays`' own `components` argument already established
+  ("a flat typed array carries no shape"). An absent name means one component, and
+  `readMesh` writes an entry only for genuinely multi-component arrays, so scalar-only
+  output is unchanged. A length that is not a multiple of its declared count is a catchable
+  `Error` naming the array.
+
+  Two consequences that were the actual reported symptoms: **writing a vector field to MED
+  now works** (it previously produced a file the MED reader itself rejected with `"field
+  data size does not match its declared shape"` — `NCO=1`/`NBR=3n` against `n` points), and
+  **object-based operations no longer corrupt vector fields**. The C++ operations were never
+  at fault: `subset_gather_rows`, `refine`'s per-component interpolation and
+  `reorder_scatter_rows` all derive the row stride from the array's real trailing
+  dimensions. With a `(3n,)` array they simply failed their `rows == num_points` test and
+  took the pass-through branch, returning stale values of the wrong length. The path-based
+  `convert`/`convertSurface`/`convertSurfaceOps` calls never materialize a JS mesh and were
+  never affected — which is why the pre-existing "convertSurfaceOps keeps multi-component
+  data" smoke step passed throughout.
+
+### Formats
+
+- **CGNS reads and writes point/cell data** (`FlowSolution_t`), where a CGNS export
+  previously dropped every field silently. One `FlowSolution_t` per location
+  (`GridLocation` = `Vertex` / `CellCenter`; absent reads as `Vertex`, the SIDS default),
+  one `DataArray_t` per scalar. **CGNS has no component concept** — no
+  `NumberOfComponents` anywhere in the SIDS — so a k-component array is split into k
+  siblings named `<name>_0..<name>_{k-1}` and re-joined on read from a *contiguous* run; a
+  documented meshio++ convention, like `zstd` for VTU. `cell_data` is written only when
+  every cell block is at the zone's `CellDim` (a `CellCenter` array is per-zone, and there
+  is no way to distribute one back across blocks of differing dimension without inventing
+  values); a mixed-dimension mesh is warn-and-skipped. `FlowSolution_t` is read only for a
+  single-zone file. See [`doc/formats/cgns.md`](doc/formats/cgns.md#data-mapping).
+- **CGNS gained the external-validation layer** v9.8.0 recorded as a follow-up. `cgnslib`
+  is not in apt on a sudo-less machine but is on conda-forge, so: `cgnscheck` reports **zero
+  errors** on everything meshio++ writes, for every supported cell type (a new test, gated
+  on `shutil.which("cgnscheck")` — it skips with an actionable reason rather than silently
+  passing), and a reference `.cgns` **written end to end by cgnslib 4.5.2 itself** is
+  committed under `tests/python/meshes/cgns/` (Git LFS; `*.cgns` added to
+  `.gitattributes`) and read unconditionally by both readers.
+- **MED: a field's `NOM` now carries 16 characters per component**, not a fixed 16. Both
+  writers previously wrote one blank 16-char slot whatever the component count, which
+  deviates from MED's convention for any k>1 field; when no explicit `med:nom` names are
+  supplied, MED's own default spelling `V1..Vk` is generated. Fixed in the C++ **and**
+  Python writers together, so they do not diverge. A scalar field's bytes are unchanged.
+  Consequence: a k>1 field now reads back with `med:nom` populated where it previously came
+  back empty.
+- **MED: a mis-shaped field is rejected at write time.** A field's row count is its entity
+  count, and there was no write-side check at all — a flattened `(nk,)` vector wrote
+  `NBR = nk` against `n` points and produced a file this very reader rejects, so the failure
+  surfaced far from its cause. `write_med` now raises a `WriteError` naming the array and
+  both counts.
+- **Exodus:** the "element attribute must be scalar" guard now tests the product of *all*
+  trailing dimensions, matching its Python twin. A 3-D `(n,1,3)` array previously slipped
+  past (its `cols()` is 1) and was silently truncated to its first component. The ordinary
+  `(n,k)` vector case was already a correct, deliberate error and is unchanged.
+
+### Operations
+
+- **Fixed: `hexahedron27`'s face-centre table**, whose defect v9.8.0 documented but
+  deliberately left in place. `detail/cell_faces.cpp` assigned mid-face nodes 20/22/23 as a
+  permuted 3-cycle of the real `vtkTriQuadraticHexahedron::Faces` order, putting
+  `extract_surface`/`extract_skin`'s quad9 mid-face node at the wrong position (never a
+  wrong topology — facet keying uses corners only). Corrected in lockstep across
+  `cell_faces.cpp`, `_skin.py`'s `_CELL_FACES`, `cell_subdivision.cpp`'s quad-face rows and
+  `refine_templates.cpp` + `_refine_templates.py`'s absolute 20–23 references, since
+  `refine` derives node `20+k` from the k-th quad-face row. The repo's format layer
+  (`cgns.cpp`, `gmsh.cpp`) was already on the corrected convention, so this makes the
+  codebase self-consistent rather than changing one.
+
+  **User-visible:** `refine` numbers new nodes in slot order, so the six face-centre points
+  of every refined hexahedron now get different **ids and coordinate order**. The geometry
+  is identical and no test pinned them (only node 26, the body centre, was pinned), but code
+  that cached point ids across versions will see the change.
+
 ## v9.8.0 (2026-07-29)
 
 **`convert(gmsh → med)` now works directly from every flat binding for real Gmsh 4.1
