@@ -11,11 +11,19 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 ## v9.9.0 (2026-07-30)
 
 **The WASM mesh object no longer loses a data array's component shape**, CGNS carries
-point/cell data, and the `hexahedron27` face-centre defect v9.8.0 documented is fixed. All
-three came out of a downstream WASM consumer re-probing its workarounds against 9.8.0.
-Additive: a bare `Float64Array` still means a scalar array, so every existing JS caller is
-unaffected; the one user-visible change is the *numbering* of refined hexahedra's
-face-centre points (same geometry — see the hexahedron27 entry).
+point/cell data, the `hexahedron27` face-centre defect v9.8.0 documented is fixed, and the
+three "handled by Python fallback" gaps that made MED, Exodus and DOLFIN lossy outside
+Python are closed. All came out of a downstream WASM consumer re-probing its workarounds
+against 9.8.0. Additive on the JS side (a bare `Float64Array` still means a scalar array, so
+every existing JS caller is unaffected); two user-visible changes are the *numbering* of
+refined hexahedra's face-centre points (same geometry — see the hexahedron27 entry) and
+**`MESHIOPLUSPLUS_ABI_VERSION` 4 → 5**, because `MedInfo` gained data members (Tier A).
+
+**Breaking (C++ ABI only):** `MedInfo` gained four fields, so its layout changed. A C++
+consumer that compiled against v9.8.0 headers and passes a `MedInfo&` must be recompiled —
+which the bumped `SOVERSION` (`libmeshioplusplus_core_*.so.5`) and
+`detail/abi_version_check.hpp` both enforce at link time rather than leaving to chance. The
+C ABI, Python, WASM, Fortran, Julia and R surfaces are all unaffected.
 
 ### WASM / bindings
 
@@ -77,6 +85,70 @@ face-centre points (same geometry — see the hexahedron27 entry).
   trailing dimensions, matching its Python twin. A 3-D `(n,1,3)` array previously slipped
   past (its `cols()` is 1) and was silently truncated to its first component. The ordinary
   `(n,k)` vector case was already a correct, deliberate error and is unchanged.
+
+#### The three "handled by Python fallback" gaps
+
+Each of these threw `ReadError`/dropped data in the C++ core and was invisible from Python,
+where the shim's blanket `except Exception` silently swapped in the pure-Python reference.
+WASM, the C API, Fortran, Julia, R and the native CLI have no such fallback, so for them the
+construct was a hard failure or a silent loss.
+
+- **MED: `ReadOptions::mLenient` opens the whole Python-only surface**, following the
+  mechanism `mdpa` established in v9.1.0. Strict reads are **unchanged** (so the Python shim
+  still falls back and the Python surface is byte-identical), but a lenient read now gets
+  through a real Salome/Code_Aster file instead of failing on sight of it. Constructs that
+  can be *described* are read into `MedInfo` rather than merely skipped — a field's
+  `UNI`/`UNT` into `mFieldUnits`, a non-default `NDT`/`NOR`/`PDT` into `mStepMeta`, and every
+  step's `PDT` into `mFieldTimeValues`; the structurally unrepresentable ones (a named
+  `PFL` profile, an `ELNO`/`ELGA` support, a field mixing nodal and cell supports) drop that
+  one field with a warning recorded in `mSkippedConstructs` and keep the rest of the file.
+  ELNO/ELGA is *structurally* impossible, not merely unimplemented: the uniform mesh API's
+  `cell_data` is always `(n,)` or `(n,k)`, never a per-node-within-cell 3-D shape.
+- **MED honours `ReadOptions::mTimeStep`**, and MED is registered in
+  `registry_readers_ex()` — which is what makes the options reach WASM, the C API, Fortran,
+  Julia, R and both CLIs with no per-binding code. A multi-timestep field used to fail the
+  read outright; an explicit step now selects one (0-based, negative counts from the end,
+  the `ResolveTimeStep` contract exodus already uses). A non-default step is honoured
+  **without** `mLenient`, deliberately: it is a request the Python shim never makes, so no
+  Python behaviour depends on it.
+- **MED: a block with no `FAM` array reads as family 0** instead of failing the whole file.
+  MED spells "belongs to no family" as id 0, so this is the file's own meaning rather than a
+  guess. The Python twin was **also** wrong here in a different way — it appended nothing,
+  leaving `cell_tags` *shorter* than `mesh.cells`, which the uniform mesh API cannot hold —
+  and now zero-fills identically.
+- **Exodus writes ordinary `cell_data` as element variables.** `name_elem_var`,
+  the `elem_var_tab` truth table and one `vals_elem_var{j}eb{k}` per (variable, block): the
+  writer previously emitted none of it, so every `cell_data` array except the
+  `exodus:attr:`-prefixed ones was dropped while `point_data` round-tripped. Trailing
+  dimensions become extra netCDF dimensions exactly as the nodal path already does, so a
+  vector cell field survives. Both writers, both readers.
+- **Exodus writes `eb_names` from `Cell` regions**, the inverse of the element-block half of
+  the read path — a named block used to come back as the reader's synthetic `Block N`. Only
+  written when at least one block is actually named, so a region-less mesh's bytes are
+  unchanged.
+- **Exodus `time_whole` comes from `field_data["exodus:time"]`** instead of a hard-coded
+  `0.0`, and both readers now populate that key with the time of the step they returned — so
+  one frame of a transient solve keeps its label through a round trip. (A genuinely
+  multi-step Exodus *writer* is a stateful object like `XdmfTimeSeriesWriter` and remains a
+  follow-up; this is one mesh, one step, correctly labelled.)
+- **Fixed: a heap buffer overflow in the Exodus reader.** Assembling a cell_data array
+  allocated a scalar `{total}` buffer and then `memcpy`'d each block's full `Nbytes()` into
+  it, so a multi-component element variable wrote `n*k` bytes into `n` bytes' worth of space.
+  Pre-existing, but unreachable until this release's writer started emitting element
+  variables, and not reachable from any real SEACAS file (none carries a multi-component
+  element variable). `Exodus.MultiComponentCellDataRoundTrips` is the regression test.
+- **DOLFIN XML writes and reads `point_data`**, as `dim="0"` mesh functions. A
+  `mesh_function`'s `dim` attribute is the topological dimension of the entities it lives on,
+  so vertices are 0 — this is the format's own notion, not a meshio++ convention, and it is
+  the whole discriminator on read. `cell_data` already round-tripped through the same
+  `<stem>_<name>.xml` sibling-file mechanism and is untouched. A name used by both locations
+  wants the same file, so cell data keeps it and the point array is warn-skipped rather than
+  clobbering it; a non-scalar point array is warn-skipped too (a mesh function is one value
+  per entity).
+
+  **Not a defect, for the record:** DOLFIN XML's triangle/tetrahedron-only restriction is
+  correct by format — it is a simplicial format — and both writers already raise explicitly
+  rather than failing silently.
 
 ### Operations
 
