@@ -8,6 +8,61 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.8.0 (2026-07-29)
+
+**`convert(gmsh → med)` now works directly from every flat binding for real Gmsh 4.1
+meshes, and CGNS is a genuine CGNS/SIDS-compliant format instead of a private
+tetrahedra-only encoding.** Three gaps reported by a downstream WASM consumer
+(CAD-Preview's Gmsh→MED/CGNS bridge), all in the C++ core and invisible from Python
+because each format's shim silently falls back to the pure-Python reference on any
+exception — a fallback WASM, the C API, Fortran, Julia, R and the native CLI don't have.
+Additive: no Python-surface behavior changes (the Python reference's output is the
+compatibility baseline for both MED fixes), and `read_cgns`/`write_cgns`'s signatures are
+unchanged.
+
+### Formats
+
+- **MED: `gmsh:physical` is now bridged to families natively in C++**, not deferred to
+  Python. `write_med` used to throw `"MED: gmsh physical groups handled by Python
+  fallback"` unconditionally on any mesh carrying `cell_data["gmsh:physical"]` — and the
+  shared registry path (what every flat binding goes through) supplies no fallback, so a
+  `.msh` → `.med` conversion was simply impossible from WASM/C API/Fortran. `write_med`
+  now folds `gmsh:physical` (via `field_data`-derived names, else `"group_<id>"`, skipping
+  an id already covered by a named `Cell` region) into the same per-cell combo pass as
+  `Point`/`Cell` regions — a direct C++ port of `_ensure_med_families`'s cell-side
+  bridging in `_med.py`, matched step for step.
+- **MED: same-type cell blocks are consolidated instead of rejected.** MSH 4.1's
+  canonical structure is one cell block per *entity*, so a real 4.1 file routinely carries
+  several blocks of the same type — which used to throw `"MED files cannot have two
+  sections of the same cell type."` up front, unconditionally, before this bump's
+  `gmsh:physical` fix could even be exercised together with a real multi-entity file.
+  `write_med` now groups blocks by type (first-seen order) and writes one `MAI/<type>`
+  section per type, concatenating connectivity and `FAM`/`NUM` (row-concatenated, written
+  for a section only when every contributing block is covered by the source data, else
+  dropped for that section with a warning) — mirroring the Python reference's own
+  write-time merge, which never had this restriction.
+- **CGNS rewritten to a genuine CGNS/SIDS-compliant subset**, readable by
+  cgnslib/ParaView/VTK. The previous writer emitted **only the first `tetra` block it
+  found** and created empty `ElementRange`/`ElementConnectivity` groups otherwise, so any
+  non-tetra mesh — every surface/2-D mesh — wrote a file this library's own reader
+  rejected (`HDF5: missing dataset ' data'`; the leading-space name was never the actual
+  problem — it is cgnslib's real ADF-over-HDF5 convention, not an ad hoc one, contrary to
+  the previous docs here). Every node now carries CGNS's real `name`/`label`/`type`/
+  `flags` attributes under HDF5 link+attribute creation-order tracking (load-bearing:
+  cgnslib's own node-lookup code has no name-order fallback), with a proper
+  `CGNSBase_t`/`Zone_t`/`ZoneType_t`/`Elements_t` tree — one section per cell block, not
+  consolidated by type like MED. Covers every fixed-node-count type through
+  `hexahedron27`/`pyramid13`, with node-ordering permutations derived from the SIDS
+  edge/face conventions and cross-checked against VTK's real translator source; the
+  cubic/quartic Lagrange families and ragged (`polygon`/`polyhedron*`) blocks are
+  deliberately unsupported (named `WriteError`/`ReadError`, never a guessed ordering).
+  2-D-authored meshes now round-trip their point shape instead of always coming back
+  `(n,3)`. Backward compatible: a pre-v9.8.0 file (or one from upstream `meshio`) still
+  reads via a structural legacy-layout fallback. See
+  [`doc/formats/cgns.md`](doc/formats/cgns.md) for the full layout, type table, and what
+  CI can and cannot verify (no `cgnslib`/`cgnscheck` reference-fixture layer yet — a
+  documented follow-up).
+
 ## v9.7.0 (2026-07-29)
 
 **Gmsh MSH 4.1 `$Entities` is supported by the C++ core**, in both directions. Until now
