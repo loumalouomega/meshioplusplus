@@ -251,6 +251,29 @@ step('MED writes plain point_data/cell_data directly (the single-timestep common
     assert.deepEqual(Array.from(back.cell_data.material[0]), [7]);
 });
 
+step('med is an options-aware reader (lenient / timeStep reach it)', () => {
+    // v9.9.0 registered MED in `registry_readers_ex()`. That table is what
+    // carries ReadOptions to this build at all -- WASM has no Python fallback,
+    // so before it a multi-timestep or unit-carrying MED file was simply
+    // unreadable here, with no flag that could change that. Asserting through
+    // the *wrapper*, not Module.*, per this file's standing rule.
+    assert.equal(m.readerSupportsOptions('med'), true);
+
+    // And the options are actually honoured end to end. Our own writer emits
+    // the single-step shape, so `lenient` is a no-op on it and `timeStep: 0`
+    // is the only in-range step -- which is exactly the point: neither may
+    // change a well-formed read, and an out-of-range step must still fail.
+    m.writeMesh('/opts.med', tet, 'med');
+    const lenient = m.readMeshSelective('/opts.med', { format: 'med', lenient: true });
+    assert.deepEqual(Array.from(lenient.point_data.temperature), [1, 2, 3, 4]);
+    const first = m.readMeshSelective('/opts.med', { format: 'med', timeStep: 0 });
+    assert.deepEqual(Array.from(first.point_data.temperature), [1, 2, 3, 4]);
+    assert.throws(
+        () => m.readMeshSelective('/opts.med', { format: 'med', timeStep: 5 }),
+        /step/i,
+    );
+});
+
 step('xdmf writes an HDF companion file when HDF5 is available', () => {
     // The registry's xdmf writer default follows the build (registry.cpp): with
     // HDF5 linked in it emits Format="HDF" heavy data beside the XML, matching
