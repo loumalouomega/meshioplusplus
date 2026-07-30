@@ -65,12 +65,31 @@ export interface Mesh {
   /** 2 or 3. */
   dim: number;
   cells: CellBlock[];
-  /** name -> flat, row-major per-point data. */
+  /**
+   * name -> flat, row-major per-point data. A multi-component (vector/tensor)
+   * array is stored interleaved, `numPoints * components` long, with its width
+   * declared in {@link Mesh.point_data_components}.
+   */
   point_data?: Record<string, Float64Array>;
+  /**
+   * Per-entity width of any `point_data` array that is not a scalar, since a
+   * flat typed array carries no shape. A name absent here has one component.
+   * Read back from `readMesh` for multi-component arrays only, so a
+   * scalar-only mesh gets an empty object.
+   */
+  point_data_components?: Record<string, number>;
   /** name -> one flat array per cell block, same order as `cells`. */
   cell_data?: Record<string, Float64Array[]>;
+  /**
+   * Per-entity width of any `cell_data` array that is not a scalar. One value
+   * per *array*, not per block: every block of a named cell_data array must
+   * agree on its component count.
+   */
+  cell_data_components?: Record<string, number>;
   /** name -> scalar/small metadata arrays (e.g. material ids). */
   field_data?: Record<string, Float64Array>;
+  /** Per-entity width of any `field_data` array that is not a scalar. */
+  field_data_components?: Record<string, number>;
   /** Named groups of points / cells / cell facets (see {@link Region}). */
   regions?: Region[];
 }

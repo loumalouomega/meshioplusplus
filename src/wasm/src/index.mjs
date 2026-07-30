@@ -68,8 +68,11 @@ function resolveVariant(variant) {
  * @property {number} dim - 2 or 3.
  * @property {CellBlock[]} cells
  * @property {Object<string, Float64Array>} [point_data]
+ * @property {Object<string, number>} [point_data_components] - per-entity width of any non-scalar point_data array, since a flat typed array carries no shape; absent name = 1 component.
  * @property {Object<string, Float64Array[]>} [cell_data] - one array per cell block, same order as `cells`.
+ * @property {Object<string, number>} [cell_data_components] - per-entity width of any non-scalar cell_data array (one value per array, not per block).
  * @property {Object<string, Float64Array>} [field_data]
+ * @property {Object<string, number>} [field_data_components] - per-entity width of any non-scalar field_data array.
  */
 
 /**
