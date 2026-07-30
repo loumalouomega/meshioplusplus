@@ -30,6 +30,7 @@
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 
 namespace fs = std::filesystem;
 
@@ -101,7 +102,11 @@ Mesh read_dolfin(const std::string& rPath) {
     }
     mesh.AddCellBlock(cell_type, std::move(data));
 
-    // Cell data: sibling files "<stem>_<name>.xml".
+    // Point/cell data: sibling files "<stem>_<name>.xml". A `mesh_function`'s
+    // `dim` attribute is the topological dimension of the entities it is defined
+    // on, so `dim="0"` means *vertices* and anything else means cells -- that is
+    // the whole discriminator, which is why point data needs no new file
+    // convention. Twin of `_read_mesh_functions` in `_dolfin.py`.
     fs::path p(rPath);
     fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
     std::string stem = p.stem().string();
@@ -136,9 +141,13 @@ Mesh read_dolfin(const std::string& rPath) {
                 else
                     arr.As<std::int64_t>()[idx] = e.attribute("value").as_llong();
             }
-            std::vector<NDArray> blocks;
-            blocks.push_back(std::move(arr));
-            mesh.AddCellData(name, std::move(blocks));
+            if (mf.attribute("dim").as_int(-1) == 0) {
+                mesh.AddPointData(name, std::move(arr));
+            } else {
+                std::vector<NDArray> blocks;
+                blocks.push_back(std::move(arr));
+                mesh.AddCellData(name, std::move(blocks));
+            }
         }
     }
 
@@ -227,31 +236,60 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 
     fs::path p(rPath);
     std::string base = (p.parent_path() / p.stem()).string();
+
+    // One writer for both locations: a mesh function differs only in its `dim`.
+    auto write_mesh_function = [&](const std::string& rName, const NDArray& rArr, int Dim) {
+        const std::string fn = base + "_" + rName + ".xml";
+        std::ofstream cf(fn, std::ios::binary);
+        if (!cf)
+            throw WriteError("Could not open file for writing: " + fn);
+        const bool is_float = detail::is_float_dtype(rArr.Dtype());
+        const char* type = is_float ? "float" : "int";
+        const std::size_t sz = rArr.Shape().empty() ? 0 : rArr.Shape()[0];
+        cf << "<dolfin><mesh_function type=\"" << type << "\" dim=\"" << Dim << "\" size=\"" << sz
+           << "\">";
+        for (std::size_t k = 0; k < sz; ++k) {
+            cf << "<entity index=\"" << k << "\" value=\"";
+            if (is_float) {
+                std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(rArr, k));
+                cf << buf;
+            } else {
+                cf << detail::read_int(rArr, k);
+            }
+            cf << "\" />";
+        }
+        cf << "</mesh_function></dolfin>";
+    };
+
     for (const auto& name : rMesh.CellDataNames()) {
         const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
-        for (std::size_t bi = 0; bi < nblocks; ++bi) {
-            const NDArray& arr = rMesh.CellData(name, bi);
-            std::string fn = base + "_" + name + ".xml";
-            std::ofstream cf(fn, std::ios::binary);
-            if (!cf)
-                throw WriteError("Could not open file for writing: " + fn);
-            bool is_float = detail::is_float_dtype(arr.Dtype());
-            const char* type = is_float ? "float" : "int";
-            std::size_t sz = arr.Shape().empty() ? 0 : arr.Shape()[0];
-            cf << "<dolfin><mesh_function type=\"" << type << "\" dim=\"" << data_dim
-               << "\" size=\"" << sz << "\">";
-            for (std::size_t k = 0; k < sz; ++k) {
-                cf << "<entity index=\"" << k << "\" value=\"";
-                if (is_float) {
-                    std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(arr, k));
-                    cf << buf;
-                } else {
-                    cf << detail::read_int(arr, k);
-                }
-                cf << "\" />";
-            }
-            cf << "</mesh_function></dolfin>";
+        for (std::size_t bi = 0; bi < nblocks; ++bi)
+            write_mesh_function(name, rMesh.CellData(name, bi), data_dim);
+    }
+
+    // Point data, as `dim="0"` mesh functions -- vertices are the topological
+    // entities of dimension 0, so this is the format's own notion rather than a
+    // meshio++ convention. A name used by *both* locations would want the same
+    // sibling file, and cell data has always owned it, so the point array is
+    // skipped with a warning rather than silently clobbering it. Twin of the
+    // identical block in `_dolfin.py`.
+    for (const auto& name : rMesh.PointDataNames()) {
+        if (rMesh.HasCellData(name)) {
+            log::warn(
+                "DOLFIN: point_data '{}' collides with a cell_data array of the same name (both "
+                "want the same sibling file); not written.",
+                name);
+            continue;
         }
+        const NDArray& arr = rMesh.PointData(name);
+        if (detail::cols(arr) != 1 || arr.Shape().size() != 1) {
+            log::warn(
+                "DOLFIN: point_data '{}' is not scalar; a mesh function is one value per entity, "
+                "so it is not written.",
+                name);
+            continue;
+        }
+        write_mesh_function(name, arr, 0);
     }
 }
 

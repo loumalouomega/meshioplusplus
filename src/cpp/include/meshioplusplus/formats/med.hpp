@@ -82,11 +82,14 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -145,6 +148,43 @@ struct MedInfo {
      * families, mirroring Python `mesh.cell_tag_groups`; same defaulting
      * behavior as `point_tag_groups`. */
     std::map<std::int64_t, std::string> mCellTagGroups;
+
+    // --- populated only under ReadOptions::mLenient (see read_med) ----------
+    /**
+     * @brief What `ReadOptions::mLenient` skipped, in the order it was met.
+     *
+     * Mirrors `MdpaInfo::mSkippedConstructs`. Empty after a strict read, since
+     * a strict read either represents everything or throws. Each entry names
+     * the field and the construct, e.g.
+     * `"field 'v' on a named profile"`.
+     */
+    std::vector<std::string> mSkippedConstructs;
+    /**
+     * @brief `field name -> (UNI, UNT)` — a field's physical and time unit.
+     *
+     * The C++ `Mesh` has nowhere to put these (they are strings, and
+     * `NDArray` has no string dtype; Python carries them as the dict-valued
+     * `field_data["med:field_units"]`, which cannot cross any binding). Under
+     * `mLenient` they are read here rather than thrown on, so a caller with no
+     * Python fallback gets the field values *and* can still see its units.
+     */
+    std::map<std::string, std::pair<std::string, std::string>> mFieldUnits;
+    /**
+     * @brief `field name -> (NDT, NOR, PDT)` of the step actually read.
+     *
+     * Recorded whenever it is not the write-side default `(1, -1, 0.0)`, i.e.
+     * exactly when a strict read would have declined. Python's counterpart is
+     * the dict-valued `field_data["med:step_meta"]`.
+     */
+    std::map<std::string, std::tuple<std::int64_t, std::int64_t, double>> mStepMeta;
+    /**
+     * @brief `field name -> the PDT of every timestep the field carries`.
+     *
+     * Always filled (one entry per `CHA` field), so a caller can discover
+     * what `ReadOptions::mTimeStep` may select before issuing the request —
+     * the same reason `MeshMetadata::mTimeValues` exists for exodus.
+     */
+    std::map<std::string, std::vector<double>> mFieldTimeValues;
 };
 
 /**
@@ -178,6 +218,46 @@ struct MedInfo {
  *         pure-Python/h5py reader.
  */
 MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
+
+/**
+ * @brief `read_med` with read options — the overload that makes a MED file
+ *        with enhanced `CHA` fields readable where there is no Python.
+ *
+ * Two options change anything here; the narrowing ones (`mPointsOnly`,
+ * `mDataArrays`, `mMmap`) are applied by the Python layer after any read, as
+ * for every other format.
+ *
+ * **`mLenient`** downgrades every `CHA` decline listed under the plain
+ * overload to a `log::warn` plus a recorded entry in
+ * `MedInfo::mSkippedConstructs`, so the mesh, its tags/families/regions and
+ * every *representable* field still come back. Units and non-default step
+ * metadata are not skipped but **read into** `MedInfo::mFieldUnits` /
+ * `mStepMeta`; only a construct with no representation at all (a named
+ * profile, an ELNO/ELGA support, a field mixing nodal and cell support) causes
+ * that one field to be dropped. This is the same mechanism, and the same
+ * rationale, as `ReadOptions::mLenient` for MDPA: strict is what the Python
+ * shim uses (so it still falls back and the Python surface is unchanged),
+ * lenient is the only way a real Salome/Code_Aster file reads at all from the
+ * C API, Fortran, Julia, R, WASM or the native CLI.
+ *
+ * **`mTimeStep`** selects which timestep of a multi-step field to read
+ * (0 = first, negative counts from the end), resolved per field via
+ * `ResolveTimeStep`. A *non-default* `mTimeStep` is honoured whether or not
+ * `mLenient` is set — it is an explicit request, and no Python behaviour
+ * depends on it. With the default step and no `mLenient`, a multi-step field
+ * still throws, exactly as before. Every field's available step times are
+ * reported in `MedInfo::mFieldTimeValues` regardless.
+ *
+ * @param rPath filesystem path to the .med file to read
+ * @param rInfo output side-channel struct (see #MedInfo)
+ * @param rOptions read options; only `mLenient` and `mTimeStep` are consulted
+ * @return the read Mesh
+ * @throws ReadError as the plain overload, minus whatever `mLenient` and
+ *         `mTimeStep` cover; a `mTimeStep` out of range throws naming the
+ *         field and its step count rather than clamping.
+ */
+MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo,
+                                 const ReadOptions& rOptions);
 
 /**
  * @brief Write a Mesh to a MED (.med) HDF5 file, handling the
@@ -218,7 +298,7 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo);
  *       `"cell_tags"`, `"med:num"`.
  */
 MESHIOPLUSPLUS_API void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
-               const std::string& rMedVersion = "4.1.0");
+                                  const std::string& rMedVersion = "4.1.0");
 
 }  // namespace meshioplusplus
 
