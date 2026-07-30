@@ -72,6 +72,47 @@ TEST(Dolfin, TriangleTetra) {
     mt::roundtrip(w, r, mt::tet_mesh(), ".xml");
 }
 
+TEST(Dolfin, PointDataRoundTripsAsADimZeroMeshFunction) {
+    // The regression: point_data was dropped outright while cell_data
+    // round-tripped through the same sibling-file mechanism. `dim` is the
+    // topological dimension of the entities a mesh function is defined on, so
+    // vertices are 0 -- which is the whole discriminator on read.
+    mt::Mesh in = mt::tri_mesh();
+    const std::size_t npts = in.NumPoints();
+    meshioplusplus::NDArray pd(meshioplusplus::DType::Float64, {npts});
+    for (std::size_t i = 0; i < npts; ++i)
+        reinterpret_cast<double*>(pd.Data())[i] = 1.5 + static_cast<double>(i);
+    in.AddPointData("temp", std::move(pd));
+
+    const std::string path = mt::temp_path(".xml");
+    meshioplusplus::write_dolfin(path, in);
+
+    // The sibling file must actually say dim="0" -- reading our own output back
+    // would pass even with a wrong dim, since the reader would then just put it
+    // in cell_data and the values would still be there.
+    const std::string sibling = std::filesystem::path(path).parent_path().string() + "/" +
+                                std::filesystem::path(path).stem().string() + "_temp.xml";
+    {
+        std::ifstream f(sibling);
+        ASSERT_TRUE(f.good()) << "no sibling mesh_function file at " << sibling;
+        std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        EXPECT_NE(text.find("dim=\"0\""), std::string::npos) << text;
+    }
+
+    mt::Mesh out = meshioplusplus::read_dolfin(path);
+    ASSERT_TRUE(out.HasPointData("temp"));
+    EXPECT_FALSE(out.HasCellData("temp"));
+    const meshioplusplus::NDArray& back = out.PointData("temp");
+    ASSERT_EQ(back.Size(), npts);
+    for (std::size_t i = 0; i < npts; ++i)
+        EXPECT_DOUBLE_EQ(reinterpret_cast<const double*>(back.Data())[i],
+                         1.5 + static_cast<double>(i));
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(sibling, ec);
+}
+
 TEST(Wkt, TriangleGeometry) {
     // WKT (TIN) de-duplicates points, so point order is not preserved; check
     // that the triangle count round-trips.

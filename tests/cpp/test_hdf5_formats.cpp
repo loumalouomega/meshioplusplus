@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/region.hpp"
 
 using meshioplusplus::detail::read_double;  // NOLINT
@@ -227,6 +228,274 @@ TEST(Med, FieldsDeferToPythonWhenTimestepMetadataIsNonDefault) {
 
     meshioplusplus::MedInfo info;
     EXPECT_THROW(meshioplusplus::read_med(p, info), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+namespace {
+
+/// A `tri_mesh` with one nodal field, written by the C++ writer, ready for a
+/// test to patch into an "enhanced" file the strict reader declines.
+std::string med_field_fixture() {
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m = mt::tri_mesh();
+    meshioplusplus::NDArray t(meshioplusplus::DType::Float64, {m.NumPoints()});
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        t.As<double>()[i] = static_cast<double>(i);
+    m.AddPointData("temperature", std::move(t));
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    return p;
+}
+
+meshioplusplus::ReadOptions med_lenient() {
+    meshioplusplus::ReadOptions o;
+    o.mLenient = true;
+    return o;
+}
+
+}  // namespace
+
+TEST(Med, LenientReadsUnitsIntoMedInfo) {
+    // Strict declines (FieldsDeferToPythonWhenUnitsPresent above); lenient must
+    // read the field AND report the units, so nothing is lost even though the
+    // C++ Mesh has nowhere to put a string.
+    std::string p = med_field_fixture();
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid field = h5::open_group(f, "CHA/temperature");
+        H5Adelete(field, "UNI");
+        H5Adelete(field, "UNT");
+        h5::write_attr_string(field, "UNI", "K");
+        h5::write_attr_string(field, "UNT", "s");
+    }
+
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info, med_lenient());
+
+    ASSERT_TRUE(out.HasPointData("temperature"));
+    for (std::size_t i = 0; i < out.NumPoints(); ++i)
+        EXPECT_DOUBLE_EQ(read_double(out.PointData("temperature"), i), static_cast<double>(i));
+    ASSERT_EQ(info.mFieldUnits.count("temperature"), 1u);
+    EXPECT_EQ(info.mFieldUnits["temperature"].first, "K");
+    EXPECT_EQ(info.mFieldUnits["temperature"].second, "s");
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, LenientReadsNonDefaultStepMetadataIntoMedInfo) {
+    std::string p = med_field_fixture();
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid field = h5::open_group(f, "CHA/temperature");
+        std::vector<std::string> steps = h5::group_links(field);
+        ASSERT_EQ(steps.size(), 1u);
+        h5::Hid ts = h5::open_group(field, steps[0]);
+        h5::Hid a(H5Aopen(ts, "NDT", H5P_DEFAULT), H5Aclose);
+        std::int64_t seven = 7;
+        H5Awrite(a, H5T_NATIVE_INT64, &seven);
+    }
+
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info, med_lenient());
+    ASSERT_TRUE(out.HasPointData("temperature"));
+    ASSERT_EQ(info.mStepMeta.count("temperature"), 1u);
+    EXPECT_EQ(std::get<0>(info.mStepMeta["temperature"]), 7);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, LenientSkipsAnElgaSupportButKeepsTheMesh) {
+    // An ELNO/ELGA support is one value per node-within-cell or Gauss point --
+    // a 3-D shape the uniform mesh API's (n,)/(n,k) cell_data cannot hold at
+    // all. Strict declines the file; lenient drops that one field and still
+    // returns the geometry, which is the whole point for a Python-less caller.
+    std::string p = med_field_fixture();
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid field = h5::open_group(f, "CHA/temperature");
+        std::vector<std::string> steps = h5::group_links(field);
+        h5::Hid ts = h5::open_group(field, steps[0]);
+        // Rename the NOE support to an ELGA-style one the reader must refuse.
+        H5Lmove(ts, "NOE", ts, "NOE.TR3", H5P_DEFAULT, H5P_DEFAULT);
+    }
+
+    meshioplusplus::MedInfo strict_info;
+    EXPECT_THROW(meshioplusplus::read_med(p, strict_info), meshioplusplus::ReadError);
+
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info, med_lenient());
+    EXPECT_FALSE(out.HasPointData("temperature"));
+    EXPECT_EQ(out.NumPoints(), mt::tri_mesh().NumPoints());
+    EXPECT_EQ(out.NumCellBlocks(), 1u);
+    ASSERT_EQ(info.mSkippedConstructs.size(), 1u);
+    EXPECT_NE(info.mSkippedConstructs[0].find("ELNO/ELGA"), std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, LenientSkipsANamedProfile) {
+    std::string p = med_field_fixture();
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid noe = h5::open_group(f, "CHA/temperature");
+        std::vector<std::string> steps = h5::group_links(noe);
+        h5::Hid ts = h5::open_group(noe, steps[0]);
+        h5::Hid supp = h5::open_group(ts, "NOE");
+        H5Adelete(supp, "PFL");
+        h5::write_attr_string(supp, "PFL", "MY_PROFILE");
+    }
+
+    meshioplusplus::MedInfo strict_info;
+    EXPECT_THROW(meshioplusplus::read_med(p, strict_info), meshioplusplus::ReadError);
+
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info, med_lenient());
+    EXPECT_FALSE(out.HasPointData("temperature"));
+    EXPECT_EQ(out.NumCellBlocks(), 1u);
+    ASSERT_EQ(info.mSkippedConstructs.size(), 1u);
+    EXPECT_NE(info.mSkippedConstructs[0].find("named profile"), std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, TimeStepSelectsOneStepOfAMultiStepField) {
+    // A genuinely multi-step field: strict declines, `mTimeStep` picks one
+    // WITHOUT needing mLenient (an explicit request, not a fallback), and
+    // MedInfo reports every available step's PDT either way.
+    std::string p = med_field_fixture();
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid field = h5::open_group(f, "CHA/temperature");
+        std::vector<std::string> steps = h5::group_links(field);
+        ASSERT_EQ(steps.size(), 1u);
+        // A second step, with distinguishable values and its own PDT.
+        char key[64];
+        std::snprintf(key, sizeof(key), "%020lld%020lld", 2LL, -1LL);
+        h5::Hid ts2 = h5::create_group(field, key);
+        h5::write_attr_int(ts2, "NDT", 2);
+        h5::write_attr_int(ts2, "NOR", -1);
+        {
+            h5::Hid space(H5Screate(H5S_SCALAR), H5Sclose);
+            h5::Hid a(H5Acreate2(ts2, "PDT", H5T_IEEE_F64LE, space, H5P_DEFAULT, H5P_DEFAULT),
+                      H5Aclose);
+            double v = 2.5;
+            H5Awrite(a, H5T_NATIVE_DOUBLE, &v);
+        }
+        h5::write_attr_int(ts2, "RDT", -1);
+        h5::write_attr_int(ts2, "ROR", -1);
+        h5::Hid supp = h5::create_group(ts2, "NOE");
+        h5::write_attr_string(supp, "GAU", "");
+        h5::write_attr_string(supp, "PFL", "MED_NO_PROFILE_INTERNAL");
+        h5::Hid prof = h5::create_group(supp, "MED_NO_PROFILE_INTERNAL");
+        const std::size_t np = mt::tri_mesh().NumPoints();
+        h5::write_attr_int(prof, "NBR", static_cast<std::int64_t>(np));
+        h5::write_attr_int(prof, "NGA", 1);
+        h5::write_attr_string(prof, "GAU", "");
+        meshioplusplus::NDArray vals(meshioplusplus::DType::Float64, {np});
+        for (std::size_t i = 0; i < np; ++i)
+            vals.As<double>()[i] = 100.0 + static_cast<double>(i);
+        h5::write_dataset(prof, "CO", vals);
+    }
+
+    // Strict, default step: still a decline (the Python shim keeps falling back).
+    meshioplusplus::MedInfo strict_info;
+    EXPECT_THROW(meshioplusplus::read_med(p, strict_info), meshioplusplus::ReadError);
+
+    // Explicit mTimeStep = 1 (ResolveTimeStep is 0-based: 0 = first) picks the
+    // SECOND step, with no mLenient needed.
+    meshioplusplus::ReadOptions second;
+    second.mTimeStep = 1;
+    meshioplusplus::MedInfo info2;
+    meshioplusplus::Mesh out2 = meshioplusplus::read_med(p, info2, second);
+    ASSERT_TRUE(out2.HasPointData("temperature"));
+    EXPECT_DOUBLE_EQ(read_double(out2.PointData("temperature"), 0), 100.0);
+    // Every step's time is reported so a caller can choose before asking.
+    ASSERT_EQ(info2.mFieldTimeValues.count("temperature"), 1u);
+    ASSERT_EQ(info2.mFieldTimeValues["temperature"].size(), 2u);
+    EXPECT_DOUBLE_EQ(info2.mFieldTimeValues["temperature"][1], 2.5);
+
+    // -1 counts from the end, which here is the same second step.
+    meshioplusplus::ReadOptions last;
+    last.mTimeStep = -1;
+    meshioplusplus::MedInfo info_last;
+    meshioplusplus::Mesh out_last = meshioplusplus::read_med(p, info_last, last);
+    EXPECT_DOUBLE_EQ(read_double(out_last.PointData("temperature"), 0), 100.0);
+
+    // Lenient with the default step takes the first, warning rather than
+    // throwing.
+    meshioplusplus::MedInfo info1;
+    meshioplusplus::Mesh out1 = meshioplusplus::read_med(p, info1, med_lenient());
+    ASSERT_TRUE(out1.HasPointData("temperature"));
+    EXPECT_DOUBLE_EQ(read_double(out1.PointData("temperature"), 0), 0.0);
+
+    // An out-of-range step is a named error, never a clamp.
+    meshioplusplus::ReadOptions too_far;
+    too_far.mTimeStep = 99;
+    meshioplusplus::MedInfo bad;
+    EXPECT_THROW(meshioplusplus::read_med(p, bad, too_far), meshioplusplus::ReadError);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, PartialCellTagsBecomeFamilyZero) {
+    // A block the file left FAM off of belongs to no family, and MED spells
+    // that as id 0 -- so the reader reports zeros instead of throwing
+    // ("partial cell tags handled by Python fallback"), which used to make an
+    // ordinary Salome file unreadable wherever there is no Python.
+    std::string p = mt::temp_path(".med");
+    meshioplusplus::Mesh m;
+    m.AssignPoints(
+        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    m.AddCellBlock("quad", mt::conn_from({{1, 4, 5, 2}}));
+    std::vector<meshioplusplus::NDArray> tags;
+    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+        meshioplusplus::NDArray t(meshioplusplus::DType::Int64, {m.Cells(b).NumCells()});
+        for (std::size_t c = 0; c < m.Cells(b).NumCells(); ++c)
+            t.As<std::int64_t>()[c] = -1;
+        tags.push_back(std::move(t));
+    }
+    m.AddCellData("cell_tags", std::move(tags));
+    meshioplusplus::MedInfo win;
+    win.mCellTags[-1] = {"grp"};
+    win.mCellTagGroups[-1] = "FAM_-1_grp";
+    meshioplusplus::write_med(p, m, win);
+
+    // Delete one block's FAM so the file carries it on only one of two.
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid mai =
+            h5::open_group(f, "ENS_MAA/mesh/-0000000000000000001-0000000000000000001/MAI");
+        h5::Hid qu4 = h5::open_group(mai, "QU4");
+        H5Ldelete(qu4, "FAM", H5P_DEFAULT);
+    }
+
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);  // strict: must NOT throw
+    ASSERT_TRUE(out.HasCellData("cell_tags"));
+    // One array per block, always -- the invariant the old short-list Python
+    // behaviour violated.
+    ASSERT_EQ(out.CellDataNumBlocks("cell_tags"), out.NumCellBlocks());
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        const auto cb = out.Cells(b);
+        const meshioplusplus::NDArray& t = out.CellData("cell_tags", b);
+        ASSERT_EQ(t.Size(), cb.NumCells()) << cb.Type();
+        const std::int64_t expect = cb.Type() == "quad" ? 0 : -1;
+        for (std::size_t c = 0; c < t.Size(); ++c)
+            EXPECT_EQ(meshioplusplus::detail::read_int(t, c), expect) << cb.Type();
+    }
+
     std::error_code ec;
     std::filesystem::remove(p, ec);
 }
@@ -679,6 +948,15 @@ TEST(Med, ReadRejectsNonHdf5) {
     EXPECT_THROW(meshioplusplus::read_med(p, info), meshioplusplus::ReadError);
     std::error_code ec;
     std::filesystem::remove(p, ec);
+}
+
+TEST(Med, IsAnOptionsAwareReader) {
+    // Registering MED in registry_readers_ex() is what lets ANY flat binding
+    // pass `lenient`/`time_step` at all; before it this was false and there was
+    // nowhere for either option to go -- which, with no Python fallback in a
+    // WASM/C-API/Fortran build, meant a real Salome/Code_Aster file was simply
+    // unreadable there. Exodus's twin assertion is in test_netcdf_formats.cpp.
+    EXPECT_TRUE(meshioplusplus::registry_reader_supports_options("med"));
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

@@ -213,6 +213,109 @@ TEST(Exodus, ElementAttributesRoundTripAsCellData) {
     EXPECT_DOUBLE_EQ(again.As<double>()[2], 0.125);
 }
 
+TEST(Exodus, CellDataRoundTripsAsElementVariables) {
+    // v9.9.0: this writer emitted no `vals_elem_var` at all, so every ordinary
+    // cell_data array was silently dropped while point_data round-tripped.
+    std::string p = mt::temp_path(".e");
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}, {0, 2, 3}}));
+
+    meshioplusplus::NDArray mat(meshioplusplus::DType::Float64, {2});
+    mat.As<double>()[0] = 7.0;
+    mat.As<double>()[1] = 8.0;
+    m.AddCellData("material", {std::move(mat)});
+    meshioplusplus::NDArray pd(meshioplusplus::DType::Float64, {4});
+    for (std::size_t i = 0; i < 4; ++i)
+        pd.As<double>()[i] = static_cast<double>(i);
+    m.AddPointData("T", std::move(pd));
+
+    meshioplusplus::write_exodus(p, m);
+    meshioplusplus::Mesh back = meshioplusplus::read_exodus(p);
+    std::filesystem::remove(p);
+
+    ASSERT_TRUE(back.HasCellData("material"));
+    ASSERT_EQ(back.CellDataNumBlocks("material"), 1u);
+    const meshioplusplus::NDArray& got = back.CellData("material", 0);
+    ASSERT_EQ(got.Size(), 2u);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(got, 0), 7.0);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(got, 1), 8.0);
+    ASSERT_TRUE(back.HasPointData("T"));  // unchanged by the new element vars
+}
+
+TEST(Exodus, MultiComponentCellDataRoundTrips) {
+    // Also the regression test for a heap buffer overflow: the reader's
+    // cell_data assembly allocated `{total}` (scalar) but memcpy'd each block's
+    // full `Nbytes()`, so a k>1 element variable wrote k*n bytes into an
+    // n-byte buffer. No real SEACAS file has one (standard Exodus element
+    // variables are scalar per element), so nothing reached it until this
+    // writer started emitting the trailing dims the nodal path already did.
+    std::string p = mt::temp_path(".e");
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}, {0, 2, 3}}));
+    meshioplusplus::NDArray s(meshioplusplus::DType::Float64, {2, 3});
+    for (std::size_t i = 0; i < 6; ++i)
+        s.As<double>()[i] = static_cast<double>(i);
+    m.AddCellData("stress", {std::move(s)});
+
+    meshioplusplus::write_exodus(p, m);
+    meshioplusplus::Mesh back = meshioplusplus::read_exodus(p);
+    std::filesystem::remove(p);
+
+    ASSERT_TRUE(back.HasCellData("stress"));
+    const meshioplusplus::NDArray& got = back.CellData("stress", 0);
+    ASSERT_EQ(got.Shape().size(), 2u);
+    EXPECT_EQ(got.Shape()[0], 2u);
+    EXPECT_EQ(got.Shape()[1], 3u);
+    for (std::size_t i = 0; i < 6; ++i)
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(got, i), static_cast<double>(i));
+}
+
+TEST(Exodus, BlockNamesRoundTripThroughCellRegions) {
+    // The writer emitted no `eb_names`, so a block name became the reader's
+    // synthetic "Block N" on the way back. It is now recovered from the Cell
+    // region the reader itself derives from `eb_names`.
+    std::string p = mt::temp_path(".e");
+    meshioplusplus::Mesh m;
+    m.AssignPoints(
+        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    m.AddCellBlock("quad", mt::conn_from({{1, 4, 5, 2}}));
+    // Global block-major cell indices: block 0 is cell 0, block 1 is cell 1.
+    meshioplusplus::NDArray a(meshioplusplus::DType::Int64, {1});
+    a.As<std::int64_t>()[0] = 0;
+    m.AddRegion(meshioplusplus::Region("skin", meshioplusplus::RegionKind::Cell, std::move(a)));
+    meshioplusplus::NDArray b(meshioplusplus::DType::Int64, {1});
+    b.As<std::int64_t>()[0] = 1;
+    m.AddRegion(meshioplusplus::Region("body", meshioplusplus::RegionKind::Cell, std::move(b)));
+
+    meshioplusplus::write_exodus(p, m);
+    meshioplusplus::Mesh back = meshioplusplus::read_exodus(p);
+    std::filesystem::remove(p);
+
+    EXPECT_TRUE(back.HasRegion("skin", meshioplusplus::RegionKind::Cell));
+    EXPECT_TRUE(back.HasRegion("body", meshioplusplus::RegionKind::Cell));
+    EXPECT_FALSE(back.HasRegion("Block 1", meshioplusplus::RegionKind::Cell));
+}
+
+TEST(Exodus, TimeValueComesFromFieldData) {
+    // The single step's recorded time was hard-coded 0; `exodus:time` supplies
+    // it so one frame of a transient solve can be labelled correctly. A real
+    // multi-step writer remains a follow-up (XdmfTimeSeriesWriter's shape).
+    std::string p = mt::temp_path(".e");
+    meshioplusplus::Mesh m = mt::tri_mesh();
+    meshioplusplus::NDArray t(meshioplusplus::DType::Float64, {1});
+    t.As<double>()[0] = 2.5;
+    m.AddFieldData("exodus:time", std::move(t));
+    meshioplusplus::write_exodus(p, m);
+
+    meshioplusplus::MeshMetadata md = meshioplusplus::read_exodus_metadata(p);
+    std::filesystem::remove(p);
+    ASSERT_EQ(md.mTimeValues.size(), 1u);
+    EXPECT_NEAR(md.mTimeValues[0], 2.5, 1e-6);  // stored as NC_FLOAT
+}
+
 TEST(Exodus, IsAnOptionsAwareReader) {
     // Registering exodus in registry_readers_ex()/registry_metadata_readers() is
     // what lets any flat binding pass a time step at all; before it, this was
