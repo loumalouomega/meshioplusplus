@@ -34,6 +34,7 @@
 // Project includes
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
+#include "meshioplusplus/detail/cell_adjacency.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/space_filling.hpp"
 #include "meshioplusplus/detail/subset.hpp"
@@ -513,68 +514,15 @@ std::vector<int> partition_kahip_parts(const Mesh& rMesh, const PartitionOptions
 // --- dispatch ----------------------------------------------------------------
 
 // --- ghost (halo) layers -----------------------------------------------------
-
-/// CSR adjacency: rows indexed by `mOffsets`, payload in `mEntries`.
-struct PartitionIncidenceCsr {
-    std::vector<std::int64_t> mOffsets;
-    std::vector<std::int64_t> mEntries;
-};
-
-/// Global cell -> its (distinct) node ids. Handles ragged blocks; a polyhedron
-/// contributes the distinct nodes across all of its faces.
-PartitionIncidenceCsr partition_cell_nodes(const Mesh& rMesh, std::size_t total) {
-    PartitionIncidenceCsr csr;
-    csr.mOffsets.reserve(total + 1);
-    csr.mOffsets.push_back(0);
-    std::vector<std::int64_t> row;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t ncells = cb.NumCells();
-        for (std::size_t c = 0; c < ncells; ++c) {
-            row.clear();
-            if (cb.IsPolyhedron()) {
-                const std::size_t nf = cb.NumFaces(c);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto [p_face, len] = cb.Face(c, f);
-                    row.insert(row.end(), p_face, p_face + len);
-                }
-                std::sort(row.begin(), row.end());
-                row.erase(std::unique(row.begin(), row.end()), row.end());
-            } else if (cb.IsRagged()) {
-                const std::int64_t* p_row = cb.Row(c);
-                row.assign(p_row, p_row + cb.RowSize(c));
-            } else {
-                const std::size_t k = cb.NodesPerCell();
-                const std::int64_t* p_conn = cb.Conn().As<std::int64_t>();
-                row.assign(p_conn + c * k, p_conn + (c + 1) * k);
-            }
-            csr.mEntries.insert(csr.mEntries.end(), row.begin(), row.end());
-            csr.mOffsets.push_back(static_cast<std::int64_t>(csr.mEntries.size()));
-        }
-    }
-    return csr;
-}
-
-/// Invert cell->nodes into node->cells, by counting (no per-node vector).
-PartitionIncidenceCsr partition_node_cells(const PartitionIncidenceCsr& rCellNodes,
-                                           std::size_t npoints, std::size_t total) {
-    PartitionIncidenceCsr csr;
-    csr.mOffsets.assign(npoints + 1, 0);
-    for (std::int64_t nid : rCellNodes.mEntries)
-        if (nid >= 0 && static_cast<std::size_t>(nid) < npoints)
-            ++csr.mOffsets[static_cast<std::size_t>(nid) + 1];
-    for (std::size_t i = 0; i < npoints; ++i)
-        csr.mOffsets[i + 1] += csr.mOffsets[i];
-    csr.mEntries.assign(static_cast<std::size_t>(csr.mOffsets.back()), 0);
-    std::vector<std::int64_t> cursor(csr.mOffsets.begin(), csr.mOffsets.end() - 1);
-    for (std::size_t c = 0; c < total; ++c)
-        for (std::int64_t k = rCellNodes.mOffsets[c]; k < rCellNodes.mOffsets[c + 1]; ++k) {
-            const std::int64_t nid = rCellNodes.mEntries[static_cast<std::size_t>(k)];
-            if (nid >= 0 && static_cast<std::size_t>(nid) < npoints)
-                csr.mEntries[static_cast<std::size_t>(cursor[static_cast<std::size_t>(nid)]++)] =
-                    static_cast<std::int64_t>(c);
-        }
-    return csr;
-}
+//
+// The cell <-> node incidences live in `detail/cell_adjacency.hpp`, shared with
+// `gradient`'s least-squares stencil so the two cannot disagree about what
+// "shares a node" means. They used to be private to this file, and read dense
+// connectivity as `Conn().As<std::int64_t>()` -- which performs no dtype check,
+// so on a MESHIO-backed mesh carrying Int32 connectivity every node id was two
+// fused Int32 entries. Most such ids failed the range filter below and simply
+// vanished, leaving halos silently too small; the shared helper reads through
+// `detail::read_int` instead.
 
 // Validate the options and resolve Auto to a concrete method.
 PartitionMethod partition_resolve_method(const PartitionOptions& rOptions) {
@@ -675,10 +623,10 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
     // choice -- it is what a node-based assembly actually needs, and it is the
     // same neighbour definition the KaHIP dual graph falls back on.
     const int nghost = rOptions.mGhostLayers;
-    PartitionIncidenceCsr cell_nodes, node_cells;
+    detail::CellIncidence cell_nodes, node_cells;
     if (nghost > 0) {
-        cell_nodes = partition_cell_nodes(rMesh, total);
-        node_cells = partition_node_cells(cell_nodes, rMesh.NumPoints(), total);
+        cell_nodes = detail::build_cell_node_incidence(rMesh, rMesh.NumPoints());
+        node_cells = detail::invert_cell_node_incidence(cell_nodes, rMesh.NumPoints(), total);
     }
 
     // Per part, per block, the kept (ascending) local cell indices, and the
