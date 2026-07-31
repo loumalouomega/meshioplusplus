@@ -1,6 +1,6 @@
 """The nested ``meshioplusplus data <verb>`` command group.
 
-Nine of the ten verbs are thin front-ends over the five data operations:
+Nine of the eleven verbs are thin front-ends over the five data operations:
 ``rename``/``drop``/``keep`` call ``data_manage``, ``to-cell``/``to-point``
 call the two averaging entry points, ``clamp``/``normalize`` call
 ``data_condition`` with a preset mode, and ``calc``/``info`` map one-to-one.
@@ -9,6 +9,12 @@ The tenth, ``export``, writes the arrays to Parquet through
 mesh format**: it does not round-trip geometry, and pyarrow is an optional
 extra, so its import stays inside the handler. It has no counterpart in the
 native C++ CLI.
+
+The eleventh, ``gradient``, is a slight departure: it is a **mesh** operation
+(``operations/gradient.hpp``), not one of the ``data_*`` family, because it
+reads geometry and topology rather than only data arrays. It lives here anyway
+because it consumes and produces data arrays, which is where a user looks for
+it. See ``doc/gradient.md``.
 
 This is the repository's first two-level subcommand. It needs no change to
 ``_main.py``'s dispatch because ``set_defaults(func=...)`` on the *inner*
@@ -23,6 +29,7 @@ from .._data_calc import data_calc
 from .._data_condition import data_condition
 from .._data_info import data_info
 from .._data_manage import data_drop, data_keep, data_rename
+from .._gradient import gradient
 from .._helpers import _writer_map, read, reader_map, write
 
 _LOCATION_FLAGS = ("point", "cell", "field")
@@ -481,6 +488,85 @@ def export_cmd(args):
     return 0
 
 
+# --- data gradient ---------------------------------------------------------
+
+
+def add_gradient_args(parser):
+    _add_io_args(parser)
+    parser.add_argument(
+        "--array",
+        type=str,
+        required=True,
+        metavar="NAME",
+        help="point_data array to differentiate (cell_data has no derivative)",
+    )
+    parser.add_argument(
+        "--op",
+        type=str,
+        default="gradient",
+        choices=("gradient", "divergence", "curl"),
+        help="which differential operator to apply (default: gradient)",
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="green-gauss",
+        choices=("green-gauss", "least-squares"),
+        help="how to reconstruct the per-cell derivative (default: green-gauss)",
+    )
+    parser.add_argument(
+        "--location",
+        type=str,
+        default="cell",
+        choices=("cell", "point"),
+        help="where the result is stored (default: cell)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="output array name (default: <array>:<op>)",
+    )
+    parser.add_argument(
+        "--component",
+        type=int,
+        default=None,
+        metavar="I",
+        help="differentiate only this component (gradient only; default: all)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing array of the output name instead of failing",
+    )
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="suppress the summary"
+    )
+
+
+def gradient_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    out, report = gradient(
+        mesh,
+        args.array,
+        operator=args.op,
+        method=args.method,
+        location=args.location,
+        output=args.output,
+        component=args.component,
+        overwrite=args.overwrite,
+        return_report=True,
+    )
+    if not args.quiet:
+        name = args.output or f"{args.array}:{args.op}"
+        print(f"wrote {args.location}_data '{name}' ({args.method})")
+        print(f"  cells skipped (NaN):      {report['num_skipped']}")
+        print(f"  cells fell back to GG:    {report['num_fallback']}")
+    write(args.outfile, out, file_format=args.output_format)
+    return 0
+
+
 # --- group wiring ----------------------------------------------------------
 
 _VERBS = (
@@ -502,6 +588,12 @@ _VERBS = (
         calc_cmd,
     ),
     ("clamp", "Clamp values into [min, max]", add_clamp_args, clamp_cmd),
+    (
+        "gradient",
+        "Differentiate a point_data field (gradient / divergence / curl)",
+        add_gradient_args,
+        gradient_cmd,
+    ),
     (
         "normalize",
         "Rescale values to a target range (or zero mean / unit std)",

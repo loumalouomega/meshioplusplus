@@ -51,6 +51,7 @@ from .. import (
     diff,
     extract_skin,
     extract_surface,
+    gradient,
     interpolate,
     isosurface,
     merge,
@@ -617,6 +618,40 @@ def tool_isosurface(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_gradient(
+    input_path,
+    output_path,
+    array,
+    input_format=None,
+    output_format=None,
+    operator="gradient",
+    method="green-gauss",
+    location="cell",
+    output=None,
+    component=None,
+    overwrite=False,
+):
+    """Gradient, divergence or curl of a point_data field."""
+    mesh = _load(input_path, input_format)
+    out, report = gradient(
+        mesh,
+        array,
+        operator=operator,
+        method=method,
+        location=location,
+        output=output,
+        component=component,
+        overwrite=overwrite,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_skipped=int(report["num_skipped"]),
+        num_fallback=int(report["num_fallback"]),
+    )
+
+
 def tool_transform(
     input_path,
     output_path,
@@ -1087,6 +1122,7 @@ TOOL_REGISTRY = OrderedDict(
             "isosurface",
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},
         ),
+        ("gradient", {"fn": tool_gradient, "wraps": ("gradient",), "gated": None}),
         ("transform", {"fn": tool_transform, "wraps": ("transform",), "gated": None}),
         (
             "convert_cells",

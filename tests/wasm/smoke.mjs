@@ -821,6 +821,106 @@ step('isosurface: the f = z level set of the unit cube has area 1', () => {
     assert.throws(() => m.isosurface(cube, 'nope', 0.5));
 });
 
+step('gradient: a linear field is differentiated exactly, and the (n,3) shape survives', () => {
+    // A frustum, not the unit cube: on a cube every face is a parallelogram
+    // whose corner average IS its area centroid, so the exactness assertion
+    // below would pass even with a broken quadrature.
+    const frustum = {
+        points: new Float64Array([
+            0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 2, 0,
+            0.5, 0.5, 1, 1.5, 0.5, 1, 1.5, 1.5, 1, 0.5, 1.5, 1,
+        ]),
+        dim: 3,
+        cells: [
+            { type: 'hexahedron', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7]), nodesPerCell: 8 },
+        ],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const f = new Float64Array(8);
+    for (let i = 0; i < 8; ++i) {
+        f[i] = 3 * frustum.points[i * 3] - 2 * frustum.points[i * 3 + 1] +
+               5 * frustum.points[i * 3 + 2] + 7;
+    }
+    const field = { ...frustum, point_data: { f } };
+
+    const g = m.gradient(field, 'f');
+    assert.equal(g.numSkipped, 0);
+    assert.equal(g.numFallback, 0);
+    const grad = g.mesh.cell_data['f:gradient'][0];
+    assert.equal(grad.length, 3, 'one cell x 3 components');
+    assert.ok(Math.abs(grad[0] - 3) < 1e-12, `d/dx ${grad[0]} != 3`);
+    assert.ok(Math.abs(grad[1] + 2) < 1e-12, `d/dy ${grad[1]} != -2`);
+    assert.ok(Math.abs(grad[2] - 5) < 1e-12, `d/dz ${grad[2]} != 5`);
+
+    // THE COMPONENT-COUNT ROUND-TRIP (v9.9.0's *_components maps). A flat typed
+    // array carries no shape, so without the sibling map an (n, 3) gradient
+    // re-enters C++ as (3n, 1). This must cross the OBJECT boundary -- a
+    // path-based call never materializes a JS mesh and so cannot detect it.
+    assert.equal(g.mesh.cell_data_components['f:gradient'], 3,
+                 'the gradient declares 3 components');
+    const back = m.gradient(g.mesh, 'f', 'gradient', 'green-gauss', 'cell', 'again');
+    assert.equal(back.mesh.cell_data_components['f:gradient'], 3,
+                 'the component count survives a round trip through JS');
+    assert.equal(back.mesh.cell_data['f:gradient'][0].length, 3,
+                 'the array is still one row of 3, not three rows of 1');
+
+    // A 3-component input yields the (n, 9) tensor, declared as 9 components.
+    const u = new Float64Array(24);
+    for (let i = 0; i < 8; ++i) {
+        const x = frustum.points[i * 3], y = frustum.points[i * 3 + 1], z = frustum.points[i * 3 + 2];
+        u[i * 3] = 7 * z;
+        u[i * 3 + 1] = 11 * x;
+        u[i * 3 + 2] = 13 * y;
+    }
+    const vec = { ...frustum, point_data: { u }, point_data_components: { u: 3 } };
+    const tensor = m.gradient(vec, 'u');
+    assert.equal(tensor.mesh.cell_data_components['u:gradient'], 9, '(n, 9) tensor');
+    assert.equal(tensor.mesh.cell_data['u:gradient'][0].length, 9);
+
+    // curl of (7z, 11x, 13y) is (13, 7, 11): three distinct nonzero components,
+    // so any index permutation or sign flip fails.
+    const curl = m.gradient(vec, 'u', 'curl');
+    const c = curl.mesh.cell_data['u:curl'][0];
+    assert.equal(curl.mesh.cell_data_components['u:curl'], 3);
+    assert.ok(Math.abs(c[0] - 13) < 1e-12 && Math.abs(c[1] - 7) < 1e-12 &&
+              Math.abs(c[2] - 11) < 1e-12, `curl ${Array.from(c)} != 13,7,11`);
+
+    // The point location moves the result into point_data, declared likewise.
+    const atPoints = m.gradient(field, 'f', 'gradient', 'green-gauss', 'point');
+    assert.equal(atPoints.mesh.point_data_components['f:gradient'], 3);
+    assert.equal(atPoints.mesh.point_data['f:gradient'].length, 8 * 3);
+
+    // Least squares on a lone cell has no neighbourhood, so the fallback fires.
+    const lsq = m.gradient(field, 'f', 'gradient', 'least-squares');
+    assert.equal(lsq.numFallback, 1, 'a cell with no neighbours must fall back');
+
+    // A cell_data field has no derivative, and a scalar has no divergence.
+    assert.throws(() => m.gradient(g.mesh, 'f:gradient'));
+    assert.throws(() => m.gradient(field, 'f', 'divergence'));
+});
+
+step('convertSurfaceOps: gradient is a chainable pipeline step', () => {
+    // The pipeline is path-based and re-skins at the end, so a POINT-located
+    // gradient is the one that survives to the written surface.
+    const f = new Float64Array([0, 0, 0, 0, 1, 1, 1, 1]);
+    m.writeMesh('/grad.vtu', { ...cube, point_data: { f } });
+    const rep = m.convertSurfaceOps('/grad.vtu', '/grad.vtp', [
+        { op: 'gradient', array: 'f', location: 'point', output: 'gf' },
+    ]);
+    assert.equal(rep.steps[0].op, 'gradient');
+    assert.equal(rep.steps[0].numSkipped, 0);
+    const skin = m.readMesh('/grad.vtp');
+    assert.ok('gf' in skin.point_data, 'the gradient rides through the re-skin');
+    // f = z on the cube, so the gradient is (0, 0, 1) everywhere.
+    assert.equal(skin.point_data_components.gf, 3);
+    for (let i = 0; i < skin.point_data.gf.length / 3; ++i) {
+        assert.ok(Math.abs(skin.point_data.gf[i * 3 + 2] - 1) < 1e-9,
+                  `d/dz ${skin.point_data.gf[i * 3 + 2]} != 1`);
+    }
+});
+
 step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
     const grid = m.refine(cube);  // 8 hexahedra
     const pieces = m.partition(grid, 2);
@@ -887,6 +987,7 @@ step('every binding is reachable through the wrapper', () => {
         'interpolate',
         'slice',
         'isosurface',
+        'gradient',
         'cropBbox',
         'cropPlane',
         'split',

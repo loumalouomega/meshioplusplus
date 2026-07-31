@@ -58,6 +58,7 @@ from ._decimate import decimate
 from ._diff import diff, meshes_equal
 from ._exceptions import ReadError, WriteError
 from ._gpu import from_cupy, has_cuda_device, has_cupy, to_cupy, to_dlpack
+from ._gradient import gradient
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -165,6 +166,7 @@ __all__ = [
     "meshes_equal",
     "merge",
     "interpolate",
+    "gradient",
     "slice",
     "isosurface",
     "transform",

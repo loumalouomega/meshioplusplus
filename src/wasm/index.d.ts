@@ -281,6 +281,19 @@ export type OpSpec =
       array: string;
       isovalue: number;
       component?: number;
+    }
+  | {
+      /**
+       * The gradient, divergence or curl of a `point_data` field. A pure data
+       * step: geometry is untouched and one new array is attached.
+       */
+      op: 'gradient';
+      array: string;
+      operator?: GradientOperator;
+      method?: GradientMethod;
+      location?: 'point' | 'cell';
+      output?: string;
+      component?: number;
     };
 
 /** Per-operation counters and caveats from a pipeline run. */
@@ -288,6 +301,12 @@ export interface OpReport {
   steps: ({ op: OpSpec['op'] } & Record<string, number | string>)[];
   warnings: string[];
 }
+
+/** `gradient`'s differential operator. See doc/gradient.md. */
+export type GradientOperator = 'gradient' | 'divergence' | 'curl';
+
+/** `gradient`'s reconstruction method. See doc/gradient.md. */
+export type GradientMethod = 'green-gauss' | 'least-squares';
 
 /** One data array's location: `point_data`, `cell_data`, or `field_data`. */
 export type DataLocation = 'point' | 'cell' | 'field';
@@ -829,6 +848,38 @@ export interface MeshioPlusPlusModule {
     component?: number,
     recordParentIds?: boolean,
   ): Mesh;
+
+  /**
+   * Field differential operators: the gradient, divergence or curl of a
+   * `point_data` field. `"green-gauss"` applies the divergence theorem over the
+   * cell's own faces and is exact for a linear field on any cell;
+   * `"least-squares"` fits over the node-sharing neighbours and falls back to
+   * Green-Gauss on a degenerate neighbourhood (counted in `numFallback`).
+   *
+   * An `nc`-component input yields `3 * nc` gradient components, flat and
+   * row-major as `[component][derivative]`, so a scalar gives `(n, 3)` and a
+   * 3-vector `(n, 9)`; divergence gives 1 and curl always 3, both needing a 2-
+   * or 3-component field. The width travels with the array in the returned
+   * mesh's `point_data_components` / `cell_data_components` maps.
+   *
+   * `component` is negative for EVERY component — the opposite of
+   * `isosurface`'s sentinel, where negative means the row magnitude. Cells that
+   * cannot be differentiated yield NaN and are counted in `numSkipped`.
+   * @throws {Error} when `array` names a `cell_data` array (piecewise constant,
+   *   so it has no derivative — convert it with `dataCellToPoint` first), an
+   *   unknown array, an unknown operator/method, an out-of-range component, or
+   *   a component count divergence/curl cannot use.
+   */
+  gradient(
+    mesh: Mesh,
+    array: string,
+    operator?: GradientOperator,
+    method?: GradientMethod,
+    location?: 'point' | 'cell',
+    output?: string,
+    component?: number,
+    overwrite?: boolean,
+  ): { mesh: Mesh; numSkipped: number; numFallback: number };
 
   /** Partition a mesh into submeshes by type, connected component, or tag. */
   split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];

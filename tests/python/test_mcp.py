@@ -332,6 +332,29 @@ def test_data_convert(mesh_file, tmp_path):
         _tools.tool_data_convert(mesh_file, str(tmp_path / "dc2.vtu"), "sideways")
 
 
+def test_gradient(mesh_file, tmp_path):
+    out = _dump(_tools.tool_gradient(mesh_file, str(tmp_path / "g.vtu"), "t"))
+    assert "t:gradient" in out["cell_data"]
+    # The mixed fixture's triangle block is below the tet block's dimension, so
+    # the skip counter must be reported rather than silently swallowed.
+    assert out["num_skipped"] == 2
+    assert out["num_fallback"] == 0
+
+    div = _dump(
+        _tools.tool_gradient(
+            mesh_file,
+            str(tmp_path / "d.vtu"),
+            "t",
+            operator="gradient",
+            location="point",
+        )
+    )
+    assert "t:gradient" in div["point_data"]
+
+    with pytest.raises(ValueError):
+        _tools.tool_gradient(mesh_file, str(tmp_path / "x.vtu"), "nope")
+
+
 def test_data_condition(mesh_file, tmp_path):
     out_path = str(tmp_path / "cond.vtu")
     _dump(

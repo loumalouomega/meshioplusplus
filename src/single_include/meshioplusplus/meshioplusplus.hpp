@@ -5180,156 +5180,6 @@ inline void bswap_inplace(char* pP, int n) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/byteswap.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/detail/cell_edges.hpp =====
-/**
- * @file cell_edges.hpp
- * @brief Per-cell-type boundary-edge topology tables (local node indices of
- * each edge of a 2D surface cell), the 2D analogue of `cell_faces.hpp`, used
- * by the surface/boundary extractor (`operations/surface.hpp`) when the input
- * is a surface (max topological dimension 2) mesh.
- *
- * Every edge row lists its two **corner nodes first**, wound consistently with
- * the cell's local corner ring (corner k -> corner k+1), then the mid-edge
- * node for quadratic cells — i.e. each row is itself a valid meshio/VTK
- * `line`/`line3` node ordering.
- *
- * Node numbering is meshio's (= VTK's): for `triangle6` mid node 3 = mid(0,1),
- * 4 = mid(1,2), 5 = mid(2,0); for `quad8`/`quad9` mid node 4 = mid(0,1),
- * 5 = mid(1,2), 6 = mid(2,3), 7 = mid(3,0) (quad9 node 8 is the face center,
- * on no edge).
- *
- * `cell_edges` is looked up once per cell (not per node/scalar), so its table
- * lookup lives in `src/cpp/src/detail/cell_edges.cpp` rather than inline here.
- */
-
-// System includes
-#include <array>
-#include <cstdint>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/**
- * @brief One boundary edge of a surface cell: its meshio edge type and the
- * local node indices into the cell's connectivity row.
- */
-struct CellEdgeDef {
-    /// Edge cell type: `Line` or `Line3`.
-    CellType mEdgeType;
-    /// Number of corner nodes (always 2) — the leading entries of `mNodes`.
-    std::uint8_t mNumCorners;
-    /// Total node count of the edge (2 for `Line`, 3 for `Line3`).
-    std::uint8_t mNumNodes;
-    /// Local node indices, corners first, then the mid node; only the first
-    /// `mNumNodes` are valid.
-    std::array<std::uint8_t, 3> mNodes;
-};
-
-/**
- * @brief The boundary edges of a surface cell type, or an empty list for types
- * the surface extractor does not support.
- * @param SurfaceType The surface cell type to query.
- * @return Reference to the process-wide edge table (empty if unsupported).
- */
-MESHIOPLUSPLUS_API const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType);
-
-/**
- * @brief Whether the surface extractor supports a surface cell type's edges.
- * @param Type The cell type to test.
- * @return `true` when `cell_edges(Type)` is non-empty.
- */
-inline bool surface_edge_supported(CellType Type) {
-    return !cell_edges(Type).empty();
-}
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/detail/cell_edges.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/detail/cell_faces.hpp =====
-/**
- * @file cell_faces.hpp
- * @brief Per-cell-type boundary-face topology tables (local node indices of
- * each face of a 3D volume cell), used by the skin extractor (`skin.hpp`).
- *
- * Every face row lists **corner nodes first** (wound so the face normal
- * points *outward*, away from the element interior), then the mid-edge nodes
- * (mid of corner k → corner k+1), then the face-center node — i.e. each row
- * is itself a valid meshio/VTK `triangle6`/`quad8`/`quad9` node ordering.
- *
- * Node numbering is meshio's (= VTK's). Conventions baked in, matching the
- * rest of this repo (see `openfoam.cpp`'s `build_*` orientation checks and
- * the `tests/python/helpers.py` fixtures):
- *  - tetra: base `(0,1,2)` normal points toward apex 3 → outward base is
- *    `(0,2,1)`.
- *  - hexahedron: base `(0,1,2,3)` normal points toward the top `(4,5,6,7)`.
- *  - wedge: base `(0,1,2)` normal points toward the top `(3,4,5)` (the
- *    gmsh-like layout this codebase uses; do NOT trust vtkWedge's own
- *    doc-comment/face array, whose orientation is famously inconsistent).
- *  - pyramid: base `(0,1,2,3)` normal points toward apex 4.
- *  - wedge15 mid-node numbering is pure VTK_QUADRATIC_WEDGE — EnSight's
- *    penta15 involution (see CLAUDE.md) must NOT be applied here.
- *
- * The outward winding of every row is enforced by a gtest invariant
- * (`tests/cpp/test_skin.cpp`): on the reference element, the Newell normal
- * of each face's corner ring must point away from the cell centroid.
- *
- * KEEP IN SYNC: `src/python/meshioplusplus/_skin.py` carries the Python twin of
- * these tables for the pure-Python fallback — any change here must be
- * mirrored there.
- *
- * `cell_faces` is looked up once per cell (not per node/scalar), so its table
- * lookup lives in `src/cpp/src/detail/cell_faces.cpp` rather than inline here.
- */
-
-// System includes
-#include <array>
-#include <cstdint>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/**
- * @brief One boundary face of a volume cell: its meshio face type and the
- * local node indices into the cell's connectivity row.
- */
-struct CellFaceDef {
-    /// Face cell type: `Triangle`/`Quad`/`Triangle6`/`Quad8`/`Quad9`.
-    CellType mFaceType;
-    /// Number of corner nodes (3 or 4) — the leading entries of `mNodes`.
-    std::uint8_t mNumCorners;
-    /// Total node count of the face (3, 4, 6, 8, or 9).
-    std::uint8_t mNumNodes;
-    /// Local node indices, corners first (outward winding), then mid-edge
-    /// nodes, then the face center; only the first `mNumNodes` are valid.
-    std::array<std::uint8_t, 9> mNodes;
-};
-
-/**
- * @brief The boundary faces of a volume cell type, or an empty list for
- * types the skin extractor does not support.
- * @param VolumeType The volume cell type to query.
- * @return Reference to the process-wide face table (empty if unsupported).
- */
-MESHIOPLUSPLUS_API const std::vector<CellFaceDef>& cell_faces(CellType VolumeType);
-
-/**
- * @brief Whether the skin extractor supports a volume cell type.
- * @param Type The cell type to test.
- * @return `true` when `cell_faces(Type)` is non-empty.
- */
-inline bool skin_supported(CellType Type) {
-    return !cell_faces(Type).empty();
-}
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/detail/cell_faces.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/mesh_backend_check.hpp =====
 /**
  * @file detail/mesh_backend_check.hpp
@@ -5498,6 +5348,255 @@ using Mesh = KratosMesh;
 // backends existed.
 #endif
 // ===== end src/cpp/include/meshioplusplus/mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/cell_adjacency.hpp =====
+/**
+ * @file detail/cell_adjacency.hpp
+ * @brief The single owner of **cell-to-cell adjacency by shared node**: the
+ * cell -> node and node -> cell incidences, and the neighbour list derived from
+ * them.
+ *
+ * This is a different object from `detail/node_adjacency.hpp`'s
+ * `NodeAdjacency`, which is a node-to-node graph. Two operations need this one
+ * and must not disagree about what "neighbour" means:
+ *  - `partition` grows its ghost (halo) layers breadth-first over it;
+ *  - `gradient`'s least-squares stencil fits the linear model over it.
+ *
+ * Rows are indexed by the **global (block-major) cell index** owned by
+ * `detail/cell_index.hpp` — never re-derive that numbering here.
+ *
+ * The per-cell node walk goes through `detail::cell_node_ids`, which is
+ * dtype-agnostic (`detail::read_int`) and drops out-of-range ids. That matters:
+ * connectivity is *not* guaranteed to be Int64 (a MESHIO-backed mesh often
+ * carries Int32 straight from numpy), so reading it as `As<std::int64_t>()`
+ * — which performs no dtype check — silently fuses two Int32 entries into one
+ * garbage id. `partition`'s ghost layers did exactly that before this header
+ * existed, producing halos that were quietly too small rather than failing.
+ *
+ * Free functions in `meshioplusplus::detail`, each called once per operation
+ * (not per element), so their bodies live in
+ * `src/cpp/src/detail/cell_adjacency.cpp` rather than inline here — the
+ * convention `detail/node_adjacency.hpp` and `detail/subset.hpp` follow.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief A ragged incidence relation in compressed-sparse-row form.
+ *
+ * Row `i` is `mEntries[mOffsets[i] .. mOffsets[i + 1])`; `mOffsets` has one
+ * more entry than there are rows and starts at 0.
+ */
+struct CellIncidence {
+    std::vector<std::int64_t> mOffsets;  ///< Row offsets, size `rows + 1`.
+    std::vector<std::int64_t> mEntries;  ///< Payload, size `mOffsets.back()`.
+};
+
+/**
+ * @brief Global (block-major) cell -> the node ids it references.
+ *
+ * Rows are in connectivity order (deliberately **not** sorted, so the relation
+ * stays a faithful record of the cell's own node list); a polyhedron
+ * contributes the concatenation of its face rings, which may repeat a node.
+ * Out-of-range ids are dropped by `cell_node_ids`.
+ * @param rMesh Mesh to read connectivity from (never modified).
+ * @param NumPoints Node-id upper bound; ids outside `[0, NumPoints)` are dropped.
+ * @return The incidence, with one row per global cell.
+ */
+MESHIOPLUSPLUS_API CellIncidence build_cell_node_incidence(const Mesh& rMesh, std::size_t NumPoints);
+
+/**
+ * @brief Inverts a cell -> node incidence into node -> cell, by counting.
+ *
+ * Each row lists the cells referencing that node, ascending by global cell
+ * index (a consequence of the counting pass walking cells in order), with a
+ * cell repeated as many times as it references the node.
+ * @param rCellNodes The forward incidence from `build_cell_node_incidence`.
+ * @param NumPoints Number of nodes; the result has `NumPoints` rows.
+ * @param NumCells Number of global cells (the forward incidence's row count).
+ * @return The inverted incidence.
+ */
+MESHIOPLUSPLUS_API CellIncidence invert_cell_node_incidence(const CellIncidence& rCellNodes,
+                                                            std::size_t NumPoints,
+                                                            std::size_t NumCells);
+
+/**
+ * @brief The cells sharing at least one node with @p Cell.
+ *
+ * Ascending global cell index, de-duplicated, with @p Cell itself excluded.
+ * This is the definition of "neighbour" that `gradient`'s least-squares stencil
+ * and `partition`'s ghost growth share; the fixed ascending order is what makes
+ * a neighbour-summed quantity byte-identical across mesh backends, thread
+ * counts and the C++/numpy boundary.
+ * @param rCellNodes Forward incidence from `build_cell_node_incidence`.
+ * @param rNodeCells Inverted incidence from `invert_cell_node_incidence`.
+ * @param Cell Global cell index to query.
+ * @param rOut Cleared and filled with the neighbour ids.
+ */
+MESHIOPLUSPLUS_API void cell_node_neighbors(const CellIncidence& rCellNodes,
+                                            const CellIncidence& rNodeCells, std::size_t Cell,
+                                            std::vector<std::int64_t>& rOut);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/cell_adjacency.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/cell_edges.hpp =====
+/**
+ * @file cell_edges.hpp
+ * @brief Per-cell-type boundary-edge topology tables (local node indices of
+ * each edge of a 2D surface cell), the 2D analogue of `cell_faces.hpp`, used
+ * by the surface/boundary extractor (`operations/surface.hpp`) when the input
+ * is a surface (max topological dimension 2) mesh.
+ *
+ * Every edge row lists its two **corner nodes first**, wound consistently with
+ * the cell's local corner ring (corner k -> corner k+1), then the mid-edge
+ * node for quadratic cells — i.e. each row is itself a valid meshio/VTK
+ * `line`/`line3` node ordering.
+ *
+ * Node numbering is meshio's (= VTK's): for `triangle6` mid node 3 = mid(0,1),
+ * 4 = mid(1,2), 5 = mid(2,0); for `quad8`/`quad9` mid node 4 = mid(0,1),
+ * 5 = mid(1,2), 6 = mid(2,3), 7 = mid(3,0) (quad9 node 8 is the face center,
+ * on no edge).
+ *
+ * `cell_edges` is looked up once per cell (not per node/scalar), so its table
+ * lookup lives in `src/cpp/src/detail/cell_edges.cpp` rather than inline here.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief One boundary edge of a surface cell: its meshio edge type and the
+ * local node indices into the cell's connectivity row.
+ */
+struct CellEdgeDef {
+    /// Edge cell type: `Line` or `Line3`.
+    CellType mEdgeType;
+    /// Number of corner nodes (always 2) — the leading entries of `mNodes`.
+    std::uint8_t mNumCorners;
+    /// Total node count of the edge (2 for `Line`, 3 for `Line3`).
+    std::uint8_t mNumNodes;
+    /// Local node indices, corners first, then the mid node; only the first
+    /// `mNumNodes` are valid.
+    std::array<std::uint8_t, 3> mNodes;
+};
+
+/**
+ * @brief The boundary edges of a surface cell type, or an empty list for types
+ * the surface extractor does not support.
+ * @param SurfaceType The surface cell type to query.
+ * @return Reference to the process-wide edge table (empty if unsupported).
+ */
+MESHIOPLUSPLUS_API const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType);
+
+/**
+ * @brief Whether the surface extractor supports a surface cell type's edges.
+ * @param Type The cell type to test.
+ * @return `true` when `cell_edges(Type)` is non-empty.
+ */
+inline bool surface_edge_supported(CellType Type) {
+    return !cell_edges(Type).empty();
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/cell_edges.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/cell_faces.hpp =====
+/**
+ * @file cell_faces.hpp
+ * @brief Per-cell-type boundary-face topology tables (local node indices of
+ * each face of a 3D volume cell), used by the skin extractor (`skin.hpp`).
+ *
+ * Every face row lists **corner nodes first** (wound so the face normal
+ * points *outward*, away from the element interior), then the mid-edge nodes
+ * (mid of corner k → corner k+1), then the face-center node — i.e. each row
+ * is itself a valid meshio/VTK `triangle6`/`quad8`/`quad9` node ordering.
+ *
+ * Node numbering is meshio's (= VTK's). Conventions baked in, matching the
+ * rest of this repo (see `openfoam.cpp`'s `build_*` orientation checks and
+ * the `tests/python/helpers.py` fixtures):
+ *  - tetra: base `(0,1,2)` normal points toward apex 3 → outward base is
+ *    `(0,2,1)`.
+ *  - hexahedron: base `(0,1,2,3)` normal points toward the top `(4,5,6,7)`.
+ *  - wedge: base `(0,1,2)` normal points toward the top `(3,4,5)` (the
+ *    gmsh-like layout this codebase uses; do NOT trust vtkWedge's own
+ *    doc-comment/face array, whose orientation is famously inconsistent).
+ *  - pyramid: base `(0,1,2,3)` normal points toward apex 4.
+ *  - wedge15 mid-node numbering is pure VTK_QUADRATIC_WEDGE — EnSight's
+ *    penta15 involution (see CLAUDE.md) must NOT be applied here.
+ *
+ * The outward winding of every row is enforced by a gtest invariant
+ * (`tests/cpp/test_skin.cpp`): on the reference element, the Newell normal
+ * of each face's corner ring must point away from the cell centroid.
+ *
+ * KEEP IN SYNC: `src/python/meshioplusplus/_skin.py` carries the Python twin of
+ * these tables for the pure-Python fallback — any change here must be
+ * mirrored there.
+ *
+ * `cell_faces` is looked up once per cell (not per node/scalar), so its table
+ * lookup lives in `src/cpp/src/detail/cell_faces.cpp` rather than inline here.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief One boundary face of a volume cell: its meshio face type and the
+ * local node indices into the cell's connectivity row.
+ */
+struct CellFaceDef {
+    /// Face cell type: `Triangle`/`Quad`/`Triangle6`/`Quad8`/`Quad9`.
+    CellType mFaceType;
+    /// Number of corner nodes (3 or 4) — the leading entries of `mNodes`.
+    std::uint8_t mNumCorners;
+    /// Total node count of the face (3, 4, 6, 8, or 9).
+    std::uint8_t mNumNodes;
+    /// Local node indices, corners first (outward winding), then mid-edge
+    /// nodes, then the face center; only the first `mNumNodes` are valid.
+    std::array<std::uint8_t, 9> mNodes;
+};
+
+/**
+ * @brief The boundary faces of a volume cell type, or an empty list for
+ * types the skin extractor does not support.
+ * @param VolumeType The volume cell type to query.
+ * @return Reference to the process-wide face table (empty if unsupported).
+ */
+MESHIOPLUSPLUS_API const std::vector<CellFaceDef>& cell_faces(CellType VolumeType);
+
+/**
+ * @brief Whether the skin extractor supports a volume cell type.
+ * @param Type The cell type to test.
+ * @return `true` when `cell_faces(Type)` is non-empty.
+ */
+inline bool skin_supported(CellType Type) {
+    return !cell_faces(Type).empty();
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/cell_faces.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/cell_index.hpp =====
 /**
  * @file detail/cell_index.hpp
@@ -14603,6 +14702,209 @@ MESHIOPLUSPLUS_API bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/diff.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/gradient.hpp =====
+/**
+ * @file operations/gradient.hpp
+ * @brief Field differential operators: the gradient, divergence and curl of a
+ * `point_data` field on a mesh.
+ *
+ * This is the operation that lets a derived quantity be contoured (`isosurface`
+ * on `|grad T|`, on vorticity) and that produces the error indicator the
+ * selective `refine` consumes (`refine --where "grad_mag > ..."`).
+ *
+ * **Why it lives in the mesh-operations layer rather than the `data_*` bundle.**
+ * The five `data_*` operations are *defined* by never touching geometry
+ * (`operations/data_common.hpp`, `doc/data_operations.md`); this one consumes
+ * and produces data arrays but **reads** geometry and topology — face areas,
+ * cell volumes, cell-to-cell adjacency — so it belongs here, with the
+ * `mPascalCase` option fields the geometry operations use. It is still
+ * *reachable* as `meshioplusplus data gradient` in both CLIs, because that is
+ * where a user looks for it.
+ *
+ * ### The two methods
+ *
+ * **Green-Gauss** (the default) applies the divergence theorem over the cell:
+ * `grad f = (1/V) * sum_faces integral_face(f n dA)`. Each face is fanned into
+ * triangles about the arithmetic mean of its corners, and each sub-triangle
+ * contributes `A_j * f(centroid_j)`. That is **exact for a linear field on any
+ * cell** — planar faces or not — because two faces sharing an edge contribute
+ * oppositely-wound triangles on that edge, so the fan surface is closed, and
+ * `∮ f n dA = V grad f` is a purely algebraic identity on a closed oriented
+ * piecewise-linear surface. `V` is the exact signed volume *of that same fan
+ * surface*, so numerator and denominator flip together and an inverted cell
+ * yields the same gradient as its positively-wound twin.
+ *
+ * The corner-average fan apex is **forced, not merely convenient**: the
+ * quadrature needs `f` at the apex, and for linear `f` the corner average is the
+ * only point whose value is known exactly without invoking shape functions
+ * (`mean(f(p_i)) == f(mean(p_i))`). Do not "simplify" it to the area centroid —
+ * for a trapezoidal quad face the two differ and exactness is lost. A plain
+ * corner-average face value (no fan at all) is wrong by 12.5% on the trapezoid
+ * `(0,0),(4,0),(2,1),(0,1)` under `f = y`.
+ *
+ * On a 2D cell the same theorem runs over the corner ring with the in-plane
+ * outward normal `t x N`; that is exact on a **planar** cell and first-order on
+ * a warped quad in 3D, which has no well-defined area or normal to begin with.
+ * The result is invariant under both reversal and cyclic rotation of the ring.
+ *
+ * **Least-squares** fits `f(x) ~ f_c + g . (x - x_c)` over the cells sharing at
+ * least one node (`detail/cell_adjacency.hpp`, the same neighbour definition
+ * `partition`'s ghost layers use), with `x_c`/`f_c` the arithmetic means of the
+ * cell's corners — so `(x_c, f_c)` lies exactly on a linear field and the fit is
+ * exact for one, under any positive weights. Weights are `1/|d|^2`, which makes
+ * the normal matrix `sum d_hat d_hat^T`: dimensionless, immune to mesh grading,
+ * and trivially scale-invariant. On a 2D mesh the offsets are projected into the
+ * cell's plane, so exactness holds on a **planar** mesh and degrades to
+ * first-order on a curved surface, where the projection discards a real part of
+ * the offset. A degenerate neighbourhood (an isolated cell, a collinear strip)
+ * falls back to Green-Gauss for that cell and is counted in
+ * `GradientResult::mNumFallback` — never silently wrong, never NaN when a usable
+ * answer exists.
+ *
+ * ### Contracts
+ *
+ * - **Input must be `point_data`.** A `cell_data` field is piecewise constant
+ *   and has no derivative; naming one throws by name and points at
+ *   `cell_data_to_point_data` (CLI `data to-point`), exactly as `isosurface`
+ *   does for the same reason.
+ * - **Shapes.** An `nc`-component input yields a gradient of `3 * nc`
+ *   components, **flat** and row-major as `[component i][derivative j]` at index
+ *   `i * 3 + j`: a scalar gives `(n, 3)`, a 3-vector gives `(n, 9)`.
+ *   `mComponent` selects a single component and yields 3.
+ *   `Divergence` yields 1 component, `Curl` always yields 3.
+ * - **Divergence and curl** need 2 or 3 components; a 2-component field reads as
+ *   `(u, v, 0)`, the same padding convention `detail::read_point` applies to 2D
+ *   points. On a 2D mesh `d/dz` is unrecoverable and reads 0, so a 3-component
+ *   field's divergence is its *in-plane* divergence and its curl is
+ *   `(d_y w, -d_x w, d_x v - d_y u)`; only a **2**-component field yields a curl
+ *   with a z-component alone.
+ * - **Output is always `Float64`** — a derivative is not an integer — named
+ *   `<input>:gradient` / `:divergence` / `:curl` unless `mOutputName` overrides.
+ *   That is deliberately `name:suffix`, not the repo's usual `prefix:name`, so
+ *   that everything derived from one field sorts next to it.
+ * - **Location.** `Cell` (the natural home of a per-cell derivative, the
+ *   default) or `Point`, the latter obtained by composing the existing
+ *   `cell_data_to_point_data` averaging rather than reimplementing it. Point
+ *   values are therefore exact to within rounding, not bit-exact, for a linear
+ *   field.
+ * - **Unsupported cells are NaN and counted**, never approximated: blocks below
+ *   the mesh's own topological dimension, 3D types with no `detail::cell_faces`
+ *   row (the 3D Lagrange family), ragged polygon and polyhedron blocks, and
+ *   cells whose volume/area is degenerate relative to their own size. This is
+ *   `compute_quality`'s NaN-where-not-applicable convention.
+ * - **Non-finite input.** Unlike every `data_*` operation there is no
+ *   `NanPolicy`: Green-Gauss has no reduction to exclude a value *from*, so a
+ *   single non-finite corner poisons its whole cell. Stated here rather than
+ *   silently diverging from `data_common.hpp`'s policy.
+ * - Geometry, connectivity, regions, property sets and every existing data
+ *   array pass through bit-identically.
+ *
+ * Output is byte-identical across the three mesh backends, across thread counts
+ * and across the C++/numpy boundary: per-cell work is independent, and every
+ * accumulation inside a cell runs in a fixed face -> fan-triangle -> neighbour
+ * order because floating-point addition is not associative.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles under
+ * every mesh backend. This is an operation, not a file format — it is not in the
+ * format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <optional>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which differential operator to apply.
+enum class GradientOperator {
+    Gradient,    ///< `grad f`; `3 * nc` components, row-major `[i][j]` at `i * 3 + j`.
+    Divergence,  ///< `div u`; one component. Needs a 2- or 3-component input.
+    Curl         ///< `curl u`; three components. Needs a 2- or 3-component input.
+};
+
+/// How the per-cell derivative is reconstructed.
+enum class GradientMethod {
+    GreenGauss,   ///< Divergence theorem over the cell's own faces/edges.
+    LeastSquares  ///< Linear fit over the node-sharing neighbour cells.
+};
+
+/// Default suffix of the produced array for each operator.
+inline constexpr const char* kGradientSuffix = ":gradient";
+inline constexpr const char* kDivergenceSuffix = ":divergence";
+inline constexpr const char* kCurlSuffix = ":curl";
+
+/// Options for `gradient`.
+struct GradientOptions {
+    /// Name of the `point_data` array to differentiate. Required.
+    std::string mArrayName;
+    /// Which operator to apply.
+    GradientOperator mOperator = GradientOperator::Gradient;
+    /// How to reconstruct the per-cell derivative.
+    GradientMethod mMethod = GradientMethod::GreenGauss;
+    /// Where the result is stored: `Point` or `Cell`. `Field` is an error.
+    DataLocation mLocation = DataLocation::Cell;
+    /// Output array name; empty selects the operator's default suffix.
+    std::string mOutputName;
+    /// Differentiate only this component of a multi-component input.
+    ///
+    /// Unset means **every** component — note this is the opposite of
+    /// `IsosurfaceOptions::mComponent`, where unset means the row magnitude.
+    /// Setting it together with `Divergence` or `Curl` is an error. At every
+    /// binding boundary the "unset" sentinel is a negative integer.
+    std::optional<int> mComponent;
+    /// When false, an output name that already exists at the target location is
+    /// an error rather than being overwritten.
+    bool mOverwrite = false;
+};
+
+/// The differentiated mesh plus what could not be computed exactly.
+struct GradientResult {
+    /// The input mesh with the produced array added; everything else unchanged.
+    Mesh mMesh;
+    /// Cells that produced a NaN row: unsupported type, wrong dimension, or a
+    /// degenerate measure. Counts cells, not (cell, component) pairs.
+    std::int64_t mNumSkipped = 0;
+    /// Cells where `LeastSquares` hit a degenerate neighbourhood and fell back
+    /// to Green-Gauss. Always 0 for `GreenGauss`.
+    std::int64_t mNumFallback = 0;
+};
+
+/**
+ * @brief Differentiates a `point_data` field over the mesh.
+ * @param rMesh the source mesh (unmodified).
+ * @param rOptions which array, operator, method, location and output name.
+ * @return the mesh with the produced array, plus the skip/fallback counters.
+ * @throws std::invalid_argument on an empty or unknown array name, on a
+ *         `cell_data` name (the message names the fix), on a row count that
+ *         disagrees with the mesh, on an out-of-range or misapplied
+ *         `mComponent`, on a component count `Divergence`/`Curl` cannot use, on
+ *         `DataLocation::Field`, on an output-name collision when `mOverwrite`
+ *         is false, or on a mesh of topological dimension 0.
+ */
+MESHIOPLUSPLUS_API GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions);
+
+/**
+ * @brief Parses an operator name.
+ * @param rName one of `gradient`/`grad`, `divergence`/`div`, or `curl`/`rot`.
+ * @return the matching `GradientOperator`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+MESHIOPLUSPLUS_API GradientOperator gradient_operator_from_name(const std::string& rName);
+
+/**
+ * @brief Parses a method name.
+ * @param rName one of `green-gauss`/`green_gauss`/`gg` (or empty), or
+ *        `least-squares`/`least_squares`/`lsq`.
+ * @return the matching `GradientMethod`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+MESHIOPLUSPLUS_API GradientMethod gradient_method_from_name(const std::string& rName);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/gradient.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/interpolate.hpp =====
 /**
  * @file interpolate.hpp
@@ -16893,7 +17195,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 9
+#define MESHIOPLUSPLUS_VERSION_MINOR 10
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -16903,7 +17205,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.9.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.10.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -32162,6 +32464,82 @@ void MESHIOPLUSPLUS_ABI_SYM(MESHIOPLUSPLUS_ABI_VERSION)() {}
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/abi_version_check.cpp =====
+// ===== begin src/cpp/src/detail/cell_adjacency.cpp =====
+#include <algorithm>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+CellIncidence build_cell_node_incidence(const Mesh& rMesh, std::size_t NumPoints) {
+    CellIncidence csr;
+    csr.mOffsets.push_back(0);
+    // The node walk goes through cell_node_ids, which reads connectivity
+    // dtype-agnostically. Reading it as As<std::int64_t>() would be wrong on a
+    // MESHIO-backed mesh carrying Int32 connectivity from numpy -- see the
+    // header comment.
+    std::vector<std::int64_t> row;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        for (std::size_t c = 0; c < ncells; ++c) {
+            cell_node_ids(cb, c, NumPoints, row);
+            csr.mEntries.insert(csr.mEntries.end(), row.begin(), row.end());
+            csr.mOffsets.push_back(static_cast<std::int64_t>(csr.mEntries.size()));
+        }
+    }
+    return csr;
+}
+
+CellIncidence invert_cell_node_incidence(const CellIncidence& rCellNodes, std::size_t NumPoints,
+                                         std::size_t NumCells) {
+    CellIncidence csr;
+    csr.mOffsets.assign(NumPoints + 1, 0);
+    for (std::int64_t nid : rCellNodes.mEntries)
+        if (nid >= 0 && static_cast<std::size_t>(nid) < NumPoints)
+            ++csr.mOffsets[static_cast<std::size_t>(nid) + 1];
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        csr.mOffsets[i + 1] += csr.mOffsets[i];
+    csr.mEntries.assign(static_cast<std::size_t>(csr.mOffsets.back()), 0);
+    // Walking cells in ascending order leaves every row ascending by cell id.
+    std::vector<std::int64_t> cursor(csr.mOffsets.begin(), csr.mOffsets.end() - 1);
+    for (std::size_t c = 0; c < NumCells; ++c)
+        for (std::int64_t k = rCellNodes.mOffsets[c]; k < rCellNodes.mOffsets[c + 1]; ++k) {
+            const std::int64_t nid = rCellNodes.mEntries[static_cast<std::size_t>(k)];
+            if (nid >= 0 && static_cast<std::size_t>(nid) < NumPoints)
+                csr.mEntries[static_cast<std::size_t>(cursor[static_cast<std::size_t>(nid)]++)] =
+                    static_cast<std::int64_t>(c);
+        }
+    return csr;
+}
+
+void cell_node_neighbors(const CellIncidence& rCellNodes, const CellIncidence& rNodeCells,
+                         std::size_t Cell, std::vector<std::int64_t>& rOut) {
+    rOut.clear();
+    if (Cell + 1 >= rCellNodes.mOffsets.size())
+        return;
+    const std::int64_t self = static_cast<std::int64_t>(Cell);
+    for (std::int64_t k = rCellNodes.mOffsets[Cell]; k < rCellNodes.mOffsets[Cell + 1]; ++k) {
+        const std::int64_t nid = rCellNodes.mEntries[static_cast<std::size_t>(k)];
+        if (nid < 0 || static_cast<std::size_t>(nid) + 1 >= rNodeCells.mOffsets.size())
+            continue;
+        for (std::int64_t j = rNodeCells.mOffsets[static_cast<std::size_t>(nid)];
+             j < rNodeCells.mOffsets[static_cast<std::size_t>(nid) + 1]; ++j) {
+            const std::int64_t other = rNodeCells.mEntries[static_cast<std::size_t>(j)];
+            if (other != self)
+                rOut.push_back(other);
+        }
+    }
+    // Ascending and de-duplicated: the neighbour order is part of this helper's
+    // contract, since a sum over neighbours must not depend on how the walk
+    // happened to encounter them.
+    std::sort(rOut.begin(), rOut.end());
+    rOut.erase(std::unique(rOut.begin(), rOut.end()), rOut.end());
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cell_adjacency.cpp =====
 // ===== begin src/cpp/src/detail/cell_edges.cpp =====
 
 namespace meshioplusplus {
@@ -63082,6 +63460,734 @@ bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol, double rtol) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/diff.cpp =====
+// ===== begin src/cpp/src/operations/gradient.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+constexpr const char* kGradPrefix = "meshio++: gradient: ";
+
+// --- per-cell geometry -------------------------------------------------------
+
+/// One cell, reduced to what both methods need: its corner coordinates and the
+/// matching field values, both recentred on the corner average.
+///
+/// Recentring is load-bearing, not an optimization. `V = (1/3) sum x_j . A_j`
+/// only telescopes to the cell's volume because `sum A_j == 0` over the closed
+/// fan surface; in floating point, on a mesh at x ~ 1e6 with cells of size 1,
+/// every term is ~1e6 * area and they cancel to ~area, losing about six decimal
+/// digits of a quantity we then divide by. The same applies to the numerator
+/// when the field carries a large constant offset (Kelvin, Pascals). Subtracting
+/// the corner means changes nothing mathematically and removes the cancellation.
+struct GradCell {
+    std::vector<Vec3> mCorners;   ///< Corner coords, relative to `mOrigin`.
+    std::vector<double> mValues;  ///< Corner field values, relative to `mValue0`, `ncomp` each.
+    Vec3 mOrigin{0.0, 0.0, 0.0};  ///< Arithmetic mean of the raw corner coords.
+    std::vector<double> mValue0;  ///< Arithmetic mean of the raw corner values, `ncomp` long.
+    bool mSupported = false;      ///< Whether the cell can be differentiated at all.
+    CellType mType = CellType::Custom;
+    int mDim = -1;
+};
+
+/// Reads the leading `NumCorners` connectivity entries of one cell.
+void grad_corner_nodes(const Mesh::CellView& rBlock, std::size_t Cell, std::size_t NumCorners,
+                       std::vector<std::int64_t>& rOut) {
+    rOut.clear();
+    const NDArray& conn = rBlock.Conn();
+    const std::size_t npc = rBlock.NodesPerCell();
+    for (std::size_t k = 0; k < NumCorners; ++k)
+        rOut.push_back(detail::read_int(conn, Cell * npc + k));
+}
+
+/// Gathers a cell's corner coordinates and field values, recentred.
+///
+/// `rOut.mSupported` is false when the block is ragged/polyhedron, has no corner
+/// count, or references an out-of-range node — the caller then emits NaN and
+/// counts the cell rather than guessing.
+void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArray& rPoints,
+                    std::size_t PointDim, const NDArray& rField, std::size_t NumComp,
+                    std::size_t NumPoints, std::size_t NumCorners, GradCell& rOut) {
+    rOut.mSupported = false;
+    rOut.mCorners.clear();
+    rOut.mValues.clear();
+    rOut.mValue0.assign(NumComp, 0.0);
+    if (rBlock.IsRagged() || rBlock.IsPolyhedron() || NumCorners == 0)
+        return;
+
+    static thread_local std::vector<std::int64_t> nodes;
+    grad_corner_nodes(rBlock, Cell, NumCorners, nodes);
+    for (std::int64_t nid : nodes)
+        if (nid < 0 || static_cast<std::size_t>(nid) >= NumPoints)
+            return;
+
+    rOut.mCorners.reserve(NumCorners);
+    rOut.mValues.reserve(NumCorners * NumComp);
+    for (std::int64_t nid : nodes) {
+        rOut.mCorners.push_back(detail::read_point(rPoints, PointDim, nid));
+        for (std::size_t k = 0; k < NumComp; ++k)
+            rOut.mValues.push_back(
+                detail::read_double(rField, static_cast<std::size_t>(nid) * NumComp + k));
+    }
+
+    // Ascending corner order, left to right — the numpy twin sums identically.
+    Vec3 origin{0.0, 0.0, 0.0};
+    for (const Vec3& r_p : rOut.mCorners)
+        origin = detail::vec3_add(origin, r_p);
+    const double inv = 1.0 / static_cast<double>(NumCorners);
+    origin = detail::vec3_scale(origin, inv);
+    for (std::size_t k = 0; k < NumComp; ++k) {
+        double s = 0.0;
+        for (std::size_t i = 0; i < NumCorners; ++i)
+            s += rOut.mValues[i * NumComp + k];
+        rOut.mValue0[k] = s * inv;
+    }
+    for (Vec3& r_p : rOut.mCorners)
+        r_p = detail::vec3_sub(r_p, origin);
+    for (std::size_t i = 0; i < NumCorners; ++i)
+        for (std::size_t k = 0; k < NumComp; ++k)
+            rOut.mValues[i * NumComp + k] -= rOut.mValue0[k];
+    rOut.mOrigin = origin;
+    rOut.mSupported = true;
+}
+
+// --- Green-Gauss -------------------------------------------------------------
+
+/// Green-Gauss over a 3D cell's faces. Writes `NumComp * 3` values to `pOut`
+/// (`[component][derivative]`), or returns false when the cell's fan volume is
+/// degenerate relative to its own size.
+bool grad_green_gauss_3d(const GradCell& rCell, std::size_t NumComp, double* pOut) {
+    const std::vector<detail::CellFaceDef>& r_faces = detail::cell_faces(rCell.mType);
+    if (r_faces.empty())
+        return false;
+
+    std::vector<double> num(NumComp * 3, 0.0);
+    double volume = 0.0;
+    double area_scale = 0.0;
+
+    for (const detail::CellFaceDef& r_face : r_faces) {
+        const std::size_t m = r_face.mNumCorners;
+        // Face centre and face-centre value: the fan apex. For linear f the
+        // corner average is the ONLY apex whose value is known exactly without
+        // shape functions -- see the header. Do not switch to the area centroid.
+        Vec3 c{0.0, 0.0, 0.0};
+        for (std::size_t i = 0; i < m; ++i)
+            c = detail::vec3_add(c, rCell.mCorners[r_face.mNodes[i]]);
+        const double inv_m = 1.0 / static_cast<double>(m);
+        c = detail::vec3_scale(c, inv_m);
+
+        static thread_local std::vector<double> fc;
+        fc.assign(NumComp, 0.0);
+        for (std::size_t k = 0; k < NumComp; ++k) {
+            double s = 0.0;
+            for (std::size_t i = 0; i < m; ++i)
+                s += rCell.mValues[static_cast<std::size_t>(r_face.mNodes[i]) * NumComp + k];
+            fc[k] = s * inv_m;
+        }
+
+        for (std::size_t i = 0; i < m; ++i) {
+            const std::size_t a = r_face.mNodes[i];
+            const std::size_t b = r_face.mNodes[(i + 1) % m];
+            const Vec3& r_pa = rCell.mCorners[a];
+            const Vec3& r_pb = rCell.mCorners[b];
+            const Vec3 av = detail::vec3_scale(
+                detail::vec3_cross(detail::vec3_sub(r_pa, c), detail::vec3_sub(r_pb, c)), 0.5);
+            const Vec3 xj = detail::vec3_scale(detail::vec3_add(detail::vec3_add(c, r_pa), r_pb),
+                                               1.0 / 3.0);
+            volume += detail::vec3_dot(xj, av) * (1.0 / 3.0);
+            area_scale += detail::vec3_norm(av);
+            for (std::size_t k = 0; k < NumComp; ++k) {
+                const double fj = (fc[k] + rCell.mValues[a * NumComp + k] +
+                                   rCell.mValues[b * NumComp + k]) *
+                                  (1.0 / 3.0);
+                num[k * 3 + 0] += fj * av[0];
+                num[k * 3 + 1] += fj * av[1];
+                num[k * 3 + 2] += fj * av[2];
+            }
+        }
+    }
+
+    // Relative degeneracy test: a volume must be large next to the cell's own
+    // (area)^(3/2) scale, never against an absolute epsilon.
+    const double scale = area_scale * std::sqrt(area_scale);
+    if (!(std::abs(volume) > 1e-12 * scale))
+        return false;
+    const double inv_v = 1.0 / volume;
+    for (std::size_t i = 0; i < NumComp * 3; ++i)
+        pOut[i] = num[i] * inv_v;
+    return true;
+}
+
+/// The recentred Newell area vector of a 2D cell's corner ring.
+///
+/// Deliberately the recentred form rather than `dataops_polygon_area`'s
+/// `sum p_i x p_{i+1}`: algebraically identical (the cross terms telescope) but
+/// far better conditioned. Do not "unify" the two.
+Vec3 grad_ring_area_vector(const std::vector<Vec3>& rRing) {
+    const std::size_t n = rRing.size();
+    Vec3 av{0.0, 0.0, 0.0};
+    for (std::size_t i = 1; i + 1 < n; ++i)
+        av = detail::vec3_add(av, detail::vec3_cross(detail::vec3_sub(rRing[i], rRing[0]),
+                                                     detail::vec3_sub(rRing[i + 1], rRing[0])));
+    return detail::vec3_scale(av, 0.5);
+}
+
+/// Green-Gauss over a 2D cell's corner ring, using the in-plane outward normal
+/// `t x N`. Invariant under reversal and cyclic rotation of the ring.
+bool grad_green_gauss_2d(const GradCell& rCell, std::size_t NumComp, double* pOut) {
+    const std::size_t n = rCell.mCorners.size();
+    if (n < 3)
+        return false;
+    const Vec3 av = grad_ring_area_vector(rCell.mCorners);
+    const double area = detail::vec3_norm(av);
+    double edge_scale = 0.0;
+    for (std::size_t i = 0; i < n; ++i)
+        edge_scale +=
+            detail::vec3_norm(detail::vec3_sub(rCell.mCorners[(i + 1) % n], rCell.mCorners[i]));
+    if (!(area > 1e-12 * (edge_scale * edge_scale)))
+        return false;
+    const Vec3 nrm = detail::vec3_scale(av, 1.0 / area);
+
+    std::vector<double> num(NumComp * 3, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t a = i;
+        const std::size_t b = (i + 1) % n;
+        const Vec3 t = detail::vec3_sub(rCell.mCorners[b], rCell.mCorners[a]);
+        const Vec3 mds = detail::vec3_cross(t, nrm);
+        for (std::size_t k = 0; k < NumComp; ++k) {
+            const double fbar =
+                (rCell.mValues[a * NumComp + k] + rCell.mValues[b * NumComp + k]) * 0.5;
+            num[k * 3 + 0] += fbar * mds[0];
+            num[k * 3 + 1] += fbar * mds[1];
+            num[k * 3 + 2] += fbar * mds[2];
+        }
+    }
+    const double inv_a = 1.0 / area;
+    for (std::size_t i = 0; i < NumComp * 3; ++i)
+        pOut[i] = num[i] * inv_a;
+    return true;
+}
+
+/// Green-Gauss on a 1D cell: the two endpoints are its "faces", with outward
+/// normals -/+ t_hat and "volume" |p1 - p0|.
+bool grad_green_gauss_1d(const GradCell& rCell, std::size_t NumComp, double* pOut) {
+    if (rCell.mCorners.size() < 2)
+        return false;
+    const Vec3 t = detail::vec3_sub(rCell.mCorners[1], rCell.mCorners[0]);
+    const double len = detail::vec3_norm(t);
+    if (!(len > 0.0))
+        return false;
+    const Vec3 dir = detail::vec3_scale(t, 1.0 / len);
+    for (std::size_t k = 0; k < NumComp; ++k) {
+        const double slope = (rCell.mValues[1 * NumComp + k] - rCell.mValues[0 * NumComp + k]) / len;
+        pOut[k * 3 + 0] = slope * dir[0];
+        pOut[k * 3 + 1] = slope * dir[1];
+        pOut[k * 3 + 2] = slope * dir[2];
+    }
+    return true;
+}
+
+bool grad_green_gauss(const GradCell& rCell, int Dim, std::size_t NumComp, double* pOut) {
+    if (Dim == 3)
+        return grad_green_gauss_3d(rCell, NumComp, pOut);
+    if (Dim == 2)
+        return grad_green_gauss_2d(rCell, NumComp, pOut);
+    if (Dim == 1)
+        return grad_green_gauss_1d(rCell, NumComp, pOut);
+    return false;
+}
+
+// --- least squares -----------------------------------------------------------
+
+/// Solves the symmetric 3x3 system `M g = b` in closed cofactor form.
+///
+/// The conditioning bound is transcribed from `decimate.cpp`'s optimal-placement
+/// solve, including the `scale * scale * scale` multiplication form: `std::pow`
+/// (and `np.power` in the twin) rounds differently and would break parity.
+bool grad_solve3(const double* pM, const double* pB, double* pOut) {
+    const double c00 = pM[4] * pM[8] - pM[5] * pM[5];
+    const double c01 = pM[2] * pM[5] - pM[1] * pM[8];
+    const double c02 = pM[1] * pM[5] - pM[2] * pM[4];
+    const double det = pM[0] * c00 + pM[1] * c01 + pM[2] * c02;
+    double scale = std::abs(pM[0]);
+    scale = std::max(scale, std::abs(pM[1]));
+    scale = std::max(scale, std::abs(pM[2]));
+    scale = std::max(scale, std::abs(pM[4]));
+    scale = std::max(scale, std::abs(pM[5]));
+    scale = std::max(scale, std::abs(pM[8]));
+    if (!(std::abs(det) > 1e-12 * (scale * scale * scale)))
+        return false;
+    const double c11 = pM[0] * pM[8] - pM[2] * pM[2];
+    const double c12 = pM[1] * pM[2] - pM[0] * pM[5];
+    const double c22 = pM[0] * pM[4] - pM[1] * pM[1];
+    const double inv = 1.0 / det;
+    pOut[0] = (c00 * pB[0] + c01 * pB[1] + c02 * pB[2]) * inv;
+    pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
+    pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
+    return true;
+}
+
+/// One cell's least-squares stencil: the neighbour offsets and value deltas,
+/// already recentred on this cell.
+struct GradStencil {
+    std::vector<Vec3> mOffsets;
+    std::vector<double> mDeltas;  ///< `NumComp` per offset.
+};
+
+/// Least-squares fit over a prepared stencil. `pNormal` is null in 3D and the
+/// cell's unit plane normal in 2D.
+bool grad_least_squares(const GradStencil& rStencil, std::size_t NumComp, int Dim,
+                        const Vec3* pNormal, double* pOut) {
+    double m[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    std::vector<double> b(NumComp * 3, 0.0);
+    const std::size_t n = rStencil.mOffsets.size();
+    for (std::size_t j = 0; j < n; ++j) {
+        Vec3 d = rStencil.mOffsets[j];
+        if (pNormal != nullptr)
+            d = detail::vec3_sub(d, detail::vec3_scale(*pNormal, detail::vec3_dot(d, *pNormal)));
+        const double d2 = detail::vec3_norm_sq(d);
+        // A zero offset would give an infinite weight and poison the whole
+        // matrix with NaN; two node-sharing cells really can have coincident
+        // corner means (a collapsed cell, a line lying inside a triangle).
+        if (!(d2 > 0.0))
+            continue;
+        const double w = 1.0 / d2;
+        for (std::size_t r = 0; r < 3; ++r)
+            for (std::size_t c = 0; c < 3; ++c)
+                m[r * 3 + c] += w * d[r] * d[c];
+        for (std::size_t k = 0; k < NumComp; ++k) {
+            const double wf = w * rStencil.mDeltas[j * NumComp + k];
+            b[k * 3 + 0] += wf * d[0];
+            b[k * 3 + 1] += wf * d[1];
+            b[k * 3 + 2] += wf * d[2];
+        }
+    }
+
+    if (Dim == 3 || Dim == 2) {
+        if (pNormal != nullptr) {
+            // Rank-1 regularization instead of a tangent-plane basis: adding
+            // s * N N^T makes the in-plane rank-2 matrix invertible without
+            // touching b (every offset was projected, so b . N == 0), so the
+            // solution automatically satisfies g . N == 0 and the SAME 3x3
+            // solver serves both dimensions. A Gram-Schmidt basis would need an
+            // arbitrary tie-break transcribed bit-for-bit into the numpy twin.
+            double s = (m[0] + m[4] + m[8]) * 0.5;
+            if (!(s > 0.0))
+                s = 1.0;
+            const Vec3& r_nrm = *pNormal;
+            for (std::size_t r = 0; r < 3; ++r)
+                for (std::size_t c = 0; c < 3; ++c)
+                    m[r * 3 + c] += s * r_nrm[r] * r_nrm[c];
+        }
+        for (std::size_t k = 0; k < NumComp; ++k)
+            if (!grad_solve3(m, b.data() + k * 3, pOut + k * 3))
+                return false;
+        return true;
+    }
+
+    // 1D: a single scalar equation per component. The generic bound would
+    // degenerate to |M00| <= 1e-12 * |M00|, which is only true at exactly zero,
+    // so say that outright rather than shipping an expression that reads as a bug.
+    if (m[0] == 0.0 && m[4] == 0.0 && m[8] == 0.0)
+        return false;
+    const double trace = m[0] + m[4] + m[8];
+    if (trace == 0.0)
+        return false;
+    for (std::size_t k = 0; k < NumComp; ++k) {
+        // The offsets are collinear, so M = w |d|^2 d_hat d_hat^T has rank 1 and
+        // the fit reduces to b projected onto that direction over the trace.
+        pOut[k * 3 + 0] = b[k * 3 + 0] / trace;
+        pOut[k * 3 + 1] = b[k * 3 + 1] / trace;
+        pOut[k * 3 + 2] = b[k * 3 + 2] / trace;
+    }
+    return true;
+}
+
+// --- operator application ----------------------------------------------------
+
+/// Number of output components for one operator.
+std::size_t grad_out_components(GradientOperator Op, std::size_t NumComp) {
+    if (Op == GradientOperator::Divergence)
+        return 1;
+    if (Op == GradientOperator::Curl)
+        return 3;
+    return NumComp * 3;
+}
+
+/// Reduces a full `[component][derivative]` block to the requested operator.
+void grad_apply_operator(GradientOperator Op, const double* pGrad, std::size_t NumComp,
+                         double* pOut) {
+    if (Op == GradientOperator::Gradient) {
+        for (std::size_t i = 0; i < NumComp * 3; ++i)
+            pOut[i] = pGrad[i];
+        return;
+    }
+    // Divergence and curl read a 3x3 block; a 2-component field is (u, v, 0),
+    // the same padding convention read_point applies to 2D points.
+    double g[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < NumComp && k < 3; ++k)
+        for (std::size_t j = 0; j < 3; ++j)
+            g[k * 3 + j] = pGrad[k * 3 + j];
+    if (Op == GradientOperator::Divergence) {
+        pOut[0] = g[0 * 3 + 0] + g[1 * 3 + 1] + g[2 * 3 + 2];
+        return;
+    }
+    pOut[0] = g[2 * 3 + 1] - g[1 * 3 + 2];
+    pOut[1] = g[0 * 3 + 2] - g[2 * 3 + 0];
+    pOut[2] = g[1 * 3 + 0] - g[0 * 3 + 1];
+}
+
+/// The default output name for an operator.
+std::string grad_default_name(const std::string& rArray, GradientOperator Op) {
+    if (Op == GradientOperator::Divergence)
+        return rArray + kDivergenceSuffix;
+    if (Op == GradientOperator::Curl)
+        return rArray + kCurlSuffix;
+    return rArray + kGradientSuffix;
+}
+
+/// `{rows}` for a scalar, `{rows, ncomp}` otherwise — data_average's rule, so a
+/// scalar result stays 1-D rather than becoming an (n, 1) column.
+std::vector<std::size_t> grad_shape(std::size_t Rows, std::size_t NumComp) {
+    if (NumComp <= 1)
+        return {Rows};
+    return {Rows, NumComp};
+}
+
+/// Max topological dimension over the mesh's blocks; ragged polygon blocks count
+/// as 2 and polyhedron blocks as 3, matching partition's dual-dimension rule.
+int grad_mesh_dimension(const Mesh& rMesh) {
+    int dim = -1;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.NumCells() == 0)
+            continue;
+        int d;
+        if (cb.IsPolyhedron())
+            d = 3;
+        else if (cb.IsRagged())
+            d = 2;
+        else
+            d = cell_type_dimension(cell_type_from_name(cb.Type()));
+        dim = std::max(dim, d);
+    }
+    return dim;
+}
+
+}  // namespace
+
+GradientOperator gradient_operator_from_name(const std::string& rName) {
+    if (rName == "gradient" || rName == "grad" || rName.empty())
+        return GradientOperator::Gradient;
+    if (rName == "divergence" || rName == "div")
+        return GradientOperator::Divergence;
+    if (rName == "curl" || rName == "rot")
+        return GradientOperator::Curl;
+    throw std::invalid_argument(std::string(kGradPrefix) + "unknown operator '" + rName +
+                                "' (expected 'gradient', 'divergence', or 'curl')");
+}
+
+GradientMethod gradient_method_from_name(const std::string& rName) {
+    if (rName == "green-gauss" || rName == "green_gauss" || rName == "gg" || rName.empty())
+        return GradientMethod::GreenGauss;
+    if (rName == "least-squares" || rName == "least_squares" || rName == "lsq")
+        return GradientMethod::LeastSquares;
+    throw std::invalid_argument(std::string(kGradPrefix) + "unknown method '" + rName +
+                                "' (expected 'green-gauss' or 'least-squares')");
+}
+
+GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
+    // --- validation, all before any work ------------------------------------
+    if (rOptions.mArrayName.empty())
+        throw std::invalid_argument(std::string(kGradPrefix) + "an array name is required");
+    if (rOptions.mLocation == DataLocation::Field)
+        throw std::invalid_argument(std::string(kGradPrefix) +
+                                    "field_data has no location on the mesh; the result must be "
+                                    "'point' or 'cell'");
+    if (!rMesh.HasPointData(rOptions.mArrayName)) {
+        // A cell_data field is piecewise constant and has no derivative. Name
+        // the fix, exactly as isosurface does for the same reason.
+        if (rMesh.HasCellData(rOptions.mArrayName))
+            throw std::invalid_argument(
+                std::string(kGradPrefix) + "'" + rOptions.mArrayName +
+                "' is cell_data, which is piecewise constant and has no derivative; convert it "
+                "first with cell_data_to_point_data (CLI: meshioplusplus data to-point)");
+        throw std::invalid_argument(
+            std::string(kGradPrefix) +
+            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
+    }
+
+    const NDArray& field = rMesh.PointData(rOptions.mArrayName);
+    const std::size_t field_comp = data_num_components(field);
+    if (field_comp == 0 || detail::rows(field) == 0)
+        throw std::invalid_argument(std::string(kGradPrefix) + "'" + rOptions.mArrayName +
+                                    "' carries no values");
+    if (detail::rows(field) != rMesh.NumPoints())
+        throw std::invalid_argument(std::string(kGradPrefix) + "'" + rOptions.mArrayName +
+                                    "' has " + std::to_string(detail::rows(field)) +
+                                    " rows on a mesh of " + std::to_string(rMesh.NumPoints()) +
+                                    " points");
+    if (rOptions.mComponent.has_value()) {
+        if (rOptions.mOperator != GradientOperator::Gradient)
+            throw std::invalid_argument(std::string(kGradPrefix) +
+                                        "a component selection applies to the gradient only; "
+                                        "divergence and curl consume the whole vector");
+        const int c = *rOptions.mComponent;
+        if (c < 0 || static_cast<std::size_t>(c) >= field_comp)
+            throw std::invalid_argument(std::string(kGradPrefix) + "component " +
+                                        std::to_string(c) + " is out of range for '" +
+                                        rOptions.mArrayName + "', which has " +
+                                        std::to_string(field_comp) + " component(s)");
+    }
+    if (rOptions.mOperator != GradientOperator::Gradient && field_comp != 2 && field_comp != 3)
+        throw std::invalid_argument(
+            std::string(kGradPrefix) + "'" + rOptions.mArrayName + "' has " +
+            std::to_string(field_comp) +
+            " components; divergence and curl need a vector field of 2 or 3");
+
+    const std::string out_name =
+        rOptions.mOutputName.empty() ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
+                                     : rOptions.mOutputName;
+    if (!rOptions.mOverwrite) {
+        const bool taken = rOptions.mLocation == DataLocation::Point ? rMesh.HasPointData(out_name)
+                                                                     : rMesh.HasCellData(out_name);
+        if (taken)
+            throw std::invalid_argument(std::string(kGradPrefix) + "'" + out_name +
+                                        "' already exists in " +
+                                        data_location_name(rOptions.mLocation) +
+                                        " (pass overwrite=true to replace it)");
+    }
+
+    // The field components actually differentiated: one when a component was
+    // selected, all of them otherwise.
+    const std::size_t work_comp = rOptions.mComponent.has_value() ? 1 : field_comp;
+    const std::size_t comp_base = rOptions.mComponent.has_value()
+                                      ? static_cast<std::size_t>(*rOptions.mComponent)
+                                      : 0;
+    const std::size_t out_comp = grad_out_components(rOptions.mOperator, work_comp);
+
+    // Geometry, connectivity, regions, property sets and every existing array
+    // ride through untouched. No warn_regions_dropped here -- unlike every
+    // restructuring operation, this one does not renumber anything.
+    Mesh out = detail::clone_mesh(rMesh);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (nblocks == 0)
+        return GradientResult{std::move(out), 0, 0};
+
+    const int dim = grad_mesh_dimension(rMesh);
+    if (dim <= 0)
+        throw std::invalid_argument(
+            std::string(kGradPrefix) +
+            "the mesh has no cells of topological dimension 1 or more to differentiate over");
+
+    // A compacted view of the field holding only the components being worked on,
+    // so every downstream loop reads a dense `work_comp`-wide row.
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    const std::size_t npoints = rMesh.NumPoints();
+
+    NDArray work(DType::Float64, grad_shape(npoints, work_comp));
+    {
+        double* pw = work.As<double>();
+        parallel_for_bw(npoints, [&](std::size_t i) {
+            for (std::size_t k = 0; k < work_comp; ++k)
+                pw[i * work_comp + k] = detail::read_double(field, i * field_comp + comp_base + k);
+        });
+    }
+
+    // Per-block corner counts and eligibility, resolved once.
+    std::vector<std::size_t> corners(nblocks, 0);
+    std::vector<std::uint8_t> eligible(nblocks, 0);
+    std::vector<CellType> types(nblocks, CellType::Custom);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.IsRagged() || cb.IsPolyhedron())
+            continue;
+        const CellType t = cell_type_from_name(cb.Type());
+        types[b] = t;
+        if (cell_type_dimension(t) != dim)
+            continue;
+        const int nc = detail::cell_corner_count(t);
+        if (nc <= 0)
+            continue;
+        // 3D additionally needs a face table; the 3D Lagrange family has none
+        // and is skipped rather than guessed at. 2D walks the corner ring
+        // directly, which is exactly what cell_edges would have given.
+        if (dim == 3 && detail::cell_faces(t).empty())
+            continue;
+        if (dim == 2 && nc < 3)
+            continue;
+        if (dim == 1 && nc < 2)
+            continue;
+        corners[b] = static_cast<std::size_t>(nc);
+        eligible[b] = 1;
+    }
+
+    // The least-squares stencil needs cell-centred state for the WHOLE mesh
+    // before any cell can be fitted, so it is prepared up front.
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t total = static_cast<std::size_t>(detail::total_cells(bases));
+    detail::CellIncidence cell_nodes, node_cells;
+    std::vector<double> cell_x, cell_f;
+    std::vector<std::uint8_t> cell_ok;
+    if (rOptions.mMethod == GradientMethod::LeastSquares) {
+        cell_nodes = detail::build_cell_node_incidence(rMesh, npoints);
+        node_cells = detail::invert_cell_node_incidence(cell_nodes, npoints, total);
+        cell_x.assign(total * 3, 0.0);
+        cell_f.assign(total * work_comp, 0.0);
+        cell_ok.assign(total, 0);
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            if (!eligible[b])
+                continue;
+            const auto cb = rMesh.Cells(b);
+            const std::size_t base = static_cast<std::size_t>(bases[b]);
+            const std::size_t ncells = cb.NumCells();
+            parallel_for(ncells, [&](std::size_t c) {
+                GradCell cell;
+                grad_load_cell(cb, c, points, pdim, work, work_comp, npoints, corners[b], cell);
+                if (!cell.mSupported)
+                    return;
+                const std::size_t g = base + c;
+                cell_x[g * 3 + 0] = cell.mOrigin[0];
+                cell_x[g * 3 + 1] = cell.mOrigin[1];
+                cell_x[g * 3 + 2] = cell.mOrigin[2];
+                for (std::size_t k = 0; k < work_comp; ++k)
+                    cell_f[g * work_comp + k] = cell.mValue0[k];
+                cell_ok[g] = 1;
+            });
+        }
+    }
+
+    // --- per-cell evaluation -------------------------------------------------
+    std::vector<NDArray> blocks;
+    blocks.reserve(nblocks);
+    std::int64_t skipped = 0;
+    std::int64_t fallback = 0;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t ncells = cb.NumCells();
+        NDArray dst(DType::Float64, grad_shape(ncells, out_comp));
+        double* pdst = dst.As<double>();
+        // Per-cell flags reduced serially afterwards: an atomic counter would
+        // work but this keeps the counts independent of scheduling and mirrors
+        // data_average's "apply the policy serially" idiom.
+        std::vector<std::uint8_t> flag_skipped(ncells, 0);
+        std::vector<std::uint8_t> flag_fallback(ncells, 0);
+
+        if (!eligible[b]) {
+            for (std::size_t i = 0; i < ncells * out_comp; ++i)
+                pdst[i] = std::nan("");
+            skipped += static_cast<std::int64_t>(ncells);
+            blocks.push_back(std::move(dst));
+            continue;
+        }
+
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+        const CellType type = types[b];
+        const std::size_t ncorners = corners[b];
+        parallel_for(ncells, [&](std::size_t c) {
+            std::vector<double> grad(work_comp * 3, 0.0);
+            GradCell cell;
+            grad_load_cell(cb, c, points, pdim, work, work_comp, npoints, ncorners, cell);
+            cell.mType = type;
+            cell.mDim = dim;
+
+            bool ok = false;
+            if (cell.mSupported) {
+                if (rOptions.mMethod == GradientMethod::LeastSquares) {
+                    static thread_local std::vector<std::int64_t> nbrs;
+                    detail::cell_node_neighbors(cell_nodes, node_cells, base + c, nbrs);
+                    GradStencil stencil;
+                    stencil.mOffsets.reserve(nbrs.size());
+                    stencil.mDeltas.reserve(nbrs.size() * work_comp);
+                    // Ascending global cell index: the neighbour order is part
+                    // of cell_node_neighbors' contract precisely so this sum is
+                    // reproducible.
+                    for (std::int64_t nb : nbrs) {
+                        const std::size_t g = static_cast<std::size_t>(nb);
+                        if (!cell_ok[g])
+                            continue;
+                        stencil.mOffsets.push_back(
+                            Vec3{cell_x[g * 3 + 0] - cell.mOrigin[0],
+                                 cell_x[g * 3 + 1] - cell.mOrigin[1],
+                                 cell_x[g * 3 + 2] - cell.mOrigin[2]});
+                        for (std::size_t k = 0; k < work_comp; ++k)
+                            stencil.mDeltas.push_back(cell_f[g * work_comp + k] -
+                                                      cell.mValue0[k]);
+                    }
+                    Vec3 nrm{0.0, 0.0, 0.0};
+                    const Vec3* p_normal = nullptr;
+                    if (dim == 2) {
+                        const Vec3 av = grad_ring_area_vector(cell.mCorners);
+                        const double a = detail::vec3_norm(av);
+                        if (a > 0.0) {
+                            nrm = detail::vec3_scale(av, 1.0 / a);
+                            p_normal = &nrm;
+                        }
+                    }
+                    ok = grad_least_squares(stencil, work_comp, dim, p_normal, grad.data());
+                    if (!ok) {
+                        // Degenerate neighbourhood: an isolated cell, a
+                        // collinear strip. Green-Gauss still has a usable
+                        // answer, so take it and say so rather than emit NaN.
+                        ok = grad_green_gauss(cell, dim, work_comp, grad.data());
+                        if (ok)
+                            flag_fallback[c] = 1;
+                    }
+                } else {
+                    ok = grad_green_gauss(cell, dim, work_comp, grad.data());
+                }
+            }
+
+            if (!ok) {
+                for (std::size_t i = 0; i < out_comp; ++i)
+                    pdst[c * out_comp + i] = std::nan("");
+                flag_skipped[c] = 1;
+                return;
+            }
+            grad_apply_operator(rOptions.mOperator, grad.data(), work_comp,
+                                pdst + c * out_comp);
+        });
+
+        for (std::size_t c = 0; c < ncells; ++c) {
+            skipped += flag_skipped[c];
+            fallback += flag_fallback[c];
+        }
+        blocks.push_back(std::move(dst));
+    }
+
+    out.AddCellData(out_name, std::move(blocks));
+
+    if (rOptions.mLocation == DataLocation::Point) {
+        // Compose the existing averaging rather than reimplementing a scatter:
+        // its accumulation is already deliberately serial, so the point values
+        // stay reproducible. All contributing cell values are equal for a linear
+        // field, so the result is exact to within rounding -- but summing n
+        // copies of g and dividing by n is not bit-exact in IEEE, which is why
+        // the point-located tests use a tolerance.
+        DataAverageOptions avg;
+        avg.names = {out_name};
+        avg.weight = CellPointWeight::Uniform;
+        avg.overwrite = true;
+        Mesh with_points = cell_data_to_point_data(out, avg);
+        out = data_drop(with_points, DataLocation::Cell, {out_name});
+    }
+
+    return GradientResult{std::move(out), skipped, fallback};
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/gradient.cpp =====
 // ===== begin src/cpp/src/operations/interpolate.cpp =====
 #include <algorithm>
 #include <array>
@@ -65319,68 +66425,15 @@ std::vector<int> partition_kahip_parts(const Mesh& rMesh, const PartitionOptions
 // --- dispatch ----------------------------------------------------------------
 
 // --- ghost (halo) layers -----------------------------------------------------
-
-/// CSR adjacency: rows indexed by `mOffsets`, payload in `mEntries`.
-struct PartitionIncidenceCsr {
-    std::vector<std::int64_t> mOffsets;
-    std::vector<std::int64_t> mEntries;
-};
-
-/// Global cell -> its (distinct) node ids. Handles ragged blocks; a polyhedron
-/// contributes the distinct nodes across all of its faces.
-PartitionIncidenceCsr partition_cell_nodes(const Mesh& rMesh, std::size_t total) {
-    PartitionIncidenceCsr csr;
-    csr.mOffsets.reserve(total + 1);
-    csr.mOffsets.push_back(0);
-    std::vector<std::int64_t> row;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t ncells = cb.NumCells();
-        for (std::size_t c = 0; c < ncells; ++c) {
-            row.clear();
-            if (cb.IsPolyhedron()) {
-                const std::size_t nf = cb.NumFaces(c);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto [p_face, len] = cb.Face(c, f);
-                    row.insert(row.end(), p_face, p_face + len);
-                }
-                std::sort(row.begin(), row.end());
-                row.erase(std::unique(row.begin(), row.end()), row.end());
-            } else if (cb.IsRagged()) {
-                const std::int64_t* p_row = cb.Row(c);
-                row.assign(p_row, p_row + cb.RowSize(c));
-            } else {
-                const std::size_t k = cb.NodesPerCell();
-                const std::int64_t* p_conn = cb.Conn().As<std::int64_t>();
-                row.assign(p_conn + c * k, p_conn + (c + 1) * k);
-            }
-            csr.mEntries.insert(csr.mEntries.end(), row.begin(), row.end());
-            csr.mOffsets.push_back(static_cast<std::int64_t>(csr.mEntries.size()));
-        }
-    }
-    return csr;
-}
-
-/// Invert cell->nodes into node->cells, by counting (no per-node vector).
-PartitionIncidenceCsr partition_node_cells(const PartitionIncidenceCsr& rCellNodes,
-                                           std::size_t npoints, std::size_t total) {
-    PartitionIncidenceCsr csr;
-    csr.mOffsets.assign(npoints + 1, 0);
-    for (std::int64_t nid : rCellNodes.mEntries)
-        if (nid >= 0 && static_cast<std::size_t>(nid) < npoints)
-            ++csr.mOffsets[static_cast<std::size_t>(nid) + 1];
-    for (std::size_t i = 0; i < npoints; ++i)
-        csr.mOffsets[i + 1] += csr.mOffsets[i];
-    csr.mEntries.assign(static_cast<std::size_t>(csr.mOffsets.back()), 0);
-    std::vector<std::int64_t> cursor(csr.mOffsets.begin(), csr.mOffsets.end() - 1);
-    for (std::size_t c = 0; c < total; ++c)
-        for (std::int64_t k = rCellNodes.mOffsets[c]; k < rCellNodes.mOffsets[c + 1]; ++k) {
-            const std::int64_t nid = rCellNodes.mEntries[static_cast<std::size_t>(k)];
-            if (nid >= 0 && static_cast<std::size_t>(nid) < npoints)
-                csr.mEntries[static_cast<std::size_t>(cursor[static_cast<std::size_t>(nid)]++)] =
-                    static_cast<std::int64_t>(c);
-        }
-    return csr;
-}
+//
+// The cell <-> node incidences live in `detail/cell_adjacency.hpp`, shared with
+// `gradient`'s least-squares stencil so the two cannot disagree about what
+// "shares a node" means. They used to be private to this file, and read dense
+// connectivity as `Conn().As<std::int64_t>()` -- which performs no dtype check,
+// so on a MESHIO-backed mesh carrying Int32 connectivity every node id was two
+// fused Int32 entries. Most such ids failed the range filter below and simply
+// vanished, leaving halos silently too small; the shared helper reads through
+// `detail::read_int` instead.
 
 // Validate the options and resolve Auto to a concrete method.
 PartitionMethod partition_resolve_method(const PartitionOptions& rOptions) {
@@ -65481,10 +66534,10 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
     // choice -- it is what a node-based assembly actually needs, and it is the
     // same neighbour definition the KaHIP dual graph falls back on.
     const int nghost = rOptions.mGhostLayers;
-    PartitionIncidenceCsr cell_nodes, node_cells;
+    detail::CellIncidence cell_nodes, node_cells;
     if (nghost > 0) {
-        cell_nodes = partition_cell_nodes(rMesh, total);
-        node_cells = partition_node_cells(cell_nodes, rMesh.NumPoints(), total);
+        cell_nodes = detail::build_cell_node_incidence(rMesh, rMesh.NumPoints());
+        node_cells = detail::invert_cell_node_incidence(cell_nodes, rMesh.NumPoints(), total);
     }
 
     // Per part, per block, the kept (ascending) local cell indices, and the

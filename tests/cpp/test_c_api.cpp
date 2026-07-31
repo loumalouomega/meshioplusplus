@@ -1575,6 +1575,122 @@ TEST(CApi, IsosurfaceContoursAScalarPointField) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, GradientCarriesTheOperatorsAndCounters) {
+    // A frustum, not a cube: on a cube every face is a parallelogram whose
+    // corner average IS its area centroid, so the exactness assertion below
+    // would pass even with a broken quadrature.
+    const std::vector<double> pts = {0,   0,   0, 2,   0,   0, 2,   2,   0, 0,   2,   0,
+                                     0.5, 0.5, 1, 1.5, 0.5, 1, 1.5, 1.5, 1, 0.5, 1.5, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::vector<double> f(8), u(24);
+    for (std::size_t i = 0; i < 8; ++i) {
+        const double x = pts[i * 3 + 0], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+        f[i] = 3.0 * x - 2.0 * y + 5.0 * z + 7.0;
+        u[i * 3 + 0] = 7.0 * z;
+        u[i * 3 + 1] = 11.0 * x;
+        u[i * 3 + 2] = 13.0 * y;
+    }
+    const std::int64_t sshape[1] = {8};
+    const std::int64_t vshape[2] = {8, 3};
+
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "f", MIO_FLOAT64, 1, sshape, f.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "u", MIO_FLOAT64, 2, vshape, u.data()), MIO_OK);
+
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int32_t ndim = 0;
+    std::int64_t got_shape[MIO_MAX_NDIM] = {0};
+
+    std::int64_t skipped = -1, fallback = -1;
+    mio_mesh* g = mio_gradient(m, "f", nullptr, nullptr, nullptr, nullptr, -1, 0, &skipped,
+                               &fallback);
+    ASSERT_NE(g, nullptr) << mio_last_error();
+    EXPECT_EQ(skipped, 0);
+    EXPECT_EQ(fallback, 0);
+    ASSERT_EQ(mio_mesh_get_cell_data(g, "f:gradient", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    ASSERT_EQ(ndim, 2);
+    EXPECT_EQ(got_shape[1], 3);
+    const double* v = static_cast<const double*>(data);
+    EXPECT_NEAR(v[0], 3.0, 1e-12);
+    EXPECT_NEAR(v[1], -2.0, 1e-12);
+    EXPECT_NEAR(v[2], 5.0, 1e-12);
+    mio_mesh_free(g);
+
+    // curl of (7z, 11x, 13y) is (13, 7, 11): three distinct nonzero components,
+    // so any index permutation or sign flip fails.
+    mio_mesh* c = mio_gradient(m, "u", "curl", "green-gauss", "cell", "w", -1, 0, nullptr,
+                               nullptr);
+    ASSERT_NE(c, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_get_cell_data(c, "w", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    v = static_cast<const double*>(data);
+    EXPECT_NEAR(v[0], 13.0, 1e-12);
+    EXPECT_NEAR(v[1], 7.0, 1e-12);
+    EXPECT_NEAR(v[2], 11.0, 1e-12);
+    mio_mesh_free(c);
+
+    // Least squares on a lone cell has no neighbourhood at all, so the fallback
+    // counter must fire -- asserting it stays 0 on a nice mesh would be inert.
+    skipped = fallback = -1;
+    mio_mesh* l = mio_gradient(m, "f", "gradient", "least-squares", "cell", nullptr, -1, 0,
+                               &skipped, &fallback);
+    ASSERT_NE(l, nullptr) << mio_last_error();
+    EXPECT_EQ(fallback, 1);
+    EXPECT_EQ(skipped, 0);
+    mio_mesh_free(l);
+
+    // Point location moves the array to point_data and drops the intermediate.
+    mio_mesh* p = mio_gradient(m, "f", "gradient", "green-gauss", "point", nullptr, -1, 0,
+                               nullptr, nullptr);
+    ASSERT_NE(p, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_get_point_data(p, "f:gradient", &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_LE(mio_mesh_cell_data_num_blocks(p, "f:gradient"), 0)
+        << "the intermediate cell array must be dropped";
+    mio_mesh_free(p);
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, GradientErrorsAreGuardedNotThrown) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3};
+    const std::vector<double> h = {0, 1, 1, 0};
+    const std::int64_t shape[1] = {4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 1, 4, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "h", MIO_FLOAT64, 1, shape, h.data()), MIO_OK);
+
+    // Unknown array, unknown operator/method, a scalar divergence, an
+    // out-of-range component and NULL arguments: NULL + last_error, never an
+    // exception across the ABI.
+    EXPECT_EQ(mio_gradient(m, "nope", nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr,
+                           nullptr),
+              nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_gradient(m, "h", "laplacian", nullptr, nullptr, nullptr, -1, 0, nullptr,
+                           nullptr),
+              nullptr);
+    EXPECT_EQ(mio_gradient(m, "h", nullptr, "magic", nullptr, nullptr, -1, 0, nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_gradient(m, "h", "divergence", nullptr, nullptr, nullptr, -1, 0, nullptr,
+                           nullptr),
+              nullptr)
+        << "a scalar has no divergence";
+    EXPECT_EQ(mio_gradient(m, "h", nullptr, nullptr, nullptr, nullptr, 7, 0, nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_gradient(nullptr, "h", nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr,
+                           nullptr),
+              nullptr);
+    EXPECT_EQ(mio_gradient(m, nullptr, nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr,
+                           nullptr),
+              nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, IsosurfaceErrorsAreGuardedNotThrown) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
     const std::vector<std::int64_t> conn = {0, 1, 2, 3};
