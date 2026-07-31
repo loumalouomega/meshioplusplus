@@ -443,6 +443,30 @@ end
     close(m)
 end
 
+@testset "operations: gradient" begin
+    m = fixture()
+
+    g = gradient(m, "temperature")
+    @test g.num_skipped == 0
+    @test "temperature:gradient" in cell_data_names(g.mesh)
+    close(g.mesh)
+
+    # The underscore spelling must reach the C API's hyphenated name.
+    l = gradient(m, "temperature"; method=:least_squares)
+    @test l.num_fallback >= 0
+    close(l.mesh)
+
+    p = gradient(m, "temperature"; location=:point, output="dT")
+    @test "dT" in point_data_names(p.mesh)
+    close(p.mesh)
+
+    # A cell_data array is piecewise constant and has no derivative, and a
+    # scalar has no divergence: both must fail by name.
+    @test_throws MeshioError gradient(m, "material")
+    @test_throws MeshioError gradient(m, "temperature"; operator=:divergence)
+    close(m)
+end
+
 @testset "operations: merge and interpolate" begin
     a = fixture()
     b = fixture()

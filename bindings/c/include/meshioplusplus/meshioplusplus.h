@@ -215,7 +215,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 9
-#define MIO_VERSION_MINOR 9
+#define MIO_VERSION_MINOR 10
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -771,6 +771,52 @@ MIO_API mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const do
 MIO_API mio_mesh* mio_isosurface(const mio_mesh* mesh, const char* array_name,
                                  const double* isovalues, int n_isovalues, int component,
                                  int record_parent_ids);
+
+/**
+ * Differentiate a point_data field: its gradient, divergence or curl.
+ *
+ * The result is a copy of the input carrying one new array; geometry,
+ * connectivity, regions and every existing array come through unchanged.
+ *
+ * Shapes: an nc-component input yields a gradient of 3*nc components, flat and
+ * row-major as [component i][derivative j] at index i*3 + j, so a scalar gives
+ * 3 and a 3-vector gives 9. Divergence gives 1 component and curl always 3;
+ * both need an input of 2 or 3 components (a 2-component field reads as
+ * (u, v, 0)). Output is always Float64.
+ *
+ * Cells that cannot be differentiated -- below the mesh's own topological
+ * dimension, ragged, or a 3-D Lagrange type with no face table -- yield NaN and
+ * are counted in num_skipped, never approximated. With "least-squares", a cell
+ * whose neighbourhood is degenerate falls back to Green-Gauss and is counted in
+ * num_fallback.
+ *
+ * @param mesh         input mesh.
+ * @param array_name   name of the point_data array to differentiate. A
+ *                     cell_data name is an error naming the fix, since a
+ *                     piecewise-constant field has no derivative.
+ * @param op           "gradient" (default), "divergence" or "curl"; NULL or ""
+ *                     selects the default.
+ * @param method       "green-gauss" (default) or "least-squares"; NULL or ""
+ *                     selects the default.
+ * @param location     "cell" (default) or "point"; NULL or "" selects the
+ *                     default.
+ * @param output_name  name for the produced array; NULL or "" uses
+ *                     "<array_name>:<op>".
+ * @param component    differentiate only this component of a multi-component
+ *                     input (gradient only); negative means EVERY component.
+ *                     Note this is the opposite of mio_isosurface's sentinel,
+ *                     where negative means the row magnitude.
+ * @param overwrite    nonzero to replace an existing array of the output name
+ *                     instead of failing.
+ * @param num_skipped  optional out: cells that produced a NaN row.
+ * @param num_fallback optional out: least-squares cells that fell back.
+ * @return the mesh carrying the produced array (free with mio_mesh_free), or
+ *         NULL on failure.
+ */
+MIO_API mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, const char* op,
+                               const char* method, const char* location, const char* output_name,
+                               int component, int overwrite, int64_t* num_skipped,
+                               int64_t* num_fallback);
 
 /**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).

@@ -76,6 +76,7 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -1029,6 +1030,35 @@ mio_mesh* mio_isosurface(const mio_mesh* mesh, const char* array_name, const dou
             opts.mComponent = component;
         opts.mRecordParentIds = record_parent_ids != 0;
         return new mio_mesh{meshioplusplus::isosurface(mesh->mMesh, opts)};
+    });
+}
+
+mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, const char* op,
+                       const char* method, const char* location, const char* output_name,
+                       int component, int overwrite, int64_t* num_skipped,
+                       int64_t* num_fallback) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !array_name)
+            throw meshioplusplus::ReadError("meshio++: mesh/array_name is NULL");
+        meshioplusplus::GradientOptions opts;
+        opts.mArrayName = array_name;
+        opts.mOperator = meshioplusplus::gradient_operator_from_name(op ? op : "");
+        opts.mMethod = meshioplusplus::gradient_method_from_name(method ? method : "");
+        opts.mLocation = meshioplusplus::data_location_from_name(
+            (location && *location) ? location : "cell");
+        if (output_name)
+            opts.mOutputName = output_name;
+        // A negative component means EVERY component here -- deliberately the
+        // opposite of mio_isosurface, where it means the row magnitude.
+        if (component >= 0)
+            opts.mComponent = component;
+        opts.mOverwrite = overwrite != 0;
+        meshioplusplus::GradientResult r = meshioplusplus::gradient(mesh->mMesh, opts);
+        if (num_skipped)
+            *num_skipped = r.mNumSkipped;
+        if (num_fallback)
+            *num_fallback = r.mNumFallback;
+        return new mio_mesh{std::move(r.mMesh)};
     });
 }
 

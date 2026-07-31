@@ -509,8 +509,15 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #' @param mode `"all"` (every node inside) or `"any"` (at least one).
 #' @param array The point-data array to contour.
 #' @param isovalues One or more level values.
-#' @param component Component of a multi-component array; negative for the row
-#'   magnitude.
+#' @param component Component of a multi-component array. For `mio_isosurface`
+#'   a negative value means the row magnitude; for `mio_gradient` it means
+#'   **every** component -- deliberately the opposite sentinel.
+#' @param op For `mio_gradient`: `"gradient"`, `"divergence"` or `"curl"`.
+#' @param method For `mio_gradient`: `"green-gauss"` or `"least-squares"`.
+#' @param location For `mio_gradient`: `"cell"` or `"point"`.
+#' @param output Output array name; `""` uses `<array>:<op>`.
+#' @param overwrite Replace an existing array of the output name instead of
+#'   failing.
 #' @param source_tag Add an integer `source_mesh_id` cell-data array.
 #' @param data_policy `"intersection"` (keep keys present in every input) or
 #'   `"fill"` (union, NaN for missing rows).
@@ -630,6 +637,18 @@ mio_isosurface <- function(mesh, array, isovalues, component = -1L,
   .Call(
     R_mio_isosurface, mesh, as.character(array), as.numeric(isovalues),
     as.integer(component), isTRUE(record_parent_ids)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_gradient <- function(mesh, array, op = "gradient", method = "green-gauss",
+                         location = "cell", output = "", component = -1L,
+                         overwrite = FALSE) {
+  .Call(
+    R_mio_gradient, mesh, as.character(array), as.character(op),
+    as.character(method), as.character(location), as.character(output),
+    as.integer(component), isTRUE(overwrite)
   )
 }
 

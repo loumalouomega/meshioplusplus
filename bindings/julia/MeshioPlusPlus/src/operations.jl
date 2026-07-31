@@ -263,6 +263,53 @@ function isosurface(m::Mesh, array::AbstractString, isovalues;
     Mesh(_check_ptr(ptr))
 end
 
+"""
+    gradient(mesh, array; operator=:gradient, method=:green_gauss, location=:cell,
+             output="", component=-1, overwrite=false)
+        -> (; mesh, num_skipped, num_fallback)
+
+Differentiate a **point-data** field: its gradient, divergence or curl.
+
+`operator` is `:gradient`, `:divergence` or `:curl`; `method` is `:green_gauss`
+(exact for a linear field on any cell) or `:least_squares` (a fit over the
+node-sharing neighbours); `location` is `:cell` or `:point`. The result is named
+`"<array>:<operator>"` unless `output` overrides it.
+
+An `nc`-component input yields `3 * nc` gradient components, flat and row-major
+as `[component i][derivative j]`; divergence yields 1 and curl always 3, both
+needing a 2- or 3-component field. `component` selects a single component of the
+gradient; **negative means every component** — deliberately the opposite of
+[`isosurface`](@ref), where negative means the row magnitude.
+
+Cells that cannot be differentiated yield `NaN` and are counted in
+`num_skipped`; least-squares cells with a degenerate neighbourhood fall back to
+Green-Gauss and are counted in `num_fallback`.
+
+Naming a *cell-data* array fails by name: cell data is piecewise constant and
+has no derivative — convert it with [`data_cell_to_point`](@ref) first. See
+`doc/gradient.md`.
+"""
+function gradient(m::Mesh, array::AbstractString; operator=:gradient,
+                  method=:green_gauss, location=:cell, output::AbstractString="",
+                  component::Integer=-1, overwrite::Bool=false)
+    skipped = Ref{Int64}(0)
+    fallback = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_gradient), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cstring, Cstring, Cstring, Cstring, Cint, Cint,
+                 Ptr{Int64}, Ptr{Int64}),
+                _handle(m), array, _op_name(operator), _method_name(method),
+                String(location), output, Cint(component),
+                overwrite ? Cint(1) : Cint(0), skipped, fallback)
+    (mesh=Mesh(_check_ptr(ptr)), num_skipped=Int(skipped[]),
+     num_fallback=Int(fallback[]))
+end
+
+# The C API spells these with hyphens; Julia symbols cannot carry one, so the
+# idiomatic underscore form is translated here rather than forcing callers to
+# pass strings.
+_op_name(op) = String(op)
+_method_name(m) = replace(String(m), '_' => '-')
+
 # --- combining / comparing ---------------------------------------------------
 
 """
