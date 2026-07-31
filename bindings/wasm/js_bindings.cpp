@@ -103,6 +103,7 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -995,6 +996,29 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
                                                      "misses the mesh -- move or flip it"));
         return section;
     }
+    if (op == "gradient") {
+        // A pure data step: geometry is untouched, so the pipeline carries the
+        // mesh straight through with one new array attached.
+        meshioplusplus::GradientOptions opts;
+        opts.mArrayName = text("array", "");
+        opts.mOperator = meshioplusplus::gradient_operator_from_name(text("operator", ""));
+        opts.mMethod = meshioplusplus::gradient_method_from_name(text("method", ""));
+        opts.mLocation = meshioplusplus::data_location_from_name(text("location", "cell"));
+        opts.mOutputName = text("output", "");
+        const int gcomp = static_cast<int>(number("component", -1.0));
+        if (gcomp >= 0)
+            opts.mComponent = gcomp;
+        opts.mOverwrite = true;
+        meshioplusplus::GradientResult gr = meshioplusplus::gradient(mesh, opts);
+        step.set("numSkipped", static_cast<double>(gr.mNumSkipped));
+        step.set("numFallback", static_cast<double>(gr.mNumFallback));
+        rSteps.call<void>("push", step);
+        if (gr.mNumSkipped > 0)
+            rWarnings.call<void>("push", std::string("gradient: ") +
+                                             std::to_string(gr.mNumSkipped) +
+                                             " cell(s) could not be differentiated and are NaN");
+        return std::move(gr.mMesh);
+    }
     if (op == "isosurface") {
         // The level set of a scalar point_data field -- slice's data-driven
         // sibling, and like it a surface one dimension lower, so the shared
@@ -1368,6 +1392,42 @@ val isosurface_js(const val& rMeshObj, const std::string& rArray, const val& rIs
             options.mComponent = component;
         options.mRecordParentIds = recordParentIds;
         return mesh_to_val(meshioplusplus::isosurface(val_to_mesh(rMeshObj), options));
+    });
+}
+
+/**
+ * @brief Gradient / divergence / curl of a point_data field.
+ *
+ * `component` is negative for EVERY component -- deliberately the opposite of
+ * `isosurface_js`, where negative means the row magnitude. An empty `output`
+ * selects `<array>:<operator>`.
+ *
+ * The result rides the mesh boundary as an (n, 3) or (n, 9) array, so its width
+ * travels in the `point_data_components`/`cell_data_components` sibling maps
+ * `mesh_to_val` emits -- without those a gradient would come back flattened to
+ * (3n, 1), which is exactly the class of bug v9.9.0 fixed.
+ */
+val gradient_js(const val& rMeshObj, const std::string& rArray, const std::string& rOperator,
+                const std::string& rMethod, const std::string& rLocation,
+                const std::string& rOutput, int component, bool overwrite) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::GradientOptions options;
+        options.mArrayName = rArray;
+        options.mOperator = meshioplusplus::gradient_operator_from_name(rOperator);
+        options.mMethod = meshioplusplus::gradient_method_from_name(rMethod);
+        options.mLocation = meshioplusplus::data_location_from_name(
+            rLocation.empty() ? "cell" : rLocation);
+        options.mOutputName = rOutput;
+        if (component >= 0)
+            options.mComponent = component;
+        options.mOverwrite = overwrite;
+        meshioplusplus::GradientResult r =
+            meshioplusplus::gradient(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSkipped", static_cast<double>(r.mNumSkipped));
+        out.set("numFallback", static_cast<double>(r.mNumFallback));
+        return out;
     });
 }
 
@@ -2050,6 +2110,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("interpolate", &interpolate_js);
     emscripten::function("slice", &slice_js);
     emscripten::function("isosurface", &isosurface_js);
+    emscripten::function("gradient", &gradient_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("split", &split_js);

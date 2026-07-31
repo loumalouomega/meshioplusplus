@@ -375,6 +375,46 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def gradient(
+        input_path: str,
+        output_path: str,
+        array: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        operator: str = "gradient",
+        method: str = "green-gauss",
+        location: str = "cell",
+        output: Optional[str] = None,
+        component: Optional[int] = None,
+        overwrite: bool = False,
+    ) -> dict:
+        """Gradient, divergence or curl of a point_data field.
+
+        operator: gradient|divergence|curl. method: green-gauss|least-squares.
+        location: cell|point. The result is named <array>:<operator> unless
+        `output` overrides it; a gradient of an nc-component field has 3*nc
+        components laid out [component][derivative]. Divergence and curl need a
+        2- or 3-component field. Cells that cannot be differentiated (below the
+        mesh dimension, ragged, or a 3-D Lagrange type) yield NaN and are
+        reported in num_skipped; least-squares cells with a degenerate
+        neighbourhood fall back to Green-Gauss and are reported in
+        num_fallback."""
+        return _guard(
+            _tools.tool_gradient,
+            input_path=input_path,
+            output_path=output_path,
+            array=array,
+            input_format=input_format,
+            output_format=output_format,
+            operator=operator,
+            method=method,
+            location=location,
+            output=output,
+            component=component,
+            overwrite=overwrite,
+        )
+
+    @server.tool()
     def transform(
         input_path: str,
         output_path: str,

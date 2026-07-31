@@ -61,6 +61,7 @@ extern SEXP R_mio_crop_bbox(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_plane(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_slice(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_merge(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -146,6 +147,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_crop_plane, 5),
     CALLDEF(R_mio_slice, 4),
     CALLDEF(R_mio_isosurface, 5),
+    CALLDEF(R_mio_gradient, 8),
     CALLDEF(R_mio_merge, 6),
     CALLDEF(R_mio_interpolate, 7),
     CALLDEF(R_mio_meshes_equal, 5),

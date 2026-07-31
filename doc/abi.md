@@ -103,6 +103,7 @@ CMake package can never disagree.
 | 2 | v9.1.0 | `GeometricalEntity` gained a member; `ModelPart`, `MdpaInfo`, `PropertySet`, `ReadOptions`, `XdmfTimeSeriesWriter`, `kratos_bridge.hpp` |
 | 3 | v9.2.0 – v9.4.1 | `KratosMesh`, `MeshioMesh`, `NativeMesh`, `PropertySet`, `mesh_api.hpp`, `XdmfTimeSeriesWriter` |
 | 4 | v9.5.0 | `RefineOptions` gained the selective-refinement fields (a cell list, a region name, a `cell_data` predicate, the closure mode and the level flag) |
+| 5 | v9.9.0 | `MedInfo` gained four members (`mFieldUnits`, `mStepMeta`, `mFieldTimeValues`, `mSkippedConstructs`) for the lenient-read surface |
 
 It reaches consumers three ways:
 
@@ -186,7 +187,7 @@ endif()
 
 ```cmake
 # Conservative, and still fully supported: pin the release.
-find_package(meshioplusplus 9.9.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.10.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 Both are correct. The second is stricter than it needs to be, and that is a legitimate choice —

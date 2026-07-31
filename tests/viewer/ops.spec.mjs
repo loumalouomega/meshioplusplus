@@ -129,6 +129,29 @@ test('multi-component data survives an operation', async ({ page }) => {
     expect(after).toContain('gradient (magnitude)');
 });
 
+test('a derivative attaches a field without changing the geometry', async ({ page }) => {
+    await openSample(page, 'Wave (point data)');
+    const before = await state(page);
+
+    await page.getByText('Derivative', { exact: true }).click();
+    await page.locator('#op-grad-array').selectOption('height');
+    await page.locator('#op-grad-apply').click();
+    await expect.poll(() => page.evaluate(() => window.__viewerState.status)).toBe('ready');
+
+    const after = await state(page);
+    // Unlike every other op, this one changes no geometry -- it only adds a
+    // field, which is exactly why it is worth having in the colour-by menu.
+    expect(after.numCells).toBe(before.numCells);
+    expect(after.numPoints).toBe(before.numPoints);
+    expect(after.arrays).toContain('height:gradient (magnitude)');
+    expect(after.arrays).toContain('height:gradient[2]');
+    await expect(page.locator('.op-chip')).toContainText('gradient · height');
+
+    await page.locator('#ops-undo').click();
+    await expect.poll(() => page.evaluate(() => window.__viewerState.status)).toBe('ready');
+    expect((await state(page)).arrays).toEqual(before.arrays);
+});
+
 test('operations stack and revert clears them all', async ({ page }) => {
     await openSample(page, 'Block (volume)');
     const before = await state(page);

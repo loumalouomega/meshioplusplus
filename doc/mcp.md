@@ -113,9 +113,12 @@ report.
 `convert_cells`, `refine` (uniform, or a subset via `cells`/`region`/`where`
 with a conforming `closure`), `decimate`, `smooth`, `merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
-`interpolate` (source → target field transfer). Parameters mirror the Python
-API / CLI one-to-one; operations that produce reports (`clean`, `decimate`,
-`smooth`) include them in the response.
+`interpolate` (source → target field transfer), `gradient` (the gradient,
+divergence or curl of a `point_data` field — see
+[field derivatives](/gradient); reports `num_skipped` and `num_fallback`).
+Parameters mirror the Python API / CLI one-to-one; operations that produce
+reports (`clean`, `decimate`, `smooth`, `gradient`) include them in the
+response.
 
 ### Data operations
 

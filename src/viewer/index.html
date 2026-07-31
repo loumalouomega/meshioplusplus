@@ -230,6 +230,42 @@
             </p>
             <button type="button" id="op-iso-apply">Apply</button>
           </details>
+
+          <details class="op">
+            <summary>Derivative</summary>
+            <label
+              ><span>array</span>
+              <select id="op-grad-array"></select></label
+            >
+            <label
+              ><span>operator</span>
+              <select id="op-grad-operator">
+                <option value="gradient">gradient</option>
+                <option value="divergence">divergence</option>
+                <option value="curl">curl</option>
+              </select></label
+            >
+            <label
+              ><span>method</span>
+              <select id="op-grad-method">
+                <option value="green-gauss">Green-Gauss</option>
+                <option value="least-squares">least squares</option>
+              </select></label
+            >
+            <label
+              ><span>location</span>
+              <select id="op-grad-location">
+                <option value="point">point</option>
+                <option value="cell">cell</option>
+              </select></label
+            >
+            <p class="hint" id="op-grad-note">
+              The gradient, divergence or curl of a point field. The geometry is
+              untouched — the result appears in the colour-by menu. Divergence
+              and curl need a 2- or 3-component field.
+            </p>
+            <button type="button" id="op-grad-apply">Apply</button>
+          </details>
         </section>
 
         <section id="convert-section" hidden>

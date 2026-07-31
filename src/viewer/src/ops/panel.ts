@@ -62,6 +62,7 @@ export class OpsPanel {
         this.wirePartition();
         this.wireSection();
         this.wireIsosurface();
+        this.wireGradient();
         this.renderChips();
     }
 
@@ -87,6 +88,7 @@ export class OpsPanel {
         this.warnings.replaceChildren();
         this.resetSectionSlider();
         this.setIsosurfaceArrays(pointArrays);
+        this.setGradientArrays(pointArrays);
         this.setRefineArrays(cellArrays);
         this.renderChips();
     }
@@ -394,6 +396,47 @@ export class OpsPanel {
             names[0] ?? ''
         );
         const apply = maybe<HTMLButtonElement>('op-iso-apply');
+        if (apply) apply.disabled = names.length === 0;
+    }
+
+    private wireGradient(): void {
+        $('op-grad-apply').addEventListener('click', () => {
+            const array = $<HTMLSelectElement>('op-grad-array').value;
+            if (!array) {
+                // The same reason isosurface refuses: a cell field is piecewise
+                // constant, so it has no derivative either.
+                this.warnings.replaceChildren(
+                    Object.assign(document.createElement('li'), {
+                        textContent:
+                            'this mesh carries no point_data, and a cell field is ' +
+                            'piecewise constant — it has no derivative',
+                    })
+                );
+                return;
+            }
+            this.push({
+                ...OP_DEFAULTS.gradient,
+                array,
+                operator: $<HTMLSelectElement>('op-grad-operator')
+                    .value as 'gradient' | 'divergence' | 'curl',
+                method: $<HTMLSelectElement>('op-grad-method').value as
+                    | 'green-gauss'
+                    | 'least-squares',
+                location: $<HTMLSelectElement>('op-grad-location').value as 'point' | 'cell',
+            });
+        });
+    }
+
+    /** Offer the mesh's own point arrays; a cell field has no derivative. */
+    private setGradientArrays(names: string[]): void {
+        const select = maybe<HTMLSelectElement>('op-grad-array');
+        if (!select) return;
+        setOptions(
+            select,
+            names.map((name) => ({ value: name, label: name })),
+            names[0] ?? ''
+        );
+        const apply = maybe<HTMLButtonElement>('op-grad-apply');
         if (apply) apply.disabled = names.length === 0;
     }
 

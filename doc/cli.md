@@ -738,11 +738,20 @@ meshioplusplus data <subcommand> [options]
 | `calc` | Derive an array from an expression (see [expressions](/data_calc)) |
 | `clamp` | Clamp values into a range (see [conditioning](/data_condition)) |
 | `normalize` | Rescale values to a target range |
+| `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 
 Every verb takes `--input-format` (`-i`), and every verb but `info` takes an
 `OUTFILE` and `--output-format` (`-o`). `export` is the exception on the output
 side: it writes a Parquet file, so it takes no `--output-format`.
+
+::: tip `data gradient` is a mesh operation
+Every other verb in this group belongs to the `data_*` family, which by
+definition never touches geometry. `gradient` consumes and produces data arrays
+but **reads** geometry and topology (face areas, cell volumes, cell adjacency),
+so it lives in the mesh-operations layer. It is grouped here because that is
+where a user looks for it. See [field derivatives](/gradient).
+:::
 
 ::: warning `data export` is not a mesh conversion
 It writes `point_data` / `cell_data` to Parquet **for analytics** (pandas,
@@ -820,11 +829,35 @@ evaluated.
 | `--nan-value` | Replacement used with `--nan replace` |
 | `--suffix` | Store as `NAME+SUFFIX` instead of replacing in place |
 
+### data gradient
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The `point_data` array to differentiate (**required**) |
+| `--op` | `gradient` (default), `divergence` or `curl` |
+| `--method` | `green-gauss` (default) or `least-squares` |
+| `--location` | `cell` (default) or `point` |
+| `--output NAME` | Output array name (default `<array>:<op>`) |
+| `--component I` | Differentiate only this component (gradient only; default all) |
+| `--overwrite` | Replace an existing array of the output name instead of failing |
+| `--quiet`, `-q` | Suppress the summary |
+
+Naming a `cell_data` array is an error pointing at `data to-point`: a piecewise
+constant field has no derivative. Divergence and curl need a 2- or 3-component
+field. Cells that cannot be differentiated are reported as `cells skipped
+(NaN)`; least-squares cells with a degenerate neighbourhood fall back to
+Green-Gauss and are reported separately. See
+[field derivatives](/gradient) for the exactness guarantees and caveats.
+
 **Examples:**
 
 ```sh
 meshioplusplus data info mesh.vtu
 meshioplusplus data info mesh.vtu --json
+
+meshioplusplus data gradient in.vtu out.vtu --array T
+meshioplusplus data gradient in.vtu out.vtu --array u --op curl --location point
+meshioplusplus data gradient in.vtu out.vtu --array T --method least-squares --output dT
 
 meshioplusplus data rename in.vtu out.vtu --point T:temperature
 meshioplusplus data drop   in.vtu out.vtu --point a,b --cell c

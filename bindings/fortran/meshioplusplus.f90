@@ -252,6 +252,7 @@ module meshioplusplus
         procedure :: crop_plane => mesh_crop_plane
         procedure :: slice => mesh_slice
         procedure :: isosurface => mesh_isosurface
+        procedure :: gradient => mesh_gradient
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: refine => mesh_refine
@@ -680,6 +681,18 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: array_name
             real(c_double), intent(in) :: isovalues(*)
             integer(c_int), value :: n_isovalues, component, record_parent_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_gradient(h, array_name, op, method, location, output_name, &
+                               component, overwrite, n_skipped, n_fallback) &
+                bind(c, name="mio_gradient") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: array_name, op, method
+            character(kind=c_char), dimension(*), intent(in) :: location, output_name
+            integer(c_int), value :: component, overwrite
+            integer(c_int64_t), intent(out) :: n_skipped, n_fallback
             type(c_ptr) :: r
         end function
 
@@ -2253,6 +2266,61 @@ contains
             call handle_failure('isosurface', mio_error_message(), stat, errmsg)
             return
         end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Differentiate a point_data field: its gradient, divergence or curl.
+    !>
+    !> `op` is "gradient" (default), "divergence" or "curl"; `method` is
+    !> "green-gauss" (default) or "least-squares"; `location` is "cell"
+    !> (default) or "point". The result is named `<array>:<op>` unless `output`
+    !> overrides it. A gradient of an nc-component field has 3*nc components
+    !> laid out [component][derivative]; divergence gives 1 and curl 3, both
+    !> needing a 2- or 3-component field. `component` (default -1 = every
+    !> component -- note this is the OPPOSITE of `isosurface`, where negative
+    !> means the row magnitude) selects one component of the gradient.
+    !>
+    !> Cells that cannot be differentiated yield NaN and are reported in
+    !> `num_skipped`; least-squares cells with a degenerate neighbourhood fall
+    !> back to Green-Gauss and are reported in `num_fallback`.
+    function mesh_gradient(self, array, op, method, location, output, component, &
+                           overwrite, num_skipped, num_fallback, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        character(*), intent(in), optional :: op, method, location, output
+        integer, intent(in), optional :: component
+        logical, intent(in), optional :: overwrite
+        integer(int64), intent(out), optional :: num_skipped, num_fallback
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: ccomp, cover
+        integer(c_int64_t) :: nskip, nfall
+        character(:), allocatable :: cop, cmethod, cloc, cout
+        cop = ''
+        if (present(op)) cop = op
+        cmethod = ''
+        if (present(method)) cmethod = method
+        cloc = 'cell'
+        if (present(location)) cloc = location
+        cout = ''
+        if (present(output)) cout = output
+        ccomp = -1_c_int
+        if (present(component)) ccomp = int(component, c_int)
+        cover = 0
+        if (present(overwrite)) then
+            if (overwrite) cover = 1
+        end if
+        nskip = 0
+        nfall = 0
+        out%handle = c_mio_gradient(self%handle, c_str(array), c_str(cop), c_str(cmethod), &
+                                    c_str(cloc), c_str(cout), ccomp, cover, nskip, nfall)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('gradient', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_skipped)) num_skipped = int(nskip, int64)
+        if (present(num_fallback)) num_fallback = int(nfall, int64)
         call clear_status(stat, errmsg)
     end function
 

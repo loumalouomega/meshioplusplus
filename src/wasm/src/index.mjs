@@ -119,6 +119,7 @@ function resolveVariant(variant) {
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
+ *   gradient: (mesh: Mesh, array: string, operator?: string, method?: string, location?: string, output?: string, component?: number, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
@@ -295,6 +296,17 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 component,
                 recordParentIds,
             ),
+        gradient: (
+            mesh,
+            array,
+            operator = 'gradient',
+            method = 'green-gauss',
+            location = 'cell',
+            output = '',
+            component = -1,
+            overwrite = false,
+        ) =>
+            Module.gradient(mesh, array, operator, method, location, output, component, overwrite),
         split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
         convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
             Module.convertCells(mesh, mode, recordParentIds),

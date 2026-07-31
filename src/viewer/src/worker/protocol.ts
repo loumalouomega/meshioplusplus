@@ -93,6 +93,20 @@ export type OpSpec =
           array: string;
           isovalue: number;
           component: number;
+      }
+    | {
+          /**
+           * The gradient, divergence or curl of a `point_data` field. Unlike
+           * every other op here it changes no geometry -- it only attaches one
+           * array -- so the pipeline carries the mesh straight through and the
+           * new field shows up in the colour-by menu.
+           */
+          op: 'gradient';
+          array: string;
+          operator: 'gradient' | 'divergence' | 'curl';
+          method: 'green-gauss' | 'least-squares';
+          location: 'point' | 'cell';
+          output: string;
       };
 
 export type OpName = OpSpec['op'];
@@ -204,6 +218,14 @@ export const OP_DEFAULTS: { [K in OpName]: Extract<OpSpec, { op: K }> } = {
         mode: 'all',
     },
     isosurface: { op: 'isosurface', array: '', isovalue: 0, component: -1 },
+    gradient: {
+        op: 'gradient',
+        array: '',
+        operator: 'gradient',
+        method: 'green-gauss',
+        location: 'point',
+        output: '',
+    },
 };
 
 /** Human label for a pipeline chip. */
@@ -229,5 +251,7 @@ export function describeOp(spec: OpSpec): string {
         }
         case 'isosurface':
             return `isosurface · ${spec.array} = ${spec.isovalue}`;
+        case 'gradient':
+            return `${spec.operator} · ${spec.array}`;
     }
 }

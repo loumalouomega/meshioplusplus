@@ -416,6 +416,56 @@ TEST(Partition, GhostLayersGrowEachPieceAndTagTheHalo) {
     EXPECT_GT(ghost_total, 0u);
 }
 
+TEST(Partition, GhostLayersReadInt32ConnectivityCorrectly) {
+    // Regression: the ghost-layer cell->node incidence used to read dense
+    // connectivity as `Conn().As<std::int64_t>()`, which performs no dtype
+    // check. A MESHIO-backed mesh routinely carries Int32 connectivity straight
+    // from numpy, so every node id was two fused Int32 entries; most failed the
+    // range filter and vanished, leaving halos silently too small (and reading
+    // past the end of the last row). The incidence now goes through
+    // `detail::cell_node_ids`, which reads via `detail::read_int`.
+    //
+    // On the NATIVE and KRATOS backends `AddCellBlock` canonicalizes to Int64,
+    // so this is a tautology there -- it is the MESHIO leg that has teeth.
+    const Mesh wide = quad_grid(4, 4);
+
+    Mesh narrow;
+    narrow.AssignPoints(mt::points_from([] {
+        std::vector<std::vector<double>> pts;
+        for (std::size_t j = 0; j <= 4; ++j)
+            for (std::size_t i = 0; i <= 4; ++i)
+                pts.push_back({static_cast<double>(i), static_cast<double>(j), 0.0});
+        return pts;
+    }()));
+    {
+        const std::size_t ncells = 16, npc = 4;
+        NDArray conn(DType::Int32, {ncells, npc});
+        std::int32_t* dst = conn.As<std::int32_t>();
+        std::size_t c = 0;
+        for (std::size_t j = 0; j < 4; ++j)
+            for (std::size_t i = 0; i < 4; ++i) {
+                const std::int32_t v = static_cast<std::int32_t>(j * 5 + i);
+                dst[c * npc + 0] = v;
+                dst[c * npc + 1] = v + 1;
+                dst[c * npc + 2] = v + 6;
+                dst[c * npc + 3] = v + 5;
+                ++c;
+            }
+        narrow.AddCellBlock("quad", std::move(conn));
+    }
+
+    PartitionOptions o = opts(2);
+    o.mGhostLayers = 1;
+    const PartitionResult from_wide = partition(wide, o);
+    const PartitionResult from_narrow = partition(narrow, o);
+
+    ASSERT_EQ(from_narrow.mPieces.size(), from_wide.mPieces.size());
+    for (std::size_t p = 0; p < from_wide.mPieces.size(); ++p)
+        EXPECT_EQ(total_cells(from_narrow.mPieces[p].mMesh),
+                  total_cells(from_wide.mPieces[p].mMesh))
+            << "part " << p << ": the halo must not depend on the connectivity dtype";
+}
+
 TEST(Partition, MoreGhostLayersNeverShrinkAPiece) {
     const Mesh m = quad_grid(5, 5);
     std::size_t prev = 0;

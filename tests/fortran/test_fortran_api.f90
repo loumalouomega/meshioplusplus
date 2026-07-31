@@ -593,6 +593,42 @@ program test_fortran_api
         call check(st /= 0, 'isosurface rejects a cell_data field')
     end block
 
+    ! ---- gradient (field differential operators) --------------------------
+    block
+        type(mio_mesh) :: g
+        integer(int64) :: nskip, nfall
+        integer :: st
+
+        g = m%gradient('temperature', stat=st, num_skipped=nskip, num_fallback=nfall)
+        call check(st == 0, 'gradient succeeded')
+        call check(g%cell_data_num_blocks('temperature:gradient') >= 1_int64, &
+                   'gradient attaches temperature:gradient')
+        call check(nfall == 0_int64, 'green-gauss never falls back')
+        call g%free()
+
+        ! Least squares on this small mesh may fall back per cell, which is a
+        ! reported outcome rather than a failure.
+        g = m%gradient('temperature', method='least-squares', stat=st, num_fallback=nfall)
+        call check(st == 0, 'least-squares gradient succeeded')
+        call check(nfall >= 0_int64, 'the fallback counter is reported')
+        call g%free()
+
+        ! The point location moves the result into point_data.
+        g = m%gradient('temperature', location='point', output='dT', stat=st)
+        call check(st == 0, 'point-located gradient succeeded')
+        call check(g%num_point_data() > m%num_point_data(), &
+                   'the point-located result adds a point_data array')
+        call g%free()
+
+        ! A cell_data field is piecewise constant and has no derivative: it must
+        ! fail through stat, never abort.
+        g = m%gradient('quality', stat=st)
+        call check(st /= 0, 'gradient rejects a cell_data field')
+        ! A scalar has no divergence.
+        g = m%gradient('temperature', op='divergence', stat=st)
+        call check(st /= 0, 'gradient rejects a scalar divergence')
+    end block
+
     ! --- named regions (doc/regions.md) ---------------------------------------
     ! The first named groups this API can carry at all; before meshio++ 8.1 they
     ! never left the Python layer.

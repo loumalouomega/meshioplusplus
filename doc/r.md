@@ -213,6 +213,19 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## v9.10.0 additions
+
+- `mio_gradient(mesh, array, op = "gradient", method = "green-gauss",
+  location = "cell", output = "", component = -1L, overwrite = FALSE)` — the
+  gradient, divergence or curl of a **point-data** field, returning a list of
+  `mesh`, `num_skipped` and `num_fallback`. See [`doc/gradient.md`](gradient.md).
+
+  The two counters come back as `double`, like every other 64-bit integer in
+  this binding (see [64-bit integers](#bit-integers)); they are exact well past
+  any plausible cell count. `component` is negative for **every** component
+  here — deliberately the opposite of `mio_isosurface()`, where negative means
+  the row magnitude.
+
 ## v9.1.0 additions
 
 - `mio_read(..., lenient = TRUE)` — see [`doc/selective_read.md`](selective_read.md).

@@ -11,6 +11,7 @@
 \alias{mio_crop_bbox}
 \alias{mio_crop_plane}
 \alias{mio_slice}
+\alias{mio_gradient}
 \alias{mio_isosurface}
 \alias{mio_merge}
 \alias{mio_interpolate}
@@ -70,6 +71,17 @@ mio_isosurface(
   isovalues,
   component = -1L,
   record_parent_ids = FALSE
+)
+
+mio_gradient(
+  mesh,
+  array,
+  op = "gradient",
+  method = "green-gauss",
+  location = "cell",
+  output = "",
+  component = -1L,
+  overwrite = FALSE
 )
 
 mio_merge(
@@ -198,8 +210,20 @@ measure.}
 
 \item{isovalues}{One or more level values.}
 
-\item{component}{Component of a multi-component array; negative for the row
-magnitude.}
+\item{component}{Component of a multi-component array. For \code{mio_isosurface}
+a negative value means the row magnitude; for \code{mio_gradient} it means
+\strong{every} component -- deliberately the opposite sentinel.}
+
+\item{op}{For \code{mio_gradient}: \code{"gradient"}, \code{"divergence"} or \code{"curl"}.}
+
+\item{method}{For \code{mio_gradient}: \code{"green-gauss"} or \code{"least-squares"}.}
+
+\item{location}{For \code{mio_gradient}: \code{"cell"} or \code{"point"}.}
+
+\item{output}{Output array name; \code{""} uses \code{<array>:<op>}.}
+
+\item{overwrite}{Replace an existing array of the output name instead of
+failing.}
 
 \item{meshes}{A list of \code{mio_mesh} objects.}
 

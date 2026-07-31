@@ -8,6 +8,70 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.10.0 (2026-07-31)
+
+New **`gradient`** operation — the gradient, divergence and curl of a `point_data` field.
+meshio++ could already transform, transfer (`interpolate`), summarize (`data_info`) and
+contour (`isosurface`) a field, but not **differentiate** one, which left two things with no
+input: contouring a *derived* quantity (`|grad T|`, vorticity), and the gradient-based error
+indicators that drive the selective `refine` shipped in v9.5.0. Both now work end to end.
+Dependency-free, on every binding surface, and byte-identical across the three mesh
+backends, thread counts and the C++/numpy boundary. **`MESHIOPLUSPLUS_ABI_VERSION` stays 5**
+— the two new headers are purely additive (Tier C, reviewed in `doc/abi_reviews.md`).
+
+### Operations
+
+- **`gradient(mesh, array, ...)`** with two methods, three operators and either output
+  location. **Green-Gauss** (the default) applies the divergence theorem over the cell,
+  fanning each face into triangles about its corner average; that is **exact for a linear
+  field on any cell — planar faces or not**, because two faces sharing an edge contribute
+  oppositely-wound fan triangles there, so the fan surface is closed and
+  `∮ f n dA = V grad f` applies verbatim. **Least-squares** fits over the cells sharing a
+  node, with the cell's corner averages as the fit centre so it is likewise exact for a
+  linear field; a degenerate neighbourhood falls back to Green-Gauss and is **counted**
+  rather than silently wrong. On a 2-D mesh the theorem runs over the corner ring with the
+  in-plane normal, exact on a planar cell and invariant under reversal *and* cyclic rotation
+  of the ring.
+- **Shapes.** An `nc`-component input yields `3 * nc` gradient components, flat and
+  row-major as `[component i][derivative j]` at `i * 3 + j`: a scalar gives `(n, 3)` and a
+  3-vector `(n, 9)`. Divergence gives 1 component and curl always 3, both needing a 2- or
+  3-component field (a 2-component one reads as `(u, v, 0)`, the same padding convention 2-D
+  points already use). Output is always `Float64`, named `<input>:gradient` / `:divergence`
+  / `:curl` unless overridden — deliberately `name:suffix` rather than the repo's usual
+  `prefix:name`, so everything derived from one field sorts next to it.
+- **Nothing is faked.** A `cell_data` input raises by name pointing at
+  `cell_data_to_point_data`, since a piecewise-constant field has no derivative. Cells that
+  cannot be differentiated — below the mesh's own topological dimension, ragged, or a 3-D
+  Lagrange type with no face table, or with a degenerate measure — yield **NaN and are
+  counted**, never approximated (`compute_quality`'s convention). Geometry, connectivity,
+  regions, property sets and every existing array pass through bit-identically.
+- **Coordinates and values are recentred on the cell's corner average before any
+  arithmetic.** `V = (1/3) sum x_j . A_j` only telescopes because `sum A_j == 0`; on a mesh
+  at `x ~ 1e8` the raw form loses eight digits to cancellation and then divides by the
+  result. Pinned by a translate-the-mesh invariance test, which was *verified to be inert*
+  at a smaller offset before being tightened.
+- Exposed on every binding surface (pybind `_core.gradient`, C API `mio_gradient`, Fortran
+  `m%gradient`, Julia `gradient`, R `mio_gradient`, WASM `gradient` plus a
+  `convertSurfaceOps` pipeline step), as **`data gradient`** in both CLIs — a documented
+  departure, since it is a mesh operation living in the `data` group because that is where a
+  user looks for it — as an MCP tool, and as a Derivative chip in the browser viewer. Docs:
+  [`doc/gradient.md`](doc/gradient.md), including the two worked compositions
+  (`gradient` → `isosurface`, `gradient` → `refine --where`) this exists for.
+
+### Fixed
+
+- **`partition(..., ghost_layers > 0)` produced halos that were silently too small on any
+  mesh with Int32 connectivity.** The ghost-layer cell→node incidence read connectivity as
+  `Conn().As<std::int64_t>()`, which performs **no dtype check** — and a MESHIO-backed mesh
+  routinely carries Int32 straight from numpy, so every node id was two fused Int32 entries.
+  Most such ids failed the range filter and simply vanished, leaving a plausible-looking but
+  undersized halo (plus a read past the end of the last row). The incidence now lives in the
+  new `detail/cell_adjacency.hpp`, shared with `gradient`'s least-squares stencil so the two
+  cannot disagree about what "shares a node" means, and reads through the dtype-agnostic
+  `detail::cell_node_ids`. Output is unchanged for `ghost_layers == 0` and for Int64
+  connectivity; the existing test suite was green only because its fixtures were Int64, so
+  the regression test uses Int32 and was confirmed to fail before the fix.
+
 ## v9.9.0 (2026-07-30)
 
 **The WASM mesh object no longer loses a data array's component shape**, CGNS carries

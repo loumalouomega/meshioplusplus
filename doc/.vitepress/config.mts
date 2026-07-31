@@ -77,6 +77,7 @@ export default defineConfig({
           { text: "Interpolation (field transfer)", link: "/interpolate" },
           { text: "Slicing / cross-sections", link: "/slice" },
           { text: "Isosurfaces / contours", link: "/isosurface" },
+                    { text: "Field derivatives", link: "/gradient" },
           { text: "Data operations", link: "/data_operations" },
           { text: "· Array management", link: "/data_manage" },
           { text: "· Location averaging", link: "/data_average" },

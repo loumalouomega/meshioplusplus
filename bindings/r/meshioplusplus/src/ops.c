@@ -166,6 +166,27 @@ SEXP R_mio_isosurface(SEXP mesh, SEXP array, SEXP isovalues, SEXP component,
     return mio_r_wrap_mesh(out);
 }
 
+SEXP R_mio_gradient(SEXP mesh, SEXP array, SEXP op, SEXP method, SEXP location, SEXP output,
+                    SEXP component, SEXP overwrite) {
+    int64_t skipped = 0, fallback = 0;
+    mio_mesh *out = mio_gradient(mio_r_mesh(mesh), mio_r_string(array, "array"),
+                                 mio_r_opt_string(op), mio_r_opt_string(method),
+                                 mio_r_opt_string(location), mio_r_opt_string(output),
+                                 mio_r_int(component, "component"),
+                                 mio_r_bool(overwrite, "overwrite"), &skipped, &fallback);
+    if (out == NULL) mio_r_fail("gradient");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    /* R has no native int64, so the counters come back as doubles (exact well
+       past any plausible cell count). */
+    SEXP a = PROTECT(Rf_ScalarReal((double)skipped));
+    SEXP b = PROTECT(Rf_ScalarReal((double)fallback));
+    const char *names[] = {"mesh", "num_skipped", "num_fallback"};
+    SEXP values[] = {mo, a, b};
+    SEXP res = PROTECT(mio_r_named_list(3, names, values));
+    UNPROTECT(4);
+    return res;
+}
+
 /* --- combining / comparing ---------------------------------------------- */
 
 SEXP R_mio_merge(SEXP meshes, SEXP weld, SEXP atol, SEXP source_tag, SEXP data_policy,

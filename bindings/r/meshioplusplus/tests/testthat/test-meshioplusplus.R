@@ -387,6 +387,30 @@ test_that("slice and isosurface work", {
   expect_error(mio_isosurface(m, "material", 8))
 })
 
+test_that("gradient differentiates a point-data field", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  g <- mio_gradient(m, "temperature")
+  expect_equal(g$num_skipped, 0)
+  expect_equal(g$num_fallback, 0)
+  expect_true("temperature:gradient" %in% mio_cell_data_names(g$mesh))
+  mio_release(g$mesh)
+
+  l <- mio_gradient(m, "temperature", method = "least-squares")
+  expect_gte(l$num_fallback, 0)
+  mio_release(l$mesh)
+
+  p <- mio_gradient(m, "temperature", location = "point", output = "dT")
+  expect_true("dT" %in% mio_point_data_names(p$mesh))
+  mio_release(p$mesh)
+
+  # A cell_data array is piecewise constant and has no derivative; a scalar has
+  # no divergence. Both must fail by name.
+  expect_error(mio_gradient(m, "material"))
+  expect_error(mio_gradient(m, "temperature", op = "divergence"))
+})
+
 test_that("merge and interpolate work", {
   a <- fixture()
   b <- fixture()

@@ -88,6 +88,7 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -919,6 +920,39 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("array"), py::arg("isovalues"), py::arg("component") = -1,
         py::arg("record_parent_ids") = false);
+
+    // Field differential operators: the gradient / divergence / curl of a
+    // point_data field, by Green-Gauss or least squares. `component` is negative
+    // for "every component" -- note this is the OPPOSITE of isosurface's
+    // sentinel, where negative means the row magnitude. An empty `output` name
+    // selects the operator's default suffix. See operations/gradient.hpp.
+    m.def(
+        "gradient",
+        [](py::object pymesh, const std::string& array, const std::string& op,
+           const std::string& method, const std::string& location, const std::string& output,
+           int component, bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::GradientOptions options;
+            options.mArrayName = array;
+            options.mOperator = meshioplusplus::gradient_operator_from_name(op);
+            options.mMethod = meshioplusplus::gradient_method_from_name(method);
+            options.mLocation = meshioplusplus::data_location_from_name(location);
+            options.mOutputName = output;
+            if (component >= 0)
+                options.mComponent = component;
+            options.mOverwrite = overwrite;
+            meshioplusplus::GradientResult r = meshioplusplus::gradient(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_skipped"] = r.mNumSkipped;
+            out["num_fallback"] = r.mNumFallback;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("operator_") = "gradient",
+        py::arg("method") = "green-gauss", py::arg("location") = "cell",
+        py::arg("output") = "", py::arg("component") = -1, py::arg("overwrite") = false);
 
     // Partition into nparts balanced pieces (SFC or KaHIP). Returns a list of
     // dicts {part_id, mesh, point_map, cell_maps}. See operations/partition.hpp.

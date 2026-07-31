@@ -103,6 +103,7 @@ meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positi
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
 meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-section
 meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of a field
+meshioplusplus data gradient in.vtu out.vtu --array T           # grad / div / curl of a field
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -424,7 +425,24 @@ shells = meshioplusplus.isosurface(vol, "T", [300.0, 350.0, 400.0])
 meshioplusplus.write("shells.vtu", shells)                     # three tagged contour surfaces
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface`.
+#### Field derivatives (gradient / divergence / curl)
+
+**`meshioplusplus.gradient`** differentiates a `point_data` field: its gradient, divergence or curl. meshio++ could already transform, transfer, summarize and contour a field — this is what lets it *differentiate* one, which is the missing input for contouring a derived quantity (`|∇T|`, vorticity) and for the gradient-based error indicators that drive the selective `refine`. Two methods: **Green-Gauss** (the default) applies the divergence theorem over the cell, fanning each face into triangles about its corner average, which is **exact for a linear field on any cell** — planar faces or not, because the fan surface is closed; **least-squares** fits over the cells sharing a node and falls back to Green-Gauss (counted, never silently wrong) on a degenerate neighbourhood. An `nc`-component input yields `3·nc` gradient components laid out `[component][derivative]`, so a scalar gives `(n, 3)` and a 3-vector `(n, 9)`; divergence gives 1 and curl 3. Output is `Float64`, named `<input>:gradient` / `:divergence` / `:curl`, at either the cell (default) or point location. A `cell_data` input raises by name — a piecewise-constant field has no derivative — and cells that cannot be differentiated yield NaN and are counted rather than approximated. Geometry, regions and existing data pass through bit-identically; output is byte-identical across backends, thread counts and the C++/numpy boundary. See `doc/gradient.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+import numpy as np
+
+vol = meshioplusplus.read("solution.vtu")                      # carrying point_data["T"]
+g = meshioplusplus.gradient(vol, "T", location="point")        # point_data["T:gradient"], (n, 3)
+
+grad = np.asarray(g.point_data["T:gradient"])
+g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
+shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
+```
+
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient`, which is a mesh operation grouped under `data` because that is where a user looks for it).
 
 #### Data operations (rename / average / calc / condition / summarize)
 
@@ -654,7 +672,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.9.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.10.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

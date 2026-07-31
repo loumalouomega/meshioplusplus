@@ -69,6 +69,7 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -2005,6 +2006,57 @@ int cmd_data_normalize(const std::vector<std::string>& rArgs) {
     return cmd_data_condition_impl(rArgs, /*clamp=*/false);
 }
 
+// `data gradient` is a slight departure from the rest of this group: it is a
+// mesh operation (it reads geometry and topology), not one of the data_* family.
+// It lives here because it consumes and produces data arrays, which is where a
+// user looks for it. See doc/gradient.md.
+int cmd_data_gradient(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    specs.push_back({"array", {}, true});
+    specs.push_back({"op", {}, true});
+    specs.push_back({"method", {}, true});
+    specs.push_back({"location", {}, true});
+    specs.push_back({"output", {}, true});
+    specs.push_back({"component", {}, true});
+    specs.push_back({"overwrite", {}, false});
+    specs.push_back({"quiet", {"-q"}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data gradient requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "array"))
+        throw std::runtime_error("data gradient requires --array NAME");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::GradientOptions opts;
+    opts.mArrayName = opt_value(p, "array");
+    // The defaults here must stay string-identical to the Python CLI's.
+    opts.mOperator = meshioplusplus::gradient_operator_from_name(opt_value(p, "op", "gradient"));
+    opts.mMethod = meshioplusplus::gradient_method_from_name(opt_value(p, "method", "green-gauss"));
+    opts.mLocation = meshioplusplus::data_location_from_name(opt_value(p, "location", "cell"));
+    opts.mOutputName = opt_value(p, "output");
+    if (has_opt(p, "component"))
+        opts.mComponent = std::stoi(opt_value(p, "component"));
+    opts.mOverwrite = has_flag(p, "overwrite");
+
+    meshioplusplus::GradientResult r = meshioplusplus::gradient(mesh, opts);
+    if (!has_flag(p, "quiet")) {
+        const std::string name =
+            opts.mOutputName.empty()
+                ? opts.mArrayName + std::string(opt_value(p, "op", "gradient") == "divergence"
+                                                    ? meshioplusplus::kDivergenceSuffix
+                                                    : (opt_value(p, "op", "gradient") == "curl"
+                                                           ? meshioplusplus::kCurlSuffix
+                                                           : meshioplusplus::kGradientSuffix))
+                : opts.mOutputName;
+        std::cout << "wrote " << meshioplusplus::data_location_name(opts.mLocation) << " '" << name
+                  << "' (" << opt_value(p, "method", "green-gauss") << ")\n";
+        std::cout << "  cells skipped (NaN):      " << r.mNumSkipped << "\n";
+        std::cout << "  cells fell back to GG:    " << r.mNumFallback << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 void print_data_usage(std::ostream& rOut) {
     rOut << "usage: meshioplusplus data <subcommand> [options]\n\n"
             "Operations on a mesh's data arrays (the geometry is never modified).\n\n"
@@ -2017,7 +2069,9 @@ void print_data_usage(std::ostream& rOut) {
             "  to-point    Average cell_data onto the points (--weighted)\n"
             "  calc        Derive an array from an expression (--point 'n = norm(v)')\n"
             "  clamp       Clamp values into [--min, --max]\n"
-            "  normalize   Rescale to --to LO,HI (or --zero-mean)\n\n";
+            "  normalize   Rescale to --to LO,HI (or --zero-mean)\n"
+            "  gradient    Differentiate a point_data field (--array NAME --op "
+            "gradient|divergence|curl)\n\n";
 }
 
 int cmd_data(const std::vector<std::string>& rArgs) {
@@ -2049,6 +2103,8 @@ int cmd_data(const std::vector<std::string>& rArgs) {
         return cmd_data_clamp(rest);
     if (sub == "normalize")
         return cmd_data_normalize(rest);
+    if (sub == "gradient")
+        return cmd_data_gradient(rest);
     std::cerr << "error: unknown data subcommand '" << sub << "'\n\n";
     print_data_usage(std::cerr);
     return 2;
