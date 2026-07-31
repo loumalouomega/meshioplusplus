@@ -204,7 +204,20 @@ component, recordParentIds)`, its data-driven sibling: the level set of a scalar
 land in one mesh, tagged per cell with `iso:value` and `iso:index`), `component`
 is negative for the row magnitude, and naming a `cell_data` array throws a
 catchable `Error` — cell data is piecewise constant and has no level set, so
-convert it with `dataCellToPoint` first. See
+convert it with `dataCellToPoint` first.
+
+`gradient(mesh, array, operator, method, location, output, component,
+overwrite)` returns `{ mesh, numSkipped, numFallback }` — the gradient,
+divergence or curl of a `point_data` field. Unlike the cutters it changes no
+geometry: it attaches one array and hands the mesh back. **Its result is an
+`(n, 3)` or `(n, 9)` array, so its width travels in the returned mesh's
+`point_data_components` / `cell_data_components` sibling maps** (see
+"The mesh object shape" above) — a JS caller that rebuilds a mesh by hand
+must carry them, or the array re-enters C++ flattened. Note that `component` is
+negative for **every** component here, deliberately the opposite of
+`isosurface`'s sentinel. It is also a `convertSurfaceOps` pipeline step
+(`{op: 'gradient', array, operator, method, location, output}`). See
+[field derivatives](./gradient.md),
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
 [cell conversion](./convert_cells.md), [refine](./refine.md),

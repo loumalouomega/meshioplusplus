@@ -228,6 +228,23 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v9.10.0 additions
+
+- `gradient(mesh, array; operator=:gradient, method=:green_gauss,
+  location=:cell, output="", component=-1, overwrite=false)` — the gradient,
+  divergence or curl of a **point-data** field, returning
+  `(; mesh, num_skipped, num_fallback)`. See
+  [`doc/gradient.md`](gradient.md).
+
+  Two spellings to note. `method` is given as an underscored symbol
+  (`:green_gauss`, `:least_squares`) and translated to the C API's hyphenated
+  name by the binding, because a Julia symbol cannot carry a hyphen. And
+  `component` is negative for **every** component here — deliberately the
+  opposite of `isosurface`, where negative means the row magnitude.
+
+  `gradient` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is
+  exported.
+
 ## v9.1.0 additions
 
 - `ReadOptions(; lenient=true)` — see [`doc/selective_read.md`](selective_read.md).
