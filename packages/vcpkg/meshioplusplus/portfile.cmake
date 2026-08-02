@@ -49,6 +49,9 @@ vcpkg_cmake_configure(
         -DMESHIOPLUSPLUS_BUILD_C_API=ON
         -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
         -DMESHIOPLUSPLUS_WITH_EIGEN=OFF
+        # Same reason as Eigen: nlohmann/json is a git submodule absent from the
+        # release tarball, so the pipeline JSON entry points raise by name.
+        -DMESHIOPLUSPLUS_WITH_JSON=OFF
         "-DMESHIOPLUSPLUS_INSTALL_CPP_BACKENDS=${MESHIOPLUSPLUS_CXX_BACKENDS_ARG}"
         ${FEATURE_OPTIONS}
 )
