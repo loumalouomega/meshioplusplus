@@ -245,9 +245,18 @@ needs_core_json = pytest.mark.skipif(
     not getattr(_core, "__has_json__", False),
     reason="_core built without MESHIOPLUSPLUS_WITH_JSON",
 )
+# The two tests below drive _core's own read/write, so the registry-default
+# binary+zlib VTU writer must be compiled in too (Windows CI builds _core
+# with native paths, including zlib, off) -- not just the JSON parser.
+needs_core_json_and_zlib = pytest.mark.skipif(
+    not (
+        getattr(_core, "__has_json__", False) and getattr(_core, "__has_zlib__", False)
+    ),
+    reason="_core built without MESHIOPLUSPLUS_WITH_JSON or MESHIOPLUSPLUS_WITH_ZLIB",
+)
 
 
-@needs_core_json
+@needs_core_json_and_zlib
 def test_cpp_matches_python(settings_env, tmp_path):
     operations = [
         {"Op": "ConvertCells", "Mode": "simplexify"},
@@ -271,7 +280,7 @@ def test_cpp_matches_python(settings_env, tmp_path):
     assert py_report["warnings"] == cpp_report["warnings"]
 
 
-@needs_core_json
+@needs_core_json_and_zlib
 def test_core_run_pipeline_json(settings_env):
     settings = make_settings(settings_env, [{"Op": "Quality"}])
     report = _core.run_pipeline_json(json.dumps(settings))
