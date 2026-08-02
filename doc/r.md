@@ -213,6 +213,16 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## v9.11.0 additions
+
+- The [settings pipeline](pipeline.md): `mio_pipeline_run_file(settings_path)`
+  and `mio_pipeline_run_json(json_text)` run a whole `settings.json` (read →
+  operation chain → write; PascalCase ops/keys) through the C++ engine, and
+  `mio_pipeline_has_json()` reports whether the loaded library carries the
+  JSON parser — a build without it signals an R error naming
+  `-DMESHIOPLUSPLUS_WITH_JSON=ON` rather than missing a symbol. The flat ABI
+  carries JSON text only; the structured run report is a recorded follow-up.
+
 ## v9.10.0 additions
 
 - `mio_gradient(mesh, array, op = "gradient", method = "green-gauss",

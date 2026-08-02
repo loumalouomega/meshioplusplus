@@ -79,6 +79,36 @@ worker, transferable buffers, and vtk.js — as well as being a live client-side
 format converter you can try at
 **<https://loumalouomega.github.io/meshioplusplus/viewer/>**.
 
+### Running a settings pipeline
+
+`runPipeline` (v9.11.0) runs a whole [settings document](./pipeline.md) —
+read → operation chain → write, against MEMFS paths — with **no**
+surface-extraction tail: what the pipeline produces is what is written.
+
+```js
+const report = meshio.runPipeline({
+  Input: { Path: '/part.msh' },
+  Operations: [
+    { Op: 'ConvertCells', Mode: 'simplexify' },
+    { Op: 'Gradient', Array: 'temperature' },
+    { Op: 'Quality' },
+  ],
+  Output: { Path: '/part.vtu' },
+});
+```
+
+It accepts the parsed object, the JSON text, or a MEMFS path ending in
+`.json` (the wrapper `JSON.parse`s the string forms — the wasm binary carries
+no JSON parser of its own, so this surface never needed the nlohmann
+submodule). Note the vocabulary is the settings.json **PascalCase** one
+(`Op`/`RemoveOrphans`), while `convertSurfaceOps` keeps its pre-existing
+camelCase op specs — the two dispatch through the same core engine
+(`apply_pipeline_step`), differing only in spelling, so they cannot drift.
+The returned report is `{steps: [{op, ...counters}], warnings: []}` with
+PascalCase counter keys; parsing is strict (unknown ops/keys error by name),
+and the multi-mesh ops (`Merge`, `Split`, ...) are rejected pointing at the
+CLI verbs.
+
 ## The mesh object shape
 
 Unlike the Python bindings (which hand numpy a zero-copy view straight into the C++ buffer), WASM linear memory and the JS heap are different address spaces, so every value crossing the boundary is copied once. `readMesh` returns, and `writeMesh` accepts, a plain object:
