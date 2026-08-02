@@ -855,3 +855,21 @@ SEXP R_mio_data_info(SEXP mesh) {
     UNPROTECT(1);
     return out;
 }
+
+/* --- settings pipeline (v9.11.0) ---------------------------------------- */
+
+SEXP R_mio_pipeline_run_file(SEXP settings_path) {
+    mio_r_check(mio_pipeline_run_file(mio_r_string(settings_path, "settings_path")),
+                "pipeline_run_file");
+    return R_NilValue;
+}
+
+SEXP R_mio_pipeline_run_json(SEXP json_text) {
+    mio_r_check(mio_pipeline_run_json(mio_r_string(json_text, "json_text")),
+                "pipeline_run_json");
+    return R_NilValue;
+}
+
+SEXP R_mio_pipeline_has_json(void) {
+    return Rf_ScalarLogical(mio_pipeline_has_json() != 0);
+}

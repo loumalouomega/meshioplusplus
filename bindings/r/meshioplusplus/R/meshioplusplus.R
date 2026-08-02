@@ -219,6 +219,36 @@ mio_convert <- function(in_path, out_path, in_format = NULL, out_format = NULL) 
   ))
 }
 
+#' Run a settings.json operation pipeline
+#'
+#' Runs a whole settings pipeline -- read `Input.Path`, apply `Operations` in
+#' order, write `Output.Path` -- described by a `settings.json` document
+#' (PascalCase ops and keys; see `doc/pipeline.md`). Needs a library built
+#' with the JSON parser (`-DMESHIOPLUSPLUS_WITH_JSON=ON`, the default when the
+#' `src/cpp/third_party/json` submodule is checked out); otherwise the raised
+#' error names the flag -- `mio_pipeline_has_json()` reports which build the
+#' loaded library is.
+#'
+#' @param settings_path Path of the `settings.json` to run.
+#' @return `NULL`, invisibly.
+#' @export
+mio_pipeline_run_file <- function(settings_path) {
+  invisible(.Call(R_mio_pipeline_run_file, as.character(settings_path)))
+}
+
+#' @rdname mio_pipeline_run_file
+#' @param json_text The settings document as JSON text.
+#' @export
+mio_pipeline_run_json <- function(json_text) {
+  invisible(.Call(R_mio_pipeline_run_json, as.character(json_text)))
+}
+
+#' @rdname mio_pipeline_run_file
+#' @export
+mio_pipeline_has_json <- function() {
+  .Call(R_mio_pipeline_has_json)
+}
+
 #' Summarize a mesh file without loading its arrays
 #'
 #' @param path Path to the file.
