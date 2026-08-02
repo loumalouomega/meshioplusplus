@@ -109,11 +109,16 @@ meshioplusplus data info  mesh.vtu                           # summarize data ar
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
 meshioplusplus data to-cell  in.vtu out.vtu --keys T         # point -> cell average
 meshioplusplus data normalize in.vtu out.vtu --cell damage --to 0,1
+
+meshioplusplus pipeline   settings.json                      # run a whole declarative
+                                                             # read -> ops -> write chain
 ```
 
 with any of the supported formats.
 
 The same verbs are available as a **standalone C++ binary** that needs no Python: grab a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page, or build it yourself with `build/configure.sh --cli --build` (or `-DMESHIOPLUSPLUS_BUILD_CLI=ON`). It links only the C++ core. Named [regions](https://loumalouomega.github.io/meshioplusplus/regions) — and so point/cell *sets* — are carried there since v8.1.0, so `info` lists them and `diff` compares them; `convert -s/-d` is still Python-only.
+
+A whole *chain* of operations can be described declaratively in one `settings.json` (`Input` → `Operations` → `Output`) and run with `meshioplusplus pipeline settings.json` — or `meshioplusplus.run_pipeline(...)` from Python, and the same engine from C/Fortran/Julia/R/WASM. See [the settings pipeline](https://loumalouomega.github.io/meshioplusplus/pipeline).
 
 In Python, simply do
 
@@ -591,7 +596,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 33 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 34 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 ### ParaView plugin
 
@@ -672,7 +677,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.10.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.11.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
