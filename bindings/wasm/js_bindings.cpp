@@ -63,6 +63,7 @@
 
 // System includes
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -99,6 +100,7 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -851,18 +853,80 @@ void convert_surface(const std::string& rInPath, const std::string& rInFormat,
 
 namespace {
 
-/// Read a 3-vector out of a JS array.
-void read_vec3(const val& rArray, double* pOut) {
-    for (unsigned i = 0; i < 3; ++i)
-        pOut[i] = rArray[i].as<double>();
+/**
+ * The step dispatch itself lives in the core (`operations/pipeline.hpp`,
+ * `apply_pipeline_step`) since v9.11.0 -- this file only converts between the
+ * viewer's camelCase `{op, ...params}` objects and the core's PascalCase
+ * `PipelineStep` vocabulary. The two casings differ by exactly the first
+ * character, so the mapping is mechanical in both directions and the old
+ * `apply_one_op` op table cannot drift from the settings.json one: they are
+ * the same table.
+ */
+
+/// camelCase -> PascalCase (`removeOrphans` -> `RemoveOrphans`).
+std::string pascal_case_key(std::string key) {
+    if (!key.empty())
+        key[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(key[0])));
+    return key;
 }
 
-/// Cells across every block. The uniform mesh API counts per block only.
-std::size_t total_cells(const Mesh& rMesh) {
-    std::size_t n = 0;
-    for (const auto& block : rMesh.CellRange())
-        n += block.NumCells();
-    return n;
+/// PascalCase -> camelCase (`PointsWelded` -> `pointsWelded`) for the step
+/// report, whose key names predate the PascalCase vocabulary and are a
+/// browser-viewer contract (`protocol.ts` `OpStepReport`).
+std::string camel_case_key(std::string key) {
+    if (!key.empty())
+        key[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(key[0])));
+    return key;
+}
+
+/// One step-parameter value out of a JS value. Arrays must be homogeneous
+/// numbers or strings -- the same closed set the JSON front-end accepts.
+meshioplusplus::PipelineValue val_to_pipeline_value(const val& rValue, const std::string& rKey) {
+    const std::string type = rValue.typeOf().as<std::string>();
+    if (type == "boolean")
+        return rValue.as<bool>();
+    if (type == "number")
+        return rValue.as<double>();
+    if (type == "string")
+        return rValue.as<std::string>();
+    if (rValue.isArray()) {
+        const unsigned n = rValue["length"].as<unsigned>();
+        if (n == 0)
+            return std::vector<std::string>{};
+        if (rValue[0].typeOf().as<std::string>() == "string") {
+            std::vector<std::string> out;
+            out.reserve(n);
+            for (unsigned i = 0; i < n; ++i)
+                out.push_back(rValue[i].as<std::string>());
+            return out;
+        }
+        std::vector<double> out;
+        out.reserve(n);
+        for (unsigned i = 0; i < n; ++i)
+            out.push_back(rValue[i].as<double>());
+        return out;
+    }
+    throw meshioplusplus::ReadError("meshio++ (wasm): op parameter '" + rKey +
+                                    "' has an unsupported value type");
+}
+
+/// A `{op, ...params}` spec -> the core `PipelineStep`. `null`/`undefined`
+/// values mean "use the default", exactly as the old per-key readers did.
+meshioplusplus::PipelineStep val_to_step(const val& rSpec) {
+    meshioplusplus::PipelineStep step;
+    step.mOp = pascal_case_key(rSpec["op"].as<std::string>());
+    val keys = val::global("Object").call<val>("keys", rSpec);
+    const unsigned n = keys["length"].as<unsigned>();
+    for (unsigned i = 0; i < n; ++i) {
+        const std::string key = keys[i].as<std::string>();
+        if (key == "op")
+            continue;
+        val v = rSpec[key];
+        if (v.isUndefined() || v.isNull())
+            continue;
+        step.mParams.emplace(pascal_case_key(key), val_to_pipeline_value(v, key));
+    }
+    return step;
 }
 
 /**
@@ -873,171 +937,31 @@ std::size_t total_cells(const Mesh& rMesh) {
  * things, and the second is what the user asked for.
  */
 Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
+    // Echo the caller's own op spelling in the report; counters go back in
+    // camelCase. Both are the pre-v9.11.0 contract, unchanged.
     const std::string op = rSpec["op"].as<std::string>();
-    val step = val::object();
-    step.set("op", op);
-
-    auto number = [&rSpec](const char* key, double fallback) {
-        val v = rSpec[key];
-        return v.isUndefined() || v.isNull() ? fallback : v.as<double>();
-    };
-    auto flag = [&rSpec](const char* key, bool fallback) {
-        val v = rSpec[key];
-        return v.isUndefined() || v.isNull() ? fallback : v.as<bool>();
-    };
-    auto text = [&rSpec](const char* key, const char* fallback) {
-        val v = rSpec[key];
-        return v.isUndefined() || v.isNull() ? std::string(fallback) : v.as<std::string>();
-    };
-
-    if (op == "quality") {
-        Mesh out = meshioplusplus::attach_quality(mesh);
-        rSteps.call<void>("push", step);
-        return out;
+    meshioplusplus::PipelineStep step = val_to_step(rSpec);
+    {
+        // The unknown-op error is a contract too: it must carry the CALLER'S
+        // spelling ("teleport"), not the PascalCase one the converter made.
+        bool known = false;
+        for (const auto& entry : meshioplusplus::pipeline_op_table())
+            known = known || entry.first == step.mOp;
+        if (!known)
+            throw meshioplusplus::ReadError("meshio++ (wasm): unknown operation '" + op + "'");
     }
-    if (op == "clean") {
-        meshioplusplus::CleanOptions opts;
-        opts.weld = flag("weld", false);
-        opts.atol = number("atol", 1e-8);
-        opts.remove_orphans = flag("removeOrphans", true);
-        opts.drop_degenerate = flag("dropDegenerate", true);
-        opts.drop_duplicate_cells = flag("dropDuplicateCells", true);
-        auto result = meshioplusplus::clean(mesh, opts);
-        step.set("pointsWelded", static_cast<double>(result.mPointsWelded));
-        step.set("pointsRemovedOrphan", static_cast<double>(result.mPointsRemovedOrphan));
-        step.set("cellsDroppedDegenerate", static_cast<double>(result.mCellsDroppedDegenerate));
-        step.set("cellsDroppedDuplicate", static_cast<double>(result.mCellsDroppedDuplicate));
+    meshioplusplus::PipelineReport report;
+    mesh = meshioplusplus::apply_pipeline_step(std::move(mesh), std::move(step), report);
+    for (const auto& entry : report.mSteps) {
+        val step = val::object();
+        step.set("op", op);
+        for (const auto& counter : entry.mCounters)
+            step.set(camel_case_key(counter.first), counter.second);
         rSteps.call<void>("push", step);
-        return std::move(result.mMesh);
     }
-    if (op == "smooth") {
-        meshioplusplus::SmoothOptions opts;
-        opts.mMethod = meshioplusplus::smooth_method_from_name(text("method", "taubin"));
-        opts.mIterations = static_cast<int>(number("iterations", 10));
-        opts.mLambda = number("lambda", -1.0);
-        opts.mMu = number("mu", -0.34);
-        opts.mFixBoundary = flag("fixBoundary", true);
-        auto result = meshioplusplus::smooth(mesh, opts);
-        step.set("numNodesMoved", static_cast<double>(result.mNumNodesMoved));
-        step.set("maxDisplacement", result.mMaxDisplacement);
-        step.set("numSkippedInversion", static_cast<double>(result.mNumSkippedInversion));
-        rSteps.call<void>("push", step);
-        return std::move(result.mMesh);
-    }
-    if (op == "refine") {
-        meshioplusplus::RefineOptions opts;
-        opts.mLevels = static_cast<int>(number("levels", 1));
-        opts.mRecordLevels = flag("recordLevels", false);
-        opts.mClosure = meshioplusplus::refine_closure_from_name(text("closure", ""));
-        val cells = rSpec["cells"];
-        if (!cells.isUndefined() && !cells.isNull()) {
-            const unsigned n = cells["length"].as<unsigned>();
-            opts.mCells.reserve(n);
-            for (unsigned i = 0; i < n; ++i)
-                opts.mCells.push_back(static_cast<std::int64_t>(cells[i].as<double>()));
-        }
-        opts.mRegion = text("region", "");
-        opts.mPredicateArray = text("array", "");
-        if (!opts.mPredicateArray.empty()) {
-            // `compare`, not `op`: `op` is the pipeline spec's own discriminant.
-            opts.mPredicateOp = meshioplusplus::refine_compare_from_name(text("compare", "<"));
-            opts.mPredicateValue = number("value", 0.0);
-        }
-        auto result = meshioplusplus::refine(mesh, opts);
-        rSteps.call<void>("push", step);
-        return std::move(result.mMesh);
-    }
-    if (op == "decimate") {
-        meshioplusplus::DecimateOptions opts;
-        opts.mTargetRatio = number("ratio", -1.0);
-        const double faces = number("targetFaces", -1.0);
-        opts.mTargetFaces =
-            faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(faces);
-        opts.mMaxError = number("maxError", -1.0);
-        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0)
-            opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
-        opts.mPlacement =
-            meshioplusplus::decimate_placement_from_name(text("placement", "optimal"));
-        opts.mPreserveBoundary = flag("preserveBoundary", true);
-        opts.mPreserveFeatures = flag("preserveFeatures", true);
-        opts.mFeatureAngleDeg = number("featureAngle", 30.0);
-        auto result = meshioplusplus::decimate(mesh, opts);
-        step.set("facesRemoved", static_cast<double>(result.mFacesRemoved));
-        step.set("collapsesRejected", static_cast<double>(result.mCollapsesRejected));
-        rSteps.call<void>("push", step);
-        return std::move(result.mMesh);
-    }
-    if (op == "partition") {
-        meshioplusplus::PartitionOptions opts;
-        opts.mNParts = static_cast<int>(number("nparts", 2));
-        opts.mMethod = meshioplusplus::partition_method_from_name(text("method", "auto"));
-        // Attach the assignment as cell data rather than splitting into
-        // pieces: the viewer wants one mesh it can colour by part.
-        auto labels = meshioplusplus::partition_labels(mesh, opts);
-        mesh.AddCellData("partition:part", std::move(labels));
-        step.set("nparts", number("nparts", 2));
-        rSteps.call<void>("push", step);
-        return mesh;
-    }
-    if (op == "section") {
-        // The planar cross-section: slice() intersects the mesh with the plane
-        // and returns a surface (triangle/quad) one dimension lower. Because a
-        // surface is not skinnable, convert_surface_ops' shared re-skin tail
-        // linearizes and writes it directly -- exactly the section is rendered,
-        // not the boundary of a retained half (the old crop_halfspace path).
-        meshioplusplus::SliceOptions opts;
-        read_vec3(rSpec["point"], opts.mOrigin.data());
-        read_vec3(rSpec["normal"], opts.mNormal.data());
-        Mesh section = meshioplusplus::slice(mesh, opts);
-        step.set("sectionFaces", static_cast<double>(total_cells(section)));
-        rSteps.call<void>("push", step);
-        if (total_cells(section) == 0)
-            rWarnings.call<void>("push", std::string("the section is empty; the plane "
-                                                     "misses the mesh -- move or flip it"));
-        return section;
-    }
-    if (op == "gradient") {
-        // A pure data step: geometry is untouched, so the pipeline carries the
-        // mesh straight through with one new array attached.
-        meshioplusplus::GradientOptions opts;
-        opts.mArrayName = text("array", "");
-        opts.mOperator = meshioplusplus::gradient_operator_from_name(text("operator", ""));
-        opts.mMethod = meshioplusplus::gradient_method_from_name(text("method", ""));
-        opts.mLocation = meshioplusplus::data_location_from_name(text("location", "cell"));
-        opts.mOutputName = text("output", "");
-        const int gcomp = static_cast<int>(number("component", -1.0));
-        if (gcomp >= 0)
-            opts.mComponent = gcomp;
-        opts.mOverwrite = true;
-        meshioplusplus::GradientResult gr = meshioplusplus::gradient(mesh, opts);
-        step.set("numSkipped", static_cast<double>(gr.mNumSkipped));
-        step.set("numFallback", static_cast<double>(gr.mNumFallback));
-        rSteps.call<void>("push", step);
-        if (gr.mNumSkipped > 0)
-            rWarnings.call<void>("push", std::string("gradient: ") +
-                                             std::to_string(gr.mNumSkipped) +
-                                             " cell(s) could not be differentiated and are NaN");
-        return std::move(gr.mMesh);
-    }
-    if (op == "isosurface") {
-        // The level set of a scalar point_data field -- slice's data-driven
-        // sibling, and like it a surface one dimension lower, so the shared
-        // re-skin tail linearizes and writes it directly.
-        meshioplusplus::IsosurfaceOptions opts;
-        opts.mArrayName = text("array", "");
-        opts.mIsovalues.push_back(number("isovalue", 0.0));
-        const int comp = static_cast<int>(number("component", -1.0));
-        if (comp >= 0)
-            opts.mComponent = comp;
-        Mesh contour = meshioplusplus::isosurface(mesh, opts);
-        step.set("contourCells", static_cast<double>(total_cells(contour)));
-        rSteps.call<void>("push", step);
-        if (total_cells(contour) == 0)
-            rWarnings.call<void>("push", std::string("the contour is empty; the isovalue "
-                                                     "lies outside the field's range"));
-        return contour;
-    }
-    throw meshioplusplus::ReadError("meshio++ (wasm): unknown operation '" + op + "'");
+    for (const auto& warning : report.mWarnings)
+        rWarnings.call<void>("push", warning);
+    return mesh;
 }
 
 }  // namespace
@@ -1106,6 +1030,160 @@ val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat
             wit->second(rOutPath, meshioplusplus::convert_cells(mesh, linearize).mMesh);
         }
 
+        val out = val::object();
+        out.set("steps", steps);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+namespace {
+
+/// Strict key check for the settings object, mirroring the JSON front-end's
+/// rule: an unknown key is an error naming it, never silently ignored.
+void check_settings_keys(const val& rObject, const char* pWhere,
+                         std::initializer_list<const char*> rAllowed) {
+    val keys = val::global("Object").call<val>("keys", rObject);
+    const unsigned n = keys["length"].as<unsigned>();
+    for (unsigned i = 0; i < n; ++i) {
+        const std::string key = keys[i].as<std::string>();
+        const bool known =
+            std::any_of(rAllowed.begin(), rAllowed.end(), [&](const char* k) { return key == k; });
+        if (!known)
+            throw meshioplusplus::ReadError("meshio++ (wasm): unknown key '" + key + "' in " +
+                                            pWhere);
+    }
+}
+
+std::string settings_string(const val& rObject, const char* pKey, const char* pWhere,
+                            bool required = false) {
+    val v = rObject[pKey];
+    if (v.isUndefined() || v.isNull()) {
+        if (required)
+            throw meshioplusplus::ReadError(std::string("meshio++ (wasm): ") + pWhere + "." + pKey +
+                                            " is required");
+        return "";
+    }
+    return v.as<std::string>();
+}
+
+/// A PascalCase settings object (the parsed form of a settings.json) -> the
+/// core `Pipeline`. The wasm build carries no JSON parser -- `JSON.parse` is
+/// free on this platform, so the wrapper in `src/wasm/src/index.mjs` parses
+/// text and this converter only walks the already-parsed object.
+meshioplusplus::Pipeline val_to_pipeline(const val& rSettings) {
+    check_settings_keys(rSettings, "the settings object",
+                        {"Version", "Input", "Operations", "Output"});
+    meshioplusplus::Pipeline pipeline;
+    val version = rSettings["Version"];
+    if (!version.isUndefined() && !version.isNull())
+        pipeline.mVersion = static_cast<int>(version.as<double>());
+
+    val input = rSettings["Input"];
+    if (input.isUndefined() || input.isNull())
+        throw meshioplusplus::ReadError("meshio++ (wasm): the settings object needs 'Input'");
+    check_settings_keys(input, "Input", {"Path", "Format", "Options"});
+    pipeline.mInput.mPath = settings_string(input, "Path", "Input", /*required=*/true);
+    pipeline.mInput.mFormat = settings_string(input, "Format", "Input");
+    val opts = input["Options"];
+    if (!opts.isUndefined() && !opts.isNull()) {
+        check_settings_keys(opts, "Input.Options",
+                            {"PointsOnly", "DataArrays", "TimeStep", "Lenient", "Mmap"});
+        val points_only = opts["PointsOnly"];
+        if (!points_only.isUndefined() && !points_only.isNull())
+            pipeline.mInput.mOptions.mPointsOnly = points_only.as<bool>();
+        val lenient = opts["Lenient"];
+        if (!lenient.isUndefined() && !lenient.isNull())
+            pipeline.mInput.mOptions.mLenient = lenient.as<bool>();
+        val time_step = opts["TimeStep"];
+        if (!time_step.isUndefined() && !time_step.isNull())
+            pipeline.mInput.mOptions.mTimeStep = static_cast<int>(time_step.as<double>());
+        val arrays = opts["DataArrays"];
+        if (!arrays.isUndefined() && !arrays.isNull()) {
+            std::vector<std::string> names;
+            const unsigned n = arrays["length"].as<unsigned>();
+            names.reserve(n);
+            for (unsigned i = 0; i < n; ++i)
+                names.push_back(arrays[i].as<std::string>());
+            pipeline.mInput.mOptions.mDataArrays = std::move(names);
+        }
+        pipeline.mInput.mOptions.mMmap =
+            meshioplusplus::pipeline_mmap_from_name(settings_string(opts, "Mmap", "Input.Options"));
+    }
+
+    val output = rSettings["Output"];
+    if (output.isUndefined() || output.isNull())
+        throw meshioplusplus::ReadError("meshio++ (wasm): the settings object needs 'Output'");
+    check_settings_keys(output, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
+    pipeline.mOutput.mPath = settings_string(output, "Path", "Output", /*required=*/true);
+    pipeline.mOutput.mFormat = settings_string(output, "Format", "Output");
+    pipeline.mOutput.mOptions.mEncoding =
+        meshioplusplus::pipeline_encoding_from_name(settings_string(output, "Encoding", "Output"));
+    const std::string codec = settings_string(output, "Codec", "Output");
+    if (!codec.empty()) {
+        pipeline.mOutput.mOptions.mCodec = meshioplusplus::pipeline_codec_from_name(codec);
+        pipeline.mOutput.mOptions.mCodecSet = true;
+    }
+    pipeline.mOutput.mOptions.mFloatFormat = settings_string(output, "FloatFormat", "Output");
+
+    val ops = rSettings["Operations"];
+    if (!ops.isUndefined() && !ops.isNull()) {
+        const unsigned n = ops["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i) {
+            val spec = ops[i];
+            val op_name = spec["Op"];
+            if (op_name.isUndefined() || op_name.isNull())
+                throw meshioplusplus::ReadError("meshio++ (wasm): Operations[" + std::to_string(i) +
+                                                "] needs 'Op'");
+            meshioplusplus::PipelineStep step;
+            step.mOp = op_name.as<std::string>();
+            val keys = val::global("Object").call<val>("keys", spec);
+            const unsigned nk = keys["length"].as<unsigned>();
+            for (unsigned k = 0; k < nk; ++k) {
+                const std::string key = keys[k].as<std::string>();
+                if (key == "Op")
+                    continue;
+                val v = spec[key];
+                if (v.isUndefined() || v.isNull())
+                    continue;
+                step.mParams.emplace(key, val_to_pipeline_value(v, key));
+            }
+            meshioplusplus::validate_pipeline_step(step);
+            pipeline.mSteps.push_back(std::move(step));
+        }
+    }
+    return pipeline;
+}
+
+}  // namespace
+
+/**
+ * @brief Run a whole settings pipeline (PascalCase settings object; see
+ * `doc/pipeline.md`) against MEMFS paths.
+ *
+ * The wrapper accepts an object, a JSON string, or a MEMFS `.json` path --
+ * string forms are `JSON.parse`d in `src/wasm/src/index.mjs`, so this build
+ * needs no nlohmann and `wasm.yml` needs no submodule.
+ *
+ * @return `{steps: [{op, ...counters}], warnings: [string]}` -- `op` and the
+ * counter keys are the canonical PascalCase vocabulary here, unlike
+ * `convertSurfaceOps`' pre-existing camelCase report.
+ */
+val run_pipeline_js(const val& rSettings) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PipelineReport report =
+            meshioplusplus::run_pipeline(val_to_pipeline(rSettings));
+        val steps = val::array();
+        for (const auto& entry : report.mSteps) {
+            val step = val::object();
+            step.set("op", entry.mOp);
+            for (const auto& counter : entry.mCounters)
+                step.set(counter.first, counter.second);
+            steps.call<void>("push", step);
+        }
+        val warnings = val::array();
+        for (const auto& warning : report.mWarnings)
+            warnings.call<void>("push", warning);
         val out = val::object();
         out.set("steps", steps);
         out.set("warnings", warnings);
@@ -1415,14 +1493,13 @@ val gradient_js(const val& rMeshObj, const std::string& rArray, const std::strin
         options.mArrayName = rArray;
         options.mOperator = meshioplusplus::gradient_operator_from_name(rOperator);
         options.mMethod = meshioplusplus::gradient_method_from_name(rMethod);
-        options.mLocation = meshioplusplus::data_location_from_name(
-            rLocation.empty() ? "cell" : rLocation);
+        options.mLocation =
+            meshioplusplus::data_location_from_name(rLocation.empty() ? "cell" : rLocation);
         options.mOutputName = rOutput;
         if (component >= 0)
             options.mComponent = component;
         options.mOverwrite = overwrite;
-        meshioplusplus::GradientResult r =
-            meshioplusplus::gradient(val_to_mesh(rMeshObj), options);
+        meshioplusplus::GradientResult r = meshioplusplus::gradient(val_to_mesh(rMeshObj), options);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("numSkipped", static_cast<double>(r.mNumSkipped));
@@ -2090,6 +2167,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("convert", &convert);
     emscripten::function("convertSurface", &convert_surface);
     emscripten::function("convertSurfaceOps", &convert_surface_ops);
+    emscripten::function("runPipeline", &run_pipeline_js);
     emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
     emscripten::function("topologicalDimension", &topological_dimension_js);
     emscripten::function("meshBackend", &mesh_backend_js);
