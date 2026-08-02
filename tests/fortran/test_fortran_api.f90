@@ -750,6 +750,25 @@ program test_fortran_api
         call check(.not. series%is_valid(), 'a failed create leaves no handle')
     end block
 
+    ! ------------------------------------------------------------------
+    ! Settings pipeline (v9.11.0): behaviour follows the build -- with the
+    ! JSON parser a bad document fails naming the offender; without it every
+    ! entry point fails naming -DMESHIOPLUSPLUS_WITH_JSON=ON.
+    ! ------------------------------------------------------------------
+    block
+        character(:), allocatable :: msg
+        integer :: st
+        call mio_pipeline_run_json('{"Input": {"Path": "a"}, "Output": {"Path": "b"}, '// &
+                                   '"Operations": [{"Op": "Nope"}]}', stat=st, errmsg=msg)
+        call check(st /= 0, 'pipeline rejects a bad document through stat')
+        if (mio_pipeline_has_json()) then
+            call check(index(msg, 'Nope') > 0, 'pipeline schema error names the op')
+        else
+            call check(index(msg, 'MESHIOPLUSPLUS_WITH_JSON') > 0, &
+                       'compiled-out pipeline names the flag')
+        end if
+    end block
+
     call m%free()
     call r%free()
     call c%free()
