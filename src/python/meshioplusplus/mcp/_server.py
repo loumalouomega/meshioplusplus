@@ -210,6 +210,25 @@ def _register_conversion(server: FastMCP) -> None:
             compression=compression,
         )
 
+    @server.tool()
+    def pipeline(
+        settings_path: str,
+        input_path: Optional[str] = None,
+        output_path: Optional[str] = None,
+    ) -> dict:
+        """Run a settings.json operation pipeline: read Input.Path, apply the
+        Operations chain (Transform/Gradient/Refine/Clean/... -- PascalCase
+        ops and keys, see doc/pipeline.md), write Output.Path.
+        input_path/output_path override the paths in the settings file; both
+        the settings file and the paths inside it stay inside the sandbox
+        root when one is configured."""
+        return _guard(
+            _tools.tool_pipeline,
+            settings_path=settings_path,
+            input_path=input_path,
+            output_path=output_path,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Mesh operations                                                             #

@@ -20,6 +20,7 @@ from . import (
     _isosurface,
     _merge,
     _partition,
+    _pipeline,
     _quality,
     _refine,
     _regions,
@@ -188,6 +189,13 @@ def main(argv=None):
     )
     _partition.add_args(parser)
     parser.set_defaults(func=_partition.partition_cmd)
+
+    parser = subparsers.add_parser(
+        "pipeline",
+        help="Run a settings.json operation chain (read -> ops -> write)",
+    )
+    _pipeline.add_args(parser)
+    parser.set_defaults(func=_pipeline.pipeline_cmd)
 
     parser = subparsers.add_parser(
         "smooth",
