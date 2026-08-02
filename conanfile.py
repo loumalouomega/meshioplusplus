@@ -27,7 +27,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "9.10.0"
+    version = "9.11.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -46,6 +46,7 @@ class MeshioplusplusConan(ConanFile):
         "with_lz4": [True, False],
         "with_kahip": [True, False],
         "with_eigen": [True, False],
+        "with_json": [True, False],
         "fortran": [True, False],
         # The full C++ API (meshioplusplus::core*) alongside the C API. Off by
         # default so the package stays the small C-API-only artifact it was.
@@ -68,6 +69,9 @@ class MeshioplusplusConan(ConanFile):
         # same policy as the CMake build). Off by default.
         "with_kahip": False,
         "with_eigen": False,  # submodule not in a source export -> fallback transpose
+        # Same reason as with_eigen: the nlohmann/json submodule is not in a
+        # source export, so the pipeline JSON entry points raise by name.
+        "with_json": False,
         "fortran": False,
         "with_cxx_api": False,
         # All three, so one package serves consumers that disagree about the
@@ -77,7 +81,8 @@ class MeshioplusplusConan(ConanFile):
     }
 
     # Everything the C API build needs. pugixml is inside src/cpp/third_party; the
-    # Eigen submodule is deliberately not exported (with_eigen defaults off).
+    # Eigen and nlohmann/json submodules are deliberately not exported
+    # (with_eigen/with_json default off).
     exports_sources = (
         "CMakeLists.txt",
         "LICENSE",
@@ -138,6 +143,7 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_LZ4"] = bool(self.options.with_lz4)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_KAHIP"] = bool(self.options.with_kahip)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_EIGEN"] = bool(self.options.with_eigen)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_JSON"] = bool(self.options.with_json)
         tc.cache_variables["MESHIOPLUSPLUS_INSTALL_CPP"] = bool(
             self.options.with_cxx_api
         )
