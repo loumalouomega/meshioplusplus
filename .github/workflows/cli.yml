@@ -59,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive # vendored Eigen (unused here: MED needs HDF5, which is OFF)
+          submodules: recursive # vendored Eigen (unused: MED needs HDF5, OFF here) + nlohmann/json (pipeline verb)
 
       - name: Install toolchain
         run: yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ cmake make
@@ -114,7 +114,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive # vendored Eigen (unused here: MED needs HDF5, which is OFF)
+          submodules: recursive # vendored Eigen (unused: MED needs HDF5, OFF here) + nlohmann/json (pipeline verb)
 
       - name: Install toolchain
         run: yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ cmake make
