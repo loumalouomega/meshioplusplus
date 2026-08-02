@@ -84,6 +84,7 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -226,6 +227,11 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_kahip__") = true;
 #else
     m.attr("__has_kahip__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_JSON
+    m.attr("__has_json__") = true;
+#else
+    m.attr("__has_json__") = false;
 #endif
     // Active compile-time parallel backend ("seq"/"stl"/"openmp"/"tbb"): lets
     // callers verify that parallel_for actually threads (STL without TBB is
@@ -951,8 +957,59 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("array"), py::arg("operator_") = "gradient",
-        py::arg("method") = "green-gauss", py::arg("location") = "cell",
-        py::arg("output") = "", py::arg("component") = -1, py::arg("overwrite") = false);
+        py::arg("method") = "green-gauss", py::arg("location") = "cell", py::arg("output") = "",
+        py::arg("component") = -1, py::arg("overwrite") = false);
+
+    // The settings.json pipeline (read -> operation chain -> write), run
+    // entirely in C++ against file paths. Bound for parity tests and for
+    // symmetry with the flat bindings -- the public Python `run_pipeline`
+    // (`_pipeline.py`) dispatches over the Python API instead, which is what
+    // gives it the per-format Python fallbacks. Both return the same report
+    // shape {steps: [{op, ...counters}], warnings: [...]}, PascalCase counter
+    // keys. See operations/pipeline.hpp and doc/pipeline.md.
+    {
+        auto report_to_py = [](const meshioplusplus::PipelineReport& r) {
+            py::list steps;
+            for (const auto& entry : r.mSteps) {
+                py::dict step;
+                step["op"] = entry.mOp;
+                for (const auto& counter : entry.mCounters)
+                    step[py::str(counter.first)] = counter.second;
+                steps.append(step);
+            }
+            py::list warnings;
+            for (const auto& warning : r.mWarnings)
+                warnings.append(warning);
+            py::dict out;
+            out["steps"] = steps;
+            out["warnings"] = warnings;
+            return out;
+        };
+        m.def(
+            "run_pipeline_file",
+            [report_to_py](const std::string& path) {
+                return report_to_py(meshioplusplus::run_pipeline_file(path));
+            },
+            py::arg("path"));
+        m.def(
+            "run_pipeline_json",
+            [report_to_py](const std::string& text) {
+                return report_to_py(meshioplusplus::run_pipeline_json(text));
+            },
+            py::arg("text"));
+        // The step vocabulary (op -> parameter keys), for pinning the pure
+        // Python runner's transcribed table (the refine_mask_table precedent).
+        m.def("pipeline_op_table", []() {
+            py::dict out;
+            for (const auto& entry : meshioplusplus::pipeline_op_table()) {
+                py::list keys;
+                for (const auto& key : entry.second)
+                    keys.append(key);
+                out[py::str(entry.first)] = keys;
+            }
+            return out;
+        });
+    }
 
     // Partition into nparts balanced pieces (SFC or KaHIP). Returns a list of
     // dicts {part_id, mesh, point_map, cell_maps}. See operations/partition.hpp.
