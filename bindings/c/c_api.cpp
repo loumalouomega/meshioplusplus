@@ -72,6 +72,7 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -1035,8 +1036,7 @@ mio_mesh* mio_isosurface(const mio_mesh* mesh, const char* array_name, const dou
 
 mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, const char* op,
                        const char* method, const char* location, const char* output_name,
-                       int component, int overwrite, int64_t* num_skipped,
-                       int64_t* num_fallback) {
+                       int component, int overwrite, int64_t* num_skipped, int64_t* num_fallback) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
         if (!mesh || !array_name)
             throw meshioplusplus::ReadError("meshio++: mesh/array_name is NULL");
@@ -1044,8 +1044,8 @@ mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, const char*
         opts.mArrayName = array_name;
         opts.mOperator = meshioplusplus::gradient_operator_from_name(op ? op : "");
         opts.mMethod = meshioplusplus::gradient_method_from_name(method ? method : "");
-        opts.mLocation = meshioplusplus::data_location_from_name(
-            (location && *location) ? location : "cell");
+        opts.mLocation =
+            meshioplusplus::data_location_from_name((location && *location) ? location : "cell");
         if (output_name)
             opts.mOutputName = output_name;
         // A negative component means EVERY component here -- deliberately the
@@ -2645,6 +2645,35 @@ void mio_xdmf_series_free(mio_xdmf_series* series) {
     // ~XdmfTimeSeriesWriter finalizes and swallows any failure (it must not
     // throw); a caller wanting to see one calls mio_xdmf_series_finalize first.
     delete series;
+}
+
+// --------------------------------------------------------------------------
+// Settings pipeline. JSON text only across the ABI -- the typed step model
+// never crosses it. When the build has no JSON parser the core throws naming
+// -DMESHIOPLUSPLUS_WITH_JSON=ON, which guarded() surfaces through
+// mio_last_error() as usual.
+// --------------------------------------------------------------------------
+
+mio_status mio_pipeline_run_file(const char* settings_path) {
+    return guarded([&]() -> mio_status {
+        if (!settings_path)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: settings_path is NULL");
+        meshioplusplus::run_pipeline_file(settings_path);
+        return MIO_OK;
+    });
+}
+
+mio_status mio_pipeline_run_json(const char* json_text) {
+    return guarded([&]() -> mio_status {
+        if (!json_text)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: json_text is NULL");
+        meshioplusplus::run_pipeline_json(json_text);
+        return MIO_OK;
+    });
+}
+
+int32_t mio_pipeline_has_json(void) {
+    return meshioplusplus::pipeline_has_json() ? 1 : 0;
 }
 
 }  // extern "C"

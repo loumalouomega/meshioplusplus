@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 9.10.0
+  VERSION 9.11.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -449,6 +449,26 @@ else()
   message(STATUS "meshio++: Eigen not found/disabled - MED transpose uses the plain loop")
 endif()
 
+# nlohmann/json (header-only, vendored as a git submodule at
+# src/cpp/third_party/json, pinned to v3.12.0): used only by the JSON pipeline
+# front-end (operations/pipeline.cpp's parse_pipeline_*). Optional -- when the
+# submodule is not checked out (e.g. an sdist without submodules) the typed
+# pipeline API still compiles and only the JSON-parsing entry points throw,
+# naming this option. Run `git submodule update --init` to enable it.
+option(MESHIOPLUSPLUS_WITH_JSON "Build the JSON pipeline parser (vendored nlohmann/json)" ON)
+if(MESHIOPLUSPLUS_WITH_JSON AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/json/single_include/nlohmann/json.hpp")
+  message(STATUS "meshio++: nlohmann/json enabled (pipeline settings parser)")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_JSON)
+  # PRIVATE for exactly Eigen's reason above: a submodule path inside the
+  # source tree must never leak into meshioplusplusTargets.cmake, and no
+  # installed header names an nlohmann type (pipeline.cpp only).
+  list(APPEND _mio_core_priv_incs
+       ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/json/single_include)
+else()
+  message(STATUS "meshio++: nlohmann/json not found/disabled - pipeline JSON parsing raises")
+endif()
+
 # --------------------------------------------------------------------------
 # Parallel backend for meshioplusplus::parallel_for (src/cpp/include/meshioplusplus/parallel.hpp).
 # Selected at configure time; exactly one MESHIOPLUSPLUS_PARALLEL_* macro is defined:
@@ -784,7 +804,7 @@ endif()
 # it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
 # on a machine that happens to have HDF5 now correctly reports "no HDF5".
 # ---------------------------------------------------------------------------
-foreach(_f ZLIB ZSTD LZ4 KAHIP HDF5 NETCDF EIGEN)
+foreach(_f ZLIB ZSTD LZ4 KAHIP HDF5 NETCDF EIGEN JSON)
   if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
     set(_mio_has_${_f} TRUE)
   else()

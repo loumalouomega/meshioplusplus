@@ -88,6 +88,7 @@ from ._isosurface import isosurface
 from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
 from ._partition import partition, partition_labels
+from ._pipeline import run_pipeline
 from ._quality import attach_quality, compute_quality
 from ._refine import refine
 from ._regions import Region
@@ -179,6 +180,7 @@ __all__ = [
     "smooth",
     "partition",
     "partition_labels",
+    "run_pipeline",
     "compute_stats",
     "data_manage",
     "data_drop",

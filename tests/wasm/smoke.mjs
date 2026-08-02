@@ -961,6 +961,7 @@ step('every binding is reachable through the wrapper', () => {
         'convert',
         'convertSurface',
         'convertSurfaceOps',
+        'runPipeline',
         'numNodesPerCell',
         'topologicalDimension',
         'availableFormats',
@@ -1395,6 +1396,51 @@ step('convertSurfaceOps runs each operation and reports its counters', () => {
         { op: 'quality' },
     ]);
     assert.deepEqual(both.steps.map((x) => x.op), ['refine', 'quality']);
+});
+
+step('runPipeline runs a settings document (object, text, and MEMFS path)', () => {
+    // The PascalCase settings vocabulary; convertSurfaceOps' camelCase op
+    // specs above dispatch through the same core engine, so the two cannot
+    // drift -- this step exercises the settings spelling and the wrapper's
+    // three input forms.
+    m.writeMesh('/pipe.vtu', cube);
+    const settings = {
+        Version: 1,
+        Input: { Path: '/pipe.vtu' },
+        Operations: [{ Op: 'ConvertCells', Mode: 'simplexify' }, { Op: 'Quality' }],
+        Output: { Path: '/pipe-out.vtu' },
+    };
+    const rep = m.runPipeline(settings);
+    assert.deepEqual(rep.steps.map((x) => x.op), ['ConvertCells', 'Quality']);
+    assert.deepEqual(rep.warnings, []);
+    const out = m.readMesh('/pipe-out.vtu');
+    assert.equal(out.cells[0].type, 'tetra');
+    assert.ok('quality:scaled_jacobian' in out.cell_data);
+
+    // JSON text and a MEMFS settings-file path resolve to the same run.
+    settings.Output.Path = '/pipe-out2.vtu';
+    m.runPipeline(JSON.stringify(settings));
+    assert.equal(m.readMesh('/pipe-out2.vtu').cells[0].type, 'tetra');
+
+    settings.Output.Path = '/pipe-out3.vtu';
+    m.FS.writeFile('/pipe.json', JSON.stringify(settings));
+    m.runPipeline('/pipe.json');
+    assert.equal(m.readMesh('/pipe-out3.vtu').cells[0].type, 'tetra');
+
+    // Strict: an unknown op or key fails by name, and excluded multi-mesh
+    // ops point at the CLI verb.
+    assert.throws(
+        () => m.runPipeline({ Input: { Path: '/pipe.vtu' }, Operations: [{ Op: 'Nope' }], Output: { Path: '/x.vtu' } }),
+        /unknown operation 'Nope'/
+    );
+    assert.throws(
+        () => m.runPipeline({ Input: { Path: '/pipe.vtu' }, Operations: [], Output: { Path: '/x.vtu' }, Bogus: 1 }),
+        /unknown key 'Bogus'/
+    );
+    assert.throws(
+        () => m.runPipeline({ Input: { Path: '/pipe.vtu' }, Operations: [{ Op: 'Merge' }], Output: { Path: '/x.vtu' } }),
+        /CLI verb/
+    );
 });
 
 step('convertSurfaceOps takes a planar cross-section (slice)', () => {

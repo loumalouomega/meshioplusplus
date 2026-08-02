@@ -879,6 +879,36 @@ meshioplusplus data export in.vtu cells.parquet --location cell
 
 ---
 
+## meshioplusplus pipeline
+
+Run a whole [settings pipeline](pipeline.md): read `Input.Path`, apply the
+`Operations` chain, write `Output.Path` — one `settings.json` instead of N
+verb invocations with intermediate files.
+
+```bash
+meshioplusplus pipeline settings.json
+meshioplusplus pipeline settings.json --input other.msh --output out.vtu
+meshioplusplus pipeline settings.json --json          # machine-readable report
+meshioplusplus pipeline settings.json --quiet
+```
+
+- `--input` / `--output` override the two paths in the settings file (the
+  document itself is untouched).
+- The report lists each step with its counters (`step 3: Clean
+  (PointsWelded=12, ...)`) plus any warnings; `--json` prints the same as JSON.
+- Parsing is strict: an unknown op, an unknown key, or an `Output` option the
+  format cannot honour is an error naming the offender.
+- The exit code is nonzero on any error, so the verb composes with `make`/CI.
+
+The verb exists in **both** CLIs. The Python CLI runs the pure-Python engine
+(and so inherits the per-format Python fallbacks); the native CLI needs a
+build with the JSON parser (`-DMESHIOPLUSPLUS_WITH_JSON=ON`, the default when
+the `src/cpp/third_party/json` submodule is checked out — release binaries
+carry it) and otherwise reports the flag by name. See
+[the settings pipeline](pipeline.md) for the schema and the full op table.
+
+---
+
 ## meshioplusplus compress
 
 Compress the data in a mesh file (formats that support compression, e.g. VTU).

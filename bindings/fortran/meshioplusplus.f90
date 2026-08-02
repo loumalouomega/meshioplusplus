@@ -54,6 +54,7 @@ module meshioplusplus
     public :: mio_stats_report
     public :: mio_data_array_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
+    public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
     public :: mio_format_readable, mio_format_writable
     public :: mio_sniff_format
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
@@ -554,6 +555,26 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: in_path, in_format
             character(kind=c_char), dimension(*), intent(in) :: out_path, out_format
             integer(c_int) :: s
+        end function
+
+        function c_mio_pipeline_run_file(settings_path) &
+                bind(c, name="mio_pipeline_run_file") result(s)
+            import :: c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: settings_path
+            integer(c_int) :: s
+        end function
+
+        function c_mio_pipeline_run_json(json_text) &
+                bind(c, name="mio_pipeline_run_json") result(s)
+            import :: c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: json_text
+            integer(c_int) :: s
+        end function
+
+        function c_mio_pipeline_has_json() &
+                bind(c, name="mio_pipeline_has_json") result(r)
+            import :: c_int32_t
+            integer(c_int32_t) :: r
         end function
 
         function c_mio_extract_surface(h, record_parent_ids) &
@@ -1597,6 +1618,33 @@ contains
         call handle_status(c_mio_convert(c_str(in_path), c_str(ifmt), c_str(out_path), &
                                          c_str(ofmt)), 'convert', stat, errmsg)
     end subroutine
+
+    !> Run a whole settings.json pipeline (read -> operation chain -> write;
+    !> PascalCase vocabulary, see doc/pipeline.md). Needs a build with the
+    !> JSON parser (-DMESHIOPLUSPLUS_WITH_JSON=ON); otherwise the error names
+    !> the flag. mio_pipeline_has_json() reports which build this is.
+    subroutine mio_pipeline_run_file(settings_path, stat, errmsg)
+        character(*), intent(in) :: settings_path
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_pipeline_run_file(c_str(settings_path)), &
+                           'pipeline_run_file', stat, errmsg)
+    end subroutine
+
+    !> Run a settings pipeline given as JSON text (see mio_pipeline_run_file).
+    subroutine mio_pipeline_run_json(json_text, stat, errmsg)
+        character(*), intent(in) :: json_text
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_pipeline_run_json(c_str(json_text)), &
+                           'pipeline_run_json', stat, errmsg)
+    end subroutine
+
+    !> Whether this build carries the JSON pipeline parser.
+    function mio_pipeline_has_json() result(has)
+        logical :: has
+        has = c_mio_pipeline_has_json() /= 0
+    end function
 
     !> Guess a mesh file's format from its contents ('' if undetermined).
     function mio_sniff_format(path) result(fmt)

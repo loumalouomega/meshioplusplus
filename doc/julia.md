@@ -228,6 +228,17 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v9.11.0 additions
+
+- The [settings pipeline](pipeline.md): `run_pipeline_file(settings_path)` and
+  `run_pipeline_json(json_text)` run a whole `settings.json` (read → operation
+  chain → write; PascalCase ops/keys) through the C++ engine, and
+  `pipeline_has_json()` reports whether the loaded library carries the JSON
+  parser — a build without it raises a `MeshioError` naming
+  `-DMESHIOPLUSPLUS_WITH_JSON=ON` rather than missing a symbol. The flat ABI
+  carries JSON text only; the structured run report is a recorded follow-up.
+  All three are exported (none shadows `Base`).
+
 ## v9.10.0 additions
 
 - `gradient(mesh, array; operator=:gradient, method=:green_gauss,

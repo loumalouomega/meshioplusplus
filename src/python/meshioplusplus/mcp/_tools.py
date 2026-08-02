@@ -27,6 +27,7 @@ Design rules (the contracts the tests pin):
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
@@ -61,6 +62,7 @@ from .. import (
     read_metadata,
     refine,
     reorder,
+    run_pipeline,
 )
 from .. import screenshot as _screenshot_fn
 from .. import slice as _slice_op
@@ -486,6 +488,30 @@ def tool_convert(
         write_kwargs = _variant_kwargs(out_fmt, mode, compression)
     resolved = _store(mesh, output_path, output_format, **write_kwargs)
     return _result(resolved, mesh, output_format=out_fmt)
+
+
+def tool_pipeline(settings_path, input_path=None, output_path=None):
+    """Run a settings.json operation pipeline (read -> ops chain -> write)."""
+    with open(_resolve(settings_path, must_exist=True), "r", encoding="utf-8") as f:
+        doc = json.load(f)
+    if not isinstance(doc, dict):
+        raise ValueError("meshio++: mcp: the settings document must be an object")
+    # Sandbox the paths INSIDE the settings too, not just the settings file --
+    # a document naming /etc/passwd must fail the same way a path argument
+    # would. Overrides take precedence exactly like the CLI's --input/--output.
+    raw_in = input_path if input_path is not None else doc.get("Input", {}).get("Path")
+    raw_out = (
+        output_path if output_path is not None else doc.get("Output", {}).get("Path")
+    )
+    if not raw_in:
+        raise ValueError("meshio++: pipeline: Input.Path is required")
+    if not raw_out:
+        raise ValueError("meshio++: pipeline: Output.Path is required")
+    resolved_in = _resolve(raw_in, must_exist=True)
+    resolved_out = _resolve(raw_out, for_write=True)
+    report = run_pipeline(doc, input_path=resolved_in, output_path=resolved_out)
+    report["output_path"] = resolved_out
+    return _json_safe(report)
 
 
 # --------------------------------------------------------------------------- #
@@ -1106,6 +1132,10 @@ TOOL_REGISTRY = OrderedDict(
         ("data_preview", {"fn": tool_data_preview, "wraps": (), "gated": None}),
         ("diff", {"fn": tool_diff, "wraps": ("diff", "meshes_equal"), "gated": None}),
         ("convert", {"fn": tool_convert, "wraps": ("read", "write"), "gated": None}),
+        (
+            "pipeline",
+            {"fn": tool_pipeline, "wraps": ("run_pipeline",), "gated": None},
+        ),
         (
             "extract_surface",
             {"fn": tool_extract_surface, "wraps": ("extract_surface",), "gated": None},

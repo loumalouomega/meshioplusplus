@@ -98,6 +98,7 @@ function resolveVariant(variant) {
  *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   convertSurface: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean}) => {steps: object[], warnings: string[]},
+ *   runPipeline: (settings: object|string) => {steps: object[], warnings: string[]},
  *   numNodesPerCell: () => Object<string, number>,
  *   topologicalDimension: () => Object<string, number>,
  *   meshBackend: () => string,
@@ -193,6 +194,21 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             { inFormat = '', outFormat = '', keepProvenance = false } = {}
         ) =>
             Module.convertSurfaceOps(inPath, inFormat, outPath, outFormat, ops, keepProvenance),
+        // A whole settings.json pipeline (PascalCase vocabulary, see
+        // doc/pipeline.md). Accepts the parsed object, the JSON text, or a
+        // MEMFS path ending in ".json" -- the wasm binary carries no JSON
+        // parser (JSON.parse is free here), so both string forms are resolved
+        // to an object on this side of the boundary.
+        runPipeline: (settings) => {
+            let resolved = settings;
+            if (typeof settings === 'string') {
+                const text = settings.trimStart().startsWith('{')
+                    ? settings
+                    : new TextDecoder().decode(Module.FS.readFile(settings));
+                resolved = JSON.parse(text);
+            }
+            return Module.runPipeline(resolved);
+        },
         numNodesPerCell: () => Module.numNodesPerCell(),
         topologicalDimension: () => Module.topologicalDimension(),
         meshBackend: () => Module.meshBackend(),

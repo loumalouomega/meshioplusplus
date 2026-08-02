@@ -12,3 +12,6 @@
 	# change -- moving polyscope itself to another commit -- still shows,
 	# because that changes the recorded gitlink rather than its contents.
 	ignore = dirty
+[submodule "cpp/third_party/json"]
+	path = src/cpp/third_party/json
+	url = https://github.com/nlohmann/json.git

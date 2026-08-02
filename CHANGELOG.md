@@ -8,6 +8,44 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.11.0 (2026-08-02)
+
+New **settings pipeline**: one `settings.json` document describes a whole read →
+operation-chain → write run (`{"Input", "Operations": [{"Op": "Transform", ...}, ...],
+"Output"}`), executed by the new **`pipeline` verb in both CLIs**, by
+`meshioplusplus.run_pipeline` in Python, and by the same C++ engine from every binding —
+C (`mio_pipeline_run_file`/`_json`), Fortran, Julia, R, WASM (`runPipeline`) and a new
+MCP `pipeline` tool. `MESHIOPLUSPLUS_ABI_VERSION` stays 5 — the one new installed header
+(`operations/pipeline.hpp`) is purely additive (Tier C, reviewed in `doc/abi_reviews.md`).
+
+### The pipeline
+
+- ~23 single-mesh operations as steps (`Transform`, `Gradient`, `ConvertCells`, `Refine`,
+  `Decimate`, `Smooth`, `Clean`, `Crop`, `Slice`/`Section`, `Isosurface`, `Quality`,
+  `Partition` (attaches `partition:part` labels), `ExtractSurface`/`ExtractSkin`,
+  `Reorder`, and the data ops `DataDrop`/`DataKeep`/`DataRename`/`DataCalc`/
+  `DataCondition`/`ToCell`/`ToPoint`). PascalCase ops and keys, lowercase enum values,
+  **strict** parsing (unknown op/key errors by name), steps validated before the input is
+  read. Multi-mesh ops (`Merge`/`Interpolate`/`Split`/`Diff`) are rejected pointing at
+  their CLI verbs — the recorded v2 follow-up. `Input.Options` narrows the read
+  (`PointsOnly`/`DataArrays`/`TimeStep`/`Lenient`/`Mmap`); `Output` selects
+  `Encoding`/`Codec`/`FloatFormat` through `registry_write_ex`, so an option the format
+  cannot honour is an error. See `doc/pipeline.md`.
+- The engine lives in the core (`operations/pipeline.{hpp,cpp}`) in two layers: a typed,
+  always-compiled step dispatcher — now the **single owner** the WASM
+  `convertSurfaceOps` pipeline also dispatches through (its camelCase op specs and report
+  are unchanged; the dedicated `apply_one_op` table is gone) — and a JSON front-end.
+- **New git submodule**: [nlohmann/json](https://github.com/nlohmann/json) v3.12.0 at
+  `src/cpp/third_party/json`, wired exactly like Eigen (`MESHIOPLUSPLUS_WITH_JSON`,
+  default ON with an `EXISTS` probe; PRIVATE include; never in an installed header).
+  Without it the typed layer still compiles and only the JSON entry points throw naming
+  the flag; wheels and the release CLI binaries carry it, the conan/vcpkg packages keep
+  it off (no submodule in a source export — the Eigen rule).
+- Python's `run_pipeline` is a pure-Python twin over the public API (per-format fallbacks
+  included, sdists fully functional); `_core.run_pipeline_file`/`_json` +
+  `_core.pipeline_op_table` expose the C++ engine, and the parity test pins the two
+  engines' meshes and reports against each other.
+
 ## v9.10.0 (2026-07-31)
 
 New **`gradient`** operation — the gradient, divergence and curl of a `point_data` field.

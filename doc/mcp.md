@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-33 tools; the two marked *gated* need a further extra and return a named
+34 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -105,6 +105,7 @@ report.
 | Tool | Notes |
 |---|---|
 | `convert` | any-to-any format conversion; `points_only`/`arrays`/`time_step` narrow the read; `mode: ascii\|binary` and `compression: zlib\|lz4\|zstd\|lzma\|gzip\|none` subsume the CLI's `ascii`/`binary`/`compress`/`decompress` verbs |
+| `pipeline` | run a whole [settings pipeline](pipeline.md) (`settings_path`; read → operation chain → write, PascalCase ops/keys); `input_path`/`output_path` override the document's paths, and the sandbox root covers the paths **inside** the settings file, not just the file itself |
 
 ### Mesh operations
 

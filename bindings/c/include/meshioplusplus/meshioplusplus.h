@@ -215,7 +215,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 9
-#define MIO_VERSION_MINOR 10
+#define MIO_VERSION_MINOR 11
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1969,6 +1969,31 @@ MIO_API int32_t mio_xdmf_series_finalized(const mio_xdmf_series* series);
 
 /** Finalize (if needed) and destroy a series handle. Safe to call with NULL. */
 MIO_API void mio_xdmf_series_free(mio_xdmf_series* series);
+
+/* --------------------------------------------------------------------------
+ * Settings pipeline (v9.11.0). A settings.json document describes read ->
+ * operation chain -> write (PascalCase ops/keys; see doc/pipeline.md), and
+ * these run it whole -- the flat ABI carries JSON text only, no step struct.
+ *
+ * Both need a build with the JSON parser (-DMESHIOPLUSPLUS_WITH_JSON=ON, the
+ * default when the src/cpp/third_party/json submodule is checked out);
+ * otherwise they return MIO_ERR_INTERNAL and mio_last_error() names the flag.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Run the settings pipeline stored in the file at `settings_path`.
+ * @return MIO_OK, or an error (schema errors name the offending op/key).
+ */
+MIO_API mio_status mio_pipeline_run_file(const char* settings_path);
+
+/**
+ * Run the settings pipeline given as JSON text.
+ * @return MIO_OK, or an error (schema errors name the offending op/key).
+ */
+MIO_API mio_status mio_pipeline_run_json(const char* json_text);
+
+/** @return 1 when this build carries the JSON pipeline parser, else 0. */
+MIO_API int32_t mio_pipeline_has_json(void);
 
 #ifdef __cplusplus
 }

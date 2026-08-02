@@ -513,6 +513,38 @@ test_that("data operations never touch geometry", {
   expect_equal(temp$num_nan, 0)
 })
 
+test_that("the settings pipeline runs (or fails naming the flag)", {
+  # Behaviour follows the build: with the JSON parser a bad document fails
+  # naming the offending op; without it every entry point fails naming
+  # -DMESHIOPLUSPLUS_WITH_JSON=ON. Never a missing symbol either way.
+  bad <- paste0(
+    '{"Input": {"Path": "a"}, "Output": {"Path": "b"},',
+    ' "Operations": [{"Op": "Nope"}]}'
+  )
+  if (mio_pipeline_has_json()) {
+    expect_error(mio_pipeline_run_json(bad), "Nope")
+    dir <- tempfile("mio_pipeline")
+    dir.create(dir)
+    inp <- file.path(dir, "in.vtu")
+    out <- file.path(dir, "out.vtu")
+    m <- fixture()
+    mio_write(m, inp)
+    mio_release(m)
+    settings <- file.path(dir, "settings.json")
+    writeLines(sprintf(
+      '{"Input": {"Path": "%s"}, "Operations": [{"Op": "Quality"}], "Output": {"Path": "%s"}}',
+      inp, out
+    ), settings)
+    mio_pipeline_run_file(settings)
+    back <- mio_read(out)
+    expect_true("quality:scaled_jacobian" %in% mio_cell_data_names(back))
+    mio_release(back)
+    unlink(dir, recursive = TRUE)
+  } else {
+    expect_error(mio_pipeline_run_json(bad), "MESHIOPLUSPLUS_WITH_JSON")
+  }
+})
+
 test_that("errors carry the C API's own message", {
   # Every failure becomes an R condition carrying mio_last_error(); a status
   # code never reaches R.

@@ -32,6 +32,7 @@
  */
 
 // System includes
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <utility>
@@ -54,6 +55,7 @@
 #include "view_payload.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -435,7 +437,11 @@ void print_usage(std::ostream& os) {
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
           "  view                    Open a mesh in an interactive viewer\n"
           "  screenshot              Render a mesh to a PNG without a window\n"
-          "  data <verb>             Inspect / rename / average / compute on data arrays\n\n"
+          "  data <verb>             Inspect / rename / average / compute on data arrays\n"
+          "  pipeline                Run a settings.json operation chain (read -> ops ->\n"
+          "                          write; see doc/pipeline.md). --input/--output\n"
+          "                          override the paths in the file; --json for a\n"
+          "                          machine-readable report\n\n"
           "  -v, --version           Display version information\n"
           "  -h, --help              Show this message\n\n"
           "notes: point/cell sets and 'convert -s/-d' are unavailable in the native\n"
@@ -2057,6 +2063,68 @@ int cmd_data_gradient(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+/// One report counter, printed as an integer when it is one (most are counts;
+/// only e.g. Smooth's MaxDisplacement is genuinely fractional).
+void pipeline_print_counter(std::ostream& rOut, double value) {
+    if (value == std::floor(value) && std::abs(value) < 1e15)
+        rOut << static_cast<long long>(value);
+    else
+        rOut << value;
+}
+
+int cmd_pipeline(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input", {}, true},
+                                  {"output", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("pipeline requires exactly SETTINGS.json");
+    // Needs a build with the JSON parser (-DMESHIOPLUSPLUS_WITH_JSON=ON, the
+    // default when the submodule is checked out); otherwise this throws naming
+    // the flag -- the view/screenshot contract, the verb always exists.
+    meshioplusplus::Pipeline pipeline = meshioplusplus::parse_pipeline_file(p.positionals[0]);
+    if (has_opt(p, "input"))
+        pipeline.mInput.mPath = opt_value(p, "input");
+    if (has_opt(p, "output"))
+        pipeline.mOutput.mPath = opt_value(p, "output");
+    const meshioplusplus::PipelineReport report = meshioplusplus::run_pipeline(pipeline);
+
+    if (has_flag(p, "json")) {
+        std::cout << "{\n  \"steps\": [";
+        for (std::size_t i = 0; i < report.mSteps.size(); ++i) {
+            const auto& step = report.mSteps[i];
+            std::cout << (i ? ",\n    " : "\n    ") << "{\"op\": \"" << step.mOp << "\"";
+            for (const auto& counter : step.mCounters) {
+                std::cout << ", \"" << counter.first << "\": ";
+                pipeline_print_counter(std::cout, counter.second);
+            }
+            std::cout << "}";
+        }
+        std::cout << (report.mSteps.empty() ? "" : "\n  ") << "],\n  \"warnings\": [";
+        for (std::size_t i = 0; i < report.mWarnings.size(); ++i)
+            std::cout << (i ? ", " : "") << "\"" << report.mWarnings[i] << "\"";
+        std::cout << "]\n}\n";
+    } else if (!has_flag(p, "quiet")) {
+        for (std::size_t i = 0; i < report.mSteps.size(); ++i) {
+            const auto& step = report.mSteps[i];
+            std::cout << "step " << (i + 1) << ": " << step.mOp;
+            for (std::size_t c = 0; c < step.mCounters.size(); ++c) {
+                std::cout << (c ? ", " : " (") << step.mCounters[c].first << "=";
+                pipeline_print_counter(std::cout, step.mCounters[c].second);
+                if (c + 1 == step.mCounters.size())
+                    std::cout << ")";
+            }
+            std::cout << "\n";
+        }
+        for (const auto& warning : report.mWarnings)
+            std::cout << "warning: " << warning << "\n";
+        std::cout << "wrote " << pipeline.mOutput.mPath << "\n";
+    }
+    return 0;
+}
+
 void print_data_usage(std::ostream& rOut) {
     rOut << "usage: meshioplusplus data <subcommand> [options]\n\n"
             "Operations on a mesh's data arrays (the geometry is never modified).\n\n"
@@ -2386,6 +2454,8 @@ int main(int argc, char** argv) {
             return cmd_partition(rest);
         if (cmd == "data")
             return cmd_data(rest);
+        if (cmd == "pipeline")
+            return cmd_pipeline(rest);
         if (cmd == "stats")
             return cmd_stats(rest);
         if (cmd == "view")

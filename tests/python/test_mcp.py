@@ -222,6 +222,45 @@ def test_convert_variant_errors(mesh_file, tmp_path):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), mode="fast")
 
 
+def test_pipeline_tool(mesh_file, tmp_path):
+    out_path = str(tmp_path / "piped.vtu")
+    settings_path = str(tmp_path / "settings.json")
+    with open(settings_path, "w") as f:
+        json.dump(
+            {
+                "Input": {"Path": mesh_file},
+                "Operations": [{"Op": "Quality"}, {"Op": "Clean"}],
+                "Output": {"Path": out_path},
+            },
+            f,
+        )
+    out = _dump(_tools.tool_pipeline(settings_path))
+    assert os.path.isfile(out["output_path"])
+    assert [s["op"] for s in out["steps"]] == ["Quality", "Clean"]
+    # overrides win over the document's paths
+    other = str(tmp_path / "other.vtu")
+    _dump(_tools.tool_pipeline(settings_path, output_path=other))
+    assert os.path.isfile(other)
+
+
+def test_pipeline_tool_sandboxes_the_inner_paths(mesh_file, tmp_path, monkeypatch):
+    # A settings document naming a path outside the root must fail exactly the
+    # way a path argument would -- the sandbox covers the document's insides.
+    settings_path = str(tmp_path / "settings.json")
+    with open(settings_path, "w") as f:
+        json.dump(
+            {
+                "Input": {"Path": "/etc/passwd"},
+                "Operations": [],
+                "Output": {"Path": str(tmp_path / "o.vtu")},
+            },
+            f,
+        )
+    monkeypatch.setattr(_tools, "_ROOT", str(tmp_path))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_pipeline(settings_path)
+
+
 # --------------------------------------------------------------------------- #
 # Pure half: mesh operations                                                  #
 # --------------------------------------------------------------------------- #

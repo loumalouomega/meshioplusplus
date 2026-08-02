@@ -15409,6 +15409,309 @@ MESHIOPLUSPLUS_API bool partition_has_kahip() noexcept;
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/partition.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/write_options.hpp =====
+/**
+ * @file write_options.hpp
+ * @brief `WriteOptions`, the write-side counterpart of `read_options.hpp`.
+ *
+ * The dispatch registry stores writers as `void(const std::string&, const
+ * Mesh&)` lambdas with one set of parameters baked in per format
+ * (`registry.cpp`), so nothing that goes through `registry_writers()` can pick
+ * ASCII vs binary, a compression codec, or a float format. Callers that need
+ * to were expected to call the per-format free function directly -- which the
+ * CLI did, with a private variant table, and which the flat bindings (C API,
+ * Fortran, WASM) could not do at all.
+ *
+ * `registry_write_ex()` is that table, hoisted into the core so there is one
+ * owner instead of one per consumer. `registry_write(path, mesh, format)` with
+ * default options is exactly the registry's own writer, so existing behaviour
+ * is unchanged.
+ *
+ * Not every option applies to every format. The rule is deliberate and matches
+ * the CLI's: an option a format cannot honour is an **error**, never silently
+ * ignored -- `--codec zstd` on a Gmsh file is a mistake worth reporting, not a
+ * no-op. `registry_write_supports()` answers the question up front.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/** @brief ASCII/binary selection for formats that have both variants. */
+enum class WriteEncoding {
+    Default,  ///< the format's registry default (unchanged behaviour)
+    Ascii,
+    Binary,
+};
+
+/**
+ * @brief Parameters for `registry_write_ex()`.
+ *
+ * Default-constructed reproduces `registry_write()` exactly, which is what lets
+ * this be added without touching a single existing caller.
+ */
+struct WriteOptions {
+    /** @brief ASCII vs binary. Errors for a format with only one variant. */
+    WriteEncoding mEncoding = WriteEncoding::Default;
+
+    /**
+     * @brief Block compression codec for the VTK-XML formats (vtu/vtp).
+     *
+     * `Zlib` is the default those formats already use when binary; `None`
+     * disables compression. Errors for any other format -- no other format in
+     * meshio++ has a block codec, so naming one is a mistake.
+     */
+    detail::VtkCodec mCodec = detail::VtkCodec::Zlib;
+    bool mCodecSet = false;  ///< whether mCodec was chosen explicitly
+
+    /**
+     * @brief `printf`-style float format for ASCII writers that take one
+     * (e.g. `".16e"`, the default). Empty keeps the writer's own default.
+     */
+    std::string mFloatFormat;
+};
+
+/**
+ * @brief Whether @p rFormat can honour @p rOptions.
+ * @param rFormat a resolved format name (see `resolve_format`).
+ * @param rOptions the options to check.
+ * @param rWhy set to a human-readable reason when the answer is false.
+ */
+MESHIOPLUSPLUS_API bool registry_write_supports(const std::string& rFormat,
+                                                const WriteOptions& rOptions, std::string& rWhy);
+
+/**
+ * @brief Write @p rMesh honouring @p rOptions.
+ *
+ * Resolves the format like `registry_read` (extension default when @p rFormat
+ * is empty), then either calls the parameterized per-format writer or, when the
+ * options are all defaults, the registry's own writer.
+ *
+ * @throws WriteError if the format cannot honour an option, or on any writer
+ *         failure.
+ */
+MESHIOPLUSPLUS_API void registry_write_ex(const std::string& rPath, const Mesh& rMesh,
+                                          const std::string& rFormat, const WriteOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/write_options.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/pipeline.hpp =====
+/**
+ * @file operations/pipeline.hpp
+ * @brief The declarative operation pipeline: read a mesh, apply a sequence of
+ * mesh/data operations, write the result -- described by a typed `Pipeline`
+ * value or, through the JSON front-end, by a `settings.json` document.
+ *
+ * The engine is split in two layers, and the split is load-bearing:
+ *
+ *  - The **typed layer** (`PipelineStep`, `apply_pipeline_step`,
+ *    `run_pipeline_steps`, `run_pipeline`, `validate_pipeline_step`) is
+ *    JSON-independent and always compiles. It is the single owner of the
+ *    step vocabulary -- the WASM `convertSurfaceOps` binding dispatches
+ *    through it, so the browser viewer's pipeline and a `settings.json`
+ *    cannot drift apart.
+ *  - The **JSON front-end** (`parse_pipeline_json`/`parse_pipeline_file` and
+ *    the `run_pipeline_json`/`run_pipeline_file` conveniences) parses the
+ *    settings document with the vendored nlohmann/json (a git submodule at
+ *    `src/cpp/third_party/json`, like Eigen). When the submodule is absent
+ *    or `-DMESHIOPLUSPLUS_WITH_JSON=OFF`, these entry points still exist and
+ *    throw naming the option -- never a link error, never a silent no-op
+ *    (the `partition_kahip_parts` contract). `pipeline_has_json()` reports
+ *    which build this is.
+ *
+ * **Vocabulary**: op names and parameter keys are PascalCase (`"Op":
+ * "ConvertCells"`, `"RemoveOrphans": true`); enum *values* keep the exact
+ * lowercase spellings the `*_from_name` helpers accept (`"simplexify"`,
+ * `"redgreen"`, `"cell"`). Refine's comparison key is `Compare`, never `Op` --
+ * `Op` is the step discriminant. Parsing is **strict**: an unknown op, an
+ * unknown key on a step, or an unknown top-level key is an error naming it,
+ * never silently ignored (the `registry_write_supports` rule).
+ *
+ * **Scope (v1)**: a single-mesh chain. Multi-input (`Merge`, `Interpolate`)
+ * and multi-output (`Split`) operations are rejected with an error naming the
+ * CLI verb to use instead; `Partition` as a step attaches the `partition:part`
+ * labels rather than splitting into pieces (exactly what the browser viewer's
+ * partition chip always did).
+ *
+ * No installed header names an nlohmann type -- the parser is confined to
+ * `pipeline.cpp` (the pugixml rule).
+ */
+
+// System includes
+#include <cstdint>
+#include <map>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief One parameter value on a pipeline step.
+ *
+ * The closed set of shapes a step parameter can take: scalars, and homogeneous
+ * arrays of them. Deliberately no nested object -- a step is flat, which is
+ * what keeps the vocabulary expressible from every binding (a JS object, a
+ * settings.json entry, a Python dict of plain values).
+ */
+using PipelineValue = std::variant<bool, std::int64_t, double, std::string, std::vector<double>,
+                                   std::vector<std::int64_t>, std::vector<std::string>>;
+
+/**
+ * @brief One operation in the chain: the PascalCase op name plus its
+ * parameters, keyed by PascalCase parameter name.
+ *
+ * `std::map` rather than `unordered_map` deliberately: validation errors and
+ * report echoes enumerate the keys, and that order is observable.
+ */
+struct PipelineStep {
+    std::string mOp;
+    std::map<std::string, PipelineValue> mParams;
+};
+
+/** @brief Where the pipeline reads from, and how (`Input` in settings.json). */
+struct PipelineInput {
+    std::string mPath;
+    /// Empty resolves from the extension, with the `sniff_format` fallback.
+    std::string mFormat;
+    ReadOptions mOptions;
+};
+
+/** @brief Where the pipeline writes to, and how (`Output` in settings.json). */
+struct PipelineOutput {
+    std::string mPath;
+    /// Empty resolves from the extension.
+    std::string mFormat;
+    /// Honoured through `registry_write_ex`: an option the format cannot
+    /// honour is an error, never silently ignored.
+    WriteOptions mOptions;
+};
+
+/** @brief A whole settings document: input, the operation chain, output. */
+struct Pipeline {
+    int mVersion = 1;
+    PipelineInput mInput;
+    std::vector<PipelineStep> mSteps;
+    PipelineOutput mOutput;
+};
+
+/**
+ * @brief What one executed step reports back: its op name and the counters the
+ * underlying operation returned (PascalCase keys, e.g. `PointsWelded`).
+ *
+ * Counters are doubles because every consumer of this shape (JS, JSON, Python)
+ * speaks doubles; the underlying `std::int64_t` counters are far below 2^53.
+ */
+struct PipelineStepReport {
+    std::string mOp;
+    std::vector<std::pair<std::string, double>> mCounters;
+};
+
+/** @brief The report of a whole run: one entry per step, plus warnings. */
+struct PipelineReport {
+    std::vector<PipelineStepReport> mSteps;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief The step vocabulary itself: op name -> its parameter keys, in table
+ * order (aliases like `Section` included).
+ *
+ * Exposed so the pure-Python runner's transcribed table can be pinned against
+ * this one by a test (`_core.pipeline_op_table`, the `refine_mask_table` /
+ * `colormap_table` precedent) instead of drifting silently.
+ */
+MESHIOPLUSPLUS_API std::vector<std::pair<std::string, std::vector<std::string>>>
+pipeline_op_table();
+
+/**
+ * @brief Checks @p rStep against the step vocabulary.
+ *
+ * Strict: an unknown op throws listing the known ops; a key the op does not
+ * take throws naming the key and listing the op's keys. The excluded
+ * multi-mesh ops (`Merge`, `Interpolate`, `Split`, `Diff`) throw an error
+ * naming the CLI verb to use instead.
+ *
+ * @throws std::invalid_argument as above.
+ */
+MESHIOPLUSPLUS_API void validate_pipeline_step(const PipelineStep& rStep);
+
+/**
+ * @brief Applies one step to @p rMesh, appending its entry to @p rReport.
+ *
+ * The single owner of the step dispatch -- the WASM `convertSurfaceOps`
+ * binding and the JSON pipeline both go through here. Parameter defaults are
+ * the ones the browser viewer's pipeline always used (e.g. `Clean` welds only
+ * on request, `Decimate` with no criterion keeps half the faces).
+ *
+ * Takes the mesh by value (move it in): most ops return a new mesh anyway,
+ * and the KRATOS backend's `Mesh` is not copy-constructible.
+ *
+ * @throws std::invalid_argument on an unknown op or a mis-typed parameter,
+ *         plus whatever the underlying operation throws.
+ */
+MESHIOPLUSPLUS_API Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep,
+                                            PipelineReport& rReport);
+
+/**
+ * @brief Applies @p rSteps in order (validating each first), moving the mesh
+ * through the chain.
+ */
+MESHIOPLUSPLUS_API Mesh run_pipeline_steps(Mesh mesh, const std::vector<PipelineStep>& rSteps,
+                                           PipelineReport& rReport);
+
+/**
+ * @brief Runs a whole pipeline: `registry_read` the input, apply the steps,
+ * `registry_write_ex` the output.
+ *
+ * Every step is validated before the input is read, so a typo fails fast
+ * rather than after an expensive read.
+ */
+MESHIOPLUSPLUS_API PipelineReport run_pipeline(const Pipeline& rPipeline);
+
+/**
+ * @brief Parses a settings.json document (see the file comment for the
+ * schema).
+ * @throws std::runtime_error naming `-DMESHIOPLUSPLUS_WITH_JSON=ON` when the
+ *         parser is compiled out; std::invalid_argument on any schema error.
+ */
+MESHIOPLUSPLUS_API Pipeline parse_pipeline_json(const std::string& rText);
+
+/** @brief `parse_pipeline_json` over the contents of @p rPath. */
+MESHIOPLUSPLUS_API Pipeline parse_pipeline_file(const std::string& rPath);
+
+/** @brief `parse_pipeline_json` + `run_pipeline`. */
+MESHIOPLUSPLUS_API PipelineReport run_pipeline_json(const std::string& rText);
+
+/** @brief `parse_pipeline_file` + `run_pipeline`. */
+MESHIOPLUSPLUS_API PipelineReport run_pipeline_file(const std::string& rPath);
+
+/** @brief Whether this build carries the JSON front-end. */
+MESHIOPLUSPLUS_API bool pipeline_has_json() noexcept;
+
+// --------------------------------------------------------------------------
+// The Output/Input option spellings, owned here so every front-end (the JSON
+// parser, the WASM settings-object converter, the CLIs) accepts exactly the
+// same words. All always compiled (JSON-independent).
+// --------------------------------------------------------------------------
+
+/** @brief `""`/`"default"`/`"ascii"`/`"binary"`; anything else throws. */
+MESHIOPLUSPLUS_API WriteEncoding pipeline_encoding_from_name(const std::string& rName);
+
+/** @brief `"none"`/`"zlib"`/`"lz4"`/`"zstd"`; anything else (incl. empty) throws. */
+MESHIOPLUSPLUS_API detail::VtkCodec pipeline_codec_from_name(const std::string& rName);
+
+/** @brief `""`/`"auto"`/`"on"`/`"off"`; anything else throws. */
+MESHIOPLUSPLUS_API MmapMode pipeline_mmap_from_name(const std::string& rName);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/pipeline.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/quality.hpp =====
 /**
  * @file operations/quality.hpp
@@ -17195,7 +17498,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 10
+#define MESHIOPLUSPLUS_VERSION_MINOR 11
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -17205,7 +17508,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.10.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.11.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -17408,95 +17711,6 @@ inline bool is_special_cell(const std::string& rMeshioType) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/vtk_common.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/write_options.hpp =====
-/**
- * @file write_options.hpp
- * @brief `WriteOptions`, the write-side counterpart of `read_options.hpp`.
- *
- * The dispatch registry stores writers as `void(const std::string&, const
- * Mesh&)` lambdas with one set of parameters baked in per format
- * (`registry.cpp`), so nothing that goes through `registry_writers()` can pick
- * ASCII vs binary, a compression codec, or a float format. Callers that need
- * to were expected to call the per-format free function directly -- which the
- * CLI did, with a private variant table, and which the flat bindings (C API,
- * Fortran, WASM) could not do at all.
- *
- * `registry_write_ex()` is that table, hoisted into the core so there is one
- * owner instead of one per consumer. `registry_write(path, mesh, format)` with
- * default options is exactly the registry's own writer, so existing behaviour
- * is unchanged.
- *
- * Not every option applies to every format. The rule is deliberate and matches
- * the CLI's: an option a format cannot honour is an **error**, never silently
- * ignored -- `--codec zstd` on a Gmsh file is a mistake worth reporting, not a
- * no-op. `registry_write_supports()` answers the question up front.
- */
-
-// System includes
-#include <string>
-
-// Project includes
-
-namespace meshioplusplus {
-
-/** @brief ASCII/binary selection for formats that have both variants. */
-enum class WriteEncoding {
-    Default,  ///< the format's registry default (unchanged behaviour)
-    Ascii,
-    Binary,
-};
-
-/**
- * @brief Parameters for `registry_write_ex()`.
- *
- * Default-constructed reproduces `registry_write()` exactly, which is what lets
- * this be added without touching a single existing caller.
- */
-struct WriteOptions {
-    /** @brief ASCII vs binary. Errors for a format with only one variant. */
-    WriteEncoding mEncoding = WriteEncoding::Default;
-
-    /**
-     * @brief Block compression codec for the VTK-XML formats (vtu/vtp).
-     *
-     * `Zlib` is the default those formats already use when binary; `None`
-     * disables compression. Errors for any other format -- no other format in
-     * meshio++ has a block codec, so naming one is a mistake.
-     */
-    detail::VtkCodec mCodec = detail::VtkCodec::Zlib;
-    bool mCodecSet = false;  ///< whether mCodec was chosen explicitly
-
-    /**
-     * @brief `printf`-style float format for ASCII writers that take one
-     * (e.g. `".16e"`, the default). Empty keeps the writer's own default.
-     */
-    std::string mFloatFormat;
-};
-
-/**
- * @brief Whether @p rFormat can honour @p rOptions.
- * @param rFormat a resolved format name (see `resolve_format`).
- * @param rOptions the options to check.
- * @param rWhy set to a human-readable reason when the answer is false.
- */
-MESHIOPLUSPLUS_API bool registry_write_supports(const std::string& rFormat,
-                                                const WriteOptions& rOptions, std::string& rWhy);
-
-/**
- * @brief Write @p rMesh honouring @p rOptions.
- *
- * Resolves the format like `registry_read` (extension default when @p rFormat
- * is empty), then either calls the parameterized per-format writer or, when the
- * options are all defaults, the registry's own writer.
- *
- * @throws WriteError if the format cannot honour an option, or on any writer
- *         failure.
- */
-MESHIOPLUSPLUS_API void registry_write_ex(const std::string& rPath, const Mesh& rMesh,
-                                          const std::string& rFormat, const WriteOptions& rOptions);
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/write_options.hpp =====
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
@@ -66632,6 +66846,1005 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/partition.cpp =====
+// ===== begin src/cpp/src/operations/pipeline.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+// External includes
+#ifdef MESHIOPLUSPLUS_HAS_JSON
+#include <nlohmann/json.hpp>  // IWYU pragma: keep
+#endif
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// --------------------------------------------------------------------------
+// Typed parameter access. Every getter throws std::invalid_argument naming the
+// step and the key on a type mismatch -- a mis-typed settings entry must fail
+// by name, never coerce silently (beyond the one deliberate int->double
+// widening, which mirrors JSON's single number type).
+// --------------------------------------------------------------------------
+
+std::string pipe_err(const PipelineStep& rStep, const std::string& rWhat) {
+    return "meshio++: pipeline: step '" + rStep.mOp + "': " + rWhat;
+}
+
+const PipelineValue* pipe_find(const PipelineStep& rStep, const char* pKey) {
+    auto it = rStep.mParams.find(pKey);
+    return it == rStep.mParams.end() ? nullptr : &it->second;
+}
+
+/// True when the value is an empty array of any element type. An empty JSON
+/// array carries no element type, so the parser stores it arbitrarily and the
+/// typed getters must all accept it as "empty of my type".
+bool pipe_is_empty_array(const PipelineValue& rValue) {
+    if (const auto* d = std::get_if<std::vector<double>>(&rValue))
+        return d->empty();
+    if (const auto* i = std::get_if<std::vector<std::int64_t>>(&rValue))
+        return i->empty();
+    if (const auto* s = std::get_if<std::vector<std::string>>(&rValue))
+        return s->empty();
+    return false;
+}
+
+double pipe_number(const PipelineStep& rStep, const char* pKey, double fallback) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return fallback;
+    if (const auto* d = std::get_if<double>(v))
+        return *d;
+    if (const auto* i = std::get_if<std::int64_t>(v))
+        return static_cast<double>(*i);
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be a number"));
+}
+
+bool pipe_flag(const PipelineStep& rStep, const char* pKey, bool fallback) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return fallback;
+    if (const auto* b = std::get_if<bool>(v))
+        return *b;
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be a boolean"));
+}
+
+std::string pipe_text(const PipelineStep& rStep, const char* pKey, const char* pFallback) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return pFallback;
+    if (const auto* s = std::get_if<std::string>(v))
+        return *s;
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be a string"));
+}
+
+/// Numeric array (int entries widened to double). Empty when the key is absent.
+std::vector<double> pipe_dvec(const PipelineStep& rStep, const char* pKey) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return {};
+    if (pipe_is_empty_array(*v))
+        return {};
+    if (const auto* d = std::get_if<std::vector<double>>(v))
+        return *d;
+    if (const auto* i = std::get_if<std::vector<std::int64_t>>(v)) {
+        std::vector<double> out(i->begin(), i->end());
+        return out;
+    }
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of numbers"));
+}
+
+/// Integer array. Doubles are accepted only when integral (JSON has one
+/// number type, so `[0, 1.0]` is a legitimate spelling of an index list).
+std::vector<std::int64_t> pipe_ivec(const PipelineStep& rStep, const char* pKey) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return {};
+    if (pipe_is_empty_array(*v))
+        return {};
+    if (const auto* i = std::get_if<std::vector<std::int64_t>>(v))
+        return *i;
+    if (const auto* d = std::get_if<std::vector<double>>(v)) {
+        std::vector<std::int64_t> out;
+        out.reserve(d->size());
+        for (double x : *d) {
+            if (x != std::floor(x))
+                throw std::invalid_argument(
+                    pipe_err(rStep, std::string("parameter '") + pKey + "' must hold integers"));
+            out.push_back(static_cast<std::int64_t>(x));
+        }
+        return out;
+    }
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of integers"));
+}
+
+std::vector<std::string> pipe_svec(const PipelineStep& rStep, const char* pKey) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return {};
+    if (pipe_is_empty_array(*v))
+        return {};
+    if (const auto* s = std::get_if<std::vector<std::string>>(v))
+        return *s;
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of strings"));
+}
+
+/// A required 3-vector (`Point`, `Normal`, `Translate`, ...).
+void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
+    std::vector<double> v = pipe_dvec(rStep, pKey);
+    if (v.size() != 3)
+        throw std::invalid_argument(
+            pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of 3 numbers"));
+    for (int i = 0; i < 3; ++i)
+        pOut[i] = v[static_cast<std::size_t>(i)];
+}
+
+std::string pipe_trim(const std::string& rText) {
+    std::size_t b = rText.find_first_not_of(" \t");
+    if (b == std::string::npos)
+        return "";
+    std::size_t e = rText.find_last_not_of(" \t");
+    return rText.substr(b, e - b + 1);
+}
+
+/// Cells across every block. The uniform mesh API counts per block only.
+std::size_t pipe_total_cells(const Mesh& rMesh) {
+    std::size_t n = 0;
+    for (const auto& block : rMesh.CellRange())
+        n += block.NumCells();
+    return n;
+}
+
+// --------------------------------------------------------------------------
+// The step vocabulary. One table, consumed by validate_pipeline_step and by
+// the error messages -- the dispatcher itself reads known keys only, so a
+// caller-side converter (the WASM binding) may copy every key it was given
+// and rely on validation to reject the unknown ones.
+// --------------------------------------------------------------------------
+
+struct PipeOpSpec {
+    const char* mName;
+    std::vector<const char*> mKeys;
+};
+
+const std::vector<PipeOpSpec>& pipe_op_table() {
+    static const std::vector<PipeOpSpec> table = {
+        {"Quality", {}},
+        {"Clean", {"Weld", "Atol", "RemoveOrphans", "DropDegenerate", "DropDuplicateCells"}},
+        {"Smooth",
+         {"Method", "Iterations", "Lambda", "Mu", "FixBoundary", "PreserveFeatures", "FeatureAngle",
+          "GuardInversion"}},
+        {"Refine",
+         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels"}},
+        {"Decimate",
+         {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
+          "FeatureAngle"}},
+        {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
+        {"Slice", {"Point", "Normal", "RecordParentIds"}},
+        {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
+        {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
+        {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
+        {"Transform",
+         {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
+          "RotateData"}},
+        {"ConvertCells", {"Mode", "RecordParentIds"}},
+        {"Crop", {"Bbox", "Point", "Normal", "Mode", "RecordIds"}},
+        {"ExtractSurface", {"RecordParentIds"}},
+        {"ExtractSkin", {"Linearize"}},
+        {"Reorder", {"Method"}},
+        {"DataDrop", {"Point", "Cell", "Field", "IgnoreMissing"}},
+        {"DataKeep", {"Point", "Cell", "Field"}},
+        {"DataRename", {"Point", "Cell", "Field"}},
+        {"DataCalc", {"Expr", "Location", "Overwrite"}},
+        {"DataCondition",
+         {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
+          "Suffix"}},
+        {"ToCell", {"Names"}},
+        {"ToPoint", {"Names", "Weight"}},
+    };
+    return table;
+}
+
+const PipeOpSpec* pipe_find_op(const std::string& rOp) {
+    for (const auto& spec : pipe_op_table())
+        if (rOp == spec.mName)
+            return &spec;
+    return nullptr;
+}
+
+/// The single-mesh-chain scope rule: these exist as operations but cannot be a
+/// step, and the error must say where to go instead.
+const char* pipe_excluded_hint(const std::string& rOp) {
+    if (rOp == "Merge")
+        return "'Merge' needs several input meshes and is not a pipeline step; "
+               "use the `merge` CLI verb";
+    if (rOp == "Interpolate")
+        return "'Interpolate' needs a second (source) mesh and is not a pipeline "
+               "step; use the `interpolate` CLI verb";
+    if (rOp == "Split")
+        return "'Split' produces several output meshes and is not a pipeline "
+               "step; use the `split` CLI verb";
+    if (rOp == "Diff")
+        return "'Diff' compares two meshes and is not a pipeline step; use the "
+               "`diff` CLI verb";
+    return nullptr;
+}
+
+void pipe_push_step(PipelineReport& rReport, const PipelineStep& rStep,
+                    std::vector<std::pair<std::string, double>> counters = {}) {
+    rReport.mSteps.push_back(PipelineStepReport{rStep.mOp, std::move(counters)});
+}
+
+// --------------------------------------------------------------------------
+// Per-op appliers. The nine ops the browser viewer's pipeline already had are
+// transcriptions of the former wasm `apply_one_op` -- defaults, counters and
+// warning strings identical (bindings/wasm/js_bindings.cpp now dispatches
+// through here, so drift is structurally impossible).
+// --------------------------------------------------------------------------
+
+Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+    AffineTransform xf;
+    int given = 0;
+    if (pipe_find(rStep, "Translate")) {
+        double t[3];
+        pipe_vec3(rStep, "Translate", t);
+        xf = transform_translation(t[0], t[1], t[2]);
+        ++given;
+    }
+    if (pipe_find(rStep, "Scale")) {
+        std::vector<double> v = pipe_dvec(rStep, "Scale");
+        // A bare number is the uniform-scale spelling.
+        if (v.empty())
+            v.assign(1, pipe_number(rStep, "Scale", 1.0));
+        if (v.size() == 1)
+            xf = transform_scale(v[0], v[0], v[0]);
+        else if (v.size() == 3)
+            xf = transform_scale(v[0], v[1], v[2]);
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Scale' expects one number or an array of 3"));
+        ++given;
+    }
+    if (pipe_find(rStep, "RotateAxis") || pipe_find(rStep, "RotateDegrees")) {
+        double axis[3];
+        pipe_vec3(rStep, "RotateAxis", axis);
+        if (!pipe_find(rStep, "RotateDegrees"))
+            throw std::invalid_argument(pipe_err(rStep, "'RotateAxis' requires 'RotateDegrees'"));
+        const double deg = pipe_number(rStep, "RotateDegrees", 0.0);
+        xf = transform_rotation(axis[0], axis[1], axis[2], deg * 3.14159265358979323846 / 180.0);
+        ++given;
+    }
+    if (pipe_find(rStep, "Matrix")) {
+        std::vector<double> v = pipe_dvec(rStep, "Matrix");
+        if (v.size() != 16)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Matrix' expects 16 values (row-major 4x4)"));
+        xf = transform_from_matrix(v.data());
+        ++given;
+    }
+    if (pipe_find(rStep, "ScaleUnits")) {
+        xf = transform_units(pipe_number(rStep, "ScaleUnits", 1.0));
+        ++given;
+    }
+    if (given != 1)
+        throw std::invalid_argument(
+            pipe_err(rStep,
+                     "give exactly one of 'Translate'/'Scale'/'RotateAxis'+'RotateDegrees'/"
+                     "'Matrix'/'ScaleUnits'"));
+    Mesh out = transform(mesh, xf, pipe_flag(rStep, "RotateData", false));
+    pipe_push_step(rReport, rStep);
+    return out;
+}
+
+Mesh pipe_apply_data_manage(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+    // DataDrop / DataKeep / DataRename share the location-keyed shape.
+    struct Loc {
+        const char* mKey;
+        DataLocation mLocation;
+    };
+    static const Loc locations[] = {{"Point", DataLocation::Point},
+                                    {"Cell", DataLocation::Cell},
+                                    {"Field", DataLocation::Field}};
+    if (rStep.mOp == "DataDrop") {
+        const bool ignore_missing = pipe_flag(rStep, "IgnoreMissing", false);
+        for (const Loc& loc : locations)
+            if (pipe_find(rStep, loc.mKey))
+                mesh = data_drop(mesh, loc.mLocation, pipe_svec(rStep, loc.mKey), ignore_missing);
+    } else if (rStep.mOp == "DataKeep") {
+        // Keep affects only the locations it mentions (the data_manage rule) --
+        // an absent key leaves that location alone, an empty list drops it all.
+        for (const Loc& loc : locations)
+            if (pipe_find(rStep, loc.mKey))
+                mesh = data_keep(mesh, loc.mLocation, pipe_svec(rStep, loc.mKey),
+                                 /*ignore_missing=*/false);
+    } else {  // DataRename
+        for (const Loc& loc : locations) {
+            for (const std::string& entry : pipe_svec(rStep, loc.mKey)) {
+                // "OLD:NEW" splits on the LAST colon: data names routinely
+                // carry colons (`gmsh:physical`) -- the CLI's documented rule.
+                std::size_t pos = entry.rfind(':');
+                if (pos == std::string::npos || pos == 0 || pos + 1 == entry.size())
+                    throw std::invalid_argument(
+                        pipe_err(rStep, "rename entry '" + entry + "' must be 'OLD:NEW'"));
+                mesh =
+                    data_rename(mesh, loc.mLocation, entry.substr(0, pos), entry.substr(pos + 1));
+            }
+        }
+    }
+    pipe_push_step(rReport, rStep);
+    return mesh;
+}
+
+}  // namespace
+
+std::vector<std::pair<std::string, std::vector<std::string>>> pipeline_op_table() {
+    std::vector<std::pair<std::string, std::vector<std::string>>> out;
+    for (const auto& spec : pipe_op_table()) {
+        std::vector<std::string> keys(spec.mKeys.begin(), spec.mKeys.end());
+        out.emplace_back(spec.mName, std::move(keys));
+    }
+    return out;
+}
+
+void validate_pipeline_step(const PipelineStep& rStep) {
+    const PipeOpSpec* spec = pipe_find_op(rStep.mOp);
+    if (!spec) {
+        if (const char* hint = pipe_excluded_hint(rStep.mOp))
+            throw std::invalid_argument("meshio++: pipeline: " + std::string(hint));
+        std::string known;
+        for (const auto& s : pipe_op_table()) {
+            if (!known.empty())
+                known += ", ";
+            known += s.mName;
+        }
+        throw std::invalid_argument("meshio++: pipeline: unknown operation '" + rStep.mOp +
+                                    "' (known: " + known + ")");
+    }
+    for (const auto& kv : rStep.mParams) {
+        const bool known = std::any_of(spec->mKeys.begin(), spec->mKeys.end(),
+                                       [&](const char* k) { return kv.first == k; });
+        if (!known) {
+            std::string keys;
+            for (const char* k : spec->mKeys) {
+                if (!keys.empty())
+                    keys += ", ";
+                keys += k;
+            }
+            throw std::invalid_argument(pipe_err(
+                rStep,
+                "unknown parameter '" + kv.first + "'" +
+                    (keys.empty() ? " (the op takes no parameters)" : " (known: " + keys + ")")));
+        }
+    }
+}
+
+Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+    const std::string& op = rStep.mOp;
+
+    if (op == "Quality") {
+        Mesh out = attach_quality(mesh);
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+    if (op == "Clean") {
+        CleanOptions opts;
+        opts.weld = pipe_flag(rStep, "Weld", false);
+        opts.atol = pipe_number(rStep, "Atol", 1e-8);
+        opts.remove_orphans = pipe_flag(rStep, "RemoveOrphans", true);
+        opts.drop_degenerate = pipe_flag(rStep, "DropDegenerate", true);
+        opts.drop_duplicate_cells = pipe_flag(rStep, "DropDuplicateCells", true);
+        auto result = clean(mesh, opts);
+        pipe_push_step(
+            rReport, rStep,
+            {{"PointsWelded", static_cast<double>(result.mPointsWelded)},
+             {"PointsRemovedOrphan", static_cast<double>(result.mPointsRemovedOrphan)},
+             {"CellsDroppedDegenerate", static_cast<double>(result.mCellsDroppedDegenerate)},
+             {"CellsDroppedDuplicate", static_cast<double>(result.mCellsDroppedDuplicate)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "Smooth") {
+        SmoothOptions opts;
+        opts.mMethod = smooth_method_from_name(pipe_text(rStep, "Method", "taubin"));
+        opts.mIterations = static_cast<int>(pipe_number(rStep, "Iterations", 10));
+        opts.mLambda = pipe_number(rStep, "Lambda", -1.0);
+        opts.mMu = pipe_number(rStep, "Mu", -0.34);
+        opts.mFixBoundary = pipe_flag(rStep, "FixBoundary", true);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mGuardInversion = pipe_flag(rStep, "GuardInversion", true);
+        auto result = smooth(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumNodesMoved", static_cast<double>(result.mNumNodesMoved)},
+                        {"MaxDisplacement", result.mMaxDisplacement},
+                        {"NumSkippedInversion", static_cast<double>(result.mNumSkippedInversion)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "Refine") {
+        RefineOptions opts;
+        opts.mLevels = static_cast<int>(pipe_number(rStep, "Levels", 1));
+        opts.mRecordLevels = pipe_flag(rStep, "RecordLevels", false);
+        opts.mClosure = refine_closure_from_name(pipe_text(rStep, "Closure", ""));
+        opts.mCells = pipe_ivec(rStep, "Cells");
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mPredicateArray = pipe_text(rStep, "Array", "");
+        if (!opts.mPredicateArray.empty()) {
+            // `Compare`, not `Op`: `Op` is the step's own discriminant.
+            opts.mPredicateOp = refine_compare_from_name(pipe_text(rStep, "Compare", "<"));
+            opts.mPredicateValue = pipe_number(rStep, "Value", 0.0);
+        }
+        auto result = refine(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Decimate") {
+        DecimateOptions opts;
+        opts.mTargetRatio = pipe_number(rStep, "Ratio", -1.0);
+        const double faces = pipe_number(rStep, "TargetFaces", -1.0);
+        opts.mTargetFaces =
+            faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(faces);
+        opts.mMaxError = pipe_number(rStep, "MaxError", -1.0);
+        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0)
+            opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
+        opts.mPlacement = decimate_placement_from_name(pipe_text(rStep, "Placement", "optimal"));
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        auto result = decimate(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                        {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "Partition") {
+        PartitionOptions opts;
+        opts.mNParts = static_cast<int>(pipe_number(rStep, "Nparts", 2));
+        opts.mMethod = partition_method_from_name(pipe_text(rStep, "Method", "auto"));
+        opts.mImbalance = pipe_number(rStep, "Imbalance", 0.03);
+        opts.mMode = partition_mode_from_name(pipe_text(rStep, "Mode", ""));
+        opts.mSeed = static_cast<int>(pipe_number(rStep, "Seed", 0));
+        opts.mWeightsKey = pipe_text(rStep, "WeightsKey", "");
+        // Attach the assignment as cell data rather than splitting into
+        // pieces: a pipeline chains one mesh, and colour-by-part is what the
+        // browser viewer's partition chip always meant.
+        auto labels = partition_labels(mesh, opts);
+        mesh.AddCellData("partition:part", std::move(labels));
+        pipe_push_step(rReport, rStep, {{"Nparts", pipe_number(rStep, "Nparts", 2)}});
+        return mesh;
+    }
+    if (op == "Slice" || op == "Section") {
+        // The planar cross-section: slice() intersects the mesh with the plane
+        // and returns a surface (triangle/quad) one dimension lower.
+        SliceOptions opts;
+        pipe_vec3(rStep, "Point", opts.mOrigin.data());
+        pipe_vec3(rStep, "Normal", opts.mNormal.data());
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        Mesh section = slice(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"SectionFaces", static_cast<double>(pipe_total_cells(section))}});
+        if (pipe_total_cells(section) == 0)
+            rReport.mWarnings.push_back(
+                "the section is empty; the plane misses the mesh -- move or flip it");
+        return section;
+    }
+    if (op == "Gradient") {
+        // A pure data step: geometry is untouched, so the pipeline carries the
+        // mesh straight through with one new array attached.
+        GradientOptions opts;
+        opts.mArrayName = pipe_text(rStep, "Array", "");
+        opts.mOperator = gradient_operator_from_name(pipe_text(rStep, "Operator", ""));
+        opts.mMethod = gradient_method_from_name(pipe_text(rStep, "Method", ""));
+        opts.mLocation = data_location_from_name(pipe_text(rStep, "Location", "cell"));
+        opts.mOutputName = pipe_text(rStep, "Output", "");
+        const int gcomp = static_cast<int>(pipe_number(rStep, "Component", -1.0));
+        if (gcomp >= 0)
+            opts.mComponent = gcomp;
+        opts.mOverwrite = true;
+        GradientResult gr = gradient(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSkipped", static_cast<double>(gr.mNumSkipped)},
+                        {"NumFallback", static_cast<double>(gr.mNumFallback)}});
+        if (gr.mNumSkipped > 0)
+            rReport.mWarnings.push_back("gradient: " + std::to_string(gr.mNumSkipped) +
+                                        " cell(s) could not be differentiated and are NaN");
+        return std::move(gr.mMesh);
+    }
+    if (op == "Isosurface") {
+        // The level set of a scalar point_data field -- slice's data-driven
+        // sibling, a surface one topological dimension lower.
+        IsosurfaceOptions opts;
+        opts.mArrayName = pipe_text(rStep, "Array", "");
+        opts.mIsovalues = pipe_dvec(rStep, "Isovalues");
+        if (opts.mIsovalues.empty())
+            opts.mIsovalues.push_back(pipe_number(rStep, "Isovalue", 0.0));
+        const int comp = static_cast<int>(pipe_number(rStep, "Component", -1.0));
+        if (comp >= 0)
+            opts.mComponent = comp;
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        Mesh contour = isosurface(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"ContourCells", static_cast<double>(pipe_total_cells(contour))}});
+        if (pipe_total_cells(contour) == 0)
+            rReport.mWarnings.push_back(
+                "the contour is empty; the isovalue lies outside the field's range");
+        return contour;
+    }
+    if (op == "Transform")
+        return pipe_apply_transform(std::move(mesh), rStep, rReport);
+    if (op == "ConvertCells") {
+        ConvertCellsOptions opts;
+        opts.mMode = convert_cells_mode_from_name(pipe_text(rStep, "Mode", ""));
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        auto result = convert_cells(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Crop") {
+        const CropMode mode =
+            pipe_text(rStep, "Mode", "all") == "any" ? CropMode::Any : CropMode::All;
+        const bool record = pipe_flag(rStep, "RecordIds", false);
+        const bool has_bbox = pipe_find(rStep, "Bbox") != nullptr;
+        const bool has_plane = pipe_find(rStep, "Point") || pipe_find(rStep, "Normal");
+        if (has_bbox == has_plane)
+            throw std::invalid_argument(pipe_err(rStep, "give either 'Bbox' or 'Point'+'Normal'"));
+        CropResult result = [&] {
+            if (has_bbox) {
+                std::vector<double> b = pipe_dvec(rStep, "Bbox");
+                if (b.size() != 6)
+                    throw std::invalid_argument(
+                        pipe_err(rStep, "'Bbox' must be [xmin, ymin, zmin, xmax, ymax, zmax]"));
+                const double lo[3] = {b[0], b[1], b[2]};
+                const double hi[3] = {b[3], b[4], b[5]};
+                return crop_bbox(mesh, lo, hi, mode, record);
+            }
+            double point[3];
+            double normal[3];
+            pipe_vec3(rStep, "Point", point);
+            pipe_vec3(rStep, "Normal", normal);
+            return crop_halfspace(mesh, point, normal, mode, record);
+        }();
+        pipe_push_step(rReport, rStep,
+                       {{"CellsKept", static_cast<double>(pipe_total_cells(result.mMesh))}});
+        return std::move(result.mMesh);
+    }
+    if (op == "ExtractSurface") {
+        Mesh out = extract_surface(mesh, pipe_flag(rStep, "RecordParentIds", false));
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+    if (op == "ExtractSkin") {
+        Mesh out = extract_skin(mesh, pipe_flag(rStep, "Linearize", false));
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+    if (op == "Reorder") {
+        auto result = reorder(mesh, reorder_method_from_name(pipe_text(rStep, "Method", "")));
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "DataDrop" || op == "DataKeep" || op == "DataRename")
+        return pipe_apply_data_manage(std::move(mesh), rStep, rReport);
+    if (op == "DataCalc") {
+        const std::string spec = pipe_text(rStep, "Expr", "");
+        // "NAME = EXPR" splits on the FIRST '=' (the CLI's documented rule):
+        // the expression side may itself contain none, and the name side may
+        // carry any character but '='.
+        const std::size_t pos = spec.find('=');
+        if (pos == std::string::npos)
+            throw std::invalid_argument(pipe_err(rStep, "'Expr' must be 'NAME = EXPRESSION'"));
+        DataCalcOptions opts;
+        opts.output = pipe_trim(spec.substr(0, pos));
+        opts.location = data_location_from_name(pipe_text(rStep, "Location", "point"));
+        opts.overwrite = pipe_flag(rStep, "Overwrite", false);
+        if (opts.output.empty())
+            throw std::invalid_argument(pipe_err(rStep, "'Expr' has an empty output name"));
+        Mesh out = data_calc(mesh, pipe_trim(spec.substr(pos + 1)), opts);
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+    if (op == "DataCondition") {
+        DataConditionOptions opts;
+        opts.mode = condition_mode_from_name(pipe_text(rStep, "Mode", ""));
+        opts.location = data_location_from_name(pipe_text(rStep, "Location", "point"));
+        opts.names = pipe_svec(rStep, "Names");
+        opts.scope = condition_scope_from_name(pipe_text(rStep, "Scope", ""));
+        opts.lo = pipe_number(rStep, "Lo", 0.0);
+        opts.hi = pipe_number(rStep, "Hi", 1.0);
+        opts.nan_policy = nan_policy_from_name(pipe_text(rStep, "NanPolicy", ""));
+        opts.nan_replacement = pipe_number(rStep, "NanReplacement", 0.0);
+        opts.suffix = pipe_text(rStep, "Suffix", "");
+        Mesh out = data_condition(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+    if (op == "ToCell" || op == "ToPoint") {
+        DataAverageOptions opts;
+        opts.names = pipe_svec(rStep, "Names");
+        Mesh out;
+        if (op == "ToCell") {
+            out = point_data_to_cell_data(mesh, opts);
+        } else {
+            opts.weight = cell_point_weight_from_name(pipe_text(rStep, "Weight", ""));
+            out = cell_data_to_point_data(mesh, opts);
+        }
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+
+    // validate_pipeline_step() rejects unknown ops with a better message; this
+    // is the backstop for a caller that skipped validation.
+    if (const char* hint = pipe_excluded_hint(op))
+        throw std::invalid_argument("meshio++: pipeline: " + std::string(hint));
+    throw std::invalid_argument("meshio++: pipeline: unknown operation '" + op + "'");
+}
+
+Mesh run_pipeline_steps(Mesh mesh, const std::vector<PipelineStep>& rSteps,
+                        PipelineReport& rReport) {
+    for (const PipelineStep& step : rSteps) {
+        validate_pipeline_step(step);
+        mesh = apply_pipeline_step(std::move(mesh), step, rReport);
+    }
+    return mesh;
+}
+
+PipelineReport run_pipeline(const Pipeline& rPipeline) {
+    if (rPipeline.mVersion != 1)
+        throw std::invalid_argument("meshio++: pipeline: unsupported Version " +
+                                    std::to_string(rPipeline.mVersion) + " (this build knows 1)");
+    if (rPipeline.mInput.mPath.empty())
+        throw std::invalid_argument("meshio++: pipeline: Input.Path is required");
+    if (rPipeline.mOutput.mPath.empty())
+        throw std::invalid_argument("meshio++: pipeline: Output.Path is required");
+
+    // Validate the whole chain before the (possibly expensive) read: a typo in
+    // step 7 must not cost reading a 10 GB mesh first.
+    for (const PipelineStep& step : rPipeline.mSteps)
+        validate_pipeline_step(step);
+
+    // Read: resolve_format with the sniff_format fallback, the read-path rule
+    // everywhere (the CLI, mio_read, the wasm read_mesh).
+    std::string rfmt;
+    try {
+        rfmt = resolve_format(rPipeline.mInput.mPath, rPipeline.mInput.mFormat);
+    } catch (const ReadError&) {
+        rfmt = sniff_format(rPipeline.mInput.mPath);
+        if (rfmt.empty())
+            throw;
+    }
+    if (!registry_readers().count(rfmt) && !registry_reader_supports_options(rfmt)) {
+        std::string hint;
+        if (const char* dep = registry_compiled_out(rfmt))
+            hint = " (format '" + rfmt + "' is not available in this build; requires " +
+                   std::string(dep) + ")";
+        throw ReadError("meshio++: pipeline: no reader for format '" + rfmt + "'" + hint);
+    }
+
+    PipelineReport report;
+    Mesh mesh = registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
+    mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+
+    // Write through the parameterized single owner: an Output option the
+    // format cannot honour is an error, never silently ignored.
+    registry_write_ex(rPipeline.mOutput.mPath, mesh, rPipeline.mOutput.mFormat,
+                      rPipeline.mOutput.mOptions);
+    return report;
+}
+
+WriteEncoding pipeline_encoding_from_name(const std::string& rName) {
+    if (rName.empty() || rName == "default")
+        return WriteEncoding::Default;
+    if (rName == "ascii")
+        return WriteEncoding::Ascii;
+    if (rName == "binary")
+        return WriteEncoding::Binary;
+    throw std::invalid_argument(
+        "meshio++: pipeline: Output.Encoding must be 'ascii' or "
+        "'binary', not '" +
+        rName + "'");
+}
+
+detail::VtkCodec pipeline_codec_from_name(const std::string& rName) {
+    if (rName == "none")
+        return detail::VtkCodec::None;
+    if (rName == "zlib")
+        return detail::VtkCodec::Zlib;
+    if (rName == "lz4")
+        return detail::VtkCodec::LZ4;
+    if (rName == "zstd")
+        return detail::VtkCodec::ZSTD;
+    throw std::invalid_argument(
+        "meshio++: pipeline: Output.Codec must be 'none', 'zlib', "
+        "'lz4' or 'zstd', not '" +
+        rName + "'");
+}
+
+MmapMode pipeline_mmap_from_name(const std::string& rName) {
+    if (rName.empty() || rName == "auto")
+        return MmapMode::Auto;
+    if (rName == "on")
+        return MmapMode::On;
+    if (rName == "off")
+        return MmapMode::Off;
+    throw std::invalid_argument(
+        "meshio++: pipeline: Input.Options.Mmap must be 'auto', "
+        "'on' or 'off', not '" +
+        rName + "'");
+}
+
+// --------------------------------------------------------------------------
+// JSON front-end. Everything below is a thin, strict mapping from a
+// settings.json document onto the typed model above; the vendored
+// nlohmann/json never appears outside this section (or this file).
+// --------------------------------------------------------------------------
+
+bool pipeline_has_json() noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_JSON
+    return true;
+#else
+    return false;
+#endif
+}
+
+#ifndef MESHIOPLUSPLUS_HAS_JSON
+
+namespace {
+[[noreturn]] void pipe_no_json() {
+    throw std::runtime_error(
+        "meshio++: pipeline: this build has no JSON parser; rebuild with "
+        "-DMESHIOPLUSPLUS_WITH_JSON=ON (after `git submodule update --init "
+        "src/cpp/third_party/json`)");
+}
+}  // namespace
+
+Pipeline parse_pipeline_json(const std::string&) {
+    pipe_no_json();
+}
+Pipeline parse_pipeline_file(const std::string&) {
+    pipe_no_json();
+}
+PipelineReport run_pipeline_json(const std::string&) {
+    pipe_no_json();
+}
+PipelineReport run_pipeline_file(const std::string&) {
+    pipe_no_json();
+}
+
+#else  // MESHIOPLUSPLUS_HAS_JSON
+
+namespace {
+
+using pipe_json = nlohmann::json;
+
+[[noreturn]] void pipe_schema_error(const std::string& rWhat) {
+    throw std::invalid_argument("meshio++: pipeline: " + rWhat);
+}
+
+/// Strict object-key check: every present key must be in `rAllowed`.
+void pipe_check_keys(const pipe_json& rObject, const char* pWhere,
+                     std::initializer_list<const char*> rAllowed) {
+    for (const auto& item : rObject.items()) {
+        const bool known = std::any_of(rAllowed.begin(), rAllowed.end(),
+                                       [&](const char* k) { return item.key() == k; });
+        if (!known) {
+            std::string keys;
+            for (const char* k : rAllowed) {
+                if (!keys.empty())
+                    keys += ", ";
+                keys += k;
+            }
+            pipe_schema_error("unknown key '" + item.key() + "' in " + pWhere + " (known: " + keys +
+                              ")");
+        }
+    }
+}
+
+const pipe_json* pipe_get(const pipe_json& rObject, const char* pKey) {
+    auto it = rObject.find(pKey);
+    return it == rObject.end() ? nullptr : &*it;
+}
+
+std::string pipe_get_string(const pipe_json& rObject, const char* pKey, const char* pWhere,
+                            bool required = false) {
+    const pipe_json* v = pipe_get(rObject, pKey);
+    if (!v) {
+        if (required)
+            pipe_schema_error(std::string(pWhere) + "." + pKey + " is required");
+        return "";
+    }
+    if (!v->is_string())
+        pipe_schema_error(std::string(pWhere) + "." + pKey + " must be a string");
+    return v->get<std::string>();
+}
+
+bool pipe_get_bool(const pipe_json& rObject, const char* pKey, const char* pWhere, bool fallback) {
+    const pipe_json* v = pipe_get(rObject, pKey);
+    if (!v)
+        return fallback;
+    if (!v->is_boolean())
+        pipe_schema_error(std::string(pWhere) + "." + pKey + " must be a boolean");
+    return v->get<bool>();
+}
+
+/// One step-parameter value. Arrays must be homogeneous; nested objects have
+/// no place in the flat step vocabulary.
+PipelineValue pipe_value_from_json(const pipe_json& rValue, const std::string& rContext) {
+    if (rValue.is_boolean())
+        return rValue.get<bool>();
+    if (rValue.is_number_integer() || rValue.is_number_unsigned())
+        return rValue.get<std::int64_t>();
+    if (rValue.is_number_float())
+        return rValue.get<double>();
+    if (rValue.is_string())
+        return rValue.get<std::string>();
+    if (rValue.is_array()) {
+        bool all_int = true, all_num = true, all_str = true;
+        for (const auto& e : rValue) {
+            all_int = all_int && (e.is_number_integer() || e.is_number_unsigned());
+            all_num = all_num && e.is_number();
+            all_str = all_str && e.is_string();
+        }
+        // An empty array carries no element type; the typed getters accept any
+        // empty vector alternative as "empty of my type".
+        if (rValue.empty())
+            return std::vector<std::string>{};
+        if (all_int)
+            return rValue.get<std::vector<std::int64_t>>();
+        if (all_num)
+            return rValue.get<std::vector<double>>();
+        if (all_str)
+            return rValue.get<std::vector<std::string>>();
+        pipe_schema_error(rContext + " must be a homogeneous array of numbers or strings");
+    }
+    pipe_schema_error(rContext +
+                      " has an unsupported value type (objects and null are "
+                      "not step parameters)");
+}
+
+PipelineInput pipe_input_from_json(const pipe_json& rInput) {
+    if (!rInput.is_object())
+        pipe_schema_error("Input must be an object");
+    pipe_check_keys(rInput, "Input", {"Path", "Format", "Options"});
+    PipelineInput input;
+    input.mPath = pipe_get_string(rInput, "Path", "Input", /*required=*/true);
+    input.mFormat = pipe_get_string(rInput, "Format", "Input");
+    if (const pipe_json* opts = pipe_get(rInput, "Options")) {
+        if (!opts->is_object())
+            pipe_schema_error("Input.Options must be an object");
+        pipe_check_keys(*opts, "Input.Options",
+                        {"PointsOnly", "DataArrays", "TimeStep", "Lenient", "Mmap"});
+        input.mOptions.mPointsOnly = pipe_get_bool(*opts, "PointsOnly", "Input.Options", false);
+        input.mOptions.mLenient = pipe_get_bool(*opts, "Lenient", "Input.Options", false);
+        if (const pipe_json* v = pipe_get(*opts, "TimeStep")) {
+            if (!v->is_number_integer() && !v->is_number_unsigned())
+                pipe_schema_error("Input.Options.TimeStep must be an integer");
+            input.mOptions.mTimeStep = v->get<int>();
+        }
+        if (const pipe_json* v = pipe_get(*opts, "DataArrays")) {
+            if (!v->is_array())
+                pipe_schema_error("Input.Options.DataArrays must be an array of strings");
+            std::vector<std::string> names;
+            for (const auto& e : *v) {
+                if (!e.is_string())
+                    pipe_schema_error("Input.Options.DataArrays must be an array of strings");
+                names.push_back(e.get<std::string>());
+            }
+            input.mOptions.mDataArrays = std::move(names);
+        }
+        input.mOptions.mMmap =
+            pipeline_mmap_from_name(pipe_get_string(*opts, "Mmap", "Input.Options"));
+    }
+    return input;
+}
+
+PipelineOutput pipe_output_from_json(const pipe_json& rOutput) {
+    if (!rOutput.is_object())
+        pipe_schema_error("Output must be an object");
+    pipe_check_keys(rOutput, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
+    PipelineOutput output;
+    output.mPath = pipe_get_string(rOutput, "Path", "Output", /*required=*/true);
+    output.mFormat = pipe_get_string(rOutput, "Format", "Output");
+    output.mOptions.mEncoding =
+        pipeline_encoding_from_name(pipe_get_string(rOutput, "Encoding", "Output"));
+    const std::string codec = pipe_get_string(rOutput, "Codec", "Output");
+    if (!codec.empty()) {
+        output.mOptions.mCodec = pipeline_codec_from_name(codec);
+        output.mOptions.mCodecSet = true;
+    }
+    output.mOptions.mFloatFormat = pipe_get_string(rOutput, "FloatFormat", "Output");
+    return output;
+}
+
+}  // namespace
+
+Pipeline parse_pipeline_json(const std::string& rText) {
+    pipe_json doc;
+    try {
+        doc = pipe_json::parse(rText);
+    } catch (const pipe_json::parse_error& e) {
+        throw std::invalid_argument(std::string("meshio++: pipeline: invalid JSON: ") + e.what());
+    }
+    if (!doc.is_object())
+        pipe_schema_error("the settings document must be a JSON object");
+    pipe_check_keys(doc, "the settings document", {"Version", "Input", "Operations", "Output"});
+
+    Pipeline pipeline;
+    if (const pipe_json* v = pipe_get(doc, "Version")) {
+        if (!v->is_number_integer() && !v->is_number_unsigned())
+            pipe_schema_error("Version must be an integer");
+        pipeline.mVersion = v->get<int>();
+        if (pipeline.mVersion != 1)
+            pipe_schema_error("unsupported Version " + std::to_string(pipeline.mVersion) +
+                              " (this build knows 1)");
+    }
+
+    const pipe_json* input = pipe_get(doc, "Input");
+    if (!input)
+        pipe_schema_error("Input is required");
+    pipeline.mInput = pipe_input_from_json(*input);
+
+    const pipe_json* output = pipe_get(doc, "Output");
+    if (!output)
+        pipe_schema_error("Output is required");
+    pipeline.mOutput = pipe_output_from_json(*output);
+
+    if (const pipe_json* ops = pipe_get(doc, "Operations")) {
+        if (!ops->is_array())
+            pipe_schema_error("Operations must be an array of steps");
+        for (std::size_t i = 0; i < ops->size(); ++i) {
+            const pipe_json& spec = (*ops)[i];
+            const std::string where = "Operations[" + std::to_string(i) + "]";
+            if (!spec.is_object())
+                pipe_schema_error(where + " must be an object");
+            PipelineStep step;
+            step.mOp = pipe_get_string(spec, "Op", where.c_str(), /*required=*/true);
+            for (const auto& item : spec.items()) {
+                if (item.key() == "Op")
+                    continue;
+                step.mParams.emplace(item.key(),
+                                     pipe_value_from_json(item.value(), where + "." + item.key()));
+            }
+            validate_pipeline_step(step);
+            pipeline.mSteps.push_back(std::move(step));
+        }
+    }
+    return pipeline;
+}
+
+Pipeline parse_pipeline_file(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("meshio++: pipeline: cannot open settings file '" + rPath + "'");
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return parse_pipeline_json(buffer.str());
+}
+
+PipelineReport run_pipeline_json(const std::string& rText) {
+    return run_pipeline(parse_pipeline_json(rText));
+}
+
+PipelineReport run_pipeline_file(const std::string& rPath) {
+    return run_pipeline(parse_pipeline_file(rPath));
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_JSON
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/pipeline.cpp =====
 // ===== begin src/cpp/src/operations/quality.cpp =====
 #include <algorithm>
 #include <array>

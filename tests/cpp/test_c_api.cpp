@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -1605,8 +1606,8 @@ TEST(CApi, GradientCarriesTheOperatorsAndCounters) {
     std::int64_t got_shape[MIO_MAX_NDIM] = {0};
 
     std::int64_t skipped = -1, fallback = -1;
-    mio_mesh* g = mio_gradient(m, "f", nullptr, nullptr, nullptr, nullptr, -1, 0, &skipped,
-                               &fallback);
+    mio_mesh* g =
+        mio_gradient(m, "f", nullptr, nullptr, nullptr, nullptr, -1, 0, &skipped, &fallback);
     ASSERT_NE(g, nullptr) << mio_last_error();
     EXPECT_EQ(skipped, 0);
     EXPECT_EQ(fallback, 0);
@@ -1622,8 +1623,7 @@ TEST(CApi, GradientCarriesTheOperatorsAndCounters) {
 
     // curl of (7z, 11x, 13y) is (13, 7, 11): three distinct nonzero components,
     // so any index permutation or sign flip fails.
-    mio_mesh* c = mio_gradient(m, "u", "curl", "green-gauss", "cell", "w", -1, 0, nullptr,
-                               nullptr);
+    mio_mesh* c = mio_gradient(m, "u", "curl", "green-gauss", "cell", "w", -1, 0, nullptr, nullptr);
     ASSERT_NE(c, nullptr) << mio_last_error();
     ASSERT_EQ(mio_mesh_get_cell_data(c, "w", 0, &data, &dt, &ndim, got_shape), MIO_OK);
     v = static_cast<const double*>(data);
@@ -1643,8 +1643,8 @@ TEST(CApi, GradientCarriesTheOperatorsAndCounters) {
     mio_mesh_free(l);
 
     // Point location moves the array to point_data and drops the intermediate.
-    mio_mesh* p = mio_gradient(m, "f", "gradient", "green-gauss", "point", nullptr, -1, 0,
-                               nullptr, nullptr);
+    mio_mesh* p =
+        mio_gradient(m, "f", "gradient", "green-gauss", "point", nullptr, -1, 0, nullptr, nullptr);
     ASSERT_NE(p, nullptr) << mio_last_error();
     ASSERT_EQ(mio_mesh_get_point_data(p, "f:gradient", &data, &dt, &ndim, got_shape), MIO_OK);
     EXPECT_LE(mio_mesh_cell_data_num_blocks(p, "f:gradient"), 0)
@@ -1667,26 +1667,23 @@ TEST(CApi, GradientErrorsAreGuardedNotThrown) {
     // Unknown array, unknown operator/method, a scalar divergence, an
     // out-of-range component and NULL arguments: NULL + last_error, never an
     // exception across the ABI.
-    EXPECT_EQ(mio_gradient(m, "nope", nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr,
-                           nullptr),
+    EXPECT_EQ(mio_gradient(m, "nope", nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr, nullptr),
               nullptr);
     EXPECT_NE(std::string(mio_last_error()), "");
-    EXPECT_EQ(mio_gradient(m, "h", "laplacian", nullptr, nullptr, nullptr, -1, 0, nullptr,
-                           nullptr),
+    EXPECT_EQ(mio_gradient(m, "h", "laplacian", nullptr, nullptr, nullptr, -1, 0, nullptr, nullptr),
               nullptr);
     EXPECT_EQ(mio_gradient(m, "h", nullptr, "magic", nullptr, nullptr, -1, 0, nullptr, nullptr),
               nullptr);
-    EXPECT_EQ(mio_gradient(m, "h", "divergence", nullptr, nullptr, nullptr, -1, 0, nullptr,
-                           nullptr),
-              nullptr)
+    EXPECT_EQ(
+        mio_gradient(m, "h", "divergence", nullptr, nullptr, nullptr, -1, 0, nullptr, nullptr),
+        nullptr)
         << "a scalar has no divergence";
     EXPECT_EQ(mio_gradient(m, "h", nullptr, nullptr, nullptr, nullptr, 7, 0, nullptr, nullptr),
               nullptr);
-    EXPECT_EQ(mio_gradient(nullptr, "h", nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr,
-                           nullptr),
-              nullptr);
-    EXPECT_EQ(mio_gradient(m, nullptr, nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr,
-                           nullptr),
+    EXPECT_EQ(
+        mio_gradient(nullptr, "h", nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr, nullptr),
+        nullptr);
+    EXPECT_EQ(mio_gradient(m, nullptr, nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr, nullptr),
               nullptr);
     mio_mesh_free(m);
 }
@@ -1909,3 +1906,58 @@ TEST(CApi, XdmfTimeSeriesUnknownFormat) {
     EXPECT_EQ(mio_xdmf_series_create(path.c_str(), "Zarr", -1), nullptr);
     EXPECT_NE(std::string(mio_last_error()).find("Zarr"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Settings pipeline (v9.11.0): JSON text only across the ABI.
+// ---------------------------------------------------------------------------
+
+#ifdef MESHIOPLUSPLUS_HAS_JSON
+
+TEST(CApi, PipelineRunsASettingsFile) {
+    ASSERT_EQ(mio_pipeline_has_json(), 1);
+    const std::string in_path = mt::temp_path("_capi_pipe.vtk");
+    const std::string out_path = mt::temp_path("_capi_pipe_out.vtk");
+    const std::string settings_path = mt::temp_path("_capi_settings.json");
+    {
+        mio_mesh* m = build_tet_mesh();
+        ASSERT_EQ(mio_write(in_path.c_str(), m, "vtk"), MIO_OK) << mio_last_error();
+        mio_mesh_free(m);
+    }
+    {
+        std::ofstream settings(settings_path);
+        settings << R"({"Input": {"Path": ")" << in_path << R"("},
+                       "Operations": [{"Op": "Quality"}],
+                       "Output": {"Path": ")"
+                 << out_path << R"("}})";
+    }
+    ASSERT_EQ(mio_pipeline_run_file(settings_path.c_str()), MIO_OK) << mio_last_error();
+    mio_mesh* out = mio_read(out_path.c_str(), "vtk");
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_GE(mio_mesh_cell_data_num_blocks(out, "quality:scaled_jacobian"), 1);
+    mio_mesh_free(out);
+    std::error_code ec;
+    std::filesystem::remove(in_path, ec);
+    std::filesystem::remove(out_path, ec);
+    std::filesystem::remove(settings_path, ec);
+}
+
+TEST(CApi, PipelineJsonSchemaErrorsNameTheOffender) {
+    EXPECT_NE(mio_pipeline_run_json(R"({"Input": {"Path": "a"}, "Output": {"Path": "b"},
+                                        "Operations": [{"Op": "Nope"}]})"),
+              MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("Nope"), std::string::npos);
+    EXPECT_NE(mio_pipeline_run_file(nullptr), MIO_OK);
+    EXPECT_NE(mio_pipeline_run_json(nullptr), MIO_OK);
+}
+
+#else  // !MESHIOPLUSPLUS_HAS_JSON
+
+TEST(CApi, PipelineCompiledOutFailsNamingTheFlag) {
+    // Never a link error, never a silent no-op: the entry points exist and
+    // the error names the CMake option (fires on the WITH_JSON=OFF CI leg).
+    EXPECT_EQ(mio_pipeline_has_json(), 0);
+    EXPECT_NE(mio_pipeline_run_json("{}"), MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_JSON"), std::string::npos);
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_JSON
