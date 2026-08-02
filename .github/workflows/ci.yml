@@ -52,11 +52,14 @@ jobs:
         # The two historical parallel-backend legs (MESHIO mesh + Python
         # extension) plus one leg per non-default mesh backend (standalone,
         # no pybind11 -- the CMake FATAL_ERROR forbids Python with them).
+        # The STL leg builds with the nlohmann/json submodule compiled OUT
+        # (-DMESHIOPLUSPLUS_WITH_JSON=OFF) so the pipeline throws-by-name gtest
+        # actually fires in CI (the KaHIP "named not-built error" precedent).
         include:
-          - { mesh: MESHIO, parallel: STL,    python: ON }
-          - { mesh: MESHIO, parallel: OPENMP, python: ON }
-          - { mesh: NATIVE, parallel: OPENMP, python: OFF }
-          - { mesh: KRATOS, parallel: OPENMP, python: OFF }
+          - { mesh: MESHIO, parallel: STL,    python: ON,  json: OFF }
+          - { mesh: MESHIO, parallel: OPENMP, python: ON,  json: ON }
+          - { mesh: NATIVE, parallel: OPENMP, python: OFF, json: ON }
+          - { mesh: KRATOS, parallel: OPENMP, python: OFF, json: ON }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,6 +85,7 @@ jobs:
           -DMESHIOPLUSPLUS_MESH_BACKEND=${{ matrix.mesh }}
           -DMESHIOPLUSPLUS_PARALLEL_BACKEND=${{ matrix.parallel }}
           -DMESHIOPLUSPLUS_BUILD_PYTHON=${{ matrix.python }}
+          -DMESHIOPLUSPLUS_WITH_JSON=${{ matrix.json }}
           -DPython_EXECUTABLE=$(which python)
           -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
       - name: Build
