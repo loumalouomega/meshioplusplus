@@ -187,8 +187,10 @@ TEST(Pipeline, DataCalcSplitsOnTheFirstEquals) {
         in.AddPointData("a", std::move(a));
     }
     PipelineReport report;
+    // move `in` in: apply_pipeline_step takes Mesh by value, and KRATOS's
+    // Mesh is not copy-constructible.
     Mesh out = meshioplusplus::apply_pipeline_step(
-        in, step("DataCalc", {{"Expr", std::string("b = a + 1")}}), report);
+        std::move(in), step("DataCalc", {{"Expr", std::string("b = a + 1")}}), report);
     EXPECT_TRUE(out.HasPointData("b"));
 }
 
@@ -204,8 +206,11 @@ TEST(Pipeline, DataRenameSplitsOnTheLastColon) {
     // The LAST colon separates OLD from NEW (the CLI's rule: OLD may carry
     // colons -- `gmsh:physical` -- NEW may not), so "ns:old:new" renames the
     // array "ns:old" to "new".
+    // move `in` in: apply_pipeline_step takes Mesh by value, and KRATOS's
+    // Mesh is not copy-constructible.
     Mesh out = meshioplusplus::apply_pipeline_step(
-        in, step("DataRename", {{"Point", std::vector<std::string>{"ns:old:new"}}}), report);
+        std::move(in), step("DataRename", {{"Point", std::vector<std::string>{"ns:old:new"}}}),
+        report);
     EXPECT_FALSE(out.HasPointData("ns:old"));
     EXPECT_TRUE(out.HasPointData("new"));
 }

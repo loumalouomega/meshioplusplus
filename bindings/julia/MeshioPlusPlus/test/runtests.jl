@@ -651,7 +651,7 @@ end
             inp = joinpath(dir, "in.vtu")
             out = joinpath(dir, "out.vtu")
             m = fixture()
-            MeshioPlusPlus.write(inp, m)
+            MeshioPlusPlus.write(m, inp)
             close(m)
             settings = joinpath(dir, "settings.json")
             open(settings, "w") do io

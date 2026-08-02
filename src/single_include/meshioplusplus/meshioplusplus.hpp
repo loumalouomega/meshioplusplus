@@ -66906,8 +66906,8 @@ double pipe_number(const PipelineStep& rStep, const char* pKey, double fallback)
         return *d;
     if (const auto* i = std::get_if<std::int64_t>(v))
         return static_cast<double>(*i);
-    throw std::invalid_argument(pipe_err(rStep, std::string("parameter '") + pKey +
-                                                    "' must be a number"));
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be a number"));
 }
 
 bool pipe_flag(const PipelineStep& rStep, const char* pKey, bool fallback) {
@@ -66916,8 +66916,8 @@ bool pipe_flag(const PipelineStep& rStep, const char* pKey, bool fallback) {
         return fallback;
     if (const auto* b = std::get_if<bool>(v))
         return *b;
-    throw std::invalid_argument(pipe_err(rStep, std::string("parameter '") + pKey +
-                                                    "' must be a boolean"));
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be a boolean"));
 }
 
 std::string pipe_text(const PipelineStep& rStep, const char* pKey, const char* pFallback) {
@@ -66926,8 +66926,8 @@ std::string pipe_text(const PipelineStep& rStep, const char* pKey, const char* p
         return pFallback;
     if (const auto* s = std::get_if<std::string>(v))
         return *s;
-    throw std::invalid_argument(pipe_err(rStep, std::string("parameter '") + pKey +
-                                                    "' must be a string"));
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be a string"));
 }
 
 /// Numeric array (int entries widened to double). Empty when the key is absent.
@@ -66943,8 +66943,8 @@ std::vector<double> pipe_dvec(const PipelineStep& rStep, const char* pKey) {
         std::vector<double> out(i->begin(), i->end());
         return out;
     }
-    throw std::invalid_argument(pipe_err(rStep, std::string("parameter '") + pKey +
-                                                    "' must be an array of numbers"));
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of numbers"));
 }
 
 /// Integer array. Doubles are accepted only when integral (JSON has one
@@ -66962,14 +66962,14 @@ std::vector<std::int64_t> pipe_ivec(const PipelineStep& rStep, const char* pKey)
         out.reserve(d->size());
         for (double x : *d) {
             if (x != std::floor(x))
-                throw std::invalid_argument(pipe_err(
-                    rStep, std::string("parameter '") + pKey + "' must hold integers"));
+                throw std::invalid_argument(
+                    pipe_err(rStep, std::string("parameter '") + pKey + "' must hold integers"));
             out.push_back(static_cast<std::int64_t>(x));
         }
         return out;
     }
-    throw std::invalid_argument(pipe_err(rStep, std::string("parameter '") + pKey +
-                                                    "' must be an array of integers"));
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of integers"));
 }
 
 std::vector<std::string> pipe_svec(const PipelineStep& rStep, const char* pKey) {
@@ -66980,16 +66980,16 @@ std::vector<std::string> pipe_svec(const PipelineStep& rStep, const char* pKey) 
         return {};
     if (const auto* s = std::get_if<std::vector<std::string>>(v))
         return *s;
-    throw std::invalid_argument(pipe_err(rStep, std::string("parameter '") + pKey +
-                                                    "' must be an array of strings"));
+    throw std::invalid_argument(
+        pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of strings"));
 }
 
 /// A required 3-vector (`Point`, `Normal`, `Translate`, ...).
 void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
     std::vector<double> v = pipe_dvec(rStep, pKey);
     if (v.size() != 3)
-        throw std::invalid_argument(pipe_err(rStep, std::string("parameter '") + pKey +
-                                                        "' must be an array of 3 numbers"));
+        throw std::invalid_argument(
+            pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of 3 numbers"));
     for (int i = 0; i < 3; ++i)
         pOut[i] = v[static_cast<std::size_t>(i)];
 }
@@ -67026,19 +67026,22 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
     static const std::vector<PipeOpSpec> table = {
         {"Quality", {}},
         {"Clean", {"Weld", "Atol", "RemoveOrphans", "DropDegenerate", "DropDuplicateCells"}},
-        {"Smooth", {"Method", "Iterations", "Lambda", "Mu", "FixBoundary", "PreserveFeatures",
-                    "FeatureAngle", "GuardInversion"}},
-        {"Refine", {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure",
-                    "RecordLevels"}},
-        {"Decimate", {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary",
-                      "PreserveFeatures", "FeatureAngle"}},
+        {"Smooth",
+         {"Method", "Iterations", "Lambda", "Mu", "FixBoundary", "PreserveFeatures", "FeatureAngle",
+          "GuardInversion"}},
+        {"Refine",
+         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels"}},
+        {"Decimate",
+         {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
+          "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
         {"Slice", {"Point", "Normal", "RecordParentIds"}},
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
-        {"Transform", {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix",
-                       "ScaleUnits", "RotateData"}},
+        {"Transform",
+         {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
+          "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
         {"Crop", {"Bbox", "Point", "Normal", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
@@ -67048,8 +67051,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"DataKeep", {"Point", "Cell", "Field"}},
         {"DataRename", {"Point", "Cell", "Field"}},
         {"DataCalc", {"Expr", "Location", "Overwrite"}},
-        {"DataCondition", {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy",
-                           "NanReplacement", "Suffix"}},
+        {"DataCondition",
+         {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
+          "Suffix"}},
         {"ToCell", {"Names"}},
         {"ToPoint", {"Names", "Weight"}},
     };
@@ -67120,8 +67124,7 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
         double axis[3];
         pipe_vec3(rStep, "RotateAxis", axis);
         if (!pipe_find(rStep, "RotateDegrees"))
-            throw std::invalid_argument(
-                pipe_err(rStep, "'RotateAxis' requires 'RotateDegrees'"));
+            throw std::invalid_argument(pipe_err(rStep, "'RotateAxis' requires 'RotateDegrees'"));
         const double deg = pipe_number(rStep, "RotateDegrees", 0.0);
         xf = transform_rotation(axis[0], axis[1], axis[2], deg * 3.14159265358979323846 / 180.0);
         ++given;
@@ -67139,9 +67142,10 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
         ++given;
     }
     if (given != 1)
-        throw std::invalid_argument(pipe_err(
-            rStep, "give exactly one of 'Translate'/'Scale'/'RotateAxis'+'RotateDegrees'/"
-                   "'Matrix'/'ScaleUnits'"));
+        throw std::invalid_argument(
+            pipe_err(rStep,
+                     "give exactly one of 'Translate'/'Scale'/'RotateAxis'+'RotateDegrees'/"
+                     "'Matrix'/'ScaleUnits'"));
     Mesh out = transform(mesh, xf, pipe_flag(rStep, "RotateData", false));
     pipe_push_step(rReport, rStep);
     return out;
@@ -67177,8 +67181,8 @@ Mesh pipe_apply_data_manage(Mesh mesh, const PipelineStep& rStep, PipelineReport
                 if (pos == std::string::npos || pos == 0 || pos + 1 == entry.size())
                     throw std::invalid_argument(
                         pipe_err(rStep, "rename entry '" + entry + "' must be 'OLD:NEW'"));
-                mesh = data_rename(mesh, loc.mLocation, entry.substr(0, pos),
-                                   entry.substr(pos + 1));
+                mesh =
+                    data_rename(mesh, loc.mLocation, entry.substr(0, pos), entry.substr(pos + 1));
             }
         }
     }
@@ -67221,10 +67225,10 @@ void validate_pipeline_step(const PipelineStep& rStep) {
                     keys += ", ";
                 keys += k;
             }
-            throw std::invalid_argument(
-                pipe_err(rStep, "unknown parameter '" + kv.first + "'" +
-                                    (keys.empty() ? " (the op takes no parameters)"
-                                                  : " (known: " + keys + ")")));
+            throw std::invalid_argument(pipe_err(
+                rStep,
+                "unknown parameter '" + kv.first + "'" +
+                    (keys.empty() ? " (the op takes no parameters)" : " (known: " + keys + ")")));
         }
     }
 }
@@ -67245,13 +67249,12 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.drop_degenerate = pipe_flag(rStep, "DropDegenerate", true);
         opts.drop_duplicate_cells = pipe_flag(rStep, "DropDuplicateCells", true);
         auto result = clean(mesh, opts);
-        pipe_push_step(rReport, rStep,
-                       {{"PointsWelded", static_cast<double>(result.mPointsWelded)},
-                        {"PointsRemovedOrphan", static_cast<double>(result.mPointsRemovedOrphan)},
-                        {"CellsDroppedDegenerate",
-                         static_cast<double>(result.mCellsDroppedDegenerate)},
-                        {"CellsDroppedDuplicate",
-                         static_cast<double>(result.mCellsDroppedDuplicate)}});
+        pipe_push_step(
+            rReport, rStep,
+            {{"PointsWelded", static_cast<double>(result.mPointsWelded)},
+             {"PointsRemovedOrphan", static_cast<double>(result.mPointsRemovedOrphan)},
+             {"CellsDroppedDegenerate", static_cast<double>(result.mCellsDroppedDegenerate)},
+             {"CellsDroppedDuplicate", static_cast<double>(result.mCellsDroppedDuplicate)}});
         return std::move(result.mMesh);
     }
     if (op == "Smooth") {
@@ -67268,8 +67271,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         pipe_push_step(rReport, rStep,
                        {{"NumNodesMoved", static_cast<double>(result.mNumNodesMoved)},
                         {"MaxDisplacement", result.mMaxDisplacement},
-                        {"NumSkippedInversion",
-                         static_cast<double>(result.mNumSkippedInversion)}});
+                        {"NumSkippedInversion", static_cast<double>(result.mNumSkippedInversion)}});
         return std::move(result.mMesh);
     }
     if (op == "Refine") {
@@ -67321,8 +67323,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         // browser viewer's partition chip always meant.
         auto labels = partition_labels(mesh, opts);
         mesh.AddCellData("partition:part", std::move(labels));
-        pipe_push_step(rReport, rStep,
-                       {{"Nparts", pipe_number(rStep, "Nparts", 2)}});
+        pipe_push_step(rReport, rStep, {{"Nparts", pipe_number(rStep, "Nparts", 2)}});
         return mesh;
     }
     if (op == "Slice" || op == "Section") {
@@ -67399,14 +67400,13 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         const bool has_bbox = pipe_find(rStep, "Bbox") != nullptr;
         const bool has_plane = pipe_find(rStep, "Point") || pipe_find(rStep, "Normal");
         if (has_bbox == has_plane)
-            throw std::invalid_argument(
-                pipe_err(rStep, "give either 'Bbox' or 'Point'+'Normal'"));
+            throw std::invalid_argument(pipe_err(rStep, "give either 'Bbox' or 'Point'+'Normal'"));
         CropResult result = [&] {
             if (has_bbox) {
                 std::vector<double> b = pipe_dvec(rStep, "Bbox");
                 if (b.size() != 6)
-                    throw std::invalid_argument(pipe_err(
-                        rStep, "'Bbox' must be [xmin, ymin, zmin, xmax, ymax, zmax]"));
+                    throw std::invalid_argument(
+                        pipe_err(rStep, "'Bbox' must be [xmin, ymin, zmin, xmax, ymax, zmax]"));
                 const double lo[3] = {b[0], b[1], b[2]};
                 const double hi[3] = {b[3], b[4], b[5]};
                 return crop_bbox(mesh, lo, hi, mode, record);
@@ -67551,9 +67551,10 @@ WriteEncoding pipeline_encoding_from_name(const std::string& rName) {
         return WriteEncoding::Ascii;
     if (rName == "binary")
         return WriteEncoding::Binary;
-    throw std::invalid_argument("meshio++: pipeline: Output.Encoding must be 'ascii' or "
-                                "'binary', not '" +
-                                rName + "'");
+    throw std::invalid_argument(
+        "meshio++: pipeline: Output.Encoding must be 'ascii' or "
+        "'binary', not '" +
+        rName + "'");
 }
 
 detail::VtkCodec pipeline_codec_from_name(const std::string& rName) {
@@ -67565,9 +67566,10 @@ detail::VtkCodec pipeline_codec_from_name(const std::string& rName) {
         return detail::VtkCodec::LZ4;
     if (rName == "zstd")
         return detail::VtkCodec::ZSTD;
-    throw std::invalid_argument("meshio++: pipeline: Output.Codec must be 'none', 'zlib', "
-                                "'lz4' or 'zstd', not '" +
-                                rName + "'");
+    throw std::invalid_argument(
+        "meshio++: pipeline: Output.Codec must be 'none', 'zlib', "
+        "'lz4' or 'zstd', not '" +
+        rName + "'");
 }
 
 MmapMode pipeline_mmap_from_name(const std::string& rName) {
@@ -67577,9 +67579,10 @@ MmapMode pipeline_mmap_from_name(const std::string& rName) {
         return MmapMode::On;
     if (rName == "off")
         return MmapMode::Off;
-    throw std::invalid_argument("meshio++: pipeline: Input.Options.Mmap must be 'auto', "
-                                "'on' or 'off', not '" +
-                                rName + "'");
+    throw std::invalid_argument(
+        "meshio++: pipeline: Input.Options.Mmap must be 'auto', "
+        "'on' or 'off', not '" +
+        rName + "'");
 }
 
 // --------------------------------------------------------------------------
@@ -67607,10 +67610,18 @@ namespace {
 }
 }  // namespace
 
-Pipeline parse_pipeline_json(const std::string&) { pipe_no_json(); }
-Pipeline parse_pipeline_file(const std::string&) { pipe_no_json(); }
-PipelineReport run_pipeline_json(const std::string&) { pipe_no_json(); }
-PipelineReport run_pipeline_file(const std::string&) { pipe_no_json(); }
+Pipeline parse_pipeline_json(const std::string&) {
+    pipe_no_json();
+}
+Pipeline parse_pipeline_file(const std::string&) {
+    pipe_no_json();
+}
+PipelineReport run_pipeline_json(const std::string&) {
+    pipe_no_json();
+}
+PipelineReport run_pipeline_file(const std::string&) {
+    pipe_no_json();
+}
 
 #else  // MESHIOPLUSPLUS_HAS_JSON
 
@@ -67635,8 +67646,8 @@ void pipe_check_keys(const pipe_json& rObject, const char* pWhere,
                     keys += ", ";
                 keys += k;
             }
-            pipe_schema_error("unknown key '" + item.key() + "' in " + pWhere +
-                              " (known: " + keys + ")");
+            pipe_schema_error("unknown key '" + item.key() + "' in " + pWhere + " (known: " + keys +
+                              ")");
         }
     }
 }
@@ -67659,8 +67670,7 @@ std::string pipe_get_string(const pipe_json& rObject, const char* pKey, const ch
     return v->get<std::string>();
 }
 
-bool pipe_get_bool(const pipe_json& rObject, const char* pKey, const char* pWhere,
-                   bool fallback) {
+bool pipe_get_bool(const pipe_json& rObject, const char* pKey, const char* pWhere, bool fallback) {
     const pipe_json* v = pipe_get(rObject, pKey);
     if (!v)
         return fallback;
@@ -67699,8 +67709,9 @@ PipelineValue pipe_value_from_json(const pipe_json& rValue, const std::string& r
             return rValue.get<std::vector<std::string>>();
         pipe_schema_error(rContext + " must be a homogeneous array of numbers or strings");
     }
-    pipe_schema_error(rContext + " has an unsupported value type (objects and null are "
-                                 "not step parameters)");
+    pipe_schema_error(rContext +
+                      " has an unsupported value type (objects and null are "
+                      "not step parameters)");
 }
 
 PipelineInput pipe_input_from_json(const pipe_json& rInput) {
@@ -67803,9 +67814,8 @@ Pipeline parse_pipeline_json(const std::string& rText) {
             for (const auto& item : spec.items()) {
                 if (item.key() == "Op")
                     continue;
-                step.mParams.emplace(
-                    item.key(),
-                    pipe_value_from_json(item.value(), where + "." + item.key()));
+                step.mParams.emplace(item.key(),
+                                     pipe_value_from_json(item.value(), where + "." + item.key()));
             }
             validate_pipeline_step(step);
             pipeline.mSteps.push_back(std::move(step));

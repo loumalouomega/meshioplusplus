@@ -7,13 +7,14 @@ import copy
 import json
 import pathlib
 
-import helpers
 import numpy as np
 import pytest
 
 import meshioplusplus
 from meshioplusplus import _core
 from meshioplusplus._pipeline import _EXCLUDED_OPS, _OP_TABLE
+
+from . import helpers
 
 
 @pytest.fixture
