@@ -631,6 +631,44 @@ end
     end
 end
 
+@testset "settings pipeline" begin
+    # Behaviour follows the build: with the JSON parser a bad document fails
+    # naming the offending op; without it every entry point fails naming
+    # -DMESHIOPLUSPLUS_WITH_JSON=ON. Never a missing symbol either way.
+    bad = """{"Input": {"Path": "a"}, "Output": {"Path": "b"},
+              "Operations": [{"Op": "Nope"}]}"""
+    err = try
+        run_pipeline_json(bad)
+        nothing
+    catch e
+        e
+    end
+    @test err isa MeshioError
+    if pipeline_has_json()
+        @test occursin("Nope", err.msg)
+        # ... and a good document runs end to end.
+        mktempdir() do dir
+            inp = joinpath(dir, "in.vtu")
+            out = joinpath(dir, "out.vtu")
+            m = fixture()
+            MeshioPlusPlus.write(inp, m)
+            close(m)
+            settings = joinpath(dir, "settings.json")
+            open(settings, "w") do io
+                print(io, """{"Input": {"Path": "$(inp)"},
+                              "Operations": [{"Op": "Quality"}],
+                              "Output": {"Path": "$(out)"}}""")
+            end
+            run_pipeline_file(settings)
+            back = MeshioPlusPlus.read(out)
+            @test "quality:scaled_jacobian" in cell_data_names(back)
+            close(back)
+        end
+    else
+        @test occursin("MESHIOPLUSPLUS_WITH_JSON", err.msg)
+    end
+end
+
 @testset "errors carry mio_last_error()" begin
     # Every failure surfaces as a MeshioError carrying the C API's own
     # thread-local message; a status code never reaches the caller.

@@ -970,3 +970,39 @@ function data_info(m::Mesh)
 end
 
 const _LOCATION_SYMS = (:point, :cell, :field)
+
+# ---------------------------------------------------------------------------
+# Settings pipeline (v9.11.0): run a whole settings.json (read -> operation
+# chain -> write; PascalCase vocabulary, see doc/pipeline.md). The flat ABI
+# carries JSON text only.
+# ---------------------------------------------------------------------------
+
+"""
+    run_pipeline_file(settings_path)
+
+Run the settings pipeline stored in the file at `settings_path` (a
+`settings.json`; PascalCase ops/keys, see `doc/pipeline.md`). Needs a build
+with the JSON parser (`-DMESHIOPLUSPLUS_WITH_JSON=ON`); otherwise the raised
+error names the flag — [`pipeline_has_json`](@ref) reports which build this is.
+"""
+function run_pipeline_file(settings_path::AbstractString)
+    _check(ccall(_sym(:mio_pipeline_run_file), Cint, (Cstring,), settings_path))
+    nothing
+end
+
+"""
+    run_pipeline_json(json_text)
+
+Run a settings pipeline given as JSON text (see [`run_pipeline_file`](@ref)).
+"""
+function run_pipeline_json(json_text::AbstractString)
+    _check(ccall(_sym(:mio_pipeline_run_json), Cint, (Cstring,), json_text))
+    nothing
+end
+
+"""
+    pipeline_has_json() -> Bool
+
+Whether the loaded library carries the JSON pipeline parser.
+"""
+pipeline_has_json() = ccall(_sym(:mio_pipeline_has_json), Cint, ()) != 0
