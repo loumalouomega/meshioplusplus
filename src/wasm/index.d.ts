@@ -675,6 +675,27 @@ export interface MeshioPlusPlusModule {
     }
   ): OpReport;
 
+  /**
+   * Run a whole settings pipeline: read `Input.Path`, apply `Operations` in
+   * order, write `Output.Path` — the `settings.json` engine (see
+   * `doc/pipeline.md`), against MEMFS paths.
+   *
+   * `settings` may be the parsed settings object, the JSON text itself, or a
+   * MEMFS path ending in `.json`. The vocabulary is the canonical PascalCase
+   * one (`{Op: "ConvertCells", Mode: "simplexify"}`), unlike
+   * {@link convertSurfaceOps}' pre-existing camelCase op specs — the two
+   * dispatch through the same core engine, differing only in spelling. The
+   * returned report's counter keys are PascalCase too.
+   *
+   * Unlike {@link convertSurfaceOps} there is no surface-extraction tail:
+   * what the pipeline produces is what is written.
+   *
+   * @throws {Error} on an unknown op or key (strict — never silently
+   * ignored), an unreadable input, or an Output option the format cannot
+   * honour.
+   */
+  runPipeline(settings: object | string): { steps: Array<Record<string, number | string>>; warnings: string[] };
+
   /** The shared cell-type -> node-count table (e.g. `{triangle: 3, tetra: 4, ...}`). */
   numNodesPerCell(): Record<string, number>;
 
