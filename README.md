@@ -495,6 +495,35 @@ with meshioplusplus.xdmf.TimeSeriesReader(filename) as reader:
         t, point_data, cell_data = reader.read_data(k)
 ```
 
+#### Transient / multi-file datasets
+
+Most formats cannot express time at all, so transient output usually arrives as
+a *set* of files (`out_0000.vtu … out_0500.vtu`). meshio++ treats such a set as
+one ordered dataset:
+
+```bash
+meshioplusplus convert 'out_*.vtu' series.xdmf         # fan-in (quote the glob!)
+meshioplusplus convert series.xdmf 'step_{step}.vtu'   # fan-out
+meshioplusplus pipeline transient.json                 # chain applied per step
+```
+
+<!--pytest-codeblocks:skip-->
+
+```python
+for time, mesh in meshioplusplus.read_sequence("out_*.vtu"):  # lazy
+    ...
+meshioplusplus.write_sequence("series.xdmf",
+                              meshioplusplus.read_sequence("out_*.vtu"))
+```
+
+Ordering is **natural-numeric**, so `out_10.vtu` follows `out_9.vtu`; each step's
+time comes from an explicit list, the file, its filename or its index, and which
+one applied is reported. Fan-in and fan-out **stream** — one mesh is alive at a
+time, whatever the step count — and a multi-step input aimed at a single-step
+output is an error naming `{step}`, never a silent write of step 0. Available
+from Python, both CLIs, C, Fortran, Julia and R. See
+[`doc/sequences.md`](doc/sequences.md).
+
 ### Interactive viewer
 
 [![Try it in your browser](https://img.shields.io/badge/try%20it-in%20your%20browser-4c9ffe?logo=webassembly&logoColor=white)](https://loumalouomega.github.io/meshioplusplus/viewer/)
@@ -596,7 +625,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 34 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 35 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 ### ParaView plugin
 
@@ -685,7 +714,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.11.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.12.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
