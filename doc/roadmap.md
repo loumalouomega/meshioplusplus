@@ -127,7 +127,51 @@ practice.*
 
 ---
 
-## 4. NURBS and higher-order geometry (long run)
+## 4. Remaining refinement and coarsening gaps
+
+`refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
+
+- **Volume decimation** — `decimate` is surface-only by documented design; tet-collapse validity is the hard part. **L**
+- **Refinement hierarchy across passes** — `refine:level` exists per pass; a persistent parent/child hierarchy is what multigrid and green-element undo need. **M**
+- **Error-estimator helpers** — now that `gradient` exists, a gradient-jump or recovery-based indicator that feeds `refine`'s selection directly closes the adaptive loop end to end. **M**
+
+---
+
+## 5. Field capability beyond derivatives
+
+- **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
+- **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
+- **Second derivatives / Hessian**, for curvature-based adaptivity. **M**
+
+---
+
+## 6. Scale
+
+The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
+
+- **A large-mesh benchmark tier** (10M+ cells) — cheap, and it would show whether the parallel paths actually hold. Do this before the two below, since it decides whether they matter. **S**
+- **Streaming / chunked writes**, the counterpart to the selective-read work. **L**
+- **Out-of-core operations** for the ops that are already block-local. **XL**
+
+---
+
+## 7. Ecosystem reach
+
+- **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
+- **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
+- **Registration and distribution** — conda-forge, CRAN, Julia General, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. **M**
+
+---
+
+## 8. Quality of implementation
+
+- **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 41 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
+- **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
+- **Property-based testing** (Hypothesis) over the invariants already articulated in the docs: partition-of-unity, volume conservation, conformity, byte-identical determinism. **M**
+
+---
+
+## 9. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -140,7 +184,7 @@ practice.*
 
 ---
 
-## 5. Mesh generation
+## 10. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
@@ -151,55 +195,11 @@ practice.*
 
 ---
 
-## 6. Remaining refinement and coarsening gaps
-
-`refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
-
-- **Volume decimation** — `decimate` is surface-only by documented design; tet-collapse validity is the hard part. **L**
-- **Refinement hierarchy across passes** — `refine:level` exists per pass; a persistent parent/child hierarchy is what multigrid and green-element undo need. **M**
-- **Error-estimator helpers** — now that `gradient` exists, a gradient-jump or recovery-based indicator that feeds `refine`'s selection directly closes the adaptive loop end to end. **M**
-
----
-
-## 7. Field capability beyond derivatives
-
-- **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
-- **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
-- **Second derivatives / Hessian**, for curvature-based adaptivity. **M**
-
----
-
-## 8. Scale
-
-The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
-
-- **A large-mesh benchmark tier** (10M+ cells) — cheap, and it would show whether the parallel paths actually hold. Do this before the two below, since it decides whether they matter. **S**
-- **Streaming / chunked writes**, the counterpart to the selective-read work. **L**
-- **Out-of-core operations** for the ops that are already block-local. **XL**
-
----
-
-## 9. Ecosystem reach
-
-- **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
-- **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
-- **Registration and distribution** — conda-forge, CRAN, Julia General, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. **M**
-
----
-
-## 10. Quality of implementation
-
-- **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 41 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
-- **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
-- **Property-based testing** (Hypothesis) over the invariants already articulated in the docs: partition-of-unity, volume conservation, conformity, byte-identical determinism. **M**
-
----
-
 ## Suggested sequencing
 
-1. **Primitive constructors (§5, first item)** — a few days, and it improves testing, docs and every demo surface at once.
+1. **Primitive constructors (§10, first item)** — a few days, and it improves testing, docs and every demo surface at once.
 2. **ML data handling (§2)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §3.
 3. **PhysicsNeMo reconnaissance (§3, first item)** — a written findings note before any code.
 4. **Polyhedral C-ABI exposure + geometric kernel (§1)** — lifts a real ceiling and unblocks OpenFOAM round-tripping.
-5. **Fuzzing (§10)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-6. **NURBS spike (§4)** — a documented investigation, scheduled independently of the rest.
+5. **Fuzzing (§8)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+6. **NURBS spike (§9)** — a documented investigation, scheduled independently of the rest.
