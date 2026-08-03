@@ -445,6 +445,34 @@ TEST(SequenceCapability, NonTimeCarryingTargetFailsByName) {
     }
 }
 
+TEST(SequenceCapability, TheTransientWriterRejectsOptionsItCannotHonour) {
+    // sequence_to_timeseries drives XdmfTimeSeriesWriter directly rather than
+    // going through registry_write_ex, so it must enforce write_options.hpp's
+    // rule itself: an option the writer cannot honour is an error, never
+    // silently ignored. Only Encoding has anywhere to go.
+    SeqTempDir dir;
+    const std::vector<std::string> files = seq_write_files(dir, "in_", 2);
+    SequenceInput in;
+    in.mPaths = files;
+
+    SequenceOutput bad_codec;
+    bad_codec.mPath = dir / "s1.xdmf";
+    bad_codec.mOptions.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
+    bad_codec.mOptions.mCodecSet = true;
+    EXPECT_THROW(meshioplusplus::sequence_to_timeseries(in, bad_codec), meshioplusplus::WriteError);
+
+    SequenceOutput bad_float;
+    bad_float.mPath = dir / "s2.xdmf";
+    bad_float.mOptions.mFloatFormat = ".9e";
+    EXPECT_THROW(meshioplusplus::sequence_to_timeseries(in, bad_float), meshioplusplus::WriteError);
+
+    // Encoding alone is fine -- it is what selects XML over HDF.
+    SequenceOutput ok;
+    ok.mPath = dir / "s3.xdmf";
+    ok.mOptions.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+    EXPECT_NO_THROW(meshioplusplus::sequence_to_timeseries(in, ok));
+}
+
 // ---------------------------------------------------------------------------
 // Mode inference.
 // ---------------------------------------------------------------------------

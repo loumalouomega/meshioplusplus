@@ -2102,6 +2102,36 @@ TEST(CApi, SequenceFanInAndFanOut) {
     std::filesystem::remove_all(dir);
 }
 
+TEST(CApi, SequenceToTimeseriesExSelectsEncodingAndRejectsWhatItCannotHonour) {
+    // The transient writer bypasses mio_write_ex's registry path entirely, so
+    // it needs its own opt-in encoding selection -- and the same "reject an
+    // option you cannot honour" rule (this is what a build without HDF5, e.g.
+    // the Julia/R notebook environments, needs to select the XML data format).
+    const std::string dir = capi_seq_dir(2);
+    mio_sequence* seq = mio_sequence_open((dir + "/in_*.vtu").c_str());
+    ASSERT_NE(seq, nullptr);
+
+    mio_write_opts ascii;
+    mio_write_opts_init(&ascii);
+    ascii.encoding = MIO_ENCODING_ASCII;
+    const std::string xml = dir + "/xml_series.xdmf";
+    EXPECT_EQ(mio_sequence_to_timeseries_ex(seq, xml.c_str(), nullptr, &ascii), MIO_OK)
+        << mio_last_error();
+    EXPECT_TRUE(std::filesystem::exists(xml));
+    // "XML" means the light data is inline -- no sibling .h5 companion.
+    EXPECT_FALSE(std::filesystem::exists(dir + "/xml_series.h5"));
+
+    mio_write_opts bad;
+    mio_write_opts_init(&bad);
+    bad.codec = MIO_CODEC_ZLIB;
+    EXPECT_NE(mio_sequence_to_timeseries_ex(seq, (dir + "/s2.xdmf").c_str(), nullptr, &bad),
+              MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("Codec"), std::string::npos);
+
+    mio_sequence_free(seq);
+    std::filesystem::remove_all(dir);
+}
+
 TEST(CApi, SequenceErrorsAreReportedNotCrashed) {
     EXPECT_EQ(mio_sequence_open(nullptr), nullptr);
     EXPECT_EQ(mio_sequence_count(nullptr), -1);
