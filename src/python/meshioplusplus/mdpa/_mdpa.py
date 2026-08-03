@@ -386,12 +386,17 @@ def _parse_generic_data_block(
         entity_type_key = "_node_"
         local_idx_0_based = -1
         if is_nodal_data:
-            local_idx_0_based = entity_id_1_based - 1
-            if not (0 <= local_idx_0_based < num_entities_per_type["_node_"]):
+            # Resolve through the map rather than `id - 1`: for a 1..n file the
+            # caller hands over the identity map, so "in range" and "in map" are
+            # the same predicate and the warning text is unchanged; for a gapped
+            # one this is what keeps the value on the right node.
+            entry = entity_id_map.get(entity_id_1_based)
+            if entry is None:
                 warn(
                     f"Invalid node ID {entity_id_1_based} for {variable_name}. Max nodes: {num_entities_per_type['_node_']}. Skipping line."
                 )
                 continue
+            local_idx_0_based = entry[1]
         else:
             if entity_id_1_based not in entity_id_map:
                 warn(
@@ -578,13 +583,20 @@ def _read_nodes(f, is_ascii, data_size):
     -------
     numpy.ndarray
         A NumPy array of shape (num_nodes, 3) containing the XYZ coordinates
-        of the nodes. Returns an empty array if no nodes are found.
+        of the nodes, in *file* order. Returns an empty array if no nodes are
+        found.
+    dict or None
+        A file node id -> 0-based row map, or ``None`` when the ids are exactly
+        ``1..n`` in order (or absent altogether), in which case "row = id - 1"
+        already is the map and every caller keeps its pre-existing arithmetic.
+        Built lazily for the same reason the C++ reader builds it lazily.
 
     Raises
     ------
     ReadError
-        If EOF is encountered before "End Nodes" or if node coordinate data
-        is malformed (e.g., less than 3 dimensions).
+        If EOF is encountered before "End Nodes", if node coordinate data
+        is malformed (e.g., less than 3 dimensions), or if two rows claim the
+        same node id.
     """
     # is_ascii and data_size are not strictly used here as only ASCII text is processed.
     num_nodes = 0
@@ -599,6 +611,7 @@ def _read_nodes(f, is_ascii, data_size):
         if line_content:
             node_lines.append(line_content)
             num_nodes += 1
+    node_id_map = None
     if num_nodes == 0:
         points_arr = np.empty((0, 3), dtype=float)
     else:
@@ -614,7 +627,17 @@ def _read_nodes(f, is_ascii, data_size):
             raise ReadError(
                 f"Node parsing failed. Check node block formatting. Error: {e}"
             )
-    return points_arr
+        # Deliberately outside the try above: a duplicate-id ReadError must not
+        # be swallowed and reworded as "Node parsing failed".
+        if points_data.shape[1] >= 4:
+            ids = points_data[:, 0].astype(np.int64)
+            if not np.array_equal(ids, np.arange(1, ids.size + 1)):
+                node_id_map = {int(k): i for i, k in enumerate(ids)}
+                # A dict collapse IS the duplicate detection; a 1..n file cannot
+                # have one, which is why this only runs on the mapped path.
+                if len(node_id_map) != ids.size:
+                    raise ReadError("Duplicate node id in the Nodes block.")
+    return points_arr, node_id_map
 
 
 def _read_cells(
@@ -625,6 +648,7 @@ def _read_cells(
     environ,
     mdpa_element_ids_info,
     mdpa_condition_ids_info,
+    node_id_map=None,
 ):
     """
     Reads element or condition connectivity from an MDPA file block.
@@ -652,12 +676,17 @@ def _read_cells(
         List to store (original_id, meshio_type, local_idx) for elements.
     mdpa_condition_ids_info : list
         List to store (original_id, meshio_type, local_idx) for conditions.
+    node_id_map : dict or None
+        The file node id -> row map from :func:`_read_nodes`. ``None`` means the
+        ids are ``1..n`` and connectivity resolves as ``id - 1``, as it always
+        has.
 
     Raises
     ------
     ReadError
         If non-ASCII cells are attempted, if entity type cannot be determined,
-        or if an unexpected block end statement is found.
+        if an unexpected block end statement is found, or if a row names a node
+        id the Nodes block does not define.
     """
     if not is_ascii:
         raise ReadError("Can only read ASCII cells")  # Ensure ASCII
@@ -727,9 +756,19 @@ def _read_cells(
                 raise ReadError(
                     f"Unknown cell type with {num_nodes_this_elem} nodes in {environ}: {line_content}"
                 )
+        if node_id_map is None:
+            rows = np.array(node_ids_1_based) - 1
+        else:
+            try:
+                rows = np.array([node_id_map[n] for n in node_ids_1_based])
+            except KeyError as e:
+                raise ReadError(
+                    f"Connectivity refers to undefined node id {e.args[0]} in "
+                    f"{environ}: {line_content}"
+                )
         if not cells_list or current_meshio_type != cells_list[-1][0]:
             cells_list.append((current_meshio_type, []))
-        cells_list[-1][1].append(np.array(node_ids_1_based) - 1)
+        cells_list[-1][1].append(rows)
         local_idx = len(cells_list[-1][1]) - 1
         id_info_list = (
             mdpa_element_ids_info if is_element_block else mdpa_condition_ids_info
@@ -751,7 +790,13 @@ def _read_cells(
 
 
 def _read_geometries(
-    f, geometries_list, is_ascii, geometry_tags_dict, environ, mdpa_geometry_ids_info
+    f,
+    geometries_list,
+    is_ascii,
+    geometry_tags_dict,
+    environ,
+    mdpa_geometry_ids_info,
+    node_id_map=None,
 ):
     """
     Reads geometry entity connectivity from a 'Geometries' block in an MDPA file.
@@ -775,12 +820,16 @@ def _read_geometries(
         The header line that started this block (e.g., "Begin Geometries GeometryType").
     mdpa_geometry_ids_info : list
         List to store (original_id, meshio_type, local_idx) for geometries.
+    node_id_map : dict or None
+        The file node id -> row map from :func:`_read_nodes`. ``None`` means the
+        ids are ``1..n`` and connectivity resolves as ``id - 1``.
 
     Raises
     ------
     ReadError
         If non-ASCII geometries are attempted, if entity type cannot be determined,
-        or if an unexpected block end statement is found.
+        if an unexpected block end statement is found, or if a row names a node id
+        the Nodes block does not define.
     """
     if not is_ascii:
         raise ReadError("Can only read ASCII geometries")  # Ensure ASCII
@@ -854,10 +903,21 @@ def _read_geometries(
                     f"Unknown geometry type with {num_nodes_this_geometry} nodes in {environ} (and type not in header): {line_content}"
                 )
 
+        if node_id_map is None:
+            rows = np.array(node_ids_1_based) - 1
+        else:
+            try:
+                rows = np.array([node_id_map[n] for n in node_ids_1_based])
+            except KeyError as e:
+                raise ReadError(
+                    f"Geometry refers to undefined node id {e.args[0]} in "
+                    f"{environ}: {line_content}"
+                )
+
         if not geometries_list or current_meshio_type != geometries_list[-1][0]:
             geometries_list.append((current_meshio_type, []))
 
-        geometries_list[-1][1].append(np.array(node_ids_1_based) - 1)
+        geometries_list[-1][1].append(rows)
         local_idx = len(geometries_list[-1][1]) - 1
         mdpa_geometry_ids_info.append((original_id, current_meshio_type, local_idx))
 
@@ -1128,6 +1188,15 @@ def read_buffer(f):
     misc_data = {}
     active_submodelpart_stack = []
     is_ascii = True
+    # File node id -> row, or None while the ids are 1..n (see _read_nodes).
+    node_id_map = None
+
+    def _node_rows(ids_1_based):
+        """File node ids -> 0-based rows, dropping ids the file never defined."""
+        if node_id_map is None:
+            return [i - 1 for i in ids_1_based if 1 <= i <= len(points)]
+        return [node_id_map[i] for i in ids_1_based if i in node_id_map]
+
     while True:
         line_raw = f.readline().decode()
         if not line_raw:
@@ -1157,10 +1226,19 @@ def read_buffer(f):
                 else:
                     warn(f"Skipping malformed line in ModelPartData: {line.strip()}")
         elif environ.startswith("Begin Nodes"):
-            points = _read_nodes(f, is_ascii, None)
+            points, node_id_map = _read_nodes(f, is_ascii, None)
         elif environ.startswith("Begin Elements") or environ.startswith(
             "Begin Conditions"
         ):
+            # Unlike the C++ reader, this one resolves connectivity as it goes,
+            # so a *gapped* deck whose entities precede its Nodes block would
+            # silently fall back to "row = id - 1". Warn rather than throw: the
+            # shape reads (wrongly) today, and this is the house response.
+            if len(points) == 0:
+                warn(
+                    f"{environ.split('//', 1)[0].strip()} read before any Nodes "
+                    "block; node ids are taken as 1-based positions."
+                )
             _read_cells(
                 f,
                 cells_list_of_tuples,
@@ -1169,9 +1247,15 @@ def read_buffer(f):
                 environ,
                 mdpa_element_ids_info,
                 mdpa_condition_ids_info,
+                node_id_map,
             )
         elif environ.startswith("Begin Geometries"):
             # Placeholder for _read_geometries call
+            if len(points) == 0:
+                warn(
+                    "Begin Geometries read before any Nodes block; node ids are "
+                    "taken as 1-based positions."
+                )
             _read_geometries(
                 f,
                 geometries_list_of_tuples,
@@ -1179,6 +1263,7 @@ def read_buffer(f):
                 {},  # empty dict for geometry_tags for now
                 environ,
                 mdpa_geometry_ids_info,
+                node_id_map,
             )
         elif environ.startswith("Begin Table"):
             actual_header_line = environ.split("//", 1)[0].strip()
@@ -1255,13 +1340,20 @@ def read_buffer(f):
                 )
                 consume_block(f, "End NodalData")
                 continue
-            node_id_map = {i + 1: ("_node_", i) for i in range(len(points))}
+            # Named apart from the enclosing `node_id_map`, which it is derived
+            # from: this one carries the ("_node_", row) pairs the generic data
+            # parser expects. The identity form is the 1..n case.
+            nodal_id_map = (
+                {i + 1: ("_node_", i) for i in range(len(points))}
+                if node_id_map is None
+                else {nid: ("_node_", row) for nid, row in node_id_map.items()}
+            )
             num_entities_map = {"_node_": len(points)}
             _parse_generic_data_block(
                 f,
                 "End NodalData",
                 variable_name_full,
-                node_id_map,
+                nodal_id_map,
                 point_data,
                 num_entities_map,
                 True,
@@ -1352,7 +1444,7 @@ def read_buffer(f):
                 consume_block(f, "End SubModelPartNodes")
                 continue
             node_ids = _parse_submodelpart_entity_list(f, "End SubModelPartNodes")
-            valid_node_ids = [nid - 1 for nid in node_ids if 1 <= nid <= len(points)]
+            valid_node_ids = _node_rows(node_ids)
             misc_data["submodelpart_info"][current_smp_name_hierarchical]["nodes"] = (
                 np.array(valid_node_ids, dtype=int)
             )
@@ -1474,8 +1566,7 @@ def read_buffer(f):
                         f, "End MeshNodes"
                     )
                     current_mesh_content["nodes"] = np.array(
-                        [nid - 1 for nid in node_ids_1based if 1 <= nid <= len(points)],
-                        dtype=int,
+                        _node_rows(node_ids_1based), dtype=int
                     )
                 elif stripped_line.startswith("Begin MeshElements"):
                     elem_ids_raw = _parse_submodelpart_entity_list(
