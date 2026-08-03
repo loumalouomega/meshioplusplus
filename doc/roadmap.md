@@ -6,37 +6,14 @@ This document lists what is *not* built. Items are grouped by theme, each with a
 
 Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **XL** = a project in its own right.
 
----
-
-## 1. Multi-file and transient workflows — done (v9.12.0)
-
-**Delivered in full** — see [`doc/sequences.md`](sequences.md). Glob/list input,
-fan-in (sequence → one multi-step file), fan-out (one multi-step file →
-sequence) and per-step pipeline execution all shipped, across both CLIs, the
-settings document, Python, C, Fortran, Julia, R **and WASM** (over MEMFS
-paths — see [`doc/wasm.md`](wasm.md#sequences-transient--multi-file-datasets)).
-Ordering is natural-numeric (`out_9` before `out_10`, not `out_10` before
-`out_9`); time values come from an explicit list, the file itself, a filename
-capture or the integer index, in that documented precedence. Parallel-over-files
-execution shipped too, as a Python-driver process pool (not for a fan-in, whose
-ordered writer cannot take buffered steps without breaking the streaming
-guarantee).
-
-One item from the original scope remains open, and is downgraded from planned
-to speculative:
-
-- **A `TimeSeries` object in the data model** — an ordered `(time, Mesh)`
-  sequence with lazy per-step reads. The v9.12.0 drivers **did not prove it
-  necessary**: Python's `read_sequence` generator and the C/Fortran/Julia/R
-  sequence handles already give lazy per-step traversal without a new
-  data-model type, and the streaming guarantee is enforced precisely because
-  nothing materialises the sequence. Revisit only if a caller genuinely needs
-  to *hold* a series as one value (random access across steps, cross-step
-  operations), which nothing has asked for yet. **L**
+Multi-file / transient workflows (glob input, fan-in/fan-out, per-step pipeline
+execution, and Python's `TimeSeries` for random-access "hold a series as one
+value") shipped in full in v9.12.0 across every language surface including
+WASM — see [`doc/sequences.md`](sequences.md) — and so no longer appears here.
 
 ---
 
-## 2. Polyhedral meshes
+## 1. Polyhedral meshes
 
 **The gap.** Ragged polyhedron blocks exist in all three backends (`AddPolyhedronBlock`, CSR / nested storage, `CellView::NumFaces`/`Face`), and MED, EnSight `nfaced` and OpenFOAM read them. But they are second-class almost everywhere else: the C ABI reports `is_ragged` and then **cannot expose the connectivity at all**, most operations raise on them, and the geometric kernel (`cell_faces.hpp`) is a fixed table of canonical types with no polyhedral entry. Since OpenFOAM — the most-used open CFD code — is natively polyhedral, this is a real ceiling.
 
@@ -50,12 +27,12 @@ to speculative:
 
 ---
 
-## 3. Machine-learning data handling
+## 2. Machine-learning data handling
 
 **The gap.** v8.2.0 gave Arrow/Parquet export of `point_data`/`cell_data`, which is the right primitive but only the first step. ML pipelines want *datasets* (many meshes), tabular frames, batched tensors and stable feature layouts — none of which exist.
 
 - **pandas / polars frames** directly (`to_pandas(mesh, location=...)`), not only via pyarrow. Trivially thin over the existing table payload, and it is what people actually reach for. **S**
-- **Dataset-level export**: a *directory* of meshes → one partitioned Parquet dataset with a `mesh_id` column, using the multi-file machinery from §1. This is the format an ML training loop wants. **M**
+- **Dataset-level export**: a *directory* of meshes → one partitioned Parquet dataset with a `mesh_id` column, using the sequence machinery (see `doc/sequences.md`). This is the format an ML training loop wants. **M**
 - **Feature extraction helpers** — assemble a canonical per-node or per-cell feature matrix (coordinates, selected fields, derived quantities like `quality:*` or `|∇f|`, region one-hots) with a **stable, recorded column order**, so training and inference cannot silently disagree. The column-order contract is the whole value; make it explicit and versioned. **M**
 - **Graph export for GNNs**: node/edge index arrays in the layout PyTorch Geometric and DGL expect (`edge_index` as (2, E)), from the existing `node_adjacency` / cell-dual machinery. The cheapest genuinely ML-shaped feature in this list. **S–M**
 - **PyTorch / JAX tensor handoff** via the DLPack path already built for GPU (v-GPU work), so a mesh becomes a batch of device tensors without a file round-trip. Mostly already there — needs the framework-facing convenience layer and docs. **S**
@@ -65,12 +42,12 @@ to speculative:
 
 ---
 
-## 4. NVIDIA PhysicsNeMo integration
+## 3. NVIDIA PhysicsNeMo integration
 
 **The gap.** PhysicsNeMo (github.com/NVIDIA/physicsnemo) is the mainstream open Physics-ML framework, and its data ingestion is where most users write bespoke glue. meshio++ already has 41 readers, GPU/DLPack handoff, and the operations (`interpolate`, `partition`, `gradient`, `decimate`) that a training pipeline needs for preprocessing. A thin, well-documented bridge would let people train on simulation output without integrating their solver at all — which is exactly the friction PhysicsNeMo users hit.
 
 - **Reconnaissance first, and treat it as a real deliverable.** PhysicsNeMo's dataset/datapipe contracts, its mesh and point-cloud conventions, and its dependency weight (CUDA-specific, container-oriented) all need checking against the repo's "optional, gated, never in `[all]`" rule. Write the findings down before writing code — the CuPy packaging finding is the precedent for how this repo handles such constraints. **S**
-- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the §3 feature-matrix contract and the existing DLPack handoff. Pure Python, lazily imported, named install error. **M**
+- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the §2 feature-matrix contract and the existing DLPack handoff. Pure Python, lazily imported, named install error. **M**
 - **Preprocessing recipes as pipeline documents** — sampling, normalisation, surface extraction, decimation, partitioning into training patches — expressed as v9.11.0 `settings.json` files so they are reproducible and reviewable rather than notebook cells. A strong fit for the pipeline engine, and cheap once the adapter exists. **S–M**
 - **A worked end-to-end example**: simulation output → meshio++ preprocessing → PhysicsNeMo training → inference results read back as a mesh and rendered. The example *is* the feature; without it the adapter will not be adopted. **M**
 - **CI reality check**: PhysicsNeMo needs a GPU, which public runners do not have. Follow the precedent set for the GPU work — test the pure adapter logic without the framework, gate the rest, and state plainly that the integration path is not covered by public CI. **S**
@@ -79,7 +56,7 @@ to speculative:
 
 ---
 
-## 5. NURBS and higher-order geometry (long run)
+## 4. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -92,7 +69,7 @@ to speculative:
 
 ---
 
-## 6. Mesh generation
+## 5. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
@@ -103,7 +80,7 @@ to speculative:
 
 ---
 
-## 7. Remaining refinement and coarsening gaps
+## 6. Remaining refinement and coarsening gaps
 
 `refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
 
@@ -113,7 +90,7 @@ to speculative:
 
 ---
 
-## 8. Field capability beyond derivatives
+## 7. Field capability beyond derivatives
 
 - **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
 - **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
@@ -121,7 +98,7 @@ to speculative:
 
 ---
 
-## 9. Scale
+## 8. Scale
 
 The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
 
@@ -131,7 +108,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 10. Ecosystem reach
+## 9. Ecosystem reach
 
 - **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
@@ -139,7 +116,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 11. Quality of implementation
+## 10. Quality of implementation
 
 - **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 41 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
@@ -149,10 +126,9 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## Suggested sequencing
 
-1. ~~**Multi-file / transient (§1)**~~ — done in v9.12.0.
-2. **Primitive constructors (§6, first item)** — a few days, and it improves testing, docs and every demo surface at once.
-3. **ML data handling (§3)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §4.
-4. **PhysicsNeMo reconnaissance (§4, first item)** — a written findings note before any code.
-5. **Polyhedral C-ABI exposure + geometric kernel (§2)** — lifts a real ceiling and unblocks OpenFOAM round-tripping.
-6. **Fuzzing (§11)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-7. **NURBS spike (§5)** — a documented investigation, scheduled independently of the rest.
+1. **Primitive constructors (§5, first item)** — a few days, and it improves testing, docs and every demo surface at once.
+2. **ML data handling (§2)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §3.
+3. **PhysicsNeMo reconnaissance (§3, first item)** — a written findings note before any code.
+4. **Polyhedral C-ABI exposure + geometric kernel (§1)** — lifts a real ceiling and unblocks OpenFOAM round-tripping.
+5. **Fuzzing (§10)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+6. **NURBS spike (§4)** — a documented investigation, scheduled independently of the rest.
