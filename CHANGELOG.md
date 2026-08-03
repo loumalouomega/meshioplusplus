@@ -8,6 +8,46 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.14.0 (2026-08-03)
+
+Original MDPA ids preserved on write — the write half of the roadmap's MDPA
+section, closing it in full (v9.13.0 shipped the read half). Both readers now
+attach `point_data`/`cell_data["mdpa:id"]` when a deck's node/element/condition
+ids were not already the trivial `1..n` a fresh write would produce, and both
+writers honour it when present, writing the original ids back instead of
+unconditionally renumbering. Notable points:
+
+- **Only when it matters**: a sequential (or id-less) deck picks up no
+  `mdpa:id` at all, so a read → write round trip of it stays on the exact old
+  code path — byte-identical output, not merely equivalent.
+- **Every reference resolves through the same written id** — connectivity,
+  `NodalData`/`ElementalData`/`ConditionalData` row keys, and `SubModelPart`
+  node/element/condition lists — never a bare `row + 1`/original id, so the
+  file stays internally consistent whichever numbering is actually used.
+- A **duplicate value** in either array is a `WriteError` (checked separately
+  for elements vs conditions, which have independent Kratos id namespaces),
+  since writing one would silently produce an ambiguous file. A missing,
+  wrong-length, or wrong-block-count array is treated as unrelated/stale
+  metadata and falls back to the old renumbering rather than partially
+  trusting it.
+- **Fixed a real, pre-existing correctness bug found along the way**: the
+  Python reference writer had always re-emitted `SubModelPartElements`/
+  `Conditions` membership using the raw original ids captured at read time,
+  which was already wrong whenever a plain read→write renumbered entities (the
+  universal case before this release) or reclassified one across the
+  Elements/Conditions boundary — silently producing a `SubModelPart` reference
+  to an id absent from the very file being written. Fixed by resolving each
+  raw id through the read-time id maps and the write-time id assignment,
+  rather than re-emitting it verbatim. `Begin Mesh`'s `MeshElements`/
+  `Conditions` (not `SubModelPart`) deliberately keep the old verbatim
+  behaviour, pinned by an existing test; `MeshNodes` gets the preserved-id
+  treatment like every other node reference.
+- New `meshioplusplus::kMdpaIdName` constant (`"mdpa:id"`), an additive header
+  change reviewed in `doc/abi_reviews.md`; `MESHIOPLUSPLUS_ABI_VERSION` stays
+  **5**.
+
+See [`doc/formats/mdpa.md`](doc/formats/mdpa.md#original-ids-preserved-on-write-v9-14-0).
+
 ## v9.13.0 (2026-08-03)
 
 Arbitrary MDPA node ids. The C++ reader required node ids to be exactly `1..n`
