@@ -29,6 +29,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -151,6 +152,10 @@ struct MdpaBlock {
     /// one, and deferring keeps the file id available for the error message.
     std::vector<std::int64_t> mConn;
     std::vector<std::int64_t> mProps;
+    /// Each row's raw file id, in append order -- captured unconditionally
+    /// (parallel to `mProps`) so the materialize pass can decide whether it is
+    /// worth keeping without having re-derived it.
+    std::vector<std::int64_t> mFileIds;
     std::size_t mCount = 0;
 };
 
@@ -506,6 +511,18 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     // `mPointIds` and unv.cpp's `label_to_index`, minus their unconditional cost.
     std::unordered_map<std::int64_t, std::size_t> node_ids;  // file id -> point row
     bool node_ids_dense = true;  // ids so far are exactly 1..num_points, in order
+    // Every node's raw file id, in file (row) order -- captured unconditionally
+    // (cheap: one push_back per row already being appended) so it is available
+    // at materialize time regardless of whether `node_ids_dense` ever flips.
+    std::vector<std::int64_t> raw_node_ids;
+    // Same "dense" idea as node ids, but tracked directly rather than lazily:
+    // elements and conditions each have their own independent 1-based counter,
+    // spanning every block of that kind in file order (not per block), which is
+    // exactly how the writer numbers them. The moment either counter's next
+    // expected value disagrees with a row's actual id, ids are no longer the
+    // trivial "renumber from 1" case and the original ones are worth keeping.
+    std::int64_t next_element_id = 1, next_condition_id = 1;
+    bool entities_dense = true;
     std::map<std::string, NDArray> field_data;
 
     // Staged data arrays, materialized after every block is known.
@@ -638,6 +655,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 // increases), so the check only runs where it can fire.
                 if (!node_ids_dense && !node_ids.emplace(id, num_points).second)
                     throw ReadError("MDPA: duplicate node id " + std::to_string(id));
+                raw_node_ids.push_back(id);
                 for (std::size_t c = t.size() - 3; c < t.size(); ++c) {
                     double v = 0.0;
                     if (!mdpa_parse_double(t[c], v))
@@ -715,6 +733,11 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                     blk.mConn[base + slot] = node;
                 }
                 blk.mProps.push_back(prop);
+                blk.mFileIds.push_back(id);
+                std::int64_t& next_id = is_condition ? next_condition_id : next_element_id;
+                if (id != next_id)
+                    entities_dense = false;
+                ++next_id;
                 const std::size_t row = blk.mCount++;
                 auto& id_map = is_condition ? condition_ids : element_ids;
                 id_map[id] = {blocks.size() - 1, row};
@@ -875,6 +898,17 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             pp[i] = coords[i];
         mesh.AssignPoints(std::move(pts));
     }
+    // Attach original node ids ONLY when they weren't already the trivial
+    // `1..n` renumbering the writer would produce anyway -- so a sequential (or
+    // id-less) deck's `Mesh` is untouched by this feature and a re-write is
+    // byte-identical to before. `write_mdpa` looks for this exact name.
+    if (!node_ids_dense) {
+        NDArray ids(DType::Int64, {num_points});
+        std::int64_t* ip = ids.As<std::int64_t>();
+        for (std::size_t i = 0; i < num_points; ++i)
+            ip[i] = raw_node_ids[i];
+        mesh.AddPointData(kMdpaIdName, std::move(ids));
+    }
 
     std::vector<NDArray> props;
     std::vector<std::size_t> block_base(blocks.size(), 0);
@@ -909,6 +943,23 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     }
     if (!blocks.empty())
         mesh.AddCellData("gmsh:physical", std::move(props));
+    // Same "only when it matters" rule as the node ids above: elements and
+    // conditions each have their own independent 1-based file-order counter,
+    // and only when EITHER disagreed with a trivial renumbering is the
+    // original id worth carrying -- so a fresh write of an untouched deck
+    // stays byte-identical, and a gapped/reclassified one round-trips.
+    if (!blocks.empty() && !entities_dense) {
+        std::vector<NDArray> ids;
+        ids.reserve(blocks.size());
+        for (const MdpaBlock& blk : blocks) {
+            NDArray a(DType::Int64, {blk.mCount});
+            std::int64_t* ap = a.As<std::int64_t>();
+            for (std::size_t i = 0; i < blk.mFileIds.size(); ++i)
+                ap[i] = blk.mFileIds[i];
+            ids.push_back(std::move(a));
+        }
+        mesh.AddCellData(kMdpaIdName, std::move(ids));
+    }
 
     for (auto& fd : field_data)
         mesh.AddFieldData(fd.first, std::move(fd.second));
@@ -1011,6 +1062,8 @@ std::size_t mdpa_components(const NDArray& rArray, std::size_t rows) {
 }
 
 bool mdpa_skip_point_data(const std::string& rName) {
+    if (rName == kMdpaIdName)
+        return true;
     const std::string suffix = "_fixed_status";
     if (rName.size() >= suffix.size() &&
         rName.compare(rName.size() - suffix.size(), suffix.size(), suffix) == 0)
@@ -1019,6 +1072,8 @@ bool mdpa_skip_point_data(const std::string& rName) {
 }
 
 bool mdpa_skip_cell_data(const std::string& rName) {
+    if (rName == kMdpaIdName)
+        return true;
     const std::string suffix = "_tag";
     if (rName.size() >= suffix.size() &&
         rName.compare(rName.size() - suffix.size(), suffix.size(), suffix) == 0)
@@ -1078,7 +1133,22 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     std::vector<std::vector<std::int64_t>> written_ids(nblocks);
     std::vector<std::size_t> block_base(nblocks, 0);
     {
+        // Honour cell_data["mdpa:id"] (kMdpaIdName) when the mesh carries one
+        // array per block AND every array's row count matches its block's cell
+        // count -- anything short of that is treated as unrelated/stale
+        // metadata and falls back to the old renumbering, exactly like the
+        // node-id check below. An id that survives is still validated for
+        // uniqueness (elements and conditions each have their own Kratos
+        // namespace, so a collision is only checked within its own kind) --
+        // writing a duplicate would silently produce an invalid Kratos deck.
+        bool preserve_entity_ids =
+            rMesh.HasCellData(kMdpaIdName) && rMesh.CellDataNumBlocks(kMdpaIdName) == nblocks;
+        for (std::size_t b = 0; preserve_entity_ids && b < nblocks; ++b)
+            if (rMesh.CellData(kMdpaIdName, b).Size() != rMesh.Cells(b).NumCells())
+                preserve_entity_ids = false;
+
         std::int64_t next_element = 1, next_condition = 1;
+        std::unordered_set<std::int64_t> seen_element_ids, seen_condition_ids;
         std::size_t running = 0;
         for (std::size_t b = 0; b < nblocks; ++b) {
             const auto cb = rMesh.Cells(b);
@@ -1107,8 +1177,19 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             block_base[b] = running;
             running += cb.NumCells();
             written_ids[b].resize(cb.NumCells());
-            for (std::size_t r = 0; r < cb.NumCells(); ++r)
-                written_ids[b][r] = is_condition[b] ? next_condition++ : next_element++;
+            std::unordered_set<std::int64_t>& seen =
+                is_condition[b] ? seen_condition_ids : seen_element_ids;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::int64_t wid =
+                    preserve_entity_ids ? detail::read_int(rMesh.CellData(kMdpaIdName, b), r)
+                                        : (is_condition[b] ? next_condition++ : next_element++);
+                if (!seen.insert(wid).second)
+                    throw WriteError("MDPA: duplicate " +
+                                     std::string(is_condition[b] ? "condition" : "element") +
+                                     " id " + std::to_string(wid) + " in cell_data['" +
+                                     std::string(kMdpaIdName) + "']");
+                written_ids[b][r] = wid;
+            }
         }
     }
 
@@ -1170,13 +1251,30 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
 
     // ---- Nodes ------------------------------------------------------------
     os << "Begin Nodes\n";
+    std::vector<std::int64_t> written_node_ids;
     {
         const NDArray& points = rMesh.Points();
         const std::size_t dim = rMesh.PointDim();
         const std::size_t np = rMesh.NumPoints();
+        // Honour point_data["mdpa:id"] (kMdpaIdName) when present and the right
+        // length; anything short of that (absent, wrong size, wrong dtype) is
+        // treated as unrelated metadata and falls back to the old row+1
+        // numbering. Values are validated for uniqueness -- a duplicate would
+        // silently produce an ambiguous file.
+        const bool preserve_node_ids =
+            rMesh.HasPointData(kMdpaIdName) && rMesh.PointData(kMdpaIdName).Size() == np;
+        written_node_ids.resize(np);
+        std::unordered_set<std::int64_t> seen_node_ids;
         char buf[64];
         for (std::size_t i = 0; i < np; ++i) {
-            os << " " << (i + 1);
+            const std::int64_t id = preserve_node_ids
+                                        ? detail::read_int(rMesh.PointData(kMdpaIdName), i)
+                                        : static_cast<std::int64_t>(i) + 1;
+            if (!seen_node_ids.insert(id).second)
+                throw WriteError("MDPA: duplicate node id " + std::to_string(id) +
+                                 " in point_data['" + std::string(kMdpaIdName) + "']");
+            written_node_ids[i] = id;
+            os << " " << id;
             for (std::size_t c = 0; c < 3; ++c) {
                 const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
                 std::snprintf(buf, sizeof(buf), "%.16e", v);
@@ -1203,7 +1301,13 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             os << "  " << written_ids[b][r] << " " << prop;
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t slot = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                os << " " << (detail::read_int(conn, r * k + slot) + 1);
+                // Through `written_node_ids`, not a bare `+ 1`: connectivity
+                // must name whichever node numbering was actually written
+                // (preserved or row+1), the same rule the Nodes block itself
+                // and the SubModelPart node lists follow.
+                const std::size_t row =
+                    static_cast<std::size_t>(detail::read_int(conn, r * k + slot));
+                os << " " << written_node_ids[row];
             }
             os << "\n";
         }
@@ -1227,7 +1331,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                     all_nan = false;
             if (all_nan)
                 continue;
-            os << "  " << (i + 1);
+            os << "  " << written_node_ids[i];
             if (has_fixed) {
                 const std::int64_t f = detail::read_int(rMesh.PointData(fixed_name), i);
                 if (f >= 0)
@@ -1292,7 +1396,10 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             const std::int64_t* e = r.Entries();
             for (std::size_t j = 0; j < r.NumEntries(); ++j) {
                 if (r.mKind == RegionKind::Point) {
-                    nodes.push_back(e[j] + 1);
+                    // `written_node_ids` already reflects whichever numbering
+                    // was actually written (preserved or row+1), so this stays
+                    // consistent with the Nodes block above with no extra work.
+                    nodes.push_back(written_node_ids[static_cast<std::size_t>(e[j])]);
                     continue;
                 }
                 // Cell region: global block-major index -> (block, row) -> id.
