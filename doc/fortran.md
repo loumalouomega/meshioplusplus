@@ -175,3 +175,35 @@ time_step=k)`, with `mio_read_metadata(path)%time_values` reporting the steps.
 poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it
 can `add_point_data` into before `write_data`. `MdpaInfo` is likewise absent, as
 for every flat binding.
+
+## Sequences (transient / multi-file datasets)
+
+`type(mio_sequence)` wraps the C API's ordered plan over a set of files (or the
+steps inside one multi-step file). Ordering is natural-numeric, so `out_9.vtu`
+precedes `out_10.vtu`; nothing is read until `%read_step`, and the sequence
+caches nothing, so a 500-step dataset is traversable without materialising it.
+
+```fortran
+type(mio_sequence) :: seq
+type(mio_mesh) :: step
+integer :: i
+
+call seq%open('out_*.vtu')
+do i = 1, int(seq%count())
+    step = seq%read_step(i)          ! OWNED; free it yourself
+    print *, seq%time(i), seq%time_source(i)
+    call step%free()
+end do
+call seq%to_timeseries('series.xdmf')            ! fan-in
+call seq%free()
+
+call mio_timeseries_to_sequence('series.xdmf', 'step_{step}.vtu')  ! fan-out
+call mio_sequence_pipeline_run_file('transient.json')              ! per-step chain
+```
+
+Indices are 1-based, like every other Fortran accessor, and handles are freed
+explicitly (`%free()`) exactly as `mio_mesh` is — there is no finalizer. Every
+fallible procedure takes the usual optional `stat`/`errmsg`.
+
+See [sequences](sequences.md) for the ordering rule, the time-value precedence
+and the streaming guarantee.

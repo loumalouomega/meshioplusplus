@@ -73,6 +73,7 @@
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -115,6 +116,16 @@ struct mio_xdmf_series {
     // Held by value: the writer is already move-only and owns its open
     // heavy-data container, so the handle is just the C-side name for it.
     meshioplusplus::XdmfTimeSeriesWriter mWriter;
+};
+
+/// The PLAN for a sequence -- paths, per-file step indices and times. It owns
+/// no mesh, deliberately: caching what it handed out is exactly the
+/// accumulation the streaming guarantee forbids, which is why
+/// mio_sequence_read returns an OWNED mesh rather than a borrow.
+struct mio_sequence {
+    std::vector<meshioplusplus::SequenceEntry> mEntries;
+    std::string mFormat;
+    meshioplusplus::ReadOptions mOptions;
 };
 
 struct mio_split_result {
@@ -788,6 +799,53 @@ void mio_write_opts_init(mio_write_opts* opts) {
     *opts = mio_write_opts{};  // value-initialized: all zero == mio_write()
 }
 
+namespace {
+
+/// mio_write_opts -> WriteOptions, shared by mio_write_ex and
+/// mio_sequence_to_timeseries_ex. Returns MIO_ERR_INVALID_ARG (via fail(),
+/// which sets the thread-local message) on a bad enum value; MIO_OK otherwise.
+mio_status write_opts_to_cxx(const mio_write_opts& rOpts, meshioplusplus::WriteOptions& rOut) {
+    switch (rOpts.encoding) {
+        case MIO_ENCODING_DEFAULT:
+            break;
+        case MIO_ENCODING_ASCII:
+            rOut.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+            break;
+        case MIO_ENCODING_BINARY:
+            rOut.mEncoding = meshioplusplus::WriteEncoding::Binary;
+            break;
+        default:
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.encoding");
+    }
+    switch (rOpts.codec) {
+        case MIO_CODEC_DEFAULT:
+            break;
+        case MIO_CODEC_NONE:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::None;
+            rOut.mCodecSet = true;
+            break;
+        case MIO_CODEC_ZLIB:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
+            rOut.mCodecSet = true;
+            break;
+        case MIO_CODEC_LZ4:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::LZ4;
+            rOut.mCodecSet = true;
+            break;
+        case MIO_CODEC_ZSTD:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::ZSTD;
+            rOut.mCodecSet = true;
+            break;
+        default:
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.codec");
+    }
+    if (rOpts.float_format)
+        rOut.mFloatFormat = rOpts.float_format;
+    return MIO_OK;
+}
+
+}  // namespace
+
 mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
                         const mio_write_opts* opts) {
     return guarded([&]() -> mio_status {
@@ -797,42 +855,9 @@ mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* form
             return mio_write(path, mesh, format);
 
         meshioplusplus::WriteOptions w;
-        switch (opts->encoding) {
-            case MIO_ENCODING_DEFAULT:
-                break;
-            case MIO_ENCODING_ASCII:
-                w.mEncoding = meshioplusplus::WriteEncoding::Ascii;
-                break;
-            case MIO_ENCODING_BINARY:
-                w.mEncoding = meshioplusplus::WriteEncoding::Binary;
-                break;
-            default:
-                return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.encoding");
-        }
-        switch (opts->codec) {
-            case MIO_CODEC_DEFAULT:
-                break;
-            case MIO_CODEC_NONE:
-                w.mCodec = meshioplusplus::detail::VtkCodec::None;
-                w.mCodecSet = true;
-                break;
-            case MIO_CODEC_ZLIB:
-                w.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
-                w.mCodecSet = true;
-                break;
-            case MIO_CODEC_LZ4:
-                w.mCodec = meshioplusplus::detail::VtkCodec::LZ4;
-                w.mCodecSet = true;
-                break;
-            case MIO_CODEC_ZSTD:
-                w.mCodec = meshioplusplus::detail::VtkCodec::ZSTD;
-                w.mCodecSet = true;
-                break;
-            default:
-                return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.codec");
-        }
-        if (opts->float_format)
-            w.mFloatFormat = opts->float_format;
+        const mio_status opt_status = write_opts_to_cxx(*opts, w);
+        if (opt_status != MIO_OK)
+            return opt_status;
 
         meshioplusplus::registry_write_ex(path, mesh->mMesh, format_or_empty(format), w);
         return MIO_OK;
@@ -2668,6 +2693,200 @@ mio_status mio_pipeline_run_json(const char* json_text) {
         if (!json_text)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: json_text is NULL");
         meshioplusplus::run_pipeline_json(json_text);
+        return MIO_OK;
+    });
+}
+
+namespace {
+
+/// mio_sequence_opts -> SequenceInput, shared by the three open* entry points.
+meshioplusplus::SequenceInput seq_input_from_opts(const mio_sequence_opts* pOpts) {
+    meshioplusplus::SequenceInput in;
+    if (!pOpts)
+        return in;
+    if (pOpts->format)
+        in.mFormat = pOpts->format;
+    if (pOpts->times && pOpts->num_times > 0)
+        in.mTimes.assign(pOpts->times, pOpts->times + pOpts->num_times);
+    switch (pOpts->time_from) {
+        case 1:
+            in.mTimeFrom = meshioplusplus::SequenceTimeFrom::File;
+            break;
+        case 2:
+            in.mTimeFrom = meshioplusplus::SequenceTimeFrom::Filename;
+            break;
+        case 3:
+            in.mTimeFrom = meshioplusplus::SequenceTimeFrom::Index;
+            break;
+        default:
+            in.mTimeFrom = meshioplusplus::SequenceTimeFrom::Auto;
+            break;
+    }
+    in.mSortExplicit = pOpts->sort != 0;
+    return in;
+}
+
+mio_sequence* seq_open(meshioplusplus::SequenceInput in) {
+    auto* out = new mio_sequence{};
+    out->mEntries = meshioplusplus::sequence_expand(in);
+    out->mFormat = in.mFormat;
+    out->mOptions = in.mOptions;
+    return out;
+}
+
+const meshioplusplus::SequenceEntry& seq_entry(const mio_sequence* pSeq, int64_t Index) {
+    if (!pSeq)
+        throw meshioplusplus::ReadError("meshio++: sequence is NULL");
+    if (Index < 0 || static_cast<std::size_t>(Index) >= pSeq->mEntries.size())
+        throw meshioplusplus::ReadError("meshio++: sequence entry index out of range");
+    return pSeq->mEntries[static_cast<std::size_t>(Index)];
+}
+
+}  // namespace
+
+void mio_sequence_opts_init(mio_sequence_opts* opts) {
+    if (opts)
+        *opts = mio_sequence_opts{};
+}
+
+mio_sequence* mio_sequence_open(const char* pattern) {
+    return mio_sequence_open_ex(pattern, nullptr);
+}
+
+mio_sequence* mio_sequence_open_ex(const char* pattern, const mio_sequence_opts* opts) {
+    return guarded_ptr(static_cast<mio_sequence*>(nullptr), [&]() -> mio_sequence* {
+        if (!pattern)
+            throw meshioplusplus::ReadError("meshio++: pattern is NULL");
+        meshioplusplus::SequenceInput in = seq_input_from_opts(opts);
+        in.mPattern = pattern;
+        return seq_open(std::move(in));
+    });
+}
+
+mio_sequence* mio_sequence_open_list(const char* const* paths, int64_t num_paths,
+                                     const mio_sequence_opts* opts) {
+    return guarded_ptr(static_cast<mio_sequence*>(nullptr), [&]() -> mio_sequence* {
+        if (!paths || num_paths <= 0)
+            throw meshioplusplus::ReadError("meshio++: paths is NULL or empty");
+        meshioplusplus::SequenceInput in = seq_input_from_opts(opts);
+        for (int64_t i = 0; i < num_paths; ++i) {
+            if (!paths[i])
+                throw meshioplusplus::ReadError("meshio++: a path in the list is NULL");
+            in.mPaths.emplace_back(paths[i]);
+        }
+        return seq_open(std::move(in));
+    });
+}
+
+int64_t mio_sequence_count(const mio_sequence* seq) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!seq)
+            throw meshioplusplus::ReadError("meshio++: sequence is NULL");
+        return static_cast<int64_t>(seq->mEntries.size());
+    });
+}
+
+int64_t mio_sequence_path(const mio_sequence* seq, int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        return copy_string(seq_entry(seq, index).mPath, buf, buflen);
+    });
+}
+
+int64_t mio_sequence_step(const mio_sequence* seq, int64_t index) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        return static_cast<int64_t>(seq_entry(seq, index).mStep);
+    });
+}
+
+mio_status mio_sequence_time(const mio_sequence* seq, int64_t index, double* out_time) {
+    return guarded([&]() -> mio_status {
+        if (!out_time)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: out_time is NULL");
+        *out_time = seq_entry(seq, index).mTime;
+        return MIO_OK;
+    });
+}
+
+int32_t mio_sequence_time_source(const mio_sequence* seq, int64_t index) {
+    return guarded_ptr(static_cast<int32_t>(-1), [&]() -> int32_t {
+        return static_cast<int32_t>(seq_entry(seq, index).mTimeSource);
+    });
+}
+
+mio_mesh* mio_sequence_read(mio_sequence* seq, int64_t index) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        seq_entry(seq, index);  // bounds/NULL check with the shared message
+        return new mio_mesh{meshioplusplus::sequence_read_step(
+            seq->mEntries, static_cast<std::size_t>(index), seq->mFormat, seq->mOptions)};
+    });
+}
+
+void mio_sequence_free(mio_sequence* seq) {
+    delete seq;
+}
+
+mio_status mio_sequence_to_timeseries(const mio_sequence* seq, const char* out_path,
+                                      const char* out_format) {
+    return mio_sequence_to_timeseries_ex(seq, out_path, out_format, nullptr);
+}
+
+mio_status mio_sequence_to_timeseries_ex(const mio_sequence* seq, const char* out_path,
+                                         const char* out_format, const mio_write_opts* opts) {
+    return guarded([&]() -> mio_status {
+        if (!seq || !out_path)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: sequence/out_path is NULL");
+        // Rebuild the input from the plan rather than re-globbing: the handle's
+        // entries (and their resolved times) are what the caller inspected.
+        meshioplusplus::SequenceInput in;
+        for (const meshioplusplus::SequenceEntry& e : seq->mEntries)
+            in.mPaths.push_back(e.mPath);
+        in.mFormat = seq->mFormat;
+        in.mOptions = seq->mOptions;
+        for (const meshioplusplus::SequenceEntry& e : seq->mEntries)
+            in.mTimes.push_back(e.mTime);
+        meshioplusplus::SequenceOutput out;
+        out.mPath = out_path;
+        if (out_format)
+            out.mFormat = out_format;
+        if (opts) {
+            const mio_status opt_status = write_opts_to_cxx(*opts, out.mOptions);
+            if (opt_status != MIO_OK)
+                return opt_status;
+        }
+        meshioplusplus::sequence_to_timeseries(in, out);
+        return MIO_OK;
+    });
+}
+
+mio_status mio_timeseries_to_sequence(const char* in_path, const char* in_format,
+                                      const char* out_pattern, const char* out_format) {
+    return guarded([&]() -> mio_status {
+        if (!in_path || !out_pattern)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: in_path/out_pattern is NULL");
+        meshioplusplus::SequenceOutput out;
+        out.mPath = out_pattern;
+        if (out_format)
+            out.mFormat = out_format;
+        meshioplusplus::timeseries_to_sequence(in_path, in_format ? in_format : "",
+                                               meshioplusplus::ReadOptions{}, out);
+        return MIO_OK;
+    });
+}
+
+mio_status mio_sequence_pipeline_run_file(const char* settings_path) {
+    return guarded([&]() -> mio_status {
+        if (!settings_path)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: settings_path is NULL");
+        meshioplusplus::run_sequence_file(settings_path);
+        return MIO_OK;
+    });
+}
+
+mio_status mio_sequence_pipeline_run_json(const char* json_text) {
+    return guarded([&]() -> mio_status {
+        if (!json_text)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: json_text is NULL");
+        meshioplusplus::run_sequence_json(json_text);
         return MIO_OK;
     });
 }

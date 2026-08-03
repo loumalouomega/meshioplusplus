@@ -268,3 +268,34 @@ The suite uses the same deliberately non-square fixture as [`tests/fortran/test_
 `flush!` is named with a bang for the same reason `finalize!` is: `Base.flush`
 means "flush this IO stream". `MdpaInfo` is not exposed (as for every flat
 binding).
+
+## Sequences (transient / multi-file datasets)
+
+`Sequence` wraps the C API's ordered plan over a set of files (or the steps
+inside one multi-step file). Ordering is natural-numeric, so `out_9.vtu`
+precedes `out_10.vtu`; nothing is read until `read_step`, and the sequence
+caches nothing, so a 500-step dataset is traversable without materialising it.
+
+```julia
+seq = Sequence("out_*.vtu")               # or Sequence(["a.vtu", "b.vtu"])
+for i in 1:length(seq)
+    mesh = read_step(seq, i)              # OWNED; one mesh alive at a time
+    @show MeshioPlusPlus.time(seq, i), MeshioPlusPlus.time_source(seq, i)
+end
+to_timeseries(seq, "series.xdmf")         # fan-in
+to_timeseries(seq, "series2.xdmf"; ascii=true)  # "XML" data format, no HDF5 needed
+close(seq)
+
+timeseries_to_sequence("series.xdmf", "step_{step}.vtu")   # fan-out
+run_sequence_file("transient.json")                        # per-step chain
+```
+
+`Sequence` is also iterable (`for mesh in seq`), and has a `do`-block form that
+closes the handle even if the body throws.
+
+**Not exported**, because they shadow `Base`: `path`, `step`, `time`,
+`time_source`. Reach them as `MeshioPlusPlus.time(seq, i)` — the same rule the
+binding already applies to `read`/`write`/`split`.
+
+See [sequences](sequences.md) for the ordering rule, the time-value precedence
+and the streaming guarantee.

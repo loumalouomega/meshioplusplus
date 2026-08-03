@@ -83,6 +83,7 @@ typedef struct mio_diff_result mio_diff_result;
 /** Opaque result of mio_split(): the ordered submesh pieces. Destroy with
  *  mio_split_result_free(). */
 typedef struct mio_split_result mio_split_result;
+typedef struct mio_sequence mio_sequence;
 
 /** Opaque result of mio_convert_cells(): the converted mesh plus the point/cell
  *  index maps. Destroy with mio_convert_cells_result_free(). */
@@ -215,7 +216,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 9
-#define MIO_VERSION_MINOR 11
+#define MIO_VERSION_MINOR 12
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1992,8 +1993,142 @@ MIO_API mio_status mio_pipeline_run_file(const char* settings_path);
  */
 MIO_API mio_status mio_pipeline_run_json(const char* json_text);
 
+
 /** @return 1 when this build carries the JSON pipeline parser, else 0. */
 MIO_API int32_t mio_pipeline_has_json(void);
+
+/* ---------------------------------------------------------------------------
+ * Sequences: multi-file / transient datasets (doc/sequences.md).
+ *
+ * A sequence is an ordered plan -- files, the step inside each, and a time
+ * value -- built once by mio_sequence_open*, then read ONE STEP AT A TIME.
+ * That is the whole point: a 500-step dataset must be traversable without
+ * materializing it, so this handle stores the plan and never a mesh.
+ *
+ * Ordering is natural-numeric, so out_9.vtu precedes out_10.vtu.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Options for opening a sequence.
+ *
+ * Same append-only rule as mio_read_opts / mio_write_opts: new fields may only
+ * replace `reserved` capacity, never reorder or resize an existing one. Always
+ * zero-initialize through mio_sequence_opts_init().
+ */
+typedef struct mio_sequence_opts {
+    const char* format;  /**< NULL/"" resolves per file (with the sniff fallback). */
+    const double* times; /**< explicit per-entry times, or NULL to derive them. */
+    int64_t num_times;   /**< length of `times`; 0 when it is NULL. */
+    int32_t time_from;   /**< 0 auto, 1 file, 2 filename, 3 index. */
+    int32_t sort;        /**< nonzero also natural-sorts an explicit path LIST. */
+    int64_t reserved[6]; /**< must be zero; room for additive growth. */
+} mio_sequence_opts;
+
+/** Zero-initialize `opts` to the documented defaults. */
+MIO_API void mio_sequence_opts_init(mio_sequence_opts* opts);
+
+/**
+ * Open a sequence from a glob pattern (`*` and `?` only; the directory part is
+ * taken literally). A pattern matching nothing is an error, never an empty
+ * sequence.
+ * @return a handle (free with mio_sequence_free), or NULL on failure.
+ */
+MIO_API mio_sequence* mio_sequence_open(const char* pattern);
+
+/** mio_sequence_open with options; `opts` may be NULL for the defaults. */
+MIO_API mio_sequence* mio_sequence_open_ex(const char* pattern,
+                                           const mio_sequence_opts* opts);
+
+/**
+ * Open a sequence from an explicit, ordered path list. The order is the
+ * caller's and is kept unless `opts->sort` asks otherwise.
+ * @return a handle (free with mio_sequence_free), or NULL on failure.
+ */
+MIO_API mio_sequence* mio_sequence_open_list(const char* const* paths, int64_t num_paths,
+                                             const mio_sequence_opts* opts);
+
+/** Number of steps in the sequence, or -1 on error. */
+MIO_API int64_t mio_sequence_count(const mio_sequence* seq);
+
+/**
+ * Copy entry `index`'s file path into `buf`.
+ * @return the untruncated length, or -1 on error (string-getter protocol).
+ */
+MIO_API int64_t mio_sequence_path(const mio_sequence* seq, int64_t index, char* buf,
+                                  int64_t buflen);
+
+/** Entry `index`'s step index WITHIN its file (0 for a single-step file), or -1. */
+MIO_API int64_t mio_sequence_step(const mio_sequence* seq, int64_t index);
+
+/** Write entry `index`'s time value to `out_time`. */
+MIO_API mio_status mio_sequence_time(const mio_sequence* seq, int64_t index, double* out_time);
+
+/**
+ * Where entry `index`'s time came from: 0 explicit, 1 file, 2 filename,
+ * 3 index (the fallback). -1 on error.
+ *
+ * Reported rather than left to be guessed: "this time is 0.25 because the file
+ * said so" and "this time is 3 because nothing said anything" are different
+ * facts, and a caller plotting against it needs to know which it has.
+ */
+MIO_API int32_t mio_sequence_time_source(const mio_sequence* seq, int64_t index);
+
+/**
+ * Read entry `index`.
+ *
+ * The returned mesh is OWNED -- free it with mio_mesh_free(). Deliberately not
+ * the borrow shape mio_split_result_mesh() uses: a borrow would force this
+ * handle to cache every mesh it handed out, which is exactly the accumulation
+ * the streaming guarantee forbids. The C ABI expresses the rule.
+ *
+ * @return a new owning mesh handle, or NULL on failure.
+ */
+MIO_API mio_mesh* mio_sequence_read(mio_sequence* seq, int64_t index);
+
+/** Free a sequence handle. The meshes it produced are unaffected (it owns none). */
+MIO_API void mio_sequence_free(mio_sequence* seq);
+
+/**
+ * Fan-in: write every step of `seq` into one multi-step file at `out_path`.
+ *
+ * Streams -- one mesh alive at a time. A format that cannot hold a series
+ * fails naming itself and pointing at '{step}', never a silent truncation to
+ * the first step.
+ */
+MIO_API mio_status mio_sequence_to_timeseries(const mio_sequence* seq, const char* out_path,
+                                              const char* out_format);
+
+/**
+ * mio_sequence_to_timeseries with write options (currently only `encoding` is
+ * meaningful here: MIO_ENCODING_ASCII selects the XDMF "XML" data format --
+ * everything inline, no HDF5 needed -- while the default/MIO_ENCODING_BINARY
+ * selects "HDF", which needs an HDF5-enabled build). `opts` may be NULL for
+ * mio_sequence_to_timeseries's defaults. `codec`/`float_format` are accepted
+ * but XDMF honours neither, so non-default values there fail by name exactly
+ * as mio_write_ex's do.
+ */
+MIO_API mio_status mio_sequence_to_timeseries_ex(const mio_sequence* seq, const char* out_path,
+                                                 const char* out_format,
+                                                 const mio_write_opts* opts);
+
+/**
+ * Fan-out: write each step of the multi-step file `in_path` to `out_pattern`,
+ * which must contain '{step}' or '{index}'. Streams likewise.
+ */
+MIO_API mio_status mio_timeseries_to_sequence(const char* in_path, const char* in_format,
+                                              const char* out_pattern, const char* out_format);
+
+/**
+ * Run a sequence settings document (the pipeline schema plus Mode /
+ * Input.Pattern / Input.Paths / Input.Times / Input.TimeFrom). A document
+ * using none of those behaves exactly as mio_pipeline_run_file would.
+ *
+ * Needs the JSON parser, like the pipeline entry points above.
+ */
+MIO_API mio_status mio_sequence_pipeline_run_file(const char* settings_path);
+
+/** mio_sequence_pipeline_run_file over JSON text. */
+MIO_API mio_status mio_sequence_pipeline_run_json(const char* json_text);
 
 #ifdef __cplusplus
 }

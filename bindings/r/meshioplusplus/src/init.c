@@ -84,6 +84,19 @@ extern SEXP R_mio_data_calc(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_condition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_info(SEXP);
 extern SEXP R_mio_pipeline_run_file(SEXP);
+extern SEXP R_mio_sequence_open(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_sequence_open_list(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_sequence_count(SEXP);
+extern SEXP R_mio_sequence_path(SEXP, SEXP);
+extern SEXP R_mio_sequence_step(SEXP, SEXP);
+extern SEXP R_mio_sequence_time(SEXP, SEXP);
+extern SEXP R_mio_sequence_time_source(SEXP, SEXP);
+extern SEXP R_mio_sequence_read(SEXP, SEXP);
+extern SEXP R_mio_sequence_free(SEXP);
+extern SEXP R_mio_sequence_to_timeseries(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_timeseries_to_sequence(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_sequence_pipeline_run_file(SEXP);
+extern SEXP R_mio_sequence_pipeline_run_json(SEXP);
 extern SEXP R_mio_pipeline_run_json(SEXP);
 extern SEXP R_mio_pipeline_has_json(void);
 
@@ -173,6 +186,19 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_data_condition, 10),
     CALLDEF(R_mio_data_info, 1),
     CALLDEF(R_mio_pipeline_run_file, 1),
+    CALLDEF(R_mio_sequence_open, 5),
+    CALLDEF(R_mio_sequence_open_list, 5),
+    CALLDEF(R_mio_sequence_count, 1),
+    CALLDEF(R_mio_sequence_path, 2),
+    CALLDEF(R_mio_sequence_step, 2),
+    CALLDEF(R_mio_sequence_time, 2),
+    CALLDEF(R_mio_sequence_time_source, 2),
+    CALLDEF(R_mio_sequence_read, 2),
+    CALLDEF(R_mio_sequence_free, 1),
+    CALLDEF(R_mio_sequence_to_timeseries, 4),
+    CALLDEF(R_mio_timeseries_to_sequence, 4),
+    CALLDEF(R_mio_sequence_pipeline_run_file, 1),
+    CALLDEF(R_mio_sequence_pipeline_run_json, 1),
     CALLDEF(R_mio_pipeline_run_json, 1),
     CALLDEF(R_mio_pipeline_has_json, 0),
     CALLDEF(R_mio_xdmf_series_create, 5),
@@ -192,6 +218,7 @@ void attribute_visible R_init_meshioplusplus(DllInfo *dll) {
      * what makes a foreign pointer an error rather than a crash. */
     mio_r_mesh_tag = Rf_install("mio_mesh_handle");
     mio_r_series_tag = Rf_install("mio_xdmf_series_handle");
+    mio_r_sequence_tag = Rf_install("mio_sequence_handle");
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
     R_forceSymbols(dll, TRUE);

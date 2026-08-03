@@ -187,7 +187,7 @@ endif()
 
 ```cmake
 # Conservative, and still fully supported: pin the release.
-find_package(meshioplusplus 9.10.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.12.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 Both are correct. The second is stricter than it needs to be, and that is a legitimate choice —

@@ -490,6 +490,111 @@ def tool_convert(
     return _result(resolved, mesh, output_format=out_fmt)
 
 
+def _resolve_pattern(pattern):
+    """Resolve a glob pattern inside the sandbox and return its matched files.
+
+    ``_resolve(..., must_exist=True)`` uses ``os.path.isfile`` and so rejects a
+    pattern outright, and a pattern's *directory* component is the obvious
+    escape hatch (``../*.vtu``, ``/etc/*``) -- so the directory is resolved and
+    containment-checked first, and every matched file then goes back through
+    ``_resolve`` individually.
+    """
+    from .._sequence import glob_match
+
+    raw = os.path.expanduser(str(pattern))
+    # os.path.split, not a manual os.sep rpartition: on Windows os.sep is
+    # '\\' alone, while ntpath (and every caller here) also accepts '/' --
+    # a manual rpartition(os.sep) would treat the whole of "../*.vtu" as the
+    # filename part, silently skipping the containment check on the '..'
+    # component instead of rejecting it.
+    head, base = os.path.split(raw)
+    if "*" in head or "?" in head:
+        raise ValueError(
+            "meshio++: mcp: the directory part of a pattern is taken literally, "
+            f"so '{head}' cannot contain '*' or '?'"
+        )
+    # Resolve the directory through the same containment check as any path.
+    directory = _resolve(head or ".")
+    if not os.path.isdir(directory):
+        raise ValueError(f"meshio++: mcp: pattern directory not found: '{directory}'")
+    matched = sorted(
+        os.path.join(directory, name)
+        for name in os.listdir(directory)
+        if glob_match(base, name) and os.path.isfile(os.path.join(directory, name))
+    )
+    if not matched:
+        raise ValueError(f"meshio++: mcp: pattern '{pattern}' matched no files")
+    return [_resolve(path, must_exist=True) for path in matched]
+
+
+def tool_sequence(
+    input_pattern=None,
+    input_paths=None,
+    output_path=None,
+    mode=None,
+    times=None,
+    time_from="auto",
+    input_format=None,
+    output_format=None,
+):
+    """Run a multi-file / transient sequence: fan-in, fan-out or N->N."""
+    from .. import run_sequence_pipeline, sequence_entries
+    from .._sequence import pattern_has_token
+
+    if (input_pattern is None) == (input_paths is None):
+        raise ValueError(
+            "meshio++: mcp: give exactly one of input_pattern or input_paths"
+        )
+    if not output_path:
+        raise ValueError("meshio++: mcp: output_path is required")
+
+    if input_pattern is not None:
+        resolved_in = _resolve_pattern(input_pattern)
+    else:
+        resolved_in = [_resolve(p, must_exist=True) for p in input_paths]
+
+    # The output is a pattern for a fan-out; _resolve its directory the same way
+    # so a '{step}' path cannot escape the sandbox either.
+    if pattern_has_token(output_path):
+        probe = str(output_path).replace("{step}", "0").replace("{index}", "0")
+        resolved_probe = _resolve(probe, for_write=True)
+        resolved_out = os.path.join(
+            os.path.dirname(resolved_probe), os.path.basename(str(output_path))
+        )
+    else:
+        resolved_out = _resolve(output_path, for_write=True)
+
+    doc = {
+        "Version": 1,
+        "Input": {"Paths": resolved_in},
+        "Output": {"Path": resolved_out},
+    }
+    if mode:
+        doc["Mode"] = mode
+    if times is not None:
+        doc["Input"]["Times"] = [float(t) for t in times]
+    if time_from and time_from != "auto":
+        doc["Input"]["TimeFrom"] = time_from
+    if input_format:
+        doc["Input"]["Format"] = input_format
+    if output_format:
+        doc["Output"]["Format"] = output_format
+
+    entries = sequence_entries(
+        resolved_in,
+        file_format=input_format,
+        times=[float(t) for t in times] if times is not None else None,
+        time_from=time_from,
+    )
+    report = run_sequence_pipeline(doc)
+    report["steps_plan"] = [
+        {"path": e["path"], "time": e["time"], "time_source": e["time_source"]}
+        for e in entries
+    ]
+    report["output_path"] = resolved_out
+    return _json_safe(report)
+
+
 def tool_pipeline(settings_path, input_path=None, output_path=None):
     """Run a settings.json operation pipeline (read -> ops chain -> write)."""
     with open(_resolve(settings_path, must_exist=True), "r", encoding="utf-8") as f:
@@ -1135,6 +1240,18 @@ TOOL_REGISTRY = OrderedDict(
         (
             "pipeline",
             {"fn": tool_pipeline, "wraps": ("run_pipeline",), "gated": None},
+        ),
+        (
+            "sequence",
+            {
+                "fn": tool_sequence,
+                "wraps": (
+                    "write_sequence",
+                    "sequence_entries",
+                    "run_sequence_pipeline",
+                ),
+                "gated": None,
+            },
         ),
         (
             "extract_surface",

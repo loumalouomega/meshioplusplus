@@ -1,29 +1,90 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.11.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 5).
+Status at time of writing: **v9.12.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 5).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
 Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **XL** = a project in its own right.
 
----
-
-## 1. Multi-file and transient workflows
-
-**The gap.** Every entry point is single-mesh, single-file. XDMF has `TimeSeriesWriter` / `TimeSeriesReader`, and v9.11.0's pipeline processes one input to one output — but there is no way to treat a *set* of files as one logical dataset. This is how transient simulation output actually arrives (`out_0000.vtu … out_0500.vtu`), and how most formats have to express it, since only a minority carry multiple steps natively.
-
-- **Glob / sequence input across the CLI, pipeline and Python API.** `meshioplusplus convert 'out_*.vtu' out.xdmf`, and a pipeline whose `Input` is a pattern or an explicit list. Needs a documented ordering rule (natural-numeric sort, not lexicographic — `out_10` after `out_9`) and a time-value source: filename regex capture, an explicit list, or a per-file `field_data` key. **M**
-- **Fan-in: sequence → single multi-step file.** N single-step meshes into one XDMF time series (the writer exists; the driver does not). The natural companion is fan-out. **M**
-- **Fan-out: multi-step file → sequence.** One XDMF/Exodus/MED time series into `out_{step}.vtu`, using the `{key}`/`{part}` filename-pattern machinery `split` and `partition` already established. This is the answer for every format that cannot express time, which is most of them. **M**
-- **Per-step pipeline execution.** Run the v9.11.0 operation chain over every step of a sequence with one settings document — the single highest-value composition, since it turns the pipeline into a batch post-processor. **M**
-- **Parallel-over-files execution** (a process pool at the driver level, not inside the ops). Embarrassingly parallel and immediately useful on 500-step datasets. **S**
-- **A `TimeSeries` object in the data model** — an ordered `(time, Mesh)` sequence with lazy per-step reads, so a 500-step dataset can be traversed without materialising it. Only worth doing if the driver work above proves the abstraction is needed; do the drivers first. **L**
-
-*Recommended entry point: fan-out + fan-in + globbed input, since they need no data-model change and immediately make the pipeline useful for transient data.*
+Multi-file / transient workflows (glob input, fan-in/fan-out, per-step pipeline
+execution, and Python's `TimeSeries` for random-access "hold a series as one
+value") shipped in full in v9.12.0 across every language surface including
+WASM — see [`doc/sequences.md`](sequences.md) — and so no longer appears here.
 
 ---
 
-## 2. Polyhedral meshes
+## 0. MDPA: non-sequential node ids
+
+**The gap.** The C++ MDPA reader requires node ids to be exactly `1..n` in file
+order: the moment a `Begin Nodes` row's id does not equal `row_index + 1`,
+`mdpa.cpp` throws `"MDPA: non-sequential node ids are not supported by the C++
+reader"` — and this is one of the few constructs that still throws **even
+under `ReadOptions::mLenient`**, because skipping it would silently return a
+mesh that is *wrong*, not merely incomplete, which is the line `mLenient` is
+documented to never cross. Element and condition ids have no such
+restriction — they already read arbitrary, gapped numbering into an
+`id_map` — so this is a **node-only** gap. The pure-Python reference reader
+does not actually solve it either: `_mdpa.py` discards the id column on read
+and reconstructs `node_id_map = {i + 1: row_i}` from row position alone, so a
+genuinely non-sequential file would make it **silently misassign** coordinates
+and data rather than error — the same "quietly wrong mesh" outcome the C++
+reader's throw exists to prevent, just unguarded there. This is not a
+hypothetical file shape: `model_part.hpp`'s own `ModelPart` represents
+entities in an id-keyed hash map specifically *because* Kratos ids are 1-based
+but sparse by construction — SubModelPart extraction, node/element removal,
+and merging decks all routinely leave gaps in a real `.mdpa` file, which is
+exactly the input the reader currently refuses. And the writer never
+round-trips original ids regardless of gaps: nodes are always emitted as
+`row_index + 1`, and elements/conditions get two independent 1-based counters
+— a full write always renumbers everything to `1..n`, whatever the source ids
+were, so today's node restriction is only half of the round-trip fidelity
+problem.
+
+The reason the restriction exists at all is architectural: the uniform mesh
+API has no id-translation layer anywhere — `Mesh::Points()`/`Conn()` are dense
+0-based arrays where "point index `i`" *is* row `i`, full stop. A reader that
+wants arbitrary node ids has to build its own file-id → row-index map before
+touching connectivity, which `abaqus.cpp` (`mPointIds`) and `unv.cpp`
+(`label_to_index`) already do; mdpa is the one reader in the tree that instead
+leans on the "row == id − 1" invariant, which is precisely why a gap breaks it
+while abaqus/unv shrug at arbitrary numbering.
+
+- **A file-id → row-index map on read**, mirroring `abaqus.cpp`'s
+  `mPointIds`/`unv.cpp`'s `label_to_index`: accept every node id as an
+  arbitrary key instead of asserting `id == row + 1`, then resolve
+  `Begin Elements`/`Conditions`/`NodalData` connectivity through the map
+  rather than `id - 1`. Self-contained and low-risk — it only changes what the
+  reader accepts, not what a mesh looks like once read — and it alone closes
+  the reader-side throw on real Kratos decks with gaps. Ids are still not
+  preserved for round-tripping after this step. **S**
+- **Preserve original ids for a lossless round trip** — carry the file's
+  node/element ids out as `point_data`/`cell_data["mdpa:id"]` (or similar),
+  reusing MED's `"med:num"` `<format>:<thing>` convention rather than growing
+  the `MdpaInfo` side channel, which is unreachable from `registry_read` (the
+  same reason MED's own tag/family data moved onto the uniform-API region/
+  property-set mechanism in v9.2.0 rather than staying `MedInfo`-only). The
+  writer would then emit those ids when present instead of unconditionally
+  renumbering. **M**
+- **`SubModelPartElements`/`Conditions` already store raw, unrenumbered
+  1-based ids** (`doc/formats/mdpa.md`) — a smaller, already-tolerated
+  instance of the same class of gap. The id-preservation item above should
+  make that the *general* case rather than a SubModelPart-only special case.
+  Folds into that item rather than being separate work. **S**
+- **Extend the same map to any other id-keyed section** (`NodalData` and
+  friends) once the base map exists, since they resolve ids exactly the way
+  `Begin Elements` does today.
+
+*Recommended entry point: the read-side id map first — it is the actual
+blocker (a real, gapped Kratos deck cannot be read at all today), it is
+self-contained, and it does not require deciding the round-trip-fidelity
+question yet. Id preservation on write is a separate, larger piece of work,
+worth doing once the read side is solid and only if round-tripping through
+mdpa (rather than reading once and moving on) turns out to matter in
+practice.*
+
+---
+
+## 1. Polyhedral meshes
 
 **The gap.** Ragged polyhedron blocks exist in all three backends (`AddPolyhedronBlock`, CSR / nested storage, `CellView::NumFaces`/`Face`), and MED, EnSight `nfaced` and OpenFOAM read them. But they are second-class almost everywhere else: the C ABI reports `is_ragged` and then **cannot expose the connectivity at all**, most operations raise on them, and the geometric kernel (`cell_faces.hpp`) is a fixed table of canonical types with no polyhedral entry. Since OpenFOAM — the most-used open CFD code — is natively polyhedral, this is a real ceiling.
 
@@ -37,12 +98,12 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 3. Machine-learning data handling
+## 2. Machine-learning data handling
 
 **The gap.** v8.2.0 gave Arrow/Parquet export of `point_data`/`cell_data`, which is the right primitive but only the first step. ML pipelines want *datasets* (many meshes), tabular frames, batched tensors and stable feature layouts — none of which exist.
 
 - **pandas / polars frames** directly (`to_pandas(mesh, location=...)`), not only via pyarrow. Trivially thin over the existing table payload, and it is what people actually reach for. **S**
-- **Dataset-level export**: a *directory* of meshes → one partitioned Parquet dataset with a `mesh_id` column, using the multi-file machinery from §1. This is the format an ML training loop wants. **M**
+- **Dataset-level export**: a *directory* of meshes → one partitioned Parquet dataset with a `mesh_id` column, using the sequence machinery (see `doc/sequences.md`). This is the format an ML training loop wants. **M**
 - **Feature extraction helpers** — assemble a canonical per-node or per-cell feature matrix (coordinates, selected fields, derived quantities like `quality:*` or `|∇f|`, region one-hots) with a **stable, recorded column order**, so training and inference cannot silently disagree. The column-order contract is the whole value; make it explicit and versioned. **M**
 - **Graph export for GNNs**: node/edge index arrays in the layout PyTorch Geometric and DGL expect (`edge_index` as (2, E)), from the existing `node_adjacency` / cell-dual machinery. The cheapest genuinely ML-shaped feature in this list. **S–M**
 - **PyTorch / JAX tensor handoff** via the DLPack path already built for GPU (v-GPU work), so a mesh becomes a batch of device tensors without a file round-trip. Mostly already there — needs the framework-facing convenience layer and docs. **S**
@@ -52,12 +113,12 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 4. NVIDIA PhysicsNeMo integration
+## 3. NVIDIA PhysicsNeMo integration
 
 **The gap.** PhysicsNeMo (github.com/NVIDIA/physicsnemo) is the mainstream open Physics-ML framework, and its data ingestion is where most users write bespoke glue. meshio++ already has 41 readers, GPU/DLPack handoff, and the operations (`interpolate`, `partition`, `gradient`, `decimate`) that a training pipeline needs for preprocessing. A thin, well-documented bridge would let people train on simulation output without integrating their solver at all — which is exactly the friction PhysicsNeMo users hit.
 
 - **Reconnaissance first, and treat it as a real deliverable.** PhysicsNeMo's dataset/datapipe contracts, its mesh and point-cloud conventions, and its dependency weight (CUDA-specific, container-oriented) all need checking against the repo's "optional, gated, never in `[all]`" rule. Write the findings down before writing code — the CuPy packaging finding is the precedent for how this repo handles such constraints. **S**
-- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the §3 feature-matrix contract and the existing DLPack handoff. Pure Python, lazily imported, named install error. **M**
+- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the §2 feature-matrix contract and the existing DLPack handoff. Pure Python, lazily imported, named install error. **M**
 - **Preprocessing recipes as pipeline documents** — sampling, normalisation, surface extraction, decimation, partitioning into training patches — expressed as v9.11.0 `settings.json` files so they are reproducible and reviewable rather than notebook cells. A strong fit for the pipeline engine, and cheap once the adapter exists. **S–M**
 - **A worked end-to-end example**: simulation output → meshio++ preprocessing → PhysicsNeMo training → inference results read back as a mesh and rendered. The example *is* the feature; without it the adapter will not be adopted. **M**
 - **CI reality check**: PhysicsNeMo needs a GPU, which public runners do not have. Follow the precedent set for the GPU work — test the pure adapter logic without the framework, gate the rest, and state plainly that the integration path is not covered by public CI. **S**
@@ -66,7 +127,51 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 5. NURBS and higher-order geometry (long run)
+## 4. Remaining refinement and coarsening gaps
+
+`refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
+
+- **Volume decimation** — `decimate` is surface-only by documented design; tet-collapse validity is the hard part. **L**
+- **Refinement hierarchy across passes** — `refine:level` exists per pass; a persistent parent/child hierarchy is what multigrid and green-element undo need. **M**
+- **Error-estimator helpers** — now that `gradient` exists, a gradient-jump or recovery-based indicator that feeds `refine`'s selection directly closes the adaptive loop end to end. **M**
+
+---
+
+## 5. Field capability beyond derivatives
+
+- **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
+- **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
+- **Second derivatives / Hessian**, for curvature-based adaptivity. **M**
+
+---
+
+## 6. Scale
+
+The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
+
+- **A large-mesh benchmark tier** (10M+ cells) — cheap, and it would show whether the parallel paths actually hold. Do this before the two below, since it decides whether they matter. **S**
+- **Streaming / chunked writes**, the counterpart to the selective-read work. **L**
+- **Out-of-core operations** for the ops that are already block-local. **XL**
+
+---
+
+## 7. Ecosystem reach
+
+- **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
+- **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
+- **Registration and distribution** — conda-forge, CRAN, Julia General, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. **M**
+
+---
+
+## 8. Quality of implementation
+
+- **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 41 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
+- **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
+- **Property-based testing** (Hypothesis) over the invariants already articulated in the docs: partition-of-unity, volume conservation, conformity, byte-identical determinism. **M**
+
+---
+
+## 9. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -79,7 +184,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 6. Mesh generation
+## 10. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
@@ -90,62 +195,11 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 7. Remaining refinement and coarsening gaps
-
-`refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
-
-- **Volume decimation** — `decimate` is surface-only by documented design; tet-collapse validity is the hard part. **L**
-- **Refinement hierarchy across passes** — `refine:level` exists per pass; a persistent parent/child hierarchy is what multigrid and green-element undo need. **M**
-- **Error-estimator helpers** — now that `gradient` exists, a gradient-jump or recovery-based indicator that feeds `refine`'s selection directly closes the adaptive loop end to end. **M**
-
----
-
-## 8. Field capability beyond derivatives
-
-- **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
-- **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
-- **Second derivatives / Hessian**, for curvature-based adaptivity. **M**
-
----
-
-## 9. Scale
-
-The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
-
-- **A large-mesh benchmark tier** (10M+ cells) — cheap, and it would show whether the parallel paths actually hold. Do this before the two below, since it decides whether they matter. **S**
-- **Streaming / chunked writes**, the counterpart to the selective-read work. **L**
-- **Out-of-core operations** for the ops that are already block-local. **XL**
-
----
-
-## 10. Ecosystem reach
-
-- **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
-- **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
-- **Registration and distribution** — conda-forge, CRAN, Julia General, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. **M**
-
----
-
-## 11. Quality of implementation
-
-- **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 41 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
-- **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
-- **Property-based testing** (Hypothesis) over the invariants already articulated in the docs: partition-of-unity, volume conservation, conformity, byte-identical determinism. **M**
-
----
-
-## 12. MDPA: non-sequential node ids are not supported by the C++ reader
-
-Add support for non-sequential entity ids. Very important.
-
----
-
 ## Suggested sequencing
 
-1. **Multi-file / transient (§1)** — composes with the v9.11.0 pipeline, needs no data-model change, and is the most commonly hit limitation today.
-2. **Primitive constructors (§6, first item)** — a few days, and it improves testing, docs and every demo surface at once.
-3. **ML data handling (§3)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §4.
-4. **PhysicsNeMo reconnaissance (§4, first item)** — a written findings note before any code.
-5. **Polyhedral C-ABI exposure + geometric kernel (§2)** — lifts a real ceiling and unblocks OpenFOAM round-tripping.
-6. **Fuzzing (§11)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-7. **NURBS spike (§5)** — a documented investigation, scheduled independently of the rest.
+1. **Primitive constructors (§10, first item)** — a few days, and it improves testing, docs and every demo surface at once.
+2. **ML data handling (§2)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §3.
+3. **PhysicsNeMo reconnaissance (§3, first item)** — a written findings note before any code.
+4. **Polyhedral C-ABI exposure + geometric kernel (§1)** — lifts a real ceiling and unblocks OpenFOAM round-tripping.
+5. **Fuzzing (§8)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+6. **NURBS spike (§9)** — a documented investigation, scheduled independently of the rest.

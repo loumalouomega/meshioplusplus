@@ -63,6 +63,8 @@
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/write_options.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 
 namespace {
 
@@ -105,6 +107,24 @@ MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 256, 8);
 
+// The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
+// `run_sequence_pipeline(const SequencePipeline&)` are exported, and both
+// aggregates embed their Input/Output structs BY VALUE -- so adding a member to
+// `PipelineInput` silently shifts `Pipeline::mSteps` and `mOutput` under a
+// consumer compiled against older headers, which is exactly the Tier A break
+// this snapshot exists to make impossible to do by accident. These four went
+// unpinned from v9.11.0 (when `operations/pipeline.hpp` shipped) until v9.12.0,
+// which is what made growing them *look* free; that gap is what motivated
+// adding a whole new header for the sequence types instead.
+MIO_ABI_LAYOUT(meshioplusplus::PipelineStep, 80, 8);
+MIO_ABI_LAYOUT(meshioplusplus::PipelineInput, 120, 8);
+MIO_ABI_LAYOUT(meshioplusplus::PipelineOutput, 112, 8);
+MIO_ABI_LAYOUT(meshioplusplus::Pipeline, 264, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SequenceEntry, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SequenceInput, 176, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SequenceOutput, 112, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SequencePipeline, 336, 8);
+
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
 // its width is structural, not cosmetic. Appending an enumerator is fine (and
 // deliberately not caught here); widening the underlying type is not.
@@ -145,6 +165,14 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::PropertyValue>("PropertyValue");
     report<meshioplusplus::PropertySet>("PropertySet");
     report<meshioplusplus::MeshMetadata>("MeshMetadata");
+    report<meshioplusplus::PipelineStep>("PipelineStep");
+    report<meshioplusplus::PipelineInput>("PipelineInput");
+    report<meshioplusplus::PipelineOutput>("PipelineOutput");
+    report<meshioplusplus::Pipeline>("Pipeline");
+    report<meshioplusplus::SequenceEntry>("SequenceEntry");
+    report<meshioplusplus::SequenceInput>("SequenceInput");
+    report<meshioplusplus::SequenceOutput>("SequenceOutput");
+    report<meshioplusplus::SequencePipeline>("SequencePipeline");
     report<meshioplusplus::Mesh>("Mesh (this backend)");
 
 #if MIO_ABI_LAYOUT_PINNED

@@ -40,7 +40,7 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
   top-level key, or a mis-typed value is an error naming the offender — never
   silently ignored (the same rule `registry_write_ex` applies to `Output`
   options a format cannot honour).
-- **v1 is a single-mesh chain.** `Merge`, `Interpolate`, `Split` and `Diff`
+- **A chain runs over one mesh at a time.** `Merge`, `Interpolate`, `Split` and `Diff`
   need extra inputs or produce extra outputs, and a step naming one errors
   pointing at the matching CLI verb. `Partition` as a step attaches the
   `partition:part` labels (colour-by-part) rather than splitting into pieces.
@@ -93,6 +93,48 @@ An option the output format cannot honour is an error.
 | `DataCalc` | `Expr` (`"NAME = EXPRESSION"`, split on the **first** `=`), `Location` ("point"), `Overwrite` (false) | |
 | `DataCondition` | `Mode` ("clamp" \| "normalize" \| "standardize"), `Location` ("point"), `Names`, `Scope` ("component" \| "magnitude"), `Lo` (0), `Hi` (1), `NanPolicy` ("ignore"), `NanReplacement` (0), `Suffix` | |
 | `ToCell` / `ToPoint` | `Names`; `ToPoint` also `Weight` ("uniform" \| "measure") | |
+
+## Sequences (transient / multi-file runs)
+
+Since v9.12.0 the same document can describe a whole **transient** run: a
+glob/list input, the chain applied per step, and a fan-out or fan-in output.
+Seven additional keys, all optional:
+
+| Key | Where | Meaning |
+| --- | --- | --- |
+| `Mode` | top level | `"sequence"` / `"fan-in"` / `"fan-out"`; **asserts** the inferred shape rather than selecting it, and errors naming both on a mismatch |
+| `Parallel` | top level | run the steps in a process pool (**Python driver only**; an error for a fan-in, and the C++ engine warns and runs serially) |
+| `Workers` | top level | worker count for `Parallel`; 0 means one per core |
+| `Pattern` | `Input` | a glob (`*` and `?` only); mutually exclusive with `Path`/`Paths` |
+| `Paths` | `Input` | an explicit, ordered list; not re-sorted |
+| `Times` | `Input` | explicit per-step times; the count must match |
+| `TimeFrom` | `Input` | `"auto"` (the documented precedence) / `"file"` / `"filename"` / `"index"` |
+
+`Output.Path` may carry `{step}` or `{index}` to write one file per step.
+
+```json
+{
+  "Version": 1,
+  "Input": { "Pattern": "raw/out_*.vtu" },
+  "Operations": [{ "Op": "Quality" }, { "Op": "Clean" }],
+  "Output": { "Path": "post/out_{step}.vtu" }
+}
+```
+
+Two rules worth stating explicitly:
+
+- **A document using none of these keys behaves exactly as before** — the C++
+  engine literally delegates to the single-file `run_pipeline`, and Python's
+  `run_pipeline` never enters the sequence code path.
+- Conversely, the typed single-file parser (`parse_pipeline_json`) **rejects** a
+  sequence key by name rather than ignoring it. Ignoring one would run a
+  transient document as its first step, which is exactly the silent truncation
+  this feature exists to prevent. The CLI verb, Python's `run_pipeline` and the
+  MCP tool all route a sequence document to the right engine automatically, so
+  nobody has to know which kind of document they hold.
+
+See [sequences](sequences.md) for the ordering rule, the time-value precedence,
+the mode-inference table and the streaming guarantee.
 
 ## Where the engine lives
 
@@ -147,6 +189,9 @@ status + `mio_last_error()`; the structured report is a recorded follow-up.
 - **Multi-mesh steps**: `Merge`/`Interpolate` would need per-step
   `Inputs: [paths]`, and `Split`/partition-to-pieces an `Output.Pattern` with
   `{key}`/`{part}` — the v2 schema sketch; today the CLI verbs cover these.
+  (v9.12.0's [sequences](sequences.md) added the *input*-list and
+  `{step}`-output halves of this for the transient case, but a step that
+  consumes or produces several meshes at once is still out of scope.)
 - A **C ABI report accessor** (caller-buffer JSON string of the run report).
 - conan/vcpkg packages shipping the parser via a registry
   `nlohmann_json/3.12.0` dependency instead of the submodule.

@@ -1059,3 +1059,153 @@ print.mio_xdmf_series <- function(x, ...) {
   }
   invisible(x)
 }
+
+# ---------------------------------------------------------------------------
+# Sequences: multi-file / transient datasets. See doc/sequences.md.
+# ---------------------------------------------------------------------------
+
+#' Open a multi-file / transient sequence
+#'
+#' An ordered plan over a set of files (or the steps inside one multi-step
+#' file), read one step at a time. The handle stores paths, per-file step
+#' indices and time values, never a mesh -- which is why
+#' \code{mio_sequence_read()} hands back an independent mesh rather than a
+#' borrow the sequence would have to cache. That is what keeps a 500-step
+#' dataset traversable.
+#'
+#' Ordering is \strong{natural-numeric}, so \code{out_9.vtu} precedes
+#' \code{out_10.vtu}; a lexicographic sort gets that backwards.
+#'
+#' @param pattern a glob (\code{*} and \code{?} only -- no \code{**}, no
+#'   \code{[set]}; the directory part is taken literally).
+#' @param format forced input format, or NULL to resolve per file.
+#' @param times explicit per-entry times; the count must match.
+#' @param time_from one of "auto", "file", "filename", "index".
+#' @return an external pointer of class \code{mio_sequence}.
+#' @export
+mio_sequence <- function(pattern, format = NULL, times = NULL, time_from = "auto") {
+  .Call(R_mio_sequence_open, as.character(pattern), format, times,
+        as.character(time_from), FALSE)
+}
+
+#' Open a sequence from an explicit, ordered path list
+#'
+#' The order is yours and is kept unless \code{sort = TRUE}.
+#' @param paths character vector of file paths.
+#' @param format forced input format, or NULL.
+#' @param times explicit per-entry times.
+#' @param time_from one of "auto", "file", "filename", "index".
+#' @param sort natural-numeric sort the list too.
+#' @return an external pointer of class \code{mio_sequence}.
+#' @export
+mio_sequence_list <- function(paths, format = NULL, times = NULL,
+                              time_from = "auto", sort = FALSE) {
+  .Call(R_mio_sequence_open_list, as.character(paths), format, times,
+        as.character(time_from), isTRUE(sort))
+}
+
+#' Number of steps in a sequence
+#' @param seq a \code{mio_sequence}.
+#' @return the step count.
+#' @export
+mio_sequence_count <- function(seq) .Call(R_mio_sequence_count, seq)
+
+#' Entry i's file path (1-based)
+#' @param seq a \code{mio_sequence}.
+#' @param index 1-based entry index.
+#' @return the path.
+#' @export
+mio_sequence_path <- function(seq, index) .Call(R_mio_sequence_path, seq, as.integer(index))
+
+#' Entry i's step index within its own file (0 for a single-step file)
+#' @param seq a \code{mio_sequence}.
+#' @param index 1-based entry index.
+#' @return the step index.
+#' @export
+mio_sequence_step <- function(seq, index) .Call(R_mio_sequence_step, seq, as.integer(index))
+
+#' Entry i's time value
+#' @param seq a \code{mio_sequence}.
+#' @param index 1-based entry index.
+#' @return the time.
+#' @export
+mio_sequence_time <- function(seq, index) .Call(R_mio_sequence_time, seq, as.integer(index))
+
+#' Where entry i's time came from
+#'
+#' One of "explicit", "file", "filename" or "index" (the fallback). Reported
+#' rather than left to be guessed: "the file said 0.25" and "nothing said
+#' anything, so this is position 3" are different facts.
+#' @param seq a \code{mio_sequence}.
+#' @param index 1-based entry index.
+#' @return the source name.
+#' @export
+mio_sequence_time_source <- function(seq, index) {
+  .Call(R_mio_sequence_time_source, seq, as.integer(index))
+}
+
+#' Read one step of a sequence
+#'
+#' The returned mesh is independent of the sequence, which caches nothing.
+#' @param seq a \code{mio_sequence}.
+#' @param index 1-based entry index.
+#' @return a \code{mio_mesh}.
+#' @export
+mio_sequence_read <- function(seq, index) .Call(R_mio_sequence_read, seq, as.integer(index))
+
+#' Release a sequence handle
+#' @param seq a \code{mio_sequence}.
+#' @return NULL, invisibly.
+#' @export
+mio_sequence_free <- function(seq) invisible(.Call(R_mio_sequence_free, seq))
+
+#' Fan-in: write every step of a sequence into one multi-step file
+#'
+#' Streams -- one mesh alive at a time. A format that cannot hold a series
+#' fails naming itself and pointing at \code{\{step\}}, never a silent
+#' truncation to the first step.
+#' @param seq a \code{mio_sequence}.
+#' @param out_path the output file.
+#' @param out_format forced output format, or NULL.
+#' @param ascii if TRUE, selects XDMF's "XML" data format (everything inline,
+#'   no HDF5 needed) instead of the default "HDF".
+#' @return NULL, invisibly.
+#' @export
+mio_sequence_to_timeseries <- function(seq, out_path, out_format = NULL, ascii = FALSE) {
+  invisible(.Call(R_mio_sequence_to_timeseries, seq, as.character(out_path), out_format,
+                  isTRUE(ascii)))
+}
+
+#' Fan-out: write each step of a multi-step file to a pattern
+#'
+#' @param in_path the multi-step input.
+#' @param out_pattern must contain \code{\{step\}} or \code{\{index\}}.
+#' @param in_format forced input format, or NULL.
+#' @param out_format forced output format, or NULL.
+#' @return NULL, invisibly.
+#' @export
+mio_timeseries_to_sequence <- function(in_path, out_pattern, in_format = NULL,
+                                       out_format = NULL) {
+  invisible(.Call(R_mio_timeseries_to_sequence, as.character(in_path), in_format,
+                  as.character(out_pattern), out_format))
+}
+
+#' Run a sequence settings document
+#'
+#' The pipeline schema plus \code{Mode}, \code{Input.Pattern},
+#' \code{Input.Paths}, \code{Input.Times} and \code{Input.TimeFrom}. A document
+#' using none of those behaves exactly as \code{mio_pipeline_run_file()}.
+#' @param settings_path path of the settings.json.
+#' @return NULL, invisibly.
+#' @export
+mio_sequence_pipeline_run_file <- function(settings_path) {
+  invisible(.Call(R_mio_sequence_pipeline_run_file, as.character(settings_path)))
+}
+
+#' Run a sequence settings document given as JSON text
+#' @param json_text the document.
+#' @return NULL, invisibly.
+#' @export
+mio_sequence_pipeline_run_json <- function(json_text) {
+  invisible(.Call(R_mio_sequence_pipeline_run_json, as.character(json_text)))
+}

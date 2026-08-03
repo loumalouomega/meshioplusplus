@@ -503,6 +503,86 @@ def _check_keys(obj, where, allowed):
             )
 
 
+def _read_kwargs_from(inp, warnings):
+    """``Input.Options`` -> ``read()`` kwargs, validating strictly.
+
+    Shared with ``_sequence.py`` rather than transcribed: two copies of this
+    mapping would drift on the next option added, and a sequence document's
+    ``Input.Options`` must mean exactly what a single-file one's does.
+    """
+    read_kwargs = {}
+    options = inp.get("Options") or {}
+    if not isinstance(options, dict):
+        raise ValueError("meshio++: pipeline: Input.Options must be an object")
+    _check_keys(
+        options,
+        "Input.Options",
+        ("PointsOnly", "DataArrays", "TimeStep", "Lenient", "Mmap"),
+    )
+    if options.get("PointsOnly"):
+        read_kwargs["points_only"] = True
+    if "DataArrays" in options:
+        read_kwargs["arrays"] = list(options["DataArrays"])
+    if "TimeStep" in options:
+        read_kwargs["time_step"] = int(options["TimeStep"])
+    if options.get("Mmap") not in (None, "auto", "on", "off"):
+        raise ValueError(
+            "meshio++: pipeline: Input.Options.Mmap must be 'auto', 'on' or 'off'"
+        )
+    # Mmap is advisory by contract (a preference, never a demand), so the
+    # Python runner -- whose readers do not memory-map -- may ignore it.
+    if options.get("Lenient"):
+        # Lenient exists to make the *C++* readers tolerant; this runner reads
+        # through the Python API, whose per-format fallbacks already tolerate
+        # those constructs. Say so rather than silently dropping the flag.
+        warnings.append(
+            "Input.Options.Lenient has no effect in the Python runner (its "
+            "per-format fallbacks already read what lenient would skip)"
+        )
+    return read_kwargs
+
+
+def _write_kwargs_from(out, out_path):
+    """``Output`` -> ``write()`` kwargs. Shared with ``_sequence.py``.
+
+    ``out_path`` is passed separately because a sequence's output is a pattern
+    whose *expanded* name is what carries the extension.
+    """
+    encoding = out.get("Encoding", "default")
+    if encoding not in ("default", "ascii", "binary"):
+        raise ValueError(
+            "meshio++: pipeline: Output.Encoding must be 'ascii' or 'binary'"
+        )
+    codec = out.get("Codec")
+    if codec is not None and codec not in ("none", "zlib", "lz4", "zstd"):
+        raise ValueError(
+            "meshio++: pipeline: Output.Codec must be 'none', 'zlib', 'lz4' or 'zstd'"
+        )
+    write_kwargs = {}
+    if encoding != "default" or codec is not None:
+        out_fmt = out.get("Format")
+        if not out_fmt:
+            candidates = _filetypes_from_path(pathlib.Path(str(out_path)))
+            out_fmt = candidates[0] if candidates else None
+        if out_fmt is None:
+            raise ValueError(
+                "meshio++: pipeline: cannot infer the output format needed to "
+                "apply Encoding/Codec; set Output.Format"
+            )
+        # The MCP convert tool's writer-kwargs mapping is the single Python
+        # owner of "this format's ascii/binary/codec spelling"; imported
+        # lazily -- mcp/_tools.py imports the package, so a module-scope
+        # import here would be a cycle. (It never imports the mcp SDK.)
+        from .mcp._tools import _variant_kwargs
+
+        write_kwargs = _variant_kwargs(
+            out_fmt, "auto" if encoding == "default" else encoding, codec
+        )
+    if out.get("FloatFormat"):
+        write_kwargs["float_fmt"] = out["FloatFormat"]
+    return write_kwargs
+
+
 def _resolve_settings(settings):
     """A dict is used as-is; a string/PathLike is JSON text when it starts
     with '{' (after whitespace), else a settings-file path."""
@@ -539,6 +619,19 @@ def run_pipeline(settings, input_path=None, output_path=None):
     doc = _resolve_settings(settings)
     if not isinstance(doc, dict):
         raise ValueError("meshio++: pipeline: the settings document must be an object")
+
+    # A transient document (a glob/list input, several steps, a {step} output)
+    # is routed to the sequence driver rather than rejected, so one entry point
+    # serves both and nobody has to know which kind of document they hold. A
+    # plain single-file document never reaches that code path at all -- its
+    # behaviour below is physically unchanged.
+    from ._sequence import _is_sequence_document, run_sequence_pipeline
+
+    if _is_sequence_document(doc, input_path, output_path):
+        return run_sequence_pipeline(
+            doc, input_path=input_path, output_path=output_path
+        )
+
     _check_keys(
         doc, "the settings document", ("Version", "Input", "Operations", "Output")
     )
@@ -563,36 +656,8 @@ def run_pipeline(settings, input_path=None, output_path=None):
     if not out_path:
         raise ValueError("meshio++: pipeline: Output.Path is required")
 
-    read_kwargs = {}
     warnings = []
-    options = inp.get("Options") or {}
-    if not isinstance(options, dict):
-        raise ValueError("meshio++: pipeline: Input.Options must be an object")
-    _check_keys(
-        options,
-        "Input.Options",
-        ("PointsOnly", "DataArrays", "TimeStep", "Lenient", "Mmap"),
-    )
-    if options.get("PointsOnly"):
-        read_kwargs["points_only"] = True
-    if "DataArrays" in options:
-        read_kwargs["arrays"] = list(options["DataArrays"])
-    if "TimeStep" in options:
-        read_kwargs["time_step"] = int(options["TimeStep"])
-    if options.get("Mmap") not in (None, "auto", "on", "off"):
-        raise ValueError(
-            "meshio++: pipeline: Input.Options.Mmap must be 'auto', 'on' or 'off'"
-        )
-    # Mmap is advisory by contract (a preference, never a demand), so the
-    # Python runner -- whose readers do not memory-map -- may ignore it.
-    if options.get("Lenient"):
-        # Lenient exists to make the *C++* readers tolerant; this runner reads
-        # through the Python API, whose per-format fallbacks already tolerate
-        # those constructs. Say so rather than silently dropping the flag.
-        warnings.append(
-            "Input.Options.Lenient has no effect in the Python runner (its "
-            "per-format fallbacks already read what lenient would skip)"
-        )
+    read_kwargs = _read_kwargs_from(inp, warnings)
 
     steps_spec = doc.get("Operations", [])
     if not isinstance(steps_spec, list):
@@ -600,38 +665,7 @@ def run_pipeline(settings, input_path=None, output_path=None):
     for step in steps_spec:
         _validate_step(step)
 
-    encoding = out.get("Encoding", "default")
-    if encoding not in ("default", "ascii", "binary"):
-        raise ValueError(
-            "meshio++: pipeline: Output.Encoding must be 'ascii' or 'binary'"
-        )
-    codec = out.get("Codec")
-    if codec is not None and codec not in ("none", "zlib", "lz4", "zstd"):
-        raise ValueError(
-            "meshio++: pipeline: Output.Codec must be 'none', 'zlib', 'lz4' or 'zstd'"
-        )
-    write_kwargs = {}
-    if encoding != "default" or codec is not None:
-        out_fmt = out.get("Format")
-        if not out_fmt:
-            candidates = _filetypes_from_path(pathlib.Path(str(out_path)))
-            out_fmt = candidates[0] if candidates else None
-        if out_fmt is None:
-            raise ValueError(
-                "meshio++: pipeline: cannot infer the output format needed to "
-                "apply Encoding/Codec; set Output.Format"
-            )
-        # The MCP convert tool's writer-kwargs mapping is the single Python
-        # owner of "this format's ascii/binary/codec spelling"; imported
-        # lazily -- mcp/_tools.py imports the package, so a module-scope
-        # import here would be a cycle. (It never imports the mcp SDK.)
-        from .mcp._tools import _variant_kwargs
-
-        write_kwargs = _variant_kwargs(
-            out_fmt, "auto" if encoding == "default" else encoding, codec
-        )
-    if out.get("FloatFormat"):
-        write_kwargs["float_fmt"] = out["FloatFormat"]
+    write_kwargs = _write_kwargs_from(out, out_path)
 
     mesh = read(in_path, file_format=inp.get("Format") or None, **read_kwargs)
 

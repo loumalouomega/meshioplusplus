@@ -418,3 +418,10 @@ given, unlike the `Mesh` overload's sorted-name order.
 **Fortran has no solver-array overload**, deliberately: an array of derived types
 holding interop pointers is a poor fit for Fortran, and a Fortran solver already
 holds an `mio_mesh` handle it can `add_point_data` into before `write_data`.
+
+## See also
+
+- [Sequences](sequences.md) — the driver that fans a directory of single-step
+  files **in** to a series through this writer, and fans a series **out** to one
+  file per step. It streams (one mesh alive at a time), so a 500-step run needs
+  no more memory than a one-step one.

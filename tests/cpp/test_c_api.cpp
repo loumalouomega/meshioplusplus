@@ -1950,6 +1950,29 @@ TEST(CApi, PipelineJsonSchemaErrorsNameTheOffender) {
     EXPECT_NE(mio_pipeline_run_json(nullptr), MIO_OK);
 }
 
+TEST(CApi, SequencePipelineRunsASettingsFile) {
+    // The sequence document shares the pipeline's parser and guard.
+    const std::string dir = mt::temp_path("_capi_seqdoc");
+    std::filesystem::create_directories(dir);
+    for (int i = 0; i < 3; ++i) {
+        mio_mesh* m = build_tet_mesh();
+        ASSERT_EQ(mio_write((dir + "/in_" + std::to_string(i) + ".vtu").c_str(), m, "vtu"), MIO_OK);
+        mio_mesh_free(m);
+    }
+    const std::string settings = dir + "/settings.json";
+    {
+        std::ofstream f(settings);
+        f << R"({"Version": 1, "Input": {"Pattern": ")" << dir
+          << R"(/in_*.vtu"}, "Operations": [{"Op": "Quality"}], "Output": {"Path": ")" << dir
+          << R"(/out_{step}.vtu"}})";
+    }
+    ASSERT_EQ(mio_sequence_pipeline_run_file(settings.c_str()), MIO_OK) << mio_last_error();
+    EXPECT_TRUE(std::filesystem::exists(dir + "/out_0002.vtu"));
+    EXPECT_NE(mio_sequence_pipeline_run_file(nullptr), MIO_OK);
+    EXPECT_NE(mio_sequence_pipeline_run_json(nullptr), MIO_OK);
+    std::filesystem::remove_all(dir);
+}
+
 #else  // !MESHIOPLUSPLUS_HAS_JSON
 
 TEST(CApi, PipelineCompiledOutFailsNamingTheFlag) {
@@ -1961,3 +1984,174 @@ TEST(CApi, PipelineCompiledOutFailsNamingTheFlag) {
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_JSON
+
+// ---------------------------------------------------------------------------
+// Sequences. The handle is a PLAN, not a cache: mio_sequence_read hands back an
+// OWNED mesh precisely so nothing accumulates, which is the C ABI's expression
+// of the streaming guarantee.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Write `count` single-step .vtu files named `<dir>/in_<i>.vtu`.
+std::string capi_seq_dir(int count) {
+    const std::string dir = mt::temp_path("_capi_seq");
+    std::filesystem::create_directories(dir);
+    for (int i = 0; i < count; ++i) {
+        mio_mesh* m = build_tet_mesh();
+        mio_write((dir + "/in_" + std::to_string(i) + ".vtu").c_str(), m, "vtu");
+        mio_mesh_free(m);
+    }
+    return dir;
+}
+
+}  // namespace
+
+TEST(CApi, SequenceOpensAPatternInNaturalOrder) {
+    const std::string dir = capi_seq_dir(12);
+    mio_sequence* seq = mio_sequence_open((dir + "/in_*.vtu").c_str());
+    ASSERT_NE(seq, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_sequence_count(seq), 12);
+
+    // in_9 must precede in_10 -- the whole point of the ordering rule.
+    char buf[512];
+    ASSERT_GT(mio_sequence_path(seq, 9, buf, sizeof(buf)), 0);
+    EXPECT_NE(std::string(buf).find("in_9.vtu"), std::string::npos);
+    ASSERT_GT(mio_sequence_path(seq, 10, buf, sizeof(buf)), 0);
+    EXPECT_NE(std::string(buf).find("in_10.vtu"), std::string::npos);
+
+    double t = -1.0;
+    ASSERT_EQ(mio_sequence_time(seq, 3, &t), MIO_OK);
+    EXPECT_DOUBLE_EQ(t, 3.0);
+    EXPECT_EQ(mio_sequence_time_source(seq, 3), 2);  // from the filename
+    EXPECT_EQ(mio_sequence_step(seq, 3), 0);
+
+    // The string-getter protocol: a short buffer reports the needed length.
+    char tiny[2];
+    EXPECT_GT(mio_sequence_path(seq, 0, tiny, sizeof(tiny)), 2);
+
+    mio_sequence_free(seq);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(CApi, SequenceReadHandsBackAnOwnedMesh) {
+    const std::string dir = capi_seq_dir(3);
+    mio_sequence* seq = mio_sequence_open((dir + "/in_*.vtu").c_str());
+    ASSERT_NE(seq, nullptr);
+    for (int64_t i = 0; i < 3; ++i) {
+        mio_mesh* m = mio_sequence_read(seq, i);
+        ASSERT_NE(m, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(m), 5);
+        // Owned: freeing it here must be correct, and the sequence must stay
+        // usable afterwards (it holds no reference to what it produced).
+        mio_mesh_free(m);
+    }
+    EXPECT_EQ(mio_sequence_count(seq), 3);
+    mio_sequence_free(seq);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(CApi, SequenceExplicitListAndOptions) {
+    const std::string dir = capi_seq_dir(3);
+    const std::string a = dir + "/in_0.vtu";
+    const std::string b = dir + "/in_1.vtu";
+    const char* paths[2] = {b.c_str(), a.c_str()};  // a caller's stated order
+
+    mio_sequence_opts opts;
+    mio_sequence_opts_init(&opts);
+    const double times[2] = {10.0, 20.0};
+    opts.times = times;
+    opts.num_times = 2;
+
+    mio_sequence* seq = mio_sequence_open_list(paths, 2, &opts);
+    ASSERT_NE(seq, nullptr) << mio_last_error();
+    char buf[512];
+    ASSERT_GT(mio_sequence_path(seq, 0, buf, sizeof(buf)), 0);
+    EXPECT_NE(std::string(buf).find("in_1.vtu"), std::string::npos)
+        << "an explicit list is a stated order and must not be re-sorted";
+    double t = 0.0;
+    ASSERT_EQ(mio_sequence_time(seq, 1, &t), MIO_OK);
+    EXPECT_DOUBLE_EQ(t, 20.0);
+    EXPECT_EQ(mio_sequence_time_source(seq, 1), 0);  // explicit
+    mio_sequence_free(seq);
+
+    // sort=1 reorders it.
+    opts.sort = 1;
+    seq = mio_sequence_open_list(paths, 2, &opts);
+    ASSERT_NE(seq, nullptr);
+    ASSERT_GT(mio_sequence_path(seq, 0, buf, sizeof(buf)), 0);
+    EXPECT_NE(std::string(buf).find("in_0.vtu"), std::string::npos);
+    mio_sequence_free(seq);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(CApi, SequenceFanInAndFanOut) {
+    const std::string dir = capi_seq_dir(4);
+    mio_sequence* seq = mio_sequence_open((dir + "/in_*.vtu").c_str());
+    ASSERT_NE(seq, nullptr);
+
+    const std::string series = dir + "/series.xdmf";
+    ASSERT_EQ(mio_sequence_to_timeseries(seq, series.c_str(), nullptr), MIO_OK) << mio_last_error();
+    mio_sequence_free(seq);
+    ASSERT_TRUE(std::filesystem::exists(series));
+
+    const std::string pattern = dir + "/back_{step}.vtu";
+    ASSERT_EQ(mio_timeseries_to_sequence(series.c_str(), nullptr, pattern.c_str(), nullptr), MIO_OK)
+        << mio_last_error();
+    EXPECT_TRUE(std::filesystem::exists(dir + "/back_0003.vtu"));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(CApi, SequenceToTimeseriesExSelectsEncodingAndRejectsWhatItCannotHonour) {
+    // The transient writer bypasses mio_write_ex's registry path entirely, so
+    // it needs its own opt-in encoding selection -- and the same "reject an
+    // option you cannot honour" rule (this is what a build without HDF5, e.g.
+    // the Julia/R notebook environments, needs to select the XML data format).
+    const std::string dir = capi_seq_dir(2);
+    mio_sequence* seq = mio_sequence_open((dir + "/in_*.vtu").c_str());
+    ASSERT_NE(seq, nullptr);
+
+    mio_write_opts ascii;
+    mio_write_opts_init(&ascii);
+    ascii.encoding = MIO_ENCODING_ASCII;
+    const std::string xml = dir + "/xml_series.xdmf";
+    EXPECT_EQ(mio_sequence_to_timeseries_ex(seq, xml.c_str(), nullptr, &ascii), MIO_OK)
+        << mio_last_error();
+    EXPECT_TRUE(std::filesystem::exists(xml));
+    // "XML" means the light data is inline -- no sibling .h5 companion.
+    EXPECT_FALSE(std::filesystem::exists(dir + "/xml_series.h5"));
+
+    mio_write_opts bad;
+    mio_write_opts_init(&bad);
+    bad.codec = MIO_CODEC_ZLIB;
+    EXPECT_NE(mio_sequence_to_timeseries_ex(seq, (dir + "/s2.xdmf").c_str(), nullptr, &bad),
+              MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("Codec"), std::string::npos);
+
+    mio_sequence_free(seq);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(CApi, SequenceErrorsAreReportedNotCrashed) {
+    EXPECT_EQ(mio_sequence_open(nullptr), nullptr);
+    EXPECT_EQ(mio_sequence_count(nullptr), -1);
+    EXPECT_EQ(mio_sequence_step(nullptr, 0), -1);
+    EXPECT_EQ(mio_sequence_time_source(nullptr, 0), -1);
+    EXPECT_EQ(mio_sequence_read(nullptr, 0), nullptr);
+    EXPECT_NE(mio_sequence_time(nullptr, 0, nullptr), MIO_OK);
+    EXPECT_EQ(mio_sequence_open_list(nullptr, 0, nullptr), nullptr);
+    // A pattern matching nothing is an error, never an empty sequence.
+    EXPECT_EQ(mio_sequence_open("/nonexistent-dir-for-meshio/out_*.vtu"), nullptr);
+    mio_sequence_free(nullptr);  // must be a no-op
+
+    const std::string dir = capi_seq_dir(2);
+    mio_sequence* seq = mio_sequence_open((dir + "/in_*.vtu").c_str());
+    ASSERT_NE(seq, nullptr);
+    EXPECT_EQ(mio_sequence_read(seq, 99), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("out of range"), std::string::npos);
+    // A target that cannot hold a series fails by name.
+    EXPECT_NE(mio_sequence_to_timeseries(seq, (dir + "/no.vtu").c_str(), nullptr), MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("{step}"), std::string::npos);
+    mio_sequence_free(seq);
+    std::filesystem::remove_all(dir);
+}

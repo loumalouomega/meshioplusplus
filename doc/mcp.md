@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-34 tools; the two marked *gated* need a further extra and return a named
+35 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -106,6 +106,7 @@ report.
 |---|---|
 | `convert` | any-to-any format conversion; `points_only`/`arrays`/`time_step` narrow the read; `mode: ascii\|binary` and `compression: zlib\|lz4\|zstd\|lzma\|gzip\|none` subsume the CLI's `ascii`/`binary`/`compress`/`decompress` verbs |
 | `pipeline` | run a whole [settings pipeline](pipeline.md) (`settings_path`; read → operation chain → write, PascalCase ops/keys); `input_path`/`output_path` override the document's paths, and the sandbox root covers the paths **inside** the settings file, not just the file itself |
+| `sequence` | run a multi-file / transient [sequence](sequences.md) (`input_pattern` **or** `input_paths`, `output_path`; optional `mode`/`times`/`time_from`). A `{step}`/`{index}` token in `output_path` writes one file per step (fan-out); a plain path writes one multi-step file (fan-in, XDMF only — anything else fails by name rather than keeping step 0). Ordering is natural-numeric, so `out_9` precedes `out_10`. A pattern's **directory** component is containment-checked against the sandbox root before it is expanded, and every matched file is re-checked individually |
 
 ### Mesh operations
 

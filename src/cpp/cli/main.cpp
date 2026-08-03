@@ -59,6 +59,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
@@ -398,6 +399,9 @@ void print_usage(std::ostream& os) {
           "                            --points-only / --arrays a,b narrow what is read\n"
           "                            --time-step=N picks a step of a multi-step file\n"
           "                            --lenient skips constructs the reader cannot represent\n"
+          "                            'out_*.vtu' (quoted) or repeated --input fans a\n"
+          "                            sequence IN; an out_{step}.vtu output fans one OUT\n"
+          "                            (--times, --time-from, --sequence/--no-sequence)\n"
           "                            --color-by NAME colours svg/tikz output by a data\n"
           "                            array (--component --cmap --vmin --vmax\n"
           "                            --nan-color --colorbar)\n"
@@ -441,7 +445,9 @@ void print_usage(std::ostream& os) {
           "  pipeline                Run a settings.json operation chain (read -> ops ->\n"
           "                          write; see doc/pipeline.md). --input/--output\n"
           "                          override the paths in the file; --json for a\n"
-          "                          machine-readable report\n\n"
+          "                          machine-readable report. A Pattern/Paths Input\n"
+          "                          or a {step} Output runs the chain per step over a\n"
+          "                          whole transient dataset (see doc/sequences.md)\n\n"
           "  -v, --version           Display version information\n"
           "  -h, --help              Show this message\n\n"
           "notes: point/cell sets and 'convert -s/-d' are unavailable in the native\n"
@@ -470,6 +476,57 @@ std::vector<std::string> data_split_names(const std::string& rValue) {
     return out;
 }
 
+/// The transient half of `convert`: fan-in, fan-out or N->N. Kept separate so
+/// the single-file path above is physically untouched.
+int convert_sequence(const cli_parsed& rParsed, const std::string& rInfile,
+                     const std::string& rOutfile, const std::string& rInFmt,
+                     const std::string& rOutFmt, const meshioplusplus::ReadOptions& rOpts,
+                     bool Ascii, const std::string& rFloatFmt,
+                     const std::vector<std::string>& rExtraInputs) {
+    meshioplusplus::SequenceInput in;
+    // A pre-expanded argv (`--input a --input b`) and a quoted pattern
+    // ('out_*.vtu') must reach exactly the same code.
+    if (!rExtraInputs.empty()) {
+        in.mPaths.push_back(rInfile);
+        for (const std::string& extra : rExtraInputs)
+            in.mPaths.push_back(extra);
+    } else if (rInfile.find('*') != std::string::npos || rInfile.find('?') != std::string::npos) {
+        in.mPattern = rInfile;
+    } else {
+        in.mPaths.push_back(rInfile);
+    }
+    in.mFormat = rInFmt;
+    in.mOptions = rOpts;
+    if (has_opt(rParsed, "times"))
+        for (const std::string& t : data_split_names(opt_value(rParsed, "times")))
+            in.mTimes.push_back(std::stod(t));
+    in.mTimeFrom = meshioplusplus::sequence_time_from_name(opt_value(rParsed, "time-from"));
+
+    meshioplusplus::SequenceOutput out;
+    out.mPath = rOutfile;
+    out.mFormat = rOutFmt;
+    if (Ascii)
+        out.mOptions.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+    out.mOptions.mFloatFormat = rFloatFmt;
+
+    const std::vector<meshioplusplus::SequenceEntry> entries = meshioplusplus::sequence_expand(in);
+    const meshioplusplus::SequenceMode mode =
+        meshioplusplus::sequence_resolve_mode(entries, out, meshioplusplus::SequenceMode::Auto);
+    if (mode == meshioplusplus::SequenceMode::FanIn) {
+        meshioplusplus::sequence_to_timeseries(in, out);
+        std::cout << "fan-in: " << entries.size() << " step(s) -> 1 file\n";
+        return 0;
+    }
+    // Sequence / fan-out: one output file per entry, through the shared driver.
+    meshioplusplus::SequencePipeline pipeline;
+    pipeline.mInput = in;
+    pipeline.mOutput = out;
+    meshioplusplus::run_sequence_pipeline(pipeline);
+    std::cout << (mode == meshioplusplus::SequenceMode::FanOut ? "fan-out: " : "sequence: ")
+              << entries.size() << " step(s) -> " << entries.size() << " file(s)\n";
+    return 0;
+}
+
 int cmd_convert(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -489,6 +546,11 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"vmax", {}, true},
                                   {"nan-color", {}, true},
                                   {"colorbar", {}, false},
+                                  {"input", {}, true},
+                                  {"times", {}, true},
+                                  {"time-from", {}, true},
+                                  {"sequence", {}, false},
+                                  {"no-sequence", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("convert requires exactly INFILE and OUTFILE");
@@ -524,6 +586,28 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     // fails. There is no Python fallback here, so this is what makes a
     // production .mdpa readable at all from the native CLI.
     opts.mLenient = has_flag(p, "lenient");
+
+    // Transient sequences: a quoted glob, repeated --input, or a {step}/{index}
+    // output. `--input` is read through the parser's `multi` map (added for the
+    // `data` verbs) so a shell that already expanded a glob is served without
+    // changing convert's two-positional shape.
+    const std::vector<std::string>& extra_inputs = opt_values(p, "input");
+    if (has_flag(p, "sequence") && has_flag(p, "no-sequence"))
+        throw std::runtime_error("--sequence and --no-sequence are mutually exclusive");
+    bool sequence = has_flag(p, "sequence");
+    if (!has_flag(p, "no-sequence") && !sequence) {
+        sequence = !extra_inputs.empty() || infile.find('*') != std::string::npos ||
+                   infile.find('?') != std::string::npos ||
+                   meshioplusplus::sequence_pattern_has_token(outfile);
+        // A multi-step input aimed at a single-step output must not quietly
+        // become step 0: route it here so the driver refuses by name. An
+        // explicit --time-step IS a deliberate single-step selection.
+        if (!sequence && !has_opt(p, "time-step"))
+            sequence = meshioplusplus::sequence_num_steps(infile, in_fmt) > 1;
+    }
+    if (sequence)
+        return convert_sequence(p, infile, outfile, in_fmt, out_fmt, opts, ascii, float_fmt,
+                                extra_inputs);
 
     // Data-driven colouring (svg/tikz only). Validated before the read so a bad
     // flag combination fails immediately rather than after loading a big mesh.
@@ -2084,12 +2168,19 @@ int cmd_pipeline(const std::vector<std::string>& rArgs) {
     // Needs a build with the JSON parser (-DMESHIOPLUSPLUS_WITH_JSON=ON, the
     // default when the submodule is checked out); otherwise this throws naming
     // the flag -- the view/screenshot contract, the verb always exists.
-    meshioplusplus::Pipeline pipeline = meshioplusplus::parse_pipeline_file(p.positionals[0]);
-    if (has_opt(p, "input"))
-        pipeline.mInput.mPath = opt_value(p, "input");
+    // One parse for both document shapes: a sequence document (a glob/list
+    // Input, a {step} Output, Mode/Parallel/Workers) runs through the sequence
+    // driver, and a plain single-file one takes the physically unchanged
+    // v9.11.0 path -- so nobody has to know which kind of document they hold.
+    meshioplusplus::SequencePipeline pipeline =
+        meshioplusplus::parse_sequence_file(p.positionals[0]);
+    if (has_opt(p, "input")) {
+        pipeline.mInput.mPaths = {opt_value(p, "input")};
+        pipeline.mInput.mPattern.clear();
+    }
     if (has_opt(p, "output"))
         pipeline.mOutput.mPath = opt_value(p, "output");
-    const meshioplusplus::PipelineReport report = meshioplusplus::run_pipeline(pipeline);
+    const meshioplusplus::PipelineReport report = meshioplusplus::run_sequence_pipeline(pipeline);
 
     if (has_flag(p, "json")) {
         std::cout << "{\n  \"steps\": [";
