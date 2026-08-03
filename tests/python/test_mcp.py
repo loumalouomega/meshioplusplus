@@ -423,6 +423,10 @@ _NOT_TOOLS = {
     "register_format",
     "deregister_format",
     "partition_labels",  # in-memory variant of partition
+    # A generator of (time, Mesh) pairs: the meshes never touch the filesystem,
+    # so there is no path-in/path-out form. The `sequence` tool covers every
+    # file-level use (fan-in, fan-out, N->N).
+    "read_sequence",
     "view",  # interactive; screenshot is the headless tool
     "has_viewer",
     "to_pyvista",
