@@ -125,6 +125,33 @@ additive (Tier C, reviewed in `doc/abi_reviews.md`).
   the probe costs nothing for the 39 that cannot. Found by the WASM smoke test,
   whose settings surface makes the same routing decision; the Python-only
   refusal test had not covered the C++ engine.
+- **The transient XDMF writer now follows the build for its data format,
+  exactly like the registry's own `xdmf` entry already does.** Both
+  `sequence_to_timeseries` (C++) and Python's `_SeriesWriter` defaulted to
+  `"HDF"` unconditionally; on a `-DMESHIOPLUSPLUS_WITH_HDF5=OFF` build (CI's
+  Windows leg, and every wheel/binary that ships without HDF5) that either
+  threw outright (the C++ engine) or silently produced an HDF-format file via
+  the pure-Python writer's own `h5py` (available independently of the C++
+  build), which the very same install's C++ reader then could not open --
+  swallowed by the read shim's fallback, surfacing as the pure-Python XDMF
+  reader's unrelated "Only supports one grid right now" (it has no temporal
+  collection support at all). Both now resolve to `"HDF"` only when
+  `MESHIOPLUSPLUS_HAS_HDF5` is actually defined, `"XML"` otherwise, with an
+  explicit `Binary`/`Ascii` encoding request still winning (and still failing
+  by name when the build cannot honour `"HDF"`).
+- **The registry's default `vtu`/`vtp` writer entries now follow the build for
+  zlib**, the same way the `xdmf` entry already did: they previously hardcoded
+  `zlib=true` regardless of `-DMESHIOPLUSPLUS_WITH_ZLIB=OFF`, which every
+  Python caller was shielded from by the per-format shim's try-C++-then-Python
+  fallback, but which threw for good on any *direct* `_core`/WASM/C-API/Fortran
+  caller of the default registry writer on such a build -- exactly the path
+  `run_sequence_pipeline`'s per-step `vtu` output takes.
+- **`meshioplusplus.mcp._resolve_pattern` now finds a pattern's directory
+  component on Windows too.** It split on `os.sep` (`'\\'` on Windows) rather
+  than `os.path.split`, so a POSIX-style pattern like `"../*.vtu"` -- what
+  every existing caller and test already passes -- had no `os.sep` to split
+  on and was treated as a bare filename glob in the sandboxed root instead of
+  having its `..` component containment-checked and rejected.
 
 ## v9.11.0 (2026-08-02)
 

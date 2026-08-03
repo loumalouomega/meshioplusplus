@@ -661,17 +661,24 @@ class _SeriesWriter:
 
         self._path = str(path)
         self._wrote_grid = False
+        # Follow the build, exactly like the registry's own xdmf entry does
+        # ("HDF when HDF5 is available, XML otherwise"): an HDF-format series
+        # is unreadable by a core with no HDF5 support, including the very
+        # core that just wrote it, so relying on either writer's own default
+        # of "HDF" would produce a file only the pure-Python (single-grid-only)
+        # reader could ever read back.
+        data_format = "HDF" if getattr(_core, "__has_hdf5__", False) else "XML"
         writer_cls = getattr(_core, "XdmfTimeSeriesWriter", None)
         if writer_cls is not None:
             try:
-                self._impl = writer_cls(self._path)
+                self._impl = writer_cls(self._path, data_format)
                 self._cpp = True
                 return
             except Exception:
                 pass
         from .xdmf import TimeSeriesWriter
 
-        self._impl = TimeSeriesWriter(self._path)
+        self._impl = TimeSeriesWriter(self._path, data_format)
         self._cpp = False
 
     def __enter__(self):

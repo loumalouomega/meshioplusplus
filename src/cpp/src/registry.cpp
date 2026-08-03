@@ -217,13 +217,27 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
          }},
+        // The zlib codec follows the build, exactly like the xdmf entry below:
+        // a hardcoded zlib=true is a WriteError on a -DMESHIOPLUSPLUS_WITH_ZLIB=OFF
+        // build (comment above already documented "falls back to Python" as
+        // the assumption -- true for every binding with a Python shim to fall
+        // back to, but not for a caller reaching this table directly, e.g.
+        // WASM/C API/Fortran or the sequence engine's per-step writes).
         {"vtp",
          [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
              meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
          }},
         {"vtu",
          [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
              meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
          }},
         {"wkt", meshioplusplus::write_wkt},
         // XDMF's heavy-data format follows the build: HDF companion file when

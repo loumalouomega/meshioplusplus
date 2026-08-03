@@ -71179,6 +71179,26 @@ std::string seq_resolve_write_format(const SequenceOutput& rOutput, std::size_t 
     return resolve_format(probe, "");
 }
 
+/// The transient writer's data-format choice. An explicit request always
+/// wins -- `Binary` asks for `"HDF"` and lets `XdmfTimeSeriesWriter`'s own
+/// constructor throw naming the missing build flag when this core has no
+/// HDF5, which is the existing "reject what cannot be honoured" rule.  Left
+/// at `Default`, this follows the build exactly like the registry's own
+/// xdmf entry does (`registry.cpp`: "HDF when HDF5 is available, XML
+/// otherwise") -- an HDF-format series is unreadable by a core with no
+/// HDF5 support, including the very core that would have just written it.
+std::string seq_resolve_data_format(const WriteOptions& rOptions) {
+    if (rOptions.mEncoding == WriteEncoding::Ascii)
+        return "XML";
+    if (rOptions.mEncoding == WriteEncoding::Binary)
+        return "HDF";
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    return "HDF";
+#else
+    return "XML";
+#endif
+}
+
 /// The transient writer bypasses `registry_write_ex` (it drives
 /// `XdmfTimeSeriesWriter` directly, not a `(path, mesh)` registry entry), so
 /// it must apply the write_options.hpp rule -- "an option the writer cannot
@@ -71207,8 +71227,7 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
 
     // Streaming: one mesh enters scope per iteration and leaves it. There is
     // deliberately no std::vector<Mesh> anywhere in this file.
-    XdmfTimeSeriesWriter writer(rOutput.mPath,
-                                rOutput.mOptions.mEncoding == WriteEncoding::Ascii ? "XML" : "HDF");
+    XdmfTimeSeriesWriter writer(rOutput.mPath, seq_resolve_data_format(rOutput.mOptions));
     bool grid_written = false;
     for (std::size_t i = 0; i < entries.size(); ++i) {
         Mesh mesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
@@ -71393,9 +71412,8 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         if (!sequence_write_supports_time(ofmt, why))
             throw WriteError(why);
         seq_check_series_write_options(rPipeline.mOutput.mOptions);
-        XdmfTimeSeriesWriter writer(
-            rPipeline.mOutput.mPath,
-            rPipeline.mOutput.mOptions.mEncoding == WriteEncoding::Ascii ? "XML" : "HDF");
+        XdmfTimeSeriesWriter writer(rPipeline.mOutput.mPath,
+                                    seq_resolve_data_format(rPipeline.mOutput.mOptions));
         bool grid_written = false;
         for (std::size_t i = 0; i < entries.size(); ++i) {
             Mesh mesh =
@@ -73966,13 +73984,27 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
          }},
+        // The zlib codec follows the build, exactly like the xdmf entry below:
+        // a hardcoded zlib=true is a WriteError on a -DMESHIOPLUSPLUS_WITH_ZLIB=OFF
+        // build (comment above already documented "falls back to Python" as
+        // the assumption -- true for every binding with a Python shim to fall
+        // back to, but not for a caller reaching this table directly, e.g.
+        // WASM/C API/Fortran or the sequence engine's per-step writes).
         {"vtp",
          [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
              meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
          }},
         {"vtu",
          [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
              meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
          }},
         {"wkt", meshioplusplus::write_wkt},
         // XDMF's heavy-data format follows the build: HDF companion file when

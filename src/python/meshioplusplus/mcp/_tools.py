@@ -502,9 +502,12 @@ def _resolve_pattern(pattern):
     from .._sequence import glob_match
 
     raw = os.path.expanduser(str(pattern))
-    head, sep, base = raw.rpartition(os.sep)
-    if not sep:
-        head, base = "", raw
+    # os.path.split, not a manual os.sep rpartition: on Windows os.sep is
+    # '\\' alone, while ntpath (and every caller here) also accepts '/' --
+    # a manual rpartition(os.sep) would treat the whole of "../*.vtu" as the
+    # filename part, silently skipping the containment check on the '..'
+    # component instead of rejecting it.
+    head, base = os.path.split(raw)
     if "*" in head or "?" in head:
         raise ValueError(
             "meshio++: mcp: the directory part of a pattern is taken literally, "
