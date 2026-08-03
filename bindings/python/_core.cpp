@@ -85,6 +85,7 @@
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -1009,7 +1010,65 @@ PYBIND11_MODULE(_core, m) {
             }
             return out;
         });
+
+        // The sequence document (a whole transient run: glob/list input, the
+        // chain applied per step, fan-out/fan-in output). Same relationship to
+        // the public Python `run_sequence_pipeline` as above.
+        m.def(
+            "run_sequence_file",
+            [report_to_py](const std::string& path) {
+                return report_to_py(meshioplusplus::run_sequence_file(path));
+            },
+            py::arg("path"));
+        m.def(
+            "run_sequence_json",
+            [report_to_py](const std::string& text) {
+                return report_to_py(meshioplusplus::run_sequence_json(text));
+            },
+            py::arg("text"));
     }
+
+    // The sequence layer's pure units, exposed so the Python twins in
+    // `_sequence.py` are pinned against these rather than transcribed and
+    // hoped for (the `pipeline_op_table` / `refine_mask_table` / `colormap_table`
+    // precedent). A natural-numeric comparator and a glob matcher that disagree
+    // across the boundary would order a transient dataset differently depending
+    // on which engine ran it -- silently.
+    m.def("sequence_natural_less", &meshioplusplus::sequence_natural_less, py::arg("a"),
+          py::arg("b"));
+    m.def("sequence_glob_match", &meshioplusplus::sequence_glob_match, py::arg("pattern"),
+          py::arg("name"));
+    m.def("sequence_expand_pattern", &meshioplusplus::sequence_expand_pattern, py::arg("pattern"),
+          py::arg("index"), py::arg("count"));
+
+    // The plan for a sequence: the ordered entries with their time values and
+    // where each came from. Reads no heavy data.
+    m.def(
+        "sequence_entries",
+        [](const std::vector<std::string>& paths, const std::string& pattern,
+           const std::string& file_format, const std::vector<double>& times,
+           const std::string& time_from, bool sort) {
+            meshioplusplus::SequenceInput in;
+            in.mPaths = paths;
+            in.mPattern = pattern;
+            in.mFormat = file_format;
+            in.mTimes = times;
+            in.mTimeFrom = meshioplusplus::sequence_time_from_name(time_from);
+            in.mSortExplicit = sort;
+            py::list out;
+            for (const meshioplusplus::SequenceEntry& e : meshioplusplus::sequence_expand(in)) {
+                py::dict d;
+                d["path"] = e.mPath;
+                d["step"] = e.mStep;
+                d["time"] = e.mTime;
+                d["time_source"] = meshioplusplus::sequence_time_source_name(e.mTimeSource);
+                out.append(d);
+            }
+            return out;
+        },
+        py::arg("paths") = std::vector<std::string>{}, py::arg("pattern") = "",
+        py::arg("file_format") = "", py::arg("times") = std::vector<double>{},
+        py::arg("time_from") = "auto", py::arg("sort") = false);
 
     // Partition into nparts balanced pieces (SFC or KaHIP). Returns a list of
     // dicts {part_id, mesh, point_map, cell_maps}. See operations/partition.hpp.
@@ -1620,11 +1679,18 @@ PYBIND11_MODULE(_core, m) {
         py::arg("path"), py::arg("mesh"), py::arg("data_format"), py::arg("gzip_level") = -1);
     m.def(
         "xdmf_read",
-        [](const std::string& path, bool points_only, py::object arrays) {
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
             return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_xdmf(path, core_read_options(points_only, arrays)));
+                meshioplusplus::read_xdmf(path, core_read_options(points_only, arrays, time_step)));
         },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        // XDMF is *the* multi-step format, and `read_xdmf` has honoured
+        // ReadOptions::mTimeStep since v9.0.0 -- this binding simply never
+        // passed it through, so a temporal collection was unreachable from
+        // Python except through `xdmf.TimeSeriesReader`. Exposed in v9.12.0 for
+        // the sequence layer's fan-out (0 = first step, negative counts from
+        // the end, out of range is an error naming the count).
+        py::arg("time_step") = 0);
 
     // Transient (time-series) XDMF — the C++ `XdmfTimeSeriesWriter`, exposed
     // ADDITIONALLY and EXPLICITLY rather than swapped in under the pure-Python
