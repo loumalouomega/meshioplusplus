@@ -10514,7 +10514,10 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
  *    connectivity, `NodalData` and `SubModelPartNodes` resolve through a
  *    file-id → row map built lazily on the first id that is not `row + 1`
  *    (`abaqus.cpp`'s `mPointIds` pattern). Points come back in **file order**,
- *    never sorted by id; a duplicate id is a `ReadError`.
+ *    never sorted by id; a duplicate id is a `ReadError`. **Original ids
+ *    survive a write**, too (see #kMdpaIdName): whenever they were not already
+ *    the trivial `1..n` a fresh write would produce anyway, they are attached
+ *    as ordinary `point_data`/`cell_data`, which `write_mdpa` reads back.
  *  - `Begin Elements <KratosName>` / `Begin Conditions <KratosName>` —
  *    `id property_id n1 n2 ...` rows. The Kratos entity name resolves to a
  *    meshio cell type through `backends/kratos_names.hpp`
@@ -10524,6 +10527,9 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
  *    whenever the type differs from the previous one, exactly as the Python
  *    reference does, so block order follows the file. Property ids become
  *    Int64 `cell_data["gmsh:physical"]` — the name the Python reference uses.
+ *    Element and condition ids (each their own independent 1-based counter, in
+ *    file order across every block of that kind) are preserved the same way as
+ *    node ids -- see #kMdpaIdName.
  *  - `Begin ModelPartData` — `KEY value` pairs, kept as one-element Float64
  *    `field_data` entries.
  *  - `Begin Properties <id>` — the material data. Its body has no place on the
@@ -10550,7 +10556,10 @@ MESHIOPLUSPLUS_API void write_ip(const std::string& rPath, const Mesh& rMesh);
  * an MDPA file stays valid for Kratos.
  *
  * @note cell_data key produced/consumed: `"gmsh:physical"` (the Kratos
- *       property id of each element/condition).
+ *       property id of each element/condition); `point_data`/
+ *       `cell_data[kMdpaIdName]` (`"mdpa:id"`) for original node/entity ids,
+ *       when they were not already the trivial `1..n` renumbering — see
+ *       #kMdpaIdName.
  *
  * ## Limitations (deliberate, and reported by throwing)
  *
@@ -10600,6 +10609,27 @@ using MdpaProperties = PropertySet;
 
 /** @brief One `KEY value` entry of a properties block (see #PropertyValue). */
 using MdpaProperty = PropertyValue;
+
+/**
+ * @brief The original-id carrier: `point_data`/`cell_data["mdpa:id"]`.
+ *
+ * The uniform mesh API has no id-translation layer -- `Mesh::Points()`/`Conn()`
+ * are dense 0-based arrays where "point index `i`" *is* row `i` -- so there is
+ * nowhere on the `Mesh` itself to remember a file's original node/element/
+ * condition numbering. `read_mdpa` attaches it as ordinary data instead: a
+ * point_data array of Int64 node ids (one per point, in read order) and/or a
+ * per-block cell_data array of Int64 element/condition ids, **only when those
+ * ids were not already the trivial `1..n` renumbering `write_mdpa` would
+ * produce anyway** -- so a sequential (or id-less) deck is completely
+ * unaffected and a re-write of it stays byte-identical to before. `write_mdpa`
+ * honours the array when present (falling back to the old renumbering when it
+ * is absent, the wrong length, or the wrong dtype) and throws `WriteError` on
+ * a duplicate value, since writing one would silently produce an invalid file.
+ * Riding as plain data means it survives (and is renumbered by) the ordinary
+ * mesh operations for free -- crop/split/etc. carry `point_data`/`cell_data`
+ * through their existing row-selection machinery with no MDPA-specific code.
+ */
+inline constexpr const char* kMdpaIdName = "mdpa:id";
 
 /**
  * @brief The Kratos entity spelling of one cell block.
@@ -10670,19 +10700,27 @@ struct MdpaInfo {
  * for its cell type is a 2-D one (`Element2D4N`, ...) and as `Elements`
  * otherwise — the rule the Python reference applies for a mesh with no
  * physical tags, which is what keeps a quad mesh writing as
- * `SurfaceCondition3D4N`. Element and condition ids are two independent
- * 1-based counters, and node ids are the row index plus one: **the writer
- * always renumbers to `1..n`**, so a deck with gapped ids reads correctly but
- * does not round-trip its ids (the `Mesh` has no place to keep them). The
- * property id of a cell is its
- * `cell_data["gmsh:physical"]` value when that array exists, else 0.
+ * `SurfaceCondition3D4N`. Node/element/condition ids default to `row + 1`
+ * (elements and conditions each their own 1-based counter over every block of
+ * that kind, in mesh order) **unless the mesh carries #kMdpaIdName**, in which
+ * case those original ids are written back instead — see #kMdpaIdName for the
+ * exact contract, including what counts as present/valid and the duplicate-id
+ * `WriteError`. Every place an entity or node is referenced elsewhere in the
+ * file (`NodalData`/`ElementalData`/`ConditionalData` row keys, `SubModelPart`
+ * node/element/condition lists) uses the same resolved id, so the file is
+ * always internally consistent whichever numbering was actually used. The
+ * property id of a cell is its `cell_data["gmsh:physical"]` value when that
+ * array exists, else 0.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
  * @throws WriteError on an unopenable output path, a ragged/polyhedron cell
- *         block (MDPA has no such entity), or a cell type with no Kratos name
+ *         block (MDPA has no such entity), a cell type with no Kratos name, or
+ *         a duplicate value in #kMdpaIdName (which would silently produce an
+ *         invalid Kratos deck)
  * @note reads `cell_data["gmsh:physical"]` for the per-entity property id;
- *       `point_data["<VAR>_fixed_status"]` for the `NodalData` fixed column.
+ *       `point_data["<VAR>_fixed_status"]` for the `NodalData` fixed column;
+ *       `point_data`/`cell_data[kMdpaIdName]` for original node/entity ids.
  */
 MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh);
 
@@ -17994,7 +18032,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 13
+#define MESHIOPLUSPLUS_VERSION_MINOR 14
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -18004,7 +18042,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.13.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.14.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -46566,6 +46604,7 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -46681,6 +46720,10 @@ struct MdpaBlock {
     /// one, and deferring keeps the file id available for the error message.
     std::vector<std::int64_t> mConn;
     std::vector<std::int64_t> mProps;
+    /// Each row's raw file id, in append order -- captured unconditionally
+    /// (parallel to `mProps`) so the materialize pass can decide whether it is
+    /// worth keeping without having re-derived it.
+    std::vector<std::int64_t> mFileIds;
     std::size_t mCount = 0;
 };
 
@@ -47036,6 +47079,18 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     // `mPointIds` and unv.cpp's `label_to_index`, minus their unconditional cost.
     std::unordered_map<std::int64_t, std::size_t> node_ids;  // file id -> point row
     bool node_ids_dense = true;  // ids so far are exactly 1..num_points, in order
+    // Every node's raw file id, in file (row) order -- captured unconditionally
+    // (cheap: one push_back per row already being appended) so it is available
+    // at materialize time regardless of whether `node_ids_dense` ever flips.
+    std::vector<std::int64_t> raw_node_ids;
+    // Same "dense" idea as node ids, but tracked directly rather than lazily:
+    // elements and conditions each have their own independent 1-based counter,
+    // spanning every block of that kind in file order (not per block), which is
+    // exactly how the writer numbers them. The moment either counter's next
+    // expected value disagrees with a row's actual id, ids are no longer the
+    // trivial "renumber from 1" case and the original ones are worth keeping.
+    std::int64_t next_element_id = 1, next_condition_id = 1;
+    bool entities_dense = true;
     std::map<std::string, NDArray> field_data;
 
     // Staged data arrays, materialized after every block is known.
@@ -47168,6 +47223,7 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 // increases), so the check only runs where it can fire.
                 if (!node_ids_dense && !node_ids.emplace(id, num_points).second)
                     throw ReadError("MDPA: duplicate node id " + std::to_string(id));
+                raw_node_ids.push_back(id);
                 for (std::size_t c = t.size() - 3; c < t.size(); ++c) {
                     double v = 0.0;
                     if (!mdpa_parse_double(t[c], v))
@@ -47245,6 +47301,11 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                     blk.mConn[base + slot] = node;
                 }
                 blk.mProps.push_back(prop);
+                blk.mFileIds.push_back(id);
+                std::int64_t& next_id = is_condition ? next_condition_id : next_element_id;
+                if (id != next_id)
+                    entities_dense = false;
+                ++next_id;
                 const std::size_t row = blk.mCount++;
                 auto& id_map = is_condition ? condition_ids : element_ids;
                 id_map[id] = {blocks.size() - 1, row};
@@ -47405,6 +47466,17 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             pp[i] = coords[i];
         mesh.AssignPoints(std::move(pts));
     }
+    // Attach original node ids ONLY when they weren't already the trivial
+    // `1..n` renumbering the writer would produce anyway -- so a sequential (or
+    // id-less) deck's `Mesh` is untouched by this feature and a re-write is
+    // byte-identical to before. `write_mdpa` looks for this exact name.
+    if (!node_ids_dense) {
+        NDArray ids(DType::Int64, {num_points});
+        std::int64_t* ip = ids.As<std::int64_t>();
+        for (std::size_t i = 0; i < num_points; ++i)
+            ip[i] = raw_node_ids[i];
+        mesh.AddPointData(kMdpaIdName, std::move(ids));
+    }
 
     std::vector<NDArray> props;
     std::vector<std::size_t> block_base(blocks.size(), 0);
@@ -47439,6 +47511,23 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     }
     if (!blocks.empty())
         mesh.AddCellData("gmsh:physical", std::move(props));
+    // Same "only when it matters" rule as the node ids above: elements and
+    // conditions each have their own independent 1-based file-order counter,
+    // and only when EITHER disagreed with a trivial renumbering is the
+    // original id worth carrying -- so a fresh write of an untouched deck
+    // stays byte-identical, and a gapped/reclassified one round-trips.
+    if (!blocks.empty() && !entities_dense) {
+        std::vector<NDArray> ids;
+        ids.reserve(blocks.size());
+        for (const MdpaBlock& blk : blocks) {
+            NDArray a(DType::Int64, {blk.mCount});
+            std::int64_t* ap = a.As<std::int64_t>();
+            for (std::size_t i = 0; i < blk.mFileIds.size(); ++i)
+                ap[i] = blk.mFileIds[i];
+            ids.push_back(std::move(a));
+        }
+        mesh.AddCellData(kMdpaIdName, std::move(ids));
+    }
 
     for (auto& fd : field_data)
         mesh.AddFieldData(fd.first, std::move(fd.second));
@@ -47541,6 +47630,8 @@ std::size_t mdpa_components(const NDArray& rArray, std::size_t rows) {
 }
 
 bool mdpa_skip_point_data(const std::string& rName) {
+    if (rName == kMdpaIdName)
+        return true;
     const std::string suffix = "_fixed_status";
     if (rName.size() >= suffix.size() &&
         rName.compare(rName.size() - suffix.size(), suffix.size(), suffix) == 0)
@@ -47549,6 +47640,8 @@ bool mdpa_skip_point_data(const std::string& rName) {
 }
 
 bool mdpa_skip_cell_data(const std::string& rName) {
+    if (rName == kMdpaIdName)
+        return true;
     const std::string suffix = "_tag";
     if (rName.size() >= suffix.size() &&
         rName.compare(rName.size() - suffix.size(), suffix.size(), suffix) == 0)
@@ -47608,7 +47701,22 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     std::vector<std::vector<std::int64_t>> written_ids(nblocks);
     std::vector<std::size_t> block_base(nblocks, 0);
     {
+        // Honour cell_data["mdpa:id"] (kMdpaIdName) when the mesh carries one
+        // array per block AND every array's row count matches its block's cell
+        // count -- anything short of that is treated as unrelated/stale
+        // metadata and falls back to the old renumbering, exactly like the
+        // node-id check below. An id that survives is still validated for
+        // uniqueness (elements and conditions each have their own Kratos
+        // namespace, so a collision is only checked within its own kind) --
+        // writing a duplicate would silently produce an invalid Kratos deck.
+        bool preserve_entity_ids =
+            rMesh.HasCellData(kMdpaIdName) && rMesh.CellDataNumBlocks(kMdpaIdName) == nblocks;
+        for (std::size_t b = 0; preserve_entity_ids && b < nblocks; ++b)
+            if (rMesh.CellData(kMdpaIdName, b).Size() != rMesh.Cells(b).NumCells())
+                preserve_entity_ids = false;
+
         std::int64_t next_element = 1, next_condition = 1;
+        std::unordered_set<std::int64_t> seen_element_ids, seen_condition_ids;
         std::size_t running = 0;
         for (std::size_t b = 0; b < nblocks; ++b) {
             const auto cb = rMesh.Cells(b);
@@ -47637,8 +47745,19 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             block_base[b] = running;
             running += cb.NumCells();
             written_ids[b].resize(cb.NumCells());
-            for (std::size_t r = 0; r < cb.NumCells(); ++r)
-                written_ids[b][r] = is_condition[b] ? next_condition++ : next_element++;
+            std::unordered_set<std::int64_t>& seen =
+                is_condition[b] ? seen_condition_ids : seen_element_ids;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::int64_t wid =
+                    preserve_entity_ids ? detail::read_int(rMesh.CellData(kMdpaIdName, b), r)
+                                        : (is_condition[b] ? next_condition++ : next_element++);
+                if (!seen.insert(wid).second)
+                    throw WriteError("MDPA: duplicate " +
+                                     std::string(is_condition[b] ? "condition" : "element") +
+                                     " id " + std::to_string(wid) + " in cell_data['" +
+                                     std::string(kMdpaIdName) + "']");
+                written_ids[b][r] = wid;
+            }
         }
     }
 
@@ -47700,13 +47819,30 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
 
     // ---- Nodes ------------------------------------------------------------
     os << "Begin Nodes\n";
+    std::vector<std::int64_t> written_node_ids;
     {
         const NDArray& points = rMesh.Points();
         const std::size_t dim = rMesh.PointDim();
         const std::size_t np = rMesh.NumPoints();
+        // Honour point_data["mdpa:id"] (kMdpaIdName) when present and the right
+        // length; anything short of that (absent, wrong size, wrong dtype) is
+        // treated as unrelated metadata and falls back to the old row+1
+        // numbering. Values are validated for uniqueness -- a duplicate would
+        // silently produce an ambiguous file.
+        const bool preserve_node_ids =
+            rMesh.HasPointData(kMdpaIdName) && rMesh.PointData(kMdpaIdName).Size() == np;
+        written_node_ids.resize(np);
+        std::unordered_set<std::int64_t> seen_node_ids;
         char buf[64];
         for (std::size_t i = 0; i < np; ++i) {
-            os << " " << (i + 1);
+            const std::int64_t id = preserve_node_ids
+                                        ? detail::read_int(rMesh.PointData(kMdpaIdName), i)
+                                        : static_cast<std::int64_t>(i) + 1;
+            if (!seen_node_ids.insert(id).second)
+                throw WriteError("MDPA: duplicate node id " + std::to_string(id) +
+                                 " in point_data['" + std::string(kMdpaIdName) + "']");
+            written_node_ids[i] = id;
+            os << " " << id;
             for (std::size_t c = 0; c < 3; ++c) {
                 const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
                 std::snprintf(buf, sizeof(buf), "%.16e", v);
@@ -47733,7 +47869,13 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             os << "  " << written_ids[b][r] << " " << prop;
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t slot = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                os << " " << (detail::read_int(conn, r * k + slot) + 1);
+                // Through `written_node_ids`, not a bare `+ 1`: connectivity
+                // must name whichever node numbering was actually written
+                // (preserved or row+1), the same rule the Nodes block itself
+                // and the SubModelPart node lists follow.
+                const std::size_t row =
+                    static_cast<std::size_t>(detail::read_int(conn, r * k + slot));
+                os << " " << written_node_ids[row];
             }
             os << "\n";
         }
@@ -47757,7 +47899,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                     all_nan = false;
             if (all_nan)
                 continue;
-            os << "  " << (i + 1);
+            os << "  " << written_node_ids[i];
             if (has_fixed) {
                 const std::int64_t f = detail::read_int(rMesh.PointData(fixed_name), i);
                 if (f >= 0)
@@ -47822,7 +47964,10 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             const std::int64_t* e = r.Entries();
             for (std::size_t j = 0; j < r.NumEntries(); ++j) {
                 if (r.mKind == RegionKind::Point) {
-                    nodes.push_back(e[j] + 1);
+                    // `written_node_ids` already reflects whichever numbering
+                    // was actually written (preserved or row+1), so this stays
+                    // consistent with the Nodes block above with no extra work.
+                    nodes.push_back(written_node_ids[static_cast<std::size_t>(e[j])]);
                     continue;
                 }
                 // Cell region: global block-major index -> (block, row) -> id.

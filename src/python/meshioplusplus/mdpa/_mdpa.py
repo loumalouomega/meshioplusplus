@@ -590,6 +590,10 @@ def _read_nodes(f, is_ascii, data_size):
         ``1..n`` in order (or absent altogether), in which case "row = id - 1"
         already is the map and every caller keeps its pre-existing arithmetic.
         Built lazily for the same reason the C++ reader builds it lazily.
+    numpy.ndarray or None
+        The raw file ids, one per row, in the same order as `points_arr` --
+        alongside `node_id_map` (``None`` exactly when it is), so a caller can
+        attach `point_data["mdpa:id"]` without inverting the map.
 
     Raises
     ------
@@ -612,6 +616,7 @@ def _read_nodes(f, is_ascii, data_size):
             node_lines.append(line_content)
             num_nodes += 1
     node_id_map = None
+    raw_ids = None
     if num_nodes == 0:
         points_arr = np.empty((0, 3), dtype=float)
     else:
@@ -637,7 +642,8 @@ def _read_nodes(f, is_ascii, data_size):
                 # have one, which is why this only runs on the mapped path.
                 if len(node_id_map) != ids.size:
                     raise ReadError("Duplicate node id in the Nodes block.")
-    return points_arr, node_id_map
+                raw_ids = ids
+    return points_arr, node_id_map, raw_ids
 
 
 def _read_cells(
@@ -649,6 +655,7 @@ def _read_cells(
     mdpa_element_ids_info,
     mdpa_condition_ids_info,
     node_id_map=None,
+    cell_ids_dict=None,
 ):
     """
     Reads element or condition connectivity from an MDPA file block.
@@ -680,6 +687,11 @@ def _read_cells(
         The file node id -> row map from :func:`_read_nodes`. ``None`` means the
         ids are ``1..n`` and connectivity resolves as ``id - 1``, as it always
         has.
+    cell_ids_dict : dict or None
+        When given, accumulates each row's raw file id under its meshio cell
+        type, parallel to `cell_tags_dict` -- the material `_prepare_cells`
+        turns into `cell_data["<type>"]["mdpa:id"]` when the caller decides the
+        file's original numbering is worth keeping.
 
     Raises
     ------
@@ -777,6 +789,8 @@ def _read_cells(
         if current_meshio_type not in cell_tags_dict:
             cell_tags_dict[current_meshio_type] = []
         cell_tags_dict[current_meshio_type].append([property_id])
+        if cell_ids_dict is not None:
+            cell_ids_dict.setdefault(current_meshio_type, []).append(original_id)
     expected_end_statement = "End Elements" if is_element_block else "End Conditions"
     if line_at_end.strip() != expected_end_statement:
         other_end_statement = "End Conditions" if is_element_block else "End Elements"
@@ -938,7 +952,7 @@ def _read_geometries(
         )
 
 
-def _prepare_cells(cells_list_of_tuples, cell_tags_dict):
+def _prepare_cells(cells_list_of_tuples, cell_tags_dict, cell_ids_dict=None):
     """
     Converts raw cell data and tags into meshio CellBlock objects and tag dictionaries.
 
@@ -960,6 +974,12 @@ def _prepare_cells(cells_list_of_tuples, cell_tags_dict):
     cell_tags_dict : dict
         A dictionary mapping meshio_cell_type_str to a list of tag lists.
         For example, `{'triangle': [[prop1], [prop2], ...]}`.
+    cell_ids_dict : dict or None
+        A dictionary mapping meshio_cell_type_str to a list of raw file ids,
+        parallel to `cell_tags_dict`. When given, each type's list becomes
+        `cell_data["<type>"]["mdpa:id"]` -- the caller decides whether it is
+        worth passing at all (only when the original numbering was not already
+        the trivial `1..n` a fresh write would produce anyway).
 
     Returns
     -------
@@ -991,6 +1011,12 @@ def _prepare_cells(cells_list_of_tuples, cell_tags_dict):
                 np.array(geom, dtype=int) if geom else np.array([], dtype=int)
             ),
         }
+    if cell_ids_dict:
+        for cell_type_str, ids_list in cell_ids_dict.items():
+            output_cell_tags_meshio.setdefault(cell_type_str, {})
+            output_cell_tags_meshio[cell_type_str]["mdpa:id"] = np.array(
+                ids_list, dtype=int
+            )
     final_cells_for_mesh = []
     # Kratos to VTK node index permutations for hexahedron20 and hexahedron27 elements.
     # These are applied to convert MDPA's Kratos-specific node ordering to meshio's VTK-based ordering.
@@ -1180,6 +1206,7 @@ def read_buffer(f):
     field_data = {}
     cell_data_parsed_blocks = {}
     cell_tags_temp = {}
+    cell_ids_temp = {}
     point_data = {}
     mdpa_element_ids_info = []
     mdpa_condition_ids_info = []
@@ -1190,6 +1217,7 @@ def read_buffer(f):
     is_ascii = True
     # File node id -> row, or None while the ids are 1..n (see _read_nodes).
     node_id_map = None
+    raw_node_ids = None
 
     def _node_rows(ids_1_based):
         """File node ids -> 0-based rows, dropping ids the file never defined."""
@@ -1226,7 +1254,7 @@ def read_buffer(f):
                 else:
                     warn(f"Skipping malformed line in ModelPartData: {line.strip()}")
         elif environ.startswith("Begin Nodes"):
-            points, node_id_map = _read_nodes(f, is_ascii, None)
+            points, node_id_map, raw_node_ids = _read_nodes(f, is_ascii, None)
         elif environ.startswith("Begin Elements") or environ.startswith(
             "Begin Conditions"
         ):
@@ -1248,6 +1276,7 @@ def read_buffer(f):
                 mdpa_element_ids_info,
                 mdpa_condition_ids_info,
                 node_id_map,
+                cell_ids_temp,
             )
         elif environ.startswith("Begin Geometries"):
             # Placeholder for _read_geometries call
@@ -1610,8 +1639,19 @@ def read_buffer(f):
         )  # No tags for geometries for now
         misc_data["mdpa_geometry_ids_info"] = mdpa_geometry_ids_info
 
+    # Elements and conditions each have their own independent 1-based counter,
+    # spanning every block of that kind in FILE order (which is exactly the
+    # order `mdpa_element_ids_info`/`mdpa_condition_ids_info` were appended in,
+    # since each list is built strictly as `_read_cells` encounters rows).
+    # Original ids are worth keeping only when either disagreed with that
+    # trivial renumbering -- the same "only when it matters" rule `_read_nodes`
+    # applies, so a sequential (or id-less) deck writes back byte-identically.
+    entities_dense = all(
+        oid == i + 1 for i, (oid, _, _) in enumerate(mdpa_element_ids_info)
+    ) and all(oid == i + 1 for i, (oid, _, _) in enumerate(mdpa_condition_ids_info))
+
     final_cells_for_mesh, processed_cell_tags, has_additional_tag_data = _prepare_cells(
-        cells_list_of_tuples, cell_tags_temp
+        cells_list_of_tuples, cell_tags_temp, None if entities_dense else cell_ids_temp
     )
     final_cell_data_for_mesh = {}
     all_cell_types = set(cell_data_parsed_blocks.keys()) | set(
@@ -1636,6 +1676,12 @@ def read_buffer(f):
                     final_cell_data_for_mesh[cell_type_key][var_name] = data_array
     if has_additional_tag_data:
         warn("The file contains tag data that couldn't be processed.")
+    # Original node ids, same "only when it matters" rule as the entity ids
+    # above: `node_id_map` is `None` exactly when the file's ids were already
+    # the trivial `1..n` a fresh write would produce, so nothing is attached
+    # then and a sequential deck's point_data is untouched.
+    if node_id_map is not None:
+        point_data["mdpa:id"] = raw_node_ids
     mesh_obj = Mesh(
         points,
         final_cells_for_mesh,
@@ -1673,12 +1719,12 @@ def consume_block(f, end_block_str):
             break
 
 
-def _write_nodes(fh, points, float_fmt, binary=False):
+def _write_nodes(fh, points, float_fmt, binary=False, node_ids=None):
     """
     Writes nodal coordinates to an MDPA file stream.
 
     Outputs the "Begin Nodes" and "End Nodes" block, with each node's ID
-    (1-based index) and its X, Y, Z coordinates formatted according to `float_fmt`.
+    and its X, Y, Z coordinates formatted according to `float_fmt`.
 
     Parameters
     ----------
@@ -1691,21 +1737,45 @@ def _write_nodes(fh, points, float_fmt, binary=False):
     binary : bool, optional
         If True, would attempt binary writing. Currently raises WriteError
         as binary is not supported for this function. (Default: False)
+    node_ids : numpy.ndarray or None
+        Original file ids (`mesh.point_data["mdpa:id"]`) to write back instead
+        of the default `row + 1`, when present and the right length. Values
+        must be unique; a duplicate raises `WriteError` rather than silently
+        producing an ambiguous file.
+
+    Returns
+    -------
+    list
+        The id actually written for each row, in row order -- what
+        `_write_elements_and_conditions`'s `SubModelPart`/data callers need for
+        the equivalent entity-id lookup are unrelated to this list, but node
+        regions resolve through it the same way.
 
     Raises
     ------
     WriteError
-        If `binary` is True.
+        If `binary` is True, or `node_ids` contains a duplicate value.
     """
     fh.write(b"Begin Nodes\n")
     if binary:
         raise WriteError(
             "Binary writing for nodes not supported."
         )  # Ensure consistent error message
+    preserve_ids = node_ids is not None and len(node_ids) == len(points)
+    written_ids = []
+    seen_ids = set()
     for k, x in enumerate(points):
+        node_id = int(node_ids[k]) if preserve_ids else k + 1
+        if node_id in seen_ids:
+            raise WriteError(
+                f"MDPA: duplicate node id {node_id} in point_data['mdpa:id']"
+            )
+        seen_ids.add(node_id)
+        written_ids.append(node_id)
         fmt = " {} " + " ".join(3 * ["{:" + float_fmt + "}"]) + "\n"
-        fh.write(fmt.format(k + 1, x[0], x[1], x[2]).encode())
+        fh.write(fmt.format(node_id, x[0], x[1], x[2]).encode())
     fh.write(b"End Nodes\n\n")
+    return written_ids
 
 
 def _compute_blocks_name(mesh, cells_to_iterate):
@@ -1880,7 +1950,7 @@ def _compute_blocks_name(mesh, cells_to_iterate):
     return bname
 
 
-def _write_elements_and_conditions(fh, mesh, cells_to_write):
+def _write_elements_and_conditions(fh, mesh, cells_to_write, written_node_ids=None):
     """
     Writes "Elements" and "Conditions" blocks to an MDPA file stream.
 
@@ -1899,6 +1969,11 @@ def _write_elements_and_conditions(fh, mesh, cells_to_write):
         The mesh object being written.
     cells_to_write : list of CellBlock
         Permuted cell blocks to write.
+    written_node_ids : list or None
+        The id actually written for each point row (from `_write_nodes`), used
+        to resolve connectivity -- never a bare `node_idx + 1`, since that
+        would silently be wrong the moment node ids are preserved. `None`
+        falls back to `row + 1`.
 
     Returns
     -------
@@ -1906,13 +1981,33 @@ def _write_elements_and_conditions(fh, mesh, cells_to_write):
         `mdpa_written_entity_ids`: A dictionary mapping (meshio_cell_type_str, local_idx_in_block)
         to the written 1-based MDPA ID for that entity. This is used by other
         functions like `_write_data_generic` to refer to these entities.
+
+    Notes
+    -----
+    Original ids are honoured when `mesh.cell_data[cell_block.type]["mdpa:id"]`
+    exists for EVERY block being written (all-or-nothing, like the C++ writer's
+    `CellDataNumBlocks(name) == nblocks` check) and its length matches. Anything
+    short of that is unrelated/stale metadata and falls back to the old
+    sequential renumbering. A duplicate value within its own kind (elements and
+    conditions have separate Kratos id namespaces) raises `WriteError`, since
+    writing one would silently produce an invalid Kratos deck.
     """
     mdpa_written_entity_ids = (
         {}
     )  # Map (meshio_type, local_idx_in_block) to written MDPA ID
     bname = _compute_blocks_name(mesh, cells_to_write)
+    cell_data = (
+        mesh.cell_data if (hasattr(mesh, "cell_data") and mesh.cell_data) else {}
+    )
+    preserve_entity_ids = all(
+        "mdpa:id" in cell_data.get(cb.type, {})
+        and len(cell_data[cb.type]["mdpa:id"]) == len(cb.data)
+        for cb in cells_to_write
+    )
     global_element_id_counter = 1
     global_condition_id_counter = 1
+    seen_element_ids = set()
+    seen_condition_ids = set()
     for ib, cell_block in enumerate(cells_to_write):
         entity_block_type = bname[ib].get("entity", "Elements")
         if entity_block_type == "Elements":
@@ -1926,12 +2021,25 @@ def _write_elements_and_conditions(fh, mesh, cells_to_write):
         line = f"Begin {entity_block_type} {mdpa_type}\n"
         fh.write(line.encode())
         for ie, node_indices_for_cell in enumerate(cell_block.data):
-            if entity_block_type == "Elements":
+            if preserve_entity_ids:
+                eid = int(cell_data[cell_block.type]["mdpa:id"][ie])
+            elif entity_block_type == "Elements":
                 eid = global_element_id_counter
                 global_element_id_counter += 1
             else:
                 eid = global_condition_id_counter
                 global_condition_id_counter += 1
+            seen_ids = (
+                seen_element_ids
+                if entity_block_type == "Elements"
+                else seen_condition_ids
+            )
+            if eid in seen_ids:
+                raise WriteError(
+                    f"MDPA: duplicate {'element' if entity_block_type == 'Elements' else 'condition'} "
+                    f"id {eid} in cell_data['mdpa:id']"
+                )
+            seen_ids.add(eid)
             mdpa_written_entity_ids[(cell_block.type, ie)] = eid
             property_id_to_write = 0  # Default property ID
 
@@ -1947,16 +2055,29 @@ def _write_elements_and_conditions(fh, mesh, cells_to_write):
                     property_id_to_write = gmsh_tag
 
             line = f"  {eid} {property_id_to_write}"  # Two leading spaces
-            # Add node numbers with a single leading space for each
+            # Add node numbers with a single leading space for each, resolved
+            # through whichever numbering the Nodes block actually used
+            # (preserved or row + 1) -- never a bare `+ 1`.
             for node_idx in node_indices_for_cell:
-                line += f" {node_idx + 1}"
+                node_id = (
+                    written_node_ids[node_idx]
+                    if written_node_ids is not None
+                    else node_idx + 1
+                )
+                line += f" {node_id}"
             line += "\n"
             fh.write(line.encode())
         fh.write(f"End {entity_block_type}\n\n".encode())
     return mdpa_written_entity_ids
 
 
-def _write_geometries(fh, geometries_to_write, mdpa_geometry_ids_info_list, float_fmt):
+def _write_geometries(
+    fh,
+    geometries_to_write,
+    mdpa_geometry_ids_info_list,
+    float_fmt,
+    written_node_ids=None,
+):
     """
     Writes "Geometries" blocks to an MDPA file stream.
 
@@ -2015,21 +2136,45 @@ def _write_geometries(fh, geometries_to_write, mdpa_geometry_ids_info_list, floa
                 geom_id = global_geometry_id_counter
                 global_geometry_id_counter += 1
 
-            # Node indices are 0-based in meshio, convert to 1-based for MDPA
-            node_ids_str = " ".join(map(str, np.array(node_indices_for_cell) + 1))
+            # Node indices are 0-based in meshio; resolve through the ids
+            # actually written for the Nodes block (preserved or row + 1).
+            if written_node_ids is not None:
+                node_ids_str = " ".join(
+                    str(written_node_ids[idx]) for idx in node_indices_for_cell
+                )
+            else:
+                node_ids_str = " ".join(map(str, np.array(node_indices_for_cell) + 1))
             fh.write(f"  {geom_id} {node_ids_str}\n".encode())
         fh.write(b"End Geometries\n\n")
 
 
-def _write_submodelparts(fh, mesh, cells_to_write, mdpa_written_entity_ids):
+def _write_submodelparts(
+    fh, mesh, cells_to_write, mdpa_written_entity_ids, written_node_ids=None
+):
     """
     Writes SubModelPart blocks to an MDPA file stream.
 
     Processes `mesh.misc_data["submodelpart_info"]` to write out SubModelPart
     definitions. This includes their specific data, tables, and lists of
-    node, element, and condition IDs. Element and condition IDs are written
-    as their original Kratos IDs (`elements_raw`, `conditions_raw`) as stored
-    during reading, to maintain fidelity for round-trip scenarios.
+    node, element, and condition IDs.
+
+    Element and condition membership (`elements_raw`/`conditions_raw`) is
+    stored as the ORIGINAL ids read from the file, but a write does not
+    generally reuse those ids verbatim: `_write_elements_and_conditions` may
+    renumber (no `cell_data["mdpa:id"]`) or reclassify an entity across the
+    Elements/Conditions boundary (`_compute_blocks_name`'s dimension
+    heuristic). Writing the raw id straight through in that case would emit a
+    `SubModelPartElements`/`Conditions` entry referencing an id that does not
+    exist anywhere in the file being written -- a real bug this function used
+    to have. Each raw id is instead resolved through
+    `misc_data["reader_element_ids_info"]`/`["reader_condition_ids_info"]`
+    (original id -> (meshio_type, local_idx), captured at read time) and then
+    through `mdpa_written_entity_ids` (that same key -> the id actually
+    written this time), so the emitted reference is always real. An id that
+    fails to resolve (only possible if the mesh was edited between read and
+    write, e.g. an entity removed) is warned about and dropped rather than
+    emitted dangling; a mesh with no reader info at all (never read via this
+    module) falls back to writing the raw id verbatim, as before.
 
     A fallback to `mesh.cell_sets` is present for basic SubModelPart creation
     if `submodelpart_info` is missing, though this is less rich.
@@ -2043,10 +2188,42 @@ def _write_submodelparts(fh, mesh, cells_to_write, mdpa_written_entity_ids):
     cells_to_write : list of CellBlock
         The list of cell blocks that were written (used by fallback path, currently inactive).
     mdpa_written_entity_ids : dict
-        Mapping of (meshio_type, local_idx) to written MDPA ID. (Used by fallback path, currently inactive).
+        Mapping of (meshio_type, local_idx) to the id actually written this
+        time (preserved from `cell_data["mdpa:id"]` or freshly renumbered).
+    written_node_ids : list or None
+        The id actually written for each point row (from `_write_nodes`), or
+        `None` to fall back to `row + 1`.
     """
     misc_data = getattr(mesh, "misc_data", {})
     smp_info_dict = misc_data.get("submodelpart_info", {})
+    reader_element_ids_info = misc_data.get("reader_element_ids_info", [])
+    reader_condition_ids_info = misc_data.get("reader_condition_ids_info", [])
+    # original id -> (meshio_type, local_idx): a fixed elements/conditions
+    # namespace split, matching Kratos's own (an element and a condition may
+    # share a numeric id).
+    orig_element_ref = {oid: (t, li) for oid, t, li in reader_element_ids_info}
+    orig_condition_ref = {oid: (t, li) for oid, t, li in reader_condition_ids_info}
+
+    def _resolve_entity_id(orig_id, orig_ref_map, has_reader_info, kind):
+        ref = orig_ref_map.get(orig_id)
+        if ref is None:
+            if not has_reader_info:
+                # Nothing to resolve through at all (e.g. a mesh built
+                # programmatically, never read via this module) -- best
+                # effort, exactly the old behaviour.
+                return orig_id
+            warn(
+                f"Could not resolve original {kind} id {orig_id} to a written "
+                "id in a SubModelPart; skipping."
+            )
+            return None
+        new_id = mdpa_written_entity_ids.get(ref)
+        if new_id is None:
+            warn(
+                f"Could not resolve original {kind} id {orig_id} to a written "
+                "id in a SubModelPart; skipping."
+            )
+        return new_id
 
     if not smp_info_dict:
         # Fallback for older mesh objects or if submodelpart_info is not populated
@@ -2110,19 +2287,38 @@ def _write_submodelparts(fh, mesh, cells_to_write, mdpa_written_entity_ids):
         if "nodes" in smp_content and len(smp_content["nodes"]) > 0:
             fh.write(f"{data_indent}Begin SubModelPartNodes\n".encode())
             for node_idx_0based in smp_content["nodes"]:
-                fh.write(f"{item_indent}{node_idx_0based + 1}\n".encode())
+                node_id = (
+                    written_node_ids[node_idx_0based]
+                    if written_node_ids is not None
+                    else node_idx_0based + 1
+                )
+                fh.write(f"{item_indent}{node_id}\n".encode())
             fh.write(f"{data_indent}End SubModelPartNodes\n".encode())
 
         if "elements_raw" in smp_content and len(smp_content["elements_raw"]) > 0:
             fh.write(f"{data_indent}Begin SubModelPartElements\n".encode())
             for elem_id_1_based in smp_content["elements_raw"]:
-                fh.write(f"{item_indent}{elem_id_1_based}\n".encode())
+                new_id = _resolve_entity_id(
+                    elem_id_1_based,
+                    orig_element_ref,
+                    bool(reader_element_ids_info),
+                    "element",
+                )
+                if new_id is not None:
+                    fh.write(f"{item_indent}{new_id}\n".encode())
             fh.write(f"{data_indent}End SubModelPartElements\n".encode())
 
         if "conditions_raw" in smp_content and len(smp_content["conditions_raw"]) > 0:
             fh.write(f"{data_indent}Begin SubModelPartConditions\n".encode())
             for cond_id_1_based in smp_content["conditions_raw"]:
-                fh.write(f"{item_indent}{cond_id_1_based}\n".encode())
+                new_id = _resolve_entity_id(
+                    cond_id_1_based,
+                    orig_condition_ref,
+                    bool(reader_condition_ids_info),
+                    "condition",
+                )
+                if new_id is not None:
+                    fh.write(f"{item_indent}{new_id}\n".encode())
             fh.write(f"{data_indent}End SubModelPartConditions\n".encode())
 
     # Close remaining blocks
@@ -2162,10 +2358,11 @@ def _write_data_generic(
     fixed_status_dict : dict or None
         For NodalData, contains `{"{variable_name}_fixed_status": array_of_bools}`
         if fixed statuses are present. Otherwise None.
-    entity_id_map : dict
-        For Elemental/ConditionalData: Maps (meshio_cell_type, local_idx_in_block) to the
-        written 1-based MDPA ID (from `_write_elements_and_conditions`).
-        For NodalData: Not directly used for ID lookup as node IDs are 1-based indices.
+    entity_id_map : dict or list
+        For Elemental/ConditionalData: a `{(meshio_cell_type, local_idx_in_block): id}`
+        dict (from `_write_elements_and_conditions`).
+        For NodalData: the per-row written node ids (from `_write_nodes`), or
+        `None` to fall back to `row + 1`.
     is_nodal_data : bool
         True if writing NodalData, False otherwise. Controls ID generation and
         handling of fixed status.
@@ -2187,7 +2384,9 @@ def _write_data_generic(
                 not is_scalar and np.all(np.isnan(values))
             ):
                 continue
-            mdpa_id = local_idx + 1
+            mdpa_id = (
+                entity_id_map[local_idx] if entity_id_map is not None else local_idx + 1
+            )
             line = f"  {mdpa_id}"
             if (
                 fixed_status_array is not None
@@ -2413,20 +2612,35 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
                         for row in value_dict["data"]:
                             fh.write(f"  {' '.join(map(str, row))}\n".encode())
                         fh.write(b"End Table\n\n")
-        _write_nodes(fh, points, float_fmt)
+        written_node_ids = _write_nodes(
+            fh,
+            points,
+            float_fmt,
+            node_ids=(
+                mesh.point_data.get("mdpa:id")
+                if hasattr(mesh, "point_data") and mesh.point_data
+                else None
+            ),
+        )
         mdpa_written_entity_ids = _write_elements_and_conditions(
-            fh, mesh, cells_to_write
+            fh, mesh, cells_to_write, written_node_ids
         )
 
         # Write Geometries if they exist
         geometries_block = getattr(mesh, "geometries_block", None)
         if geometries_block:
             mdpa_geom_ids_info = misc_data.get("mdpa_geometry_ids_info", [])
-            _write_geometries(fh, geometries_block, mdpa_geom_ids_info, float_fmt)
+            _write_geometries(
+                fh, geometries_block, mdpa_geom_ids_info, float_fmt, written_node_ids
+            )
 
         if hasattr(mesh, "point_data") and mesh.point_data:
             for name, data_array in mesh.point_data.items():
-                if name.endswith("_fixed_status") or name.startswith("gmsh:"):
+                if (
+                    name.endswith("_fixed_status")
+                    or name.startswith("gmsh:")
+                    or name == "mdpa:id"
+                ):
                     continue
                 _write_data_generic(
                     fh,
@@ -2434,7 +2648,7 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
                     name,
                     {"_node_": data_array},
                     mesh.point_data,
-                    mdpa_written_entity_ids,
+                    written_node_ids,
                     True,
                 )
         if hasattr(mesh, "cell_data") and mesh.cell_data:
@@ -2443,7 +2657,11 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
                 cell_type_str = cell_block.type
                 if cell_type_str in mesh.cell_data:
                     for var_name, data_array in mesh.cell_data[cell_type_str].items():
-                        if var_name.startswith("gmsh:") or var_name.endswith("_tag"):
+                        if (
+                            var_name.startswith("gmsh:")
+                            or var_name.endswith("_tag")
+                            or var_name == "mdpa:id"
+                        ):
                             continue
                         block_kind_name = bname_map[ib].get("entity", "Elements")
                         data_block_name = (
@@ -2460,7 +2678,9 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
                             mdpa_written_entity_ids,
                             False,
                         )
-        _write_submodelparts(fh, mesh, cells_to_write, mdpa_written_entity_ids)
+        _write_submodelparts(
+            fh, mesh, cells_to_write, mdpa_written_entity_ids, written_node_ids
+        )
 
         # Prepare maps for writing Mesh block entity IDs
         # mdpa_written_entity_ids maps (cell_block.type, local_idx_in_block) -> new_global_id.
@@ -2501,9 +2721,12 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
                 if "nodes" in mesh_content and len(mesh_content["nodes"]) > 0:
                     fh.write(b"    Begin MeshNodes\n")  # Level 2, 4 spaces
                     for node_idx_0based in mesh_content["nodes"]:
-                        fh.write(
-                            f"        {node_idx_0based + 1}\n".encode()
-                        )  # Level 3, 8 spaces
+                        node_id = (
+                            written_node_ids[node_idx_0based]
+                            if written_node_ids is not None
+                            else node_idx_0based + 1
+                        )
+                        fh.write(f"        {node_id}\n".encode())  # Level 3, 8 spaces
                     fh.write(b"    End MeshNodes\n")  # Level 2, 4 spaces
 
                 if (
