@@ -26,8 +26,14 @@
  * `Begin Elements Element3D3N// group`), and tabs are as good as spaces.
  * The blocks this reader/writer understands:
  *
- *  - `Begin Nodes` — `id x y z` rows. Node ids must be `1..n` in order (see
- *    the limitations below); connectivity is 1-based into them.
+ *  - `Begin Nodes` — `id x y z` rows, or bare `x y z` rows (auto-detected by
+ *    column count; a bare row takes its position as its id). Ids may be
+ *    arbitrary — gapped and non-monotonic both read, as a real Kratos deck
+ *    left by a SubModelPart extraction or an entity removal needs — and
+ *    connectivity, `NodalData` and `SubModelPartNodes` resolve through a
+ *    file-id → row map built lazily on the first id that is not `row + 1`
+ *    (`abaqus.cpp`'s `mPointIds` pattern). Points come back in **file order**,
+ *    never sorted by id; a duplicate id is a `ReadError`.
  *  - `Begin Elements <KratosName>` / `Begin Conditions <KratosName>` —
  *    `id property_id n1 n2 ...` rows. The Kratos entity name resolves to a
  *    meshio cell type through `backends/kratos_names.hpp`
@@ -87,11 +93,10 @@
  * because skipping them would return a mesh that is quietly wrong rather than
  * merely incomplete:
  *
- *  - node ids that are not `1..n` in ascending order (the format allows
- *    arbitrary ids; honouring them would need a renumbering the Python
- *    reference does not do);
+ *  - a duplicate node id (two coordinate rows claiming one id is
+ *    unrepresentable, not merely incomplete);
  *  - a malformed row, an unknown entity name, or connectivity naming a node
- *    that does not exist.
+ *    the `Nodes` block does not define.
  *
  * The writer emits the mesh-level blocks (`ModelPartData` from scalar
  * `field_data`, `Properties`, `Nodes`, `Elements`/`Conditions`,
@@ -189,7 +194,10 @@ struct MdpaInfo {
  * otherwise — the rule the Python reference applies for a mesh with no
  * physical tags, which is what keeps a quad mesh writing as
  * `SurfaceCondition3D4N`. Element and condition ids are two independent
- * 1-based counters. The property id of a cell is its
+ * 1-based counters, and node ids are the row index plus one: **the writer
+ * always renumbers to `1..n`**, so a deck with gapped ids reads correctly but
+ * does not round-trip its ids (the `Mesh` has no place to keep them). The
+ * property id of a cell is its
  * `cell_data["gmsh:physical"]` value when that array exists, else 0.
  *
  * @param rPath filesystem path to write
