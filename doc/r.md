@@ -245,3 +245,31 @@ with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The 
 As elsewhere in this binding, remember to release a series *before* its tempdir
 is removed: a write failure during the implicit finalize in a GC finalizer cannot
 be reported. `MdpaInfo` is not exposed (as for every flat binding).
+
+## Sequences (transient / multi-file datasets)
+
+`mio_sequence()` wraps the C API's ordered plan over a set of files (or the
+steps inside one multi-step file). Ordering is natural-numeric, so `out_9.vtu`
+precedes `out_10.vtu`; nothing is read until `mio_sequence_read()`, which hands
+back a mesh independent of the sequence — the sequence caches nothing, so a
+500-step dataset is traversable without materialising it.
+
+```r
+seq <- mio_sequence("out_*.vtu")            # or mio_sequence_list(c("a.vtu", ...))
+for (i in seq_len(mio_sequence_count(seq))) {
+  mesh <- mio_sequence_read(seq, i)         # one mesh alive at a time
+  cat(mio_sequence_time(seq, i), mio_sequence_time_source(seq, i), "\n")
+}
+mio_sequence_to_timeseries(seq, "series.xdmf")            # fan-in
+mio_sequence_free(seq)
+
+mio_timeseries_to_sequence("series.xdmf", "step_{step}.vtu")   # fan-out
+mio_sequence_pipeline_run_file("transient.json")               # per-step chain
+```
+
+Indices are 1-based, like every other R accessor. The external pointer has its
+own tag, so a `mio_mesh`, a `mio_xdmf_series` and a `mio_sequence` can never be
+passed for one another; a released handle is an R error, never a dereference.
+
+See [sequences](sequences.md) for the ordering rule, the time-value precedence
+and the streaming guarantee.

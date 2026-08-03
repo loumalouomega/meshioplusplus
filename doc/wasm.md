@@ -484,3 +484,52 @@ build wrote before it still round-trips.
 
 `MdpaInfo` (MDPA properties bodies and entity names) is not exposed, as for every
 flat binding.
+
+## Sequences (transient / multi-file datasets)
+
+A set of MEMFS files — or the steps inside one multi-step file — treated as one
+ordered dataset, the same surface `convert` and `runPipeline` already work on.
+See [sequences](sequences.md) for the ordering rule, the time-value precedence
+and the streaming guarantee.
+
+```js
+// Stage the steps in MEMFS, then treat them as one dataset.
+for (let i = 0; i < 12; ++i) m.writeMesh(`/seq/out_${i}.vtu`, meshes[i]);
+
+const plan = m.sequenceEntries('/seq/out_*.vtu');
+// -> [{path, step, time, timeSource}, ...] in NATURAL-NUMERIC order, so
+//    out_9.vtu precedes out_10.vtu (a plain sort gets that backwards).
+
+m.sequenceToTimeseries('/seq/out_*.vtu', '/seq/series.xdmf');   // fan-in  -> 12
+const bytes = m.FS.readFile('/seq/series.xdmf');
+
+const paths = m.timeseriesToSequence('/seq/series.xdmf', '/seq/back_{step}.vtu');
+// -> ['/seq/back_0000.vtu', ...] fan-out; read them back with Module.FS
+
+// A whole transient post-processing run: the chain applies to EVERY step.
+m.runPipeline({
+  Version: 1,
+  Input: { Pattern: '/seq/out_*.vtu' },
+  Operations: [{ Op: 'Quality' }],
+  Output: { Path: '/seq/post_{step}.vtu' },
+});
+```
+
+`runPipeline` **routes** a transient document (a `Pattern`/`Paths` input, a
+`{step}`/`{index}` output, or `Mode`/`Parallel`/`Workers`) to the sequence
+driver automatically; a plain single-mesh document takes the unchanged path, so
+nobody has to know which kind of document they hold.
+
+The pattern language is deliberately just `*` and `?` — **no** `**`, no
+`[set]`, and the directory component is literal — identical to the core's, so
+the browser and the CLIs accept exactly the same words.
+
+Three things that fail **by name** rather than doing something surprising: a
+fan-in to a format that cannot hold a series (only XDMF can), a fan-out without
+a `{step}`/`{index}` token, and a multi-step input aimed at a single-step
+output. None of them silently keeps step 0.
+
+**`Parallel` is accepted and ignored with a warning** in the report: it is a
+Python-driver feature (a process pool), and this build has no processes to
+pool. The steps run in order, which is what the streaming guarantee needs
+anyway.

@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.11.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 5).
+Status at time of writing: **v9.12.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 5).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -8,18 +8,31 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 1. Multi-file and transient workflows
+## 1. Multi-file and transient workflows — done (v9.12.0)
 
-**The gap.** Every entry point is single-mesh, single-file. XDMF has `TimeSeriesWriter` / `TimeSeriesReader`, and v9.11.0's pipeline processes one input to one output — but there is no way to treat a *set* of files as one logical dataset. This is how transient simulation output actually arrives (`out_0000.vtu … out_0500.vtu`), and how most formats have to express it, since only a minority carry multiple steps natively.
+**Delivered in full** — see [`doc/sequences.md`](sequences.md). Glob/list input,
+fan-in (sequence → one multi-step file), fan-out (one multi-step file →
+sequence) and per-step pipeline execution all shipped, across both CLIs, the
+settings document, Python, C, Fortran, Julia, R **and WASM** (over MEMFS
+paths — see [`doc/wasm.md`](wasm.md#sequences-transient--multi-file-datasets)).
+Ordering is natural-numeric (`out_9` before `out_10`, not `out_10` before
+`out_9`); time values come from an explicit list, the file itself, a filename
+capture or the integer index, in that documented precedence. Parallel-over-files
+execution shipped too, as a Python-driver process pool (not for a fan-in, whose
+ordered writer cannot take buffered steps without breaking the streaming
+guarantee).
 
-- **Glob / sequence input across the CLI, pipeline and Python API.** `meshioplusplus convert 'out_*.vtu' out.xdmf`, and a pipeline whose `Input` is a pattern or an explicit list. Needs a documented ordering rule (natural-numeric sort, not lexicographic — `out_10` after `out_9`) and a time-value source: filename regex capture, an explicit list, or a per-file `field_data` key. **M**
-- **Fan-in: sequence → single multi-step file.** N single-step meshes into one XDMF time series (the writer exists; the driver does not). The natural companion is fan-out. **M**
-- **Fan-out: multi-step file → sequence.** One XDMF/Exodus/MED time series into `out_{step}.vtu`, using the `{key}`/`{part}` filename-pattern machinery `split` and `partition` already established. This is the answer for every format that cannot express time, which is most of them. **M**
-- **Per-step pipeline execution.** Run the v9.11.0 operation chain over every step of a sequence with one settings document — the single highest-value composition, since it turns the pipeline into a batch post-processor. **M**
-- **Parallel-over-files execution** (a process pool at the driver level, not inside the ops). Embarrassingly parallel and immediately useful on 500-step datasets. **S**
-- **A `TimeSeries` object in the data model** — an ordered `(time, Mesh)` sequence with lazy per-step reads, so a 500-step dataset can be traversed without materialising it. Only worth doing if the driver work above proves the abstraction is needed; do the drivers first. **L**
+One item from the original scope remains open, and is downgraded from planned
+to speculative:
 
-*Recommended entry point: fan-out + fan-in + globbed input, since they need no data-model change and immediately make the pipeline useful for transient data.*
+- **A `TimeSeries` object in the data model** — an ordered `(time, Mesh)`
+  sequence with lazy per-step reads. The v9.12.0 drivers **did not prove it
+  necessary**: Python's `read_sequence` generator and the C/Fortran/Julia/R
+  sequence handles already give lazy per-step traversal without a new
+  data-model type, and the streaming guarantee is enforced precisely because
+  nothing materialises the sequence. Revisit only if a caller genuinely needs
+  to *hold* a series as one value (random access across steps, cross-step
+  operations), which nothing has asked for yet. **L**
 
 ---
 
@@ -136,7 +149,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## Suggested sequencing
 
-1. **Multi-file / transient (§1)** — composes with the v9.11.0 pipeline, needs no data-model change, and is the most commonly hit limitation today.
+1. ~~**Multi-file / transient (§1)**~~ — done in v9.12.0.
 2. **Primitive constructors (§6, first item)** — a few days, and it improves testing, docs and every demo surface at once.
 3. **ML data handling (§3)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §4.
 4. **PhysicsNeMo reconnaissance (§4, first item)** — a written findings note before any code.

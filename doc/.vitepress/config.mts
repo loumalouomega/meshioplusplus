@@ -85,6 +85,7 @@ export default defineConfig({
           { text: "· Value conditioning", link: "/data_condition" },
           { text: "· Data summary", link: "/data_info" },
           { text: "Settings pipeline", link: "/pipeline" },
+          { text: "Sequences (transient)", link: "/sequences" },
           { text: "CLI reference", link: "/cli" },
           { text: "XDMF time series", link: "/xdmf_time_series" },
           { text: "Extending meshio++", link: "/extending" },

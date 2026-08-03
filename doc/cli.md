@@ -29,6 +29,32 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--sets-to-int-data` | `-s` | Convert point/cell sets to integer data arrays |
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
 
+**Transient sequences** — treat a set of files, or the steps inside one file,
+as one dataset (see [sequences](sequences.md)):
+
+| Option | Description |
+|--------|-------------|
+| `--input FILE` | An extra input file, appended after `INFILE`; repeatable |
+| `--times T1,T2,...` | Explicit per-step times; the count must match |
+| `--time-from WHICH` | `auto` (default), `file`, `filename` or `index` |
+| `--sequence` | Force sequence handling |
+| `--no-sequence` | Force single-file handling (for a filename containing `*` or `{step}`) |
+
+```bash
+meshioplusplus convert 'out_*.vtu' series.xdmf          # fan-in (quote the glob!)
+meshioplusplus convert series.xdmf 'step_{step}.vtu'    # fan-out
+meshioplusplus convert a.vtu --input b.vtu out.xdmf     # pre-expanded argv
+```
+
+**Quote the pattern.** A shell expands `out_*.vtu` before the CLI sees it, so
+the unquoted form arrives as a dozen positionals and fails on the argument
+count; use `--input` when something else has already expanded the glob.
+
+Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step
+input aimed at a single-step output is an **error** naming `{step}` and
+`--time-step`, never a silent write of step 0 — pass `--time-step=N` when you
+genuinely want one step.
+
 **Data-driven colouring** (SVG/TikZ output only):
 
 | Option | Description |
@@ -891,6 +917,11 @@ meshioplusplus pipeline settings.json --input other.msh --output out.vtu
 meshioplusplus pipeline settings.json --json          # machine-readable report
 meshioplusplus pipeline settings.json --quiet
 ```
+
+A document whose `Input` is a `Pattern`/`Paths`, or whose `Output.Path` carries
+`{step}`/`{index}`, runs the chain **per step** over a whole transient dataset —
+see [sequences](sequences.md). The verb routes it automatically; a plain
+single-file document takes the unchanged path.
 
 - `--input` / `--output` override the two paths in the settings file (the
   document itself is untouched).
