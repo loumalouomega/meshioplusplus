@@ -82,6 +82,28 @@ additive (Tier C, reviewed in `doc/abi_reviews.md`).
   a pattern's *directory* component before expanding it -- `_resolve`'s
   `os.path.isfile` rejects a glob outright, and the directory is the obvious
   sandbox escape.
+- **`TimeSeries` (Python)**: an ordered `(time, Mesh)` sequence held as one
+  value with random access -- the counterpart to the C/Fortran/Julia/R sequence
+  handles, which already give indexable per-step traversal (`mio_sequence_read
+  (seq, i)`, `read_step(seq, i)`, ...) that Python's `read_sequence` generator
+  cannot (exhausted after one pass, no `len()`, no indexing). Still holds only
+  the entry *plan*, never a mesh: `series[i]` performs exactly one independent
+  read, so a 500-entry `TimeSeries` costs no more memory than its plan. This
+  closes the one item `doc/roadmap.md` §1 had left open; nothing remains open
+  in that theme.
+- **`example/julia/03_mesh_operations.ipynb` and `example/r/03_mesh_operations.ipynb`**
+  gain the same "Transient sequences" section as the Python/C++ notebooks:
+  natural-numeric ordering (a lexicographic sort would put `seq_10` third, not
+  last), fan-in/fan-out, and a per-step `run_sequence_file`/
+  `mio_sequence_pipeline_run_file` chain, with the mean-height-per-step result
+  rendered as a bar chart (these bindings' documented no-PyVista convention).
+  Writing them surfaced a real flat-ABI gap: `mio_sequence_to_timeseries` had
+  no way to select XDMF's `"XML"` data format, which these HDF5-off notebook
+  environments specifically need. Closed with **`mio_sequence_to_timeseries_ex`**
+  (a `mio_write_opts*`, mirroring `mio_write_ex`; only `encoding` has anywhere
+  to go here -- `Codec`/`FloatFormat` fail by name, since the transient writer
+  drives `XdmfTimeSeriesWriter` directly and bypasses the registry) plus an
+  `ascii`/`ascii = TRUE` keyword on the Julia and R wrappers.
 
 ### Fixed
 
