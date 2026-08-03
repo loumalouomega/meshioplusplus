@@ -449,6 +449,8 @@ _NOT_TOOLS = {
     "Mesh",
     "CellBlock",
     "Region",
+    "TimeSeries",  # in-memory random-access class; the `sequence` tool covers
+    # the path-in/path-out cases (fan-in/fan-out/per-step chain)
     "ReadError",
     "WriteError",
     "topological_dimension",

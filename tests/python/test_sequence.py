@@ -397,6 +397,59 @@ def test_fan_in_peak_is_constant_in_the_step_count(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# TimeSeries: the "hold a series as one value" case, with random access       #
+# --------------------------------------------------------------------------- #
+
+
+def test_timeseries_gives_random_access_without_materializing(steps):
+    ts = meshioplusplus.TimeSeries(str(steps / "out_*.vtu"))
+    assert len(ts) == 12
+    # times/paths/entries() answer from the plan alone -- no reads.
+    assert ts.times == [float(i) for i in range(12)]
+    assert os.path.basename(ts.paths[3]) == "out_3.vtu"
+    assert ts.entries()[3]["time_source"] == "filename"
+
+    t0, mesh0 = ts[0]
+    assert t0 == 0.0
+    assert mesh0.points.shape == (3, 3)
+    t_last, _ = ts[-1]
+    assert t_last == 11.0
+
+    sliced = ts[2:5]
+    assert [t for t, _ in sliced] == [2.0, 3.0, 4.0]
+    assert repr(ts) == "TimeSeries(12 step(s))"
+
+
+def test_timeseries_is_reusable_unlike_read_sequence(steps):
+    # A generator is exhausted after one pass; a TimeSeries is not -- that is
+    # the entire point of "holding a series as one value".
+    ts = meshioplusplus.TimeSeries(str(steps / "out_*.vtu"))
+    first_pass = [t for t, _ in ts]
+    second_pass = [t for t, _ in ts]
+    assert first_pass == second_pass == ts.times
+
+
+def test_timeseries_each_access_is_one_independent_read(steps):
+    # Repeated indexing must not share mesh state between accesses.
+    ts = meshioplusplus.TimeSeries(str(steps / "out_*.vtu"))
+    _, mesh_a = ts[3]
+    mesh_a.point_data["marker"] = mesh_a.points[:, 0].copy()
+    _, mesh_b = ts[3]
+    assert "marker" not in mesh_b.point_data
+
+
+def test_timeseries_rejects_time_step_kwarg(steps):
+    with pytest.raises(TypeError, match="time_step"):
+        meshioplusplus.TimeSeries(str(steps / "out_*.vtu"), time_step=1)
+
+
+def test_timeseries_forwards_read_kwargs(steps):
+    ts = meshioplusplus.TimeSeries(str(steps / "out_*.vtu"), points_only=True)
+    _, mesh = ts[0]
+    assert not mesh.point_data
+
+
+# --------------------------------------------------------------------------- #
 # The settings document                                                       #
 # --------------------------------------------------------------------------- #
 
