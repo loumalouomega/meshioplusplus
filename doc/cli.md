@@ -1027,7 +1027,7 @@ no time concept refuses rather than quietly returning the first step.
 `--lenient` (**native CLI only**) downgrades "this reader cannot represent construct X"
 errors to a warning plus a skip — currently MDPA's `Table`, `Geometries`, `Mesh` and
 `Constraints` blocks, which nearly every production `.mdpa` carries. It is *not* "ignore
-all errors": a malformed row, a bad node reference or non-sequential node ids still fail,
+all errors": a malformed row, a bad node reference or a duplicate node id still fail,
 because continuing past those returns a mesh that is quietly wrong rather than merely
 incomplete. The Python CLI has no such flag, deliberately: its MDPA reader is the
 pure-Python reference, which already accepts every construct the flag covers.
