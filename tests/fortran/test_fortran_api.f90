@@ -16,7 +16,8 @@ program test_fortran_api
     use meshioplusplus
     implicit none
 
-    type(mio_mesh) :: m, r, c, s, q, ro
+    type(mio_mesh) :: m, r, c, s, q, ro, seq_step
+    type(mio_sequence) :: seq
     integer(int64) :: qcells, qinv, qdeg, bw
     integer(int64), allocatable :: node_perm(:)
     logical :: perm_ok, eq
@@ -773,6 +774,56 @@ program test_fortran_api
     call r%free()
     call c%free()
     call check(.not. m%is_valid(), 'handle invalid after free')
+
+    ! ------------------------------------------------------------------
+    ! Sequences (multi-file / transient datasets). The three files below are
+    ! deliberately named _1/_2/_10 so the natural-numeric ordering rule is
+    ! exercised: a lexicographic sort would put _10 second.
+    ! ------------------------------------------------------------------
+    call m%create()
+    call m%set_points(points)
+    call m%add_cell_block('tetra', conn)
+    call m%write(prefix//'_seq_1.vtu')
+    call m%write(prefix//'_seq_2.vtu')
+    call m%write(prefix//'_seq_10.vtu')
+    call m%free()
+
+    call seq%open(prefix//'_seq_*.vtu', stat=ierr)
+    call check(ierr == 0, 'sequence open')
+    call check(seq%count() == 3_int64, 'sequence count')
+    call check(index(seq%path(2), '_seq_2.vtu') > 0, 'natural order puts _2 before _10')
+    call check(index(seq%path(3), '_seq_10.vtu') > 0, 'natural order puts _10 last')
+    call check(seq%time(3) == 10.0_real64, 'time parsed from the filename')
+    call check(seq%time_source(3) == 2, 'time source is filename')
+    call check(seq%step(1) == 0_int64, 'single-step file has step 0')
+
+    ! read_step hands back an OWNED mesh: freeing it must be right, and the
+    ! sequence must stay usable (it caches nothing).
+    seq_step = seq%read_step(1, stat=ierr)
+    call check(ierr == 0, 'sequence read_step')
+    call check(seq_step%num_points() == 5_int64, 'read step has the right points')
+    call seq_step%free()
+    call check(seq%count() == 3_int64, 'sequence usable after a step was freed')
+
+    call seq%to_timeseries(prefix//'_seq_series.xdmf', stat=ierr)
+    call check(ierr == 0, 'sequence fan-in')
+
+    ! A format that cannot hold a series must fail by name, not truncate.
+    call seq%to_timeseries(prefix//'_seq_bad.vtu', stat=ierr, errmsg=msg)
+    call check(ierr /= 0, 'fan-in to a non-series format fails')
+    call check(index(msg, '{step}') > 0, 'and the message names the remedy')
+    call seq%free()
+    call check(.not. seq%is_valid(), 'sequence handle invalid after free')
+
+    ! NOTE the fan-out stem: it must NOT match the '_seq_*.vtu' input pattern
+    ! above, or a second run in the same build directory would glob its own
+    ! previous output back in and the count check would fail.
+    call mio_timeseries_to_sequence(prefix//'_seq_series.xdmf', &
+                                    prefix//'_fanout_{step}.vtu', stat=ierr)
+    call check(ierr == 0, 'sequence fan-out')
+    call r%read(prefix//'_fanout_0002.vtu', stat=ierr)
+    call check(ierr == 0, 'fan-out wrote the third step')
+    call r%free()
 
     if (fails /= 0) then
         write (error_unit, '(a,i0,a)') 'test_fortran_api: ', fails, ' check(s) FAILED'
