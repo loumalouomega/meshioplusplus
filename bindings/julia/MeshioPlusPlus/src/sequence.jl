@@ -205,16 +205,43 @@ Base.iterate(s::Sequence, i::Int=1) = i > length(s) ? nothing : (read_step(s, i)
 Base.eltype(::Type{Sequence}) = Mesh
 Base.IteratorSize(::Type{Sequence}) = Base.HasLength()
 
+# Mirror of C `mio_write_opts`; field order and types are ABI. `to_timeseries`
+# is the transient writer's only consumer of this on the Julia side -- it
+# drives `XdmfTimeSeriesWriter` directly rather than the registry, so `ascii`
+# is the one option with anywhere to go (selects the XDMF "XML" data format,
+# needing no HDF5, over the default "HDF"). `codec`/`float_format` have no
+# effect there and are left at their MIO_*_DEFAULT / null values.
+struct _WriteOpts
+    encoding::Cint
+    codec::Cint
+    float_format::Cstring
+    reserved::NTuple{5,Int64}
+end
+
+const _MIO_ENCODING_ASCII = Cint(1)
+
 """
-    to_timeseries(seq, out_path; format="")
+    to_timeseries(seq, out_path; format="", ascii=false)
 
 Fan-in: write every step into one multi-step file. Streams — one mesh alive at
 a time. A format that cannot hold a series throws naming itself and pointing at
 `{step}`, never a silent truncation to the first step.
+
+`ascii=true` selects XDMF's `"XML"` data format (everything inline, no HDF5
+needed) instead of the default `"HDF"` — the option a build without HDF5
+support (this notebook's environment among them, see `doc/julia.md`) needs.
 """
-function to_timeseries(s::Sequence, out_path::AbstractString; format::AbstractString="")
-    _check(ccall(_sym(:mio_sequence_to_timeseries), Cint, (Ptr{Cvoid}, Cstring, Cstring),
-                 _handle(s), out_path, format))
+function to_timeseries(s::Sequence, out_path::AbstractString; format::AbstractString="",
+                       ascii::Bool=false)
+    if !ascii
+        _check(ccall(_sym(:mio_sequence_to_timeseries), Cint, (Ptr{Cvoid}, Cstring, Cstring),
+                     _handle(s), out_path, format))
+        return nothing
+    end
+    opts = _WriteOpts(_MIO_ENCODING_ASCII, Cint(0), Ptr{Cchar}(C_NULL), ntuple(_ -> Int64(0), 5))
+    _check(ccall(_sym(:mio_sequence_to_timeseries_ex), Cint,
+                 (Ptr{Cvoid}, Cstring, Cstring, Ref{_WriteOpts}),
+                 _handle(s), out_path, format, Ref(opts)))
     nothing
 end
 
