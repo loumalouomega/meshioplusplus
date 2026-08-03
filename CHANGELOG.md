@@ -8,6 +8,50 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.13.0 (2026-08-03)
+
+Arbitrary MDPA node ids. The C++ reader required node ids to be exactly `1..n`
+in file order and threw `"MDPA: non-sequential node ids are not supported by
+the C++ reader"` otherwise — one of the few constructs that threw even under
+`ReadOptions::mLenient`. Real Kratos decks routinely have gaps (SubModelPart
+extraction, entity removal and deck merging all leave them, which is why
+`ModelPart` keys entities in a hash map), so a genuine production `.mdpa` was
+unreadable from WASM, the C API, Fortran, Julia, R and the native CLI — none of
+which has a Python fallback. The pure-Python reference was no better: it
+discarded the id column and reconstructed row = id − 1 from position, silently
+misassigning coordinates and data on a gapped deck through
+`meshioplusplus.read()`, which for mdpa is *always* the Python path.
+
+Both readers now resolve connectivity, `NodalData`, `SubModelPartNodes` and
+`MeshNodes` through a file-id → row map, built lazily on the first id that is
+not `row + 1` (the `abaqus.cpp` `mPointIds` / `unv.cpp` `label_to_index`
+pattern). Notable points:
+
+- **Not gated on `mLenient`**: accepting arbitrary ids is strictly more
+  *correct*, not more lenient, so no read that succeeded before changes its
+  result. A `1..n` (or id-less) deck never leaves the arithmetic path.
+- Points come back in **file order**, never sorted by id. Ids themselves are
+  not carried onto the mesh.
+- A **bare `x y z` row takes its position as its id**, so the id-less form and
+  mixed blocks are both well defined. (The reference reader's `np.loadtxt` is
+  rectangular and still rejects a *mixed* block; the C++ reader accepts one.)
+- A **duplicate node id** now throws by name, always — two coordinate rows
+  claiming one id is unrepresentable, not merely incomplete.
+- Connectivity naming an undefined node still throws, but the message was
+  reworded to name the **file id** and report the node count as context:
+  `"connectivity refers to node id N, which the file's Nodes block does not
+  define (M nodes read)"`. The old wording ("but the file has M nodes") is
+  false for a gapped file, where id 500 can be perfectly valid in a 4-node deck.
+- `SubModelPartNodes` naming an unknown id is now dropped with a `log::warn`
+  rather than silently, matching what the entity lists already did.
+- The Python reference warns when an `Elements`/`Conditions`/`Geometries` block
+  precedes the `Nodes` block, since it resolves eagerly and would fall back to
+  "row = id − 1" there; the C++ reader defers resolution and is order-independent.
+
+Ids are still **renumbered to `1..n` on write** by both writers — the remaining,
+narrowed roadmap §0. `MESHIOPLUSPLUS_ABI_VERSION` stays **5**: `formats/mdpa.hpp`
+changed only in its doc comment, with every declaration byte-identical.
+
 ## v9.12.0 (2026-08-03)
 
 Multi-file and transient datasets. Every entry point was single-mesh,
