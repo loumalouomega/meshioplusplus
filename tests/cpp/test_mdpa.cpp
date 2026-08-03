@@ -596,6 +596,124 @@ TEST(Mdpa, SubModelPartNodesWithUnknownIdIsSkipped) {
     EXPECT_EQ(m.Region(ip).Entries()[0], 2);
 }
 
+// ---------------------------------------------------------------------------
+// Original ids preserved on write (kMdpaIdName / "mdpa:id")
+// ---------------------------------------------------------------------------
+
+TEST(Mdpa, GappedIdsRoundTripThroughAWrite) {
+    // The write half of roadmap #0: a gapped read attaches point_data/
+    // cell_data["mdpa:id"], and the writer must honour it -- so a re-write
+    // names the ORIGINAL file ids, not row+1/counter renumbering.
+    const std::string in_path = mdpa_temp_file(kMdpaGappedDeck);
+    const Mesh m = meshioplusplus::read_mdpa(in_path);
+    ASSERT_TRUE(m.HasPointData(meshioplusplus::kMdpaIdName));
+    ASSERT_TRUE(m.HasCellData(meshioplusplus::kMdpaIdName));
+
+    const std::string out_path = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out_path, m);
+    const std::string text = mdpa_slurp(out_path);
+    EXPECT_NE(text.find("Begin Nodes\n 10 "), std::string::npos) << text;
+    EXPECT_NE(text.find(" 7 "), std::string::npos) << text;
+    EXPECT_NE(text.find(" 42 "), std::string::npos) << text;
+    EXPECT_NE(text.find(" 5 "), std::string::npos) << text;
+    EXPECT_NE(text.find("Begin Elements Element3D4N\n  100 "), std::string::npos) << text;
+    EXPECT_EQ(text.find("Begin Elements Element3D4N\n  1 "), std::string::npos) << text;
+
+    // And the round trip is exact: re-reading the written file reproduces the
+    // same mesh, ids included.
+    const Mesh out = meshioplusplus::read_mdpa(out_path);
+    mt::expect_mesh_eq(m, out);
+    ASSERT_TRUE(out.HasPointData(meshioplusplus::kMdpaIdName));
+    EXPECT_EQ(meshioplusplus::detail::read_int(out.PointData(meshioplusplus::kMdpaIdName), 0), 10);
+    std::error_code ec;
+    std::filesystem::remove(in_path, ec);
+    std::filesystem::remove(out_path, ec);
+}
+
+TEST(Mdpa, SubModelPartNodeAndElementReferencesUseThePreservedIds) {
+    // Point regions AND cell regions (SubModelPart) must reference the SAME
+    // preserved ids as the Nodes/Elements blocks they point into -- the file
+    // must stay internally consistent whichever numbering is actually used.
+    const Mesh m = mdpa_read_string(kMdpaGappedDeck);
+    const std::string out_path = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out_path, m);
+    const std::string text = mdpa_slurp(out_path);
+    const std::size_t smp = text.find("Begin SubModelPart Gapped");
+    ASSERT_NE(smp, std::string::npos) << text;
+    const std::string tail = text.substr(smp);
+    EXPECT_NE(tail.find("        42\n"), std::string::npos) << tail;
+    EXPECT_NE(tail.find("        5\n"), std::string::npos) << tail;
+    std::error_code ec;
+    std::filesystem::remove(out_path, ec);
+}
+
+TEST(Mdpa, SequentialDeckIsNotAffectedByIdPreservation) {
+    // The "only when it matters" contract: a plain 1..n deck gets no
+    // point_data/cell_data["mdpa:id"] at all, so a re-write stays on the
+    // exact old renumbering code path.
+    const Mesh m = mdpa_read_string(
+        "Begin Nodes\n1 0 0 0\n2 1 0 0\n3 0 1 0\n4 0 0 1\nEnd Nodes\n"
+        "Begin Elements Element3D4N\n1 0 1 2 3 4\nEnd Elements\n");
+    EXPECT_FALSE(m.HasPointData(meshioplusplus::kMdpaIdName));
+    EXPECT_FALSE(m.HasCellData(meshioplusplus::kMdpaIdName));
+
+    const std::string out_path = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out_path, m);
+    const std::string text = mdpa_slurp(out_path);
+    EXPECT_NE(text.find("Begin Nodes\n 1 "), std::string::npos) << text;
+    EXPECT_NE(text.find("Begin Elements Element3D4N\n  1 "), std::string::npos) << text;
+    std::error_code ec;
+    std::filesystem::remove(out_path, ec);
+}
+
+TEST(Mdpa, DuplicateNodeIdInMdpaIdThrowsOnWrite) {
+    Mesh m = mt::tri_mesh();
+    NDArray ids(meshioplusplus::DType::Int64, {m.NumPoints()});
+    std::int64_t* ip = ids.As<std::int64_t>();
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        ip[i] = 5;  // every point claims the same id
+    m.AddPointData(meshioplusplus::kMdpaIdName, std::move(ids));
+    const std::string out_path = mt::temp_path(".mdpa");
+    EXPECT_THROW(meshioplusplus::write_mdpa(out_path, m), meshioplusplus::WriteError);
+    std::error_code ec;
+    std::filesystem::remove(out_path, ec);
+}
+
+TEST(Mdpa, DuplicateElementIdInMdpaIdThrowsOnWrite) {
+    Mesh m = mt::tri_quad_mesh();  // triangle, quad, triangle -- 3 blocks
+    std::vector<NDArray> ids;
+    ids.reserve(m.NumCellBlocks());
+    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+        NDArray a(meshioplusplus::DType::Int64, {m.Cells(b).NumCells()});
+        std::int64_t* ap = a.As<std::int64_t>();
+        for (std::size_t r = 0; r < m.Cells(b).NumCells(); ++r)
+            ap[r] = 7;  // every element claims the same id
+        ids.push_back(std::move(a));
+    }
+    m.AddCellData(meshioplusplus::kMdpaIdName, std::move(ids));
+    const std::string out_path = mt::temp_path(".mdpa");
+    EXPECT_THROW(meshioplusplus::write_mdpa(out_path, m), meshioplusplus::WriteError);
+    std::error_code ec;
+    std::filesystem::remove(out_path, ec);
+}
+
+TEST(Mdpa, MismatchedMdpaIdShapeFallsBackRatherThanCrashing) {
+    // A wrong-length array is treated as unrelated/stale metadata: the writer
+    // falls back to the old renumbering instead of reading out of bounds.
+    Mesh m = mt::tri_mesh();
+    NDArray ids(meshioplusplus::DType::Int64, {m.NumPoints() - 1});  // too short
+    std::int64_t* ip = ids.As<std::int64_t>();
+    for (std::size_t i = 0; i < ids.Size(); ++i)
+        ip[i] = static_cast<std::int64_t>(i) + 100;
+    m.AddPointData(meshioplusplus::kMdpaIdName, std::move(ids));
+    const std::string out_path = mt::temp_path(".mdpa");
+    meshioplusplus::write_mdpa(out_path, m);
+    const std::string text = mdpa_slurp(out_path);
+    EXPECT_NE(text.find("Begin Nodes\n 1 "), std::string::npos) << text;
+    std::error_code ec;
+    std::filesystem::remove(out_path, ec);
+}
+
 TEST(Mdpa, EmptyMeshRoundTrips) {
     const std::string path = mt::temp_path(".mdpa");
     Mesh empty;
