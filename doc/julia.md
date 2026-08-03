@@ -283,6 +283,7 @@ for i in 1:length(seq)
     @show MeshioPlusPlus.time(seq, i), MeshioPlusPlus.time_source(seq, i)
 end
 to_timeseries(seq, "series.xdmf")         # fan-in
+to_timeseries(seq, "series2.xdmf"; ascii=true)  # "XML" data format, no HDF5 needed
 close(seq)
 
 timeseries_to_sequence("series.xdmf", "step_{step}.vtu")   # fan-out

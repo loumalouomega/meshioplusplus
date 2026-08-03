@@ -263,6 +263,9 @@ for (i in seq_len(mio_sequence_count(seq))) {
 mio_sequence_to_timeseries(seq, "series.xdmf")            # fan-in
 mio_sequence_free(seq)
 
+# ascii=TRUE selects XDMF's "XML" data format (no HDF5 needed) -- the option
+# this package's own HDF5-off notebook environment needs; see below.
+
 mio_timeseries_to_sequence("series.xdmf", "step_{step}.vtu")   # fan-out
 mio_sequence_pipeline_run_file("transient.json")               # per-step chain
 ```

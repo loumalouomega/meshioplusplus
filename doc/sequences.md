@@ -247,6 +247,33 @@ would force the handle to cache every mesh it produced.
 memory, and an operation's own internals are unchanged — a single step that does
 not fit in memory still does not fit.
 
+## Holding a series as one value: `TimeSeries`
+
+`read_sequence` is a **generator**: exhausted after one pass, unable to answer
+`len(...)`, unable to be indexed. That is deliberate — it is the surface for a
+single streaming traversal. But the C/Fortran/Julia/R sequence handles
+(`mio_sequence`, `type(mio_sequence)`, `Sequence`, `mio_sequence()`) already
+give **random access** by construction: they hold the entry *plan* and read
+step *i* on demand, any number of times, in any order. Python had no
+equivalent — until `TimeSeries`:
+
+```python
+series = mp.TimeSeries("out_*.vtu")
+len(series)                  # 12, from the plan alone -- no reads
+series.times                 # [0.0, 1.0, ..., 11.0], likewise
+t0, mesh0 = series[0]        # exactly one read
+t_last, mesh_last = series[-1]
+for t, mesh in series:       # a fresh, independent pass every time
+    ...
+```
+
+It closes the one item [`doc/roadmap.md`](roadmap.md) had left open for this
+feature: a caller that genuinely needs to *hold* a series — random access
+across steps, more than one pass — no longer has to reach for `list(...)`. It
+still honours the streaming invariant: only the plan is held, never a mesh, so
+`series[i]` performs exactly one read and nothing is cached between accesses —
+holding a 500-entry `TimeSeries` costs no more memory than holding its plan.
+
 ## Sequences in a settings document
 
 The v9.11.0 pipeline schema, plus seven keys. See
@@ -309,8 +336,8 @@ Two deliberate restrictions:
 |---|---|
 | Python CLI | `meshioplusplus convert 'in_*.vtu' out.xdmf`, `… in.xdmf 'out_{step}.vtu'`, `meshioplusplus pipeline settings.json` |
 | Native CLI | the same words |
-| Python | `read_sequence`, `write_sequence`, `sequence_entries`, `run_sequence_pipeline` (and `run_pipeline`, which routes here) |
-| C | `mio_sequence_open`/`_open_list`/`_count`/`_path`/`_step`/`_time`/`_time_source`/`_read`/`_free`, `mio_sequence_to_timeseries`, `mio_timeseries_to_sequence`, `mio_sequence_pipeline_run_file`/`_json` |
+| Python | `read_sequence`, `write_sequence`, `sequence_entries`, `run_sequence_pipeline`, `TimeSeries` (and `run_pipeline`, which routes here) |
+| C | `mio_sequence_open`/`_open_list`/`_count`/`_path`/`_step`/`_time`/`_time_source`/`_read`/`_free`, `mio_sequence_to_timeseries`/`_ex`, `mio_timeseries_to_sequence`, `mio_sequence_pipeline_run_file`/`_json` |
 | Fortran | `type(mio_sequence)` with `%open`/`%count`/`%path`/`%time`/`%read_step`/`%to_timeseries`/`%free`, plus `mio_timeseries_to_sequence` |
 | Julia | `Sequence`, `read_step`, `to_timeseries`, `timeseries_to_sequence`, `run_sequence_file`/`_json` |
 | R | `mio_sequence()`, `mio_sequence_read()`, `mio_sequence_to_timeseries()`, `mio_timeseries_to_sequence()`, … |
