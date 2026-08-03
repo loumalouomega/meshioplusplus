@@ -1005,6 +1005,10 @@ step('every binding is reachable through the wrapper', () => {
         // steps below assert the handle's own methods, which is where a
         // missing raw forward would show up.
         'createXdmfTimeSeriesWriter',
+        // Sequences (multi-file / transient datasets) over MEMFS paths.
+        'sequenceEntries',
+        'sequenceToTimeseries',
+        'timeseriesToSequence',
     ]) {
         assert.equal(typeof m[name], 'function', `${name} is not forwarded by the wrapper`);
     }
@@ -1440,6 +1444,110 @@ step('runPipeline runs a settings document (object, text, and MEMFS path)', () =
     assert.throws(
         () => m.runPipeline({ Input: { Path: '/pipe.vtu' }, Operations: [{ Op: 'Merge' }], Output: { Path: '/x.vtu' } }),
         /CLI verb/
+    );
+});
+
+step('sequences: natural ordering, fan-in, fan-out over MEMFS', () => {
+    // A set of MEMFS files treated as one transient dataset. Deliberately
+    // UNPADDED names, so the ordering rule has something to prove: a plain
+    // sort would put out_10 third.
+    m.FS.mkdir('/seq');
+    for (let i = 0; i < 12; ++i) m.writeMesh(`/seq/out_${i}.vtu`, cube);
+
+    const plan = m.sequenceEntries('/seq/out_*.vtu');
+    assert.equal(plan.length, 12);
+    assert.deepEqual(
+        plan.map((e) => e.path.split('/').pop()),
+        Array.from({ length: 12 }, (_, i) => `out_${i}.vtu`),
+        'sequence entries must be in natural-numeric order (out_9 before out_10)'
+    );
+    // Times come from each filename's trailing digit run, and the entry says so.
+    assert.deepEqual(plan.map((e) => e.time), Array.from({ length: 12 }, (_, i) => i));
+    assert.equal(plan[0].timeSource, 'filename');
+    assert.equal(plan[0].step, 0);
+
+    // Fan-in: 12 single-step files -> one multi-step XDMF.
+    const written = m.sequenceToTimeseries('/seq/out_*.vtu', '/seq/series.xdmf');
+    assert.equal(written, 12);
+    const series = m.sequenceEntries('/seq/series.xdmf');
+    assert.equal(series.length, 12, 'the series must report its own 12 steps');
+    assert.equal(series[3].timeSource, 'file', 'a series knows its own step times');
+    assert.equal(series[3].step, 3);
+
+    // Fan-out: back to one file per step, {step} zero-padded to four digits.
+    const paths = m.timeseriesToSequence('/seq/series.xdmf', '/seq/back_{step}.vtu');
+    assert.equal(paths.length, 12);
+    assert.equal(paths[0], '/seq/back_0000.vtu');
+    assert.equal(paths[11], '/seq/back_0011.vtu');
+    const back = m.readMesh('/seq/back_0011.vtu');
+    assert.equal(back.points.length, cube.points.length);
+
+    // An explicit path list is a stated order and is NOT re-sorted.
+    const listed = m.sequenceEntries(['/seq/out_2.vtu', '/seq/out_0.vtu']);
+    assert.equal(listed[0].path, '/seq/out_2.vtu');
+    assert.equal(m.sequenceEntries(['/seq/out_2.vtu', '/seq/out_0.vtu'], { sort: true })[0].path,
+                 '/seq/out_0.vtu');
+
+    // Explicit times win, and report themselves as such.
+    const timed = m.sequenceEntries('/seq/out_*.vtu',
+                                    { times: Array.from({ length: 12 }, (_, i) => i * 0.25) });
+    assert.equal(timed[4].time, 1.0);
+    assert.equal(timed[4].timeSource, 'explicit');
+});
+
+step('sequences fail by name rather than truncating', () => {
+    // A format that cannot hold a series names itself and the remedy.
+    assert.throws(
+        () => m.sequenceToTimeseries('/seq/out_*.vtu', '/seq/bad.vtu'),
+        /cannot hold a multi-step series/
+    );
+    // A fan-out needs a {step}/{index} token.
+    assert.throws(
+        () => m.timeseriesToSequence('/seq/series.xdmf', '/seq/plain.vtu'),
+        /\{step\}/
+    );
+    // A pattern matching nothing is an error, never an empty sequence.
+    assert.throws(() => m.sequenceEntries('/seq/nothing_*.vtu'), /matched no files/);
+    // The directory component of a pattern is taken literally.
+    assert.throws(() => m.sequenceEntries('/se*/out_*.vtu'), /taken literally/);
+    // A mistyped option is named.
+    assert.throws(() => m.sequenceEntries('/seq/out_*.vtu', { timeFrom: 'vibes' }), /TimeFrom/);
+    assert.throws(() => m.sequenceEntries('/seq/out_*.vtu', { bogus: 1 }), /unknown key 'bogus'/);
+});
+
+step('runPipeline runs a whole transient dataset per step', () => {
+    // The composition that makes the pipeline a batch post-processor: a
+    // Pattern input and a {step} output route the SAME document to the
+    // sequence driver, with the chain applied to every step.
+    const rep = m.runPipeline({
+        Version: 1,
+        Input: { Pattern: '/seq/out_*.vtu' },
+        Operations: [{ Op: 'Quality' }],
+        Output: { Path: '/seq/post_{step}.vtu' },
+    });
+    assert.equal(rep.steps.length, 12, 'one report entry per (step, op)');
+    assert.deepEqual(new Set(rep.steps.map((x) => x.op)), new Set(['Quality']));
+    const post = m.readMesh('/seq/post_0007.vtu');
+    assert.ok('quality:scaled_jacobian' in post.cell_data);
+
+    // Mode ASSERTS the inferred shape rather than selecting it.
+    assert.throws(
+        () => m.runPipeline({
+            Version: 1,
+            Mode: 'fan-in',
+            Input: { Paths: ['/seq/out_0.vtu'] },
+            Output: { Path: '/seq/one.xdmf' },
+        }),
+        /Mode says 'fan-in'/
+    );
+    // A multi-step input aimed at a single-step output refuses to truncate.
+    assert.throws(
+        () => m.runPipeline({
+            Version: 1,
+            Input: { Path: '/seq/series.xdmf' },
+            Output: { Path: '/seq/trunc.vtu' },
+        }),
+        /12 time steps/
     );
 });
 
