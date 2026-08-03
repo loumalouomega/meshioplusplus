@@ -8,6 +8,102 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.12.0 (2026-08-03)
+
+Multi-file and transient datasets. Every entry point was single-mesh,
+single-file: XDMF had a time-series writer and v9.11.0's pipeline ran one input
+through an operation chain to one output, but there was no way to treat a *set*
+of files as one logical dataset -- which is how transient solver output actually
+arrives (`out_0000.vtu … out_0500.vtu`), and how most of the 41 formats have to
+express time, since only a minority carry several steps natively. This release
+adds fan-out (one multi-step file -> N files), fan-in (N files -> one multi-step
+file), globbed/list input and per-step pipeline execution, across the CLI, the
+settings document, Python, C, Fortran, Julia, R and WASM. `MESHIOPLUSPLUS_ABI_VERSION`
+stays 5 -- the one new installed header (`operations/sequence.hpp`) is purely
+additive (Tier C, reviewed in `doc/abi_reviews.md`).
+
+### Sequences
+
+- **`operations/sequence.{hpp,cpp}`** (docs [`doc/sequences.md`](doc/sequences.md)):
+  a **driver, not a new operation**. It reads and writes through the existing
+  registry and runs operation chains through the existing typed pipeline layer,
+  so `run_pipeline_steps` remains the single owner of the step dispatch and a
+  settings document still cannot drift from the browser viewer's
+  `convertSurfaceOps`.
+- **Ordering is natural-numeric and documented**: `out_9.vtu` sorts before
+  `out_10.vtu`. Digit runs compare numerically on the digits themselves (never
+  through `stoull`, so a 40-digit name cannot overflow), non-digit runs compare
+  as `unsigned char`, and a final tie-break on the unstripped strings is what
+  makes the comparator a **strict weak ordering** -- without it `out_1` and
+  `out_01` are mutually "not less" yet not equivalent, and `std::sort` on a
+  directory mixing padded and unpadded names would be undefined behaviour. A
+  brute-force gtest checks all four axioms.
+- **Time values** follow a documented precedence -- explicit list, the file
+  itself (a series step, or `field_data["meshio:time"]`, generalizing the
+  length-1 `exodus:time` the Exodus reader/writer already round-trips), the
+  last digit run of the filename, then the integer index -- and every entry
+  **reports which source it used**, because "the file said 0.25" and "nothing
+  said anything, so this is position 3" are different facts.
+- **The streaming invariant**: at most one `Mesh` is alive at any point in a
+  fan-in, a fan-out or a per-step run, and Python's `read_sequence` is a
+  generator. This is a contract, not an optimization -- the feature exists so a
+  500-step dataset is traversable on a laptop. It is pinned rather than
+  asserted in prose: a gtest measures the peak through the `BufferAllocator`
+  hook and requires it to be **O(1) in the step count** (20 files vs 40), and
+  the Python suite uses weak references so a regression names the retainer.
+- **A multi-step input aimed at a single-step output fails by name**, naming
+  the format and pointing at `{step}` and `--time-step`, rather than silently
+  writing step 0 -- which is what `convert series.xdmf out.vtu` did before.
+- **Both CLIs**: `convert 'out_*.vtu' out.xdmf` (fan-in, quote the glob),
+  `convert in.xdmf 'out_{step}.vtu'` (fan-out), and repeated `--input` for an
+  argv your shell already expanded. Glob matching lives in the **core**, not
+  only in Python, so both CLIs accept exactly the same pattern language --
+  deliberately just `*` and `?`, narrower than `glob(3)` and `fnmatch`, so the
+  two matchers cannot accept different things.
+- **The settings document** gains `Mode`, `Input.Pattern`, `Input.Paths`,
+  `Input.Times`, `Input.TimeFrom`, `Parallel` and `Workers`; the operation chain
+  runs per step. `Mode` **asserts** the inferred shape rather than selecting it,
+  and a mismatch names both. `Parallel` is a Python-driver process pool, legal
+  for element-wise runs only: with a fan-in it is an error, not a silent
+  serialization, because buffering steps for an ordered writer would break the
+  streaming guarantee. A document using none of the new keys takes a physically
+  unchanged path.
+- **Python**: `read_sequence` (a lazy `(time, Mesh)` generator), `write_sequence`,
+  `sequence_entries` and `run_sequence_pipeline`; `run_pipeline` routes a
+  sequence document here automatically. **C**: `mio_sequence_*`, whose
+  `_read` hands back an **owned** mesh rather than a borrow — the C ABI's way of
+  expressing the no-caching rule. **Fortran/Julia/R** wrap that handle in each
+  language's idiom. **WASM** gets `sequenceEntries`/`sequenceToTimeseries`/
+  `timeseriesToSequence` over MEMFS paths — the same virtual filesystem
+  `convert` and `runPipeline` already work on — with `runPipeline` routing a
+  transient document itself; `Parallel` is accepted and ignored with a warning
+  there, since a wasm module has no processes to pool.
+- **MCP**: a `sequence` tool, plus `_resolve_pattern`, which containment-checks
+  a pattern's *directory* component before expanding it -- `_resolve`'s
+  `os.path.isfile` rejects a glob outright, and the directory is the obvious
+  sandbox escape.
+
+### Fixed
+
+- **`meshioplusplus.xdmf.read` now accepts `time_step`.** `read_xdmf` has
+  honoured `ReadOptions::mTimeStep` since v9.0.0, but the pybind binding never
+  passed it through, so a temporal collection was unreachable from Python
+  except through `xdmf.TimeSeriesReader` -- on *the* multi-step format. A
+  non-default step deliberately does **not** fall back to the pure-Python
+  reader, which always returns step 0: that would be a wrong answer, not a
+  slower one.
+- `tests/cpp/test_abi_layout.cpp` now pins `Pipeline`, `PipelineInput`,
+  `PipelineOutput` and `PipelineStep`, which shipped unpinned in v9.11.0.
+- **A settings document naming a multi-step input no longer writes step 0.**
+  A document that used no sequence key and named a plain output took the
+  single-file path, so `{"Input": {"Path": "series.xdmf"}, "Output": {"Path":
+  "out.vtu"}}` silently converted the first step — the same silent truncation
+  the CLI guard prevents. Every front-end now shares one predicate
+  (`sequence_input_needs_driver`), gated on the formats that can carry time so
+  the probe costs nothing for the 39 that cannot. Found by the WASM smoke test,
+  whose settings surface makes the same routing decision; the Python-only
+  refusal test had not covered the C++ engine.
+
 ## v9.11.0 (2026-08-02)
 
 New **settings pipeline**: one `settings.json` document describes a whole read →
