@@ -696,6 +696,81 @@ export interface MeshioPlusPlusModule {
    */
   runPipeline(settings: object | string): { steps: Array<Record<string, number | string>>; warnings: string[] };
 
+  /**
+   * One entry of a {@link MeshioPlusPlus.sequenceEntries} plan.
+   */
+  // (declared inline below rather than as a named export, matching the rest of
+  // this file's plain-object style.)
+
+  /**
+   * The ordered plan for a **sequence** — a set of MEMFS files, or the steps
+   * inside one multi-step file, treated as one transient dataset.
+   *
+   * `source` is a glob pattern (**`*` and `?` only** — no `**`, no `[set]`,
+   * and the directory part is taken literally) or an array of paths, whose
+   * order is yours and is kept unless `options.sort`.
+   *
+   * Ordering is **natural-numeric**, so `out_9.vtu` precedes `out_10.vtu`; a
+   * plain sort gets that backwards. Each entry's `timeSource` reports where
+   * its time came from, because "the file said 0.25" and "nothing said
+   * anything, so this is position 3" are different facts.
+   *
+   * Reads no heavy data. See `doc/sequences.md`.
+   */
+  sequenceEntries(
+    source: string | string[],
+    options?: {
+      format?: string;
+      times?: number[];
+      timeFrom?: 'auto' | 'file' | 'filename' | 'index';
+      sort?: boolean;
+    },
+  ): Array<{
+    path: string;
+    step: number;
+    time: number;
+    timeSource: 'explicit' | 'file' | 'filename' | 'index';
+  }>;
+
+  /**
+   * **Fan-in**: write every step of `source` into one multi-step file.
+   *
+   * Streams — at most one mesh is alive at a time, whatever the step count,
+   * which is what makes a long dataset viable in a browser tab. A format that
+   * cannot hold a series throws naming itself and pointing at `{step}`, never
+   * a silent truncation to the first step (XDMF is the one that can today).
+   *
+   * @returns the number of steps written.
+   */
+  sequenceToTimeseries(
+    source: string | string[],
+    outPath: string,
+    outFormat?: string,
+    options?: {
+      format?: string;
+      times?: number[];
+      timeFrom?: 'auto' | 'file' | 'filename' | 'index';
+      sort?: boolean;
+    },
+  ): number;
+
+  /**
+   * **Fan-out**: write each step of the multi-step file `inPath` to
+   * `outPattern`, which must contain `{step}` or `{index}`. Streams likewise.
+   *
+   * `{index}` is the plain index; `{step}` is zero-padded to at least four
+   * digits, so a 12-step run writes `out_0000 … out_0011`.
+   *
+   * @returns the MEMFS paths written, so they can be read straight back with
+   *   `Module.FS.readFile`.
+   */
+  timeseriesToSequence(
+    inPath: string,
+    outPattern: string,
+    inFormat?: string,
+    outFormat?: string,
+  ): string[];
+
   /** The shared cell-type -> node-count table (e.g. `{triangle: 3, tetra: 4, ...}`). */
   numNodesPerCell(): Record<string, number>;
 

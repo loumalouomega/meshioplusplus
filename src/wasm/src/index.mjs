@@ -99,6 +99,9 @@ function resolveVariant(variant) {
  *   convertSurface: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean}) => {steps: object[], warnings: string[]},
  *   runPipeline: (settings: object|string) => {steps: object[], warnings: string[]},
+ *   sequenceEntries: (source: string|string[], options?: object) => object[],
+ *   sequenceToTimeseries: (source: string|string[], outPath: string, outFormat?: string, options?: object) => number,
+ *   timeseriesToSequence: (inPath: string, outPattern: string, inFormat?: string, outFormat?: string) => string[],
  *   numNodesPerCell: () => Object<string, number>,
  *   topologicalDimension: () => Object<string, number>,
  *   meshBackend: () => string,
@@ -209,6 +212,20 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             }
             return Module.runPipeline(resolved);
         },
+        // Sequences: a set of MEMFS files (or the steps inside one multi-step
+        // file) as one ordered transient dataset. See doc/sequences.md.
+        // `source` is a glob pattern ('*' and '?' only) or an array of paths;
+        // ordering is natural-numeric, so out_9.vtu precedes out_10.vtu.
+        sequenceEntries: (source, options = undefined) =>
+            Module.sequenceEntries(source, options),
+        // Fan-in: N single-step files -> one multi-step file (XDMF today).
+        // Streams -- one mesh alive at a time, whatever the step count.
+        sequenceToTimeseries: (source, outPath, outFormat = '', options = undefined) =>
+            Module.sequenceToTimeseries(source, outPath, outFormat, options),
+        // Fan-out: one multi-step file -> one file per step. `outPattern` must
+        // contain '{step}' or '{index}'; returns the MEMFS paths written.
+        timeseriesToSequence: (inPath, outPattern, inFormat = '', outFormat = '') =>
+            Module.timeseriesToSequence(inPath, inFormat, outPattern, outFormat),
         numNodesPerCell: () => Module.numNodesPerCell(),
         topologicalDimension: () => Module.topologicalDimension(),
         meshBackend: () => Module.meshBackend(),
