@@ -94,6 +94,7 @@ from ._refine import refine
 from ._regions import Region
 from ._reorder import compute_bandwidth, reorder
 from ._sequence import (
+    TimeSeries,
     read_sequence,
     run_sequence_pipeline,
     sequence_entries,
@@ -191,6 +192,7 @@ __all__ = [
     "write_sequence",
     "sequence_entries",
     "run_sequence_pipeline",
+    "TimeSeries",
     "compute_stats",
     "data_manage",
     "data_drop",

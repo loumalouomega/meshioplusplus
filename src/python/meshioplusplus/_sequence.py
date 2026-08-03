@@ -47,6 +47,7 @@ __all__ = [
     "write_sequence",
     "sequence_entries",
     "run_sequence_pipeline",
+    "TimeSeries",
 ]
 
 
@@ -480,6 +481,106 @@ def read_sequence(
             **read_kwargs,
         )
         yield _resolve_time(entry, mesh, time_from), mesh
+
+
+class TimeSeries:
+    """An ordered ``(time, Mesh)`` sequence, held as **one value** with random
+    access — the Python data-model counterpart of the C/Fortran/Julia/R
+    sequence handles, which already give lazy, indexable per-step traversal
+    (``mio_sequence_read(seq, i)``, ``read_step(seq, i)``, ...).
+
+    ``read_sequence`` is a single-pass generator: once consumed, it is gone,
+    and it cannot answer ``len(...)`` or be indexed. A ``TimeSeries`` is built
+    once (an ordinary :func:`sequence_entries` expansion) and can then be
+    indexed, sliced, iterated over more than once, or interrogated for its
+    length or its full time range — the "hold a series as one value" case
+    ``doc/roadmap.md`` had left open.
+
+    **It still honours the streaming invariant**: only the entry *plan*
+    (paths, per-file step indices, time values) is held — never a mesh.
+    ``series[i]`` performs exactly one read and returns immediately; nothing
+    is cached across accesses, so repeated indexing costs a repeated read, by
+    design, precisely so that holding a 500-entry ``TimeSeries`` costs no more
+    memory than holding its plan.
+
+    :param source: a glob pattern, a single path, or an iterable of paths (see
+        :func:`sequence_entries`).
+    :param read_kwargs: forwarded to :func:`meshioplusplus.read` on every
+        access (``points_only``, ``arrays``, ...).
+
+    .. code-block:: python
+
+        series = TimeSeries("out_*.vtu")
+        len(series)                  # 12, without reading anything heavy
+        t0, mesh0 = series[0]        # exactly one read
+        t_last, mesh_last = series[-1]
+        for t, mesh in series:       # a fresh, independent pass each time
+            ...
+        series.times                 # [0.0, 1.0, ..., 11.0], from the plan alone
+    """
+
+    def __init__(
+        self,
+        source,
+        *,
+        file_format=None,
+        times=None,
+        time_from="auto",
+        sort=False,
+        **read_kwargs,
+    ):
+        if "time_step" in read_kwargs:
+            raise TypeError(
+                "meshio++: sequence: TimeSeries supplies time_step per entry; "
+                "select a single step with meshioplusplus.read instead"
+            )
+        self._entries = sequence_entries(
+            source,
+            file_format=file_format,
+            times=times,
+            time_from=time_from,
+            sort=sort,
+        )
+        self._file_format = file_format
+        self._time_from = time_from
+        self._read_kwargs = read_kwargs
+
+    def __len__(self):
+        return len(self._entries)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        entry = self._entries[index]  # a plain list index: negative works too
+        mesh = read(
+            entry["path"],
+            file_format=self._file_format or None,
+            time_step=entry["step"],
+            **self._read_kwargs,
+        )
+        return _resolve_time(entry, mesh, self._time_from), mesh
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __repr__(self):
+        return f"TimeSeries({len(self)} step(s))"
+
+    @property
+    def times(self):
+        """Every step's time value, from the plan alone -- no reads."""
+        return [e["time"] for e in self._entries]
+
+    @property
+    def paths(self):
+        """Every step's source file path, from the plan alone -- no reads."""
+        return [e["path"] for e in self._entries]
+
+    def entries(self):
+        """The full plan (see :func:`sequence_entries`): a list of
+        ``{"path", "step", "time", "time_source"}`` dicts, one per step."""
+        return list(self._entries)
 
 
 def _check_series_target(path, file_format):
