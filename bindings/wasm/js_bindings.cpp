@@ -101,6 +101,7 @@
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
@@ -1067,23 +1068,145 @@ std::string settings_string(const val& rObject, const char* pKey, const char* pW
     return v.as<std::string>();
 }
 
+/// A list of strings from a JS array (or a single string), for the settings
+/// converter and the sequence entry points.
+std::vector<std::string> val_to_string_list(const val& rValue) {
+    std::vector<std::string> out;
+    if (rValue.isUndefined() || rValue.isNull())
+        return out;
+    if (rValue.isString()) {
+        out.push_back(rValue.as<std::string>());
+        return out;
+    }
+    const unsigned n = rValue["length"].as<unsigned>();
+    out.reserve(n);
+    for (unsigned i = 0; i < n; ++i)
+        out.push_back(rValue[i].as<std::string>());
+    return out;
+}
+
+/// `{format, times, timeFrom, sort}` (all optional) + a source -> a
+/// `SequenceInput`. `rSource` is a glob pattern string or an array of MEMFS
+/// paths; a string containing `*`/`?` is a pattern, anything else a single
+/// path -- the same rule the CLIs use.
+meshioplusplus::SequenceInput val_to_sequence_input(const val& rSource, const val& rOptions) {
+    meshioplusplus::SequenceInput in;
+    if (rSource.isString()) {
+        const std::string text = rSource.as<std::string>();
+        if (text.find('*') != std::string::npos || text.find('?') != std::string::npos)
+            in.mPattern = text;
+        else
+            in.mPaths.push_back(text);
+    } else {
+        in.mPaths = val_to_string_list(rSource);
+        if (in.mPaths.empty())
+            throw meshioplusplus::ReadError(
+                "meshio++ (wasm): the sequence input must be a pattern string or a "
+                "non-empty array of paths");
+    }
+    if (rOptions.isUndefined() || rOptions.isNull())
+        return in;
+    check_settings_keys(rOptions, "the sequence options", {"format", "times", "timeFrom", "sort"});
+    in.mFormat = settings_string(rOptions, "format", "the sequence options");
+    val times = rOptions["times"];
+    if (!times.isUndefined() && !times.isNull()) {
+        const unsigned n = times["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+            in.mTimes.push_back(times[i].as<double>());
+    }
+    in.mTimeFrom = meshioplusplus::sequence_time_from_name(
+        settings_string(rOptions, "timeFrom", "the sequence options"));
+    val sort = rOptions["sort"];
+    if (!sort.isUndefined() && !sort.isNull())
+        in.mSortExplicit = sort.as<bool>();
+    return in;
+}
+
+/// A parsed settings object, plus whether it used any sequence-only key.
+struct SettingsDocument {
+    meshioplusplus::SequencePipeline mSeq;
+    bool mSequenceKeys = false;
+};
+
 /// A PascalCase settings object (the parsed form of a settings.json) -> the
-/// core `Pipeline`. The wasm build carries no JSON parser -- `JSON.parse` is
-/// free on this platform, so the wrapper in `src/wasm/src/index.mjs` parses
-/// text and this converter only walks the already-parsed object.
-meshioplusplus::Pipeline val_to_pipeline(const val& rSettings) {
-    check_settings_keys(rSettings, "the settings object",
-                        {"Version", "Input", "Operations", "Output"});
-    meshioplusplus::Pipeline pipeline;
+/// core `SequencePipeline`. The wasm build carries no JSON parser --
+/// `JSON.parse` is free on this platform, so the wrapper in
+/// `src/wasm/src/index.mjs` parses text and this converter only walks the
+/// already-parsed object.
+///
+/// ONE converter for both document shapes, exactly as the C++ JSON front-end
+/// does: `run_pipeline_js` projects it down to the single-mesh `Pipeline` when
+/// no sequence key was used, so a plain document takes the physically
+/// unchanged path and a transient one is routed to the sequence driver.
+SettingsDocument val_to_settings(const val& rSettings) {
+    check_settings_keys(
+        rSettings, "the settings object",
+        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers"});
+    SettingsDocument parsed;
+    meshioplusplus::SequencePipeline& pipeline = parsed.mSeq;
     val version = rSettings["Version"];
     if (!version.isUndefined() && !version.isNull())
         pipeline.mVersion = static_cast<int>(version.as<double>());
 
+    val mode = rSettings["Mode"];
+    if (!mode.isUndefined() && !mode.isNull()) {
+        parsed.mSequenceKeys = true;
+        pipeline.mMode = meshioplusplus::sequence_mode_from_name(mode.as<std::string>());
+    }
+    val parallel = rSettings["Parallel"];
+    if (!parallel.isUndefined() && !parallel.isNull()) {
+        parsed.mSequenceKeys = true;
+        pipeline.mParallel = parallel.as<bool>();
+    }
+    val workers = rSettings["Workers"];
+    if (!workers.isUndefined() && !workers.isNull()) {
+        parsed.mSequenceKeys = true;
+        pipeline.mWorkers = static_cast<int>(workers.as<double>());
+    }
+
     val input = rSettings["Input"];
     if (input.isUndefined() || input.isNull())
         throw meshioplusplus::ReadError("meshio++ (wasm): the settings object needs 'Input'");
-    check_settings_keys(input, "Input", {"Path", "Format", "Options"});
-    pipeline.mInput.mPath = settings_string(input, "Path", "Input", /*required=*/true);
+    check_settings_keys(input, "Input",
+                        {"Path", "Format", "Options", "Pattern", "Paths", "Times", "TimeFrom"});
+    val path = input["Path"];
+    val pattern = input["Pattern"];
+    val paths = input["Paths"];
+    const int given = (path.isUndefined() || path.isNull() ? 0 : 1) +
+                      (pattern.isUndefined() || pattern.isNull() ? 0 : 1) +
+                      (paths.isUndefined() || paths.isNull() ? 0 : 1);
+    if (given == 0)
+        throw meshioplusplus::ReadError(
+            "meshio++ (wasm): Input.Path is required (or Input.Pattern / Input.Paths)");
+    if (given > 1)
+        throw meshioplusplus::ReadError(
+            "meshio++ (wasm): Input names more than one source; set exactly one of Path, "
+            "Pattern or Paths");
+    if (given == 1 && !(path.isUndefined() || path.isNull())) {
+        pipeline.mInput.mPaths.push_back(settings_string(input, "Path", "Input", true));
+    } else if (!(pattern.isUndefined() || pattern.isNull())) {
+        parsed.mSequenceKeys = true;
+        pipeline.mInput.mPattern = settings_string(input, "Pattern", "Input", true);
+    } else {
+        parsed.mSequenceKeys = true;
+        pipeline.mInput.mPaths = val_to_string_list(paths);
+        if (pipeline.mInput.mPaths.empty())
+            throw meshioplusplus::ReadError(
+                "meshio++ (wasm): Input.Paths must be a non-empty array of strings");
+    }
+    val times = input["Times"];
+    if (!times.isUndefined() && !times.isNull()) {
+        parsed.mSequenceKeys = true;
+        const unsigned n = times["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+            pipeline.mInput.mTimes.push_back(times[i].as<double>());
+    }
+    val time_from = input["TimeFrom"];
+    if (!time_from.isUndefined() && !time_from.isNull()) {
+        parsed.mSequenceKeys = true;
+        pipeline.mInput.mTimeFrom =
+            meshioplusplus::sequence_time_from_name(time_from.as<std::string>());
+    }
     pipeline.mInput.mFormat = settings_string(input, "Format", "Input");
     val opts = input["Options"];
     if (!opts.isUndefined() && !opts.isNull()) {
@@ -1152,7 +1275,41 @@ meshioplusplus::Pipeline val_to_pipeline(const val& rSettings) {
             pipeline.mSteps.push_back(std::move(step));
         }
     }
-    return pipeline;
+    return parsed;
+}
+
+/// Project a parsed document down to the single-mesh model. Only called when
+/// no sequence key was used, so nothing can be lost here.
+meshioplusplus::Pipeline settings_to_pipeline(const SettingsDocument& rParsed) {
+    meshioplusplus::Pipeline out;
+    out.mVersion = rParsed.mSeq.mVersion;
+    out.mInput.mPath = rParsed.mSeq.mInput.mPaths.empty() ? "" : rParsed.mSeq.mInput.mPaths[0];
+    out.mInput.mFormat = rParsed.mSeq.mInput.mFormat;
+    out.mInput.mOptions = rParsed.mSeq.mInput.mOptions;
+    out.mSteps = rParsed.mSeq.mSteps;
+    out.mOutput.mPath = rParsed.mSeq.mOutput.mPath;
+    out.mOutput.mFormat = rParsed.mSeq.mOutput.mFormat;
+    out.mOutput.mOptions = rParsed.mSeq.mOutput.mOptions;
+    return out;
+}
+
+/// The shared `{steps, warnings}` report shape.
+val report_to_val(const meshioplusplus::PipelineReport& rReport) {
+    val steps = val::array();
+    for (const auto& entry : rReport.mSteps) {
+        val step = val::object();
+        step.set("op", entry.mOp);
+        for (const auto& counter : entry.mCounters)
+            step.set(counter.first, counter.second);
+        steps.call<void>("push", step);
+    }
+    val warnings = val::array();
+    for (const auto& warning : rReport.mWarnings)
+        warnings.call<void>("push", warning);
+    val out = val::object();
+    out.set("steps", steps);
+    out.set("warnings", warnings);
+    return out;
 }
 
 }  // namespace
@@ -1171,23 +1328,93 @@ meshioplusplus::Pipeline val_to_pipeline(const val& rSettings) {
  */
 val run_pipeline_js(const val& rSettings) {
     return with_js_errors([&]() -> val {
-        meshioplusplus::PipelineReport report =
-            meshioplusplus::run_pipeline(val_to_pipeline(rSettings));
-        val steps = val::array();
-        for (const auto& entry : report.mSteps) {
-            val step = val::object();
-            step.set("op", entry.mOp);
-            for (const auto& counter : entry.mCounters)
-                step.set(counter.first, counter.second);
-            steps.call<void>("push", step);
+        const SettingsDocument parsed = val_to_settings(rSettings);
+        // A document using no sequence key and naming a plain output IS a
+        // single-mesh run and takes the unchanged path; anything else is
+        // routed to the sequence driver, so nobody has to know which kind of
+        // document they hold (the same rule both CLIs and Python follow).
+        if (!parsed.mSequenceKeys &&
+            !meshioplusplus::sequence_input_needs_driver(parsed.mSeq.mInput, parsed.mSeq.mOutput))
+            return report_to_val(meshioplusplus::run_pipeline(settings_to_pipeline(parsed)));
+        return report_to_val(meshioplusplus::run_sequence_pipeline(parsed.mSeq));
+    });
+}
+
+/**
+ * @brief The ordered plan for a sequence: which MEMFS files, which step inside
+ * each, and each step's time value.
+ *
+ * Reads no heavy data. `source` is a glob pattern (`*` and `?` only; the
+ * directory part is literal) or an array of paths; `options` is
+ * `{format, times, timeFrom, sort}`.
+ *
+ * @return `[{path, step, time, timeSource}]` in natural-numeric order, so
+ * `out_9.vtu` precedes `out_10.vtu`. `timeSource` is `"explicit"`, `"file"`,
+ * `"filename"` or `"index"` -- reported rather than left to be guessed.
+ */
+val sequence_entries_js(const val& rSource, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        const std::vector<meshioplusplus::SequenceEntry> entries =
+            meshioplusplus::sequence_expand(val_to_sequence_input(rSource, rOptions));
+        val out = val::array();
+        for (const meshioplusplus::SequenceEntry& e : entries) {
+            val entry = val::object();
+            entry.set("path", e.mPath);
+            entry.set("step", static_cast<double>(e.mStep));
+            entry.set("time", e.mTime);
+            entry.set("timeSource",
+                      std::string(meshioplusplus::sequence_time_source_name(e.mTimeSource)));
+            out.call<void>("push", entry);
         }
-        val warnings = val::array();
-        for (const auto& warning : report.mWarnings)
-            warnings.call<void>("push", warning);
-        val out = val::object();
-        out.set("steps", steps);
-        out.set("warnings", warnings);
         return out;
+    });
+}
+
+/**
+ * @brief Fan-in: every step of `source` into one multi-step file at `outPath`.
+ *
+ * Streams -- one mesh alive at a time, whatever the step count. A format that
+ * cannot hold a series throws naming itself and pointing at `{step}`, never a
+ * silent truncation to the first step.
+ *
+ * @return the number of steps written.
+ */
+double sequence_to_timeseries_js(const val& rSource, const std::string& rOutPath,
+                                 const std::string& rOutFormat, const val& rOptions) {
+    return with_js_errors([&]() -> double {
+        meshioplusplus::SequenceInput in = val_to_sequence_input(rSource, rOptions);
+        meshioplusplus::SequenceOutput out;
+        out.mPath = rOutPath;
+        out.mFormat = rOutFormat;
+        const std::size_t n = meshioplusplus::sequence_expand(in).size();
+        meshioplusplus::sequence_to_timeseries(in, out);
+        return static_cast<double>(n);
+    });
+}
+
+/**
+ * @brief Fan-out: each step of the multi-step file `inPath` to `outPattern`,
+ * which must contain `{step}` or `{index}`. Streams likewise.
+ *
+ * @return the MEMFS paths written, so the caller can read them straight back.
+ */
+val timeseries_to_sequence_js(const std::string& rInPath, const std::string& rInFormat,
+                              const std::string& rOutPattern, const std::string& rOutFormat) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SequenceOutput out;
+        out.mPath = rOutPattern;
+        out.mFormat = rOutFormat;
+        meshioplusplus::ReadOptions opts;
+        meshioplusplus::timeseries_to_sequence(rInPath, rInFormat, opts, out);
+        // Recover the written names the same way the driver produced them.
+        meshioplusplus::SequenceInput in;
+        in.mPaths = {rInPath};
+        in.mFormat = rInFormat;
+        const std::size_t n = meshioplusplus::sequence_expand(in).size();
+        val paths = val::array();
+        for (std::size_t i = 0; i < n; ++i)
+            paths.call<void>("push", meshioplusplus::sequence_expand_pattern(rOutPattern, i, n));
+        return paths;
     });
 }
 
@@ -2168,6 +2395,11 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("convertSurface", &convert_surface);
     emscripten::function("convertSurfaceOps", &convert_surface_ops);
     emscripten::function("runPipeline", &run_pipeline_js);
+    // Sequences (multi-file / transient datasets) over MEMFS paths -- the same
+    // surface `convert`/`runPipeline` already work on. See doc/sequences.md.
+    emscripten::function("sequenceEntries", &sequence_entries_js);
+    emscripten::function("sequenceToTimeseries", &sequence_to_timeseries_js);
+    emscripten::function("timeseriesToSequence", &timeseries_to_sequence_js);
     emscripten::function("numNodesPerCell", &num_nodes_per_cell_js);
     emscripten::function("topologicalDimension", &topological_dimension_js);
     emscripten::function("meshBackend", &mesh_backend_js);
