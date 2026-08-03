@@ -33,6 +33,7 @@ extern SEXP mio_r_mesh_tag;
 /* The same, for the transient XDMF writer's own opaque handle (xdmf_series.c).
  * A separate tag so a mesh and a series cannot be passed for one another. */
 extern SEXP mio_r_series_tag;
+extern SEXP mio_r_sequence_tag;
 
 /* Wrap an owning `mio_mesh*` in an external pointer with a registered
  * finalizer calling mio_mesh_free. The returned SEXP is NOT protected: a
