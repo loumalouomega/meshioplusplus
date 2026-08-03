@@ -55,6 +55,10 @@ module meshioplusplus
     public :: mio_data_array_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
+    ! `mio_sequence`'s fan-in is the type-bound `%to_timeseries`; only the
+    ! fan-out (which starts from a path, not a handle) is module-level.
+    public :: mio_sequence, mio_timeseries_to_sequence
+    public :: mio_sequence_pipeline_run_file, mio_sequence_pipeline_run_json
     public :: mio_format_readable, mio_format_writable
     public :: mio_sniff_format
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
@@ -313,6 +317,49 @@ module meshioplusplus
         procedure :: get_field_data => mesh_get_field_data_r1
     end type mio_mesh
 
+    !> A multi-file / transient dataset: an ordered PLAN over a set of files
+    !> (or the steps inside one multi-step file), read ONE STEP AT A TIME.
+    !>
+    !> That is the whole point -- a 500-step dataset must be traversable
+    !> without materializing it -- so the handle stores paths, per-file step
+    !> indices and time values, and never a mesh. `read_step` therefore hands
+    !> back an OWNED `mio_mesh` the caller frees, rather than a borrow the
+    !> sequence would have to cache.
+    !>
+    !> Ordering is natural-numeric, so `out_9.vtu` precedes `out_10.vtu`.
+    !> Handles are freed explicitly, exactly like `mio_mesh` -- no finalizer.
+    !>
+    !> ```fortran
+    !> type(mio_sequence) :: seq
+    !> type(mio_mesh) :: step
+    !> integer :: i
+    !> call seq%open('out_*.vtu')
+    !> do i = 1, seq%count()
+    !>     step = seq%read_step(i)      ! 1-based, Fortran style
+    !>     ! ... use step, whose time is seq%time(i) ...
+    !>     call step%free()
+    !> end do
+    !> call seq%free()
+    !> ```
+    !>
+    !> See doc/sequences.md.
+    type :: mio_sequence
+        private
+        type(c_ptr) :: handle = c_null_ptr
+    contains
+        procedure :: open => sequence_open
+        procedure :: open_list => sequence_open_list
+        procedure :: free => sequence_free
+        procedure :: is_valid => sequence_is_valid
+        procedure :: count => sequence_count
+        procedure :: path => sequence_path
+        procedure :: step => sequence_step
+        procedure :: time => sequence_time
+        procedure :: time_source => sequence_time_source
+        procedure :: read_step => sequence_read_step
+        procedure :: to_timeseries => sequence_to_timeseries
+    end type mio_sequence
+
     !> A transient (time-series) XDMF writer: the write half of what the
     !> `time_step` read option and `mio_metadata%time_values` expose on the read
     !> side. A solver writes the mesh ONCE and then one cheap step per solve, so
@@ -566,6 +613,109 @@ module meshioplusplus
 
         function c_mio_pipeline_run_json(json_text) &
                 bind(c, name="mio_pipeline_run_json") result(s)
+            import :: c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: json_text
+            integer(c_int) :: s
+        end function
+
+        function c_mio_sequence_open(pattern) &
+                bind(c, name="mio_sequence_open") result(p)
+            import :: c_char, c_ptr
+            character(kind=c_char), dimension(*), intent(in) :: pattern
+            type(c_ptr) :: p
+        end function
+
+        function c_mio_sequence_open_list(paths, num_paths) &
+                bind(c, name="mio_sequence_open_list") result(p)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), dimension(*), intent(in) :: paths
+            integer(c_int64_t), value :: num_paths
+            type(c_ptr) :: p
+        end function
+
+        function c_mio_sequence_count(seq) &
+                bind(c, name="mio_sequence_count") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: seq
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_sequence_path(seq, index, buf, buflen) &
+                bind(c, name="mio_sequence_path") result(n)
+            import :: c_ptr, c_int64_t, c_char
+            type(c_ptr), value :: seq
+            integer(c_int64_t), value :: index
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_sequence_step(seq, index) &
+                bind(c, name="mio_sequence_step") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: seq
+            integer(c_int64_t), value :: index
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_sequence_time(seq, index, out_time) &
+                bind(c, name="mio_sequence_time") result(s)
+            import :: c_ptr, c_int64_t, c_double, c_int
+            type(c_ptr), value :: seq
+            integer(c_int64_t), value :: index
+            real(c_double), intent(out) :: out_time
+            integer(c_int) :: s
+        end function
+
+        function c_mio_sequence_time_source(seq, index) &
+                bind(c, name="mio_sequence_time_source") result(r)
+            import :: c_ptr, c_int64_t, c_int32_t
+            type(c_ptr), value :: seq
+            integer(c_int64_t), value :: index
+            integer(c_int32_t) :: r
+        end function
+
+        function c_mio_sequence_read(seq, index) &
+                bind(c, name="mio_sequence_read") result(p)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: seq
+            integer(c_int64_t), value :: index
+            type(c_ptr) :: p
+        end function
+
+        subroutine c_mio_sequence_free(seq) bind(c, name="mio_sequence_free")
+            import :: c_ptr
+            type(c_ptr), value :: seq
+        end subroutine
+
+        function c_mio_sequence_to_timeseries(seq, out_path, out_format) &
+                bind(c, name="mio_sequence_to_timeseries") result(s)
+            import :: c_ptr, c_char, c_int
+            type(c_ptr), value :: seq
+            character(kind=c_char), dimension(*), intent(in) :: out_path
+            character(kind=c_char), dimension(*), intent(in) :: out_format
+            integer(c_int) :: s
+        end function
+
+        function c_mio_timeseries_to_sequence(in_path, in_format, out_pattern, out_format) &
+                bind(c, name="mio_timeseries_to_sequence") result(s)
+            import :: c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: in_path
+            character(kind=c_char), dimension(*), intent(in) :: in_format
+            character(kind=c_char), dimension(*), intent(in) :: out_pattern
+            character(kind=c_char), dimension(*), intent(in) :: out_format
+            integer(c_int) :: s
+        end function
+
+        function c_mio_sequence_pipeline_run_file(settings_path) &
+                bind(c, name="mio_sequence_pipeline_run_file") result(s)
+            import :: c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: settings_path
+            integer(c_int) :: s
+        end function
+
+        function c_mio_sequence_pipeline_run_json(json_text) &
+                bind(c, name="mio_sequence_pipeline_run_json") result(s)
             import :: c_char, c_int
             character(kind=c_char), dimension(*), intent(in) :: json_text
             integer(c_int) :: s
@@ -3986,5 +4136,211 @@ contains
         n = int(c_mio_xdmf_series_num_steps(self%handle), int64)
         if (n < 0_int64) n = 0_int64
     end function
+
+    ! ----------------------------------------------------------------------
+    ! Sequences (multi-file / transient datasets). See doc/sequences.md.
+    !
+    ! Indices are 1-based on this side, like every other Fortran accessor;
+    ! the C ABI's 0-based index is produced by the `- 1` inside each wrapper.
+    ! ----------------------------------------------------------------------
+
+    !> Open a sequence from a glob pattern (`*` and `?` only; the directory
+    !> part is taken literally). A pattern matching nothing is an error, never
+    !> an empty sequence. Replaces any sequence this handle already held.
+    subroutine sequence_open(self, pattern, stat, errmsg)
+        class(mio_sequence), intent(inout) :: self
+        character(*), intent(in) :: pattern
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call sequence_free(self)
+        self%handle = c_mio_sequence_open(c_str(pattern))
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('sequence open', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Open a sequence from an explicit, ordered path list. The order is the
+    !> caller's and is kept -- a stated order is not second-guessed.
+    subroutine sequence_open_list(self, paths, stat, errmsg)
+        class(mio_sequence), intent(inout) :: self
+        character(*), intent(in) :: paths(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        ! `storage`/`cptrs` are the actual backing memory for the C string
+        ! array and must stay in scope for the whole call -- see c_str_array.
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        call sequence_free(self)
+        if (size(paths) <= 0) then
+            call handle_failure('sequence open_list', 'the path list is empty', stat, errmsg)
+            return
+        end if
+        call c_str_array(paths, storage, cptrs, arr, count)
+        self%handle = c_mio_sequence_open_list(cptrs, count)
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('sequence open_list', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Release the sequence handle. Meshes it produced are unaffected.
+    subroutine sequence_free(self)
+        class(mio_sequence), intent(inout) :: self
+        if (c_associated(self%handle)) call c_mio_sequence_free(self%handle)
+        self%handle = c_null_ptr
+    end subroutine
+
+    !> Whether this handle currently holds a sequence.
+    function sequence_is_valid(self) result(v)
+        class(mio_sequence), intent(in) :: self
+        logical :: v
+        v = c_associated(self%handle)
+    end function
+
+    !> Number of steps (0 on a closed handle).
+    function sequence_count(self) result(n)
+        class(mio_sequence), intent(in) :: self
+        integer(int64) :: n
+        n = 0_int64
+        if (.not. c_associated(self%handle)) return
+        n = int(c_mio_sequence_count(self%handle), int64)
+        if (n < 0_int64) n = 0_int64
+    end function
+
+    !> Entry `index`'s file path (1-based; empty on error).
+    function sequence_path(self, index) result(p)
+        class(mio_sequence), intent(in) :: self
+        integer, intent(in) :: index
+        character(:), allocatable :: p
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        integer(c_int64_t) :: n
+        p = ''
+        if (.not. c_associated(self%handle)) return
+        n = c_mio_sequence_path(self%handle, int(index - 1, c_int64_t), buf, &
+                                int(STRBUF_LEN, c_int64_t))
+        if (n > 0) p = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+    end function
+
+    !> Entry `index`'s step WITHIN its own file (0 for a single-step file).
+    function sequence_step(self, index) result(k)
+        class(mio_sequence), intent(in) :: self
+        integer, intent(in) :: index
+        integer(int64) :: k
+        k = -1_int64
+        if (.not. c_associated(self%handle)) return
+        k = int(c_mio_sequence_step(self%handle, int(index - 1, c_int64_t)), int64)
+    end function
+
+    !> Entry `index`'s time value.
+    function sequence_time(self, index) result(t)
+        class(mio_sequence), intent(in) :: self
+        integer, intent(in) :: index
+        real(real64) :: t
+        real(c_double) :: v
+        t = 0.0_real64
+        if (.not. c_associated(self%handle)) return
+        if (c_mio_sequence_time(self%handle, int(index - 1, c_int64_t), v) == 0) &
+            t = real(v, real64)
+    end function
+
+    !> Where entry `index`'s time came from: 0 explicit, 1 file, 2 filename,
+    !> 3 index (the fallback). Reported so a caller can tell "the file said
+    !> 0.25" from "nothing said anything, so this is position 3".
+    function sequence_time_source(self, index) result(src)
+        class(mio_sequence), intent(in) :: self
+        integer, intent(in) :: index
+        integer :: src
+        src = -1
+        if (.not. c_associated(self%handle)) return
+        src = int(c_mio_sequence_time_source(self%handle, int(index - 1, c_int64_t)))
+    end function
+
+    !> Read entry `index` (1-based). The result is OWNED: free it with
+    !> `%free()`. The sequence caches nothing, which is what keeps a long
+    !> dataset traversable.
+    function sequence_read_step(self, index, stat, errmsg) result(m)
+        class(mio_sequence), intent(in) :: self
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: m
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('sequence read_step', 'sequence handle is not open', &
+                                stat, errmsg)
+            return
+        end if
+        m%handle = c_mio_sequence_read(self%handle, int(index - 1, c_int64_t))
+        if (.not. c_associated(m%handle)) then
+            call handle_failure('sequence read_step', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Fan-in: write every step into one multi-step file. Streams -- one mesh
+    !> alive at a time. A format that cannot hold a series fails by name.
+    subroutine sequence_to_timeseries(self, out_path, out_format, stat, errmsg)
+        class(mio_sequence), intent(in) :: self
+        character(*), intent(in) :: out_path
+        character(*), intent(in), optional :: out_format
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: fmt
+        fmt = ''
+        if (present(out_format)) fmt = out_format
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('sequence to_timeseries', 'sequence handle is not open', &
+                                stat, errmsg)
+            return
+        end if
+        call handle_status(c_mio_sequence_to_timeseries(self%handle, c_str(out_path), &
+                                                        c_str(fmt)), &
+                           'sequence to_timeseries', stat, errmsg)
+    end subroutine
+
+    !> Fan-out: write each step of a multi-step file to `out_pattern`, which
+    !> must contain '{step}' or '{index}'.
+    subroutine mio_timeseries_to_sequence(in_path, out_pattern, in_format, out_format, &
+                                          stat, errmsg)
+        character(*), intent(in) :: in_path
+        character(*), intent(in) :: out_pattern
+        character(*), intent(in), optional :: in_format
+        character(*), intent(in), optional :: out_format
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: ifmt, ofmt
+        ifmt = ''
+        ofmt = ''
+        if (present(in_format)) ifmt = in_format
+        if (present(out_format)) ofmt = out_format
+        call handle_status(c_mio_timeseries_to_sequence(c_str(in_path), c_str(ifmt), &
+                                                        c_str(out_pattern), c_str(ofmt)), &
+                           'timeseries_to_sequence', stat, errmsg)
+    end subroutine
+
+    !> Run a sequence settings document (the pipeline schema plus Mode /
+    !> Input.Pattern / Input.Paths / Input.Times / Input.TimeFrom). A document
+    !> using none of those behaves exactly as `mio_pipeline_run_file`.
+    subroutine mio_sequence_pipeline_run_file(settings_path, stat, errmsg)
+        character(*), intent(in) :: settings_path
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_sequence_pipeline_run_file(c_str(settings_path)), &
+                           'sequence_pipeline_run_file', stat, errmsg)
+    end subroutine
+
+    !> `mio_sequence_pipeline_run_file` over JSON text.
+    subroutine mio_sequence_pipeline_run_json(json_text, stat, errmsg)
+        character(*), intent(in) :: json_text
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_sequence_pipeline_run_json(c_str(json_text)), &
+                           'sequence_pipeline_run_json', stat, errmsg)
+    end subroutine
 
 end module meshioplusplus
