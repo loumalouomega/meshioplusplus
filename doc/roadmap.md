@@ -33,7 +33,21 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 2. Machine-learning data handling
+## 2. Signed distance fields for skin meshes (octree)
+
+**The gap.** meshio++ has surface extraction (`extract_surface`/`extract_skin`), slicing and isosurfacing, but no way to answer "how far is this point from the surface" — the primitive collision detection, offsetting, and voxelization-style ML preprocessing all need. A closed skin mesh (STL and friends: watertight triangle soup, no volume topology) is exactly the input shape this needs, and a sparse octree is the natural structure for it — a dense grid wastes cells far from the surface, and the octree doubles as the acceleration structure for nearest-triangle queries.
+
+- **Spike: where does an octree live in the data model?** It has no cell connectivity in the usual sense, so it is not a `CellBlock` — decide whether it is a side-channel structure (the `MedInfo`/`GmshInfo` precedent) or a genuinely new mesh flavor, and write the finding up before committing, following the NURBS-spike precedent (§10). **S**
+- **Octree construction over a closed triangle skin**: adaptive subdivision to a max depth / target cell size, refined near the surface (leaf-triangle bucketing reusing `detail/spatial_hash.hpp`'s bucket-grid idiom) and coarse away from it. **M**
+- **Signed distance evaluation per octree leaf**: nearest-triangle distance (the same bucket search) plus a sign — fast winding number, or angle-weighted pseudo-normals for a possibly-imperfect/non-watertight STL — stored at leaf corners or centers. **M**
+- **`compute_sdf(mesh, SdfOptions{max_depth, band, watertight_check})`** as a new operation, exposed like the others (pybind / C-ABI / Fortran / WASM / a `sdf` CLI verb) plus a point-query API (`sample(x, y, z)`). **L**
+- **Writers/consumers**: dump the octree + distances to VTU (as an unstructured hex/point cloud) for visualization, and to a simple voxel format for downstream ML tooling. Once the primitive exists, offsetting and inside/outside queries for `crop`/`merge` follow cheaply. **S–M**
+
+*Recommended entry point: the data-model spike, then the octree plus nearest-triangle SDF evaluation on a single closed STL skin — that alone is usable for point queries and voxelization, and the writers/CSG-adjacent consumers build on it.*
+
+---
+
+## 3. Machine-learning data handling
 
 **The gap.** v8.2.0 gave Arrow/Parquet export of `point_data`/`cell_data`, which is the right primitive but only the first step. ML pipelines want *datasets* (many meshes), tabular frames, batched tensors and stable feature layouts — none of which exist.
 
@@ -48,12 +62,12 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 3. NVIDIA PhysicsNeMo integration
+## 4. NVIDIA PhysicsNeMo integration
 
 **The gap.** PhysicsNeMo (github.com/NVIDIA/physicsnemo) is the mainstream open Physics-ML framework, and its data ingestion is where most users write bespoke glue. meshio++ already has 41 readers, GPU/DLPack handoff, and the operations (`interpolate`, `partition`, `gradient`, `decimate`) that a training pipeline needs for preprocessing. A thin, well-documented bridge would let people train on simulation output without integrating their solver at all — which is exactly the friction PhysicsNeMo users hit.
 
 - **Reconnaissance first, and treat it as a real deliverable.** PhysicsNeMo's dataset/datapipe contracts, its mesh and point-cloud conventions, and its dependency weight (CUDA-specific, container-oriented) all need checking against the repo's "optional, gated, never in `[all]`" rule. Write the findings down before writing code — the CuPy packaging finding is the precedent for how this repo handles such constraints. **S**
-- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the §2 feature-matrix contract and the existing DLPack handoff. Pure Python, lazily imported, named install error. **M**
+- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the §3 feature-matrix contract and the existing DLPack handoff. Pure Python, lazily imported, named install error. **M**
 - **Preprocessing recipes as pipeline documents** — sampling, normalisation, surface extraction, decimation, partitioning into training patches — expressed as v9.11.0 `settings.json` files so they are reproducible and reviewable rather than notebook cells. A strong fit for the pipeline engine, and cheap once the adapter exists. **S–M**
 - **A worked end-to-end example**: simulation output → meshio++ preprocessing → PhysicsNeMo training → inference results read back as a mesh and rendered. The example *is* the feature; without it the adapter will not be adopted. **M**
 - **CI reality check**: PhysicsNeMo needs a GPU, which public runners do not have. Follow the precedent set for the GPU work — test the pure adapter logic without the framework, gate the rest, and state plainly that the integration path is not covered by public CI. **S**
@@ -62,7 +76,7 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 4. Remaining refinement and coarsening gaps
+## 5. Remaining refinement and coarsening gaps
 
 `refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
 
@@ -72,7 +86,7 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 5. Field capability beyond derivatives
+## 6. Field capability beyond derivatives
 
 - **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
 - **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
@@ -80,7 +94,7 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 6. Scale
+## 7. Scale
 
 The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
 
@@ -90,7 +104,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 7. Ecosystem reach
+## 8. Ecosystem reach
 
 - **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
@@ -98,7 +112,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 8. Quality of implementation
+## 9. Quality of implementation
 
 - **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 41 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
@@ -106,7 +120,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 9. NURBS and higher-order geometry (long run)
+## 10. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -119,7 +133,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 10. Mesh generation
+## 11. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
@@ -132,9 +146,10 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## Suggested sequencing
 
-1. **Primitive constructors (§10, first item)** — a few days, and it improves testing, docs and every demo surface at once.
-2. **ML data handling (§2)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §3.
-3. **PhysicsNeMo reconnaissance (§3, first item)** — a written findings note before any code.
+1. **Primitive constructors (§11, first item)** — a few days, and it improves testing, docs and every demo surface at once.
+2. **ML data handling (§3)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §4.
+3. **PhysicsNeMo reconnaissance (§4, first item)** — a written findings note before any code.
 4. **Polyhedral C-ABI exposure + geometric kernel (§1)** — lifts a real ceiling and unblocks OpenFOAM round-tripping.
-5. **Fuzzing (§8)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-6. **NURBS spike (§9)** — a documented investigation, scheduled independently of the rest.
+5. **SDF/octree spike (§2, first item)** — a documented data-model decision before the octree/SDF work is scheduled.
+6. **Fuzzing (§9)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+7. **NURBS spike (§10)** — a documented investigation, scheduled independently of the rest.
