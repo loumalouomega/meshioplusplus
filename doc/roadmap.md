@@ -124,6 +124,12 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
+## 12. MDPA: non-sequential node ids are not supported by the C++ reader
+
+Add support for non-sequential entity ids. Very important.
+
+---
+
 ## Suggested sequencing
 
 1. **Primitive constructors (§5, first item)** — a few days, and it improves testing, docs and every demo surface at once.
