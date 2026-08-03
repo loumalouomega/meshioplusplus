@@ -52,6 +52,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -816,6 +817,22 @@ PipelineReport run_pipeline_file(const std::string&) {
     pipe_no_json();
 }
 
+// The sequence document shares this parser, and therefore this guard: the
+// typed sequence driver in operations/sequence.cpp compiles either way, but a
+// settings document cannot be read without a JSON parser.
+SequencePipeline parse_sequence_json(const std::string&) {
+    pipe_no_json();
+}
+SequencePipeline parse_sequence_file(const std::string&) {
+    pipe_no_json();
+}
+PipelineReport run_sequence_json(const std::string&) {
+    pipe_no_json();
+}
+PipelineReport run_sequence_file(const std::string&) {
+    pipe_no_json();
+}
+
 #else  // MESHIOPLUSPLUS_HAS_JSON
 
 namespace {
@@ -907,12 +924,72 @@ PipelineValue pipe_value_from_json(const pipe_json& rValue, const std::string& r
                       "not step parameters)");
 }
 
-PipelineInput pipe_input_from_json(const pipe_json& rInput) {
+/// A parsed document, plus whether it used any of the sequence-only keys.
+///
+/// There is ONE parser: it always builds a `SequencePipeline`, and
+/// `parse_pipeline_json` projects that down to the single-file `Pipeline`,
+/// refusing by name if a sequence key was present. Two parsers would drift on
+/// the shared two thirds (Version/Operations/Output), and a
+/// `parse_pipeline_json` that merely *ignored* `Mode` would silently truncate a
+/// transient run to its first step -- exactly the failure this feature exists
+/// to prevent.
+struct PipeDocument {
+    SequencePipeline mSeq;
+    bool mSequenceKeys = false;
+};
+
+SequenceInput pipe_sequence_input_from_json(const pipe_json& rInput, bool& rSequenceKeys) {
     if (!rInput.is_object())
         pipe_schema_error("Input must be an object");
-    pipe_check_keys(rInput, "Input", {"Path", "Format", "Options"});
-    PipelineInput input;
-    input.mPath = pipe_get_string(rInput, "Path", "Input", /*required=*/true);
+    pipe_check_keys(rInput, "Input",
+                    {"Path", "Format", "Options", "Pattern", "Paths", "Times", "TimeFrom"});
+    SequenceInput input;
+
+    const pipe_json* path = pipe_get(rInput, "Path");
+    const pipe_json* pattern = pipe_get(rInput, "Pattern");
+    const pipe_json* paths = pipe_get(rInput, "Paths");
+    const int given = (path ? 1 : 0) + (pattern ? 1 : 0) + (paths ? 1 : 0);
+    if (given == 0)
+        pipe_schema_error("Input.Path is required (or Input.Pattern / Input.Paths)");
+    if (given > 1)
+        pipe_schema_error(
+            "Input names more than one source; set exactly one of Path, Pattern or Paths");
+    if (path) {
+        input.mPaths = {pipe_get_string(rInput, "Path", "Input", /*required=*/true)};
+    } else if (pattern) {
+        rSequenceKeys = true;
+        input.mPattern = pipe_get_string(rInput, "Pattern", "Input", /*required=*/true);
+        if (input.mPattern.empty())
+            pipe_schema_error("Input.Pattern must not be empty");
+    } else {
+        rSequenceKeys = true;
+        if (!paths->is_array() || paths->empty())
+            pipe_schema_error("Input.Paths must be a non-empty array of strings");
+        for (const auto& e : *paths) {
+            if (!e.is_string())
+                pipe_schema_error("Input.Paths must be a non-empty array of strings");
+            input.mPaths.push_back(e.get<std::string>());
+        }
+        // An explicit list is a stated order, so it is not re-sorted; the
+        // caller asked for these files in this order.
+        input.mSortExplicit = false;
+    }
+
+    if (const pipe_json* times = pipe_get(rInput, "Times")) {
+        rSequenceKeys = true;
+        if (!times->is_array())
+            pipe_schema_error("Input.Times must be an array of numbers");
+        for (const auto& e : *times) {
+            if (!e.is_number())
+                pipe_schema_error("Input.Times must be an array of numbers");
+            input.mTimes.push_back(e.get<double>());
+        }
+    }
+    if (pipe_get(rInput, "TimeFrom")) {
+        rSequenceKeys = true;
+        input.mTimeFrom = sequence_time_from_name(pipe_get_string(rInput, "TimeFrom", "Input"));
+    }
+
     input.mFormat = pipe_get_string(rInput, "Format", "Input");
     if (const pipe_json* opts = pipe_get(rInput, "Options")) {
         if (!opts->is_object())
@@ -943,11 +1020,11 @@ PipelineInput pipe_input_from_json(const pipe_json& rInput) {
     return input;
 }
 
-PipelineOutput pipe_output_from_json(const pipe_json& rOutput) {
+SequenceOutput pipe_sequence_output_from_json(const pipe_json& rOutput) {
     if (!rOutput.is_object())
         pipe_schema_error("Output must be an object");
     pipe_check_keys(rOutput, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
-    PipelineOutput output;
+    SequenceOutput output;
     output.mPath = pipe_get_string(rOutput, "Path", "Output", /*required=*/true);
     output.mFormat = pipe_get_string(rOutput, "Format", "Output");
     output.mOptions.mEncoding =
@@ -961,9 +1038,7 @@ PipelineOutput pipe_output_from_json(const pipe_json& rOutput) {
     return output;
 }
 
-}  // namespace
-
-Pipeline parse_pipeline_json(const std::string& rText) {
+PipeDocument pipe_document_from_json(const std::string& rText) {
     pipe_json doc;
     try {
         doc = pipe_json::parse(rText);
@@ -972,9 +1047,11 @@ Pipeline parse_pipeline_json(const std::string& rText) {
     }
     if (!doc.is_object())
         pipe_schema_error("the settings document must be a JSON object");
-    pipe_check_keys(doc, "the settings document", {"Version", "Input", "Operations", "Output"});
+    pipe_check_keys(doc, "the settings document",
+                    {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers"});
 
-    Pipeline pipeline;
+    PipeDocument parsed;
+    SequencePipeline& pipeline = parsed.mSeq;
     if (const pipe_json* v = pipe_get(doc, "Version")) {
         if (!v->is_number_integer() && !v->is_number_unsigned())
             pipe_schema_error("Version must be an integer");
@@ -984,15 +1061,33 @@ Pipeline parse_pipeline_json(const std::string& rText) {
                               " (this build knows 1)");
     }
 
+    if (pipe_get(doc, "Mode")) {
+        parsed.mSequenceKeys = true;
+        pipeline.mMode =
+            sequence_mode_from_name(pipe_get_string(doc, "Mode", "the settings document"));
+    }
+    if (pipe_get(doc, "Parallel")) {
+        parsed.mSequenceKeys = true;
+        pipeline.mParallel = pipe_get_bool(doc, "Parallel", "the settings document", false);
+    }
+    if (const pipe_json* v = pipe_get(doc, "Workers")) {
+        parsed.mSequenceKeys = true;
+        if (!v->is_number_integer() && !v->is_number_unsigned())
+            pipe_schema_error("Workers must be an integer");
+        pipeline.mWorkers = v->get<int>();
+        if (pipeline.mWorkers < 0)
+            pipe_schema_error("Workers must not be negative (0 means one per core)");
+    }
+
     const pipe_json* input = pipe_get(doc, "Input");
     if (!input)
         pipe_schema_error("Input is required");
-    pipeline.mInput = pipe_input_from_json(*input);
+    pipeline.mInput = pipe_sequence_input_from_json(*input, parsed.mSequenceKeys);
 
     const pipe_json* output = pipe_get(doc, "Output");
     if (!output)
         pipe_schema_error("Output is required");
-    pipeline.mOutput = pipe_output_from_json(*output);
+    pipeline.mOutput = pipe_sequence_output_from_json(*output);
 
     if (const pipe_json* ops = pipe_get(doc, "Operations")) {
         if (!ops->is_array())
@@ -1014,16 +1109,48 @@ Pipeline parse_pipeline_json(const std::string& rText) {
             pipeline.mSteps.push_back(std::move(step));
         }
     }
-    return pipeline;
+    return parsed;
 }
 
-Pipeline parse_pipeline_file(const std::string& rPath) {
+std::string pipe_read_file(const std::string& rPath) {
     std::ifstream in(rPath, std::ios::binary);
     if (!in)
         throw ReadError("meshio++: pipeline: cannot open settings file '" + rPath + "'");
     std::ostringstream buffer;
     buffer << in.rdbuf();
-    return parse_pipeline_json(buffer.str());
+    return buffer.str();
+}
+
+/// Project a parsed document down to the single-file model, refusing by name
+/// if it used a sequence key. Ignoring one instead would quietly run a
+/// transient document as its first step.
+Pipeline pipe_project_single(const PipeDocument& rParsed) {
+    if (rParsed.mSequenceKeys)
+        pipe_schema_error(
+            "this document uses sequence keys (Mode / Input.Pattern / Input.Paths / "
+            "Input.Times / Input.TimeFrom / Parallel / Workers); run it with "
+            "run_sequence_file / run_sequence_json (the CLI's `pipeline` verb and Python's "
+            "run_pipeline route there automatically)");
+    Pipeline out;
+    out.mVersion = rParsed.mSeq.mVersion;
+    out.mInput.mPath = rParsed.mSeq.mInput.mPaths.empty() ? "" : rParsed.mSeq.mInput.mPaths[0];
+    out.mInput.mFormat = rParsed.mSeq.mInput.mFormat;
+    out.mInput.mOptions = rParsed.mSeq.mInput.mOptions;
+    out.mSteps = rParsed.mSeq.mSteps;
+    out.mOutput.mPath = rParsed.mSeq.mOutput.mPath;
+    out.mOutput.mFormat = rParsed.mSeq.mOutput.mFormat;
+    out.mOutput.mOptions = rParsed.mSeq.mOutput.mOptions;
+    return out;
+}
+
+}  // namespace
+
+Pipeline parse_pipeline_json(const std::string& rText) {
+    return pipe_project_single(pipe_document_from_json(rText));
+}
+
+Pipeline parse_pipeline_file(const std::string& rPath) {
+    return parse_pipeline_json(pipe_read_file(rPath));
 }
 
 PipelineReport run_pipeline_json(const std::string& rText) {
@@ -1032,6 +1159,32 @@ PipelineReport run_pipeline_json(const std::string& rText) {
 
 PipelineReport run_pipeline_file(const std::string& rPath) {
     return run_pipeline(parse_pipeline_file(rPath));
+}
+
+SequencePipeline parse_sequence_json(const std::string& rText) {
+    return pipe_document_from_json(rText).mSeq;
+}
+
+SequencePipeline parse_sequence_file(const std::string& rPath) {
+    return parse_sequence_json(pipe_read_file(rPath));
+}
+
+PipelineReport run_sequence_json(const std::string& rText) {
+    const PipeDocument parsed = pipe_document_from_json(rText);
+    // A document using no sequence key, naming a plain output path AND a
+    // single-step input IS a single-file run, and takes the physically
+    // unchanged v9.11.0 path -- so every existing settings.json still produces
+    // byte-identical output, right down to which function wrote it. A
+    // multi-step input is routed to the driver even without a sequence key, so
+    // it refuses by name rather than quietly writing step 0.
+    if (!parsed.mSequenceKeys &&
+        !sequence_input_needs_driver(parsed.mSeq.mInput, parsed.mSeq.mOutput))
+        return run_pipeline(pipe_project_single(parsed));
+    return run_sequence_pipeline(parsed.mSeq);
+}
+
+PipelineReport run_sequence_file(const std::string& rPath) {
+    return run_sequence_json(pipe_read_file(rPath));
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_JSON
