@@ -2099,6 +2099,19 @@ MIO_API mio_status mio_sequence_to_timeseries(const mio_sequence* seq, const cha
                                               const char* out_format);
 
 /**
+ * mio_sequence_to_timeseries with write options (currently only `encoding` is
+ * meaningful here: MIO_ENCODING_ASCII selects the XDMF "XML" data format --
+ * everything inline, no HDF5 needed -- while the default/MIO_ENCODING_BINARY
+ * selects "HDF", which needs an HDF5-enabled build). `opts` may be NULL for
+ * mio_sequence_to_timeseries's defaults. `codec`/`float_format` are accepted
+ * but XDMF honours neither, so non-default values there fail by name exactly
+ * as mio_write_ex's do.
+ */
+MIO_API mio_status mio_sequence_to_timeseries_ex(const mio_sequence* seq, const char* out_path,
+                                                 const char* out_format,
+                                                 const mio_write_opts* opts);
+
+/**
  * Fan-out: write each step of the multi-step file `in_path` to `out_pattern`,
  * which must contain '{step}' or '{index}'. Streams likewise.
  */

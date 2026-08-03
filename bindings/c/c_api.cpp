@@ -799,6 +799,53 @@ void mio_write_opts_init(mio_write_opts* opts) {
     *opts = mio_write_opts{};  // value-initialized: all zero == mio_write()
 }
 
+namespace {
+
+/// mio_write_opts -> WriteOptions, shared by mio_write_ex and
+/// mio_sequence_to_timeseries_ex. Returns MIO_ERR_INVALID_ARG (via fail(),
+/// which sets the thread-local message) on a bad enum value; MIO_OK otherwise.
+mio_status write_opts_to_cxx(const mio_write_opts& rOpts, meshioplusplus::WriteOptions& rOut) {
+    switch (rOpts.encoding) {
+        case MIO_ENCODING_DEFAULT:
+            break;
+        case MIO_ENCODING_ASCII:
+            rOut.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+            break;
+        case MIO_ENCODING_BINARY:
+            rOut.mEncoding = meshioplusplus::WriteEncoding::Binary;
+            break;
+        default:
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.encoding");
+    }
+    switch (rOpts.codec) {
+        case MIO_CODEC_DEFAULT:
+            break;
+        case MIO_CODEC_NONE:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::None;
+            rOut.mCodecSet = true;
+            break;
+        case MIO_CODEC_ZLIB:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
+            rOut.mCodecSet = true;
+            break;
+        case MIO_CODEC_LZ4:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::LZ4;
+            rOut.mCodecSet = true;
+            break;
+        case MIO_CODEC_ZSTD:
+            rOut.mCodec = meshioplusplus::detail::VtkCodec::ZSTD;
+            rOut.mCodecSet = true;
+            break;
+        default:
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.codec");
+    }
+    if (rOpts.float_format)
+        rOut.mFloatFormat = rOpts.float_format;
+    return MIO_OK;
+}
+
+}  // namespace
+
 mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
                         const mio_write_opts* opts) {
     return guarded([&]() -> mio_status {
@@ -808,42 +855,9 @@ mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* form
             return mio_write(path, mesh, format);
 
         meshioplusplus::WriteOptions w;
-        switch (opts->encoding) {
-            case MIO_ENCODING_DEFAULT:
-                break;
-            case MIO_ENCODING_ASCII:
-                w.mEncoding = meshioplusplus::WriteEncoding::Ascii;
-                break;
-            case MIO_ENCODING_BINARY:
-                w.mEncoding = meshioplusplus::WriteEncoding::Binary;
-                break;
-            default:
-                return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.encoding");
-        }
-        switch (opts->codec) {
-            case MIO_CODEC_DEFAULT:
-                break;
-            case MIO_CODEC_NONE:
-                w.mCodec = meshioplusplus::detail::VtkCodec::None;
-                w.mCodecSet = true;
-                break;
-            case MIO_CODEC_ZLIB:
-                w.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
-                w.mCodecSet = true;
-                break;
-            case MIO_CODEC_LZ4:
-                w.mCodec = meshioplusplus::detail::VtkCodec::LZ4;
-                w.mCodecSet = true;
-                break;
-            case MIO_CODEC_ZSTD:
-                w.mCodec = meshioplusplus::detail::VtkCodec::ZSTD;
-                w.mCodecSet = true;
-                break;
-            default:
-                return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_write_opts.codec");
-        }
-        if (opts->float_format)
-            w.mFloatFormat = opts->float_format;
+        const mio_status opt_status = write_opts_to_cxx(*opts, w);
+        if (opt_status != MIO_OK)
+            return opt_status;
 
         meshioplusplus::registry_write_ex(path, mesh->mMesh, format_or_empty(format), w);
         return MIO_OK;
@@ -2813,6 +2827,11 @@ void mio_sequence_free(mio_sequence* seq) {
 
 mio_status mio_sequence_to_timeseries(const mio_sequence* seq, const char* out_path,
                                       const char* out_format) {
+    return mio_sequence_to_timeseries_ex(seq, out_path, out_format, nullptr);
+}
+
+mio_status mio_sequence_to_timeseries_ex(const mio_sequence* seq, const char* out_path,
+                                         const char* out_format, const mio_write_opts* opts) {
     return guarded([&]() -> mio_status {
         if (!seq || !out_path)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: sequence/out_path is NULL");
@@ -2829,6 +2848,11 @@ mio_status mio_sequence_to_timeseries(const mio_sequence* seq, const char* out_p
         out.mPath = out_path;
         if (out_format)
             out.mFormat = out_format;
+        if (opts) {
+            const mio_status opt_status = write_opts_to_cxx(*opts, out.mOptions);
+            if (opt_status != MIO_OK)
+                return opt_status;
+        }
         meshioplusplus::sequence_to_timeseries(in, out);
         return MIO_OK;
     });
