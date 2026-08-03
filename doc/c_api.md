@@ -36,7 +36,7 @@ target_link_libraries(my_solver PRIVATE meshioplusplus::meshioplusplus)
 
 HDF5/netCDF/zlib are detected at configure time exactly as for the Python build; they are private dependencies of the shared library (consumers never link them directly).
 
-## Package managers (Conan & vcpkg)
+## Package managers (Conan, vcpkg & Spack)
 
 The C API also ships as a **Conan** recipe (root [`conanfile.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/conanfile.py)) and a **vcpkg** overlay port ([`packages/vcpkg/meshioplusplus/`](https://github.com/loumalouomega/meshioplusplus/tree/main/packages/vcpkg/meshioplusplus)). Both are self-hosted in the repo and drive the same `-DMESHIOPLUSPLUS_BUILD_C_API=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF` install path, so consumers get the identical `meshioplusplus::meshioplusplus` target:
 
@@ -65,6 +65,14 @@ conan install --requires=meshioplusplus/<version> --build=missing \
 # vcpkg, from the release archive (unzip first):
 vcpkg install meshioplusplus --overlay-ports=meshioplusplus-vcpkg-overlay-port-<version>
 ```
+
+Unlike Conan/vcpkg, the **Spack** recipe is not self-hosted in this repo — it lives in the [`spack/spack-packages`](https://github.com/spack/spack-packages) upstream repo ([`meshioplusplus`](https://github.com/spack/spack-packages/blob/develop/repos/spack_repo/builtin/packages/meshioplusplus/package.py), [PR #5624](https://github.com/spack/spack-packages/pull/5624)), so it needs no local checkout and resolves `meshioplusplus` as a plain requirement:
+
+```sh
+spack install meshioplusplus +fortran +hdf5 +netcdf +zlib
+```
+
+Variants mirror the Conan options / vcpkg features above (`+hdf5`/`+netcdf`/`+zlib`/`+zstd`/`+lz4`/`+kahip`, all named the same way) plus `+fortran`, `+cxx_api` (the [installable C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api), with `cxx_api_backends=meshio,native,kratos` selecting which mesh-backend libraries to install), `parallel=auto|seq|stl|openmp|tbb|kokkos`, and `mesh_backend=meshio|native|kratos` for the standalone build. See [Installation → Spack](installation.md#spack) for the matching `py-meshioplusplus` Python package.
 
 ## Example
 

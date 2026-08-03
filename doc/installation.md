@@ -21,6 +21,16 @@ This pulls in:
 | `h5py` | CGNS, H5M, HMF, MED, XDMF (HDF data format) |
 | `netCDF4` | Exodus |
 
+## Spack
+
+meshio++ is also packaged for [Spack](https://spack.io), upstream in [`spack/spack-packages`](https://github.com/spack/spack-packages) ([PR #5624](https://github.com/spack/spack-packages/pull/5624)) — no local checkout of this repo needed:
+
+```
+spack install py-meshioplusplus +hdf5 +netcdf +zlib
+```
+
+This is `py-meshioplusplus` (a `PythonPackage`), the Python bindings — the Spack counterpart of `pip install meshioplusplus[all]`, built via scikit-build-core against a Spack-provided `hdf5`/`netcdf-c`/`zlib-api`, with the matching `py-h5py`/`py-netcdf4`/`py-zstandard`/`py-lz4` fallbacks pulled in per variant. A separate `meshioplusplus` package (`CMakePackage`) builds the standalone C API / Fortran module instead, for HPC codes with no Python involved — see [C API → Package managers](c_api.md#package-managers-conan-vcpkg-spack). Both take the same `+hdf5`/`+netcdf`/`+zlib`/`+zstd`/`+lz4`/`+kahip` variants (all named identically to the Conan options / vcpkg features), and both `conflicts` below GCC 10 (meshio++ needs a C++20 toolchain). Since the recipes live upstream rather than in this repo, a new meshio++ release needs no action here to become spack-installable — a `version(...)` line is added to the upstream recipe after each tag.
+
 ## Development install
 
 ```

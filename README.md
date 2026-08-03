@@ -667,6 +667,14 @@ npm install @meshioplusplus/wasm
 
 See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
 
+meshio++ is also on [Spack](https://spack.io), upstream in [`spack/spack-packages`](https://github.com/spack/spack-packages/pull/5624) — no checkout of this repo required:
+
+```
+spack install py-meshioplusplus +hdf5 +netcdf +zlib
+```
+
+See [Installation → Spack](https://loumalouomega.github.io/meshioplusplus/installation#spack) for the standalone C API package and the full variant list.
+
 ### C++ API
 
 The full C++ core installs as a normal CMake package — the real `Mesh`, the format registry, every mesh/data operation, and the header-only Kratos bridge, none of which fit through a C ABI:
@@ -725,11 +733,12 @@ call m%write("out.vtu")
 call m%free()
 ```
 
-The C API is also packaged for **Conan** (root [`conanfile.py`](conanfile.py)) and **vcpkg** (overlay port under [`packages/vcpkg/meshioplusplus/`](packages/vcpkg/meshioplusplus)), both driving the same install/`find_package` path:
+The C API is also packaged for **Conan** (root [`conanfile.py`](conanfile.py)) and **vcpkg** (overlay port under [`packages/vcpkg/meshioplusplus/`](packages/vcpkg/meshioplusplus)), both driving the same install/`find_package` path, plus **Spack** (upstream in [`spack/spack-packages`](https://github.com/spack/spack-packages/pull/5624), no checkout needed):
 
 ```
 conan create . -o meshioplusplus/*:with_hdf5=True
 vcpkg install meshioplusplus --overlay-ports=ports
+spack install meshioplusplus +fortran +hdf5
 ```
 
 Full mesh access (build meshes from raw arrays, zero-copy readback) is covered on the [C API](https://loumalouomega.github.io/meshioplusplus/c_api) and [Fortran](https://loumalouomega.github.io/meshioplusplus/fortran) doc pages.
