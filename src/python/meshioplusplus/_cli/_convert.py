@@ -86,6 +86,54 @@ def add_args(parser):
             "needs the --time-step=-1 form."
         ),
     )
+    seq = parser.add_argument_group(
+        "transient sequences (multi-file datasets)",
+        "Treat a set of files, or the steps inside one file, as one ordered "
+        "dataset. See doc/sequences.md.",
+    )
+    seq.add_argument(
+        "--input",
+        action="append",
+        default=None,
+        metavar="FILE",
+        help=(
+            "an EXTRA input file, appended after the positional infile; repeat "
+            "for each. Use this when your shell has already expanded a glob: "
+            "`convert a.vtu --input b.vtu --input c.vtu out.xdmf`. Quoting the "
+            "pattern instead (`convert 'out_*.vtu' out.xdmf`) lets the CLI "
+            "expand it itself and is usually what you want."
+        ),
+    )
+    seq.add_argument(
+        "--times",
+        type=str,
+        default=None,
+        metavar="T1,T2,...",
+        help="comma-separated time value per step; the count must match.",
+    )
+    seq.add_argument(
+        "--time-from",
+        type=str,
+        choices=("auto", "file", "filename", "index"),
+        default="auto",
+        help=(
+            "where each step's time comes from: auto (the documented "
+            "precedence), file, filename (its last digit run) or index."
+        ),
+    )
+    seq.add_argument(
+        "--sequence",
+        action="store_true",
+        help="force sequence handling even when nothing in the paths suggests it.",
+    )
+    seq.add_argument(
+        "--no-sequence",
+        action="store_true",
+        help=(
+            "force single-file handling -- the escape hatch for a filename that "
+            "genuinely contains '*' or '{step}', which is legal on POSIX."
+        ),
+    )
     color = parser.add_argument_group(
         "data-driven colouring (svg/tikz output only)",
         "Colour the drawn faces by a data array instead of a flat fill.",
@@ -186,6 +234,82 @@ def _color_kwargs(args):
     return kwargs
 
 
+def _wants_sequence(args):
+    """Whether this invocation describes a transient sequence.
+
+    Inferred from the paths -- extra ``--input``s, a glob in the input, or a
+    ``{step}``/``{index}`` token in the output -- with ``--sequence`` and
+    ``--no-sequence`` as explicit overrides. ``--no-sequence`` exists because a
+    filename may legitimately contain ``*`` on POSIX.
+    """
+    from .._sequence import pattern_has_token
+
+    if args.no_sequence and args.sequence:
+        raise ValueError("--sequence and --no-sequence are mutually exclusive")
+    if args.no_sequence:
+        return False
+    if args.sequence:
+        return True
+    if args.input:
+        return True
+    if "*" in args.infile or "?" in args.infile:
+        return True
+    if pattern_has_token(args.outfile):
+        return True
+    # A multi-step input aimed at a single-step output must not quietly become
+    # step 0 -- route it here so the sequence driver refuses by name, pointing
+    # at '{step}' and at --time-step. An explicit --time-step IS a deliberate
+    # single-step selection, so it opts out. The check is skipped entirely for
+    # the formats that cannot carry time (see _sequence._TIME_CAPABLE_READERS),
+    # which is what keeps it free for almost every convert.
+    from .._sequence import num_steps
+
+    if not args.time_step:
+        return num_steps(args.infile, args.input_format) > 1
+    return False
+
+
+def _convert_sequence(args, arrays, write_kwargs):
+    """The transient half of `convert`: fan-in, fan-out or N->N."""
+    from .._sequence import (
+        pattern_has_token,
+        read_sequence,
+        sequence_entries,
+        write_sequence,
+    )
+
+    # A pre-expanded argv (`--input a --input b`) and a quoted pattern
+    # ('out_*.vtu') must reach exactly the same code, so both become the same
+    # `source` here.
+    source = [args.infile, *args.input] if args.input else args.infile
+    times = None
+    if args.times is not None:
+        times = [float(t) for t in args.times.split(",") if t]
+
+    entries = sequence_entries(
+        source,
+        file_format=args.input_format,
+        times=times,
+        time_from=args.time_from,
+    )
+    steps = read_sequence(
+        source,
+        file_format=args.input_format,
+        times=times,
+        time_from=args.time_from,
+        points_only=args.points_only,
+        arrays=arrays,
+    )
+    written = write_sequence(
+        args.outfile, steps, file_format=args.output_format, **write_kwargs
+    )
+    what = "fan-out" if pattern_has_token(args.outfile) else "fan-in"
+    if not pattern_has_token(args.outfile) and len(written) == len(entries):
+        what = "sequence"
+    print(f"{what}: {len(entries)} step(s) -> {len(written)} file(s)")
+    return 0
+
+
 def convert(args):
     if args.points_only and args.arrays is not None:
         raise ValueError("--points-only and --arrays are mutually exclusive")
@@ -197,6 +321,19 @@ def convert(args):
     arrays = None
     if args.arrays is not None:
         arrays = [name for name in args.arrays.split(",") if name]
+
+    if _wants_sequence(args):
+        if args.sets_to_int_data or args.int_data_to_sets:
+            raise ValueError(
+                "-s/-d are not available for a sequence; convert one step at a "
+                "time, or use the `pipeline` verb's Operations chain"
+            )
+        write_kwargs = dict(color_kwargs)
+        if args.float_format is not None:
+            write_kwargs["float_fmt"] = args.float_format
+        if args.ascii:
+            write_kwargs["binary"] = False
+        return _convert_sequence(args, arrays, write_kwargs)
 
     # read mesh data
     mesh = read(

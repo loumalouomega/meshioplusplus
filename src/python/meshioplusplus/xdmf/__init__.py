@@ -13,8 +13,15 @@ from .time_series import TimeSeriesReader, TimeSeriesWriter
 _HAS_HDF5 = getattr(_core, "__has_hdf5__", False)
 
 
-def read(filename, points_only=False, arrays=None):
-    """Read an XDMF file (C++ core; HDF DataItems need an HDF5-enabled build)."""
+def read(filename, points_only=False, arrays=None, time_step=0):
+    """Read an XDMF file (C++ core; HDF DataItems need an HDF5-enabled build).
+
+    ``time_step`` selects one step of a temporal collection (0 = the first,
+    negative counts from the end). Unlike ``points_only``/``arrays`` it is
+    *not* a narrowing option that a post-filter could emulate, so a non-default
+    step must not silently fall back to the pure-Python reader, which always
+    returns step 0 -- see the guard below.
+    """
     # points_only/arrays reach the C++ reader, which skips the unwanted
     # <DataArray>/section bodies outright. The Python fallback below has no
     # selective support, so _helpers.read trims its result instead -- same
@@ -22,10 +29,16 @@ def read(filename, points_only=False, arrays=None):
     if not is_buffer(filename, "r"):
         try:
             return _core.xdmf_read(
-                str(filename), points_only=points_only, arrays=arrays
+                str(filename),
+                points_only=points_only,
+                arrays=arrays,
+                time_step=time_step,
             )
         except Exception:
-            pass
+            if time_step:
+                # Falling back here would quietly hand back step 0 under the
+                # name of step N -- a wrong answer, not a slower one.
+                raise
     return _py_read(filename)
 
 

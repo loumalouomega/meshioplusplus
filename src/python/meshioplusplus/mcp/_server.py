@@ -229,6 +229,37 @@ def _register_conversion(server: FastMCP) -> None:
             output_path=output_path,
         )
 
+    @server.tool()
+    def sequence(
+        output_path: str,
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        mode: Optional[str] = None,
+        times: Optional[List[float]] = None,
+        time_from: str = "auto",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Treat a set of files (or the steps inside one multi-step file) as one
+        transient dataset. Give exactly one of input_pattern (a glob -- '*' and
+        '?' only) or input_paths. A '{step}'/'{index}' token in output_path
+        writes one file per step (fan-out); a plain path writes one multi-step
+        file (fan-in, XDMF only -- any other format fails by name rather than
+        silently keeping step 0). Ordering is natural-numeric, so out_9 precedes
+        out_10. mode optionally asserts 'sequence'/'fan-in'/'fan-out'.
+        See doc/sequences.md."""
+        return _guard(
+            _tools.tool_sequence,
+            input_pattern=input_pattern,
+            input_paths=input_paths,
+            output_path=output_path,
+            mode=mode,
+            times=times,
+            time_from=time_from,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Mesh operations                                                             #
