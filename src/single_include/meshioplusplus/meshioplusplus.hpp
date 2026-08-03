@@ -71179,6 +71179,19 @@ std::string seq_resolve_write_format(const SequenceOutput& rOutput, std::size_t 
     return resolve_format(probe, "");
 }
 
+/// The transient writer bypasses `registry_write_ex` (it drives
+/// `XdmfTimeSeriesWriter` directly, not a `(path, mesh)` registry entry), so
+/// it must apply the write_options.hpp rule -- "an option the writer cannot
+/// honour is an error, never silently ignored" -- itself. Only `Encoding`
+/// (XML vs HDF) has anywhere to go; `Codec`/`FloatFormat` do not.
+void seq_check_series_write_options(const WriteOptions& rOptions) {
+    if (rOptions.mCodecSet)
+        throw WriteError("meshio++: sequence: the transient XDMF writer does not support Codec");
+    if (!rOptions.mFloatFormat.empty())
+        throw WriteError(
+            "meshio++: sequence: the transient XDMF writer does not support FloatFormat");
+}
+
 }  // namespace
 
 void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& rOutput) {
@@ -71190,6 +71203,7 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
     std::string why;
     if (!sequence_write_supports_time(ofmt, why))
         throw WriteError(why);
+    seq_check_series_write_options(rOutput.mOptions);
 
     // Streaming: one mesh enters scope per iteration and leaves it. There is
     // deliberately no std::vector<Mesh> anywhere in this file.
@@ -71378,6 +71392,7 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         std::string why;
         if (!sequence_write_supports_time(ofmt, why))
             throw WriteError(why);
+        seq_check_series_write_options(rPipeline.mOutput.mOptions);
         XdmfTimeSeriesWriter writer(
             rPipeline.mOutput.mPath,
             rPipeline.mOutput.mOptions.mEncoding == WriteEncoding::Ascii ? "XML" : "HDF");
