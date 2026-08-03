@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.13.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 5).
+Status at time of writing: **v9.14.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 5).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -11,61 +11,11 @@ execution, and Python's `TimeSeries` for random-access "hold a series as one
 value") shipped in full in v9.12.0 across every language surface including
 WASM — see [`doc/sequences.md`](sequences.md) — and so no longer appears here.
 
----
-
-## 0. MDPA: original ids are not preserved on write
-
-**Shipped in v9.13.0 — the read half.** Both readers now accept arbitrary node
-ids (gapped, non-monotonic), resolving connectivity, `NodalData`,
-`SubModelPartNodes` and `MeshNodes` through a file-id → row map built lazily on
-the first id that is not `row + 1` — the `abaqus.cpp` `mPointIds` /
-`unv.cpp` `label_to_index` pattern. Not gated on `ReadOptions::mLenient`
-(accepting arbitrary ids is strictly more *correct*, not more lenient), so a
-real gapped Kratos deck is now readable from WASM, the C API, Fortran, Julia, R
-and the native CLI, none of which has a Python fallback. See
-[`doc/formats/mdpa.md`](formats/mdpa.md).
-
-**The gap that remains.** The writer never round-trips original ids: nodes are
-always emitted as `row_index + 1`, and elements and conditions get two
-independent 1-based counters — a full write renumbers everything to `1..n`
-whatever the source ids were. So a gapped deck reads correctly and then loses
-its numbering the moment it is written back, which matters wherever the ids are
-the identity of the entity rather than an implementation detail: cross-referencing
-against a solver's own output, diffing two decks, or feeding a
-`SubModelPartElements` list that names raw ids.
-
-The reason is architectural, and it is why the *write* side is the harder half:
-the uniform mesh API has no id-translation layer anywhere — `Mesh::Points()`/
-`Conn()` are dense 0-based arrays where "point index `i`" *is* row `i`, full
-stop. A reader can build its own map before touching connectivity, which is
-what v9.13.0 did; a writer instead needs somewhere on the `Mesh` to have kept
-the ids in the first place.
-
-- **Preserve original ids for a lossless round trip** — carry the file's
-  node/element ids out as `point_data`/`cell_data["mdpa:id"]` (or similar),
-  reusing MED's `"med:num"` `<format>:<thing>` convention rather than growing
-  the `MdpaInfo` side channel, which is unreachable from `registry_read` (the
-  same reason MED's own tag/family data moved onto the uniform-API region/
-  property-set mechanism in v9.2.0 rather than staying `MedInfo`-only). The
-  writer would then emit those ids when present instead of unconditionally
-  renumbering. Note v9.13.0 deliberately did **not** park the node ids in the
-  reference reader's `mesh.misc_data` — that dict is read by
-  `_write_submodelparts`/`_write_mdpa` and is one refactor from becoming a
-  round-trip contract, so choosing the carrier is the first step here, not an
-  afterthought. **M**
-- **`SubModelPartElements`/`Conditions` already store raw, unrenumbered
-  1-based ids** (`doc/formats/mdpa.md`) — a smaller, already-tolerated
-  instance of the same class of gap, and now the *only* one, since the node
-  lists went through the map in v9.13.0. The id-preservation item above should
-  make that the general case rather than a SubModelPart-only special case.
-  Folds into that item rather than being separate work. **S**
-
-*Recommended entry point: decide the carrier first — `point_data["mdpa:id"]`
-versus a new uniform-API slot — since everything else (both writers honouring
-it, the flat bindings seeing it, what happens when an operation renumbers or
-duplicates a point) follows from that one choice. Worth doing only if
-round-tripping through mdpa, rather than reading once and moving on, turns out
-to matter in practice.*
+MDPA's arbitrary/gapped node ids (v9.13.0, read side) and original-id
+preservation on write, including a fixed `SubModelPart` stale-reference bug
+found along the way (v9.14.0, write side) shipped in full — see
+[`doc/formats/mdpa.md`](formats/mdpa.md#original-ids-preserved-on-write-v9-14-0)
+— and so no longer appears here.
 
 ---
 
