@@ -380,69 +380,43 @@ def test_read_sequence_holds_exactly_one_mesh(steps):
     assert all(r() is None for r in refs)
 
 
-def test_fan_in_peak_is_constant_in_the_step_count(tmp_path):
-    import tracemalloc
+def test_fan_in_holds_no_more_than_one_mesh_across_many_steps(tmp_path):
+    """A wider-scale version of ``test_read_sequence_holds_exactly_one_mesh``,
+    but driven through the full ``write_sequence`` path over enough steps
+    (200) that an accidental accumulation would be unmistakable.
 
-    def bigger_mesh():
-        # Big enough that a genuine "every step stays alive" bug dominates the
-        # measurement; a 3-point fixture mesh is so small that fixed
-        # per-process tracemalloc overhead (import caches, allocator arena
-        # behaviour, which vary across Python versions) is comparable in size
-        # to the very thing being measured, which is what made the tighter,
-        # smaller-mesh version of this test flaky on some Python builds.
-        n = 30
-        xs, ys = np.meshgrid(np.arange(n), np.arange(n))
-        points = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(n * n)]).astype(
-            float
-        )
-        quads = [
-            [j * n + i, j * n + i + 1, (j + 1) * n + i + 1, (j + 1) * n + i]
-            for j in range(n - 1)
-            for i in range(n - 1)
-        ]
-        return meshioplusplus.Mesh(
-            points,
-            [("quad", np.array(quads))],
-            point_data={"t": np.arange(n * n, dtype=float)},
-        )
+    A raw ``tracemalloc`` byte threshold was tried here and dropped: pymalloc
+    arena behaviour, GC scheduling and numpy's allocator all vary enough
+    across Python versions and OSes (observed anywhere from ~1 KB/step to
+    ~34 KB/step for the exact same code) that no fixed byte bound is
+    portable. Weak references give a deterministic answer instead -- under
+    CPython refcounting a released, non-cyclic object is freed immediately,
+    so a genuine accumulation shows up as *growing* numbers of live
+    references, not a fuzzy byte count.
 
-    def peak(count):
-        directory = tmp_path / f"n{count}"
-        directory.mkdir()
-        for i in range(count):
-            meshioplusplus.write(
-                str(directory / f"out_{i}.vtu"), bigger_mesh(), compression=None
-            )
-        tracemalloc.start()
-        meshioplusplus.write_sequence(
-            str(directory / "series.xdmf"),
-            meshioplusplus.read_sequence(str(directory / "out_*.vtu")),
-        )
-        _, high = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
-        return high
+    One benign overlap is unavoidable and allowed for: ``write_sequence``'s
+    own ``for time, mesh in steps:`` loop variable only rebinds once
+    ``next()`` returns, so while step *N*'s mesh is being produced, step
+    *N-1*'s mesh may still be referenced by that loop variable for a moment.
+    Anything *older* than the immediately preceding step must already be
+    dead.
+    """
+    for i in range(200):
+        meshioplusplus.write(str(tmp_path / f"out_{i}.vtu"), _mesh())
 
-    # The peak is NOT expected to be flat in the step count: the XDMF writer's
-    # light-data document (one <Grid>/<Attribute>/<DataItem> per step,
-    # describing shape/format/dataset-path text) is only serialized at
-    # Finalize() -- doc/xdmf_time_series.md's Flush()/AutoFlush entry states
-    # this is deliberate, since eager per-step flushing would instead make
-    # writing quadratic in the step count. So the light document legitimately
-    # grows a small, roughly-constant amount per step regardless of build
-    # (measured: ~1.2 KB/step, HDF or XML). What must NOT happen is a whole
-    # extra `Mesh`'s worth of DATA (this fixture's own point_data array alone
-    # is 900*8 = 7200 bytes, and a real `Mesh` object plus its points/cells
-    # arrays runs well past that) being retained per step -- so the assertion
-    # is a per-step marginal-growth bound comfortably above the light
-    # document's own small, real overhead and comfortably below one retained
-    # mesh's, rather than "the peak stays flat".
-    small, large = peak(20), peak(100)
-    per_step = (large - small) / 80
-    assert per_step < 8000, (
-        f"fan-in peak grew {per_step:.0f} bytes per extra step (small={small}, "
-        f"large={large}): that is enough to be holding a whole Mesh per step, "
-        "not merely growing the XDMF light-data document"
-    )
+    refs = []
+
+    def watched():
+        for time, mesh in meshioplusplus.read_sequence(str(tmp_path / "out_*.vtu")):
+            gc.collect()
+            assert all(r() is None for r in refs[:-1]), "an older step is still alive"
+            refs.append(weakref.ref(mesh))
+            yield time, mesh
+
+    meshioplusplus.write_sequence(str(tmp_path / "series.xdmf"), watched())
+    gc.collect()
+    assert all(r() is None for r in refs)
+    assert len(refs) == 200
 
 
 # --------------------------------------------------------------------------- #
