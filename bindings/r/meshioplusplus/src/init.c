@@ -93,7 +93,7 @@ extern SEXP R_mio_sequence_time(SEXP, SEXP);
 extern SEXP R_mio_sequence_time_source(SEXP, SEXP);
 extern SEXP R_mio_sequence_read(SEXP, SEXP);
 extern SEXP R_mio_sequence_free(SEXP);
-extern SEXP R_mio_sequence_to_timeseries(SEXP, SEXP, SEXP);
+extern SEXP R_mio_sequence_to_timeseries(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_timeseries_to_sequence(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sequence_pipeline_run_file(SEXP);
 extern SEXP R_mio_sequence_pipeline_run_json(SEXP);
@@ -195,7 +195,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_sequence_time_source, 2),
     CALLDEF(R_mio_sequence_read, 2),
     CALLDEF(R_mio_sequence_free, 1),
-    CALLDEF(R_mio_sequence_to_timeseries, 3),
+    CALLDEF(R_mio_sequence_to_timeseries, 4),
     CALLDEF(R_mio_timeseries_to_sequence, 4),
     CALLDEF(R_mio_sequence_pipeline_run_file, 1),
     CALLDEF(R_mio_sequence_pipeline_run_json, 1),

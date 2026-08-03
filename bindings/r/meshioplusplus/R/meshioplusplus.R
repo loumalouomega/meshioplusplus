@@ -1167,10 +1167,13 @@ mio_sequence_free <- function(seq) invisible(.Call(R_mio_sequence_free, seq))
 #' @param seq a \code{mio_sequence}.
 #' @param out_path the output file.
 #' @param out_format forced output format, or NULL.
+#' @param ascii if TRUE, selects XDMF's "XML" data format (everything inline,
+#'   no HDF5 needed) instead of the default "HDF".
 #' @return NULL, invisibly.
 #' @export
-mio_sequence_to_timeseries <- function(seq, out_path, out_format = NULL) {
-  invisible(.Call(R_mio_sequence_to_timeseries, seq, as.character(out_path), out_format))
+mio_sequence_to_timeseries <- function(seq, out_path, out_format = NULL, ascii = FALSE) {
+  invisible(.Call(R_mio_sequence_to_timeseries, seq, as.character(out_path), out_format,
+                  isTRUE(ascii)))
 }
 
 #' Fan-out: write each step of a multi-step file to a pattern

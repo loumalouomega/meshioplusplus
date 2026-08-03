@@ -175,9 +175,23 @@ SEXP R_mio_sequence_free(SEXP seq) {
     return R_NilValue;
 }
 
-SEXP R_mio_sequence_to_timeseries(SEXP seq, SEXP out_path, SEXP out_format) {
-    mio_r_check(mio_sequence_to_timeseries(sequence_of(seq), mio_r_string(out_path, "out_path"),
-                                           mio_r_opt_string(out_format)),
+SEXP R_mio_sequence_to_timeseries(SEXP seq, SEXP out_path, SEXP out_format, SEXP ascii) {
+    /* The transient writer drives XdmfTimeSeriesWriter directly rather than
+     * the registry, so `ascii` is the one write option with anywhere to go:
+     * it selects XDMF's "XML" data format (no HDF5 needed) over the default
+     * "HDF" -- the option a build without HDF5 support (this package's own
+     * notebook environment among them, see doc/r.md) needs. */
+    if (!mio_r_bool(ascii, "ascii")) {
+        mio_r_check(mio_sequence_to_timeseries(sequence_of(seq), mio_r_string(out_path, "out_path"),
+                                               mio_r_opt_string(out_format)),
+                    "sequence_to_timeseries");
+        return R_NilValue;
+    }
+    mio_write_opts opts;
+    mio_write_opts_init(&opts);
+    opts.encoding = MIO_ENCODING_ASCII;
+    mio_r_check(mio_sequence_to_timeseries_ex(sequence_of(seq), mio_r_string(out_path, "out_path"),
+                                              mio_r_opt_string(out_format), &opts),
                 "sequence_to_timeseries");
     return R_NilValue;
 }
