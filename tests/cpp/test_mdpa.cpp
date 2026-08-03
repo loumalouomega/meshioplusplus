@@ -386,7 +386,6 @@ TEST(Mdpa, UnsupportedConstructsThrowByName) {
         {"Begin Geometries Triangle3D3\n1 1 2 3\nEnd Geometries\n", "Geometries"},
         {"Begin Mesh 1\nEnd Mesh\n", "Mesh"},
         {"Begin ModelPartData\n  NAME \"a string\"\nEnd ModelPartData\n", "ModelPartData"},
-        {"Begin Nodes\n1 0 0 0\n3 1 1 1\nEnd Nodes\n", "node ids"},
         {"Begin Nodes\n1 0 0 0\n", "End Nodes"},
         {"Begin SubModelPart S\n  Begin SubModelPartData\n    K 1\n  End SubModelPartData\n"
          "End SubModelPart\n",
@@ -427,6 +426,174 @@ TEST(Mdpa, UnknownEntityNameThrows) {
     EXPECT_THROW(meshioplusplus::read_mdpa(path), meshioplusplus::ReadError);
     std::error_code ec;
     std::filesystem::remove(path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// Arbitrary node ids (gapped, non-monotonic) -- what a real Kratos deck left by
+// a SubModelPart extraction or an entity removal looks like.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Gapped AND non-monotonic ids, exercised by every id block that resolves one.
+/// Kept textually identical to `GAPPED_NODE_DECK` in tests/python/test_mdpa.py,
+/// which is what makes the C++/Python parity test there meaningful.
+const char* const kMdpaGappedDeck = R"(Begin Nodes
+10 0.0 0.0 0.0
+7  1.0 0.0 0.0
+42 0.0 1.0 0.0
+5  0.0 0.0 1.0
+End Nodes
+
+Begin Elements Element3D4N
+100 1 10 7 42 5
+End Elements
+
+Begin NodalData TEMPERATURE
+42 3.5
+10 1.5
+End NodalData
+
+Begin SubModelPart Gapped
+    Begin SubModelPartNodes
+        42
+        5
+    End SubModelPartNodes
+End SubModelPart
+)";
+
+}  // namespace
+
+TEST(Mdpa, GappedNodeIdsRead) {
+    const Mesh m = mdpa_read_string(kMdpaGappedDeck);
+    ASSERT_EQ(m.NumPoints(), 4u);
+
+    // Points come back in FILE order, never sorted by id.
+    const double* p = m.Points().As<double>();
+    const std::vector<double> expected = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        EXPECT_DOUBLE_EQ(p[i], expected[i]) << "coordinate " << i;
+
+    // Connectivity resolved through the map: ids 10/7/42/5 are rows 0/1/2/3.
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    const auto blk = m.Cells(0);
+    EXPECT_EQ(std::string(blk.Type()), "tetra");
+    ASSERT_EQ(blk.NumCells(), 1u);
+    const std::int64_t* c = blk.Conn().As<std::int64_t>();
+    for (int j = 0; j < 4; ++j)
+        EXPECT_EQ(c[j], j);
+
+    // NodalData keyed by the real file ids.
+    ASSERT_TRUE(m.HasPointData("TEMPERATURE"));
+    const double* t = m.PointData("TEMPERATURE").As<double>();
+    EXPECT_DOUBLE_EQ(t[0], 1.5);  // id 10
+    EXPECT_TRUE(std::isnan(t[1]));
+    EXPECT_DOUBLE_EQ(t[2], 3.5);  // id 42
+    EXPECT_TRUE(std::isnan(t[3]));
+
+    // And so is the SubModelPart node list.
+    const std::size_t ip = m.FindRegion("Gapped", RegionKind::Point);
+    ASSERT_NE(ip, Mesh::npos);
+    ASSERT_EQ(m.Region(ip).NumEntries(), 2u);
+    EXPECT_EQ(m.Region(ip).Entries()[0], 2);  // id 42
+    EXPECT_EQ(m.Region(ip).Entries()[1], 3);  // id 5
+}
+
+TEST(Mdpa, GappedIdsAreNotGatedOnLenient) {
+    // Accepting arbitrary ids is strictly more correct, not more lenient: a
+    // strict read must succeed and record nothing as skipped.
+    const std::string path = mdpa_temp_file(kMdpaGappedDeck);
+    meshioplusplus::MdpaInfo info;
+    meshioplusplus::ReadOptions opts;  // mLenient stays false
+    const Mesh m = meshioplusplus::read_mdpa(path, info, opts);
+    EXPECT_EQ(m.NumPoints(), 4u);
+    EXPECT_TRUE(info.mSkippedConstructs.empty());
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Mdpa, NonMonotonicNodeIds) {
+    const Mesh m = mdpa_read_string(
+        "Begin Nodes\n4 0 0 0\n3 1 0 0\n2 0 1 0\n1 0 0 1\nEnd Nodes\n"
+        "Begin Elements Element3D4N\n1 0 1 2 3 4\nEnd Elements\n");
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    const std::int64_t* c = m.Cells(0).Conn().As<std::int64_t>();
+    // ids 1,2,3,4 are rows 3,2,1,0 -- descending, which is exactly the case a
+    // "row == id - 1" reader gets silently backwards.
+    for (int j = 0; j < 4; ++j)
+        EXPECT_EQ(c[j], 3 - j);
+}
+
+TEST(Mdpa, DanglingConnectivityNodeIdThrowsWithTheFileId) {
+    const std::string path = mdpa_temp_file(
+        "Begin Nodes\n10 0 0 0\n7 1 0 0\n42 0 1 0\n5 0 0 1\nEnd Nodes\n"
+        "Begin Elements Element3D4N\n1 0 10 7 42 999\nEnd Elements\n");
+    try {
+        meshioplusplus::read_mdpa(path);
+        ADD_FAILURE() << "expected ReadError for a dangling node id";
+    } catch (const meshioplusplus::ReadError& e) {
+        const std::string what = e.what();
+        // The FILE id, not a row index and not `id + 1`.
+        EXPECT_NE(what.find("999"), std::string::npos) << what;
+        EXPECT_EQ(what.find("1000"), std::string::npos) << what;
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Mdpa, DuplicateNodeIdThrows) {
+    // Unrepresentable, not merely incomplete: two coordinate rows claim one id.
+    const std::string path = mdpa_temp_file("Begin Nodes\n5 0 0 0\n5 1 1 1\nEnd Nodes\n");
+    try {
+        meshioplusplus::read_mdpa(path);
+        ADD_FAILURE() << "expected ReadError for a duplicate node id";
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("duplicate node id"), std::string::npos) << e.what();
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Mdpa, BareCoordinateRowsStillRead) {
+    // The id-less `x y z` form, which the reader has always accepted and which
+    // nothing covered until the id map made it worth pinning.
+    const Mesh m = mdpa_read_string(
+        "Begin Nodes\n0 0 0\n1 0 0\n0 1 0\nEnd Nodes\n"
+        "Begin Elements Element2D3N\n1 0 1 2 3\nEnd Elements\n");
+    ASSERT_EQ(m.NumPoints(), 3u);
+    const double* p = m.Points().As<double>();
+    EXPECT_DOUBLE_EQ(p[3], 1.0);  // second row's x
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    const std::int64_t* c = m.Cells(0).Conn().As<std::int64_t>();
+    for (int j = 0; j < 3; ++j)
+        EXPECT_EQ(c[j], j);
+}
+
+TEST(Mdpa, MixedIdAndBareNodeRows) {
+    // An id-less row takes its POSITION as its id -- the documented rule, and
+    // the only one that keeps a mixed file whose explicit ids happen to be
+    // sequential reading as it always did.
+    const Mesh m = mdpa_read_string(
+        "Begin Nodes\n5 0 0 0\n1 0 0\n0 1 0\nEnd Nodes\n"
+        "Begin Elements Element2D3N\n1 0 5 2 3\nEnd Elements\n");
+    ASSERT_EQ(m.NumPoints(), 3u);
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    const std::int64_t* c = m.Cells(0).Conn().As<std::int64_t>();
+    for (int j = 0; j < 3; ++j)
+        EXPECT_EQ(c[j], j);
+}
+
+TEST(Mdpa, SubModelPartNodesWithUnknownIdIsSkipped) {
+    // A set is not connectivity: an unknown member is dropped with a warning,
+    // matching what the entity lists already did.
+    const Mesh m = mdpa_read_string(
+        "Begin Nodes\n10 0 0 0\n7 1 0 0\n42 0 1 0\nEnd Nodes\n"
+        "Begin SubModelPart S\n  Begin SubModelPartNodes\n    42\n    999\n"
+        "  End SubModelPartNodes\nEnd SubModelPart\n");
+    const std::size_t ip = m.FindRegion("S", RegionKind::Point);
+    ASSERT_NE(ip, Mesh::npos);
+    ASSERT_EQ(m.Region(ip).NumEntries(), 1u);
+    EXPECT_EQ(m.Region(ip).Entries()[0], 2);
 }
 
 TEST(Mdpa, EmptyMeshRoundTrips) {
