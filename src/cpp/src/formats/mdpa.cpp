@@ -29,6 +29,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -146,8 +147,15 @@ struct MdpaBlock {
     std::string mEntityName;
     std::size_t mNodes = 0;
     bool mIsCondition = false;
+    /// Raw *file* node ids until `mdpa_read_impl`'s materialize pass resolves
+    /// them to point rows -- the Nodes block is not required to precede this
+    /// one, and deferring keeps the file id available for the error message.
     std::vector<std::int64_t> mConn;
     std::vector<std::int64_t> mProps;
+    /// Each row's raw file id, in append order -- captured unconditionally
+    /// (parallel to `mProps`) so the materialize pass can decide whether it is
+    /// worth keeping without having re-derived it.
+    std::vector<std::int64_t> mFileIds;
     std::size_t mCount = 0;
 };
 
@@ -494,6 +502,27 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     std::vector<PropertySet> property_sets;
     std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_ids,
         condition_ids;
+    // The node half of the id maps above -- but materialized LAZILY. Kratos node
+    // ids are 1..n in file order in the overwhelming majority of decks, and those
+    // are the million-node ones; until an id turns up that is not `row + 1`,
+    // "row == id - 1" IS the map and building one would be pure overhead. The
+    // moment one does, the identity entries read so far are back-filled and the
+    // map takes over for the rest of the file. This mirrors abaqus.cpp's
+    // `mPointIds` and unv.cpp's `label_to_index`, minus their unconditional cost.
+    std::unordered_map<std::int64_t, std::size_t> node_ids;  // file id -> point row
+    bool node_ids_dense = true;  // ids so far are exactly 1..num_points, in order
+    // Every node's raw file id, in file (row) order -- captured unconditionally
+    // (cheap: one push_back per row already being appended) so it is available
+    // at materialize time regardless of whether `node_ids_dense` ever flips.
+    std::vector<std::int64_t> raw_node_ids;
+    // Same "dense" idea as node ids, but tracked directly rather than lazily:
+    // elements and conditions each have their own independent 1-based counter,
+    // spanning every block of that kind in file order (not per block), which is
+    // exactly how the writer numbers them. The moment either counter's next
+    // expected value disagrees with a row's actual id, ids are no longer the
+    // trivial "renumber from 1" case and the original ones are worth keeping.
+    std::int64_t next_element_id = 1, next_condition_id = 1;
+    bool entities_dense = true;
     std::map<std::string, NDArray> field_data;
 
     // Staged data arrays, materialized after every block is known.
@@ -538,6 +567,22 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             rOut.push_back(v);
         }
         throw ReadError("MDPA: EOF before '" + rEnd + "'");
+    };
+
+    // File node id -> point row. False when the file defines no such node. The
+    // dense branch is the pre-v9.13.0 arithmetic, bit for bit.
+    auto node_row = [&](std::int64_t Id, std::size_t& rRow) -> bool {
+        if (node_ids_dense) {
+            if (Id < 1 || static_cast<std::size_t>(Id) > num_points)
+                return false;
+            rRow = static_cast<std::size_t>(Id) - 1;
+            return true;
+        }
+        const auto it = node_ids.find(Id);
+        if (it == node_ids.end())
+            return false;
+        rRow = it->second;
+        return true;
     };
 
     while (!cur.Done()) {
@@ -591,16 +636,26 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                 const std::vector<std::string> t = mdpa_tokens(e);
                 if (t.size() < 3)
                     throw ReadError("MDPA: node line with fewer than 3 coordinates: " + e);
-                if (t.size() >= 4) {
-                    std::int64_t id = 0;
-                    if (!mdpa_parse_int(t[0], id))
-                        throw ReadError("MDPA: non-integer node id: " + e);
-                    if (id != static_cast<std::int64_t>(num_points) + 1)
-                        throw ReadError(
-                            "MDPA: non-sequential node ids are not supported by the C++ reader "
-                            "(expected " +
-                            std::to_string(num_points + 1) + ", got " + std::to_string(id) + ")");
+                // An id-less row (`x y z`) takes its position as its id, which is
+                // exactly what "connectivity is 1-based into row order" already
+                // meant for a fully id-less file -- so such a file never leaves
+                // the dense path and reads byte-identically to before.
+                std::int64_t id = static_cast<std::int64_t>(num_points) + 1;
+                if (t.size() >= 4 && !mdpa_parse_int(t[0], id))
+                    throw ReadError("MDPA: non-integer node id: " + e);
+                if (node_ids_dense && id != static_cast<std::int64_t>(num_points) + 1) {
+                    node_ids.reserve(num_points * 2 + 16);
+                    for (std::size_t r = 0; r < num_points; ++r)
+                        node_ids.emplace(static_cast<std::int64_t>(r) + 1, r);
+                    node_ids_dense = false;
                 }
+                // A duplicate is unrepresentable -- two coordinate rows would
+                // claim one id -- so it throws, always. The dense path cannot
+                // produce one by construction (`id == row + 1` strictly
+                // increases), so the check only runs where it can fire.
+                if (!node_ids_dense && !node_ids.emplace(id, num_points).second)
+                    throw ReadError("MDPA: duplicate node id " + std::to_string(id));
+                raw_node_ids.push_back(id);
                 for (std::size_t c = t.size() - 3; c < t.size(); ++c) {
                     double v = 0.0;
                     if (!mdpa_parse_double(t[c], v))
@@ -673,9 +728,16 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
                         order.empty()
                             ? static_cast<std::size_t>(j)
                             : static_cast<std::size_t>(order[static_cast<std::size_t>(j)]);
-                    blk.mConn[base + slot] = node - 1;
+                    // The raw file id; resolved to a point row in the
+                    // materialize pass below (see MdpaBlock::mConn).
+                    blk.mConn[base + slot] = node;
                 }
                 blk.mProps.push_back(prop);
+                blk.mFileIds.push_back(id);
+                std::int64_t& next_id = is_condition ? next_condition_id : next_element_id;
+                if (id != next_id)
+                    entities_dense = false;
+                ++next_id;
                 const std::size_t row = blk.mCount++;
                 auto& id_map = is_condition ? condition_ids : element_ids;
                 id_map[id] = {blocks.size() - 1, row};
@@ -709,11 +771,8 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             const int nc = mdpa_parse_data_block(
                 cur, "End NodalData", /*nodal=*/true,
                 [&](std::int64_t id, std::size_t& block, std::size_t& row) {
-                    if (id < 1 || static_cast<std::size_t>(id) > num_points)
-                        return false;
                     block = 0;
-                    row = static_cast<std::size_t>(id) - 1;
-                    return true;
+                    return node_row(id, row);
                 },
                 sd.mRows, sd.mHasFixed);
             if (nc < 0) {
@@ -773,9 +832,14 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             std::vector<std::int64_t> ids;
             read_id_list("End SubModelPartNodes", ids);
             auto& smp = smps[smp_name()];
-            for (std::int64_t id : ids)
-                if (id >= 1 && static_cast<std::size_t>(id) <= num_points)
-                    smp.mNodes.push_back(id - 1);
+            for (std::int64_t id : ids) {
+                std::size_t row = 0;
+                if (!node_row(id, row)) {
+                    log::warn("mdpa: SubModelPart references unknown node id {}", id);
+                    continue;
+                }
+                smp.mNodes.push_back(static_cast<std::int64_t>(row));
+            }
         } else if (mdpa_starts_with(line, "Begin SubModelPartElements") ||
                    mdpa_starts_with(line, "Begin SubModelPartConditions")) {
             const bool elemental = mdpa_starts_with(line, "Begin SubModelPartElements");
@@ -834,6 +898,17 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
             pp[i] = coords[i];
         mesh.AssignPoints(std::move(pts));
     }
+    // Attach original node ids ONLY when they weren't already the trivial
+    // `1..n` renumbering the writer would produce anyway -- so a sequential (or
+    // id-less) deck's `Mesh` is untouched by this feature and a re-write is
+    // byte-identical to before. `write_mdpa` looks for this exact name.
+    if (!node_ids_dense) {
+        NDArray ids(DType::Int64, {num_points});
+        std::int64_t* ip = ids.As<std::int64_t>();
+        for (std::size_t i = 0; i < num_points; ++i)
+            ip[i] = raw_node_ids[i];
+        mesh.AddPointData(kMdpaIdName, std::move(ids));
+    }
 
     std::vector<NDArray> props;
     std::vector<std::size_t> block_base(blocks.size(), 0);
@@ -842,14 +917,21 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
         MdpaBlock& blk = blocks[b];
         block_base[b] = running;
         running += blk.mCount;
-        for (std::int64_t node : blk.mConn)
-            if (node < 0 || static_cast<std::size_t>(node) >= num_points)
-                throw ReadError("MDPA: connectivity refers to node " + std::to_string(node + 1) +
-                                " but the file has " + std::to_string(num_points) + " nodes");
         NDArray conn(DType::Int64, {blk.mCount, blk.mNodes});
         std::int64_t* cp = conn.As<std::int64_t>();
-        for (std::size_t i = 0; i < blk.mConn.size(); ++i)
-            cp[i] = blk.mConn[i];
+        for (std::size_t i = 0; i < blk.mConn.size(); ++i) {
+            // Resolve the raw file ids staged above. The message names the FILE
+            // id, never a row: with arbitrary ids "the file has N nodes" is no
+            // longer the criterion (id 500 can be valid in a 4-node deck), so it
+            // is reported as context instead.
+            std::size_t row = 0;
+            if (!node_row(blk.mConn[i], row))
+                throw ReadError("MDPA: connectivity refers to node id " +
+                                std::to_string(blk.mConn[i]) +
+                                ", which the file's Nodes block does not define (" +
+                                std::to_string(num_points) + " nodes read)");
+            cp[i] = static_cast<std::int64_t>(row);
+        }
         mesh.AddCellBlock(blk.mType, std::move(conn));
         if (pInfo)
             pInfo->mEntityNames.push_back(MdpaEntityName{blk.mEntityName, blk.mIsCondition});
@@ -861,6 +943,23 @@ Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
     }
     if (!blocks.empty())
         mesh.AddCellData("gmsh:physical", std::move(props));
+    // Same "only when it matters" rule as the node ids above: elements and
+    // conditions each have their own independent 1-based file-order counter,
+    // and only when EITHER disagreed with a trivial renumbering is the
+    // original id worth carrying -- so a fresh write of an untouched deck
+    // stays byte-identical, and a gapped/reclassified one round-trips.
+    if (!blocks.empty() && !entities_dense) {
+        std::vector<NDArray> ids;
+        ids.reserve(blocks.size());
+        for (const MdpaBlock& blk : blocks) {
+            NDArray a(DType::Int64, {blk.mCount});
+            std::int64_t* ap = a.As<std::int64_t>();
+            for (std::size_t i = 0; i < blk.mFileIds.size(); ++i)
+                ap[i] = blk.mFileIds[i];
+            ids.push_back(std::move(a));
+        }
+        mesh.AddCellData(kMdpaIdName, std::move(ids));
+    }
 
     for (auto& fd : field_data)
         mesh.AddFieldData(fd.first, std::move(fd.second));
@@ -963,6 +1062,8 @@ std::size_t mdpa_components(const NDArray& rArray, std::size_t rows) {
 }
 
 bool mdpa_skip_point_data(const std::string& rName) {
+    if (rName == kMdpaIdName)
+        return true;
     const std::string suffix = "_fixed_status";
     if (rName.size() >= suffix.size() &&
         rName.compare(rName.size() - suffix.size(), suffix.size(), suffix) == 0)
@@ -971,6 +1072,8 @@ bool mdpa_skip_point_data(const std::string& rName) {
 }
 
 bool mdpa_skip_cell_data(const std::string& rName) {
+    if (rName == kMdpaIdName)
+        return true;
     const std::string suffix = "_tag";
     if (rName.size() >= suffix.size() &&
         rName.compare(rName.size() - suffix.size(), suffix.size(), suffix) == 0)
@@ -1030,7 +1133,22 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     std::vector<std::vector<std::int64_t>> written_ids(nblocks);
     std::vector<std::size_t> block_base(nblocks, 0);
     {
+        // Honour cell_data["mdpa:id"] (kMdpaIdName) when the mesh carries one
+        // array per block AND every array's row count matches its block's cell
+        // count -- anything short of that is treated as unrelated/stale
+        // metadata and falls back to the old renumbering, exactly like the
+        // node-id check below. An id that survives is still validated for
+        // uniqueness (elements and conditions each have their own Kratos
+        // namespace, so a collision is only checked within its own kind) --
+        // writing a duplicate would silently produce an invalid Kratos deck.
+        bool preserve_entity_ids =
+            rMesh.HasCellData(kMdpaIdName) && rMesh.CellDataNumBlocks(kMdpaIdName) == nblocks;
+        for (std::size_t b = 0; preserve_entity_ids && b < nblocks; ++b)
+            if (rMesh.CellData(kMdpaIdName, b).Size() != rMesh.Cells(b).NumCells())
+                preserve_entity_ids = false;
+
         std::int64_t next_element = 1, next_condition = 1;
+        std::unordered_set<std::int64_t> seen_element_ids, seen_condition_ids;
         std::size_t running = 0;
         for (std::size_t b = 0; b < nblocks; ++b) {
             const auto cb = rMesh.Cells(b);
@@ -1059,8 +1177,19 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             block_base[b] = running;
             running += cb.NumCells();
             written_ids[b].resize(cb.NumCells());
-            for (std::size_t r = 0; r < cb.NumCells(); ++r)
-                written_ids[b][r] = is_condition[b] ? next_condition++ : next_element++;
+            std::unordered_set<std::int64_t>& seen =
+                is_condition[b] ? seen_condition_ids : seen_element_ids;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::int64_t wid =
+                    preserve_entity_ids ? detail::read_int(rMesh.CellData(kMdpaIdName, b), r)
+                                        : (is_condition[b] ? next_condition++ : next_element++);
+                if (!seen.insert(wid).second)
+                    throw WriteError("MDPA: duplicate " +
+                                     std::string(is_condition[b] ? "condition" : "element") +
+                                     " id " + std::to_string(wid) + " in cell_data['" +
+                                     std::string(kMdpaIdName) + "']");
+                written_ids[b][r] = wid;
+            }
         }
     }
 
@@ -1122,13 +1251,30 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
 
     // ---- Nodes ------------------------------------------------------------
     os << "Begin Nodes\n";
+    std::vector<std::int64_t> written_node_ids;
     {
         const NDArray& points = rMesh.Points();
         const std::size_t dim = rMesh.PointDim();
         const std::size_t np = rMesh.NumPoints();
+        // Honour point_data["mdpa:id"] (kMdpaIdName) when present and the right
+        // length; anything short of that (absent, wrong size, wrong dtype) is
+        // treated as unrelated metadata and falls back to the old row+1
+        // numbering. Values are validated for uniqueness -- a duplicate would
+        // silently produce an ambiguous file.
+        const bool preserve_node_ids =
+            rMesh.HasPointData(kMdpaIdName) && rMesh.PointData(kMdpaIdName).Size() == np;
+        written_node_ids.resize(np);
+        std::unordered_set<std::int64_t> seen_node_ids;
         char buf[64];
         for (std::size_t i = 0; i < np; ++i) {
-            os << " " << (i + 1);
+            const std::int64_t id = preserve_node_ids
+                                        ? detail::read_int(rMesh.PointData(kMdpaIdName), i)
+                                        : static_cast<std::int64_t>(i) + 1;
+            if (!seen_node_ids.insert(id).second)
+                throw WriteError("MDPA: duplicate node id " + std::to_string(id) +
+                                 " in point_data['" + std::string(kMdpaIdName) + "']");
+            written_node_ids[i] = id;
+            os << " " << id;
             for (std::size_t c = 0; c < 3; ++c) {
                 const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
                 std::snprintf(buf, sizeof(buf), "%.16e", v);
@@ -1155,7 +1301,13 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             os << "  " << written_ids[b][r] << " " << prop;
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t slot = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                os << " " << (detail::read_int(conn, r * k + slot) + 1);
+                // Through `written_node_ids`, not a bare `+ 1`: connectivity
+                // must name whichever node numbering was actually written
+                // (preserved or row+1), the same rule the Nodes block itself
+                // and the SubModelPart node lists follow.
+                const std::size_t row =
+                    static_cast<std::size_t>(detail::read_int(conn, r * k + slot));
+                os << " " << written_node_ids[row];
             }
             os << "\n";
         }
@@ -1179,7 +1331,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                     all_nan = false;
             if (all_nan)
                 continue;
-            os << "  " << (i + 1);
+            os << "  " << written_node_ids[i];
             if (has_fixed) {
                 const std::int64_t f = detail::read_int(rMesh.PointData(fixed_name), i);
                 if (f >= 0)
@@ -1244,7 +1396,10 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             const std::int64_t* e = r.Entries();
             for (std::size_t j = 0; j < r.NumEntries(); ++j) {
                 if (r.mKind == RegionKind::Point) {
-                    nodes.push_back(e[j] + 1);
+                    // `written_node_ids` already reflects whichever numbering
+                    // was actually written (preserved or row+1), so this stays
+                    // consistent with the Nodes block above with no extra work.
+                    nodes.push_back(written_node_ids[static_cast<std::size_t>(e[j])]);
                     continue;
                 }
                 // Cell region: global block-major index -> (block, row) -> id.

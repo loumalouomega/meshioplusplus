@@ -26,8 +26,17 @@
  * `Begin Elements Element3D3N// group`), and tabs are as good as spaces.
  * The blocks this reader/writer understands:
  *
- *  - `Begin Nodes` — `id x y z` rows. Node ids must be `1..n` in order (see
- *    the limitations below); connectivity is 1-based into them.
+ *  - `Begin Nodes` — `id x y z` rows, or bare `x y z` rows (auto-detected by
+ *    column count; a bare row takes its position as its id). Ids may be
+ *    arbitrary — gapped and non-monotonic both read, as a real Kratos deck
+ *    left by a SubModelPart extraction or an entity removal needs — and
+ *    connectivity, `NodalData` and `SubModelPartNodes` resolve through a
+ *    file-id → row map built lazily on the first id that is not `row + 1`
+ *    (`abaqus.cpp`'s `mPointIds` pattern). Points come back in **file order**,
+ *    never sorted by id; a duplicate id is a `ReadError`. **Original ids
+ *    survive a write**, too (see #kMdpaIdName): whenever they were not already
+ *    the trivial `1..n` a fresh write would produce anyway, they are attached
+ *    as ordinary `point_data`/`cell_data`, which `write_mdpa` reads back.
  *  - `Begin Elements <KratosName>` / `Begin Conditions <KratosName>` —
  *    `id property_id n1 n2 ...` rows. The Kratos entity name resolves to a
  *    meshio cell type through `backends/kratos_names.hpp`
@@ -37,6 +46,9 @@
  *    whenever the type differs from the previous one, exactly as the Python
  *    reference does, so block order follows the file. Property ids become
  *    Int64 `cell_data["gmsh:physical"]` — the name the Python reference uses.
+ *    Element and condition ids (each their own independent 1-based counter, in
+ *    file order across every block of that kind) are preserved the same way as
+ *    node ids -- see #kMdpaIdName.
  *  - `Begin ModelPartData` — `KEY value` pairs, kept as one-element Float64
  *    `field_data` entries.
  *  - `Begin Properties <id>` — the material data. Its body has no place on the
@@ -63,7 +75,10 @@
  * an MDPA file stays valid for Kratos.
  *
  * @note cell_data key produced/consumed: `"gmsh:physical"` (the Kratos
- *       property id of each element/condition).
+ *       property id of each element/condition); `point_data`/
+ *       `cell_data[kMdpaIdName]` (`"mdpa:id"`) for original node/entity ids,
+ *       when they were not already the trivial `1..n` renumbering — see
+ *       #kMdpaIdName.
  *
  * ## Limitations (deliberate, and reported by throwing)
  *
@@ -87,11 +102,10 @@
  * because skipping them would return a mesh that is quietly wrong rather than
  * merely incomplete:
  *
- *  - node ids that are not `1..n` in ascending order (the format allows
- *    arbitrary ids; honouring them would need a renumbering the Python
- *    reference does not do);
+ *  - a duplicate node id (two coordinate rows claiming one id is
+ *    unrepresentable, not merely incomplete);
  *  - a malformed row, an unknown entity name, or connectivity naming a node
- *    that does not exist.
+ *    the `Nodes` block does not define.
  *
  * The writer emits the mesh-level blocks (`ModelPartData` from scalar
  * `field_data`, `Properties`, `Nodes`, `Elements`/`Conditions`,
@@ -118,6 +132,27 @@ using MdpaProperties = PropertySet;
 
 /** @brief One `KEY value` entry of a properties block (see #PropertyValue). */
 using MdpaProperty = PropertyValue;
+
+/**
+ * @brief The original-id carrier: `point_data`/`cell_data["mdpa:id"]`.
+ *
+ * The uniform mesh API has no id-translation layer -- `Mesh::Points()`/`Conn()`
+ * are dense 0-based arrays where "point index `i`" *is* row `i` -- so there is
+ * nowhere on the `Mesh` itself to remember a file's original node/element/
+ * condition numbering. `read_mdpa` attaches it as ordinary data instead: a
+ * point_data array of Int64 node ids (one per point, in read order) and/or a
+ * per-block cell_data array of Int64 element/condition ids, **only when those
+ * ids were not already the trivial `1..n` renumbering `write_mdpa` would
+ * produce anyway** -- so a sequential (or id-less) deck is completely
+ * unaffected and a re-write of it stays byte-identical to before. `write_mdpa`
+ * honours the array when present (falling back to the old renumbering when it
+ * is absent, the wrong length, or the wrong dtype) and throws `WriteError` on
+ * a duplicate value, since writing one would silently produce an invalid file.
+ * Riding as plain data means it survives (and is renumbered by) the ordinary
+ * mesh operations for free -- crop/split/etc. carry `point_data`/`cell_data`
+ * through their existing row-selection machinery with no MDPA-specific code.
+ */
+inline constexpr const char* kMdpaIdName = "mdpa:id";
 
 /**
  * @brief The Kratos entity spelling of one cell block.
@@ -188,16 +223,27 @@ struct MdpaInfo {
  * for its cell type is a 2-D one (`Element2D4N`, ...) and as `Elements`
  * otherwise — the rule the Python reference applies for a mesh with no
  * physical tags, which is what keeps a quad mesh writing as
- * `SurfaceCondition3D4N`. Element and condition ids are two independent
- * 1-based counters. The property id of a cell is its
- * `cell_data["gmsh:physical"]` value when that array exists, else 0.
+ * `SurfaceCondition3D4N`. Node/element/condition ids default to `row + 1`
+ * (elements and conditions each their own 1-based counter over every block of
+ * that kind, in mesh order) **unless the mesh carries #kMdpaIdName**, in which
+ * case those original ids are written back instead — see #kMdpaIdName for the
+ * exact contract, including what counts as present/valid and the duplicate-id
+ * `WriteError`. Every place an entity or node is referenced elsewhere in the
+ * file (`NodalData`/`ElementalData`/`ConditionalData` row keys, `SubModelPart`
+ * node/element/condition lists) uses the same resolved id, so the file is
+ * always internally consistent whichever numbering was actually used. The
+ * property id of a cell is its `cell_data["gmsh:physical"]` value when that
+ * array exists, else 0.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
  * @throws WriteError on an unopenable output path, a ragged/polyhedron cell
- *         block (MDPA has no such entity), or a cell type with no Kratos name
+ *         block (MDPA has no such entity), a cell type with no Kratos name, or
+ *         a duplicate value in #kMdpaIdName (which would silently produce an
+ *         invalid Kratos deck)
  * @note reads `cell_data["gmsh:physical"]` for the per-entity property id;
- *       `point_data["<VAR>_fixed_status"]` for the `NodalData` fixed column.
+ *       `point_data["<VAR>_fixed_status"]` for the `NodalData` fixed column;
+ *       `point_data`/`cell_data[kMdpaIdName]` for original node/entity ids.
  */
 MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh);
 

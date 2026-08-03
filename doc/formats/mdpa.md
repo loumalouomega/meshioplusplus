@@ -26,14 +26,14 @@ meshioplusplus.mdpa.write("out.mdpa", mesh, float_fmt=".16e", binary=False)
 A single pass over `Begin <X> ... End <X>` blocks:
 
 - **`ModelPartData`** — `key value` pairs (`//` comments stripped) → `field_data[key]` (parsed as float when possible, else kept as a string).
-- **`Nodes`** — rows of either `id x y z` or bare `x y z` (auto-detected by column count).
+- **`Nodes`** — rows of either `id x y z` or bare `x y z` (auto-detected by column count). Ids may be **arbitrary** — gapped and non-monotonic both read, which is what a real Kratos deck left by a SubModelPart extraction or an entity removal looks like — and a bare row takes its **position** as its id. Points come back in **file order**, never sorted by id; connectivity, `NodalData`, `SubModelPartNodes` and `MeshNodes` all resolve through the resulting file-id → row map. A **duplicate id is a `ReadError`** (two coordinate rows claiming one id is unrepresentable, not merely incomplete), as is connectivity naming an id the block does not define.
 - **`Elements <KratosType>`** / **`Conditions <KratosType>`** — the header's Kratos type name is matched by exact match first, then by longest-substring match (to avoid e.g. `"Line"` ambiguously matching inside `"Line3D2"`); each row is `id property_id node_ids...`. If the type can't be resolved from the header at all, it's inferred purely from node count. Property ids become `gmsh:physical`/`gmsh:geometrical`-style tags (MDPA reuses gmsh's tag-key convention here).
 - **`Geometries <Type>`** — like Elements/Conditions but with **no property id column**; stored separately as `mesh.geometries_block` (**not** part of `mesh.cells`), a non-standard mesh-level attribute.
 - **`Table <id> <var1> <var2> ...`** — rows until `End Table`; a malformed header (too few parts, non-integer id, no variables) is warned-and- skipped; stored as `field_data[f"table_{id}"] = {"variables": [...], "data": ndarray}`.
 - **`Properties <id>`** — key/value pairs (auto-typed float → int-if-integer → else string) plus any nested `Table` blocks, stored under `field_data[f"properties_{id}"]`.
 - **`NodalData <VAR[n]>`** / **`ElementalData`/`ConditionalData <VAR>`** — values per entity; missing entities are densified with `NaN`. An optional leading "fixed" flag column (`0`/`1`) is heuristically detected (only treated as a flag if the value is exactly 0/1 **and** more numeric values follow on the same row) — if any fixed-status is seen, a parallel `{var}_fixed_status` array is produced (sentinel `-1` = "not specified"). Scalar (0-component) variables are treated as boolean-by-presence: listed ids get `1`, unlisted get `0`.
-- **`SubModelPart <Name>`** (nestable, joined with `/` for a hierarchical key e.g. `"Outer/Inner"`) — sub-blocks `SubModelPartData`, `SubModelPartTables`, `SubModelPartNodes` (0-based, validated against the point count), `SubModelPartElements`/`Conditions` (raw 1-based ids kept **unconverted**, explicitly to preserve exact round-trip values). Not implemented: `SubModelPartGeometries`, `Constraints` sub-blocks.
-- **`Mesh <id> [name]`** — an alternate/coarser mesh representation; `id=0` is invalid per Kratos convention and skipped with a warning. Sub-blocks: `MeshData`, `MeshNodes` (0-based, validated), `MeshElements`/`Conditions` (raw 1-based ids kept as-is).
+- **`SubModelPart <Name>`** (nestable, joined with `/` for a hierarchical key e.g. `"Outer/Inner"`) — sub-blocks `SubModelPartData`, `SubModelPartTables`, `SubModelPartNodes` (0-based rows, resolved through the node-id map; an id the file never defined is dropped), `SubModelPartElements`/`Conditions` (raw 1-based ids kept **unconverted**, explicitly to preserve exact round-trip values). Not implemented: `SubModelPartGeometries`, `Constraints` sub-blocks.
+- **`Mesh <id> [name]`** — an alternate/coarser mesh representation; `id=0` is invalid per Kratos convention and skipped with a warning. Sub-blocks: `MeshData`, `MeshNodes` (0-based rows, resolved through the node-id map), `MeshElements`/`Conditions` (raw 1-based ids kept as-is).
 
 All of the round-trip-only bookkeeping above (element/condition/geometry id maps, SubModelPart hierarchy, alternate-mesh data) accumulates in `mesh.misc_data` — a **non-standard mesh attribute** specific to this format.
 
@@ -79,8 +79,10 @@ MDPA has an unusually rich set of data keys, several structured differently from
 
 - The `cell_data` nested-by-type structure (`{cell_type: {var: array}}`) is a genuine structural departure from meshio++'s usual flat convention — code consuming MDPA-read meshes needs to account for this specifically.
 - The h20/h27 permutation tables are applied **directly** on write (not their inverse) and via **argsort** on read — this is intentional and correct (the two operations really are exact inverses of each other), but worth internalizing since it looks asymmetric at first glance.
-- `SubModelPartElements`/`Conditions` and `MeshElements`/`Conditions` store **raw, unconverted 1-based ids** rather than remapped local indices — this assumes element/condition ids are stable across a read→write cycle (true unless entities are reordered in between).
-- Malformed rows in almost every block type (bad `Table` headers, data-row/variable-count mismatches, out-of-range `SubModelPartNodes` entries) are warned-and-skipped rather than raising — MDPA parsing is deliberately lenient/best-effort given how varied real Kratos input decks are.
+- `SubModelPartElements`/`Conditions` and `MeshElements`/`Conditions` (`Begin Mesh`, not `SubModelPart`) store **raw, unconverted 1-based ids** internally (in `misc_data`), but the *written* reference is resolved through `reader_element_ids_info`/`reader_condition_ids_info` for `SubModelPart` (see below) — `Begin Mesh` blocks are the one place that still writes the raw stored id verbatim (a deliberate, narrower exception; see [Original ids preserved on write](#original-ids-preserved-on-write-v9-14-0)). The *node* lists resolve through the node-id map either way.
+- **Original ids are preserved on write since v9.14.0** — see [Original ids preserved on write](#original-ids-preserved-on-write-v9-14-0) below.
+- The reference reader resolves connectivity **as it goes**, so a *gapped* deck whose `Elements`/`Conditions`/`Geometries` block precedes its `Nodes` block falls back to "row = id − 1" and warns; the C++ reader defers resolution to the end and is order-independent. Real decks always put `Nodes` first.
+- Malformed rows in almost every block type (bad `Table` headers, data-row/variable-count mismatches, `SubModelPartNodes` entries naming an undefined node) are warned-and-skipped rather than raising — MDPA parsing is deliberately lenient/best-effort given how varied real Kratos input decks are.
 - Writing `ElementalData`/`ConditionalData` omits any entity that was entirely `NaN` (never had data) rather than writing `NaN` literally.
 
 ## C++ core
@@ -91,14 +93,14 @@ What the C++ core maps:
 
 | MDPA | C++ `Mesh` |
 |---|---|
-| `Nodes` | `points` (always 3 columns) |
-| `Elements` / `Conditions` | cell blocks, in file order, plus Int64 `cell_data["gmsh:physical"]` (the property id) |
+| `Nodes` | `points` (always 3 columns), in file order, with a file-id → row map for arbitrary ids; original ids ride along as `point_data["mdpa:id"]` when non-trivial |
+| `Elements` / `Conditions` | cell blocks, in file order, plus Int64 `cell_data["gmsh:physical"]` (the property id) and `cell_data["mdpa:id"]` (the original entity id, when non-trivial) |
 | `ModelPartData` | one-element Float64 `field_data` entries (numeric values only) |
 | `NodalData` | `point_data` (+ `"<VAR>_fixed_status"`) |
 | `ElementalData` / `ConditionalData` | `cell_data`, **one array per cell block** — the repo-wide convention, *not* the reference reader's nested-by-cell-type layout |
 | `SubModelPart` | a `Point` and/or `Cell` [named region](../regions.md); nested parts flatten to a `parent/child` name |
 
-Everything the C++ `Mesh` cannot hold makes the reader **throw `ReadError` naming the construct** rather than dropping it silently: `Table`, `Geometries`, `Mesh <id>` and `Constraints` blocks, a non-empty `Properties` body, a non-numeric `ModelPartData` value, non-empty `SubModelPartData`/`SubModelPartTables`, node ids that are not `1..n` in order, and any unrecognized block. The writer emits `ModelPartData`, an empty `Properties 0`, `Nodes`, `Elements`/`Conditions`, the `*Data` blocks and one `SubModelPart` per named region; `Side` regions are dropped with a warning (MDPA has no facet-set concept).
+Everything the C++ `Mesh` cannot hold makes the reader **throw `ReadError` naming the construct** rather than dropping it silently: `Table`, `Geometries`, `Mesh <id>` and `Constraints` blocks, a non-empty `Properties` body, a non-numeric `ModelPartData` value, non-empty `SubModelPartData`/`SubModelPartTables`, a duplicate node id, connectivity naming a node the `Nodes` block does not define, and any unrecognized block. The writer emits `ModelPartData`, an empty `Properties 0`, `Nodes`, `Elements`/`Conditions`, the `*Data` blocks and one `SubModelPart` per named region; `Side` regions are dropped with a warning (MDPA has no facet-set concept). Node/element/condition ids default to `row + 1`/independent 1-based counters **unless the mesh carries `point_data`/`cell_data["mdpa:id"]`**, in which case the original ids are written back — see [Original ids preserved on write](#original-ids-preserved-on-write-v9-14-0).
 
 **The Python `meshioplusplus.mdpa.read` deliberately does not use it.** Only the reference reader produces `mesh.misc_data`, `mesh.geometries_block` and the nested-by-cell-type `cell_data` this page documents, so preferring the C++ reader would silently change the Python API's output; reach it explicitly with `meshioplusplus._core.mdpa_read(path)` when you want the standard layout. `meshioplusplus.mdpa.write` *does* use the C++ writer, for real file paths and meshes that carry none of the MDPA extras (`misc_data`, `geometries_block`, `field_data`), falling back to the reference writer otherwise.
 
@@ -201,10 +203,125 @@ rejections — `Table`, `Geometries`, `Mesh`, `Constraints`, non-empty
 `SubModelPartData`/`Tables`/`Geometries`/`Constraints`, a non-numeric
 `ModelPartData` value — to a warning plus a skip, recorded in
 `MdpaInfo::mSkippedConstructs`. What still throws, even under `mLenient`:
-non-sequential node ids, a malformed row, an unknown entity name, and
+a duplicate node id, a malformed row, an unknown entity name, and
 connectivity naming a node that does not exist — skipping any of those would
 return a mesh that is quietly wrong rather than merely incomplete.
+
+Note that **arbitrary node ids are not on that list and need no `mLenient`**:
+accepting them is strictly more *correct*, not more lenient, so a plain strict
+read handles a gapped deck. Both readers agree on one exactly — points in file
+order, connectivity resolved to the same rows, `point_data` keyed by the real
+file id — which `tests/python/test_mdpa.py::test_cpp_and_python_agree_on_gapped_ids`
+pins against a deck kept textually identical to the gtest suite's. The one
+remaining divergence is a *mixed* `Nodes` block (some rows with ids, some
+without): the C++ reader accepts it under the "a bare row takes its position"
+rule, while the reference reader's `np.loadtxt` is rectangular and rejects it.
 
 `meshioplusplus.mdpa.read` remains the pure-Python reference reader and is
 unaffected by all of the above; it already carries this content in
 `mesh.misc_data` and `field_data["properties_<id>"]`.
+
+## Original ids preserved on write (v9.14.0)
+
+The read-side arbitrary-id support above (v9.13.0) closed the *read* half of
+roadmap `doc/roadmap.md`'s MDPA section; v9.14.0 closes the *write* half:
+node/element/condition ids read from a gapped or non-monotonic deck now
+survive a re-write, instead of both writers unconditionally renumbering to
+`1..n`.
+
+**The carrier is ordinary data, not a new `Mesh` slot.** The uniform mesh API
+has no id-translation layer — `Mesh::Points()`/`Conn()` are dense 0-based
+arrays where "point index `i`" *is* row `i` — so there is nowhere on the
+`Mesh` itself to remember a file's original numbering. Both readers instead
+attach it as:
+
+- `point_data["mdpa:id"]` — Int64, one entry per point, in read (row) order.
+- `cell_data["mdpa:id"]` — Int64, one array per cell block (C++) / one array
+  per meshio cell type (the Python reference's existing nesting), the
+  original element/condition id.
+
+**Attached only when it matters.** Node ids get the array exactly when
+`node_ids_dense` (the read-side lazy map) ever flipped to `false` — i.e. the
+file's ids were not already `1..n`. Elements and conditions get it exactly
+when either kind's own independent 1-based file-order counter ever disagreed
+with a row's actual id. A sequential (or id-less) deck therefore picks up no
+`mdpa:id` at all, and a re-write of it takes the *exact* old code path —
+byte-identical output, not merely equivalent. This is the same "only when it
+matters" contract the read-side feature established, applied to the write
+side.
+
+**Both writers honour the array when present**, falling back to the old
+renumbering when it is absent, the wrong length, or (for `cell_data`) missing
+from any one block/type — never partially honouring it, since that would risk
+assigning the same id to two different entities. A **duplicate value** in
+either array is a hard `WriteError` — two nodes (or two elements, or two
+conditions; elements and conditions have independent Kratos id namespaces, so
+an element and a condition may legitimately share a numeric id) claiming one
+id would silently produce an ambiguous file, which is unrepresentable rather
+than merely incomplete, the same class of error the reader's duplicate-id
+`ReadError` already covers.
+
+**Every place a node or entity is referenced elsewhere in the file resolves
+through the same written id**, not a bare `row + 1`/original id — this is
+what actually makes the feature correct rather than half-working:
+connectivity, `NodalData`/`ElementalData`/`ConditionalData` row keys, and
+`SubModelPart` node/element/condition lists. Getting only the `Nodes` block
+itself right while leaving connectivity on `+ 1` was the first, wrong
+implementation of this feature during development — caught by
+`test_cpp_and_python_agree_on_gapped_ids`'s round-trip check failing with
+`"connectivity refers to node id 1, which the file's Nodes block does not
+define"` the moment a re-read was attempted, which is why every gtest/pytest
+case here re-reads the written file rather than only inspecting it.
+
+**A real correctness bug surfaced and got fixed along the way.** The Python
+reference reader has always stored `SubModelPartElements`/`Conditions`
+membership as the *original*, unconverted file ids
+(`misc_data["submodelpart_info"][name]["elements_raw"/"conditions_raw"]`).
+Before v9.14.0, the writer re-emitted those raw ids **verbatim** — which was
+already wrong whenever a plain read→write renumbered entities (the
+pre-v9.14.0 universal case) or reclassified one across the Elements/Conditions
+boundary (`_compute_blocks_name`'s dimension heuristic can turn a `Condition`
+into an `Element`, as happens to
+`tests/python/input/mdpa/test_submodelparts_hierarchical.mdpa`'s lone
+`LineCondition3D2N`): the emitted `SubModelPartConditions` entry could name an
+id that does not exist anywhere in the very file being written, or that now
+belongs to a different block kind — a real, reproducible corrupt-file bug
+that predates this feature and was invisible because the round-trip test
+covering that fixture only ever compared parsed-back `misc_data`, never
+validated that the written file's own cross-references resolved. The fix:
+each raw id is resolved through `misc_data["reader_element_ids_info"]`/
+`["reader_condition_ids_info"]` (original id → `(meshio_type, local_idx)`,
+captured at read time) and then through the writer's own
+`mdpa_written_entity_ids` (that same key → the id actually written this
+time, whether preserved or freshly renumbered), so the emitted reference is
+always real. An id that fails to resolve (only possible if the mesh was
+edited between read and write) is warned about and dropped rather than
+emitted dangling; a mesh with no reader info at all — never read via this
+module — falls back to writing the raw id verbatim, matching the pre-fix
+behaviour for that case. `Begin Mesh`'s `MeshElements`/`Conditions` sub-blocks
+are a narrower, **deliberately unfixed** instance of the same historical
+shortcut: an existing test (`test_roundtrip_all_blocks`) asserts they carry
+the raw ids verbatim, specifically so two independent reads' `misc_data`
+compare equal, so that one path keeps its documented, tested behaviour rather
+than being changed as a side effect of this work; `MeshNodes` (a node
+reference, not an entity reference) *does* resolve through the preserved
+node ids, since nothing tests the old `+ 1` behaviour there.
+
+**C++ writer duplicate/fallback rules**, mirrored exactly by the Python
+reference writer:
+
+- Node ids: honoured when `HasPointData("mdpa:id")` and its size matches
+  `NumPoints()`; a duplicate value throws.
+- Entity ids: honoured when `HasCellData("mdpa:id")` and `CellDataNumBlocks`
+  equals the block count, **and** every individual block's array length
+  matches that block's cell count (checked up front; any mismatch disables
+  preservation for the whole write rather than partially trusting it). A
+  duplicate value throws, checked separately within elements and within
+  conditions.
+
+**What is still out of scope**: geometries and `Begin Mesh` blocks are
+Python-reference-only, non-standard mesh attributes (`mesh.geometries_block`,
+`mesh.misc_data["meshes"]`); their entity-id lists (as opposed to node
+references, which are fixed) keep their pre-existing behaviour rather than
+gaining the same resolution machinery `SubModelPart` got. This closes
+roadmap `doc/roadmap.md`'s MDPA section in full.

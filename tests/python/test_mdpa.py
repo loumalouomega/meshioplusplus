@@ -1978,6 +1978,273 @@ def test_mdpa_unterminated_nodes_block_raises(tmp_path):
         _mdpa_py_read(str(p))
 
 
+# --- arbitrary node ids (gapped, non-monotonic) ------------------------------
+#
+# What a real Kratos deck left by a SubModelPart extraction or an entity removal
+# looks like. Kept textually identical to `kMdpaGappedDeck` in
+# tests/cpp/test_mdpa.cpp, which is what makes the parity test below meaningful.
+
+GAPPED_NODE_DECK = """Begin Nodes
+10 0.0 0.0 0.0
+7  1.0 0.0 0.0
+42 0.0 1.0 0.0
+5  0.0 0.0 1.0
+End Nodes
+
+Begin Elements Element3D4N
+100 1 10 7 42 5
+End Elements
+
+Begin NodalData TEMPERATURE
+42 3.5
+10 1.5
+End NodalData
+
+Begin SubModelPart Gapped
+    Begin SubModelPartNodes
+        42
+        5
+    End SubModelPartNodes
+End SubModelPart
+"""
+
+
+def test_gapped_node_ids_reference_reader(tmp_path):
+    p = tmp_path / "gapped.mdpa"
+    p.write_text(GAPPED_NODE_DECK)
+    mesh = _mdpa_py_read(str(p))
+
+    # Points come back in FILE order, never sorted by id.
+    np.testing.assert_allclose(
+        mesh.points,
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float),
+    )
+    # Connectivity resolved through the map: ids 10/7/42/5 are rows 0/1/2/3.
+    assert len(mesh.cells) == 1
+    assert mesh.cells[0].type == "tetra"
+    np.testing.assert_array_equal(mesh.cells[0].data, np.array([[0, 1, 2, 3]]))
+    # And so is the SubModelPart node list.
+    np.testing.assert_array_equal(
+        mesh.misc_data["submodelpart_info"]["Gapped"]["nodes"], np.array([2, 3])
+    )
+
+
+def test_gapped_nodal_data_keyed_by_file_id(tmp_path):
+    """`NodalData` rows are keyed by the file id, not by position.
+
+    The reference reader used to resolve nodal rows as `id - 1`, ignoring the
+    map it was handed -- so on this deck the value for node 42 landed on row 41
+    (out of range, dropped with a warning) instead of on row 2.
+    """
+    p = tmp_path / "gapped.mdpa"
+    p.write_text(GAPPED_NODE_DECK)
+    mesh = _mdpa_py_read(str(p))
+    np.testing.assert_allclose(
+        mesh.point_data["TEMPERATURE"], np.array([1.5, np.nan, 3.5, np.nan])
+    )
+
+
+def test_non_monotonic_node_ids(tmp_path):
+    p = tmp_path / "desc.mdpa"
+    p.write_text(
+        "Begin Nodes\n4 0 0 0\n3 1 0 0\n2 0 1 0\n1 0 0 1\nEnd Nodes\n"
+        "Begin Elements Element3D4N\n1 0 1 2 3 4\nEnd Elements\n"
+    )
+    mesh = _mdpa_py_read(str(p))
+    # ids 1,2,3,4 are rows 3,2,1,0 -- exactly the case a "row == id - 1" reader
+    # gets silently backwards.
+    np.testing.assert_array_equal(mesh.cells[0].data, np.array([[3, 2, 1, 0]]))
+
+
+def test_dangling_connectivity_node_id_raises(tmp_path):
+    p = tmp_path / "dangling.mdpa"
+    p.write_text(
+        "Begin Nodes\n10 0 0 0\n7 1 0 0\n42 0 1 0\n5 0 0 1\nEnd Nodes\n"
+        "Begin Elements Element3D4N\n1 0 10 7 42 999\nEnd Elements\n"
+    )
+    # The message names the FILE id, never a row index.
+    with pytest.raises(meshioplusplus.ReadError, match="999"):
+        _mdpa_py_read(str(p))
+
+
+def test_duplicate_node_ids_raise(tmp_path):
+    p = tmp_path / "dup.mdpa"
+    p.write_text("Begin Nodes\n5 0 0 0\n5 1 1 1\nEnd Nodes\n")
+    with pytest.raises(meshioplusplus.ReadError, match="[Dd]uplicate node id"):
+        _mdpa_py_read(str(p))
+
+
+def test_bare_coordinate_rows(tmp_path):
+    """The id-less `x y z` form, which nothing covered until now."""
+    p = tmp_path / "bare.mdpa"
+    p.write_text(
+        "Begin Nodes\n0 0 0\n1 0 0\n0 1 0\nEnd Nodes\n"
+        "Begin Elements Element2D3N\n1 0 1 2 3\nEnd Elements\n"
+    )
+    mesh = _mdpa_py_read(str(p))
+    np.testing.assert_allclose(
+        mesh.points, np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+    )
+    np.testing.assert_array_equal(mesh.cells[0].data, np.array([[0, 1, 2]]))
+
+
+# --- original ids preserved on write (roadmap #0, write half) ---------------
+
+
+def test_gapped_ids_round_trip_through_a_write_reference_reader(tmp_path):
+    """The write half of roadmap #0: `_mdpa_py_write` must honour the
+    `mdpa:id` arrays `_mdpa_py_read` attached, so a re-write names the
+    ORIGINAL file ids (not row+1/counter renumbering) -- including in
+    connectivity, which is the part that is easy to get only half right.
+    """
+    p = tmp_path / "gapped.mdpa"
+    p.write_text(GAPPED_NODE_DECK)
+    mesh = _mdpa_py_read(str(p))
+
+    out = tmp_path / "out.mdpa"
+    _mdpa_py_write(str(out), mesh)
+    text = out.read_text()
+    assert "Begin Nodes\n 10 " in text
+    assert " 7 " in text
+    assert " 42 " in text
+    assert " 5 " in text
+    # Connectivity must reference the ORIGINAL node ids, not rows 1..4 -- the
+    # bug this feature would silently reintroduce if only the Nodes block
+    # itself were fixed. (Property id reads back as 0 here because the
+    # fixture declares no matching `Begin Properties 1` block -- an existing,
+    # unrelated quirk of this writer's property-id policy.)
+    assert "Begin Elements Element3D4N\n  100 0 10 7 42 5\n" in text
+    assert "Begin Elements Element3D4N\n  1 " not in text
+
+    # And the round trip is exact end to end.
+    reread = _mdpa_py_read(str(out))
+    np.testing.assert_allclose(reread.points, mesh.points)
+    np.testing.assert_array_equal(reread.cells[0].data, mesh.cells[0].data)
+    np.testing.assert_allclose(
+        reread.point_data["TEMPERATURE"], mesh.point_data["TEMPERATURE"], equal_nan=True
+    )
+    np.testing.assert_array_equal(
+        reread.misc_data["submodelpart_info"]["Gapped"]["nodes"],
+        mesh.misc_data["submodelpart_info"]["Gapped"]["nodes"],
+    )
+
+
+def test_sequential_deck_write_is_byte_identical_reference_reader(tmp_path):
+    """The "only when it matters" contract: a plain 1..n deck picks up no
+    `mdpa:id`, so a read -> write round trip stays on the exact old code path
+    and produces byte-identical output to a deck that never had ids at all.
+    """
+    text_with_ids = (
+        "Begin Nodes\n1 0.0 0.0 0.0\n2 1.0 0.0 0.0\n3 0.0 1.0 0.0\nEnd Nodes\n\n"
+        "Begin Elements Element2D3N\n1 0 1 2 3\nEnd Elements\n\n"
+    )
+    p = tmp_path / "seq.mdpa"
+    p.write_text(text_with_ids)
+    mesh = _mdpa_py_read(str(p))
+    assert "mdpa:id" not in mesh.point_data
+    assert "mdpa:id" not in mesh.cell_data.get("triangle", {})
+
+    out = tmp_path / "out.mdpa"
+    _mdpa_py_write(str(out), mesh)
+    assert "Begin Nodes\n 1 " in out.read_text()
+    assert "Begin Elements Element3D3N\n  1 " in out.read_text()
+
+
+def test_submodelpart_references_survive_reclassification(tmp_path):
+    """Regression test for the SubModelPart stale-id bug.
+
+    `test_submodelparts_hierarchical.mdpa` has a lone `LineCondition3D2N`
+    (id 101) that shares meshio type "line" with four `Element3D2N`s (ids
+    1-4); the writer's Elements/Conditions dimension heuristic reclassifies
+    it as an Element. Before the fix, `_write_submodelparts` re-emitted the
+    ORIGINAL id 101 under `SubModelPartConditions` even though the written
+    file has no Conditions block naming it at all -- a corrupt reference.
+    The fix resolves through `reader_condition_ids_info` and
+    `mdpa_written_entity_ids`, so the written reference is always real.
+
+    The `cell_data[...]["mdpa:id"]` array is dropped before writing to force
+    the fallback renumbering path: this fixture's ids (1-4, 101) are not
+    already `1..n`, so the id-PRESERVATION feature (which writes 101 back
+    verbatim) would otherwise mask the id-VALUE-resolution bug by
+    construction -- the write would happen to reproduce the stale id by
+    accident rather than by the fix actually resolving it.
+    """
+    src = (
+        pathlib.Path(__file__).resolve().parent
+        / "input"
+        / "mdpa"
+        / "test_submodelparts_hierarchical.mdpa"
+    )
+    mesh = _mdpa_py_read(str(src))
+    for tag_dict in mesh.cell_data.values():
+        tag_dict.pop("mdpa:id", None)
+    out = tmp_path / "out.mdpa"
+    _mdpa_py_write(str(out), mesh)
+    text = out.read_text()
+
+    # Collect every id actually declared under Elements/Conditions blocks.
+    declared_ids = set()
+    kind = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Begin Elements") or stripped.startswith(
+            "Begin Conditions"
+        ):
+            kind = "entity"
+            continue
+        if stripped.startswith("End Elements") or stripped.startswith("End Conditions"):
+            kind = None
+            continue
+        if kind == "entity" and stripped:
+            declared_ids.add(int(stripped.split()[0]))
+
+    # Collect every id referenced under a SubModelPartElements/Conditions list.
+    referenced_ids = set()
+    in_smp_entities = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Begin SubModelPartElements") or stripped.startswith(
+            "Begin SubModelPartConditions"
+        ):
+            in_smp_entities = True
+            continue
+        if stripped.startswith("End SubModelPartElements") or stripped.startswith(
+            "End SubModelPartConditions"
+        ):
+            in_smp_entities = False
+            continue
+        if in_smp_entities and stripped:
+            referenced_ids.add(int(stripped))
+
+    assert referenced_ids, "expected at least one SubModelPart entity reference"
+    assert referenced_ids <= declared_ids, (
+        f"SubModelPart references {referenced_ids - declared_ids} which the "
+        "written file never declares"
+    )
+
+
+def test_mesh_nodes_use_preserved_node_ids(tmp_path):
+    """`Begin Mesh`'s `MeshNodes` sub-block is a node reference like
+    `SubModelPartNodes`; it must resolve through the same preserved ids.
+    """
+    p = tmp_path / "gapped.mdpa"
+    p.write_text(
+        GAPPED_NODE_DECK.replace(
+            "Begin SubModelPart Gapped",
+            "Begin Mesh 1\n    Begin MeshNodes\n        42\n        5\n"
+            "    End MeshNodes\nEnd Mesh\n\nBegin SubModelPart Gapped",
+        )
+    )
+    mesh = _mdpa_py_read(str(p))
+    out = tmp_path / "out.mdpa"
+    _mdpa_py_write(str(out), mesh)
+    text = out.read_text()
+    mesh_block = text[text.index("Begin Mesh 1") : text.index("End Mesh")]
+    assert "42" in mesh_block
+    assert "5" in mesh_block
+    assert "\n        1\n" not in mesh_block  # not renumbered to row+1
+
+
 # --- C++ core path (meshioplusplus._core.mdpa_read / mdpa_write) -------------
 #
 # `meshioplusplus.mdpa.read` deliberately stays on the pure-Python reference
@@ -2035,6 +2302,87 @@ def test_python_write_cpp_read(mesh, tmp_path):
     p = tmp_path / "py_written.mdpa"
     _mdpa_py_write(str(p), copy.deepcopy(mesh))
     _assert_same_geometry(mesh, _core.mdpa_read(str(p)))
+
+
+def test_cpp_gapped_ids_need_no_lenient(tmp_path):
+    """Arbitrary node ids used to be on `test_cpp_declines_by_name`'s list.
+
+    Accepting them is strictly more *correct*, not more lenient, so a plain
+    strict read must succeed -- which is what makes a real gapped Kratos deck
+    reachable from WASM/C/Fortran/Julia/R and the native CLI, none of which has
+    a Python fallback.
+    """
+    p = tmp_path / "gapped.mdpa"
+    p.write_text(GAPPED_NODE_DECK)
+    mesh = _core.mdpa_read(str(p))
+    assert len(mesh.points) == 4
+    np.testing.assert_array_equal(mesh.cells[0].data, np.array([[0, 1, 2, 3]]))
+
+
+def test_cpp_and_python_agree_on_gapped_ids(tmp_path):
+    """The two readers resolve a gapped deck identically.
+
+    "Agree" means: points in file order, connectivity resolved to the same
+    rows, `point_data` keyed by the real file id, and (since the write-side
+    half of roadmap #0 landed) both attaching the same `mdpa:id` arrays.
+    """
+    p = tmp_path / "gapped.mdpa"
+    p.write_text(GAPPED_NODE_DECK)
+    py_mesh = _mdpa_py_read(str(p))
+    cpp_mesh = _core.mdpa_read(str(p))
+    _assert_same_geometry(py_mesh, cpp_mesh)
+    np.testing.assert_allclose(
+        py_mesh.point_data["TEMPERATURE"],
+        cpp_mesh.point_data["TEMPERATURE"],
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        py_mesh.point_data["mdpa:id"], cpp_mesh.point_data["mdpa:id"]
+    )
+    np.testing.assert_array_equal(
+        py_mesh.cell_data["tetra"]["mdpa:id"], cpp_mesh.cell_data["mdpa:id"][0]
+    )
+
+
+def test_cpp_gapped_ids_round_trip_through_a_write(tmp_path):
+    """The write half of roadmap #0, exercised through the C++ core directly:
+    `_core.mdpa_write` must honour `point_data`/`cell_data["mdpa:id"]`, and the
+    written connectivity must name the original ids, not a `+ 1` renumbering.
+    """
+    p = tmp_path / "gapped.mdpa"
+    p.write_text(GAPPED_NODE_DECK)
+    mesh = _core.mdpa_read(str(p))
+    out = tmp_path / "out.mdpa"
+    _core.mdpa_write(str(out), mesh)
+    text = out.read_text()
+    assert "Begin Nodes\n 10 " in text
+    assert "Begin Elements Element3D4N\n  100 1 10 7 42 5\n" in text
+    assert "Begin Elements Element3D4N\n  1 " not in text
+
+    reread = _core.mdpa_read(str(out))
+    _assert_same_geometry(mesh, reread)
+
+
+def test_cpp_and_python_write_agree_on_gapped_ids(tmp_path):
+    """Both writers preserve the same original ids in the same places."""
+    p = tmp_path / "gapped.mdpa"
+    p.write_text(GAPPED_NODE_DECK)
+
+    cpp_mesh = _core.mdpa_read(str(p))
+    cpp_out = tmp_path / "cpp_out.mdpa"
+    _core.mdpa_write(str(cpp_out), cpp_mesh)
+
+    py_mesh = _mdpa_py_read(str(p))
+    py_out = tmp_path / "py_out.mdpa"
+    _mdpa_py_write(str(py_out), py_mesh)
+
+    # Property id policy differs between the two writers (the C++ core always
+    # declares every referenced id; the Python reference only carries a tag
+    # through when a matching Properties block already exists) -- irrelevant
+    # here, so match on the node/element ids only.
+    for text in (cpp_out.read_text(), py_out.read_text()):
+        assert "Begin Nodes\n 10 " in text
+        assert " 10 7 42 5\n" in text
 
 
 @pytest.mark.parametrize(
@@ -2169,7 +2517,6 @@ def test_cpp_declines_by_name(tmp_path):
         ("Begin Table 1 T V\n 0.0 1.0\nEnd Table\n", "Table"),
         ("Begin Mesh 1\nEnd Mesh\n", "Mesh"),
         ('Begin ModelPartData\n NAME "x"\nEnd ModelPartData\n', "ModelPartData"),
-        ("Begin Nodes\n1 0 0 0\n5 1 1 1\nEnd Nodes\n", "node ids"),
     ]
     for i, (text, needle) in enumerate(cases):
         p = tmp_path / f"bad{i}.mdpa"

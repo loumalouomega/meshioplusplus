@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.12.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 5).
+Status at time of writing: **v9.14.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 5).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -11,76 +11,11 @@ execution, and Python's `TimeSeries` for random-access "hold a series as one
 value") shipped in full in v9.12.0 across every language surface including
 WASM — see [`doc/sequences.md`](sequences.md) — and so no longer appears here.
 
----
-
-## 0. MDPA: non-sequential node ids
-
-**The gap.** The C++ MDPA reader requires node ids to be exactly `1..n` in file
-order: the moment a `Begin Nodes` row's id does not equal `row_index + 1`,
-`mdpa.cpp` throws `"MDPA: non-sequential node ids are not supported by the C++
-reader"` — and this is one of the few constructs that still throws **even
-under `ReadOptions::mLenient`**, because skipping it would silently return a
-mesh that is *wrong*, not merely incomplete, which is the line `mLenient` is
-documented to never cross. Element and condition ids have no such
-restriction — they already read arbitrary, gapped numbering into an
-`id_map` — so this is a **node-only** gap. The pure-Python reference reader
-does not actually solve it either: `_mdpa.py` discards the id column on read
-and reconstructs `node_id_map = {i + 1: row_i}` from row position alone, so a
-genuinely non-sequential file would make it **silently misassign** coordinates
-and data rather than error — the same "quietly wrong mesh" outcome the C++
-reader's throw exists to prevent, just unguarded there. This is not a
-hypothetical file shape: `model_part.hpp`'s own `ModelPart` represents
-entities in an id-keyed hash map specifically *because* Kratos ids are 1-based
-but sparse by construction — SubModelPart extraction, node/element removal,
-and merging decks all routinely leave gaps in a real `.mdpa` file, which is
-exactly the input the reader currently refuses. And the writer never
-round-trips original ids regardless of gaps: nodes are always emitted as
-`row_index + 1`, and elements/conditions get two independent 1-based counters
-— a full write always renumbers everything to `1..n`, whatever the source ids
-were, so today's node restriction is only half of the round-trip fidelity
-problem.
-
-The reason the restriction exists at all is architectural: the uniform mesh
-API has no id-translation layer anywhere — `Mesh::Points()`/`Conn()` are dense
-0-based arrays where "point index `i`" *is* row `i`, full stop. A reader that
-wants arbitrary node ids has to build its own file-id → row-index map before
-touching connectivity, which `abaqus.cpp` (`mPointIds`) and `unv.cpp`
-(`label_to_index`) already do; mdpa is the one reader in the tree that instead
-leans on the "row == id − 1" invariant, which is precisely why a gap breaks it
-while abaqus/unv shrug at arbitrary numbering.
-
-- **A file-id → row-index map on read**, mirroring `abaqus.cpp`'s
-  `mPointIds`/`unv.cpp`'s `label_to_index`: accept every node id as an
-  arbitrary key instead of asserting `id == row + 1`, then resolve
-  `Begin Elements`/`Conditions`/`NodalData` connectivity through the map
-  rather than `id - 1`. Self-contained and low-risk — it only changes what the
-  reader accepts, not what a mesh looks like once read — and it alone closes
-  the reader-side throw on real Kratos decks with gaps. Ids are still not
-  preserved for round-tripping after this step. **S**
-- **Preserve original ids for a lossless round trip** — carry the file's
-  node/element ids out as `point_data`/`cell_data["mdpa:id"]` (or similar),
-  reusing MED's `"med:num"` `<format>:<thing>` convention rather than growing
-  the `MdpaInfo` side channel, which is unreachable from `registry_read` (the
-  same reason MED's own tag/family data moved onto the uniform-API region/
-  property-set mechanism in v9.2.0 rather than staying `MedInfo`-only). The
-  writer would then emit those ids when present instead of unconditionally
-  renumbering. **M**
-- **`SubModelPartElements`/`Conditions` already store raw, unrenumbered
-  1-based ids** (`doc/formats/mdpa.md`) — a smaller, already-tolerated
-  instance of the same class of gap. The id-preservation item above should
-  make that the *general* case rather than a SubModelPart-only special case.
-  Folds into that item rather than being separate work. **S**
-- **Extend the same map to any other id-keyed section** (`NodalData` and
-  friends) once the base map exists, since they resolve ids exactly the way
-  `Begin Elements` does today.
-
-*Recommended entry point: the read-side id map first — it is the actual
-blocker (a real, gapped Kratos deck cannot be read at all today), it is
-self-contained, and it does not require deciding the round-trip-fidelity
-question yet. Id preservation on write is a separate, larger piece of work,
-worth doing once the read side is solid and only if round-tripping through
-mdpa (rather than reading once and moving on) turns out to matter in
-practice.*
+MDPA's arbitrary/gapped node ids (v9.13.0, read side) and original-id
+preservation on write, including a fixed `SubModelPart` stale-reference bug
+found along the way (v9.14.0, write side) shipped in full — see
+[`doc/formats/mdpa.md`](formats/mdpa.md#original-ids-preserved-on-write-v9-14-0)
+— and so no longer appears here.
 
 ---
 
