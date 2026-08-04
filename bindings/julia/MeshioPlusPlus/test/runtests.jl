@@ -41,7 +41,7 @@ end
     @test !isempty(library_path())
     @test format_readable("vtu")
     @test format_writable("vtu")
-    @test !format_writable("openfoam")      # read-only format
+    @test format_writable("openfoam")       # writable since v9.20.0
     @test !format_readable("nonexistent")
     @test cell_type_num_nodes("tetra10") == 10
     @test cell_type_dimension("triangle") == 2

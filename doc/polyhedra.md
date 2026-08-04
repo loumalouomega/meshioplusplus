@@ -126,15 +126,18 @@ mesh's mutation generation as its guard, which is the wrong guard here.
 
 ## Format support
 
-Reading polyhedra: **MED** (`POE`), **EnSight** (`nfaced`), **OpenFOAM**, and
-**CGNS** (`NGON_n`+`NFACE_n`) on a build with the optional
+Reading polyhedra: **MED** (`POE`), **EnSight** (`nfaced`), **OpenFOAM**, **VTU**
+(type 42) and **CGNS** (`NGON_n`+`NFACE_n`). CGNS additionally reads ADF
+containers and the CGNS 3.x section layout on a build with the optional
 [cgnslib backend](/formats/cgns).
 Reading jagged polygons: **MED** (`POG`/`POG2`), **EnSight** (`nsided`),
 **VTP**, **OpenFOAM**.
 
 Writing polyhedra: **MED** (`POE`), **EnSight** (`nfaced`) and **VTU** (type 42)
-since v9.19.0; **OpenFOAM** since v9.20.0, where they are the native cell shape.
-Writing jagged polygons: **MED** (`POG`/`POG2`), **EnSight** (`nsided`), **VTP**.
+since v9.19.0; **OpenFOAM** since v9.20.0, where they are the native cell shape;
+**CGNS** (`NGON_n`+`NFACE_n`) since v9.21.0.
+Writing jagged polygons: **MED** (`POG`/`POG2`), **EnSight** (`nsided`), **VTP**,
+**CGNS** (`NGON_n`).
 
 See [Formats](/formats) for the current table and each format page for what it
 can express. A writer that cannot represent a ragged block fails naming the

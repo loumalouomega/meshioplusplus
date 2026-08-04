@@ -1832,9 +1832,13 @@ finalizes.
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     // CGNS writer / reader (.cgns).
+    // `allow_ragged`: polygon/polyhedron blocks became NGON_n/NFACE_n
+    // sections in v9.21.0, so they must reach the C++ writer rather than being
+    // bounced back to the (deliberately NGON-less) Python twin.
     m.def("cgns_write", [](const std::string& path, py::object pymesh, int gzip_level) {
         meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         meshioplusplus::write_cgns(path, cpp, gzip_level);
     });
     m.def("cgns_read", [](const std::string& path) {
@@ -1996,7 +2000,7 @@ finalizes.
         return pymesh;
     });
 
-    // OpenFOAM polyMesh reader (read-only). Boundary patch names are
+    // OpenFOAM polyMesh reader. Boundary patch names and types are
     // mesh.cell_tags, carried through the OpenFoamInfo side-channel.
     m.def("openfoam_read", [](const std::string& path) {
         meshioplusplus::OpenFoamInfo info;

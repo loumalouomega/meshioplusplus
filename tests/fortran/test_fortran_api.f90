@@ -47,7 +47,7 @@ program test_fortran_api
     call check(len(mio_mesh_backend()) > 0, 'mio_mesh_backend() is non-empty')
     call check(mio_format_readable('vtu'), 'vtu is readable')
     call check(mio_format_writable('vtu'), 'vtu is writable')
-    call check(.not. mio_format_writable('openfoam'), 'openfoam is read-only')
+    call check(mio_format_writable('openfoam'), 'openfoam is writable since v9.20.0')
     call check(.not. mio_format_readable('nonexistent'), 'unknown format is not readable')
 
     ! ---- build a small tet mesh from arrays ----------------------------

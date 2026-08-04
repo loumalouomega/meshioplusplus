@@ -8,6 +8,59 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.21.0 (2026-08-04)
+
+**CGNS `NGON_n`/`NFACE_n` — polyhedral cells, hand-rolled in both directions.**
+This closes the last bullet of the roadmap's polyhedral-meshes section: every
+polyhedral writer now exists, and polyhedral CGNS works in the default build,
+the PyPI wheels and WASM rather than only on a build with the optional
+[cgnslib backend](doc/formats/cgns.md).
+
+Hand-rolling the **write** side is what made hand-rolling the read side
+obligatory too. Writing has no CGNS 3.x-vs-4.0 `ElementStartOffset` split to
+absorb — the writer picks its layout — so the reason cgnslib was needed on read
+does not apply; but a build able to write a file it cannot read back would be
+worse than either extreme. cgnslib remains the answer for ADF containers and for
+files written in the 3.x layout, which the hand-rolled reader refuses **by
+name** rather than misreading.
+
+- `NGON_n` is emitted ahead of the `NFACE_n` sections that point into it, and
+  its faces are deduplicated across the **polyhedral blocks only**, via a new
+  block-filtered overload of `detail::build_global_faces`. A mesh mixing
+  hexahedra with polyhedra keeps ordinary `HEXA_8` sections for the former;
+  putting their faces in the pool would leave `NGON_n` elements no `NFACE_n`
+  cell ever references. A 2D jagged block needs no dedup at all — its cells
+  *are* faces — so it becomes an `NGON_n` on its own.
+- On read, an `NGON_n` becomes `polygon<N>` blocks **only when no `NFACE_n`
+  references it**; otherwise it is the shared face pool, and emitting it as
+  cells would duplicate every polyhedron's geometry while leaving the cell
+  count looking plausible.
+
+**Two bugs found by cgnscheck, neither of which any internal check could see.**
+Both made cgnslib corrupt its own heap and abort rather than report anything, so
+the tests assert the *return code* as much as the absence of `ERROR` lines:
+
+- `NCell` omitted the polyhedral blocks, because `cell_type_from_name` does not
+  know `polygon<N>`/`polyhedron<N>` and they reported dimension 0. cgnscheck
+  sizes its cell arrays from `NCell` and then reads `NFACE_n`.
+- The file declared `CGNSLibraryVersion` **3.1**. Below 4.0, cgnslib reads
+  `NGON_n` with the 3.x inline-length layout — so it spliced our
+  `ElementStartOffset` array into the connectivity. A face-based file now
+  declares 4.0; a file without such a section reads identically under either
+  number and keeps 3.1, so its bytes are unchanged.
+
+- **The h5py twin deliberately does not implement this** and says so by name,
+  pointing at the compiled core. The writer deduplicates faces and repairs each
+  cell's winding, and the repair is a discrete branch on the sign of an enclosed
+  volume — two implementations of such a branch can land on opposite sides for a
+  near-degenerate cell and then diverge macroscopically, the reasoning that
+  already keeps `smooth`'s inversion guard out of its numpy fallback. It is also
+  unreachable in practice, since `_core` ships in every wheel. This keeps
+  `test_structural_parity_with_cpp`, the byte-for-byte C++/Python oracle, exact.
+
+- `cgns_write`'s pybind binding now passes `allow_ragged=true`; without it a
+  polyhedral mesh never reached the C++ writer at all.
+
 ## v9.20.0 (2026-08-04)
 
 The **OpenFOAM polyMesh writer** — the last of the roadmap's polyhedral writers,

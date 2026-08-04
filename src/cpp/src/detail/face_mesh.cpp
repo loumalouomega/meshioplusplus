@@ -54,7 +54,21 @@ bool fm_block_has_volume(const Mesh::CellView& rBlock) {
 }  // namespace
 
 GlobalFaces build_global_faces(const Mesh& rMesh) {
+    return build_global_faces(rMesh, {});
+}
+
+GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>& rBlocks) {
     GlobalFaces out;
+
+    // Empty means "every block"; that is what the one-argument form passes, so
+    // there is exactly one implementation rather than two that could drift.
+    std::vector<bool> wanted;
+    if (!rBlocks.empty()) {
+        wanted.assign(rMesh.NumCellBlocks(), false);
+        for (std::size_t b : rBlocks)
+            if (b < wanted.size())
+                wanted[b] = true;
+    }
 
     const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
@@ -66,7 +80,7 @@ GlobalFaces build_global_faces(const Mesh& rMesh) {
     std::size_t n_cells = 0;
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
         const auto cb = rMesh.Cells(k);
-        if (!fm_block_has_volume(cb)) {
+        if ((!wanted.empty() && !wanted[k]) || !fm_block_has_volume(cb)) {
             out.mNonCellBlocks.push_back(k);
             continue;
         }

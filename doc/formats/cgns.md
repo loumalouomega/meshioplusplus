@@ -74,7 +74,7 @@ Permutations are derived from the SIDS element-numbering-conventions edge/face t
 - **`wedge` is identity** — meshio++'s wedge node order (0,1,2 bottom triangle; 3,4,5 top triangle) already matches SIDS's `PENTA_6` face-for-face. Do **not** apply the `{0,2,1,3,5,4}` flip `vtk_common.hpp`'s `meshio_to_vtk_order("wedge")` uses for VTK/VTU interop — that permutation exists for a *different* target convention (`vtkWedge`) and is wrong for CGNS.
 - **`hexahedron27`**'s mid-face order follows the real `vtkTriQuadraticHexahedron::Faces` table (`20=(0,4,7,3)`, `21=(1,2,6,5)`, `22=(0,1,5,4)`, `23=(3,7,6,2)`, `24`=bottom, `25`=top, `26`=body centre) mapped onto the SIDS face order `F1..F6 = (0,3,2,1)(0,1,5,4)(1,2,6,5)(2,3,7,6)(0,4,7,3)(4,5,6,7)`.
 
-**Deliberately unsupported, by name, with a distinct error rather than a guessed ordering:** the cubic/quartic Lagrange families — `line4`/`BAR_4`, `triangle10`, `quad16`, `tetra20`, `hexahedron64`, and similar — have a CGNS `ElementType_t` code but their SIDS interior-node order is shown only in the (image-only) SIDS convention figures, with no text source to verify against; VTK's own translator tables for these target `VTK_LAGRANGE_*`, which is not the ordering meshio++'s same-named types use. Writing one raises `WriteError` naming the type ("its CGNS node ordering is not yet verified in meshio++; refusing to write a guessed ordering"); reading a section with one of these `ElementType_t` codes raises the equivalent `ReadError`. Also unsupported: `polygon`/`polygon2`/`polyhedron*` (ragged blocks — CGNS's `MIXED`/`NGON_n`/`NFACE_n` sections are not written by meshio++, and are a `ReadError` naming the code on read) and any type with no CGNS `ElementType_t` at all.
+**Deliberately unsupported, by name, with a distinct error rather than a guessed ordering:** the cubic/quartic Lagrange families — `line4`/`BAR_4`, `triangle10`, `quad16`, `tetra20`, `hexahedron64`, and similar — have a CGNS `ElementType_t` code but their SIDS interior-node order is shown only in the (image-only) SIDS convention figures, with no text source to verify against; VTK's own translator tables for these target `VTK_LAGRANGE_*`, which is not the ordering meshio++'s same-named types use. Writing one raises `WriteError` naming the type ("its CGNS node ordering is not yet verified in meshio++; refusing to write a guessed ordering"); reading a section with one of these `ElementType_t` codes raises the equivalent `ReadError`. Also unsupported: `MIXED` sections, and any type with no CGNS `ElementType_t` at all. (`polygon*`/`polyhedron*` **are** supported since v9.21.0 — see [Polyhedral cells](#polyhedral-cells-ngon_n-nface_n) below.)
 
 ## Data mapping
 
@@ -128,6 +128,43 @@ the arrays would have to be concatenated in whatever order the zones happen to
 be listed in, and a solution present on only some zones has no defensible
 filler; a multi-zone file's solutions are skipped with a warning. meshio++'s own
 writer always emits one zone.
+
+## Polyhedral cells (`NGON_n` / `NFACE_n`)
+
+Since v9.21.0 meshio++ reads and writes CGNS's face-based sections itself, with
+no optional dependency — so polyhedral CGNS works in the default build, the PyPI
+wheels and the WASM artifact. A `polyhedron<N>` block becomes an `NGON_n` face
+list plus an `NFACE_n` cell list of **signed** face element ids (the sign meaning
+"traverse this face reversed"); a jagged `polygon<N>` block is itself a face
+list, so it becomes an `NGON_n` on its own.
+
+Three rules are worth knowing:
+
+- **`NGON_n` is written before the `NFACE_n` sections that reference it**, and
+  its faces are deduplicated across the *polyhedral* blocks only. A mesh mixing
+  hexahedra with polyhedra keeps ordinary `HEXA_8` sections for the former —
+  putting their faces in the pool would leave `NGON_n` elements that no cell
+  references.
+- **On read, an `NGON_n` becomes `polygon<N>` cells only when no `NFACE_n`
+  references it.** Otherwise it is the shared face pool, not a set of cells, and
+  emitting it as cells would duplicate every polyhedron's geometry.
+- **Only the CGNS ≥ 4.0 layout is read** (`ElementStartOffset` beside
+  `ElementConnectivity`). A CGNS 3.x file prefixes each row with its own length
+  inline instead; normalising the two is exactly what `cg_poly_elements_read`
+  exists for, so such a file is refused **by name**, pointing at the
+  [cgnslib backend](#the-optional-cgnslib-backend), rather than misread. A file meshio++
+  writes with a face-based section declares `CGNSLibraryVersion` 4.0 for the
+  same reason — below that, cgnslib itself reads `NGON_n` the 3.x way.
+
+::: warning No pure-Python path
+The h5py twin deliberately does not implement this; it raises naming the
+compiled core. The writer deduplicates faces and repairs each cell's winding,
+and that repair is a discrete branch on the sign of an enclosed volume — two
+implementations of such a branch can land on opposite sides for a
+near-degenerate cell and then diverge macroscopically, the same reasoning that
+keeps `smooth`'s inversion guard out of its numpy fallback. `_core` ships in
+every wheel, so this is not a practical restriction.
+:::
 
 ## The optional cgnslib backend
 

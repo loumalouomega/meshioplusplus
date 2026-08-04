@@ -3,7 +3,7 @@ test_that("build information is available", {
   expect_true(mio_mesh_backend() %in% c("meshio", "native", "kratos"))
   expect_true(mio_format_readable("vtu"))
   expect_true(mio_format_writable("vtu"))
-  expect_false(mio_format_writable("openfoam")) # read-only format
+  expect_true(mio_format_writable("openfoam")) # writable since v9.20.0
   expect_false(mio_format_readable("nonexistent"))
   expect_equal(mio_cell_type_num_nodes("tetra10"), 10L)
   expect_equal(mio_cell_type_dimension("triangle"), 2L)

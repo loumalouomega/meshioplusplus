@@ -114,7 +114,7 @@ TEST(CApi, FormatAvailability) {
     EXPECT_EQ(mio_format_readable("vtu"), 1);
     EXPECT_EQ(mio_format_writable("vtu"), 1);
     EXPECT_EQ(mio_format_readable("openfoam"), 1);
-    EXPECT_EQ(mio_format_writable("openfoam"), 0);  // read-only format
+    EXPECT_EQ(mio_format_writable("openfoam"), 1);  // writable since v9.20.0
     EXPECT_EQ(mio_format_readable("nonexistent"), 0);
     EXPECT_EQ(mio_format_readable(nullptr), 0);
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -578,8 +578,11 @@ TEST(CApi, ErrorPaths) {
     EXPECT_EQ(mio_write("mesh.not_an_extension", m, nullptr), MIO_ERR_READ);
     EXPECT_STRNE(mio_last_error(), "");
     EXPECT_EQ(mio_write("mesh.vtu", m, "no_such_format"), MIO_ERR_NOT_FOUND);
-    // openfoam is read-only: resolvable format, no writer.
-    EXPECT_EQ(mio_write("mesh.foam", m, "openfoam"), MIO_ERR_NOT_FOUND);
+    // openfoam gained a writer in v9.20.0, so the "resolvable format with no
+    // writer" case it used to demonstrate needs a different format: svg/tikz
+    // are write-only, so pick the mirror case -- a read-only key no longer
+    // exists in the registry at all.
+    EXPECT_EQ(mio_read("mesh.svg", "svg"), nullptr);
 
 #ifndef MESHIOPLUSPLUS_HAS_HDF5
     // Compiled-out formats name the missing dependency.

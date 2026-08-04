@@ -168,6 +168,23 @@ struct GlobalFaces {
 MESHIOPLUSPLUS_API GlobalFaces build_global_faces(const Mesh& rMesh);
 
 /**
+ * @brief `build_global_faces` restricted to the cell blocks in @p rBlocks.
+ *
+ * Every other block is reported in `mNonCellBlocks` exactly as a 2D one would
+ * be, so a caller cannot silently lose a solid: the distinction between "this
+ * block has no volume" and "you did not ask for this block" is the caller's to
+ * make, and CGNS's is the case that needs it. Writing a mesh that mixes
+ * hexahedra with polyhedra emits ordinary `HEXA_8` sections for the former and
+ * an `NGON_n`/`NFACE_n` pair for the latter, and the face list must then contain
+ * the polyhedra's faces **only** -- a hexahedron's faces would be `NGON_n`
+ * elements no `NFACE_n` cell ever references.
+ *
+ * Blocks keep their relative order; ids out of range are ignored.
+ */
+MESHIOPLUSPLUS_API GlobalFaces build_global_faces(const Mesh& rMesh,
+                                                  const std::vector<std::size_t>& rBlocks);
+
+/**
  * @brief Find a global face by its (unordered) corner ids.
  *
  * How a caller maps a 2D cell block -- an OpenFOAM boundary patch, say -- back

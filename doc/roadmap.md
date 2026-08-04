@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.20.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
+Status at time of writing: **v9.21.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -19,17 +19,32 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 1. Polyhedral meshes
+## 1. Polyhedral meshes — **shipped in full (v9.15.0 – v9.21.0)**
 
-**The gap.** Ragged polyhedron blocks exist in all three backends (`AddPolyhedronBlock`, CSR / nested storage, `CellView::NumFaces`/`Face`), and MED, EnSight `nfaced` and OpenFOAM read them. Since v9.15.0 they also cross the flat C ABI in both directions, so Fortran / Julia / R / WASM can build and read one — see [`doc/polyhedra.md`](polyhedra.md). Since v9.16.0 there is also a geometric kernel for them (`detail/polyhedron.hpp`: volume, centroid, area, and the winding repair all of those depend on), and `stats`, `gradient`, `quality`, `smooth`'s inversion guard, `extract_surface`/`extract_skin` and `data_average`'s measure weighting all go through it. Since v9.17.0 `convert_cells(simplexify)` decomposes them into tetrahedra with the same fan, which also makes `slice`, `isosurface` and `interpolate --barycentric` work. Since v9.19.0 the polyhedral **writers** landed for VTU (type 42), MED (`POE`) and EnSight (`nfaced`), and since v9.20.0 for **OpenFOAM**, which is where they are the native cell shape — so an OpenFOAM case now round-trips, and a mesh from any other format converts into one. **What remains is the CGNS write side, and the fixtures.**
+Ragged polyhedron blocks are now first-class end to end, so this section no
+longer lists a gap. In order: they cross the flat C ABI in both directions
+(v9.15.0), have a geometric kernel behind `stats`/`gradient`/`quality`/`smooth`/
+`extract_surface`/`data_average` (v9.16.0), decompose into tetrahedra through
+`convert_cells(simplexify)` — which also makes `slice`, `isosurface` and
+`interpolate --barycentric` work (v9.17.0) — are readable from real files via
+the optional [cgnslib backend](formats/cgns.md) (v9.18.0), and are **writable**
+by VTU (type 42), MED (`POE`) and EnSight (`nfaced`) (v9.19.0), by OpenFOAM,
+where they are the native cell shape (v9.20.0), and by CGNS
+(`NGON_n`/`NFACE_n`, hand-rolled so it works in the default build, the wheels
+and WASM) (v9.21.0). See [`doc/polyhedra.md`](polyhedra.md).
 
-- **CGNS `NGON_n`/`NFACE_n`, hand-rolled, in both directions**: `write_cgns` still refuses a ragged block, and the hand-rolled *reader* (`cgns.cpp`) plus the h5py twin (`_cgns.py`) still reject the two codes — so polyhedral CGNS currently needs the optional [cgnslib backend](formats/cgns.md). The shared face primitive it needs already exists (`detail/face_mesh.hpp`, v9.20.0), and the write side has no CGNS 3.x-vs-4.0 `ElementStartOffset` split to absorb, since the writer picks the layout. Doing both directions by hand puts polyhedral CGNS in the default build, the PyPI wheels and WASM, leaving cgnslib as the answer for ADF containers and 3.x-layout files; doing only the write side would leave a build able to write a file it cannot read. **S–M**
-- **Test fixtures**: there is no genuinely polyhedral file fixture anywhere in the tree — `med/voronoi_hex.med` is 2-D `POG` polygons, `ensight/simple.geo` has `nsided` but no `nfaced`, the `vtu/*.vtu` files are tetra, and no OpenFOAM case is checked in at all. The only polyhedral fixtures are synthetic and in-code (`tests/python/helpers.py`'s `polyhedron_mesh`, plus `AddPolyhedronBlock` literals in the gtests), and `helpers.py`'s is **inconsistently wound** — both of its `polyhedron5` cells traverse an edge in the same direction from two incident faces — which is exactly why the geometric kernel above has to repair winding rather than assume it. Generate fixtures by round-tripping through meshio++'s own writers, which since v9.20.0 all exist (the repo's stated preference, and how the `.cgns`/`.ex2` fixtures came about) rather than importing third-party files; anything third-party follows `tests/python/meshes/exodus/` to the letter (`.license` sidecar + `LICENSE.<SPDX>` + README + `CITATION.cff` credit), and the rule against GPL-sourced test data still applies. **S**
+Two follow-ups are recorded rather than forgotten, neither of them a ceiling:
 
-  *Note:* the CGNS project's examples page ([cgns.org/current/examples.html](https://cgns.org/current/examples.html)) became usable in v9.18.0, on a build with the optional [cgnslib backend](formats/cgns.md) — which reads both `NGON_n`/`NFACE_n` and the ADF container those files often use. Without that flag they remain unreadable.
-
-
-*Transferable since v9.15.0 (C ABI), measurable since v9.16.0 (the kernel), operable since v9.17.0 (the tetrahedra decomposition), readable from real files since v9.18.0 (the cgnslib backend) and writable since v9.19.0–v9.20.0. Recommended next: hand-rolled CGNS `NGON_n`/`NFACE_n`, then the fixtures it makes cheap to generate.*
+- **OpenFOAM binary write.** The reader handles binary (little-endian,
+  `label=32/64`, `scalar=32/64`); the writer is ASCII only, and an explicit
+  binary request fails by name rather than silently writing ASCII. The fiddly
+  part is that a binary `faces` file still carries each row's ASCII `count(`
+  prefix inside the blob. **S**
+- **`refine` and `decimate` on a polyhedron.** Both are built on fixed
+  subdivision templates and an arbitrary polyhedron has none, so both raise
+  pointing at `convert_cells(simplexify)`. Closing this properly means a
+  genuinely different algorithm (polyhedral coarsening/agglomeration), not an
+  extra template table. **L**
 
 ---
 
