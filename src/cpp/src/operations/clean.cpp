@@ -36,6 +36,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -137,31 +138,6 @@ std::int64_t clean_build_weld_map(const NDArray& rPts, std::size_t n, std::size_
     return static_cast<std::int64_t>(rRepSource.size());
 }
 
-// Unsigned area of a 2D corner polygon (triangle / quad, Newell normal).
-double clean_area(const std::vector<Vec3>& rC, int corners) {
-    if (corners < 3)
-        return 0.0;
-    Vec3 s = {0, 0, 0};
-    for (int i = 0; i < corners; ++i)
-        s = detail::vec3_add(s, detail::vec3_cross(rC[i], rC[(i + 1) % corners]));
-    return 0.5 * detail::vec3_norm(s);
-}
-
-// Unsigned volume of a 3D cell via the divergence theorem over its outward-wound
-// boundary faces (triangulated fan). NaN for types without a face table.
-double clean_volume(const std::vector<Vec3>& rC, CellType ct) {
-    const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
-    if (faces.empty())
-        return std::nan("");
-    double vol6 = 0.0;
-    for (const detail::CellFaceDef& f : faces) {
-        const Vec3 a = rC[f.mNodes[0]];
-        for (int i = 1; i + 1 < f.mNumCorners; ++i)
-            vol6 += detail::triple_product(a, rC[f.mNodes[i]], rC[f.mNodes[i + 1]]);
-    }
-    return std::abs(vol6 / 6.0);
-}
-
 }  // namespace
 
 CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
@@ -210,29 +186,137 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
 
         if (cb.IsPolyhedron()) {
             bo.kind = 2;
+            // Degenerate/duplicate detection for polyhedra (v9.16.1). Before
+            // that these branches kept every cell unconditionally, so a welded
+            // polyhedron that had collapsed to nothing survived `clean` while
+            // the equivalent hexahedron did not.
+            //
+            // "Degenerate" here is: a face that lost corners to the weld and is
+            // no longer a polygon, a face set that is no longer a closed
+            // orientable surface, or a volume that is negligible next to the
+            // cell's own size. "Duplicate" keys on the SET OF FACES (each face
+            // a sorted node set, the whole cell then sorted), so two cells that
+            // list the same faces in a different order or with different
+            // per-face rotations still collide -- a plain sorted node list
+            // could not tell a cube from a differently-connected solid on the
+            // same eight nodes.
+            std::unordered_set<std::string> seen_poly;
             for (std::size_t c = 0; c < nc; ++c) {
                 std::vector<std::vector<std::int64_t>> cell(cb.NumFaces(c));
+                bool degenerate = false;
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                     auto face = cb.Face(c, f);
                     cell[f].reserve(face.second);
-                    for (std::size_t k = 0; k < face.second; ++k) {
-                        std::int64_t r = weld_rep[static_cast<std::size_t>(face.first[k])];
-                        cell[f].push_back(r);
-                        rep_used[static_cast<std::size_t>(r)] = 1;
+                    for (std::size_t k = 0; k < face.second; ++k)
+                        cell[f].push_back(weld_rep[static_cast<std::size_t>(face.first[k])]);
+                    if (rOpts.drop_degenerate) {
+                        std::vector<std::int64_t> u(cell[f]);
+                        std::sort(u.begin(), u.end());
+                        if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) <
+                            3)
+                            degenerate = true;  // the face collapsed below a triangle
                     }
                 }
+                if (rOpts.drop_degenerate && !degenerate) {
+                    // Measure it through the shared kernel, on the WELDED nodes.
+                    detail::CellRings rings;
+                    std::vector<Vec3> coords;
+                    rings.mFaceStart.push_back(0);
+                    for (const std::vector<std::int64_t>& face : cell) {
+                        for (std::int64_t id : face) {
+                            std::uint32_t local = 0;
+                            while (local < rings.mNodes.size() && rings.mNodes[local] != id)
+                                ++local;
+                            if (local == rings.mNodes.size()) {
+                                rings.mNodes.push_back(id);
+                                coords.push_back(detail::read_point(
+                                    points, dim, rep_source[static_cast<std::size_t>(id)]));
+                            }
+                            rings.mFaceNodes.push_back(local);
+                        }
+                        rings.mFaceStart.push_back(
+                            static_cast<std::uint32_t>(rings.mFaceNodes.size()));
+                    }
+                    if (detail::orient_rings(rings, coords.data()) ==
+                        detail::RingOrientation::Unorientable) {
+                        degenerate = true;
+                    } else {
+                        const detail::PolyMeasure pm = detail::poly_measure(rings, coords.data());
+                        const double scale = pm.mSurfaceArea * std::sqrt(pm.mSurfaceArea);
+                        if (!(std::abs(pm.mVolume) > eps * scale))
+                            degenerate = true;
+                    }
+                }
+                if (degenerate) {
+                    ++res.mCellsDroppedDegenerate;
+                    continue;
+                }
+                if (rOpts.drop_duplicate_cells) {
+                    std::vector<std::string> face_keys;
+                    face_keys.reserve(cell.size());
+                    for (const std::vector<std::int64_t>& face : cell) {
+                        std::vector<std::int64_t> sorted(face);
+                        std::sort(sorted.begin(), sorted.end());
+                        sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+                        std::string k;
+                        for (std::int64_t v : sorted) {
+                            k.append(reinterpret_cast<const char*>(&v), sizeof(v));
+                            k.push_back(',');
+                        }
+                        face_keys.push_back(std::move(k));
+                    }
+                    std::sort(face_keys.begin(), face_keys.end());
+                    std::string key;
+                    for (const std::string& k : face_keys) {
+                        key += k;
+                        key.push_back(';');
+                    }
+                    if (!seen_poly.insert(std::move(key)).second) {
+                        ++res.mCellsDroppedDuplicate;
+                        continue;
+                    }
+                }
+                for (const std::vector<std::int64_t>& face : cell)
+                    for (std::int64_t r : face)
+                        rep_used[static_cast<std::size_t>(r)] = 1;
                 bo.polyh.push_back(std::move(cell));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
         } else if (cb.IsRagged()) {
             bo.kind = 1;
+            std::unordered_set<std::string> seen_rows;
             for (std::size_t c = 0; c < nc; ++c) {
                 std::vector<std::int64_t> row(cb.RowSize(c));
-                for (std::size_t k = 0; k < cb.RowSize(c); ++k) {
-                    std::int64_t r = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
-                    row[k] = r;
-                    rep_used[static_cast<std::size_t>(r)] = 1;
+                for (std::size_t k = 0; k < cb.RowSize(c); ++k)
+                    row[k] = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
+                if (rOpts.drop_degenerate) {
+                    std::vector<std::int64_t> u(row);
+                    std::sort(u.begin(), u.end());
+                    if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) < 3) {
+                        ++res.mCellsDroppedDegenerate;
+                        continue;  // fewer than three distinct nodes is not a polygon
+                    }
+                    std::vector<Vec3> coords(row.size());
+                    for (std::size_t k = 0; k < row.size(); ++k)
+                        coords[k] = detail::read_point(
+                            points, dim, rep_source[static_cast<std::size_t>(row[k])]);
+                    if (!(detail::polygon_area(coords.data(), coords.size()) > eps)) {
+                        ++res.mCellsDroppedDegenerate;
+                        continue;
+                    }
                 }
+                if (rOpts.drop_duplicate_cells) {
+                    std::vector<std::int64_t> sorted(row);
+                    std::sort(sorted.begin(), sorted.end());
+                    std::string key(reinterpret_cast<const char*>(sorted.data()),
+                                    sorted.size() * sizeof(std::int64_t));
+                    if (!seen_rows.insert(std::move(key)).second) {
+                        ++res.mCellsDroppedDuplicate;
+                        continue;
+                    }
+                }
+                for (std::int64_t r : row)
+                    rep_used[static_cast<std::size_t>(r)] = 1;
                 bo.poly_rows.push_back(std::move(row));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
@@ -267,9 +351,10 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                                 points, dim, rep_source[static_cast<std::size_t>(row[i])]);
                         double measure = std::nan("");
                         if (cdim == 2)
-                            measure = clean_area(coords, corner_count);
+                            measure = detail::polygon_area(coords.data(),
+                                                           static_cast<std::size_t>(corner_count));
                         else if (cdim == 3)
-                            measure = clean_volume(coords, ct);
+                            measure = std::abs(detail::cell_volume_from_corners(coords.data(), ct));
                         if (!std::isnan(measure) && measure < eps)
                             degenerate = true;
                     }

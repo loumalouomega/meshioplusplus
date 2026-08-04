@@ -42,6 +42,7 @@
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
@@ -451,10 +452,6 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     // a purely linear mesh.
     bool needs_linearize = false;
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron())
-            throw std::invalid_argument("convert_cells: cannot simplexify polyhedron cell block '" +
-                                        std::string(cb.Type()) +
-                                        "' (2-level ragged blocks have no simplex template)");
         if (cb.IsRagged())
             continue;
         const CellType type = cell_type_from_name(std::string(cb.Type()));
@@ -466,6 +463,12 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     if (needs_linearize)
         prepared = ccells_linearize(rMesh, /*RecordParentIds=*/false);
     const Mesh& mesh = needs_linearize ? prepared.mMesh : rMesh;
+
+    // New points appended by the polyhedral fan, each recorded as the list of
+    // existing nodes it averages -- coordinates and point_data both derive from
+    // that one list, so they cannot drift apart.
+    const std::size_t num_points = mesh.NumPoints();
+    std::vector<std::vector<std::int64_t>> new_point_src;
 
     const std::size_t nblocks = mesh.NumCellBlocks();
     std::vector<CcellsOutBlock> staged;
@@ -481,6 +484,65 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         firsts.resize(ncells);
 
         const CellType type = cell_type_from_name(std::string(cb.Type()));
+
+        // Polyhedra fan into tetrahedra: one tet per (face, edge-of-that-face)
+        // from the face's corner average to the cell's, adding 1 + numFaces
+        // points per cell.
+        //
+        // NOT a single centroid point with a fan about each face's first node,
+        // which is the obvious cheaper scheme and is wrong twice over: it is
+        // diagonal-dependent for non-planar faces (so two cells sharing one
+        // would disagree), and it produces inverted tets on any cell whose
+        // faces are not star-shaped about whichever node happens to be listed
+        // first. Using the SAME fan detail/polyhedron.hpp measures also buys a
+        // hard oracle -- the simplexified mesh's total volume equals the
+        // original's exactly, both being literally the same sum.
+        if (cb.IsPolyhedron()) {
+            CcellsOutBlock out;
+            out.mType = cell_type_name(CellType::Tetra);
+            out.mNodesPerCell = 4;
+            detail::CellRings rings;
+            std::vector<detail::Vec3> coords;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 4);
+                if (!detail::cell_rings(cb, c, mesh.Points(), mesh.PointDim(), rings, coords))
+                    continue;  // no faces at all: contributes nothing
+                if (detail::orient_rings(rings, coords.data()) ==
+                    detail::RingOrientation::Unorientable)
+                    throw std::invalid_argument(
+                        "convert_cells: cannot simplexify cell " + std::to_string(c) +
+                        " of polyhedron block '" + std::string(cb.Type()) +
+                        "': its faces are not a closed orientable surface, so it bounds no "
+                        "volume to decompose");
+                // One new point for the cell centroid, then one per face.
+                const std::int64_t cell_pt =
+                    static_cast<std::int64_t>(num_points + new_point_src.size());
+                new_point_src.push_back(rings.mNodes);
+                for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+                    const std::uint32_t* ring = rings.Face(f);
+                    const std::size_t m = rings.FaceSize(f);
+                    const std::int64_t face_pt =
+                        static_cast<std::int64_t>(num_points + new_point_src.size());
+                    std::vector<std::int64_t> face_nodes(m);
+                    for (std::size_t k = 0; k < m; ++k)
+                        face_nodes[k] = rings.mNodes[ring[k]];
+                    new_point_src.push_back(std::move(face_nodes));
+                    for (std::size_t k = 0; k < m; ++k) {
+                        // (cell centroid, face centroid, a, b) is positively
+                        // oriented for an outward-wound face -- the same
+                        // determinant poly_measure accumulates.
+                        out.mConn.push_back(cell_pt);
+                        out.mConn.push_back(face_pt);
+                        out.mConn.push_back(rings.mNodes[ring[k]]);
+                        out.mConn.push_back(rings.mNodes[ring[(k + 1) % m]]);
+                        parents.push_back(static_cast<std::int64_t>(c));
+                    }
+                }
+            }
+            staged.push_back(std::move(out));
+            ++bi;
+            continue;
+        }
 
         // Polygons fan into (n-2) triangles around node 0. This covers both
         // storage shapes: a jagged block (rows of differing length) and a
@@ -556,10 +618,57 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     }
 
     Mesh out;
-    out.AssignPoints(detail::data_owned_copy(mesh.Points()));
+    if (new_point_src.empty()) {
+        out.AssignPoints(detail::data_owned_copy(mesh.Points()));
+    } else {
+        // Originals, then one appended row per new point: the arithmetic mean
+        // of its source nodes. Order-independent, so neighbouring cells that
+        // share a face agree on that face's centroid bit for bit.
+        const NDArray& points = mesh.Points();
+        const std::size_t dim = detail::cols(points);
+        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
+        std::memcpy(np.Data(), points.Data(), points.Nbytes());
+        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
+            const std::vector<std::int64_t>& src = new_point_src[i];
+            for (std::size_t d = 0; d < dim; ++d) {
+                double sum = 0.0;
+                for (std::int64_t nid : src)
+                    sum += detail::read_double(points, static_cast<std::size_t>(nid) * dim + d);
+                detail::write_double(np, (num_points + i) * dim + d,
+                                     sum / static_cast<double>(src.size()));
+            }
+        });
+        out.AssignPoints(std::move(np));
+    }
     for (CcellsOutBlock& block : staged)
         ccells_emit_block(out, block, nullptr);
-    ccells_copy_point_data(mesh, out);
+    if (new_point_src.empty()) {
+        ccells_copy_point_data(mesh, out);
+    } else {
+        for (const std::string& name : mesh.PointDataNames()) {
+            const NDArray& a = mesh.PointData(name);
+            if (detail::rows(a) != num_points) {
+                out.AddPointData(name, detail::data_owned_copy(a));
+                continue;  // not per-point data; copy verbatim rather than mangle
+            }
+            const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
+            std::vector<std::size_t> shape = a.Shape();
+            shape[0] = num_points + new_point_src.size();
+            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+            std::memcpy(b.Data(), a.Data(), a.Nbytes());
+            parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
+                const std::vector<std::int64_t>& src = new_point_src[i];
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    for (std::int64_t nid : src)
+                        sum += detail::read_double(a, static_cast<std::size_t>(nid) * ncomp + k);
+                    detail::write_double(b, (num_points + i) * ncomp + k,
+                                         sum / static_cast<double>(src.size()));
+                }
+            });
+            out.AddPointData(name, std::move(b));
+        }
+    }
     ccells_copy_field_data(mesh, out);
 
     // cell_data: replicate each parent's row to its children. An array whose

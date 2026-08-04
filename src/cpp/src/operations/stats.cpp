@@ -36,7 +36,9 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -46,39 +48,24 @@ namespace {
 
 using detail::Vec3;
 
-// Unsigned area of a corner polygon (triangle / quad) via the Newell normal.
-double stats_area(const std::vector<Vec3>& rC, int corners) {
-    if (corners < 3)
-        return 0.0;
-    Vec3 s = {0, 0, 0};
-    for (int i = 0; i < corners; ++i)
-        s = detail::vec3_add(s, detail::vec3_cross(rC[i], rC[(i + 1) % corners]));
-    return 0.5 * detail::vec3_norm(s);
-}
-
-// Signed volume of a 3D cell via the divergence theorem over its outward-wound
-// boundary faces (triangulated fan). NaN for types without a face table.
-double stats_signed_volume(const std::vector<Vec3>& rC, CellType ct) {
-    const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
-    if (faces.empty())
-        return std::nan("");
-    double vol6 = 0.0;
-    for (const detail::CellFaceDef& f : faces) {
-        const Vec3 a = rC[f.mNodes[0]];
-        for (int i = 1; i + 1 < f.mNumCorners; ++i)
-            vol6 += detail::triple_product(a, rC[f.mNodes[i]], rC[f.mNodes[i + 1]]);
-    }
-    return vol6 / 6.0;
-}
-
 // Sum the areas of the triangle/quad facets of a (linearized) surface mesh.
 double stats_surface_area(const Mesh& rSurf) {
     const NDArray& points = rSurf.Points();
     const std::size_t pdim = rSurf.PointDim();
     double area = 0.0;
     for (const auto cb : rSurf.CellRange()) {
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        if (cb.IsPolyhedron())
+            continue;  // a volume cell, not a facet of one
+        if (cb.IsRagged()) {
+            for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+                const std::size_t n = cb.RowSize(i);
+                std::vector<Vec3> coords(n);
+                for (std::size_t k = 0; k < n; ++k)
+                    coords[k] = detail::read_point(points, pdim, cb.Row(i)[k]);
+                area += detail::polygon_area(coords.data(), n);
+            }
             continue;
+        }
         const CellType ct = cell_type_from_name(cb.Type());
         const int cc = detail::cell_corner_count(ct);
         if (cell_type_dimension(ct) != 2 || (cc != 3 && cc != 4))
@@ -91,7 +78,7 @@ double stats_surface_area(const Mesh& rSurf) {
             std::vector<Vec3> coords;
             detail::read_corner_coords(points, pdim, conn, i * npc, static_cast<std::size_t>(cc),
                                        coords);
-            vals[i] = stats_area(coords, cc);
+            vals[i] = detail::polygon_area(coords.data(), static_cast<std::size_t>(cc));
         });
         for (double v : vals)
             area += v;
@@ -176,8 +163,61 @@ StatsReport compute_stats(const Mesh& rMesh) {
             rep.mCellTypeCounts[it->second].second += static_cast<std::int64_t>(nc);
         }
 
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        if (cb.IsPolyhedron()) {
+            // A polyhedron block's face winding is NOT a contract -- meshio++
+            // repairs it rather than requiring it (doc/polyhedra.md) -- so
+            // "inverted" is not a question one can ask of such a cell: there is
+            // no convention for it to violate. Orient, then take the (now
+            // positive) volume. What IS meaningful is an unorientable cell,
+            // which is the polyhedral analogue of degenerate and is counted as
+            // such rather than silently contributing zero.
+            any_3d = true;
+            std::vector<double> vals(nc);
+            parallel_for(nc, [&](std::size_t i) {
+                detail::CellRings rings;
+                std::vector<Vec3> coords;
+                if (!detail::cell_rings(cb, i, points, dim, rings, coords)) {
+                    vals[i] = std::nan("");
+                    return;
+                }
+                if (detail::orient_rings(rings, coords.data()) ==
+                    detail::RingOrientation::Unorientable) {
+                    vals[i] = std::nan("");
+                    return;
+                }
+                vals[i] = std::abs(detail::poly_measure(rings, coords.data()).mVolume);
+            });
+            std::size_t n_bad = 0;
+            for (double v : vals) {
+                if (std::isnan(v)) {
+                    ++n_bad;
+                    continue;
+                }
+                rep.mSignedVolume += v;
+                rep.mUnsignedVolume += v;
+            }
+            if (n_bad > 0)
+                log::warn(
+                    "stats: {} polyhedron cell(s) in block '{}' are not closed orientable "
+                    "surfaces; their volume is not defined and is excluded",
+                    n_bad, type);
             continue;
+        }
+        if (cb.IsRagged()) {
+            // 1-level ragged (jagged polygons): a surface, so it contributes
+            // area. Before v9.16.0 such a block contributed nothing at all.
+            std::vector<double> vals(nc);
+            parallel_for(nc, [&](std::size_t i) {
+                const std::size_t n = cb.RowSize(i);
+                std::vector<Vec3> coords(n);
+                for (std::size_t k = 0; k < n; ++k)
+                    coords[k] = detail::read_point(points, dim, cb.Row(i)[k]);
+                vals[i] = detail::polygon_area(coords.data(), n);
+            });
+            for (double v : vals)
+                rep.mTotalArea += v;
+            continue;
+        }
         const int cc = detail::cell_corner_count(ct);
         const int cdim = cell_type_dimension(ct);
         if (cc <= 0)
@@ -191,18 +231,23 @@ StatsReport compute_stats(const Mesh& rMesh) {
                 std::vector<Vec3> coords;
                 detail::read_corner_coords(points, dim, conn, i * npc, static_cast<std::size_t>(cc),
                                            coords);
-                vals[i] = stats_area(coords, cc);
+                vals[i] = detail::polygon_area(coords.data(), static_cast<std::size_t>(cc));
             });
             for (double v : vals)
                 rep.mTotalArea += v;
         } else if (cdim == 3) {
+            // Deliberately NOT oriented: `cell_faces`' rows are canonically
+            // outward-wound, so the sign here genuinely measures whether the
+            // CELL is inverted. Repairing the winding first would make every
+            // cell positive and silently zero `mNumInverted`.
             any_3d = true;
             std::vector<double> vals(nc);
             parallel_for(nc, [&](std::size_t i) {
+                detail::CellRings rings;
                 std::vector<Vec3> coords;
-                detail::read_corner_coords(points, dim, conn, i * npc, static_cast<std::size_t>(cc),
-                                           coords);
-                vals[i] = stats_signed_volume(coords, ct);
+                vals[i] = detail::cell_rings(cb, i, points, dim, rings, coords)
+                              ? detail::poly_measure(rings, coords.data()).mVolume
+                              : std::nan("");
             });
             for (double v : vals) {
                 if (std::isnan(v))

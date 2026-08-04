@@ -144,6 +144,8 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
 
     Mesh mesh;
     std::vector<std::int64_t> conn, offsets, types;
+    // VTU's polyhedral stream; empty when the file has none.
+    std::vector<std::int64_t> faces, face_offsets;
     std::unordered_map<std::string, NDArray> cell_data_raw;
 
     for (pugi::xml_node child : piece.children()) {
@@ -167,8 +169,10 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
                     offsets = vtu_to_int64(arr);
                 else if (name == "types")
                     types = vtu_to_int64(arr);
-                else if (name == "faces" || name == "faceoffsets")
-                    throw ReadError("polyhedron VTU not supported by the C++ reader");
+                else if (name == "faces")
+                    faces = vtu_to_int64(arr);
+                else if (name == "faceoffsets")
+                    face_offsets = vtu_to_int64(arr);
             }
         } else if (tag == "PointData") {
             if (!want_data)
@@ -202,7 +206,8 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
-    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
+    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
+                              faces.empty() ? nullptr : &faces, face_offsets, mesh);
     return mesh;
 }
 

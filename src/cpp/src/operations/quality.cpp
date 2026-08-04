@@ -35,6 +35,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -598,8 +599,44 @@ QualityReport compute_quality(const Mesh& rMesh) {
         const std::size_t nc = cb.NumCells();
         rep.mNumCells += static_cast<std::int64_t>(nc);
         std::vector<CellMetrics> vals(nc);
-        const QualityFamily family =
-            (cb.IsRagged() || cb.IsPolyhedron()) ? QualityFamily::None : quality_family(ct);
+        if (cb.IsPolyhedron()) {
+            // A REDUCED set, deliberately: volume, inverted and degenerate are
+            // the three that are well defined for a cell bounded by arbitrary
+            // polygons. Aspect ratio, skewness, warpage and the angle metrics
+            // are all defined against a reference element a polyhedron does not
+            // have; inventing plausible-looking numbers for them would be worse
+            // than NaN, which is `compute_quality`'s standing convention for a
+            // metric that does not apply.
+            //
+            // "Inverted" here means UNORIENTABLE, not negative-volume: a
+            // polyhedron's stored winding is not a contract (doc/polyhedra.md),
+            // so there is no convention for a cell to violate -- what a cell can
+            // fail to be is a closed orientable surface.
+            parallel_for(nc, [&](std::size_t i) {
+                CellMetrics& v = vals[i];
+                v.fill(QUALITY_NAN);
+                detail::CellRings rings;
+                std::vector<Vec3> coords;
+                if (!detail::cell_rings(cb, i, points, pdim, rings, coords))
+                    return;
+                const bool orientable = detail::orient_rings(rings, coords.data()) !=
+                                        detail::RingOrientation::Unorientable;
+                v[QM_INVERTED] = orientable ? 0.0 : 1.0;
+                if (!orientable) {
+                    v[QM_DEGENERATE] = 1.0;
+                    return;
+                }
+                const detail::PolyMeasure pm = detail::poly_measure(rings, coords.data());
+                v[QM_VOLUME] = std::abs(pm.mVolume);
+                // Relative to the cell's own size, never an absolute epsilon --
+                // the same rule grad_green_gauss_3d uses.
+                const double scale = pm.mSurfaceArea * std::sqrt(pm.mSurfaceArea);
+                v[QM_DEGENERATE] = (std::abs(pm.mVolume) > eps * scale) ? 0.0 : 1.0;
+            });
+            block_vals.push_back(std::move(vals));
+            continue;
+        }
+        const QualityFamily family = cb.IsRagged() ? QualityFamily::None : quality_family(ct);
         if (family == QualityFamily::None) {
             for (CellMetrics& v : vals)
                 v.fill(QUALITY_NAN);

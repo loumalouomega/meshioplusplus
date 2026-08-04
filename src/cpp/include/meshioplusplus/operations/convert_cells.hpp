@@ -43,9 +43,18 @@
  * block passes through Linearize unchanged, an already-simplex block passes
  * through Simplexify unchanged, and an already-quadratic block passes through
  * Elevate unchanged. That is what makes the operation safe on a mixed-order
- * mesh. Only genuinely unsupported constructs throw: a polyhedron block cannot
- * be simplexified, and the full-Lagrange targets that need face/body centres
- * (`quad9`, `hexahedron27`) are an explicit non-goal of this version.
+ * mesh. Only genuinely unsupported constructs throw: the full-Lagrange targets
+ * that need face/body centres (`quad9`, `hexahedron27`) are an explicit
+ * non-goal of this version.
+ *
+ * **Simplexify decomposes a polyhedron** (since v9.17.0) into one tetrahedron
+ * per (face, edge-of-that-face), from the face's corner average to the cell's
+ * -- the same fan `detail/polyhedron.hpp` measures, so the children's total
+ * volume equals the parent's exactly. That adds `1 + numFaces` points per cell
+ * rather than a single centroid: a one-point fan about each face's first node
+ * is diagonal-dependent for non-planar faces and inverts on any cell whose
+ * faces are not star-shaped about that node. A cell whose faces are not a
+ * closed orientable surface throws, naming the cell.
  *
  * **Block structure is preserved 1:1 in every mode** -- the output has exactly
  * as many cell blocks as the input, in the same order -- which is what keeps
@@ -121,9 +130,11 @@ struct ConvertCellsResult {
  * @param rOptions the mode and flags (defaults to `Linearize`, no parent ids).
  * @return the converted mesh plus the point/cell index maps.
  * @throws std::invalid_argument when a block cannot be converted in the
- *         requested mode (a polyhedron block under `Simplexify`, or a
- *         full-Lagrange target such as `quad9`/`hexahedron27` under `Elevate`).
+ *         requested mode (a full-Lagrange target such as `quad9`/`hexahedron27`
+ *         under `Elevate`, or a polyhedron cell under `Simplexify` whose faces
+ *         are not a closed orientable surface).
  */
-MESHIOPLUSPLUS_API ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions = {});
+MESHIOPLUSPLUS_API ConvertCellsResult convert_cells(const Mesh& rMesh,
+                                                    const ConvertCellsOptions& rOptions = {});
 
 }  // namespace meshioplusplus

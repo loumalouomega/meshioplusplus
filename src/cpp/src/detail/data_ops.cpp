@@ -24,6 +24,7 @@
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -110,50 +111,23 @@ FiniteStats combine_components(const std::vector<FiniteStats>& rStats) {
     return all;
 }
 
-namespace {
-
-/**
- * @brief Unsigned area of a corner polygon (triangle / quad) via the Newell
- * normal. Mirrors `stats_area` in `operations/stats.cpp`. Internal to
- * `cell_measure`, so not exposed in the header.
- * @param rCoords the corner coordinates.
- * @param Corners how many of them form the polygon.
- * @return the unsigned area, or 0 for fewer than 3 corners.
- */
-double dataops_polygon_area(const std::vector<Vec3>& rCoords, int Corners) {
-    if (Corners < 3)
-        return 0.0;
-    Vec3 s = {0, 0, 0};
-    for (int i = 0; i < Corners; ++i)
-        s = vec3_add(s, vec3_cross(rCoords[i], rCoords[(i + 1) % Corners]));
-    return 0.5 * vec3_norm(s);
-}
-
-/**
- * @brief Signed volume of a 3D cell via the divergence theorem over its
- * outward-wound boundary faces. Mirrors `stats_signed_volume`. Internal to
- * `cell_measure`, so not exposed in the header.
- * @param rCoords the cell's corner coordinates.
- * @param Type the cell type, which supplies the face table.
- * @return the signed volume, or NaN for a type with no face table.
- */
-double dataops_cell_signed_volume(const std::vector<Vec3>& rCoords, CellType Type) {
-    const std::vector<CellFaceDef>& faces = cell_faces(Type);
-    if (faces.empty())
-        return std::nan("");
-    double vol6 = 0.0;
-    for (const CellFaceDef& f : faces) {
-        const Vec3 a = rCoords[f.mNodes[0]];
-        for (int i = 1; i + 1 < f.mNumCorners; ++i)
-            vol6 += triple_product(a, rCoords[f.mNodes[i]], rCoords[f.mNodes[i + 1]]);
-    }
-    return vol6 / 6.0;
-}
-
-}  // namespace
-
 double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
                     std::size_t Index) {
+    // 3D first, via the shared polyhedral kernel: it serves a tabulated
+    // hexahedron and a `polyhedron12` through the same code path, which is
+    // what makes the measure of one physical cell independent of whether the
+    // reader happened to classify it as a named type or as a polyhedron.
+    // (openfoam.cpp classifies by an (nfaces, nunique_points) signature, so a
+    // slightly-degenerate hex genuinely lands in the other bucket.)
+    CellRings rings;
+    std::vector<Vec3> ring_coords;
+    if (cell_rings(rCell, Index, rPoints, PointDim, rings, ring_coords)) {
+        orient_rings(rings, ring_coords.data());
+        const PolyMeasure m = poly_measure(rings, ring_coords.data());
+        return std::fabs(m.mVolume);
+    }
+    // Not a closed volume: fall through to the 2D/1D cases, which only a
+    // rectangular block can supply.
     if (rCell.IsRagged() || rCell.IsPolyhedron())
         return std::nan("");
     const CellType ct = cell_type_from_name(rCell.Type());
@@ -164,12 +138,8 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
     read_corner_coords(rPoints, PointDim, rCell.Conn(), Index * rCell.NodesPerCell(),
                        static_cast<std::size_t>(corners), coords);
     const int dim = cell_type_dimension(ct);
-    if (dim == 3) {
-        const double v = dataops_cell_signed_volume(coords, ct);
-        return std::isnan(v) ? v : std::fabs(v);
-    }
     if (dim == 2)
-        return dataops_polygon_area(coords, corners);
+        return polygon_area(coords.data(), static_cast<std::size_t>(corners));
     if (dim == 1 && corners >= 2)
         return vec3_norm(vec3_sub(coords[1], coords[0]));
     return std::nan("");

@@ -106,7 +106,8 @@ void decim_check_blocks(const Mesh& rMesh) {
         if (cb.IsPolyhedron())
             throw std::invalid_argument(
                 "meshio++: decimate: mesh contains a polyhedron cell block; decimate operates on "
-                "surface meshes (extract_surface first)");
+                "surface meshes -- run extract_surface first (or convert_cells(simplexify) "
+                "if you wanted the volume decomposed instead)");
         const CellType ct = cell_type_from_name(std::string(cb.Type()));
         const int dim = cell_type_dimension(ct);
         if (dim == 3)

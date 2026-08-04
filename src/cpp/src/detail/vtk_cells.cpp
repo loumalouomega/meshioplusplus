@@ -17,6 +17,7 @@
 
 // System includes
 #include <algorithm>
+#include <map>
 #include <cstring>
 
 // Project includes
@@ -130,6 +131,17 @@ bool cells_need_offsets(const std::vector<std::int64_t>& rTypes) {
 void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
                        const std::vector<std::int64_t>& rTypes,
                        const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh) {
+    // The historical four-argument form: no faces stream, so type 42 still
+    // refuses by name (see the header -- this must stay a distinct symbol).
+    static const std::vector<std::int64_t> kNoFaceOffsets;
+    reconstruct_cells(pConn, rOffsets, rTypes, rCellDataRaw, nullptr, kNoFaceOffsets, rMesh);
+}
+
+void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                       const std::vector<std::int64_t>& rTypes,
+                       const std::unordered_map<std::string, NDArray>& rCellDataRaw,
+                       const std::vector<std::int64_t>* pFaces,
+                       const std::vector<std::int64_t>& rFaceOffsets, Mesh& rMesh) {
     const auto& vmap = vtk_to_meshio_type();
     const std::size_t ncells = rTypes.size();
 
@@ -145,8 +157,67 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             ++end;
 
         int vtk_type = static_cast<int>(rTypes[start]);
-        if (vtk_type == 42)
-            throw ReadError("polyhedron cells are not supported by the C++ reader");
+        if (vtk_type == 42) {
+            if (pFaces == nullptr || rFaceOffsets.size() != ncells)
+                throw ReadError(
+                    "VTU: a cell has VTK type 42 (polyhedron) but the file carries no usable "
+                    "'faces'/'faceoffsets' arrays");
+            // Decode this run of polyhedra, then bucket by unique node count
+            // into polyhedron<N> -- the convention the OpenFOAM, EnSight, MED
+            // and CGNS readers all use.
+            std::vector<std::vector<std::vector<std::int64_t>>> cells;
+            std::vector<std::size_t> node_counts;
+            for (std::size_t c = start; c < end; ++c) {
+                // faceoffsets are END offsets, so this cell's stream begins
+                // where the previous polyhedral cell's ended. A non-polyhedral
+                // cell carries -1 and contributes nothing.
+                std::int64_t begin_at = 0;
+                for (std::size_t q = 0; q < c; ++q)
+                    if (rFaceOffsets[q] >= 0)
+                        begin_at = rFaceOffsets[q];
+                const std::int64_t end_at = rFaceOffsets[c];
+                if (end_at < 0 || begin_at > end_at ||
+                    static_cast<std::size_t>(end_at) > pFaces->size())
+                    throw ReadError("VTU: 'faceoffsets' entry is out of range for a polyhedron");
+                std::size_t at = static_cast<std::size_t>(begin_at);
+                const std::int64_t nfaces = (*pFaces)[at++];
+                std::vector<std::vector<std::int64_t>> faces;
+                std::vector<std::int64_t> uniq;
+                for (std::int64_t f = 0; f < nfaces; ++f) {
+                    const std::int64_t nn = (*pFaces)[at++];
+                    std::vector<std::int64_t> ring;
+                    ring.reserve(static_cast<std::size_t>(nn));
+                    for (std::int64_t k = 0; k < nn; ++k)
+                        ring.push_back((*pFaces)[at++]);
+                    uniq.insert(uniq.end(), ring.begin(), ring.end());
+                    faces.push_back(std::move(ring));
+                }
+                std::sort(uniq.begin(), uniq.end());
+                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                node_counts.push_back(uniq.size());
+                cells.push_back(std::move(faces));
+            }
+            std::vector<std::size_t> order;
+            std::map<std::size_t, std::vector<std::size_t>> groups;
+            std::size_t at_row = start;
+            for (std::size_t i = 0; i < cells.size(); ++i) {
+                if (groups.find(node_counts[i]) == groups.end())
+                    order.push_back(node_counts[i]);
+                groups[node_counts[i]].push_back(i);
+            }
+            for (std::size_t n : order) {
+                std::vector<std::vector<std::vector<std::int64_t>>> group;
+                for (std::size_t i : groups[n])
+                    group.push_back(std::move(cells[i]));
+                const std::size_t m = group.size();
+                rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
+                for (const auto& kv : rCellDataRaw)
+                    rMesh.AppendCellData(kv.first, slice_rows(kv.second, at_row, at_row + m));
+                at_row += m;
+            }
+            start = end;
+            continue;
+        }
         auto it = vmap.find(vtk_type);
         if (it == vmap.end())
             throw ReadError("VTK cell type " + std::to_string(vtk_type) +
