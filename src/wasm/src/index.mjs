@@ -44,10 +44,38 @@ function resolveVariant(variant) {
 }
 
 /**
- * @typedef {Object} CellBlock
+ * A rectangular (uniform node count) group of cells.
+ * @typedef {Object} RectangularCellBlock
  * @property {string} type - meshio++ cell type name (e.g. "triangle", "tetra10").
  * @property {Int32Array} data - flat, row-major connectivity (numCells * nodesPerCell).
  * @property {number} nodesPerCell
+ */
+
+/**
+ * A 1-level ragged (jagged polygon) block: rows of varying node count, so
+ * there is no single `nodesPerCell`. Two flat CSR arrays instead of a nested
+ * array of arrays, which embind has no efficient representation for.
+ * @typedef {Object} PolygonCellBlock
+ * @property {string} type
+ * @property {Int32Array} data - every row's node ids concatenated.
+ * @property {Int32Array} rowOffsets - each cell's start in `data` (numCells + 1).
+ */
+
+/**
+ * A 2-level ragged (polyhedron) block: each cell a list of faces, each face a
+ * list of node ids.
+ * @typedef {Object} PolyhedronCellBlock
+ * @property {string} type
+ * @property {Int32Array} data - every face's node ids concatenated.
+ * @property {Int32Array} faceOffsets - each face's start in `data` (totalFaces + 1).
+ * @property {Int32Array} cellOffsets - each cell's start in the face list (numCells + 1).
+ */
+
+/**
+ * One homogeneous group of cells. Which shape it is is told by key presence:
+ * `cellOffsets` means polyhedron, `rowOffsets` means polygon, `nodesPerCell`
+ * means rectangular. See doc/polyhedra.md.
+ * @typedef {RectangularCellBlock | PolygonCellBlock | PolyhedronCellBlock} CellBlock
  */
 
 /**
