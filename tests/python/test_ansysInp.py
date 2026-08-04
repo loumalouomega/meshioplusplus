@@ -43,7 +43,8 @@ def _read_from_str(content: str) -> Mesh:
 
 # Test data
 
-CUBE_TETRA_INP = textwrap.dedent("""\
+CUBE_TETRA_INP = textwrap.dedent(
+    """\
     /PREP7
     ET,1,285
     NBLOCK,6,SOLID,       8,       8
@@ -69,9 +70,11 @@ CUBE_TETRA_INP = textwrap.dedent("""\
     (8i10)
              1        -2
     FINISH
-""")
+"""
+)
 
-RANGE_CMBLOCK_INP = textwrap.dedent("""\
+RANGE_CMBLOCK_INP = textwrap.dedent(
+    """\
     /PREP7
     ET,1,285
     NBLOCK,6,SOLID,4,4
@@ -89,9 +92,11 @@ RANGE_CMBLOCK_INP = textwrap.dedent("""\
     (8i10)
              1        -4
     FINISH
-""")
+"""
+)
 
-ETBLOCK_INP = textwrap.dedent("""\
+ETBLOCK_INP = textwrap.dedent(
+    """\
     /PREP7
     ETBLOCK,1,1
     (2i9,19a9)
@@ -109,13 +114,15 @@ ETBLOCK_INP = textwrap.dedent("""\
             1        1        1        1        0        0        0        0        4        0        1        1        2        3        4
            -1
     FINISH
-""")
+"""
+)
 
 
 # A 10-node tetra (TET187). Its connectivity does not fit on the EBLOCK
 # first line (which holds at most 8 node IDs after the 11-field header), so
 # parsing exercises the continuation-line path.
-TETRA10_INP = textwrap.dedent("""\
+TETRA10_INP = textwrap.dedent(
+    """\
     /PREP7
     ET,1,187
     NBLOCK,6,SOLID,      10,      10
@@ -137,11 +144,13 @@ TETRA10_INP = textwrap.dedent("""\
             9       10
            -1
     FINISH
-""")
+"""
+)
 
 # CMBLOCK whose first item is a negative range marker (no preceding base
 # value). Such a file is malformed and must raise a clean ReadError.
-BAD_CMBLOCK_INP = textwrap.dedent("""\
+BAD_CMBLOCK_INP = textwrap.dedent(
+    """\
     /PREP7
     ET,1,285
     NBLOCK,6,SOLID,4,4
@@ -159,10 +168,12 @@ BAD_CMBLOCK_INP = textwrap.dedent("""\
     (8i10)
             -4
     FINISH
-""")
+"""
+)
 
 # CMBLOCK with two consecutive ranges: 1..4 then 6..8.
-MULTI_RANGE_CMBLOCK_INP = textwrap.dedent("""\
+MULTI_RANGE_CMBLOCK_INP = textwrap.dedent(
+    """\
     /PREP7
     ET,1,285
     NBLOCK,6,SOLID,8,8
@@ -184,7 +195,8 @@ MULTI_RANGE_CMBLOCK_INP = textwrap.dedent("""\
     (8i10)
              1        -4         6        -8
     FINISH
-""")
+"""
+)
 
 
 def _make_tetra_mesh() -> Mesh:
