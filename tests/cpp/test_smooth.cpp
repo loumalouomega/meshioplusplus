@@ -125,8 +125,7 @@ TEST(Smooth, DisplacedInteriorNodeReturnsTowardItsCentroid) {
     pts.As<double>()[node * 3 + 1] -= 0.35;
     mesh.AssignPoints(std::move(pts));
 
-    const double before =
-        std::hypot(point_at(mesh, node, 0) - 4.0, point_at(mesh, node, 1) - 4.0);
+    const double before = std::hypot(point_at(mesh, node, 0) - 4.0, point_at(mesh, node, 1) - 4.0);
     const SmoothResult r = smooth(mesh, opts(SmoothMethod::Laplacian, 8));
     const double after =
         std::hypot(point_at(r.mMesh, node, 0) - 4.0, point_at(r.mMesh, node, 1) - 4.0);
@@ -213,11 +212,19 @@ TEST(Smooth, GuardDoesNotLockInPreExistingInversions) {
     // any sign change and so pinned every pre-existing inversion permanently.
     // Drag one interior node clean through the plane of its neighbours, which
     // turns every hexahedron touching it inside out.
+    //
+    // The displacement was 3.5 before v9.16.0, when the signed volume fanned
+    // each face about its own first node. That decomposition reported those
+    // cells as inverted; the corner-average fan (detail/polyhedron.hpp) does
+    // not, and neither answer is "wrong" -- a self-intersecting hexahedron has
+    // no decomposition-independent signed volume. 5.0 is inverted under the
+    // canonical measure, so the fixture states its premise honestly rather than
+    // relying on an artefact of one triangulation.
     Mesh mesh = hex_block(3);
     const std::size_t tangled = (1 * 4 + 1) * 4 + 1;  // the node at (1, 1, 1)
     NDArray pts = mesh.Points();
     pts.MakeOwned();
-    pts.As<double>()[tangled * 3 + 0] += 3.5;
+    pts.As<double>()[tangled * 3 + 0] += 5.0;
     mesh.AssignPoints(std::move(pts));
     ASSERT_GT(compute_stats(mesh).mNumInverted, 0) << "fixture must start tangled";
 

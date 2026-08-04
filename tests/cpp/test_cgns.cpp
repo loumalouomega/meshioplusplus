@@ -23,6 +23,8 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include <hdf5.h>
@@ -32,6 +34,10 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+#include <cgnslib.h>
+#endif
+#include "meshioplusplus/operations/stats.hpp"
 
 using meshioplusplus::detail::read_double;  // NOLINT
 namespace h5 = meshioplusplus::h5;
@@ -601,5 +607,124 @@ TEST(CgnsOrdering, PermutationsAreInvolutions) {
         std::filesystem::remove(p, ec);
     }
 }
+
+// --- the cgnslib (MLL) backend ----------------------------------------------
+//
+// Two capabilities justify the optional dependency, and both are things the
+// raw-HDF5 reader in cgns.cpp fundamentally cannot have. Everything else about
+// the backend is covered for free by the suite above, which runs through it
+// whenever the flag is on.
+
+TEST(CgnsMll, ReportsWhetherTheBackendIsBuilt) {
+    // The predicate must agree with the macro, or every skip below is a lie.
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    EXPECT_TRUE(meshioplusplus::cgns_has_cgnslib());
+#else
+    EXPECT_FALSE(meshioplusplus::cgns_has_cgnslib());
+    // Compiled out, the entry point still exists and throws NAMING the flag --
+    // the partition_kahip_parts contract. A link error would break the
+    // Python-fallback shim; a silent downgrade would answer a different
+    // question than the caller asked.
+    EXPECT_THROW(meshioplusplus::read_cgns_mll("nonexistent.cgns"), meshioplusplus::ReadError);
+    try {
+        meshioplusplus::read_cgns_mll("nonexistent.cgns");
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("MESHIOPLUSPLUS_WITH_CGNSLIB"), std::string::npos);
+    }
+#endif
+}
+
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+
+TEST(CgnsMll, ReadsAnAdfContainerTheRawHdf5ReaderCannotOpen) {
+    // `.cgns` has two on-disk containers. cgns.cpp speaks HDF5 directly, so an
+    // ADF file is not merely unimplemented there -- it is unreachable by
+    // construction. This is the strongest single argument for the backend, and
+    // it is what makes the CGNS project's own example meshes usable.
+    if (!std::system("command -v cgnsconvert > /dev/null 2>&1") == 0)
+        GTEST_SKIP() << "cgnsconvert not on PATH";
+
+    const mt::Mesh m =
+        mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
+    const std::string hdf5 = mt::temp_path("_mll_hdf5.cgns");
+    const std::string adf = mt::temp_path("_mll_adf.cgns");
+    meshioplusplus::write_cgns(hdf5, m, -1);
+
+    // `-a` rewrites into the ADF container through cgnslib's own API.
+    const std::string cmd = "cgnsconvert -a '" + hdf5 + "' '" + adf + "' > /dev/null 2>&1";
+    if (std::system(cmd.c_str()) != 0) {
+        std::remove(hdf5.c_str());
+        GTEST_SKIP() << "cgnsconvert -a failed (this cgnslib may be built without ADF)";
+    }
+
+    // The MLL reads it...
+    const mt::Mesh via_mll = meshioplusplus::read_cgns_mll(adf);
+    EXPECT_EQ(via_mll.NumPoints(), 4u);
+    ASSERT_EQ(via_mll.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(via_mll.Cells(0).Type()), "tetra");
+
+    std::remove(hdf5.c_str());
+    std::remove(adf.c_str());
+}
+
+TEST(CgnsMll, ReadsNgonNfacePolyhedralSections) {
+    // The other capability: NGON_n lists faces, NFACE_n lists each cell as
+    // SIGNED face ids (negative = traverse that face reversed, which is how
+    // CGNS orients a shared face outward from each of the two cells using it).
+    // Written here through cgnslib's own API, so the bytes are the MLL's and
+    // the test is not merely reading back our own idea of the encoding.
+    const std::string path = mt::temp_path("_mll_ngon.cgns");
+    std::remove(path.c_str());
+
+    int fn = 0, B = 0, Z = 0, S = 0;
+    ASSERT_EQ(cg_open(path.c_str(), CG_MODE_WRITE, &fn), CG_OK) << cg_get_error();
+    ASSERT_EQ(cg_base_write(fn, "Base", 3, 3, &B), CG_OK);
+
+    // A unit cube: 8 points, 6 quad faces, 1 cell.
+    cgsize_t zsize[3] = {8, 1, 0};
+    ASSERT_EQ(cg_zone_write(fn, B, "Zone", zsize, CGNS_ENUMV(Unstructured), &Z), CG_OK);
+    const double x[8] = {0, 1, 1, 0, 0, 1, 1, 0};
+    const double y[8] = {0, 0, 1, 1, 0, 0, 1, 1};
+    const double z[8] = {0, 0, 0, 0, 1, 1, 1, 1};
+    int c = 0;
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateX", x, &c), CG_OK);
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateY", y, &c), CG_OK);
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateZ", z, &c), CG_OK);
+
+    // NGON_n: the cube's six quads, 1-based, outward.
+    const cgsize_t faces[24] = {1, 4, 3, 2, 5, 6, 7, 8, 1, 2, 6, 5,
+                                3, 4, 8, 7, 1, 5, 8, 4, 2, 3, 7, 6};
+    cgsize_t face_off[7] = {0, 4, 8, 12, 16, 20, 24};
+    ASSERT_EQ(
+        cg_poly_section_write(fn, B, Z, "Faces", CGNS_ENUMV(NGON_n), 1, 6, 0, faces, face_off, &S),
+        CG_OK)
+        << cg_get_error();
+
+    // NFACE_n: one cell referencing all six faces (ids 1..6).
+    const cgsize_t cells[6] = {1, 2, 3, 4, 5, 6};
+    cgsize_t cell_off[2] = {0, 6};
+    ASSERT_EQ(
+        cg_poly_section_write(fn, B, Z, "Cells", CGNS_ENUMV(NFACE_n), 7, 7, 0, cells, cell_off, &S),
+        CG_OK)
+        << cg_get_error();
+    ASSERT_EQ(cg_close(fn), CG_OK);
+
+    const mt::Mesh got = meshioplusplus::read_cgns_mll(path);
+    EXPECT_EQ(got.NumPoints(), 8u);
+    ASSERT_EQ(got.NumCellBlocks(), 1u);
+    const auto cb = got.Cells(0);
+    EXPECT_TRUE(cb.IsPolyhedron());
+    EXPECT_EQ(std::string(cb.Type()), "polyhedron8");
+    ASSERT_EQ(cb.NumCells(), 1u);
+    EXPECT_EQ(cb.NumFaces(0), 6u);
+
+    // The geometry must actually be the unit cube -- reading six faces of the
+    // right arity proves nothing about whether the node ids landed correctly.
+    EXPECT_NEAR(meshioplusplus::compute_stats(got).mUnsignedVolume, 1.0, 1e-12);
+
+    std::remove(path.c_str());
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_CGNSLIB
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

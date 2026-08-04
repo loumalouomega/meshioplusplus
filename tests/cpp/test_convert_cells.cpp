@@ -235,11 +235,43 @@ TEST(ConvertCells, SimplexifyReplicatesCellDataAndRecordsParents) {
     EXPECT_EQ(r.mCellMaps[0].As<std::int64_t>()[0], 0);
 }
 
-TEST(ConvertCells, SimplexifyPolyhedronThrows) {
+TEST(ConvertCells, SimplexifyPolyhedronFansIntoTetrahedra) {
+    // Since v9.17.0 a polyhedron decomposes rather than raising: one tet per
+    // (face, edge-of-that-face), from the face's corner average to the cell's.
     Mesh m;
     m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}));
-    m.AddPolyhedronBlock("polyhedron4", {{{0, 1, 2}, {0, 1, 3}, {1, 2, 3}, {0, 2, 3}}});
-    EXPECT_THROW(convert_cells(m, opts(ConvertCellsMode::Simplexify)), std::invalid_argument);
+    m.AddPolyhedronBlock("polyhedron4", {{{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}}});
+    ConvertCellsResult r = convert_cells(m, opts(ConvertCellsMode::Simplexify));
+    ASSERT_EQ(r.mMesh.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(r.mMesh.Cells(0).Type()), "tetra");
+    // 4 faces x 3 edges each = 12 children; 1 cell centroid + 4 face centroids.
+    EXPECT_EQ(r.mMesh.Cells(0).NumCells(), 12u);
+    EXPECT_EQ(r.mMesh.NumPoints(), 4u + 5u);
+    // Block structure stays 1:1 and the map is a contiguous FirstChild run.
+    ASSERT_EQ(r.mCellMaps.size(), 1u);
+    EXPECT_EQ(meshioplusplus::detail::read_int(r.mCellMaps[0], 0), 0);
+}
+
+TEST(ConvertCells, SimplexifyingAPolyhedronConservesVolumeExactly) {
+    // The oracle the shared fan buys: the children's total volume is the
+    // parent's, both being literally the same sum of the same tetrahedra. A
+    // single-centroid decomposition would not conserve it on a warped cell.
+    const std::vector<std::vector<double>> pts = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0},       {0, 1, 0},
+                                                  {0, 0, 1}, {1, 0, 1}, {1.6, 1.4, 1.3}, {0, 1, 1}};
+    Mesh m;
+    m.AssignPoints(mt::points_from(pts));
+    m.AddPolyhedronBlock(
+        "polyhedron8",
+        {{{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}}});
+    const double before = compute_stats(m).mSignedVolume;
+    const Mesh simp = convert_cells(m, opts(ConvertCellsMode::Simplexify)).mMesh;
+    const double after = compute_stats(simp).mSignedVolume;
+    EXPECT_GT(before, 0.0);
+    EXPECT_NEAR(after, before, 1e-14) << "the decomposition did not conserve volume";
+
+    // Every child must be positively oriented, or the "same sum" claim is a
+    // coincidence of cancelling signs.
+    EXPECT_EQ(compute_stats(simp).mNumInverted, 0);
 }
 
 TEST(ConvertCells, SimplexifyPolygonFansIntoTriangles) {

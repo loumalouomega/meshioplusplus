@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -957,6 +958,59 @@ TEST(Med, IsAnOptionsAwareReader) {
     // WASM/C-API/Fortran build, meant a real Salome/Code_Aster file was simply
     // unreadable there. Exodus's twin assertion is in test_netcdf_formats.cpp.
     EXPECT_TRUE(meshioplusplus::registry_reader_supports_options("med"));
+}
+
+TEST(Med, PolyhedronPoeRoundTrip) {
+    // MED_POLYHEDRON (POE) needs THREE 1-based arrays where a polygon needs
+    // two: NOD, INN (face -> NOD) and IND (cell -> face). Before v9.19.0
+    // neither the C++ nor the Python path had a POE entry at all -- contrary to
+    // what doc/formats/med.md claimed, which said polyhedra were "Python-only".
+    std::string p = mt::temp_path("_poe.med");
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from(
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}));
+    m.AddPolyhedronBlock(
+        "polyhedron8",
+        {{{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}}});
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    const auto cb = out.Cells(0);
+    EXPECT_TRUE(cb.IsPolyhedron());
+    EXPECT_EQ(cb.Type(), "polyhedron8");
+    ASSERT_EQ(cb.NumCells(), 1u);
+    EXPECT_EQ(cb.NumFaces(0), 6u);
+    // Geometry, not just arity: six faces of the right size prove nothing
+    // about whether the node ids landed where they belong.
+    EXPECT_NEAR(meshioplusplus::compute_stats(out).mUnsignedVolume, 1.0, 1e-12);
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, MixedPolyhedronNodeCountsShareOnePoeSection) {
+    // MED holds ONE section per type inside a MAI group, so polyhedron4 and
+    // polyhedron5 must consolidate into the SAME POE. Grouping on the exact
+    // meshio type string would try to create POE twice and fail at group
+    // creation -- which is why the writer canonicalises every polyhedron<N>.
+    std::string p = mt::temp_path("_poe_mixed.med");
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 1, 1}}));
+    m.AddPolyhedronBlock("polyhedron4", {{{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}}});
+    m.AddPolyhedronBlock("polyhedron5", {{{1, 2, 3}, {1, 3, 4}, {2, 1, 4}, {3, 2, 4}}});
+
+    meshioplusplus::write_med(p, m, meshioplusplus::MedInfo{});
+    meshioplusplus::MedInfo info;
+    meshioplusplus::Mesh out = meshioplusplus::read_med(p, info);
+    std::size_t total = 0;
+    for (const auto cb : out.CellRange()) {
+        EXPECT_TRUE(cb.IsPolyhedron());
+        total += cb.NumCells();
+    }
+    EXPECT_EQ(total, 2u);
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

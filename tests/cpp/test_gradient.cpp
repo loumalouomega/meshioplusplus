@@ -65,8 +65,7 @@ using meshioplusplus::NDArray;
 // division of two quantities each accumulated over a handful of terms.
 constexpr double kTight = 1e-12;
 
-GradientOptions opts(const std::string& rArray,
-                     GradientMethod method = GradientMethod::GreenGauss,
+GradientOptions opts(const std::string& rArray, GradientMethod method = GradientMethod::GreenGauss,
                      GradientOperator op = GradientOperator::Gradient) {
     GradientOptions o;
     o.mArrayName = rArray;
@@ -182,6 +181,53 @@ TEST(Gradient, LinearFieldOnAWarpedHexIsExact) {
     expect_grad(r.mMesh, "f:gradient", 0, 0, -1.5, 4.0, 0.25);
 }
 
+TEST(Gradient, LinearFieldOnAPolyhedronIsExact) {
+    // The headline property, and the reason the roadmap calls Green-Gauss
+    // "naturally polyhedral": it needs only faces, so a polyhedron block goes
+    // through the SAME code as a hexahedron and must recover a linear field's
+    // gradient just as exactly. Before v9.16.0 a polyhedron block was skipped
+    // and NaN'd instead.
+    const auto pts = warped_hex_points();
+    Mesh m;
+    m.AssignPoints(mt::points_from(pts));
+    // The warped hex's own six faces, outward-wound, as a polyhedron.
+    m.AddPolyhedronBlock(
+        "polyhedron8",
+        {{{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}}});
+    m.AddPointData("f", linear_scalar(pts, -1.5, 4.0, 0.25, -3.0));
+
+    const GradientResult r = gradient(m, opts("f"));
+    EXPECT_EQ(r.mNumSkipped, 0);
+    EXPECT_EQ(r.mNumFallback, 0);
+    expect_grad(r.mMesh, "f:gradient", 0, 0, -1.5, 4.0, 0.25);
+}
+
+TEST(Gradient, APolyhedronAgreesWithTheIdenticalHexahedron) {
+    // The same solid expressed two ways must differentiate identically -- which
+    // is what makes the openfoam reader's (nfaces, npoints) classification
+    // heuristic harmless: whichever bucket a cell lands in, the answer matches.
+    const auto pts = warped_hex_points();
+    const NDArray f = linear_scalar(pts, 0.7, -2.2, 3.1, 0.0);
+
+    Mesh hex = mt::make_mesh(pts, "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
+    hex.AddPointData("f", f);
+
+    Mesh poly;
+    poly.AssignPoints(mt::points_from(pts));
+    poly.AddPolyhedronBlock(
+        "polyhedron8",
+        {{{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}}});
+    poly.AddPointData("f", f);
+
+    const GradientResult a = gradient(hex, opts("f"));
+    const GradientResult b = gradient(poly, opts("f"));
+    for (std::size_t k = 0; k < 3; ++k)
+        EXPECT_NEAR(meshioplusplus::detail::read_double(a.mMesh.CellData("f:gradient", 0), k),
+                    meshioplusplus::detail::read_double(b.mMesh.CellData("f:gradient", 0), k),
+                    1e-13)
+            << "component " << k;
+}
+
 TEST(Gradient, LinearFieldOnATetAndAWedgeIsExact) {
     const std::vector<std::vector<double>> tp = {
         {0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
@@ -189,9 +235,8 @@ TEST(Gradient, LinearFieldOnATetAndAWedgeIsExact) {
     t.AddPointData("f", linear_scalar(tp, 2.0, 3.0, 5.0, 1.0));
     expect_grad(gradient(t, opts("f")).mMesh, "f:gradient", 0, 0, 2.0, 3.0, 5.0);
 
-    const std::vector<std::vector<double>> wp = {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0},
-                                                {0.0, 1.0, 0.0}, {0.0, 0.0, 2.0},
-                                                {1.0, 0.0, 2.0}, {0.0, 1.0, 2.0}};
+    const std::vector<std::vector<double>> wp = {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0},
+                                                 {0.0, 0.0, 2.0}, {1.0, 0.0, 2.0}, {0.0, 1.0, 2.0}};
     Mesh w = mt::make_mesh(wp, "wedge", {{0, 1, 2, 3, 4, 5}});
     w.AddPointData("f", linear_scalar(wp, -4.0, 6.0, 0.5, 0.0));
     expect_grad(gradient(w, opts("f")).mMesh, "f:gradient", 0, 0, -4.0, 6.0, 0.5);
@@ -265,8 +310,8 @@ TEST(Gradient, DivergenceOfAnAnisotropicFieldIsTheExactConstant) {
     const double C[9] = {2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 5.0};
     m.AddPointData("u", linear_vector(pts, C));
 
-    const GradientResult r = gradient(m, opts("u", GradientMethod::GreenGauss,
-                                              GradientOperator::Divergence));
+    const GradientResult r =
+        gradient(m, opts("u", GradientMethod::GreenGauss, GradientOperator::Divergence));
     ASSERT_TRUE(r.mMesh.HasCellData("u:divergence"));
     EXPECT_NEAR(meshioplusplus::detail::read_double(r.mMesh.CellData("u:divergence", 0), 0), 10.0,
                 kTight);
@@ -418,8 +463,8 @@ TEST(Gradient, UnsupportedCellsAreNanAndCounted) {
     // A boundary triangle block on a tet mesh is below the mesh's dimension and
     // must be NaN-and-counted, never approximated.
     Mesh m;
-    m.AssignPoints(mt::points_from(
-        {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}));
+    m.AssignPoints(
+        mt::points_from({{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}));
     m.AddCellBlock("tetra", mt::conn_from({{0, 1, 2, 3}}));
     m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}, {0, 1, 3}}));
     m.AddPointData("f", mt::data_array({0.0, 1.0, 2.0, 3.0}));
@@ -506,9 +551,8 @@ TEST(Gradient, BadArgumentsThrow) {
         << "a component selection is meaningless for divergence";
 
     // A scalar cannot have a divergence.
-    EXPECT_THROW(
-        gradient(m, opts("T", GradientMethod::GreenGauss, GradientOperator::Divergence)),
-        std::invalid_argument);
+    EXPECT_THROW(gradient(m, opts("T", GradientMethod::GreenGauss, GradientOperator::Divergence)),
+                 std::invalid_argument);
 
     GradientOptions field = opts("T");
     field.mLocation = DataLocation::Field;
