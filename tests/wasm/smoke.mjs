@@ -1035,10 +1035,11 @@ step('availableFormats reports what this build can read and write', () => {
     const { readers, writers } = m.availableFormats();
     assert.ok(Array.isArray(readers) && Array.isArray(writers));
     assert.ok(readers.includes('vtu') && writers.includes('vtu'));
-    // The two lists genuinely differ: openfoam is read-only, svg/tikz are
-    // write-only. A viewer that assumes one list would offer broken menu items.
-    assert.ok(readers.includes('openfoam') && !writers.includes('openfoam'));
+    // The two lists genuinely differ: svg/tikz are write-only. A viewer that
+    // assumes one list would offer broken menu items.
     assert.ok(writers.includes('svg') && !readers.includes('svg'));
+    // openfoam was read-only until v9.20.0 -- this step used to assert that.
+    assert.ok(readers.includes('openfoam') && writers.includes('openfoam'));
     // The HDF5- and netCDF-backed formats are in this build too (the wasm32
     // libhdf5/libnetcdf come from build/build-wasm-deps.sh) -- if any of these
     // is missing, the artifact was linked without its dependency and the
@@ -1054,6 +1055,26 @@ step('availableFormats reports what this build can read and write', () => {
     // before this entry, WASM could select only the lossy 4.1 writer and had
     // no way to reach the one that round-trips region MEMBERSHIP.
     assert.ok(writers.includes('gmsh22') && !readers.includes('gmsh22'));
+});
+
+step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {
+    // The only writer that creates a directory rather than a file, so it is
+    // the only one whose MEMFS behaviour is not covered by every other step.
+    const hex = {
+        points: new Float64Array([
+            0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+            0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1,
+        ]),
+        dim: 3,
+        cells: [{ type: 'hexahedron', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7]), nodesPerCell: 8 }],
+    };
+    m.writeMesh('/of/case.foam', hex, 'openfoam');
+    for (const f of ['points', 'faces', 'owner', 'neighbour', 'boundary'])
+        assert.ok(m.FS.readFile(`/of/constant/polyMesh/${f}`).length > 0, `missing ${f}`);
+
+    const back = m.readMesh('/of/case.foam', 'openfoam');
+    assert.equal(back.points.length, 24);
+    assert.ok(back.cells.some((c) => c.type === 'hexahedron'));
 });
 
 step('gmsh22 round-trips a region-only mesh; gmsh (4.1) needs entity structure', () => {

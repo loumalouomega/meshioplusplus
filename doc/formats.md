@@ -33,7 +33,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — |
 | [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — |
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — |
-| [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | — | — |
+| [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | ✓ | — |
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
 | [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — |
@@ -69,7 +69,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `tikz`:** Write-only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
 
-**Note on `openfoam`:** Read-only; a directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file.
+**Note on `openfoam`:** A directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file — so it is the only writer that *creates a directory*. Writing takes a `.foam` marker file, a `polyMesh` directory, or a case root; a case *directory* has no extension, so that form needs an explicit `file_format="openfoam"`. ASCII only on write (binary is a follow-up). Polyhedral cells are native here.
 
 **Note on `mfm`:** Single element type per file (non-hybrid), linear elements only.
 
@@ -182,9 +182,9 @@ MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_me
 
 `meshioplusplus.ansysInp.read(filename)` / `meshioplusplus.ansysInp.write(filename, mesh)` — no extra options. See the [`.inp` note](#format-table) above for the Abaqus extension collision.
 
-### OpenFOAM (`.foam`, read-only)
+### OpenFOAM (`.foam`)
 
-`meshioplusplus.openfoam.read(filename)` — no extra options, no writer.
+`meshioplusplus.openfoam.read(filename)` / `meshioplusplus.openfoam.write(filename, mesh)` — no extra options. `write` creates `<case>/constant/polyMesh/`; it is the only meshio++ writer that produces a directory, and needs the compiled core (there is no Python fallback writer).
 
 ### CGNS (`.cgns`)
 

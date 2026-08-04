@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import meshioplusplus
 from meshioplusplus.openfoam._openfoam import (
     _build_boundary_cells,
     _build_boundary_polygons,
@@ -1167,3 +1168,145 @@ class TestRobustness:
         # Only the one valid face should be included
         total = sum(len(cb.data) for cb in cells)
         assert total == 1
+
+
+class TestWrite:
+    """The polyMesh writer (C++ core only -- see openfoam/__init__.py)."""
+
+    @staticmethod
+    def _hex_grid(n):
+        p = n + 1
+        pts = np.array(
+            [[i, j, k] for i in range(p) for j in range(p) for k in range(p)],
+            dtype=float,
+        )
+
+        def nid(i, j, k):
+            return (i * p + j) * p + k
+
+        rows = [
+            [
+                nid(i, j, k),
+                nid(i + 1, j, k),
+                nid(i + 1, j + 1, k),
+                nid(i, j + 1, k),
+                nid(i, j, k + 1),
+                nid(i + 1, j, k + 1),
+                nid(i + 1, j + 1, k + 1),
+                nid(i, j + 1, k + 1),
+            ]
+            for i in range(n)
+            for j in range(n)
+            for k in range(n)
+        ]
+        return meshioplusplus.Mesh(pts, [("hexahedron", np.array(rows))])
+
+    def test_writes_all_five_files(self, tmp_path):
+        case = tmp_path / "case.foam"
+        meshioplusplus.openfoam.write(case, self._hex_grid(2))
+        poly = tmp_path / "constant" / "polyMesh"
+        for name in ("points", "faces", "owner", "neighbour", "boundary"):
+            assert (poly / name).is_file(), f"{name} was not written"
+        # The .foam marker is what makes the case openable.
+        assert case.is_file()
+
+    def test_extension_inference_reaches_the_writer(self, tmp_path):
+        # `.foam` gained a registry entry in v9.20.0; before that `write` could
+        # not infer the format at all.
+        case = tmp_path / "case.foam"
+        meshioplusplus.write(case, self._hex_grid(1))
+        assert (tmp_path / "constant" / "polyMesh" / "points").is_file()
+
+    def test_round_trip_preserves_cells_and_points(self, tmp_path):
+        m = self._hex_grid(2)
+        case = tmp_path / "case.foam"
+        meshioplusplus.write(case, m)
+        back = meshioplusplus.read(case)
+        assert len(back.points) == 27
+        nhex = sum(len(c.data) for c in back.cells if c.type == "hexahedron")
+        assert nhex == 8
+
+    def test_untagged_mesh_gets_default_faces(self, tmp_path):
+        case = tmp_path / "case.foam"
+        meshioplusplus.write(case, self._hex_grid(1))
+        back = meshioplusplus.read(case)
+        assert back.cell_tags == {-1: ["defaultFaces"]}
+        assert back.openfoam_patch_types == {-1: "patch"}
+
+    def test_patch_names_and_types_round_trip(self, tmp_path):
+        # Read a real case, write it back, and check the boundary survives.
+        src = tmp_path / "src"
+        poly = src / "constant" / "polyMesh"
+        poly.mkdir(parents=True)
+
+        def hdr(cls, obj):
+            return f"FoamFile\n{{\n format ascii;\n class {cls};\n object {obj};\n}}\n"
+
+        (poly / "points").write_text(
+            hdr("vectorField", "points") + "8\n(\n(0 0 0)\n(1 0 0)\n(1 1 0)\n(0 1 0)\n"
+            "(0 0 1)\n(1 0 1)\n(1 1 1)\n(0 1 1)\n)\n"
+        )
+        (poly / "faces").write_text(
+            hdr("faceList", "faces") + "6\n(\n4(0 3 2 1)\n4(4 5 6 7)\n4(0 1 5 4)\n"
+            "4(2 3 7 6)\n4(1 2 6 5)\n4(0 4 7 3)\n)\n"
+        )
+        (poly / "owner").write_text(
+            hdr("labelList", "owner") + "6\n(\n0\n0\n0\n0\n0\n0\n)\n"
+        )
+        (poly / "boundary").write_text(
+            hdr("polyBoundaryMesh", "boundary")
+            + "2\n(\nlower { type wall; nFaces 1; startFace 0; }\n"
+            "rest { type symmetry; nFaces 5; startFace 1; }\n)\n"
+        )
+
+        mesh = meshioplusplus.openfoam.read(src)
+        assert mesh.openfoam_patch_types == {-1: "wall", -2: "symmetry"}
+
+        out = tmp_path / "out.foam"
+        meshioplusplus.openfoam.write(out, mesh)
+        back = meshioplusplus.openfoam.read(out)
+        names = {v[0] for v in back.cell_tags.values()}
+        assert names == {"lower", "rest"}
+        assert set(back.openfoam_patch_types.values()) == {"wall", "symmetry"}
+
+    def test_polyhedron_cell_is_writable(self, tmp_path):
+        # No C++ writer accepted a polyhedron block before v9.19.0, and OpenFOAM
+        # is the format they are native to.
+        pts = np.array(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
+            ],
+            dtype=float,
+        )
+        faces = [
+            [
+                [0, 3, 2, 1],
+                [4, 5, 6, 7],
+                [0, 1, 5, 4],
+                [2, 3, 7, 6],
+                [1, 2, 6, 5],
+                [0, 4, 7, 3],
+            ]
+        ]
+        m = meshioplusplus.Mesh(pts, [("polyhedron8", faces)])
+        case = tmp_path / "case.foam"
+        meshioplusplus.openfoam.write(case, m)
+        back = meshioplusplus.openfoam.read(case)
+        assert len(back.points) == 8
+        # A single cube reconstructs as a hexahedron on the way back in.
+        assert any(c.type == "hexahedron" for c in back.cells)
+
+    def test_a_2d_only_mesh_is_refused_by_name(self, tmp_path):
+        m = meshioplusplus.Mesh(
+            np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float),
+            [("quad", np.array([[0, 1, 2, 3]]))],
+        )
+        with pytest.raises(Exception, match="volume cells"):
+            meshioplusplus.openfoam.write(tmp_path / "case.foam", m)

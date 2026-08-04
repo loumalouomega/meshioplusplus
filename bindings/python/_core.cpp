@@ -2007,8 +2007,36 @@ finalizes.
             ctags[py::int_(kv.first)] = kv.second;
         pymesh.attr("cell_tags") = ctags;
         pymesh.attr("point_tags") = py::dict();
+        py::dict ptypes;
+        for (const auto& kv : info.mPatchTypes)
+            ptypes[py::int_(kv.first)] = kv.second;
+        pymesh.attr("openfoam_patch_types") = ptypes;
         return pymesh;
     });
+
+    // OpenFOAM polyMesh writer. `allow_ragged` is mandatory: a polyhedron block
+    // is this format's native cell shape, and the reader emits them, so a
+    // round-trip write would otherwise throw on our own output.
+    m.def(
+        "openfoam_write",
+        [](const std::string& path, py::object pymesh, py::dict cell_tags, py::dict patch_types) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::OpenFoamInfo info;
+            for (auto item : cell_tags) {
+                std::vector<std::string> names;
+                for (auto n : py::cast<py::iterable>(item.second))
+                    names.push_back(py::cast<std::string>(n));
+                info.mCellTags[py::cast<std::int64_t>(item.first)] = std::move(names);
+            }
+            for (auto item : patch_types)
+                info.mPatchTypes[py::cast<std::int64_t>(item.first)] =
+                    py::cast<std::string>(item.second);
+            meshioplusplus::write_openfoam(path, cpp, info);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("cell_tags") = py::dict(),
+        py::arg("patch_types") = py::dict());
 
     // WKT (TIN) writer / reader (.wkt).
     m.def("wkt_write", [](const std::string& path, py::object pymesh) {

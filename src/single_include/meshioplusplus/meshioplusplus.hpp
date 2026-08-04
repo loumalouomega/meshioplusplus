@@ -72,7 +72,8 @@
  *  | 2   | v9.1.0             | `GeometricalEntity`, `ModelPart`, `MdpaInfo`, … |
  *  | 3   | v9.2.0 .. v9.4.1   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
  *  | 4   | v9.5.0 .. v9.8.0   | `RefineOptions` gained selection/closure fields |
- *  | 5   | v9.9.0             | `MedInfo` gained four lenient-read fields       |
+ *  | 5   | v9.9.0 .. v9.19.0  | `MedInfo` gained four lenient-read fields       |
+ *  | 6   | v9.20.0            | `OpenFoamInfo` gained `mPatchTypes`             |
  *
  * ### This is the ONE place the number is written
  *
@@ -91,7 +92,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 5
+#define MESHIOPLUSPLUS_ABI_VERSION 6
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -6417,6 +6418,567 @@ MESHIOPLUSPLUS_API FaceColors resolve_face_colors(const ColorSpec& rSpec, const 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/face_color.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/geometry.hpp =====
+/**
+ * @file geometry.hpp
+ * @brief Small, dependency-free 3D vector primitives and mesh-coordinate
+ * readers shared by the mesh-operations layer (`operations/quality.cpp`,
+ * `operations/surface.cpp`).
+ *
+ * `Vec3` is a plain `std::array<double, 3>`; the `vec3_*`/`triple_product`/
+ * `det3` primitives are tiny per-operation arithmetic invoked repeatedly
+ * inside per-cell hot loops (surface normals, quality metrics), so they stay
+ * `inline` here rather than moving to a `.cpp` — at that call frequency,
+ * removing the function-call boundary is what lets the compiler fold/
+ * vectorize the surrounding loop. `read_point`/`read_corner_coords`/
+ * `cell_corner_count` are each called once per cell (not once per scalar), so
+ * their bodies live in `src/cpp/src/detail/geometry.cpp` instead.
+ *
+ * Coordinates are pulled out of an `NDArray` through `detail::read_double`, so
+ * these work regardless of the point/connectivity dtype and under every mesh
+ * backend.
+ */
+
+// System includes
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A point/vector in 3D. 2D meshes are padded with z = 0 on read.
+using Vec3 = std::array<double, 3>;
+
+/** @brief Component-wise difference `a - b`. */
+inline Vec3 vec3_sub(const Vec3& a, const Vec3& b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+/** @brief Component-wise sum `a + b`. */
+inline Vec3 vec3_add(const Vec3& a, const Vec3& b) {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+}
+
+/** @brief Scalar multiple `s * a`. */
+inline Vec3 vec3_scale(const Vec3& a, double s) {
+    return {a[0] * s, a[1] * s, a[2] * s};
+}
+
+/** @brief Dot product `a . b`. */
+inline double vec3_dot(const Vec3& a, const Vec3& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+/** @brief Cross product `a x b`. */
+inline Vec3 vec3_cross(const Vec3& a, const Vec3& b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+/** @brief Squared Euclidean length `a . a`. */
+inline double vec3_norm_sq(const Vec3& a) {
+    return vec3_dot(a, a);
+}
+
+/** @brief Euclidean length `|a|`. */
+inline double vec3_norm(const Vec3& a) {
+    return std::sqrt(vec3_norm_sq(a));
+}
+
+/**
+ * @brief Unit vector along `a`, or the zero vector when `|a| < eps`.
+ * @param a Vector to normalize.
+ * @param eps Length below which `a` is treated as degenerate.
+ * @return `a / |a|`, or `{0,0,0}` if `|a| < eps`.
+ */
+inline Vec3 vec3_normalize(const Vec3& a, double eps = 1e-300) {
+    const double n = vec3_norm(a);
+    if (n < eps)
+        return {0.0, 0.0, 0.0};
+    return vec3_scale(a, 1.0 / n);
+}
+
+/** @brief Scalar triple product `a . (b x c)` (signed volume of the parallelepiped). */
+inline double triple_product(const Vec3& a, const Vec3& b, const Vec3& c) {
+    return vec3_dot(a, vec3_cross(b, c));
+}
+
+/** @brief Determinant of the 3x3 matrix whose columns are `c0`, `c1`, `c2`. */
+inline double det3(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
+    return triple_product(c0, c1, c2);
+}
+
+/**
+ * @brief Reads global point @p nodeId as a `Vec3`, padding z = 0 when the mesh
+ * is 2D (`pointDim == 2`).
+ * @param rPoints The `(num_points, pointDim)` point array.
+ * @param pointDim Spatial dimension of the points (2 or 3).
+ * @param nodeId Global point index.
+ * @return The point's coordinates, with unused components set to 0.
+ */
+MESHIOPLUSPLUS_API Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId);
+
+/**
+ * @brief Reads the first @p n connectivity entries of one cell row into @p rOut
+ * as `Vec3` coordinates (used to gather a cell's corner nodes).
+ * @param rPoints The point array.
+ * @param pointDim Spatial dimension of the points.
+ * @param rConn The block connectivity array.
+ * @param rowOffset Flat offset of the cell's row (`cell * nodes_per_cell`).
+ * @param n Number of leading entries to read (the corner count).
+ * @param rOut Cleared and filled with @p n coordinates.
+ */
+MESHIOPLUSPLUS_API void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
+                        std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut);
+
+/**
+ * @brief Number of corner (linear-parent) nodes of a cell type. Corners are
+ * always the leading connectivity entries in meshio/VTK ordering, so a
+ * quadratic cell can be reduced to its linear parent by reading the first
+ * `cell_corner_count(type)` nodes.
+ * @param type The cell type to query.
+ * @return The corner count, or 0 for variable-node-count / unsupported types
+ *         (`Polygon`, `Polyhedron`, the VTK Lagrange family, `Custom`) — the
+ *         caller must skip those.
+ */
+MESHIOPLUSPLUS_API int cell_corner_count(CellType type);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/geometry.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/polyhedron.hpp =====
+/**
+ * @file polyhedron.hpp
+ * @brief The geometric kernel for cells bounded by arbitrary polygonal faces:
+ * volume, centroid, surface area, face normals and areas, and the winding
+ * repair every one of those depends on.
+ *
+ * ### Why this is a separate header
+ *
+ * `detail/geometry.hpp` is inline `Vec3` arithmetic included nearly everywhere.
+ * This kernel needs `mesh.hpp` and `cell_faces.hpp`, so folding it in there
+ * would drag heavy includes into every consumer. Keeping the two apart also
+ * keeps `geometry.hpp` byte-identical across this release.
+ *
+ * ### The impedance mismatch this resolves
+ *
+ * `cell_faces.hpp` describes a tabulated type's faces as **local** node indices
+ * into a rectangular connectivity row. A polyhedron block has no row: it has
+ * `NumFaces(cell)` faces of **global** node ids. `CellRings` is the single
+ * shape both reduce to, so one measure kernel serves a `hexahedron` and a
+ * `polyhedron12` alike, and every existing loop that wrote
+ * `coords[face.mNodes[i]]` ports across unchanged.
+ *
+ * ### Winding: repaired, not required
+ *
+ * Faces *should* wind so their right-hand normal points out of the cell. Real
+ * meshes do not always oblige -- this repository's own long-standing
+ * `polyhedron5` test fixture has two faces traversing a shared edge in the
+ * same direction -- so `orient_rings` fixes the winding per cell (BFS over the
+ * faces' shared-edge dual, then a global flip if the enclosed volume came out
+ * negative) rather than trusting or rejecting it. A face set that is not a
+ * closed orientable surface is reported as `Unorientable`, never guessed at.
+ *
+ * ### Non-planar faces: the corner-average fan
+ *
+ * A face with four or more non-coplanar corners bounds no unique volume. This
+ * kernel resolves it as the fan of triangles from each of the face's edges to
+ * that face's **corner average**, each paired with the cell's own corner
+ * average. Five independent reasons, because any one alone would read as
+ * taste:
+ *
+ *  1. **The apex is a function of the FACE ALONE, so a shared face is
+ *     triangulated identically from both sides whatever each cell's local node
+ *     order happens to be.** Two cells meeting on a warped quad therefore agree
+ *     on it exactly, and their boundary integrals cancel there. A fan about the
+ *     ring's first node is a function of the cell's *storage*, so the two sides
+ *     can pick different diagonals and the sum over a closed region drifts.
+ *     (A structured generator numbers shared faces consistently and so happens
+ *     to escape this -- which is precisely why the test for it uses two cells
+ *     that store the shared ring differently, and why a mesh that looks fine
+ *     can hide the defect until it is read from a file that does not.)
+ *     `PolyhedronKernel.CellsSharingAWarpedFaceAgreeOnIt` pins it.
+ *  2. **Invariance to the ring's start node**, which is the same property seen
+ *     from one cell. OpenFOAM's `faces`, MED's `INN` and VTU's `faces` stream
+ *     all choose that start node arbitrarily, so two readers of one mesh could
+ *     otherwise legitimately disagree about a cell's volume. A quantity that
+ *     moves under a rotation the file format does not constrain is a trap, not
+ *     a rounding difference.
+ *  3. **It is already the forced choice elsewhere.** `operations/gradient.cpp`'s
+ *     Green-Gauss integration fans about the face centre because the corner
+ *     average is the only apex whose value is known *exactly* for a linear
+ *     field. Sharing the apex means gradient and stats measure the same
+ *     surface instead of disagreeing ten lines apart.
+ *  4. **It is OpenFOAM's own cell volume** (`primitiveMesh`'s face-centre to
+ *     cell-centre pyramid decomposition), so a round-tripped case reports the
+ *     volumes its solver would.
+ *  5. **The convention is already in the repo**: `test_skin.cpp`'s
+ *     `SkinFaceTables.OutwardWindingAndNodeCounts` asserts geometrically that a
+ *     quad9's mid-face node sits at the face's corner average.
+ *
+ * See `doc/polyhedra.md`.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief One cell's boundary as node-indexed face rings -- the uniform shape a
+ * polyhedron (`CellView::Face`, global ids) and a tabulated type
+ * (`cell_faces.hpp`, local indices into a row) both reduce to.
+ *
+ * Corner nodes only: mid-edge and mid-face nodes are dropped, matching every
+ * existing measure kernel in the repo. Reuse one instance across cells via
+ * `Clear()`, which keeps the vectors' capacity.
+ */
+struct CellRings {
+    std::vector<std::int64_t> mNodes;       ///< global node ids, first-seen order
+    std::vector<std::uint32_t> mFaceNodes;  ///< local indices into `mNodes`
+    std::vector<std::uint32_t> mFaceStart;  ///< `NumFaces() + 1` entries
+
+    /** @brief Number of faces bounding the cell. */
+    std::size_t NumFaces() const { return mFaceStart.empty() ? 0 : mFaceStart.size() - 1; }
+
+    /** @brief Corner count of face @p Face. */
+    std::size_t FaceSize(std::size_t Face) const { return mFaceStart[Face + 1] - mFaceStart[Face]; }
+
+    /** @brief Local node indices of face @p Face, `FaceSize(Face)` of them. */
+    const std::uint32_t* Face(std::size_t Face) const {
+        return mFaceNodes.data() + mFaceStart[Face];
+    }
+
+    /** @brief Mutable form of `Face`, for the winding repair. */
+    std::uint32_t* FaceMutable(std::size_t Face) { return mFaceNodes.data() + mFaceStart[Face]; }
+
+    /** @brief Reset to empty, keeping the allocated capacity. */
+    void Clear() {
+        mNodes.clear();
+        mFaceNodes.clear();
+        mFaceStart.clear();
+    }
+};
+
+/**
+ * @brief Fill @p rOut with cell @p Cell's face rings and @p rCoords with the
+ * matching coordinates, one entry per `rOut.mNodes` id.
+ *
+ * Works for a polyhedron block (faces come from `CellView::Face`) and for any
+ * rectangular 3D type with a `cell_faces.hpp` row (faces come from the table,
+ * corners only).
+ *
+ * @return false when the block has no face topology at all -- a 1D/2D block, a
+ *   1-level ragged (polygon) block, or a 3D type with no `cell_faces` row (the
+ *   3D Lagrange family). The caller then reports NaN and counts the cell rather
+ *   than guessing, which is `compute_quality`'s standing convention.
+ */
+MESHIOPLUSPLUS_API bool cell_rings(const Mesh::CellView& rBlock, std::size_t Cell,
+                                   const NDArray& rPoints, std::size_t PointDim, CellRings& rOut,
+                                   std::vector<Vec3>& rCoords);
+
+/** @brief Outcome of `orient_rings`. */
+enum class RingOrientation : std::uint8_t {
+    Consistent,   ///< already consistently wound outward; nothing changed
+    Repaired,     ///< rewound (and/or globally flipped) to point outward
+    Unorientable  ///< not a closed orientable surface; measures are undefined
+};
+
+/**
+ * @brief Make every ring wind consistently, then flip them all if the enclosed
+ * signed volume came out negative -- so on return the normals point *out*.
+ *
+ * BFS over the faces' shared-edge dual: two faces sharing an undirected edge
+ * agree iff they traverse it in *opposite* directions. Returns `Unorientable`
+ * (leaving @p rRings untouched) when some undirected edge is not used exactly
+ * twice, which is what an open or non-manifold face set looks like.
+ */
+MESHIOPLUSPLUS_API RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords);
+
+/** @brief What `poly_measure` computes about one cell. */
+struct PolyMeasure {
+    double mVolume = 0.0;  ///< signed; positive once the rings wind outward
+    double mSurfaceArea = 0.0;
+    Vec3 mCentroid{0.0, 0.0, 0.0};  ///< volume centroid
+    bool mClosed = false;           ///< every undirected edge used exactly twice
+    bool mOrientable = false;       ///< a consistent winding exists
+};
+
+/**
+ * @brief Volume, volume centroid and surface area of the cell bounded by
+ * @p rRings, by the corner-average fan documented at the top of this file.
+ *
+ * Call `orient_rings` first if the winding is not known to be outward; this
+ * function measures whatever it is given, so inward-wound input yields a
+ * negative volume rather than an error. Coordinates are recentred on the cell's
+ * corner average before any arithmetic, which is what keeps the volume's
+ * `sum(x . A) / 3` telescoping accurate for a mesh far from the origin.
+ */
+MESHIOPLUSPLUS_API PolyMeasure poly_measure(const CellRings& rRings, const Vec3* pCoords);
+
+/**
+ * @brief Newell area vector of one ring: `|result|` is the area, its direction
+ * the normal. Translation-invariant and independent of which corner the ring
+ * starts at, which is exactly why Newell rather than a fan is used here.
+ */
+MESHIOPLUSPLUS_API Vec3 polygon_area_vector(const Vec3* pCoords, const std::uint32_t* pRing,
+                                            std::size_t N);
+
+/** @brief Area of one ring (the magnitude of `polygon_area_vector`). */
+MESHIOPLUSPLUS_API double polygon_area(const Vec3* pCoords, const std::uint32_t* pRing,
+                                       std::size_t N);
+
+/** @brief Corner average of one ring -- the fan apex, and the face "centre". */
+MESHIOPLUSPLUS_API Vec3 polygon_centroid(const Vec3* pCoords, const std::uint32_t* pRing,
+                                         std::size_t N);
+
+/**
+ * @brief `polygon_area_vector` for coordinates already stored in ring order,
+ * i.e. with an implicit identity ring `0, 1, ... N-1`.
+ *
+ * This is the shape a rectangular 2D cell arrives in (`read_corner_coords`
+ * hands back the corners in connectivity order), so it saves materializing an
+ * identity index array once per cell in a hot loop.
+ */
+MESHIOPLUSPLUS_API Vec3 polygon_area_vector(const Vec3* pCoords, std::size_t N);
+
+/** @brief `polygon_area` for coordinates already in ring order. */
+MESHIOPLUSPLUS_API double polygon_area(const Vec3* pCoords, std::size_t N);
+
+/**
+ * @brief Signed volume of a tabulated 3D cell whose CORNER coordinates are
+ * given in connectivity order, by the same corner-average fan as
+ * `poly_measure`.
+ *
+ * For callers that already hold the coordinates and cannot go through
+ * `cell_rings` -- `clean`, for instance, measures a cell built from *welded*
+ * node representatives rather than from the mesh's own connectivity. Positive
+ * when the cell is correctly oriented, since `cell_faces.hpp`'s rows are
+ * outward-wound.
+ *
+ * @return NaN when @p Type has no `cell_faces` row.
+ */
+MESHIOPLUSPLUS_API double cell_volume_from_corners(const Vec3* pCoords, CellType Type);
+
+/**
+ * @brief The sorted corner ids of one facet, of any arity.
+ *
+ * `surface.cpp`'s existing key is a fixed `std::array<std::int64_t, 4>`, which
+ * cannot hold a general polygonal face. This keeps that four-entry inline fast
+ * path (so a triangle or quad still costs no allocation) and spills to the heap
+ * beyond it.
+ */
+struct FacetKey {
+    /** @brief An empty key, so a `FacetKey` can sit in a pre-sized buffer that
+     *  a parallel pass then fills slot by slot (surface.cpp's phase split). */
+    FacetKey() = default;
+
+    /** @brief Build from @p N unsorted node ids. */
+    FacetKey(const std::int64_t* pIds, std::size_t N);
+
+    std::size_t Size() const { return mN; }
+    const std::int64_t* Data() const { return mN <= kInline ? mInline.data() : mHeap.data(); }
+
+    bool operator==(const FacetKey& rOther) const;
+
+    static constexpr std::size_t kInline = 4;
+
+private:
+    std::size_t mN = 0;
+    std::array<std::int64_t, kInline> mInline{};
+    std::vector<std::int64_t> mHeap;
+};
+
+/** @brief Hash for `FacetKey`, for `unordered_map`/`unordered_set` keying. */
+struct FacetKeyHash {
+    std::size_t operator()(const FacetKey& rKey) const;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/polyhedron.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/face_mesh.hpp =====
+/**
+ * @file face_mesh.hpp
+ * @brief A mesh's volume cells re-expressed as a globally deduplicated face
+ * list with owner/neighbour pairing.
+ *
+ * Two formats are *defined* in these terms rather than in terms of cells:
+ *
+ *  - **OpenFOAM `polyMesh`** is literally this structure on disk -- `faces`,
+ *    `owner`, `neighbour` -- and never stores a cell's node list at all.
+ *  - **CGNS `NGON_n` + `NFACE_n`**: `NGON_n` is the face list, `NFACE_n` gives
+ *    each cell as a list of *signed* face ids, the sign meaning "traverse this
+ *    face reversed".
+ *
+ * Building it twice would mean two implementations of the one genuinely
+ * error-prone step (recognising that a hexahedron and a polyhedron meeting on a
+ * face are meeting on *one* face), so `mCellFaces` is stored in CGNS's own
+ * signed-1-based encoding: the CGNS writer copies a row with an element-id
+ * offset and no per-entry branch, and OpenFOAM reads only the sign.
+ *
+ * ### Cells are numbered in a compact space, not the block-major global one
+ *
+ * `detail/cell_index.hpp`'s `block_bases` numbering counts *every* cell block,
+ * including 2D ones. But every mesh `read_openfoam` produces carries its
+ * boundary faces as `triangle`/`quad`/`polygon<N>` blocks, so in that numbering
+ * "cell 8" is routinely a boundary quad rather than a cell. `mOwner`,
+ * `mNeighbour` and `mCellFaceStart` therefore index a compact space containing
+ * only the blocks that bound a volume, and `mCellToGlobal` bridges back to it
+ * for `cell_data` lookups. Confusing the two is the bug that member exists to
+ * prevent.
+ *
+ * ### Winding is repaired, never assumed
+ *
+ * `cell_faces.hpp`'s rows are outward-wound *on the reference element*. An
+ * inverted (negative-Jacobian) hexahedron therefore yields six inward-pointing
+ * normals, and OpenFOAM would report every one of its faces as misoriented. So
+ * every cell -- tabulated and polyhedral alike -- goes through
+ * `detail::orient_rings`, which rewinds and then flips on the enclosed signed
+ * volume. `mNumFlipped` reports how often that mattered.
+ *
+ * ### Determinism
+ *
+ * Face ids are assigned by a **serial** first-seen sweep in ascending
+ * (compact cell, local face) order over a buffer filled in parallel --
+ * `surface.cpp`'s phase split. No hash-map iteration order reaches the output,
+ * so the result is byte-identical across thread counts and across the three
+ * mesh backends.
+ *
+ * See `doc/polyhedra.md`.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief A mesh's volume cells as a deduplicated face list plus the pairing
+ * that tells you which cells each face separates.
+ */
+struct GlobalFaces {
+    // ---- the faces themselves (OpenFOAM `faces`, CGNS `NGON_n`) ----
+
+    /// CSR over the face node rings: global node ids, **corners only**, wound
+    /// so that the normal points *out of* `mOwner[f]`.
+    std::vector<std::int64_t> mFaceNodes;
+    std::vector<std::int64_t> mFaceStart;  ///< `NumFaces() + 1` entries
+
+    // ---- the pairing (OpenFOAM `owner` / `neighbour`) ----
+
+    std::vector<std::int64_t> mOwner;      ///< compact cell id; never -1
+    std::vector<std::int64_t> mNeighbour;  ///< compact cell id, or -1 = boundary
+
+    // ---- the cells (CGNS `NFACE_n`) ----
+
+    /// CSR over compact cell ids. Each entry is a **signed, 1-based** face id:
+    /// `+(f+1)` means "traverse `Face(f)` as stored", `-(f+1)` means "reversed".
+    /// This is CGNS `NFACE_n`'s own encoding, deliberately.
+    ///
+    /// Entry `k` of cell `c`'s row corresponds to face `k` of that cell as
+    /// `detail::cell_rings` enumerated it, so "which face of which cell, and
+    /// was it reversed" is answered by the position in the row plus the sign --
+    /// no parallel side table to keep in step.
+    std::vector<std::int64_t> mCellFaces;
+    std::vector<std::int64_t> mCellFaceStart;  ///< `NumCells() + 1` entries
+
+    /// Compact cell id -> the mesh's global (block-major) cell index, the
+    /// numbering `detail/cell_index.hpp` and `cell_data` use. See the file
+    /// header: these two numberings genuinely differ on any mesh with 2D blocks.
+    std::vector<std::int64_t> mCellToGlobal;
+
+    /// Block indices that contributed no cells: 1D/2D blocks, 1-level ragged
+    /// (polygon) blocks, and 3D types with no `cell_faces` row. The **caller**
+    /// decides which are acceptable -- a 2D boundary block is expected, a
+    /// skipped 3D block is a silently dropped solid.
+    std::vector<std::size_t> mNonCellBlocks;
+
+    std::int64_t mNumFlipped = 0;       ///< cells whose winding needed repair
+    std::int64_t mNumUnorientable = 0;  ///< cells that are not closed+orientable
+    std::int64_t mNumNonManifold = 0;   ///< faces used by three or more cells
+
+    /** @brief Number of distinct faces. */
+    std::size_t NumFaces() const { return mFaceStart.empty() ? 0 : mFaceStart.size() - 1; }
+
+    /** @brief Number of volume cells (the compact space). */
+    std::size_t NumCells() const {
+        return mCellFaceStart.empty() ? 0 : mCellFaceStart.size() - 1;
+    }
+
+    /** @brief Corner count of face @p Face. */
+    std::size_t FaceSize(std::size_t Face) const {
+        return static_cast<std::size_t>(mFaceStart[Face + 1] - mFaceStart[Face]);
+    }
+
+    /** @brief Global node ids of face @p Face, `FaceSize(Face)` of them. */
+    const std::int64_t* Face(std::size_t Face) const {
+        return mFaceNodes.data() + mFaceStart[Face];
+    }
+
+    /** @brief Number of faces bounding compact cell @p Cell. */
+    std::size_t NumCellFaces(std::size_t Cell) const {
+        return static_cast<std::size_t>(mCellFaceStart[Cell + 1] - mCellFaceStart[Cell]);
+    }
+
+    /** @brief Signed 1-based face ids of compact cell @p Cell. */
+    const std::int64_t* CellFaces(std::size_t Cell) const {
+        return mCellFaces.data() + mCellFaceStart[Cell];
+    }
+};
+
+/**
+ * @brief Build the global face list of @p rMesh's volume cells.
+ *
+ * Deterministic: face ids are assigned in ascending (compact cell, local face)
+ * order, independent of thread count, mesh backend and hash order.
+ *
+ * Quadratic cells contribute their **corner** faces only (neither target format
+ * has quadratic faces), so a `hexahedron20` mesh's mid-edge nodes end up
+ * unreferenced by any face. That is reported by the caller rather than fixed
+ * here: pruning them would renumber points for no benefit.
+ */
+MESHIOPLUSPLUS_API GlobalFaces build_global_faces(const Mesh& rMesh);
+
+/**
+ * @brief Find a global face by its (unordered) corner ids.
+ *
+ * How a caller maps a 2D cell block -- an OpenFOAM boundary patch, say -- back
+ * onto the face list. Built once, then queried per 2D cell.
+ */
+class MESHIOPLUSPLUS_API FaceLookup {
+public:
+    /** @brief Index @p rFaces. The reference need not outlive the lookup. */
+    explicit FaceLookup(const GlobalFaces& rFaces);
+
+    /**
+     * @brief Look up the face whose corner set is exactly @p pIds.
+     * @return the global face id, or -1 when no face has those corners.
+     */
+    std::int64_t Find(const std::int64_t* pIds, std::size_t N) const;
+
+private:
+    std::unordered_map<FacetKey, std::int64_t, FacetKeyHash> mMap;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/face_mesh.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/read_options.hpp =====
 /**
  * @file read_options.hpp
@@ -6842,138 +7404,6 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/file_source.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/detail/geometry.hpp =====
-/**
- * @file geometry.hpp
- * @brief Small, dependency-free 3D vector primitives and mesh-coordinate
- * readers shared by the mesh-operations layer (`operations/quality.cpp`,
- * `operations/surface.cpp`).
- *
- * `Vec3` is a plain `std::array<double, 3>`; the `vec3_*`/`triple_product`/
- * `det3` primitives are tiny per-operation arithmetic invoked repeatedly
- * inside per-cell hot loops (surface normals, quality metrics), so they stay
- * `inline` here rather than moving to a `.cpp` — at that call frequency,
- * removing the function-call boundary is what lets the compiler fold/
- * vectorize the surrounding loop. `read_point`/`read_corner_coords`/
- * `cell_corner_count` are each called once per cell (not once per scalar), so
- * their bodies live in `src/cpp/src/detail/geometry.cpp` instead.
- *
- * Coordinates are pulled out of an `NDArray` through `detail::read_double`, so
- * these work regardless of the point/connectivity dtype and under every mesh
- * backend.
- */
-
-// System includes
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/// A point/vector in 3D. 2D meshes are padded with z = 0 on read.
-using Vec3 = std::array<double, 3>;
-
-/** @brief Component-wise difference `a - b`. */
-inline Vec3 vec3_sub(const Vec3& a, const Vec3& b) {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-
-/** @brief Component-wise sum `a + b`. */
-inline Vec3 vec3_add(const Vec3& a, const Vec3& b) {
-    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
-}
-
-/** @brief Scalar multiple `s * a`. */
-inline Vec3 vec3_scale(const Vec3& a, double s) {
-    return {a[0] * s, a[1] * s, a[2] * s};
-}
-
-/** @brief Dot product `a . b`. */
-inline double vec3_dot(const Vec3& a, const Vec3& b) {
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-/** @brief Cross product `a x b`. */
-inline Vec3 vec3_cross(const Vec3& a, const Vec3& b) {
-    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-}
-
-/** @brief Squared Euclidean length `a . a`. */
-inline double vec3_norm_sq(const Vec3& a) {
-    return vec3_dot(a, a);
-}
-
-/** @brief Euclidean length `|a|`. */
-inline double vec3_norm(const Vec3& a) {
-    return std::sqrt(vec3_norm_sq(a));
-}
-
-/**
- * @brief Unit vector along `a`, or the zero vector when `|a| < eps`.
- * @param a Vector to normalize.
- * @param eps Length below which `a` is treated as degenerate.
- * @return `a / |a|`, or `{0,0,0}` if `|a| < eps`.
- */
-inline Vec3 vec3_normalize(const Vec3& a, double eps = 1e-300) {
-    const double n = vec3_norm(a);
-    if (n < eps)
-        return {0.0, 0.0, 0.0};
-    return vec3_scale(a, 1.0 / n);
-}
-
-/** @brief Scalar triple product `a . (b x c)` (signed volume of the parallelepiped). */
-inline double triple_product(const Vec3& a, const Vec3& b, const Vec3& c) {
-    return vec3_dot(a, vec3_cross(b, c));
-}
-
-/** @brief Determinant of the 3x3 matrix whose columns are `c0`, `c1`, `c2`. */
-inline double det3(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
-    return triple_product(c0, c1, c2);
-}
-
-/**
- * @brief Reads global point @p nodeId as a `Vec3`, padding z = 0 when the mesh
- * is 2D (`pointDim == 2`).
- * @param rPoints The `(num_points, pointDim)` point array.
- * @param pointDim Spatial dimension of the points (2 or 3).
- * @param nodeId Global point index.
- * @return The point's coordinates, with unused components set to 0.
- */
-MESHIOPLUSPLUS_API Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId);
-
-/**
- * @brief Reads the first @p n connectivity entries of one cell row into @p rOut
- * as `Vec3` coordinates (used to gather a cell's corner nodes).
- * @param rPoints The point array.
- * @param pointDim Spatial dimension of the points.
- * @param rConn The block connectivity array.
- * @param rowOffset Flat offset of the cell's row (`cell * nodes_per_cell`).
- * @param n Number of leading entries to read (the corner count).
- * @param rOut Cleared and filled with @p n coordinates.
- */
-MESHIOPLUSPLUS_API void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
-                        std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut);
-
-/**
- * @brief Number of corner (linear-parent) nodes of a cell type. Corners are
- * always the leading connectivity entries in meshio/VTK ordering, so a
- * quadratic cell can be reduced to its linear parent by reading the first
- * `cell_corner_count(type)` nodes.
- * @param type The cell type to query.
- * @return The corner count, or 0 for variable-node-count / unsupported types
- *         (`Polygon`, `Polyhedron`, the VTK Lagrange family, `Custom`) — the
- *         caller must skip those.
- */
-MESHIOPLUSPLUS_API int cell_corner_count(CellType type);
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/detail/geometry.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
 /**
  * @file hdf5_util.hpp
@@ -7696,262 +8126,6 @@ MESHIOPLUSPLUS_API NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::si
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/detail/polyhedron.hpp =====
-/**
- * @file polyhedron.hpp
- * @brief The geometric kernel for cells bounded by arbitrary polygonal faces:
- * volume, centroid, surface area, face normals and areas, and the winding
- * repair every one of those depends on.
- *
- * ### Why this is a separate header
- *
- * `detail/geometry.hpp` is inline `Vec3` arithmetic included nearly everywhere.
- * This kernel needs `mesh.hpp` and `cell_faces.hpp`, so folding it in there
- * would drag heavy includes into every consumer. Keeping the two apart also
- * keeps `geometry.hpp` byte-identical across this release.
- *
- * ### The impedance mismatch this resolves
- *
- * `cell_faces.hpp` describes a tabulated type's faces as **local** node indices
- * into a rectangular connectivity row. A polyhedron block has no row: it has
- * `NumFaces(cell)` faces of **global** node ids. `CellRings` is the single
- * shape both reduce to, so one measure kernel serves a `hexahedron` and a
- * `polyhedron12` alike, and every existing loop that wrote
- * `coords[face.mNodes[i]]` ports across unchanged.
- *
- * ### Winding: repaired, not required
- *
- * Faces *should* wind so their right-hand normal points out of the cell. Real
- * meshes do not always oblige -- this repository's own long-standing
- * `polyhedron5` test fixture has two faces traversing a shared edge in the
- * same direction -- so `orient_rings` fixes the winding per cell (BFS over the
- * faces' shared-edge dual, then a global flip if the enclosed volume came out
- * negative) rather than trusting or rejecting it. A face set that is not a
- * closed orientable surface is reported as `Unorientable`, never guessed at.
- *
- * ### Non-planar faces: the corner-average fan
- *
- * A face with four or more non-coplanar corners bounds no unique volume. This
- * kernel resolves it as the fan of triangles from each of the face's edges to
- * that face's **corner average**, each paired with the cell's own corner
- * average. Five independent reasons, because any one alone would read as
- * taste:
- *
- *  1. **The apex is a function of the FACE ALONE, so a shared face is
- *     triangulated identically from both sides whatever each cell's local node
- *     order happens to be.** Two cells meeting on a warped quad therefore agree
- *     on it exactly, and their boundary integrals cancel there. A fan about the
- *     ring's first node is a function of the cell's *storage*, so the two sides
- *     can pick different diagonals and the sum over a closed region drifts.
- *     (A structured generator numbers shared faces consistently and so happens
- *     to escape this -- which is precisely why the test for it uses two cells
- *     that store the shared ring differently, and why a mesh that looks fine
- *     can hide the defect until it is read from a file that does not.)
- *     `PolyhedronKernel.CellsSharingAWarpedFaceAgreeOnIt` pins it.
- *  2. **Invariance to the ring's start node**, which is the same property seen
- *     from one cell. OpenFOAM's `faces`, MED's `INN` and VTU's `faces` stream
- *     all choose that start node arbitrarily, so two readers of one mesh could
- *     otherwise legitimately disagree about a cell's volume. A quantity that
- *     moves under a rotation the file format does not constrain is a trap, not
- *     a rounding difference.
- *  3. **It is already the forced choice elsewhere.** `operations/gradient.cpp`'s
- *     Green-Gauss integration fans about the face centre because the corner
- *     average is the only apex whose value is known *exactly* for a linear
- *     field. Sharing the apex means gradient and stats measure the same
- *     surface instead of disagreeing ten lines apart.
- *  4. **It is OpenFOAM's own cell volume** (`primitiveMesh`'s face-centre to
- *     cell-centre pyramid decomposition), so a round-tripped case reports the
- *     volumes its solver would.
- *  5. **The convention is already in the repo**: `test_skin.cpp`'s
- *     `SkinFaceTables.OutwardWindingAndNodeCounts` asserts geometrically that a
- *     quad9's mid-face node sits at the face's corner average.
- *
- * See `doc/polyhedra.md`.
- */
-
-// System includes
-#include <cstddef>
-#include <cstdint>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/**
- * @brief One cell's boundary as node-indexed face rings -- the uniform shape a
- * polyhedron (`CellView::Face`, global ids) and a tabulated type
- * (`cell_faces.hpp`, local indices into a row) both reduce to.
- *
- * Corner nodes only: mid-edge and mid-face nodes are dropped, matching every
- * existing measure kernel in the repo. Reuse one instance across cells via
- * `Clear()`, which keeps the vectors' capacity.
- */
-struct CellRings {
-    std::vector<std::int64_t> mNodes;       ///< global node ids, first-seen order
-    std::vector<std::uint32_t> mFaceNodes;  ///< local indices into `mNodes`
-    std::vector<std::uint32_t> mFaceStart;  ///< `NumFaces() + 1` entries
-
-    /** @brief Number of faces bounding the cell. */
-    std::size_t NumFaces() const { return mFaceStart.empty() ? 0 : mFaceStart.size() - 1; }
-
-    /** @brief Corner count of face @p Face. */
-    std::size_t FaceSize(std::size_t Face) const { return mFaceStart[Face + 1] - mFaceStart[Face]; }
-
-    /** @brief Local node indices of face @p Face, `FaceSize(Face)` of them. */
-    const std::uint32_t* Face(std::size_t Face) const {
-        return mFaceNodes.data() + mFaceStart[Face];
-    }
-
-    /** @brief Mutable form of `Face`, for the winding repair. */
-    std::uint32_t* FaceMutable(std::size_t Face) { return mFaceNodes.data() + mFaceStart[Face]; }
-
-    /** @brief Reset to empty, keeping the allocated capacity. */
-    void Clear() {
-        mNodes.clear();
-        mFaceNodes.clear();
-        mFaceStart.clear();
-    }
-};
-
-/**
- * @brief Fill @p rOut with cell @p Cell's face rings and @p rCoords with the
- * matching coordinates, one entry per `rOut.mNodes` id.
- *
- * Works for a polyhedron block (faces come from `CellView::Face`) and for any
- * rectangular 3D type with a `cell_faces.hpp` row (faces come from the table,
- * corners only).
- *
- * @return false when the block has no face topology at all -- a 1D/2D block, a
- *   1-level ragged (polygon) block, or a 3D type with no `cell_faces` row (the
- *   3D Lagrange family). The caller then reports NaN and counts the cell rather
- *   than guessing, which is `compute_quality`'s standing convention.
- */
-MESHIOPLUSPLUS_API bool cell_rings(const Mesh::CellView& rBlock, std::size_t Cell,
-                                   const NDArray& rPoints, std::size_t PointDim, CellRings& rOut,
-                                   std::vector<Vec3>& rCoords);
-
-/** @brief Outcome of `orient_rings`. */
-enum class RingOrientation : std::uint8_t {
-    Consistent,   ///< already consistently wound outward; nothing changed
-    Repaired,     ///< rewound (and/or globally flipped) to point outward
-    Unorientable  ///< not a closed orientable surface; measures are undefined
-};
-
-/**
- * @brief Make every ring wind consistently, then flip them all if the enclosed
- * signed volume came out negative -- so on return the normals point *out*.
- *
- * BFS over the faces' shared-edge dual: two faces sharing an undirected edge
- * agree iff they traverse it in *opposite* directions. Returns `Unorientable`
- * (leaving @p rRings untouched) when some undirected edge is not used exactly
- * twice, which is what an open or non-manifold face set looks like.
- */
-MESHIOPLUSPLUS_API RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords);
-
-/** @brief What `poly_measure` computes about one cell. */
-struct PolyMeasure {
-    double mVolume = 0.0;  ///< signed; positive once the rings wind outward
-    double mSurfaceArea = 0.0;
-    Vec3 mCentroid{0.0, 0.0, 0.0};  ///< volume centroid
-    bool mClosed = false;           ///< every undirected edge used exactly twice
-    bool mOrientable = false;       ///< a consistent winding exists
-};
-
-/**
- * @brief Volume, volume centroid and surface area of the cell bounded by
- * @p rRings, by the corner-average fan documented at the top of this file.
- *
- * Call `orient_rings` first if the winding is not known to be outward; this
- * function measures whatever it is given, so inward-wound input yields a
- * negative volume rather than an error. Coordinates are recentred on the cell's
- * corner average before any arithmetic, which is what keeps the volume's
- * `sum(x . A) / 3` telescoping accurate for a mesh far from the origin.
- */
-MESHIOPLUSPLUS_API PolyMeasure poly_measure(const CellRings& rRings, const Vec3* pCoords);
-
-/**
- * @brief Newell area vector of one ring: `|result|` is the area, its direction
- * the normal. Translation-invariant and independent of which corner the ring
- * starts at, which is exactly why Newell rather than a fan is used here.
- */
-MESHIOPLUSPLUS_API Vec3 polygon_area_vector(const Vec3* pCoords, const std::uint32_t* pRing,
-                                            std::size_t N);
-
-/** @brief Area of one ring (the magnitude of `polygon_area_vector`). */
-MESHIOPLUSPLUS_API double polygon_area(const Vec3* pCoords, const std::uint32_t* pRing,
-                                       std::size_t N);
-
-/** @brief Corner average of one ring -- the fan apex, and the face "centre". */
-MESHIOPLUSPLUS_API Vec3 polygon_centroid(const Vec3* pCoords, const std::uint32_t* pRing,
-                                         std::size_t N);
-
-/**
- * @brief `polygon_area_vector` for coordinates already stored in ring order,
- * i.e. with an implicit identity ring `0, 1, ... N-1`.
- *
- * This is the shape a rectangular 2D cell arrives in (`read_corner_coords`
- * hands back the corners in connectivity order), so it saves materializing an
- * identity index array once per cell in a hot loop.
- */
-MESHIOPLUSPLUS_API Vec3 polygon_area_vector(const Vec3* pCoords, std::size_t N);
-
-/** @brief `polygon_area` for coordinates already in ring order. */
-MESHIOPLUSPLUS_API double polygon_area(const Vec3* pCoords, std::size_t N);
-
-/**
- * @brief Signed volume of a tabulated 3D cell whose CORNER coordinates are
- * given in connectivity order, by the same corner-average fan as
- * `poly_measure`.
- *
- * For callers that already hold the coordinates and cannot go through
- * `cell_rings` -- `clean`, for instance, measures a cell built from *welded*
- * node representatives rather than from the mesh's own connectivity. Positive
- * when the cell is correctly oriented, since `cell_faces.hpp`'s rows are
- * outward-wound.
- *
- * @return NaN when @p Type has no `cell_faces` row.
- */
-MESHIOPLUSPLUS_API double cell_volume_from_corners(const Vec3* pCoords, CellType Type);
-
-/**
- * @brief The sorted corner ids of one facet, of any arity.
- *
- * `surface.cpp`'s existing key is a fixed `std::array<std::int64_t, 4>`, which
- * cannot hold a general polygonal face. This keeps that four-entry inline fast
- * path (so a triangle or quad still costs no allocation) and spills to the heap
- * beyond it.
- */
-struct FacetKey {
-    /** @brief An empty key, so a `FacetKey` can sit in a pre-sized buffer that
-     *  a parallel pass then fills slot by slot (surface.cpp's phase split). */
-    FacetKey() = default;
-
-    /** @brief Build from @p N unsorted node ids. */
-    FacetKey(const std::int64_t* pIds, std::size_t N);
-
-    std::size_t Size() const { return mN; }
-    const std::int64_t* Data() const { return mN <= kInline ? mInline.data() : mHeap.data(); }
-
-    bool operator==(const FacetKey& rOther) const;
-
-    static constexpr std::size_t kInline = 4;
-
-private:
-    std::size_t mN = 0;
-    std::array<std::int64_t, kInline> mInline{};
-    std::vector<std::int64_t> mHeap;
-};
-
-/** @brief Hash for `FacetKey`, for `unordered_map`/`unordered_set` keying. */
-struct FacetKeyHash {
-    std::size_t operator()(const FacetKey& rKey) const;
-};
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/detail/polyhedron.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/refine_templates.hpp =====
 /**
  * @file refine_templates.hpp
@@ -11956,10 +12130,15 @@ MESHIOPLUSPLUS_API Mesh read_obj(const std::string& rPath);
  * zero-copy). Boundary faces become `triangle`/`quad`/`polygon<N>` blocks,
  * one per patch/size combination.
  *
- * This reader is **read-only** — there is no OpenFOAM writer at all, in
- * C++ or Python. Only mesh topology is read; OpenFOAM field files (`U`,
- * `p`, `T`, …) under a case's time directories are never read by this
- * module, so no `point_data`/`field_data` is ever produced.
+ * `write_openfoam` (v9.20.0) is the inverse, and is the **only writer in
+ * meshio++ that takes a directory path** — it creates
+ * `<case>/constant/polyMesh/` and writes all five files. It goes through
+ * `detail/face_mesh.hpp`'s global face table, which is also what CGNS's
+ * `NFACE_n` writer uses. ASCII only; a binary polyMesh is a follow-up.
+ *
+ * Only mesh topology is read or written; OpenFOAM field files (`U`, `p`,
+ * `T`, …) under a case's time directories are never touched by this module,
+ * so no `point_data`/`field_data` is ever produced or consumed.
  */
 
 // System includes
@@ -11992,6 +12171,28 @@ struct OpenFoamInfo {
      * groups (see doc/formats/med.md).
      */
     std::map<std::int64_t, std::vector<std::string>> mCellTags;
+
+    /**
+     * `family_id -> patch type` — the `type` entry of the on-disk `boundary`
+     * file (`patch`, `wall`, `symmetry`, `symmetryPlane`, `empty`, `wedge`,
+     * `cyclic`, …), keyed by the **same** negative family id as #mCellTags
+     * rather than by patch name: that key is this format's primary key
+     * everywhere else, and two maps keyed differently invite a bad join.
+     *
+     * A patch whose `type` the file omitted simply has no entry, and the
+     * writer then emits `patch` — OpenFOAM's base type, always safe.
+     * Deliberately **not** `wall`: `wall` selects wall functions and
+     * `nut*WallFunction` boundary behaviour, so guessing it would silently
+     * change a solve's physics.
+     *
+     * Types needing companion keys this struct cannot carry (`cyclic`'s
+     * `neighbourPatch`, `processor`'s `myProcNo`, `mappedWall`'s `sample`,
+     * …) are **downgraded to `patch` with a warning** on write: emitting
+     * them bare produces a case OpenFOAM refuses to load, whereas a
+     * downgraded case loads and solves with boundary conditions the user
+     * can see and fix.
+     */
+    std::map<std::int64_t, std::string> mPatchTypes;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh
@@ -12027,6 +12228,48 @@ struct OpenFoamInfo {
  *         pure-Python reader
  */
 MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
+
+/**
+ * @brief Write a Mesh as an OpenFOAM polyMesh case.
+ *
+ * The **only meshio++ writer that creates a directory**: @p rPath is
+ * resolved exactly as `read_openfoam` resolves it (a `.foam` marker file, a
+ * directory literally named `polyMesh`, or any other directory taken as the
+ * case root), and `<case>/constant/polyMesh/` is created if absent. A
+ * `.foam` target additionally gets its empty marker file written, which is
+ * what makes the case openable by ParaView and by this reader.
+ *
+ * Volume cells become the `faces`/`owner`/`neighbour` triple via
+ * `detail::build_global_faces`, which repairs each cell's winding — so an
+ * inverted cell is written correctly oriented rather than rejected by
+ * `checkMesh`. All four ordering rules OpenFOAM requires (internal faces
+ * first, `owner < neighbour`, faces sorted by owner then neighbour, normals
+ * pointing owner→neighbour) are enforced and then re-validated before
+ * anything is written; a violation is a `WriteError` naming the rule,
+ * because it means an internal bug rather than bad input.
+ *
+ * Boundary patches are recovered from `cell_data["cell_tags"]`'s negative
+ * values together with @p rInfo. A mesh carrying none — anything converted
+ * from another format — gets a single `defaultFaces` patch of type `patch`,
+ * which is what `blockMesh` itself produces and yields a loadable case.
+ * Patches are **not** synthesized from geometry.
+ *
+ * ASCII only: a binary polyMesh is a documented follow-up, so an explicit
+ * binary request fails by name rather than silently writing ASCII.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rMesh the mesh to write; ragged polyhedron blocks are supported
+ *        and are in fact this format's native cell shape
+ * @param rInfo patch names and types, keyed by the same negative family ids
+ *        `read_openfoam` produces (see #OpenFoamInfo). An empty struct is
+ *        valid and yields the `defaultFaces` case above.
+ * @throws WriteError if the mesh has no volume cells, if a 3D block cannot
+ *         contribute faces (which would silently drop solids), if a face is
+ *         shared by three or more cells, or if the output directory cannot
+ *         be created
+ */
+MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
+                                       const OpenFoamInfo& rInfo);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/openfoam.hpp =====
@@ -18367,7 +18610,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 19
+#define MESHIOPLUSPLUS_VERSION_MINOR 20
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -18377,7 +18620,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.19.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.20.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -34519,6 +34762,206 @@ FaceColors resolve_face_colors(const ColorSpec& rSpec, const Mesh& rSource, cons
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/face_color.cpp =====
+// ===== begin src/cpp/src/detail/face_mesh.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+/// Per-block bookkeeping for the two parallel passes: where this block's cells
+/// land in the compact numbering, and where its faces land in the slot space.
+struct FmBlockDesc {
+    std::size_t mBlock = 0;        ///< index into the mesh's cell blocks
+    std::size_t mFirstCell = 0;    ///< first compact cell id
+    std::size_t mNumCells = 0;
+};
+
+/// Does this block bound a volume? Mirrors `cell_rings`' own acceptance rule --
+/// deliberately, so a block can never be counted here and then declined there.
+bool fm_block_has_volume(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return true;
+    if (rBlock.IsRagged())
+        return false;  // 1-level (polygon): a surface cell, no enclosed volume
+    return skin_supported(cell_type_from_name(rBlock.Type()));
+}
+
+}  // namespace
+
+GlobalFaces build_global_faces(const Mesh& rMesh) {
+    GlobalFaces out;
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::vector<std::int64_t> bases = block_bases(rMesh);
+
+    // ---- Phase 0: the compact cell space --------------------------------
+    // Serial and cheap: one pass over the blocks, no per-cell work.
+    std::vector<FmBlockDesc> descs;
+    std::size_t n_cells = 0;
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+        const auto cb = rMesh.Cells(k);
+        if (!fm_block_has_volume(cb)) {
+            out.mNonCellBlocks.push_back(k);
+            continue;
+        }
+        FmBlockDesc d;
+        d.mBlock = k;
+        d.mFirstCell = n_cells;
+        d.mNumCells = cb.NumCells();
+        n_cells += d.mNumCells;
+        descs.push_back(d);
+    }
+
+    out.mCellToGlobal.resize(n_cells);
+    for (const FmBlockDesc& d : descs) {
+        const std::int64_t base = bases[d.mBlock];
+        for (std::size_t i = 0; i < d.mNumCells; ++i)
+            out.mCellToGlobal[d.mFirstCell + i] = base + static_cast<std::int64_t>(i);
+    }
+
+    // ---- Phase 1: face counts and ring sizes ----------------------------
+    // `cell_rings` is a gather, so running it twice is cheap; `orient_rings`
+    // (the BFS) runs only in phase 2. Counting first is what lets phase 2 write
+    // straight into pre-sized buffers instead of holding a per-cell vector pair
+    // for the whole mesh -- on a ten-million-cell case that is gigabytes.
+    std::vector<std::int64_t> n_cell_faces(n_cells, 0);
+    for (const FmBlockDesc& d : descs) {
+        const auto cb = rMesh.Cells(d.mBlock);
+        parallel_for(d.mNumCells, [&](std::size_t i) {
+            static thread_local CellRings rings;
+            static thread_local std::vector<Vec3> coords;
+            if (cell_rings(cb, i, points, dim, rings, coords))
+                n_cell_faces[d.mFirstCell + i] = static_cast<std::int64_t>(rings.NumFaces());
+        });
+    }
+
+    out.mCellFaceStart.resize(n_cells + 1);
+    out.mCellFaceStart[0] = 0;
+    for (std::size_t c = 0; c < n_cells; ++c)
+        out.mCellFaceStart[c + 1] = out.mCellFaceStart[c] + n_cell_faces[c];
+    const std::size_t n_slots = static_cast<std::size_t>(out.mCellFaceStart[n_cells]);
+
+    // Ring sizes per slot, then their prefix, so phase 2's writes are disjoint.
+    std::vector<std::int64_t> slot_size(n_slots, 0);
+    for (const FmBlockDesc& d : descs) {
+        const auto cb = rMesh.Cells(d.mBlock);
+        parallel_for(d.mNumCells, [&](std::size_t i) {
+            static thread_local CellRings rings;
+            static thread_local std::vector<Vec3> coords;
+            if (!cell_rings(cb, i, points, dim, rings, coords))
+                return;
+            const std::size_t base =
+                static_cast<std::size_t>(out.mCellFaceStart[d.mFirstCell + i]);
+            for (std::size_t f = 0; f < rings.NumFaces(); ++f)
+                slot_size[base + f] = static_cast<std::int64_t>(rings.FaceSize(f));
+        });
+    }
+
+    std::vector<std::int64_t> slot_start(n_slots + 1);
+    slot_start[0] = 0;
+    for (std::size_t s = 0; s < n_slots; ++s)
+        slot_start[s + 1] = slot_start[s] + slot_size[s];
+
+    // ---- Phase 2: build every cell's outward-wound rings ----------------
+    std::vector<std::int64_t> slot_nodes(static_cast<std::size_t>(slot_start[n_slots]));
+    std::vector<std::uint8_t> cell_flipped(n_cells, 0);
+    std::vector<std::uint8_t> cell_unorientable(n_cells, 0);
+
+    for (const FmBlockDesc& d : descs) {
+        const auto cb = rMesh.Cells(d.mBlock);
+        parallel_for(d.mNumCells, [&](std::size_t i) {
+            static thread_local CellRings rings;
+            static thread_local std::vector<Vec3> coords;
+            const std::size_t cell = d.mFirstCell + i;
+            if (!cell_rings(cb, i, points, dim, rings, coords))
+                return;
+            // Repair unconditionally: `cell_faces.hpp`'s rows are outward on the
+            // REFERENCE element, so an inverted hexahedron yields six inward
+            // normals and every one of its faces would be written misoriented.
+            const RingOrientation ro = orient_rings(rings, coords.data());
+            if (ro == RingOrientation::Repaired)
+                cell_flipped[cell] = 1;
+            else if (ro == RingOrientation::Unorientable)
+                cell_unorientable[cell] = 1;
+
+            const std::size_t base = static_cast<std::size_t>(out.mCellFaceStart[cell]);
+            for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+                const std::uint32_t* ring = rings.Face(f);
+                const std::size_t n = rings.FaceSize(f);
+                std::int64_t* dst = slot_nodes.data() + slot_start[base + f];
+                for (std::size_t k = 0; k < n; ++k)
+                    dst[k] = rings.mNodes[ring[k]];
+            }
+        });
+    }
+
+    for (std::size_t c = 0; c < n_cells; ++c) {
+        out.mNumFlipped += cell_flipped[c];
+        out.mNumUnorientable += cell_unorientable[c];
+    }
+
+    // ---- Phase 3: SERIAL first-seen dedup -------------------------------
+    // Slot order is ascending (compact cell, local face), so face ids -- and
+    // therefore `owner < neighbour`, which the OpenFOAM writer validates rather
+    // than assumes -- do not depend on thread count or hash order.
+    out.mCellFaces.resize(n_slots);
+    out.mFaceStart.push_back(0);
+
+    std::unordered_map<FacetKey, std::int64_t, FacetKeyHash> first_use;
+    first_use.reserve(n_slots);
+
+    for (std::size_t c = 0; c < n_cells; ++c) {
+        const std::size_t lo = static_cast<std::size_t>(out.mCellFaceStart[c]);
+        const std::size_t hi = static_cast<std::size_t>(out.mCellFaceStart[c + 1]);
+        for (std::size_t s = lo; s < hi; ++s) {
+            const std::int64_t* ring = slot_nodes.data() + slot_start[s];
+            const std::size_t n = static_cast<std::size_t>(slot_size[s]);
+            const FacetKey key(ring, n);
+            auto it = first_use.find(key);
+            if (it == first_use.end()) {
+                const std::int64_t fid = static_cast<std::int64_t>(out.NumFaces());
+                out.mFaceNodes.insert(out.mFaceNodes.end(), ring, ring + n);
+                out.mFaceStart.push_back(static_cast<std::int64_t>(out.mFaceNodes.size()));
+                out.mOwner.push_back(static_cast<std::int64_t>(c));
+                out.mNeighbour.push_back(-1);
+                first_use.emplace(key, fid);
+                out.mCellFaces[s] = fid + 1;  // positive: stored as this cell wound it
+            } else {
+                const std::int64_t fid = it->second;
+                if (out.mNeighbour[static_cast<std::size_t>(fid)] < 0)
+                    out.mNeighbour[static_cast<std::size_t>(fid)] = static_cast<std::int64_t>(c);
+                else
+                    ++out.mNumNonManifold;
+                out.mCellFaces[s] = -(fid + 1);  // negative: reversed from stored
+            }
+        }
+    }
+
+    return out;
+}
+
+FaceLookup::FaceLookup(const GlobalFaces& rFaces) {
+    mMap.reserve(rFaces.NumFaces());
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        mMap.emplace(FacetKey(rFaces.Face(f), rFaces.FaceSize(f)), static_cast<std::int64_t>(f));
+}
+
+std::int64_t FaceLookup::Find(const std::int64_t* pIds, std::size_t N) const {
+    const auto it = mMap.find(FacetKey(pIds, N));
+    return it == mMap.end() ? -1 : it->second;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/face_mesh.cpp =====
 // ===== begin src/cpp/src/detail/geometry.cpp =====
 
 namespace meshioplusplus {
@@ -52976,6 +53419,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <sstream>
 #include <string>
@@ -53216,9 +53660,45 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
 // OpenFOAM's own on-disk `boundary` field names (`nFaces`/`startFace`).
 struct Patch {
     std::string mName;
+    std::string mType;  ///< the `type` entry; empty when the file omitted it
     std::int64_t mNFaces = 0;
     std::int64_t mStartFace = 0;
 };
+
+/**
+ * @brief Read the value of key @p pKey from a `boundary` sub-dictionary body.
+ *
+ * `nFaces`/`startFace` are read with `atoll`, but `type` is a word, so it needs
+ * real tokenising. The word-boundary guard matters: a bare `find("type")` also
+ * matches `physicalType` and `patchType`, both of which are legal entries in the
+ * same dictionary and neither of which is the patch's type.
+ *
+ * @return the value token, or "" when the key is absent.
+ */
+std::string openfoam_dict_word(const std::string& rBlock, const char* pKey) {
+    const std::size_t klen = std::strlen(pKey);
+    std::size_t p = 0;
+    while ((p = rBlock.find(pKey, p)) != std::string::npos) {
+        const bool left_ok = p == 0 || std::isspace(static_cast<unsigned char>(rBlock[p - 1])) ||
+                             rBlock[p - 1] == ';';
+        const std::size_t after = p + klen;
+        const bool right_ok =
+            after < rBlock.size() && std::isspace(static_cast<unsigned char>(rBlock[after]));
+        if (!left_ok || !right_ok) {
+            p = after;
+            continue;
+        }
+        std::size_t a = after;
+        while (a < rBlock.size() && std::isspace(static_cast<unsigned char>(rBlock[a])))
+            ++a;
+        std::size_t b = a;
+        while (b < rBlock.size() && !std::isspace(static_cast<unsigned char>(rBlock[b])) &&
+               rBlock[b] != ';')
+            ++b;
+        return rBlock.substr(a, b - a);
+    }
+    return "";
+}
 
 std::vector<Patch> parse_boundary(const std::string& rBody) {
     // Find `name { ... }` blocks with nFaces/startFace.
@@ -53238,12 +53718,28 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
         std::string name = rBody.substr(start, i - start);
         skip_ws(i);
         if (i < n && rBody[i] == '{') {
-            std::size_t close = rBody.find('}', i);
+            // Match the brace by DEPTH, not by the first '}': real patches nest
+            // (a `cyclicAMI` carries `transform { ... }`, a `mappedWall` carries
+            // `sample { ... }`), and taking the first close truncates the block
+            // and then resumes scanning from inside it, inventing patches.
+            std::size_t close = std::string::npos;
+            int depth = 0;
+            for (std::size_t p = i; p < n; ++p) {
+                if (rBody[p] == '{') {
+                    ++depth;
+                } else if (rBody[p] == '}') {
+                    if (--depth == 0) {
+                        close = p;
+                        break;
+                    }
+                }
+            }
             if (close == std::string::npos)
                 break;
             std::string block = rBody.substr(i + 1, close - i - 1);
             Patch pt;
             pt.mName = name;
+            pt.mType = openfoam_dict_word(block, "type");
             bool has_n = false, has_s = false;
             std::size_t np = block.find("nFaces");
             if (np != std::string::npos) {
@@ -53687,6 +54183,8 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
     for (std::size_t pidx = 0; pidx < boundary.size(); ++pidx) {
         std::int64_t fam = -(static_cast<std::int64_t>(pidx) + 1);
         rInfo.mCellTags[fam] = {boundary[pidx].mName};
+        if (!boundary[pidx].mType.empty())
+            rInfo.mPatchTypes[fam] = boundary[pidx].mType;
         for (std::int64_t fid = boundary[pidx].mStartFace;
              fid < boundary[pidx].mStartFace + boundary[pidx].mNFaces; ++fid) {
             if (fid < 0 || static_cast<std::size_t>(fid) >= faces.size())
@@ -53739,6 +54237,550 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
     if (!cell_tags.empty())
         mesh.AddCellData("cell_tags", std::move(cell_tags));
     return mesh;
+}
+
+// ==========================================================================
+//                                  WRITER
+// ==========================================================================
+
+namespace {
+
+/// One boundary patch as it will be written.
+struct FoamPatchOut {
+    std::string mName;
+    std::string mType = "patch";
+    std::int64_t mNFaces = 0;
+    std::int64_t mStartFace = 0;
+};
+
+/// The written face order plus the patch table describing its tail.
+struct FoamFaceOrder {
+    std::vector<std::int64_t> mNewToOld;  ///< written face id -> GlobalFaces id
+    std::int64_t mNumInternal = 0;
+    std::vector<FoamPatchOut> mPatches;  ///< ascending mStartFace
+};
+
+/**
+ * @brief Patch types that survive a round trip unchanged.
+ *
+ * Everything else needs companion dictionary entries `OpenFoamInfo` does not
+ * carry -- `cyclic`/`cyclicAMI` need `neighbourPatch`, `processor` needs
+ * `myProcNo`/`neighbProcNo`, `mapped*` needs `sample*` -- and OpenFOAM refuses
+ * to *load* a case whose patch declares such a type without them. Downgrading
+ * to `patch` yields a case that loads and solves with visibly wrong boundary
+ * conditions, which is strictly better than one that does not open.
+ */
+bool foam_type_is_self_contained(const std::string& rType) {
+    return rType == "patch" || rType == "wall" || rType == "symmetry" ||
+           rType == "symmetryPlane" || rType == "empty" || rType == "wedge";
+}
+
+/// Resolve the polyMesh directory. One function for both directions, so the
+/// reader's resolution and the writer's cannot drift apart.
+fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
+    if (rPath.extension() == ".foam") {
+        const fs::path c = rPath.parent_path() / "constant" / "polyMesh";
+        if (ForWrite || fs::exists(c))
+            return c;
+    }
+    if (rPath.filename() == "polyMesh" && (ForWrite || fs::is_directory(rPath)))
+        return rPath;
+    if (!ForWrite) {
+        for (const fs::path& c : {rPath / "constant" / "polyMesh", rPath / "polyMesh"}) {
+            if (fs::exists(c))
+                return c;
+        }
+        return {};
+    }
+    return rPath / "constant" / "polyMesh";
+}
+
+/// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
+/// but the rest is what makes the file legible to OpenFOAM itself.
+void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
+    rOs << "/*--------------------------------*- C++ -*----------------------------------*\\\n"
+           "| =========                 |                                                 |\n"
+           "| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |\n"
+           "|  \\\\    /   O peration     |                                                 |\n"
+           "|   \\\\  /    A nd           | Written by meshio++                             |\n"
+           "|    \\\\/     M anipulation  |                                                 |\n"
+           "\\*---------------------------------------------------------------------------*/\n"
+           "FoamFile\n"
+           "{\n"
+           "    version     2.0;\n"
+           "    format      ascii;\n"
+           "    class       "
+        << rClass
+        << ";\n"
+           "    location    \"constant/polyMesh\";\n"
+           "    object      "
+        << rObject
+        << ";\n"
+           "}\n"
+           "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n\n";
+}
+
+/**
+ * @brief Assign every boundary face to a patch.
+ *
+ * @return per-`GlobalFaces`-face patch index, `-1` for internal or unassigned.
+ */
+struct FoamPatchAssignment {
+    std::vector<std::int64_t> mFacePatch;
+    std::vector<FoamPatchOut> mPatches;
+    std::int64_t mNumOrphan = 0;         ///< 2D cell matching no face at all
+    std::int64_t mNumInternalTagged = 0;  ///< 2D cell matching an INTERNAL face
+};
+
+FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalFaces& rFaces,
+                                        const OpenFoamInfo& rInfo) {
+    FoamPatchAssignment out;
+    out.mFacePatch.assign(rFaces.NumFaces(), -1);
+
+    // Family ids in the reader's own order (ascending -fam == ascending patch
+    // index), so an OpenFOAM round trip preserves the boundary file's order.
+    std::vector<std::int64_t> fams;
+    for (const auto& kv : rInfo.mCellTags)
+        fams.push_back(kv.first);
+    std::sort(fams.begin(), fams.end(), [](std::int64_t a, std::int64_t b) { return a > b; });
+
+    std::unordered_map<std::int64_t, std::size_t> fam_to_patch;
+    for (std::int64_t fam : fams) {
+        FoamPatchOut p;
+        const auto& names = rInfo.mCellTags.at(fam);
+        p.mName = names.empty() ? ("patch" + std::to_string(-fam)) : names.front();
+        const auto it = rInfo.mPatchTypes.find(fam);
+        if (it != rInfo.mPatchTypes.end() && !it->second.empty()) {
+            if (foam_type_is_self_contained(it->second)) {
+                p.mType = it->second;
+            } else {
+                log::warn(
+                    "OpenFOAM: patch '{}' has type '{}', which needs dictionary entries meshio++ "
+                    "does not carry; writing 'patch' instead so the case still loads",
+                    p.mName, it->second);
+            }
+        }
+        fam_to_patch[fam] = out.mPatches.size();
+        out.mPatches.push_back(std::move(p));
+    }
+
+    const detail::FaceLookup lookup(rFaces);
+    const bool have_tags = rMesh.HasCellData("cell_tags");
+
+    for (std::size_t block : rFaces.mNonCellBlocks) {
+        const auto cb = rMesh.Cells(block);
+        if (cell_type_dimension(cell_type_from_name(cb.Type())) != 2)
+            continue;
+        const NDArray* tags =
+            have_tags && rMesh.CellDataNumBlocks("cell_tags") == rMesh.NumCellBlocks()
+                ? &rMesh.CellData("cell_tags", block)
+                : nullptr;
+
+        std::vector<std::int64_t> ids;
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            ids.clear();
+            if (cb.IsRagged()) {
+                const std::size_t n = cb.RowSize(i);
+                const std::int64_t* row = cb.Row(i);
+                ids.assign(row, row + n);
+            } else {
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t k = 0; k < npc; ++k)
+                    ids.push_back(detail::read_int(cb.Conn(), i * npc + k));
+            }
+            const std::int64_t fid = lookup.Find(ids.data(), ids.size());
+            if (fid < 0) {
+                ++out.mNumOrphan;
+                continue;
+            }
+            if (rFaces.mNeighbour[static_cast<std::size_t>(fid)] >= 0) {
+                // A face between two cells cannot also be a patch member --
+                // OpenFOAM would refuse the case. Legitimate input (an interior
+                // baffle), so drop it rather than throw.
+                ++out.mNumInternalTagged;
+                continue;
+            }
+            if (out.mFacePatch[static_cast<std::size_t>(fid)] >= 0)
+                continue;  // first claim wins
+            std::int64_t fam = 0;
+            if (tags && i < tags->Shape()[0])
+                fam = detail::read_int(*tags, i);
+            const auto it = fam_to_patch.find(fam);
+            if (fam < 0 && it != fam_to_patch.end())
+                out.mFacePatch[static_cast<std::size_t>(fid)] =
+                    static_cast<std::int64_t>(it->second);
+        }
+    }
+
+    // Everything still unassigned joins `defaultFaces` -- blockMesh's own name
+    // for exactly this, so the result is a valid single-patch case rather than
+    // an error or an invented decomposition.
+    std::int64_t n_unassigned = 0;
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (rFaces.mNeighbour[f] < 0 && out.mFacePatch[f] < 0)
+            ++n_unassigned;
+    if (n_unassigned > 0) {
+        const std::int64_t idx = static_cast<std::int64_t>(out.mPatches.size());
+        FoamPatchOut p;
+        p.mName = "defaultFaces";
+        p.mType = "patch";
+        out.mPatches.push_back(std::move(p));
+        for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+            if (rFaces.mNeighbour[f] < 0 && out.mFacePatch[f] < 0)
+                out.mFacePatch[f] = idx;
+    }
+
+    // An empty patch is legal but checkMesh flags it, and its emptiness always
+    // means something went wrong upstream.
+    std::vector<std::int64_t> counts(out.mPatches.size(), 0);
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (out.mFacePatch[f] >= 0)
+            ++counts[static_cast<std::size_t>(out.mFacePatch[f])];
+    std::vector<FoamPatchOut> kept;
+    std::vector<std::int64_t> remap(out.mPatches.size(), -1);
+    for (std::size_t p = 0; p < out.mPatches.size(); ++p) {
+        if (counts[p] == 0) {
+            log::warn("OpenFOAM: patch '{}' has no faces and is not written",
+                      out.mPatches[p].mName);
+            continue;
+        }
+        remap[p] = static_cast<std::int64_t>(kept.size());
+        kept.push_back(out.mPatches[p]);
+    }
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (out.mFacePatch[f] >= 0)
+            out.mFacePatch[f] = remap[static_cast<std::size_t>(out.mFacePatch[f])];
+    out.mPatches = std::move(kept);
+    return out;
+}
+
+/// Order the faces the way OpenFOAM requires.
+FoamFaceOrder foam_order_faces(const detail::GlobalFaces& rFaces,
+                               const FoamPatchAssignment& rAssign) {
+    FoamFaceOrder order;
+    order.mPatches = rAssign.mPatches;
+
+    std::vector<std::int64_t> internal, boundary;
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        (rFaces.mNeighbour[f] >= 0 ? internal : boundary).push_back(static_cast<std::int64_t>(f));
+
+    // Upper-triangular order. The face id is a THIRD key, not decoration: two
+    // cells can share two distinct faces, so (owner, neighbour) alone is not a
+    // strict weak ordering and std::sort would be undefined behaviour on it.
+    std::sort(internal.begin(), internal.end(), [&](std::int64_t a, std::int64_t b) {
+        const std::size_t ia = static_cast<std::size_t>(a), ib = static_cast<std::size_t>(b);
+        if (rFaces.mOwner[ia] != rFaces.mOwner[ib])
+            return rFaces.mOwner[ia] < rFaces.mOwner[ib];
+        if (rFaces.mNeighbour[ia] != rFaces.mNeighbour[ib])
+            return rFaces.mNeighbour[ia] < rFaces.mNeighbour[ib];
+        return a < b;
+    });
+    // Boundary faces contiguous per patch, patches in table order.
+    std::stable_sort(boundary.begin(), boundary.end(), [&](std::int64_t a, std::int64_t b) {
+        return rAssign.mFacePatch[static_cast<std::size_t>(a)] <
+               rAssign.mFacePatch[static_cast<std::size_t>(b)];
+    });
+
+    order.mNumInternal = static_cast<std::int64_t>(internal.size());
+    order.mNewToOld = std::move(internal);
+    order.mNewToOld.insert(order.mNewToOld.end(), boundary.begin(), boundary.end());
+
+    std::int64_t start = order.mNumInternal;
+    for (std::size_t p = 0; p < order.mPatches.size(); ++p) {
+        std::int64_t n = 0;
+        for (std::int64_t f : boundary)
+            if (rAssign.mFacePatch[static_cast<std::size_t>(f)] == static_cast<std::int64_t>(p))
+                ++n;
+        order.mPatches[p].mStartFace = start;
+        order.mPatches[p].mNFaces = n;
+        start += n;
+    }
+    return order;
+}
+
+/**
+ * @brief Check every clause of the polyMesh ordering contract.
+ *
+ * Runs in release builds too, deliberately: release is exactly where someone
+ * writes a ten-million-cell case, the cost is a handful of flops per face
+ * against ASCII formatting that costs far more, and a failure means we were
+ * about to hand a solver a corrupt mesh.
+ *
+ * @return "" when valid, else the first violated clause, named.
+ */
+std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFaceOrder& rOrder,
+                                const FoamPatchAssignment& rAssign, const NDArray& rPoints,
+                                std::size_t PointDim, std::size_t NumPoints) {
+    const std::size_t nf = rOrder.mNewToOld.size();
+    if (nf != rFaces.NumFaces())
+        return "C0: the written face list does not cover every face";
+
+    // Cell centroids, for the two normal-direction clauses.
+    std::vector<detail::Vec3> centroid(rFaces.NumCells(), detail::Vec3{0, 0, 0});
+    for (std::size_t c = 0; c < rFaces.NumCells(); ++c) {
+        detail::Vec3 acc{0, 0, 0};
+        std::size_t n = 0;
+        for (std::size_t k = 0; k < rFaces.NumCellFaces(c); ++k) {
+            const std::size_t f =
+                static_cast<std::size_t>(std::abs(rFaces.CellFaces(c)[k]) - 1);
+            for (std::size_t j = 0; j < rFaces.FaceSize(f); ++j) {
+                const detail::Vec3 p =
+                    detail::read_point(rPoints, PointDim, rFaces.Face(f)[j]);
+                acc[0] += p[0];
+                acc[1] += p[1];
+                acc[2] += p[2];
+                ++n;
+            }
+        }
+        if (n)
+            for (int a = 0; a < 3; ++a)
+                acc[a] /= static_cast<double>(n);
+        centroid[c] = acc;
+    }
+
+    std::vector<detail::Vec3> ring;
+    for (std::size_t i = 0; i < nf; ++i) {
+        const std::size_t f = static_cast<std::size_t>(rOrder.mNewToOld[i]);
+        const bool is_internal = i < static_cast<std::size_t>(rOrder.mNumInternal);
+
+        // C2: internal faces first.
+        if (is_internal != (rFaces.mNeighbour[f] >= 0))
+            return detail::format_compat(
+                "C2: face {} is {} but sits in the {} range", i,
+                rFaces.mNeighbour[f] >= 0 ? "internal" : "boundary",
+                is_internal ? "internal" : "boundary");
+
+        // C7: node ids in range, ring big enough to bound an area.
+        if (rFaces.FaceSize(f) < 3)
+            return detail::format_compat("C7: face {} has fewer than three nodes", i);
+        for (std::size_t k = 0; k < rFaces.FaceSize(f); ++k) {
+            const std::int64_t id = rFaces.Face(f)[k];
+            if (id < 0 || static_cast<std::size_t>(id) >= NumPoints)
+                return detail::format_compat("C7: face {} references node {}, out of range", i,
+                                             id);
+        }
+
+        ring.clear();
+        for (std::size_t k = 0; k < rFaces.FaceSize(f); ++k)
+            ring.push_back(detail::read_point(rPoints, PointDim, rFaces.Face(f)[k]));
+        const detail::Vec3 nrm = detail::polygon_area_vector(ring.data(), ring.size());
+        detail::Vec3 fc{0, 0, 0};
+        for (const detail::Vec3& p : ring)
+            for (int a = 0; a < 3; ++a)
+                fc[a] += p[a] / static_cast<double>(ring.size());
+
+        if (is_internal) {
+            // C1: owner < neighbour.
+            if (!(rFaces.mOwner[f] < rFaces.mNeighbour[f]))
+                return detail::format_compat("C1: face {} has owner {} >= neighbour {}", i,
+                                             rFaces.mOwner[f], rFaces.mNeighbour[f]);
+            // C3: strictly increasing (owner, neighbour).
+            if (i > 0) {
+                const std::size_t g = static_cast<std::size_t>(rOrder.mNewToOld[i - 1]);
+                const bool ok = rFaces.mOwner[g] < rFaces.mOwner[f] ||
+                                (rFaces.mOwner[g] == rFaces.mOwner[f] &&
+                                 rFaces.mNeighbour[g] <= rFaces.mNeighbour[f]);
+                if (!ok)
+                    return detail::format_compat(
+                        "C3: face {} has (owner,neighbour)=({},{}) after ({},{})", i,
+                        rFaces.mOwner[f], rFaces.mNeighbour[f], rFaces.mOwner[g],
+                        rFaces.mNeighbour[g]);
+            }
+            // C4: normal points owner -> neighbour.
+            const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
+            const detail::Vec3& cn = centroid[static_cast<std::size_t>(rFaces.mNeighbour[f])];
+            const double d = nrm[0] * (cn[0] - co[0]) + nrm[1] * (cn[1] - co[1]) +
+                             nrm[2] * (cn[2] - co[2]);
+            if (!(d > 0.0))
+                return detail::format_compat(
+                    "C4: internal face {} does not point from owner to neighbour", i);
+        } else {
+            // C5: boundary normal points out of the domain.
+            const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
+            const double d = nrm[0] * (fc[0] - co[0]) + nrm[1] * (fc[1] - co[1]) +
+                             nrm[2] * (fc[2] - co[2]);
+            if (!(d > 0.0))
+                return detail::format_compat("C5: boundary face {} is wound inward", i);
+        }
+    }
+
+    // C6: patches partition the boundary range exactly -- AND every face in a
+    // patch's range really belongs to that patch. Checking only that the
+    // start/count table tiles the range is not enough: the table is built by
+    // counting, so it describes a contiguity the face order may simply not
+    // have, and the resulting case is silently wrong.
+    std::int64_t expect = rOrder.mNumInternal;
+    for (std::size_t p = 0; p < rOrder.mPatches.size(); ++p) {
+        const FoamPatchOut& patch = rOrder.mPatches[p];
+        if (patch.mStartFace != expect)
+            return detail::format_compat("C6: patch '{}' starts at {}, expected {}", patch.mName,
+                                         patch.mStartFace, expect);
+        for (std::int64_t i = patch.mStartFace; i < patch.mStartFace + patch.mNFaces; ++i) {
+            const std::size_t f = static_cast<std::size_t>(rOrder.mNewToOld[
+                static_cast<std::size_t>(i)]);
+            if (rAssign.mFacePatch[f] != static_cast<std::int64_t>(p))
+                return detail::format_compat(
+                    "C6: face {} sits in patch '{}'s range but belongs to patch {}", i,
+                    patch.mName, rAssign.mFacePatch[f]);
+        }
+        expect += patch.mNFaces;
+    }
+    if (expect != static_cast<std::int64_t>(nf))
+        return detail::format_compat("C6: patches cover {} faces, expected {}",
+                                     expect - rOrder.mNumInternal,
+                                     static_cast<std::int64_t>(nf) - rOrder.mNumInternal);
+    return "";
+}
+
+std::ofstream foam_open(const fs::path& rPath) {
+    std::ofstream f(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("OpenFOAM: could not open for writing: " + rPath.string());
+    return f;
+}
+
+}  // namespace
+
+void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo) {
+    const detail::GlobalFaces faces = detail::build_global_faces(rMesh);
+
+    if (faces.NumCells() == 0)
+        throw WriteError(
+            "OpenFOAM: the mesh has no volume cells; a polyMesh needs at least one "
+            "tetra/pyramid/wedge/hexahedron/polyhedron cell");
+    // A 3D block we could not turn into faces would be a silently dropped solid.
+    for (std::size_t block : faces.mNonCellBlocks) {
+        const auto cb = rMesh.Cells(block);
+        const std::string type(cb.Type());
+        if (cell_type_dimension(cell_type_from_name(type)) == 3)
+            throw WriteError(detail::format_compat(
+                "OpenFOAM: cell type '{}' is 3D but has no face topology in meshio++, so writing "
+                "it would silently drop those cells",
+                type));
+    }
+    if (faces.mNumNonManifold > 0)
+        throw WriteError(detail::format_compat(
+            "OpenFOAM: {} face(s) are shared by three or more cells; a polyMesh face has at most "
+            "an owner and one neighbour",
+            faces.mNumNonManifold));
+    if (faces.mNumUnorientable > 0)
+        log::warn("OpenFOAM: {} cell(s) are not closed orientable surfaces; their faces are "
+                  "written with the winding they arrived with",
+                  faces.mNumUnorientable);
+    if (faces.mNumFlipped > 0)
+        log::info("OpenFOAM: rewound {} inverted cell(s) so their faces point outward",
+                  faces.mNumFlipped);
+
+    const FoamPatchAssignment assign = foam_assign_patches(rMesh, faces, rInfo);
+    if (assign.mNumOrphan > 0)
+        log::warn("OpenFOAM: {} boundary cell(s) match no cell face and are not written",
+                  assign.mNumOrphan);
+    if (assign.mNumInternalTagged > 0)
+        log::warn("OpenFOAM: {} boundary cell(s) coincide with an INTERNAL face; OpenFOAM cannot "
+                  "put such a face on a patch, so they are not written",
+                  assign.mNumInternalTagged);
+
+    const FoamFaceOrder order = foam_order_faces(faces, assign);
+    const std::string bad = foam_validate_order(faces, order, assign, rMesh.Points(),
+                                                rMesh.PointDim(), rMesh.NumPoints());
+    if (!bad.empty())
+        throw WriteError("OpenFOAM: internal error, the written face order violates " + bad);
+
+    const fs::path poly = foam_polymesh_dir(fs::path(rPath), /*ForWrite=*/true);
+    std::error_code ec;
+    fs::create_directories(poly, ec);
+    if (ec && !fs::is_directory(poly))
+        throw WriteError("OpenFOAM: could not create directory " + poly.string() + ": " +
+                         ec.message());
+    if (fs::path(rPath).extension() == ".foam") {
+        // The marker file is what makes the case openable by ParaView and by
+        // this reader's own `.foam` branch.
+        std::ofstream marker(rPath, std::ios::binary);
+    }
+
+    // Companion files this writer does not produce but OpenFOAM would read.
+    // Leaving a stale one behind corrupts the case, so remove exactly these --
+    // never the whole directory, which may hold a user's own files.
+    for (const char* name : {"cellZones", "faceZones", "pointZones", "meshModifiers",
+                             "boundaryProcAddressing", "cellProcAddressing",
+                             "faceProcAddressing", "pointProcAddressing", "cellLevel",
+                             "pointLevel", "level0Edge", "refinementHistory", "surfaceIndex"}) {
+        std::error_code rc;
+        if (fs::remove(poly / name, rc))
+            log::info("OpenFOAM: removed stale {}", name);
+    }
+
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t np = rMesh.NumPoints();
+
+    {
+        std::ofstream f = foam_open(poly / "points");
+        foam_write_header(f, "vectorField", "points");
+        // The count MUST be on a line of its own: every ASCII parser here takes
+        // "the first line that is entirely digits" as the count, so `8(` would
+        // be read as data and the list would come back EMPTY, not as an error.
+        f << np << "\n(\n";
+        f << std::setprecision(16);
+        for (std::size_t i = 0; i < np; ++i) {
+            const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+            f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
+        }
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "faces");
+        foam_write_header(f, "faceList", "faces");
+        f << order.mNewToOld.size() << "\n(\n";
+        for (std::int64_t old : order.mNewToOld) {
+            const std::size_t fi = static_cast<std::size_t>(old);
+            f << faces.FaceSize(fi) << "(";
+            for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
+                f << (k ? " " : "") << faces.Face(fi)[k];
+            f << ")\n";
+        }
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "owner");
+        foam_write_header(f, "labelList", "owner");
+        f << order.mNewToOld.size() << "\n(\n";
+        for (std::int64_t old : order.mNewToOld)
+            f << faces.mOwner[static_cast<std::size_t>(old)] << "\n";
+        f << ")\n";
+    }
+    {
+        // Always written, even with zero entries: a stale `neighbour` left from
+        // a previous, larger case is one of the nastiest ways to corrupt one.
+        // OpenFOAM's `neighbour` holds ONLY internal faces -- our own reader
+        // also accepts a -1-padded full-length list, which is exactly why a
+        // round trip through it is a weak oracle for this writer.
+        std::ofstream f = foam_open(poly / "neighbour");
+        foam_write_header(f, "labelList", "neighbour");
+        f << order.mNumInternal << "\n(\n";
+        for (std::int64_t i = 0; i < order.mNumInternal; ++i)
+            f << faces.mNeighbour[static_cast<std::size_t>(order.mNewToOld[
+                  static_cast<std::size_t>(i)])]
+              << "\n";
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "boundary");
+        foam_write_header(f, "polyBoundaryMesh", "boundary");
+        f << order.mPatches.size() << "\n(\n";
+        for (const FoamPatchOut& p : order.mPatches) {
+            f << "    " << p.mName << "\n    {\n";
+            f << "        type            " << p.mType << ";\n";
+            f << "        nFaces          " << p.mNFaces << ";\n";
+            f << "        startFace       " << p.mStartFace << ";\n";
+            f << "    }\n";
+        }
+        f << ")\n";
+    }
+
+    log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)",
+              poly.string(), faces.NumCells(), order.mNewToOld.size(), order.mNumInternal,
+              order.mPatches.size());
 }
 
 }  // namespace meshioplusplus
@@ -76338,7 +77380,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets side channel in v1
              meshioplusplus::write_ansysinp(p, mm, info);
          }},
-    // openfoam is read-only in the C++ core (see openfoam.hpp) -> no writer entry.
+        {"openfoam",
+         [](const std::string& p, const Mesh& mm) {
+             // No patch-name/type side channel here, so this yields a single
+             // `defaultFaces` patch -- a valid, loadable case (see
+             // write_openfoam). The flat bindings get that rather than an error.
+             meshioplusplus::OpenFoamInfo info;
+             meshioplusplus::write_openfoam(p, mm, info);
+         }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"cgns", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},
@@ -76395,6 +77444,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".fem", "nastran"},
         {".vol", "netgen"},
         {".obj", "obj"},
+        // OpenFOAM: the `.foam` marker file. A case *directory* has no
+        // extension at all, so that form still needs an explicit format.
+        {".foam", "openfoam"},
         {".off", "off"},
         {".post", "permas"},
         {".dato", "permas"},

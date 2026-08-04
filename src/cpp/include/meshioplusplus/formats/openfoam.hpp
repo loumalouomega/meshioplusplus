@@ -41,10 +41,15 @@
  * zero-copy). Boundary faces become `triangle`/`quad`/`polygon<N>` blocks,
  * one per patch/size combination.
  *
- * This reader is **read-only** — there is no OpenFOAM writer at all, in
- * C++ or Python. Only mesh topology is read; OpenFOAM field files (`U`,
- * `p`, `T`, …) under a case's time directories are never read by this
- * module, so no `point_data`/`field_data` is ever produced.
+ * `write_openfoam` (v9.20.0) is the inverse, and is the **only writer in
+ * meshio++ that takes a directory path** — it creates
+ * `<case>/constant/polyMesh/` and writes all five files. It goes through
+ * `detail/face_mesh.hpp`'s global face table, which is also what CGNS's
+ * `NFACE_n` writer uses. ASCII only; a binary polyMesh is a follow-up.
+ *
+ * Only mesh topology is read or written; OpenFOAM field files (`U`, `p`,
+ * `T`, …) under a case's time directories are never touched by this module,
+ * so no `point_data`/`field_data` is ever produced or consumed.
  */
 
 // System includes
@@ -79,6 +84,28 @@ struct OpenFoamInfo {
      * groups (see doc/formats/med.md).
      */
     std::map<std::int64_t, std::vector<std::string>> mCellTags;
+
+    /**
+     * `family_id -> patch type` — the `type` entry of the on-disk `boundary`
+     * file (`patch`, `wall`, `symmetry`, `symmetryPlane`, `empty`, `wedge`,
+     * `cyclic`, …), keyed by the **same** negative family id as #mCellTags
+     * rather than by patch name: that key is this format's primary key
+     * everywhere else, and two maps keyed differently invite a bad join.
+     *
+     * A patch whose `type` the file omitted simply has no entry, and the
+     * writer then emits `patch` — OpenFOAM's base type, always safe.
+     * Deliberately **not** `wall`: `wall` selects wall functions and
+     * `nut*WallFunction` boundary behaviour, so guessing it would silently
+     * change a solve's physics.
+     *
+     * Types needing companion keys this struct cannot carry (`cyclic`'s
+     * `neighbourPatch`, `processor`'s `myProcNo`, `mappedWall`'s `sample`,
+     * …) are **downgraded to `patch` with a warning** on write: emitting
+     * them bare produces a case OpenFOAM refuses to load, whereas a
+     * downgraded case loads and solves with boundary conditions the user
+     * can see and fix.
+     */
+    std::map<std::int64_t, std::string> mPatchTypes;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh
@@ -114,5 +141,47 @@ struct OpenFoamInfo {
  *         pure-Python reader
  */
 MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
+
+/**
+ * @brief Write a Mesh as an OpenFOAM polyMesh case.
+ *
+ * The **only meshio++ writer that creates a directory**: @p rPath is
+ * resolved exactly as `read_openfoam` resolves it (a `.foam` marker file, a
+ * directory literally named `polyMesh`, or any other directory taken as the
+ * case root), and `<case>/constant/polyMesh/` is created if absent. A
+ * `.foam` target additionally gets its empty marker file written, which is
+ * what makes the case openable by ParaView and by this reader.
+ *
+ * Volume cells become the `faces`/`owner`/`neighbour` triple via
+ * `detail::build_global_faces`, which repairs each cell's winding — so an
+ * inverted cell is written correctly oriented rather than rejected by
+ * `checkMesh`. All four ordering rules OpenFOAM requires (internal faces
+ * first, `owner < neighbour`, faces sorted by owner then neighbour, normals
+ * pointing owner→neighbour) are enforced and then re-validated before
+ * anything is written; a violation is a `WriteError` naming the rule,
+ * because it means an internal bug rather than bad input.
+ *
+ * Boundary patches are recovered from `cell_data["cell_tags"]`'s negative
+ * values together with @p rInfo. A mesh carrying none — anything converted
+ * from another format — gets a single `defaultFaces` patch of type `patch`,
+ * which is what `blockMesh` itself produces and yields a loadable case.
+ * Patches are **not** synthesized from geometry.
+ *
+ * ASCII only: a binary polyMesh is a documented follow-up, so an explicit
+ * binary request fails by name rather than silently writing ASCII.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rMesh the mesh to write; ragged polyhedron blocks are supported
+ *        and are in fact this format's native cell shape
+ * @param rInfo patch names and types, keyed by the same negative family ids
+ *        `read_openfoam` produces (see #OpenFoamInfo). An empty struct is
+ *        valid and yields the `defaultFaces` case above.
+ * @throws WriteError if the mesh has no volume cells, if a 3D block cannot
+ *         contribute faces (which would silently drop solids), if a face is
+ *         shared by three or more cells, or if the output directory cannot
+ *         be created
+ */
+MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
+                                       const OpenFoamInfo& rInfo);
 
 }  // namespace meshioplusplus

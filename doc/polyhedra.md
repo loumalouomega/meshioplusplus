@@ -132,7 +132,8 @@ Reading polyhedra: **MED** (`POE`), **EnSight** (`nfaced`), **OpenFOAM**, and
 Reading jagged polygons: **MED** (`POG`/`POG2`), **EnSight** (`nsided`),
 **VTP**, **OpenFOAM**.
 
-Writing polyhedra: **MED** (`POE`) and **EnSight** (`nfaced`) since v9.19.0.
+Writing polyhedra: **MED** (`POE`), **EnSight** (`nfaced`) and **VTU** (type 42)
+since v9.19.0; **OpenFOAM** since v9.20.0, where they are the native cell shape.
 Writing jagged polygons: **MED** (`POG`/`POG2`), **EnSight** (`nsided`), **VTP**.
 
 See [Formats](/formats) for the current table and each format page for what it

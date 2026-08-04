@@ -8,6 +8,85 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.20.0 (2026-08-04)
+
+The **OpenFOAM polyMesh writer** — the last of the roadmap's polyhedral writers,
+and the last read-only format in the tree. Round-tripping an OpenFOAM case is the
+headline outcome; a mesh from any other format converts into one too.
+
+**`MESHIOPLUSPLUS_ABI_VERSION` 5 → 6**, because `OpenFoamInfo` gained a data
+member (Tier A).
+
+**Breaking (C++ ABI only):** `OpenFoamInfo` gained `mPatchTypes`, so its layout
+changed. A C++ consumer that compiled against v9.19.0 headers and passes an
+`OpenFoamInfo&` must be recompiled — which the bumped `SOVERSION`
+(`libmeshioplusplus_core_*.so.6`) and `detail/abi_version_check.hpp` both enforce
+at link time rather than leaving to chance. The C ABI, Python, WASM, Fortran,
+Julia and R surfaces are all unaffected.
+
+- **`detail/face_mesh.hpp`** — `build_global_faces` re-expresses a mesh's volume
+  cells as a globally deduplicated face list with owner/neighbour pairing. Two
+  formats are *defined* in those terms rather than in terms of cells: OpenFOAM's
+  polyMesh literally is this structure on disk, and CGNS's `NGON_n`/`NFACE_n`
+  pair is the same thing, so cell rows are stored in CGNS's own **signed 1-based**
+  encoding and the CGNS writer (next release) copies a row with an element-id
+  offset and no per-entry branch.
+
+  Three decisions worth recording. Cells are numbered in a **compact volume-cell
+  space**, not `block_bases`' block-major one: every mesh `read_openfoam`
+  produces carries its boundary faces as 2D blocks, so in the global numbering
+  "cell 8" is routinely a quad. Winding is **repaired unconditionally** —
+  `cell_faces.hpp`'s rows are outward on the *reference* element, so an inverted
+  hexahedron yields six inward normals and `checkMesh` would reject every one of
+  its faces. And one `detail::FacetKey` serves both cell kinds, which is what
+  makes a hexahedron and a polyhedron meeting on a face meet on *one* face.
+
+- **`write_openfoam`** — the only meshio++ writer that creates a **directory**.
+  All four ordering rules OpenFOAM requires (internal faces first, `owner <
+  neighbour`, faces sorted by owner then neighbour, normals owner→neighbour) are
+  enforced and then re-validated before anything is written, with one check per
+  clause naming the clause it broke; the validator runs in release builds too,
+  since release is where large cases get written and its failure means a corrupt
+  mesh was about to reach a solver. `.foam` is now in the registry's extension
+  table, so `write("case.foam", mesh)` infers the format — previously
+  `resolve_format` threw on it, and the flat bindings could not read a case by
+  extension either.
+
+  A mesh with no patch tags — anything converted from another format — gets a
+  single `defaultFaces` patch of type `patch`, which is what `blockMesh` itself
+  produces. Patches are never synthesized from geometry.
+
+- **Two reader fixes** came with it. `parse_boundary` now reads each patch's
+  `type` (the **Python reader always has**; the C++ one was behind), and it
+  matches braces by **depth** rather than taking the first `}` — so a patch
+  carrying a nested sub-dictionary, as every `cyclicAMI` and `mappedWall` does,
+  is no longer truncated into garbage patches. The second fix is not optional
+  given the first: without it, `type` would be read from a truncated block.
+
+- Patch types needing companion dictionary entries `OpenFoamInfo` cannot carry
+  (`cyclic`, `processor`, `mapped*`, …) are **downgraded to `patch` with a
+  warning**. Emitting them bare produces a case OpenFOAM refuses to *load*;
+  a downgraded case loads and solves with boundary conditions the user can see
+  and fix. An unknown type writes `patch`, never `wall` — `wall` selects wall
+  functions, so guessing it would silently change a solve's physics.
+
+- `tests/cpp/test_abi_layout.cpp` now pins `OpenFoamInfo`, `GmshInfo` and
+  `MdpaInfo`. It pinned **no** format side-channel struct before, which is
+  exactly what made growing one look free — `MedInfo` gained four members in
+  v9.9.0 with the Tier A guard silent. (`MedInfo` and `ExodusInfo` stay unpinned:
+  they exist only in an HDF5 / netCDF build, and a layout snapshot that says
+  different things in different configurations is worse than none.)
+
+- **No Python fallback writer**, deliberately. A twin would have to re-implement
+  the per-cell winding repair, a discrete branch on the sign of an enclosed
+  volume, and two implementations of such a branch can land on opposite sides
+  for a near-degenerate cell — the reasoning that already keeps `smooth`'s
+  inversion guard out of its numpy fallback. It would also be dead code:
+  `openfoam_write` needs no optional dependency, so it is present in every wheel
+  and every source build with Python bindings. The writer is registered only when
+  the core provides it, so `meshioplusplus.write` never advertises a format that
+  always raises.
+
 ## v9.19.0 (2026-08-04)
 
 The polyhedral **writers** — the fifth item of the roadmap's polyhedral-meshes
