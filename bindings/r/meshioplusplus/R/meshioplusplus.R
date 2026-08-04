@@ -360,6 +360,58 @@ mio_connectivity_raw <- function(mesh, block = 1) {
   .Call(R_mio_connectivity_raw, mesh, .mio_block(block))
 }
 
+#' Ragged (polygon and polyhedron) cell blocks
+#'
+#' A ragged block holds cells of varying size, so it has no rectangular
+#' connectivity matrix and `mio_connectivity()` raises for it. The C ABI carries
+#' these as flat CSR arrays, but R has lists, so that is what these return --
+#' the same reasoning that gives Fortran a CSR triple (no ragged array type) and
+#' Julia nested vectors. Node indices are **1-based**, like every other copying
+#' accessor here.
+#'
+#' `mio_polygon_block()` handles 1-level ragged blocks (jagged polygons): one
+#' numeric vector per cell. `mio_polyhedron_block()` handles 2-level ones: one
+#' list of faces per cell, each face a numeric vector of node indices. Use
+#' `mio_cell_block_info()$is_polyhedron` to tell them apart; each accessor
+#' raises by name if handed the other kind.
+#'
+#' Faces *should* be wound so their right-hand normal points out of the cell,
+#' but meshio++ does not require it -- the geometric kernels repair an
+#' inconsistent winding rather than rejecting it.
+#'
+#' @param mesh A `mio_mesh` object.
+#' @param block A **1-based** cell-block index.
+#' @param cell_type A meshio type name, e.g. `"polygon"` or `"polyhedron"`.
+#' @param rows A list of numeric vectors, one per cell (1-based node indices).
+#' @param cells A list of cells, each a list of numeric face vectors.
+#' @return `mio_polygon_block()` a list of numeric vectors;
+#'   `mio_polyhedron_block()` a list of lists of numeric vectors. The setters
+#'   return the mesh invisibly.
+#' @export
+mio_polygon_block <- function(mesh, block = 1) {
+  .Call(R_mio_polygon_block, mesh, .mio_block(block))
+}
+
+#' @rdname mio_polygon_block
+#' @export
+mio_polyhedron_block <- function(mesh, block = 1) {
+  .Call(R_mio_polyhedron_block, mesh, .mio_block(block))
+}
+
+#' @rdname mio_polygon_block
+#' @export
+mio_add_polygon_block <- function(mesh, cell_type, rows) {
+  .Call(R_mio_add_polygon_block, mesh, as.character(cell_type), rows)
+  invisible(mesh)
+}
+
+#' @rdname mio_polygon_block
+#' @export
+mio_add_polyhedron_block <- function(mesh, cell_type, cells) {
+  .Call(R_mio_add_polyhedron_block, mesh, as.character(cell_type), cells)
+  invisible(mesh)
+}
+
 #' Named data arrays
 #'
 #' A data array shaped `(rows, components...)` in the C API comes back with the

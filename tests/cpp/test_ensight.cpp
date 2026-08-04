@@ -27,6 +27,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
+#include "meshioplusplus/operations/stats.hpp"
 
 namespace {
 
@@ -119,4 +120,60 @@ TEST(Ensight, WriteRejectsUnknownType) {
         mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}}, "line4", {{0, 1, 2, 3}});
     EXPECT_THROW(meshioplusplus::write_ensight(mt::temp_path(".case"), mesh, false),
                  meshioplusplus::WriteError);
+}
+
+// --- ragged (nsided / nfaced) round trips ------------------------------------
+//
+// The reader has always parsed these; the writer refused them until v9.19.0.
+// EnSight is the cheapest of the polyhedral writers precisely because its wire
+// format is a direct CSR dump -- no orientation contract, no global face table
+// -- so a round trip against the existing reader is a complete oracle.
+
+TEST(Ensight, NsidedPolygonRoundTrip) {
+    mt::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0.5, 0}}));
+    m.AddPolygonBlock("polygon", {{0, 1, 2, 3}, {1, 4, 2}});  // a quad then a triangle
+
+    for (bool binary : {false, true}) {
+        const std::string path = mt::temp_path(binary ? "_nsided_b.case" : "_nsided_a.case");
+        meshioplusplus::write_ensight(path, m, binary);
+        const mt::Mesh back = meshioplusplus::read_ensight(path);
+        ASSERT_EQ(back.NumCellBlocks(), 1u) << "binary=" << binary;
+        const auto cb = back.Cells(0);
+        EXPECT_TRUE(cb.IsRagged());
+        ASSERT_EQ(cb.NumCells(), 2u);
+        EXPECT_EQ(cb.RowSize(0), 4u);
+        EXPECT_EQ(cb.RowSize(1), 3u);
+        EXPECT_EQ(cb.Row(1)[0], 1);
+        EXPECT_EQ(cb.Row(1)[1], 4);
+        EXPECT_EQ(cb.Row(1)[2], 2);
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        std::filesystem::remove(path.substr(0, path.size() - 5) + ".geo", ec);
+    }
+}
+
+TEST(Ensight, NfacedPolyhedronRoundTrip) {
+    mt::Mesh m;
+    m.AssignPoints(mt::points_from(
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}));
+    m.AddPolyhedronBlock(
+        "polyhedron8",
+        {{{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}}});
+
+    for (bool binary : {false, true}) {
+        const std::string path = mt::temp_path(binary ? "_nfaced_b.case" : "_nfaced_a.case");
+        meshioplusplus::write_ensight(path, m, binary);
+        const mt::Mesh back = meshioplusplus::read_ensight(path);
+        ASSERT_EQ(back.NumCellBlocks(), 1u) << "binary=" << binary;
+        const auto cb = back.Cells(0);
+        EXPECT_TRUE(cb.IsPolyhedron());
+        ASSERT_EQ(cb.NumCells(), 1u);
+        EXPECT_EQ(cb.NumFaces(0), 6u);
+        // Geometry, not just arity: the cube must come back as a unit cube.
+        EXPECT_NEAR(meshioplusplus::compute_stats(back).mUnsignedVolume, 1.0, 1e-12);
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        std::filesystem::remove(path.substr(0, path.size() - 5) + ".geo", ec);
+    }
 }

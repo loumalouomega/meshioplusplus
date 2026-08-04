@@ -41,7 +41,7 @@ end
     @test !isempty(library_path())
     @test format_readable("vtu")
     @test format_writable("vtu")
-    @test !format_writable("openfoam")      # read-only format
+    @test format_writable("openfoam")       # writable since v9.20.0
     @test !format_readable("nonexistent")
     @test cell_type_num_nodes("tetra10") == 10
     @test cell_type_dimension("triangle") == 2
@@ -99,6 +99,43 @@ end
     @test c1 == CONN
     @test c1 == c0 .+ 1                 # exactly the documented relationship
     @test eltype(c0) == Int64
+    close(m)
+end
+
+@testset "ragged (polygon / polyhedron) connectivity" begin
+    # Before meshio++ 9.15 the C ABI could neither build nor read one of these,
+    # so this whole testset is new ground rather than a regression guard.
+    m = Mesh()
+    set_points!(m, Float64[0.0 1.0 1.0 0.0 2.0
+                           0.0 0.0 1.0 1.0 0.5
+                           0.0 0.0 0.0 0.0 0.0])
+    # A quad then a triangle -- the point of a jagged block.
+    rows = [[1, 2, 3, 4], [2, 5, 3]]
+    add_polygon_block!(m, "polygon", rows)
+    # A 4-face tetrahedron then a 3-face sliver: different face counts, so the
+    # cell offsets carry real information.
+    cells = [[[1, 2, 3], [1, 4, 2], [2, 4, 3], [3, 4, 1]],
+             [[2, 3, 5], [3, 4, 5], [4, 2, 5]]]
+    add_polyhedron_block!(m, "polyhedron", cells)
+
+    @test num_cell_blocks(m) == 2
+    i1 = cell_block_info(m, 1)
+    @test i1.is_ragged && !i1.is_polyhedron
+    @test i1.num_cells == 2 && i1.nodes_per_cell == 0
+    @test i1.num_faces == 2 && i1.num_nodes == 7
+    i2 = cell_block_info(m, 2)
+    @test i2.is_ragged && i2.is_polyhedron
+    @test i2.num_cells == 2 && i2.num_faces == 7 && i2.num_nodes == 21
+
+    @test polygon_block(m, 1) == rows
+    @test polyhedron_block(m, 2) == cells
+
+    # Each accessor refuses the wrong shape by name rather than returning
+    # something plausible-but-wrong.
+    @test_throws ArgumentError polyhedron_block(m, 1)
+    @test_throws ArgumentError polygon_block(m, 2)
+    @test_throws MeshioPlusPlus.MeshioError connectivity(m, 1)
+    @test_throws Exception polygon_block(m, 3)   # out of range
     close(m)
 end
 

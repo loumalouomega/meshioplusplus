@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 9.14.0
+  VERSION 9.22.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -160,6 +160,27 @@ option(MESHIOPLUSPLUS_WITH_KAHIP "Build the KaHIP partition backend" OFF)
 if(MESHIOPLUSPLUS_WITH_KAHIP AND NOT EMSCRIPTEN)
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
   find_package(KaHIP QUIET)
+endif()
+
+# The official CGNS library (cgnslib / the CGNS Mid-Level Library). OFF by
+# default and bring-your-own, exactly like KaHIP: never vendored, never
+# downloaded. It is an ADDITIVE backend -- the hand-rolled ADF-over-HDF5 CGNS
+# reader and writer are unchanged and remain the default -- that buys two
+# things the raw-HDF5 path fundamentally cannot have: files in the ADF
+# container (a raw-HDF5 reader can never open one) and NGON_n/NFACE_n
+# polyhedral sections, whose CGNS 3.x-vs-4.0 ElementStartOffset split the MLL
+# absorbs. Point CGNS_ROOT at an install; cgnslib ships its own CMake config
+# (targets CGNS::cgns_shared / CGNS::cgns_static), so no Find module is needed
+# and the exported package stays relocatable.
+option(MESHIOPLUSPLUS_WITH_CGNSLIB
+       "Use the official CGNS library for CGNS (ADF containers + NGON_n/NFACE_n)" OFF)
+if(MESHIOPLUSPLUS_WITH_CGNSLIB)
+  find_package(CGNS CONFIG QUIET)
+  if(NOT TARGET CGNS::cgns_shared AND NOT TARGET CGNS::cgns_static AND CGNS_ROOT)
+    # Some installs predate the config package; fall back to a plain probe.
+    find_path(CGNS_INCLUDE_DIR cgnslib.h HINTS "${CGNS_ROOT}/include")
+    find_library(CGNS_LIBRARY NAMES cgns HINTS "${CGNS_ROOT}/lib")
+  endif()
 endif()
 
 # Optional heavy dependencies. When absent, the corresponding format sources
@@ -388,6 +409,29 @@ if(MESHIOPLUSPLUS_WITH_KAHIP AND KAHIP_FOUND)
 elseif(MESHIOPLUSPLUS_WITH_KAHIP)
   message(STATUS "meshio++: KaHIP requested but not found (set KAHIP_ROOT) - "
                  "partition method 'kahip' will raise")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_CGNSLIB AND NOT MESHIOPLUSPLUS_WITH_HDF5)
+  message(FATAL_ERROR
+          "meshio++: MESHIOPLUSPLUS_WITH_CGNSLIB needs MESHIOPLUSPLUS_WITH_HDF5=ON - "
+          "the cgnslib backend augments the HDF5-backed CGNS format, it does not replace it.")
+endif()
+if(MESHIOPLUSPLUS_WITH_CGNSLIB AND TARGET CGNS::cgns_shared)
+  message(STATUS "meshio++: cgnslib CGNS backend enabled (shared)")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_CGNSLIB)
+  list(APPEND _mio_core_libs CGNS::cgns_shared)
+elseif(MESHIOPLUSPLUS_WITH_CGNSLIB AND TARGET CGNS::cgns_static)
+  message(STATUS "meshio++: cgnslib CGNS backend enabled (static)")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_CGNSLIB)
+  list(APPEND _mio_core_libs CGNS::cgns_static)
+elseif(MESHIOPLUSPLUS_WITH_CGNSLIB AND CGNS_LIBRARY AND CGNS_INCLUDE_DIR)
+  message(STATUS "meshio++: cgnslib CGNS backend enabled (${CGNS_LIBRARY})")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_CGNSLIB)
+  list(APPEND _mio_core_incs ${CGNS_INCLUDE_DIR})
+  list(APPEND _mio_core_libs ${CGNS_LIBRARY})
+elseif(MESHIOPLUSPLUS_WITH_CGNSLIB)
+  message(STATUS "meshio++: cgnslib requested but not found (set CGNS_ROOT) - "
+                 "ADF containers and NGON_n/NFACE_n sections will raise by name")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_HDF5 AND HDF5_FOUND)
@@ -804,7 +848,7 @@ endif()
 # it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
 # on a machine that happens to have HDF5 now correctly reports "no HDF5".
 # ---------------------------------------------------------------------------
-foreach(_f ZLIB ZSTD LZ4 KAHIP HDF5 NETCDF EIGEN JSON)
+foreach(_f ZLIB ZSTD LZ4 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB)
   if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
     set(_mio_has_${_f} TRUE)
   else()

@@ -475,19 +475,28 @@ function num_cells(m::Mesh)
 end
 
 """
-    cell_block_info(mesh, block) -> (; num_cells, nodes_per_cell, is_ragged)
+    cell_block_info(mesh, block)
+        -> (; num_cells, nodes_per_cell, is_ragged, is_polyhedron, num_faces, num_nodes)
 
 Shape of cell block `block` (**1-based**). A ragged block (polygons or
 polyhedra of varying size) reports `nodes_per_cell == 0` and `is_ragged ==
-true`; its connectivity is **not reachable through the C API** (a documented
-v1 limitation), so [`connectivity`](@ref) throws for it.
+true`, so [`connectivity`](@ref) throws for it — read it with
+[`polygon_block`](@ref) or, when `is_polyhedron`, [`polyhedron_block`](@ref).
+
+`num_faces` is the total face count (equal to `num_cells` unless
+`is_polyhedron`) and `num_nodes` the total node ids the block stores. Both are
+an O(cells) walk on the MESHIO mesh backend, which stores ragged blocks as
+nested vectors rather than CSR — fine to size a buffer with, not a hot loop.
 """
 function cell_block_info(m::Mesh, block::Integer)
-    nc = Ref{Int64}(0); npc = Ref{Int64}(0); ragged = Ref{Int32}(0)
-    _check(ccall(_sym(:mio_mesh_cell_block_info), Cint,
-                 (Ptr{Cvoid}, Int64, Ptr{Int64}, Ptr{Int64}, Ptr{Int32}),
-                 _handle(m), Int64(block - 1), nc, npc, ragged))
-    (num_cells=Int(nc[]), nodes_per_cell=Int(npc[]), is_ragged=ragged[] != 0)
+    info = Ref{_CCellBlockInfo}()
+    _check(ccall(_sym(:mio_mesh_cell_block_info_ex), Cint,
+                 (Ptr{Cvoid}, Int64, Ptr{_CCellBlockInfo}),
+                 _handle(m), Int64(block - 1), info))
+    ci = info[]
+    (num_cells=Int(ci.num_cells), nodes_per_cell=Int(ci.nodes_per_cell),
+     is_ragged=ci.is_ragged != 0, is_polyhedron=ci.is_polyhedron != 0,
+     num_faces=Int(ci.num_faces), num_nodes=Int(ci.num_nodes))
 end
 
 """    cell_block_type(mesh, block) -> String — the meshio type name (1-based `block`)."""
@@ -561,8 +570,8 @@ end
 `block` (1-based). The `+1` shift happens here, where a copy is made anyway;
 [`connectivity_ptr`](@ref) is the un-shifted zero-copy borrow.
 
-Throws on a ragged block: the C API reports `is_ragged` but does not expose
-that connectivity (a documented v1 limitation).
+Throws on a ragged block, which has no rectangular buffer — read it with
+[`polygon_block`](@ref) or [`polyhedron_block`](@ref).
 """
 function connectivity(m::Mesh, block::Integer)
     b = connectivity_ptr(m, block)
@@ -572,6 +581,85 @@ function connectivity(m::Mesh, block::Integer)
         out[i] = Int64(src[i]) + 1
     end
     out
+end
+
+# --- inspecting: ragged (polygon / polyhedron) connectivity ------------------
+#
+# The C ABI carries these as flat CSR, but Julia has nested vectors, so that is
+# what the package hands back — the same reasoning that gives Fortran the CSR
+# triple (it has no ragged array type) and R a nested list. Each language gets
+# its natural shape over one ABI, exactly as column-major points and 1-based
+# indices already work.
+#
+# There is deliberately no `_ptr` form. `mio_poly_conn` is an owning SNAPSHOT
+# rather than a rule-3 borrow (the MESHIO mesh backend has no offsets array to
+# point at), so its arrays are guarded by the snapshot's own lifetime, not the
+# mesh's mutation generation. Handing out a `MeshBorrow` over them would attach
+# the wrong guard.
+
+# Run `f(shape, nodes, face_offsets, cell_offsets)` over a fresh snapshot of a
+# ragged block, freeing it however `f` exits.
+function _with_poly_conn(f, m::Mesh, block::Integer)
+    h = _handle(m)
+    poly = _check_ptr(ccall(_sym(:mio_poly_conn_create), Ptr{Cvoid},
+                            (Ptr{Cvoid}, Int64), h, Int64(block - 1)))
+    try
+        sh = Ref{_CPolyConnShape}()
+        _check(ccall(_sym(:mio_poly_conn_get_shape), Cint,
+                     (Ptr{Cvoid}, Ptr{_CPolyConnShape}), poly, sh))
+        grab = function (symbol)
+            n = Ref{Int64}(0)
+            p = ccall(_sym(symbol), Ptr{Int64}, (Ptr{Cvoid}, Ptr{Int64}), poly, n)
+            p == C_NULL ? Int64[] : copy(unsafe_wrap(Array, p, (Int(n[]),); own=false))
+        end
+        f(sh[], grab(:mio_poly_conn_nodes), grab(:mio_poly_conn_face_offsets),
+          grab(:mio_poly_conn_cell_offsets))
+    finally
+        ccall(_sym(:mio_poly_conn_free), Cvoid, (Ptr{Cvoid},), poly)
+    end
+end
+
+"""
+    polygon_block(mesh, block) -> Vector{Vector{Int}}
+
+**Copy, 1-BASED** node ids of a 1-level ragged (jagged polygon) cell block
+(`block` is 1-based). One inner vector per cell, each as long as that cell has
+nodes — which is the whole point of a ragged block.
+
+Throws on a rectangular block (use [`connectivity`](@ref)) and on a polyhedron
+block (use [`polyhedron_block`](@ref)).
+"""
+function polygon_block(m::Mesh, block::Integer)
+    _with_poly_conn(m, block) do shape, nodes, face_offsets, _
+        shape.is_polyhedron == 0 || throw(ArgumentError(
+            "cell block $block is a polyhedron block; use polyhedron_block"))
+        [Int[nodes[i] + 1 for i in (face_offsets[c] + 1):face_offsets[c + 1]]
+         for c in 1:Int(shape.num_cells)]
+    end
+end
+
+"""
+    polyhedron_block(mesh, block) -> Vector{Vector{Vector{Int}}}
+
+**Copy, 1-BASED** connectivity of a 2-level ragged (polyhedron) cell block
+(`block` is 1-based): one entry per cell, each a list of faces, each face a
+list of node ids.
+
+Faces *should* be wound so their right-hand normal points out of the cell, but
+meshio++ does not require it — the geometric kernels repair an inconsistent
+winding rather than rejecting it. See `doc/polyhedra.md`.
+
+Throws on a rectangular block (use [`connectivity`](@ref)) and on a 1-level
+polygon block (use [`polygon_block`](@ref)).
+"""
+function polyhedron_block(m::Mesh, block::Integer)
+    _with_poly_conn(m, block) do shape, nodes, face_offsets, cell_offsets
+        shape.is_polyhedron != 0 || throw(ArgumentError(
+            "cell block $block is a 1-level polygon block; use polygon_block"))
+        [[Int[nodes[i] + 1 for i in (face_offsets[f] + 1):face_offsets[f + 1]]
+          for f in (cell_offsets[c] + 1):cell_offsets[c + 1]]
+         for c in 1:Int(shape.num_cells)]
+    end
 end
 
 # --- inspecting: data arrays -------------------------------------------------
@@ -736,6 +824,75 @@ function add_cell_block!(m::Mesh, cell_type::AbstractString,
                                       (Ptr{Cvoid}, Cstring, Int64, Int64, Cint, Ptr{Cvoid}),
                                       _handle(m), cell_type, Int64(nc), Int64(npc),
                                       _miodtype(Int64), pointer(shifted)))
+    _touch!(m)
+    m
+end
+
+# Flatten nested 1-based node lists into the 0-based CSR pair the ABI takes.
+function _ragged_csr(rows, what::AbstractString)
+    offsets = Int64[0]
+    nodes = Int64[]
+    for row in rows
+        for v in row
+            iv = Int64(v)
+            iv >= 1 || throw(ArgumentError(
+                "$what is 1-based here; got $iv"))
+            push!(nodes, iv - 1)
+        end
+        push!(offsets, Int64(length(nodes)))
+    end
+    offsets, nodes
+end
+
+"""
+    add_polygon_block!(mesh, cell_type, rows) -> mesh
+
+Append a 1-level ragged (jagged polygon) cell block. `rows` is one collection
+of **1-based** node ids per cell, of whatever lengths — e.g.
+`[[1, 2, 3, 4], [2, 5, 3]]` for a quad then a triangle.
+"""
+function add_polygon_block!(m::Mesh, cell_type::AbstractString, rows)
+    offsets, nodes = _ragged_csr(rows, "connectivity")
+    _check(GC.@preserve offsets nodes ccall(
+        _sym(:mio_mesh_add_polygon_block), Cint,
+        (Ptr{Cvoid}, Cstring, Int64, Ptr{Int64}, Ptr{Int64}, Int64),
+        _handle(m), cell_type, Int64(length(offsets) - 1), pointer(offsets),
+        pointer(nodes), Int64(length(nodes))))
+    _touch!(m)
+    m
+end
+
+"""
+    add_polyhedron_block!(mesh, cell_type, cells) -> mesh
+
+Append a 2-level ragged (polyhedron) cell block. `cells` is one collection of
+faces per cell, each face a collection of **1-based** node ids — e.g.
+`[[[1,2,3], [1,4,2], [2,4,3], [3,4,1]]]` for a single tetrahedron.
+
+Wind each face so its right-hand normal points out of the cell where you can;
+meshio++ repairs an inconsistent winding rather than rejecting it.
+"""
+function add_polyhedron_block!(m::Mesh, cell_type::AbstractString, cells)
+    cell_offsets = Int64[0]
+    face_offsets = Int64[0]
+    nodes = Int64[]
+    for cell in cells
+        for face in cell
+            for v in face
+                iv = Int64(v)
+                iv >= 1 || throw(ArgumentError("connectivity is 1-based here; got $iv"))
+                push!(nodes, iv - 1)
+            end
+            push!(face_offsets, Int64(length(nodes)))
+        end
+        push!(cell_offsets, Int64(length(face_offsets) - 1))
+    end
+    _check(GC.@preserve cell_offsets face_offsets nodes ccall(
+        _sym(:mio_mesh_add_polyhedron_block), Cint,
+        (Ptr{Cvoid}, Cstring, Int64, Ptr{Int64}, Int64, Ptr{Int64}, Ptr{Int64}, Int64),
+        _handle(m), cell_type, Int64(length(cell_offsets) - 1), pointer(cell_offsets),
+        Int64(length(face_offsets) - 1), pointer(face_offsets), pointer(nodes),
+        Int64(length(nodes))))
     _touch!(m)
     m
 end

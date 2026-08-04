@@ -40,6 +40,19 @@ print(s["num_inverted"])              # cells with negative volume
   sums the volumes; `unsigned` sums their magnitudes.
 - **Inverted cells** — 3D cells with negative signed volume (wrong orientation).
 
+Since v9.16.0 the volume comes from the shared polyhedral kernel, so:
+
+- **`polyhedron` blocks are measured** rather than skipped. Their faces are
+  oriented first (winding is repaired, not required — see
+  [Polyhedra](/polyhedra)), so they never report as inverted; a cell that is not
+  a closed orientable surface is excluded from the totals and warned about.
+- **Ragged `polygon` blocks contribute their area**, which they previously did
+  not.
+- A cell with **non-planar faces** measures slightly differently than before
+  v9.16.0: each face is fanned about its corner average rather than its first
+  node, so the answer no longer depends on where the face's node list happens to
+  start. Planar faces are unaffected.
+
 ## CLI
 
 ```bash

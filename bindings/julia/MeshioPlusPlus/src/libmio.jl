@@ -191,6 +191,27 @@ struct _CRegionInfo
     stride::Int64
 end
 
+"""Mirror of C `mio_cell_block_info`. Grows only into `reserved`."""
+struct _CCellBlockInfo
+    num_cells::Int64
+    nodes_per_cell::Int64
+    is_ragged::Int32
+    is_polyhedron::Int32
+    num_faces::Int64
+    num_nodes::Int64
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_poly_conn_shape`."""
+struct _CPolyConnShape
+    is_polyhedron::Int32
+    reserved0::Int32
+    num_cells::Int64
+    num_faces::Int64
+    num_nodes::Int64
+    reserved::NTuple{4,Int64}
+end
+
 # Layout guards: a mismatch here would corrupt every call taking these structs,
 # silently. Checked once at load rather than trusted.
 function _check_abi_layout()
@@ -202,6 +223,10 @@ function _check_abi_layout()
         error("meshio++: mio_region_info layout mismatch ($(sizeof(_CRegionInfo)) bytes)")
     sizeof(_CRefineOpts) == 112 ||
         error("meshio++: mio_refine_opts layout mismatch ($(sizeof(_CRefineOpts)) bytes)")
+    sizeof(_CCellBlockInfo) == 88 ||
+        error("meshio++: mio_cell_block_info layout mismatch ($(sizeof(_CCellBlockInfo)) bytes)")
+    sizeof(_CPolyConnShape) == 64 ||
+        error("meshio++: mio_poly_conn_shape layout mismatch ($(sizeof(_CPolyConnShape)) bytes)")
     nothing
 end
 

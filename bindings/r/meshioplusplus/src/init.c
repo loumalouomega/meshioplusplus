@@ -34,6 +34,10 @@ extern SEXP R_mio_cell_block_type(SEXP, SEXP);
 extern SEXP R_mio_points(SEXP);
 extern SEXP R_mio_connectivity(SEXP, SEXP);
 extern SEXP R_mio_connectivity_raw(SEXP, SEXP);
+extern SEXP R_mio_polygon_block(SEXP, SEXP);
+extern SEXP R_mio_polyhedron_block(SEXP, SEXP);
+extern SEXP R_mio_add_polygon_block(SEXP, SEXP, SEXP);
+extern SEXP R_mio_add_polyhedron_block(SEXP, SEXP, SEXP);
 extern SEXP R_mio_point_data_names(SEXP);
 extern SEXP R_mio_cell_data_names(SEXP);
 extern SEXP R_mio_field_data_names(SEXP);
@@ -138,6 +142,10 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_points, 1),
     CALLDEF(R_mio_connectivity, 2),
     CALLDEF(R_mio_connectivity_raw, 2),
+    CALLDEF(R_mio_polygon_block, 2),
+    CALLDEF(R_mio_polyhedron_block, 2),
+    CALLDEF(R_mio_add_polygon_block, 3),
+    CALLDEF(R_mio_add_polyhedron_block, 3),
     CALLDEF(R_mio_point_data_names, 1),
     CALLDEF(R_mio_cell_data_names, 1),
     CALLDEF(R_mio_field_data_names, 1),

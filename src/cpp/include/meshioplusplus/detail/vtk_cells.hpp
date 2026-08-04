@@ -74,7 +74,8 @@ namespace detail {
  * @param pSrc Source buffer, at least `n` elements.
  * @param n Number of `int64_t` elements to copy.
  */
-MESHIOPLUSPLUS_API void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n);
+MESHIOPLUSPLUS_API void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc,
+                                          std::size_t n);
 
 /**
  * @brief Extracts rows `[r0, r1)` of a 2-D (or column-vector) `NDArray` into
@@ -112,8 +113,8 @@ MESHIOPLUSPLUS_API NDArray slice_rows(const NDArray& rA, std::size_t r0, std::si
  * @throws ReadError on the same unsupported types `reconstruct_cells` rejects,
  *         so a summary never claims a file is readable when it is not.
  */
-MESHIOPLUSPLUS_API std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
-                                           const std::vector<std::int64_t>& rTypes);
+MESHIOPLUSPLUS_API std::vector<CellBlockInfo> summarize_cells(
+    const std::vector<std::int64_t>& rOffsets, const std::vector<std::int64_t>& rTypes);
 
 /** @brief Whether any type in @p rTypes needs `offsets` to be summarized. */
 MESHIOPLUSPLUS_API bool cells_need_offsets(const std::vector<std::int64_t>& rTypes);
@@ -159,9 +160,38 @@ MESHIOPLUSPLUS_API bool cells_need_offsets(const std::vector<std::int64_t>& rTyp
  *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
  *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
  */
-MESHIOPLUSPLUS_API void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
-                       const std::vector<std::int64_t>& rTypes,
-                       const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh);
+MESHIOPLUSPLUS_API void reconstruct_cells(
+    const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+    const std::vector<std::int64_t>& rTypes,
+    const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh);
+
+/**
+ * @brief As above, additionally decoding `VTK_POLYHEDRON` (type 42) cells from
+ *        VTU's `faces` / `faceoffsets` arrays.
+ *
+ * An **overload**, never a changed signature: `vtk_cells.hpp` is installed, so
+ * altering the four-argument form would rename a mangled symbol and break an
+ * already-compiled consumer (a Tier A change by `doc/abi.md`). The old form
+ * still exists and still refuses type 42.
+ *
+ * `faces` is VTK's flat stream `[numFaces, [numNodes, nodes...] x numFaces]`
+ * per polyhedral cell, and `faceoffsets` gives each cell's **end** offset into
+ * it, with **-1 for a cell that is not a polyhedron**. That -1 is precisely the
+ * mechanism by which VTU mixes polyhedra with other cell types, which is why
+ * meshio++ supports mixing where the Python reference historically did not: an
+ * OpenFOAM mesh always mixes.
+ *
+ * @param pFaces `faces` stream, or nullptr when the file has none.
+ * @param rFaceOffsets per-cell end offsets into `pFaces` (empty when absent).
+ * @throws ReadError if a type-42 cell has no usable `faces`/`faceoffsets`
+ *         entry, or as for the four-argument form otherwise.
+ */
+MESHIOPLUSPLUS_API void reconstruct_cells(
+    const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+    const std::vector<std::int64_t>& rTypes,
+    const std::unordered_map<std::string, NDArray>& rCellDataRaw,
+    const std::vector<std::int64_t>* pFaces, const std::vector<std::int64_t>& rFaceOffsets,
+    Mesh& rMesh);
 
 }  // namespace detail
 }  // namespace meshioplusplus

@@ -27,7 +27,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "9.14.0"
+    version = "9.22.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -45,6 +45,7 @@ class MeshioplusplusConan(ConanFile):
         "with_zstd": [True, False],
         "with_lz4": [True, False],
         "with_kahip": [True, False],
+        "with_cgnslib": [True, False],
         "with_eigen": [True, False],
         "with_json": [True, False],
         "fortran": [True, False],
@@ -68,6 +69,7 @@ class MeshioplusplusConan(ConanFile):
         # supplies an install and points KAHIP_ROOT at it (find_package prefix,
         # same policy as the CMake build). Off by default.
         "with_kahip": False,
+        "with_cgnslib": False,
         "with_eigen": False,  # submodule not in a source export -> fallback transpose
         # Same reason as with_eigen: the nlohmann/json submodule is not in a
         # source export, so the pipeline JSON entry points raise by name.
@@ -142,6 +144,11 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_ZSTD"] = bool(self.options.with_zstd)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_LZ4"] = bool(self.options.with_lz4)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_KAHIP"] = bool(self.options.with_kahip)
+        # cgnslib is not on ConanCenter, so like KaHIP it is bring-your-own:
+        # this only flips the CMake flag and the consumer supplies CGNS_ROOT.
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_CGNSLIB"] = bool(
+            self.options.with_cgnslib
+        )
         tc.cache_variables["MESHIOPLUSPLUS_WITH_EIGEN"] = bool(self.options.with_eigen)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_JSON"] = bool(self.options.with_json)
         tc.cache_variables["MESHIOPLUSPLUS_INSTALL_CPP"] = bool(

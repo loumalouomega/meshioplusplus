@@ -124,7 +124,8 @@ struct RefineBlockDesc {
 void refine_check_block(const Mesh::CellView& rBlock) {
     if (rBlock.IsRagged())
         throw std::invalid_argument(
-            "refine: cannot refine ragged cell block '" + std::string(rBlock.Type()) +
+            "refine: cannot refine ragged cell block (run convert_cells(simplexify) first) '" +
+            std::string(rBlock.Type()) +
             "' (polygon/polyhedron blocks have no same-type subdivision template)");
     const CellType type = cell_type_from_name(std::string(rBlock.Type()));
     if (detail::refine_type_supported(type))

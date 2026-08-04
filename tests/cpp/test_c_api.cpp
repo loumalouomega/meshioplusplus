@@ -24,6 +24,7 @@
  */
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -113,7 +114,7 @@ TEST(CApi, FormatAvailability) {
     EXPECT_EQ(mio_format_readable("vtu"), 1);
     EXPECT_EQ(mio_format_writable("vtu"), 1);
     EXPECT_EQ(mio_format_readable("openfoam"), 1);
-    EXPECT_EQ(mio_format_writable("openfoam"), 0);  // read-only format
+    EXPECT_EQ(mio_format_writable("openfoam"), 1);  // writable since v9.20.0
     EXPECT_EQ(mio_format_readable("nonexistent"), 0);
     EXPECT_EQ(mio_format_readable(nullptr), 0);
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -577,8 +578,11 @@ TEST(CApi, ErrorPaths) {
     EXPECT_EQ(mio_write("mesh.not_an_extension", m, nullptr), MIO_ERR_READ);
     EXPECT_STRNE(mio_last_error(), "");
     EXPECT_EQ(mio_write("mesh.vtu", m, "no_such_format"), MIO_ERR_NOT_FOUND);
-    // openfoam is read-only: resolvable format, no writer.
-    EXPECT_EQ(mio_write("mesh.foam", m, "openfoam"), MIO_ERR_NOT_FOUND);
+    // openfoam gained a writer in v9.20.0, so the "resolvable format with no
+    // writer" case it used to demonstrate needs a different format: svg/tikz
+    // are write-only, so pick the mirror case -- a read-only key no longer
+    // exists in the registry at all.
+    EXPECT_EQ(mio_read("mesh.svg", "svg"), nullptr);
 
 #ifndef MESHIOPLUSPLUS_HAS_HDF5
     // Compiled-out formats name the missing dependency.
@@ -600,31 +604,243 @@ TEST(CApi, StringBufferProtocol) {
     mio_mesh_free(m);
 }
 
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-TEST(CApi, RaggedBlocksAreReportedButNotAccessible) {
-    // Ragged blocks cannot be constructed through the C API, and MED is the
-    // one C++ writer that serializes them (POG polygons) -- build the mesh
-    // through the C++ API, round-trip through .med, inspect via C.
-    meshioplusplus::Mesh cpp_mesh;
-    cpp_mesh.AssignPoints(
-        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0.5, 0}}));
-    cpp_mesh.AddPolygonBlock("polygon", {{0, 1, 2, 3}, {1, 4, 2}});
-    const std::string med = mt::temp_path("_capi_ragged.med");
-    meshioplusplus::write_med(med, cpp_mesh, meshioplusplus::MedInfo{});
+/* Ragged (polygon / polyhedron) connectivity.
+ *
+ * These used to need MED (the one C++ writer that serializes ragged blocks) to
+ * construct a ragged mesh at all, and so only ran on an HDF5 build. The setters
+ * mean the C API can now build one directly, which is why they are unguarded. */
 
-    mio_mesh* m = mio_read(med.c_str(), nullptr);
-    ASSERT_NE(m, nullptr) << mio_last_error();
-    ASSERT_EQ(mio_mesh_num_cell_blocks(m), 1);
-    std::int64_t num_cells = 0, npc = -1;
+TEST(CApi, PolygonBlockRoundTripsThroughTheCApi) {
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_NE(m, nullptr);
+    const double xyz[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0.5, 0};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, xyz), MIO_OK);
+
+    // A quad then a triangle -- the point of a jagged block.
+    const std::int64_t row_offsets[] = {0, 4, 7};
+    const std::int64_t nodes[] = {0, 1, 2, 3, 1, 4, 2};
+    ASSERT_EQ(mio_mesh_add_polygon_block(m, "polygon", 2, row_offsets, nodes, 7), MIO_OK)
+        << mio_last_error();
+
+    mio_cell_block_info info{};
+    ASSERT_EQ(mio_mesh_cell_block_info_ex(m, 0, &info), MIO_OK);
+    EXPECT_EQ(info.num_cells, 2);
+    EXPECT_EQ(info.nodes_per_cell, 0);
+    EXPECT_EQ(info.is_ragged, 1);
+    EXPECT_EQ(info.is_polyhedron, 0);
+    EXPECT_EQ(info.num_faces, 2);  // 1-level: one face per cell
+    EXPECT_EQ(info.num_nodes, 7);
+
+    // The five-argument original must keep agreeing on the fields it shares.
+    std::int64_t nc = 0, npc = -1;
     std::int32_t ragged = 0;
-    ASSERT_EQ(mio_mesh_cell_block_info(m, 0, &num_cells, &npc, &ragged), MIO_OK);
-    EXPECT_EQ(num_cells, 2);
-    EXPECT_EQ(ragged, 1);
+    ASSERT_EQ(mio_mesh_cell_block_info(m, 0, &nc, &npc, &ragged), MIO_OK);
+    EXPECT_EQ(nc, info.num_cells);
+    EXPECT_EQ(npc, info.nodes_per_cell);
+    EXPECT_EQ(ragged, info.is_ragged);
+
+    // A ragged block has no rectangular buffer to borrow.
     const void* conn = nullptr;
     mio_dtype dt;
     EXPECT_EQ(mio_mesh_cell_block_conn(m, 0, &conn, &dt), MIO_ERR_UNSUPPORTED);
-    EXPECT_STRNE(mio_last_error(), "");
+
+    mio_poly_conn* pc = mio_poly_conn_create(m, 0);
+    ASSERT_NE(pc, nullptr) << mio_last_error();
+    mio_poly_conn_shape shape{};
+    ASSERT_EQ(mio_poly_conn_get_shape(pc, &shape), MIO_OK);
+    EXPECT_EQ(shape.is_polyhedron, 0);
+    EXPECT_EQ(shape.num_cells, 2);
+    EXPECT_EQ(shape.num_faces, 2);
+    EXPECT_EQ(shape.num_nodes, 7);
+
+    std::int64_t n = -1;
+    const std::int64_t* out_nodes = mio_poly_conn_nodes(pc, &n);
+    ASSERT_NE(out_nodes, nullptr);
+    EXPECT_EQ(n, 7);
+    EXPECT_TRUE(std::equal(nodes, nodes + 7, out_nodes));
+    const std::int64_t* out_rows = mio_poly_conn_face_offsets(pc, &n);
+    ASSERT_NE(out_rows, nullptr);
+    EXPECT_EQ(n, 3);
+    EXPECT_TRUE(std::equal(row_offsets, row_offsets + 3, out_rows));
+
+    // A 1-level block has no cell-offsets array: NULL, not a synthesized
+    // identity that a caller could mistake for information.
+    n = -1;
+    EXPECT_EQ(mio_poly_conn_cell_offsets(pc, &n), nullptr);
+    EXPECT_EQ(n, 0);
+
+    mio_poly_conn_free(pc);
     mio_mesh_free(m);
+}
+
+TEST(CApi, PolyhedronBlockRoundTripsThroughTheCApi) {
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_NE(m, nullptr);
+    const double xyz[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, xyz), MIO_OK);
+
+    // Two cells: a 4-face tetrahedron, then a 3-face sliver (deliberately not
+    // the same face count, so cell_offsets carries real information).
+    const std::int64_t cell_offsets[] = {0, 4, 7};
+    const std::int64_t face_offsets[] = {0, 3, 6, 9, 12, 15, 18, 21};
+    const std::int64_t nodes[] = {0, 1, 2, 0, 3, 1, 1, 3, 2, 2, 3, 0, 1, 2, 4, 2, 3, 4, 3, 1, 4};
+    ASSERT_EQ(
+        mio_mesh_add_polyhedron_block(m, "polyhedron", 2, cell_offsets, 7, face_offsets, nodes, 21),
+        MIO_OK)
+        << mio_last_error();
+
+    mio_cell_block_info info{};
+    ASSERT_EQ(mio_mesh_cell_block_info_ex(m, 0, &info), MIO_OK);
+    EXPECT_EQ(info.num_cells, 2);
+    EXPECT_EQ(info.is_ragged, 1);
+    EXPECT_EQ(info.is_polyhedron, 1);
+    EXPECT_EQ(info.num_faces, 7);
+    EXPECT_EQ(info.num_nodes, 21);
+
+    mio_poly_conn* pc = mio_poly_conn_create(m, 0);
+    ASSERT_NE(pc, nullptr) << mio_last_error();
+    mio_poly_conn_shape shape{};
+    ASSERT_EQ(mio_poly_conn_get_shape(pc, &shape), MIO_OK);
+    EXPECT_EQ(shape.is_polyhedron, 1);
+    EXPECT_EQ(shape.num_cells, 2);
+    EXPECT_EQ(shape.num_faces, 7);
+    EXPECT_EQ(shape.num_nodes, 21);
+
+    std::int64_t n = -1;
+    const std::int64_t* out_nodes = mio_poly_conn_nodes(pc, &n);
+    ASSERT_NE(out_nodes, nullptr);
+    ASSERT_EQ(n, 21);
+    EXPECT_TRUE(std::equal(nodes, nodes + 21, out_nodes));
+    const std::int64_t* out_faces = mio_poly_conn_face_offsets(pc, &n);
+    ASSERT_NE(out_faces, nullptr);
+    ASSERT_EQ(n, 8);
+    EXPECT_TRUE(std::equal(face_offsets, face_offsets + 8, out_faces));
+    const std::int64_t* out_cells = mio_poly_conn_cell_offsets(pc, &n);
+    ASSERT_NE(out_cells, nullptr);
+    ASSERT_EQ(n, 3);
+    EXPECT_TRUE(std::equal(cell_offsets, cell_offsets + 3, out_cells));
+
+    // Face f of cell c spans nodes[face_offsets[cell_offsets[c] + f] .. +1) --
+    // the documented indexing, checked rather than described.
+    const std::int64_t f = out_cells[1] + 0;  // cell 1's first face
+    EXPECT_EQ(out_faces[f + 1] - out_faces[f], 3);
+    EXPECT_EQ(out_nodes[out_faces[f]], 1);
+
+    mio_poly_conn_free(pc);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, PolyConnSnapshotSurvivesMutation) {
+    // The contract that distinguishes the snapshot from every other getter on
+    // this ABI: rule 3 borrows die at the next mutating call, this does not.
+    mio_mesh* m = mio_mesh_create();
+    const double xyz[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, xyz), MIO_OK);
+    const std::int64_t row_offsets[] = {0, 4};
+    const std::int64_t nodes[] = {0, 1, 2, 3};
+    ASSERT_EQ(mio_mesh_add_polygon_block(m, "polygon", 1, row_offsets, nodes, 4), MIO_OK);
+
+    mio_poly_conn* pc = mio_poly_conn_create(m, 0);
+    ASSERT_NE(pc, nullptr) << mio_last_error();
+    const std::int64_t* borrowed = mio_poly_conn_nodes(pc, nullptr);
+    ASSERT_NE(borrowed, nullptr);
+
+    const std::int64_t tri[] = {0, 1, 2};
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "triangle", 1, 3, MIO_INT64, tri), MIO_OK);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(m), 2);
+    // Still readable, and still the values it was created from.
+    EXPECT_TRUE(std::equal(nodes, nodes + 4, borrowed));
+
+    mio_poly_conn_free(pc);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, PolyConnRejectsRectangularBlocks) {
+    mio_mesh* m = mio_mesh_create();
+    const double xyz[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 3, 3, xyz), MIO_OK);
+    const std::int64_t tri[] = {0, 1, 2};
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "triangle", 1, 3, MIO_INT64, tri), MIO_OK);
+
+    EXPECT_EQ(mio_poly_conn_create(m, 0), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    EXPECT_EQ(mio_poly_conn_create(m, 7), nullptr);  // out of range
+
+    mio_cell_block_info info{};
+    ASSERT_EQ(mio_mesh_cell_block_info_ex(m, 0, &info), MIO_OK);
+    EXPECT_EQ(info.is_ragged, 0);
+    EXPECT_EQ(info.is_polyhedron, 0);
+    EXPECT_EQ(info.num_faces, 1);
+    EXPECT_EQ(info.num_nodes, 3);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RaggedSettersRejectMalformedOffsets) {
+    mio_mesh* m = mio_mesh_create();
+    const std::int64_t nodes[] = {0, 1, 2, 3};
+
+    const std::int64_t not_zero_based[] = {1, 4};
+    EXPECT_EQ(mio_mesh_add_polygon_block(m, "polygon", 1, not_zero_based, nodes, 4),
+              MIO_ERR_INVALID_ARG);
+    const std::int64_t decreasing[] = {0, 3, 2};
+    EXPECT_EQ(mio_mesh_add_polygon_block(m, "polygon", 2, decreasing, nodes, 2),
+              MIO_ERR_INVALID_ARG);
+    const std::int64_t wrong_total[] = {0, 3};
+    EXPECT_EQ(mio_mesh_add_polygon_block(m, "polygon", 1, wrong_total, nodes, 4),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_mesh_add_polygon_block(m, "polygon", 1, nullptr, nodes, 4), MIO_ERR_INVALID_ARG);
+
+    const std::int64_t negative[] = {0, -1, 2, 3};
+    const std::int64_t ok_offsets[] = {0, 4};
+    EXPECT_EQ(mio_mesh_add_polygon_block(m, "polygon", 1, ok_offsets, negative, 4),
+              MIO_ERR_INVALID_ARG);
+
+    // The 2-level setter validates both offset arrays independently.
+    const std::int64_t cell_offsets[] = {0, 2};
+    const std::int64_t bad_faces[] = {0, 3, 5};  // must end at num_nodes == 6
+    EXPECT_EQ(
+        mio_mesh_add_polyhedron_block(m, "polyhedron", 1, cell_offsets, 2, bad_faces, nodes, 6),
+        MIO_ERR_INVALID_ARG);
+    const std::int64_t bad_cells[] = {0, 3};  // must end at num_faces == 2
+    const std::int64_t ok_faces[] = {0, 3, 6};
+    EXPECT_EQ(mio_mesh_add_polyhedron_block(m, "polyhedron", 1, bad_cells, 2, ok_faces, nodes, 6),
+              MIO_ERR_INVALID_ARG);
+
+    // Nothing was added by any of the rejected calls.
+    EXPECT_EQ(mio_mesh_num_cell_blocks(m), 0);
+    mio_mesh_free(m);
+}
+
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+TEST(CApi, RaggedBlockBuiltThroughTheCApiSurvivesAMedRoundTrip) {
+    // The end-to-end path the setters exist for: build ragged through C, write
+    // it with the one C++ writer that serializes ragged blocks (MED's POG),
+    // read it back and compare through the snapshot.
+    mio_mesh* m = mio_mesh_create();
+    const double xyz[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0.5, 0};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, xyz), MIO_OK);
+    const std::int64_t row_offsets[] = {0, 4, 7};
+    const std::int64_t nodes[] = {0, 1, 2, 3, 1, 4, 2};
+    ASSERT_EQ(mio_mesh_add_polygon_block(m, "polygon", 2, row_offsets, nodes, 7), MIO_OK);
+
+    const std::string med = mt::temp_path("_capi_ragged.med");
+    ASSERT_EQ(mio_write(med.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    mio_mesh_free(m);
+
+    mio_mesh* back = mio_read(med.c_str(), nullptr);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_num_cell_blocks(back), 1);
+    mio_poly_conn* pc = mio_poly_conn_create(back, 0);
+    ASSERT_NE(pc, nullptr) << mio_last_error();
+    std::int64_t n = -1;
+    const std::int64_t* out_nodes = mio_poly_conn_nodes(pc, &n);
+    ASSERT_EQ(n, 7);
+    EXPECT_TRUE(std::equal(nodes, nodes + 7, out_nodes));
+    const std::int64_t* out_rows = mio_poly_conn_face_offsets(pc, &n);
+    ASSERT_EQ(n, 3);
+    EXPECT_TRUE(std::equal(row_offsets, row_offsets + 3, out_rows));
+    mio_poly_conn_free(pc);
+    mio_mesh_free(back);
     std::remove(med.c_str());
 }
 #endif

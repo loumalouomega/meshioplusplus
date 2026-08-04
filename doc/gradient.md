@@ -148,7 +148,8 @@ Cells that **cannot** be differentiated yield a NaN row and increment
 
 - blocks below the mesh's own max topological dimension (a boundary `triangle`
   block on a tet mesh);
-- ragged polygon and polyhedron blocks;
+- ragged polygon blocks (a polyhedron block **is** supported since v9.16.0 —
+  Green-Gauss integrates over the cell's own faces, so it needs no table);
 - 3-D types with no face table — the 3-D Lagrange family (`hexahedron64` and up).
   2-D Lagrange types *are* supported, since the corner ring is all that is needed;
 - cells whose volume or area is degenerate **relative to their own size** (never

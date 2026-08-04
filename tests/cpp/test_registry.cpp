@@ -70,10 +70,14 @@ TEST(Registry, ReadersAndWritersContainCoreFormats) {
     }
 }
 
-TEST(Registry, OpenfoamIsReadOnly) {
-    // openfoam is read-only in the C++ core: reader present, writer absent.
+TEST(Registry, OpenfoamIsReadWriteAndResolvesByExtension) {
+    // openfoam was read-only until v9.20.0 -- this test asserted that.
     EXPECT_EQ(registry_readers().count("openfoam"), 1u);
-    EXPECT_EQ(registry_writers().count("openfoam"), 0u);
+    EXPECT_EQ(registry_writers().count("openfoam"), 1u);
+    // `.foam` also joined the extension table then; before that
+    // `resolve_format` THREW on it, so no flat binding could reach a case by
+    // extension in either direction.
+    EXPECT_EQ(resolve_format("case.foam", ""), "openfoam");
 }
 
 TEST(Registry, Gmsh22IsWriteOnly) {

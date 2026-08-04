@@ -308,21 +308,32 @@ def test_legacy_layout_still_reads(tmp_path):
         assert out2.cells[0].type == "tetra"
 
 
-@pytest.mark.parametrize("write_fn", [_cgns.write, pytest.param(None, id="cpp")])
-def test_ragged_block_raises(tmp_path, write_fn):
-    mesh = meshioplusplus.Mesh(
+def _polygon_mesh():
+    return meshioplusplus.Mesh(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]),
         [("polygon", [np.array([0, 1, 2])])],
     )
+
+
+def test_ragged_block_writes_as_ngon_in_the_cpp_core(tmp_path):
+    # Until v9.21.0 both paths refused this outright; the C++ core now emits an
+    # NGON_n section.
+    if not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
     p = tmp_path / "test.cgns"
-    if write_fn is None:
-        if not _HAS_HDF5:
-            pytest.skip("needs the C++ HDF5-enabled core")
-        with pytest.raises(WriteError, match="ragged block"):
-            _core.cgns_write(str(p), mesh, -1)
-    else:
-        with pytest.raises(WriteError, match="ragged block"):
-            write_fn(p, mesh, compression=None)
+    _core.cgns_write(str(p), _polygon_mesh(), -1)
+    out = _core.cgns_read(str(p))
+    assert len(out.points) == 3
+    assert any(c.type.startswith("polygon") for c in out.cells)
+
+
+def test_ragged_block_names_the_compiled_core_in_the_python_twin(tmp_path):
+    # The h5py twin deliberately does not reimplement NGON_n/NFACE_n (the face
+    # dedup + winding repair would be a second implementation of a discrete
+    # sign branch). It must say which path is needed, not "unsupported".
+    p = tmp_path / "test.cgns"
+    with pytest.raises(WriteError, match="compiled core"):
+        _cgns.write(p, _polygon_mesh(), compression=None)
 
 
 @pytest.mark.parametrize("write_fn", [_cgns.write, pytest.param(None, id="cpp")])
@@ -436,6 +447,103 @@ def test_cgnscheck_accepts_our_output(mesh, tmp_path):
     """
     p = tmp_path / "out.cgns"
     meshioplusplus.cgns.write(p, mesh)
+    r = subprocess.run(
+        ["cgnscheck", "-w3", str(p)], capture_output=True, text=True, check=False
+    )
+    errors = [ln for ln in (r.stdout + r.stderr).splitlines() if "ERROR" in ln.upper()]
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert not errors, errors
+
+
+# ---------------------------------------------------------------------------
+# NGON_n / NFACE_n -- polyhedral cells (C++ core only; see _cgns.py)
+# ---------------------------------------------------------------------------
+
+_POLY_PTS = np.array(
+    [
+        [0, 0, 0],
+        [1, 0, 0],
+        [1, 1, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+        [1, 0, 1],
+        [1, 1, 1],
+        [0, 1, 1],
+        [2, 0, 0],
+        [2, 1, 0],
+        [2, 1, 1],
+        [2, 0, 1],
+    ],
+    dtype=float,
+)
+_CUBE_A = [
+    [0, 3, 2, 1],
+    [4, 5, 6, 7],
+    [0, 1, 5, 4],
+    [2, 3, 7, 6],
+    [1, 2, 6, 5],
+    [0, 4, 7, 3],
+]
+_CUBE_B = [
+    [1, 2, 9, 8],
+    [5, 11, 10, 6],
+    [1, 8, 11, 5],
+    [2, 6, 10, 9],
+    [8, 9, 10, 11],
+    [1, 5, 6, 2],
+]
+
+
+def _poly_meshes():
+    return {
+        "one": meshioplusplus.Mesh(_POLY_PTS[:8], [("polyhedron8", [_CUBE_A])]),
+        "two": meshioplusplus.Mesh(_POLY_PTS, [("polyhedron8", [_CUBE_A, _CUBE_B])]),
+        "mixed": meshioplusplus.Mesh(
+            _POLY_PTS,
+            [
+                ("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]])),
+                ("polyhedron8", [_CUBE_B]),
+            ],
+        ),
+    }
+
+
+@pytest.mark.skipif(not _HAS_HDF5, reason="needs the C++ HDF5-enabled core")
+@pytest.mark.parametrize("key", ["one", "two", "mixed"])
+def test_polyhedral_round_trip(key, tmp_path):
+    m = _poly_meshes()[key]
+    p = tmp_path / "poly.cgns"
+    _core.cgns_write(str(p), m, -1)
+    back = _core.cgns_read(str(p))
+
+    assert len(back.points) == len(m.points)
+    n_poly = sum(len(c.data) for c in back.cells if c.type.startswith("polyhedron"))
+    expected = sum(len(c.data) for c in m.cells if c.type.startswith("polyhedron"))
+    assert n_poly == expected
+    if key == "mixed":
+        # The hexahedron keeps its own HEXA_8 section rather than being
+        # demoted, which is what the block-filtered face table is for.
+        assert any(c.type == "hexahedron" for c in back.cells)
+
+
+@pytest.mark.skipif(not _HAS_HDF5, reason="needs the C++ HDF5-enabled core")
+@pytest.mark.skipif(
+    shutil.which("cgnscheck") is None,
+    reason="cgnscheck (cgnslib) not on PATH",
+)
+@pytest.mark.parametrize("key", ["one", "two", "mixed"])
+def test_cgnscheck_accepts_our_polyhedral_output(key, tmp_path):
+    """The oracle that actually found the bugs in this feature.
+
+    cgnscheck reported no ERROR yet *aborted* on the first version of this
+    writer -- twice: once because NCell omitted the polyhedral blocks, and once
+    because the file declared CGNSLibraryVersion 3.1, under which cgnslib reads
+    NGON_n with the 3.x inline-length layout. Both corrupted cgnslib's heap
+    rather than producing a diagnostic, so the return code matters as much as
+    the absence of ERROR lines.
+    """
+    p = tmp_path / "poly.cgns"
+    _core.cgns_write(str(p), _poly_meshes()[key], -1)
     r = subprocess.run(
         ["cgnscheck", "-w3", str(p)], capture_output=True, text=True, check=False
     )

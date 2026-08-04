@@ -72,7 +72,8 @@
  *  | 2   | v9.1.0             | `GeometricalEntity`, `ModelPart`, `MdpaInfo`, … |
  *  | 3   | v9.2.0 .. v9.4.1   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
  *  | 4   | v9.5.0 .. v9.8.0   | `RefineOptions` gained selection/closure fields |
- *  | 5   | v9.9.0             | `MedInfo` gained four lenient-read fields       |
+ *  | 5   | v9.9.0 .. v9.19.0  | `MedInfo` gained four lenient-read fields       |
+ *  | 6   | v9.20.0            | `OpenFoamInfo` gained `mPatchTypes`             |
  *
  * ### This is the ONE place the number is written
  *
@@ -91,7 +92,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 5
+#define MESHIOPLUSPLUS_ABI_VERSION 6
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -6417,6 +6418,584 @@ MESHIOPLUSPLUS_API FaceColors resolve_face_colors(const ColorSpec& rSpec, const 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/face_color.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/geometry.hpp =====
+/**
+ * @file geometry.hpp
+ * @brief Small, dependency-free 3D vector primitives and mesh-coordinate
+ * readers shared by the mesh-operations layer (`operations/quality.cpp`,
+ * `operations/surface.cpp`).
+ *
+ * `Vec3` is a plain `std::array<double, 3>`; the `vec3_*`/`triple_product`/
+ * `det3` primitives are tiny per-operation arithmetic invoked repeatedly
+ * inside per-cell hot loops (surface normals, quality metrics), so they stay
+ * `inline` here rather than moving to a `.cpp` — at that call frequency,
+ * removing the function-call boundary is what lets the compiler fold/
+ * vectorize the surrounding loop. `read_point`/`read_corner_coords`/
+ * `cell_corner_count` are each called once per cell (not once per scalar), so
+ * their bodies live in `src/cpp/src/detail/geometry.cpp` instead.
+ *
+ * Coordinates are pulled out of an `NDArray` through `detail::read_double`, so
+ * these work regardless of the point/connectivity dtype and under every mesh
+ * backend.
+ */
+
+// System includes
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A point/vector in 3D. 2D meshes are padded with z = 0 on read.
+using Vec3 = std::array<double, 3>;
+
+/** @brief Component-wise difference `a - b`. */
+inline Vec3 vec3_sub(const Vec3& a, const Vec3& b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+/** @brief Component-wise sum `a + b`. */
+inline Vec3 vec3_add(const Vec3& a, const Vec3& b) {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+}
+
+/** @brief Scalar multiple `s * a`. */
+inline Vec3 vec3_scale(const Vec3& a, double s) {
+    return {a[0] * s, a[1] * s, a[2] * s};
+}
+
+/** @brief Dot product `a . b`. */
+inline double vec3_dot(const Vec3& a, const Vec3& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+/** @brief Cross product `a x b`. */
+inline Vec3 vec3_cross(const Vec3& a, const Vec3& b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+/** @brief Squared Euclidean length `a . a`. */
+inline double vec3_norm_sq(const Vec3& a) {
+    return vec3_dot(a, a);
+}
+
+/** @brief Euclidean length `|a|`. */
+inline double vec3_norm(const Vec3& a) {
+    return std::sqrt(vec3_norm_sq(a));
+}
+
+/**
+ * @brief Unit vector along `a`, or the zero vector when `|a| < eps`.
+ * @param a Vector to normalize.
+ * @param eps Length below which `a` is treated as degenerate.
+ * @return `a / |a|`, or `{0,0,0}` if `|a| < eps`.
+ */
+inline Vec3 vec3_normalize(const Vec3& a, double eps = 1e-300) {
+    const double n = vec3_norm(a);
+    if (n < eps)
+        return {0.0, 0.0, 0.0};
+    return vec3_scale(a, 1.0 / n);
+}
+
+/** @brief Scalar triple product `a . (b x c)` (signed volume of the parallelepiped). */
+inline double triple_product(const Vec3& a, const Vec3& b, const Vec3& c) {
+    return vec3_dot(a, vec3_cross(b, c));
+}
+
+/** @brief Determinant of the 3x3 matrix whose columns are `c0`, `c1`, `c2`. */
+inline double det3(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
+    return triple_product(c0, c1, c2);
+}
+
+/**
+ * @brief Reads global point @p nodeId as a `Vec3`, padding z = 0 when the mesh
+ * is 2D (`pointDim == 2`).
+ * @param rPoints The `(num_points, pointDim)` point array.
+ * @param pointDim Spatial dimension of the points (2 or 3).
+ * @param nodeId Global point index.
+ * @return The point's coordinates, with unused components set to 0.
+ */
+MESHIOPLUSPLUS_API Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId);
+
+/**
+ * @brief Reads the first @p n connectivity entries of one cell row into @p rOut
+ * as `Vec3` coordinates (used to gather a cell's corner nodes).
+ * @param rPoints The point array.
+ * @param pointDim Spatial dimension of the points.
+ * @param rConn The block connectivity array.
+ * @param rowOffset Flat offset of the cell's row (`cell * nodes_per_cell`).
+ * @param n Number of leading entries to read (the corner count).
+ * @param rOut Cleared and filled with @p n coordinates.
+ */
+MESHIOPLUSPLUS_API void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
+                        std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut);
+
+/**
+ * @brief Number of corner (linear-parent) nodes of a cell type. Corners are
+ * always the leading connectivity entries in meshio/VTK ordering, so a
+ * quadratic cell can be reduced to its linear parent by reading the first
+ * `cell_corner_count(type)` nodes.
+ * @param type The cell type to query.
+ * @return The corner count, or 0 for variable-node-count / unsupported types
+ *         (`Polygon`, `Polyhedron`, the VTK Lagrange family, `Custom`) — the
+ *         caller must skip those.
+ */
+MESHIOPLUSPLUS_API int cell_corner_count(CellType type);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/geometry.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/polyhedron.hpp =====
+/**
+ * @file polyhedron.hpp
+ * @brief The geometric kernel for cells bounded by arbitrary polygonal faces:
+ * volume, centroid, surface area, face normals and areas, and the winding
+ * repair every one of those depends on.
+ *
+ * ### Why this is a separate header
+ *
+ * `detail/geometry.hpp` is inline `Vec3` arithmetic included nearly everywhere.
+ * This kernel needs `mesh.hpp` and `cell_faces.hpp`, so folding it in there
+ * would drag heavy includes into every consumer. Keeping the two apart also
+ * keeps `geometry.hpp` byte-identical across this release.
+ *
+ * ### The impedance mismatch this resolves
+ *
+ * `cell_faces.hpp` describes a tabulated type's faces as **local** node indices
+ * into a rectangular connectivity row. A polyhedron block has no row: it has
+ * `NumFaces(cell)` faces of **global** node ids. `CellRings` is the single
+ * shape both reduce to, so one measure kernel serves a `hexahedron` and a
+ * `polyhedron12` alike, and every existing loop that wrote
+ * `coords[face.mNodes[i]]` ports across unchanged.
+ *
+ * ### Winding: repaired, not required
+ *
+ * Faces *should* wind so their right-hand normal points out of the cell. Real
+ * meshes do not always oblige -- this repository's own long-standing
+ * `polyhedron5` test fixture has two faces traversing a shared edge in the
+ * same direction -- so `orient_rings` fixes the winding per cell (BFS over the
+ * faces' shared-edge dual, then a global flip if the enclosed volume came out
+ * negative) rather than trusting or rejecting it. A face set that is not a
+ * closed orientable surface is reported as `Unorientable`, never guessed at.
+ *
+ * ### Non-planar faces: the corner-average fan
+ *
+ * A face with four or more non-coplanar corners bounds no unique volume. This
+ * kernel resolves it as the fan of triangles from each of the face's edges to
+ * that face's **corner average**, each paired with the cell's own corner
+ * average. Five independent reasons, because any one alone would read as
+ * taste:
+ *
+ *  1. **The apex is a function of the FACE ALONE, so a shared face is
+ *     triangulated identically from both sides whatever each cell's local node
+ *     order happens to be.** Two cells meeting on a warped quad therefore agree
+ *     on it exactly, and their boundary integrals cancel there. A fan about the
+ *     ring's first node is a function of the cell's *storage*, so the two sides
+ *     can pick different diagonals and the sum over a closed region drifts.
+ *     (A structured generator numbers shared faces consistently and so happens
+ *     to escape this -- which is precisely why the test for it uses two cells
+ *     that store the shared ring differently, and why a mesh that looks fine
+ *     can hide the defect until it is read from a file that does not.)
+ *     `PolyhedronKernel.CellsSharingAWarpedFaceAgreeOnIt` pins it.
+ *  2. **Invariance to the ring's start node**, which is the same property seen
+ *     from one cell. OpenFOAM's `faces`, MED's `INN` and VTU's `faces` stream
+ *     all choose that start node arbitrarily, so two readers of one mesh could
+ *     otherwise legitimately disagree about a cell's volume. A quantity that
+ *     moves under a rotation the file format does not constrain is a trap, not
+ *     a rounding difference.
+ *  3. **It is already the forced choice elsewhere.** `operations/gradient.cpp`'s
+ *     Green-Gauss integration fans about the face centre because the corner
+ *     average is the only apex whose value is known *exactly* for a linear
+ *     field. Sharing the apex means gradient and stats measure the same
+ *     surface instead of disagreeing ten lines apart.
+ *  4. **It is OpenFOAM's own cell volume** (`primitiveMesh`'s face-centre to
+ *     cell-centre pyramid decomposition), so a round-tripped case reports the
+ *     volumes its solver would.
+ *  5. **The convention is already in the repo**: `test_skin.cpp`'s
+ *     `SkinFaceTables.OutwardWindingAndNodeCounts` asserts geometrically that a
+ *     quad9's mid-face node sits at the face's corner average.
+ *
+ * See `doc/polyhedra.md`.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief One cell's boundary as node-indexed face rings -- the uniform shape a
+ * polyhedron (`CellView::Face`, global ids) and a tabulated type
+ * (`cell_faces.hpp`, local indices into a row) both reduce to.
+ *
+ * Corner nodes only: mid-edge and mid-face nodes are dropped, matching every
+ * existing measure kernel in the repo. Reuse one instance across cells via
+ * `Clear()`, which keeps the vectors' capacity.
+ */
+struct CellRings {
+    std::vector<std::int64_t> mNodes;       ///< global node ids, first-seen order
+    std::vector<std::uint32_t> mFaceNodes;  ///< local indices into `mNodes`
+    std::vector<std::uint32_t> mFaceStart;  ///< `NumFaces() + 1` entries
+
+    /** @brief Number of faces bounding the cell. */
+    std::size_t NumFaces() const { return mFaceStart.empty() ? 0 : mFaceStart.size() - 1; }
+
+    /** @brief Corner count of face @p Face. */
+    std::size_t FaceSize(std::size_t Face) const { return mFaceStart[Face + 1] - mFaceStart[Face]; }
+
+    /** @brief Local node indices of face @p Face, `FaceSize(Face)` of them. */
+    const std::uint32_t* Face(std::size_t Face) const {
+        return mFaceNodes.data() + mFaceStart[Face];
+    }
+
+    /** @brief Mutable form of `Face`, for the winding repair. */
+    std::uint32_t* FaceMutable(std::size_t Face) { return mFaceNodes.data() + mFaceStart[Face]; }
+
+    /** @brief Reset to empty, keeping the allocated capacity. */
+    void Clear() {
+        mNodes.clear();
+        mFaceNodes.clear();
+        mFaceStart.clear();
+    }
+};
+
+/**
+ * @brief Fill @p rOut with cell @p Cell's face rings and @p rCoords with the
+ * matching coordinates, one entry per `rOut.mNodes` id.
+ *
+ * Works for a polyhedron block (faces come from `CellView::Face`) and for any
+ * rectangular 3D type with a `cell_faces.hpp` row (faces come from the table,
+ * corners only).
+ *
+ * @return false when the block has no face topology at all -- a 1D/2D block, a
+ *   1-level ragged (polygon) block, or a 3D type with no `cell_faces` row (the
+ *   3D Lagrange family). The caller then reports NaN and counts the cell rather
+ *   than guessing, which is `compute_quality`'s standing convention.
+ */
+MESHIOPLUSPLUS_API bool cell_rings(const Mesh::CellView& rBlock, std::size_t Cell,
+                                   const NDArray& rPoints, std::size_t PointDim, CellRings& rOut,
+                                   std::vector<Vec3>& rCoords);
+
+/** @brief Outcome of `orient_rings`. */
+enum class RingOrientation : std::uint8_t {
+    Consistent,   ///< already consistently wound outward; nothing changed
+    Repaired,     ///< rewound (and/or globally flipped) to point outward
+    Unorientable  ///< not a closed orientable surface; measures are undefined
+};
+
+/**
+ * @brief Make every ring wind consistently, then flip them all if the enclosed
+ * signed volume came out negative -- so on return the normals point *out*.
+ *
+ * BFS over the faces' shared-edge dual: two faces sharing an undirected edge
+ * agree iff they traverse it in *opposite* directions. Returns `Unorientable`
+ * (leaving @p rRings untouched) when some undirected edge is not used exactly
+ * twice, which is what an open or non-manifold face set looks like.
+ */
+MESHIOPLUSPLUS_API RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords);
+
+/** @brief What `poly_measure` computes about one cell. */
+struct PolyMeasure {
+    double mVolume = 0.0;  ///< signed; positive once the rings wind outward
+    double mSurfaceArea = 0.0;
+    Vec3 mCentroid{0.0, 0.0, 0.0};  ///< volume centroid
+    bool mClosed = false;           ///< every undirected edge used exactly twice
+    bool mOrientable = false;       ///< a consistent winding exists
+};
+
+/**
+ * @brief Volume, volume centroid and surface area of the cell bounded by
+ * @p rRings, by the corner-average fan documented at the top of this file.
+ *
+ * Call `orient_rings` first if the winding is not known to be outward; this
+ * function measures whatever it is given, so inward-wound input yields a
+ * negative volume rather than an error. Coordinates are recentred on the cell's
+ * corner average before any arithmetic, which is what keeps the volume's
+ * `sum(x . A) / 3` telescoping accurate for a mesh far from the origin.
+ */
+MESHIOPLUSPLUS_API PolyMeasure poly_measure(const CellRings& rRings, const Vec3* pCoords);
+
+/**
+ * @brief Newell area vector of one ring: `|result|` is the area, its direction
+ * the normal. Translation-invariant and independent of which corner the ring
+ * starts at, which is exactly why Newell rather than a fan is used here.
+ */
+MESHIOPLUSPLUS_API Vec3 polygon_area_vector(const Vec3* pCoords, const std::uint32_t* pRing,
+                                            std::size_t N);
+
+/** @brief Area of one ring (the magnitude of `polygon_area_vector`). */
+MESHIOPLUSPLUS_API double polygon_area(const Vec3* pCoords, const std::uint32_t* pRing,
+                                       std::size_t N);
+
+/** @brief Corner average of one ring -- the fan apex, and the face "centre". */
+MESHIOPLUSPLUS_API Vec3 polygon_centroid(const Vec3* pCoords, const std::uint32_t* pRing,
+                                         std::size_t N);
+
+/**
+ * @brief `polygon_area_vector` for coordinates already stored in ring order,
+ * i.e. with an implicit identity ring `0, 1, ... N-1`.
+ *
+ * This is the shape a rectangular 2D cell arrives in (`read_corner_coords`
+ * hands back the corners in connectivity order), so it saves materializing an
+ * identity index array once per cell in a hot loop.
+ */
+MESHIOPLUSPLUS_API Vec3 polygon_area_vector(const Vec3* pCoords, std::size_t N);
+
+/** @brief `polygon_area` for coordinates already in ring order. */
+MESHIOPLUSPLUS_API double polygon_area(const Vec3* pCoords, std::size_t N);
+
+/**
+ * @brief Signed volume of a tabulated 3D cell whose CORNER coordinates are
+ * given in connectivity order, by the same corner-average fan as
+ * `poly_measure`.
+ *
+ * For callers that already hold the coordinates and cannot go through
+ * `cell_rings` -- `clean`, for instance, measures a cell built from *welded*
+ * node representatives rather than from the mesh's own connectivity. Positive
+ * when the cell is correctly oriented, since `cell_faces.hpp`'s rows are
+ * outward-wound.
+ *
+ * @return NaN when @p Type has no `cell_faces` row.
+ */
+MESHIOPLUSPLUS_API double cell_volume_from_corners(const Vec3* pCoords, CellType Type);
+
+/**
+ * @brief The sorted corner ids of one facet, of any arity.
+ *
+ * `surface.cpp`'s existing key is a fixed `std::array<std::int64_t, 4>`, which
+ * cannot hold a general polygonal face. This keeps that four-entry inline fast
+ * path (so a triangle or quad still costs no allocation) and spills to the heap
+ * beyond it.
+ */
+struct FacetKey {
+    /** @brief An empty key, so a `FacetKey` can sit in a pre-sized buffer that
+     *  a parallel pass then fills slot by slot (surface.cpp's phase split). */
+    FacetKey() = default;
+
+    /** @brief Build from @p N unsorted node ids. */
+    FacetKey(const std::int64_t* pIds, std::size_t N);
+
+    std::size_t Size() const { return mN; }
+    const std::int64_t* Data() const { return mN <= kInline ? mInline.data() : mHeap.data(); }
+
+    bool operator==(const FacetKey& rOther) const;
+
+    static constexpr std::size_t kInline = 4;
+
+private:
+    std::size_t mN = 0;
+    std::array<std::int64_t, kInline> mInline{};
+    std::vector<std::int64_t> mHeap;
+};
+
+/** @brief Hash for `FacetKey`, for `unordered_map`/`unordered_set` keying. */
+struct FacetKeyHash {
+    std::size_t operator()(const FacetKey& rKey) const;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/polyhedron.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/face_mesh.hpp =====
+/**
+ * @file face_mesh.hpp
+ * @brief A mesh's volume cells re-expressed as a globally deduplicated face
+ * list with owner/neighbour pairing.
+ *
+ * Two formats are *defined* in these terms rather than in terms of cells:
+ *
+ *  - **OpenFOAM `polyMesh`** is literally this structure on disk -- `faces`,
+ *    `owner`, `neighbour` -- and never stores a cell's node list at all.
+ *  - **CGNS `NGON_n` + `NFACE_n`**: `NGON_n` is the face list, `NFACE_n` gives
+ *    each cell as a list of *signed* face ids, the sign meaning "traverse this
+ *    face reversed".
+ *
+ * Building it twice would mean two implementations of the one genuinely
+ * error-prone step (recognising that a hexahedron and a polyhedron meeting on a
+ * face are meeting on *one* face), so `mCellFaces` is stored in CGNS's own
+ * signed-1-based encoding: the CGNS writer copies a row with an element-id
+ * offset and no per-entry branch, and OpenFOAM reads only the sign.
+ *
+ * ### Cells are numbered in a compact space, not the block-major global one
+ *
+ * `detail/cell_index.hpp`'s `block_bases` numbering counts *every* cell block,
+ * including 2D ones. But every mesh `read_openfoam` produces carries its
+ * boundary faces as `triangle`/`quad`/`polygon<N>` blocks, so in that numbering
+ * "cell 8" is routinely a boundary quad rather than a cell. `mOwner`,
+ * `mNeighbour` and `mCellFaceStart` therefore index a compact space containing
+ * only the blocks that bound a volume, and `mCellToGlobal` bridges back to it
+ * for `cell_data` lookups. Confusing the two is the bug that member exists to
+ * prevent.
+ *
+ * ### Winding is repaired, never assumed
+ *
+ * `cell_faces.hpp`'s rows are outward-wound *on the reference element*. An
+ * inverted (negative-Jacobian) hexahedron therefore yields six inward-pointing
+ * normals, and OpenFOAM would report every one of its faces as misoriented. So
+ * every cell -- tabulated and polyhedral alike -- goes through
+ * `detail::orient_rings`, which rewinds and then flips on the enclosed signed
+ * volume. `mNumFlipped` reports how often that mattered.
+ *
+ * ### Determinism
+ *
+ * Face ids are assigned by a **serial** first-seen sweep in ascending
+ * (compact cell, local face) order over a buffer filled in parallel --
+ * `surface.cpp`'s phase split. No hash-map iteration order reaches the output,
+ * so the result is byte-identical across thread counts and across the three
+ * mesh backends.
+ *
+ * See `doc/polyhedra.md`.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief A mesh's volume cells as a deduplicated face list plus the pairing
+ * that tells you which cells each face separates.
+ */
+struct GlobalFaces {
+    // ---- the faces themselves (OpenFOAM `faces`, CGNS `NGON_n`) ----
+
+    /// CSR over the face node rings: global node ids, **corners only**, wound
+    /// so that the normal points *out of* `mOwner[f]`.
+    std::vector<std::int64_t> mFaceNodes;
+    std::vector<std::int64_t> mFaceStart;  ///< `NumFaces() + 1` entries
+
+    // ---- the pairing (OpenFOAM `owner` / `neighbour`) ----
+
+    std::vector<std::int64_t> mOwner;      ///< compact cell id; never -1
+    std::vector<std::int64_t> mNeighbour;  ///< compact cell id, or -1 = boundary
+
+    // ---- the cells (CGNS `NFACE_n`) ----
+
+    /// CSR over compact cell ids. Each entry is a **signed, 1-based** face id:
+    /// `+(f+1)` means "traverse `Face(f)` as stored", `-(f+1)` means "reversed".
+    /// This is CGNS `NFACE_n`'s own encoding, deliberately.
+    ///
+    /// Entry `k` of cell `c`'s row corresponds to face `k` of that cell as
+    /// `detail::cell_rings` enumerated it, so "which face of which cell, and
+    /// was it reversed" is answered by the position in the row plus the sign --
+    /// no parallel side table to keep in step.
+    std::vector<std::int64_t> mCellFaces;
+    std::vector<std::int64_t> mCellFaceStart;  ///< `NumCells() + 1` entries
+
+    /// Compact cell id -> the mesh's global (block-major) cell index, the
+    /// numbering `detail/cell_index.hpp` and `cell_data` use. See the file
+    /// header: these two numberings genuinely differ on any mesh with 2D blocks.
+    std::vector<std::int64_t> mCellToGlobal;
+
+    /// Block indices that contributed no cells: 1D/2D blocks, 1-level ragged
+    /// (polygon) blocks, and 3D types with no `cell_faces` row. The **caller**
+    /// decides which are acceptable -- a 2D boundary block is expected, a
+    /// skipped 3D block is a silently dropped solid.
+    std::vector<std::size_t> mNonCellBlocks;
+
+    std::int64_t mNumFlipped = 0;       ///< cells whose winding needed repair
+    std::int64_t mNumUnorientable = 0;  ///< cells that are not closed+orientable
+    std::int64_t mNumNonManifold = 0;   ///< faces used by three or more cells
+
+    /** @brief Number of distinct faces. */
+    std::size_t NumFaces() const { return mFaceStart.empty() ? 0 : mFaceStart.size() - 1; }
+
+    /** @brief Number of volume cells (the compact space). */
+    std::size_t NumCells() const {
+        return mCellFaceStart.empty() ? 0 : mCellFaceStart.size() - 1;
+    }
+
+    /** @brief Corner count of face @p Face. */
+    std::size_t FaceSize(std::size_t Face) const {
+        return static_cast<std::size_t>(mFaceStart[Face + 1] - mFaceStart[Face]);
+    }
+
+    /** @brief Global node ids of face @p Face, `FaceSize(Face)` of them. */
+    const std::int64_t* Face(std::size_t Face) const {
+        return mFaceNodes.data() + mFaceStart[Face];
+    }
+
+    /** @brief Number of faces bounding compact cell @p Cell. */
+    std::size_t NumCellFaces(std::size_t Cell) const {
+        return static_cast<std::size_t>(mCellFaceStart[Cell + 1] - mCellFaceStart[Cell]);
+    }
+
+    /** @brief Signed 1-based face ids of compact cell @p Cell. */
+    const std::int64_t* CellFaces(std::size_t Cell) const {
+        return mCellFaces.data() + mCellFaceStart[Cell];
+    }
+};
+
+/**
+ * @brief Build the global face list of @p rMesh's volume cells.
+ *
+ * Deterministic: face ids are assigned in ascending (compact cell, local face)
+ * order, independent of thread count, mesh backend and hash order.
+ *
+ * Quadratic cells contribute their **corner** faces only (neither target format
+ * has quadratic faces), so a `hexahedron20` mesh's mid-edge nodes end up
+ * unreferenced by any face. That is reported by the caller rather than fixed
+ * here: pruning them would renumber points for no benefit.
+ */
+MESHIOPLUSPLUS_API GlobalFaces build_global_faces(const Mesh& rMesh);
+
+/**
+ * @brief `build_global_faces` restricted to the cell blocks in @p rBlocks.
+ *
+ * Every other block is reported in `mNonCellBlocks` exactly as a 2D one would
+ * be, so a caller cannot silently lose a solid: the distinction between "this
+ * block has no volume" and "you did not ask for this block" is the caller's to
+ * make, and CGNS's is the case that needs it. Writing a mesh that mixes
+ * hexahedra with polyhedra emits ordinary `HEXA_8` sections for the former and
+ * an `NGON_n`/`NFACE_n` pair for the latter, and the face list must then contain
+ * the polyhedra's faces **only** -- a hexahedron's faces would be `NGON_n`
+ * elements no `NFACE_n` cell ever references.
+ *
+ * Blocks keep their relative order; ids out of range are ignored.
+ */
+MESHIOPLUSPLUS_API GlobalFaces build_global_faces(const Mesh& rMesh,
+                                                  const std::vector<std::size_t>& rBlocks);
+
+/**
+ * @brief Find a global face by its (unordered) corner ids.
+ *
+ * How a caller maps a 2D cell block -- an OpenFOAM boundary patch, say -- back
+ * onto the face list. Built once, then queried per 2D cell.
+ */
+class MESHIOPLUSPLUS_API FaceLookup {
+public:
+    /** @brief Index @p rFaces. The reference need not outlive the lookup. */
+    explicit FaceLookup(const GlobalFaces& rFaces);
+
+    /**
+     * @brief Look up the face whose corner set is exactly @p pIds.
+     * @return the global face id, or -1 when no face has those corners.
+     */
+    std::int64_t Find(const std::int64_t* pIds, std::size_t N) const;
+
+private:
+    std::unordered_map<FacetKey, std::int64_t, FacetKeyHash> mMap;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/face_mesh.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/read_options.hpp =====
 /**
  * @file read_options.hpp
@@ -6842,138 +7421,6 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/file_source.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/detail/geometry.hpp =====
-/**
- * @file geometry.hpp
- * @brief Small, dependency-free 3D vector primitives and mesh-coordinate
- * readers shared by the mesh-operations layer (`operations/quality.cpp`,
- * `operations/surface.cpp`).
- *
- * `Vec3` is a plain `std::array<double, 3>`; the `vec3_*`/`triple_product`/
- * `det3` primitives are tiny per-operation arithmetic invoked repeatedly
- * inside per-cell hot loops (surface normals, quality metrics), so they stay
- * `inline` here rather than moving to a `.cpp` — at that call frequency,
- * removing the function-call boundary is what lets the compiler fold/
- * vectorize the surrounding loop. `read_point`/`read_corner_coords`/
- * `cell_corner_count` are each called once per cell (not once per scalar), so
- * their bodies live in `src/cpp/src/detail/geometry.cpp` instead.
- *
- * Coordinates are pulled out of an `NDArray` through `detail::read_double`, so
- * these work regardless of the point/connectivity dtype and under every mesh
- * backend.
- */
-
-// System includes
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/// A point/vector in 3D. 2D meshes are padded with z = 0 on read.
-using Vec3 = std::array<double, 3>;
-
-/** @brief Component-wise difference `a - b`. */
-inline Vec3 vec3_sub(const Vec3& a, const Vec3& b) {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-
-/** @brief Component-wise sum `a + b`. */
-inline Vec3 vec3_add(const Vec3& a, const Vec3& b) {
-    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
-}
-
-/** @brief Scalar multiple `s * a`. */
-inline Vec3 vec3_scale(const Vec3& a, double s) {
-    return {a[0] * s, a[1] * s, a[2] * s};
-}
-
-/** @brief Dot product `a . b`. */
-inline double vec3_dot(const Vec3& a, const Vec3& b) {
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-/** @brief Cross product `a x b`. */
-inline Vec3 vec3_cross(const Vec3& a, const Vec3& b) {
-    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-}
-
-/** @brief Squared Euclidean length `a . a`. */
-inline double vec3_norm_sq(const Vec3& a) {
-    return vec3_dot(a, a);
-}
-
-/** @brief Euclidean length `|a|`. */
-inline double vec3_norm(const Vec3& a) {
-    return std::sqrt(vec3_norm_sq(a));
-}
-
-/**
- * @brief Unit vector along `a`, or the zero vector when `|a| < eps`.
- * @param a Vector to normalize.
- * @param eps Length below which `a` is treated as degenerate.
- * @return `a / |a|`, or `{0,0,0}` if `|a| < eps`.
- */
-inline Vec3 vec3_normalize(const Vec3& a, double eps = 1e-300) {
-    const double n = vec3_norm(a);
-    if (n < eps)
-        return {0.0, 0.0, 0.0};
-    return vec3_scale(a, 1.0 / n);
-}
-
-/** @brief Scalar triple product `a . (b x c)` (signed volume of the parallelepiped). */
-inline double triple_product(const Vec3& a, const Vec3& b, const Vec3& c) {
-    return vec3_dot(a, vec3_cross(b, c));
-}
-
-/** @brief Determinant of the 3x3 matrix whose columns are `c0`, `c1`, `c2`. */
-inline double det3(const Vec3& c0, const Vec3& c1, const Vec3& c2) {
-    return triple_product(c0, c1, c2);
-}
-
-/**
- * @brief Reads global point @p nodeId as a `Vec3`, padding z = 0 when the mesh
- * is 2D (`pointDim == 2`).
- * @param rPoints The `(num_points, pointDim)` point array.
- * @param pointDim Spatial dimension of the points (2 or 3).
- * @param nodeId Global point index.
- * @return The point's coordinates, with unused components set to 0.
- */
-MESHIOPLUSPLUS_API Vec3 read_point(const NDArray& rPoints, std::size_t pointDim, std::int64_t nodeId);
-
-/**
- * @brief Reads the first @p n connectivity entries of one cell row into @p rOut
- * as `Vec3` coordinates (used to gather a cell's corner nodes).
- * @param rPoints The point array.
- * @param pointDim Spatial dimension of the points.
- * @param rConn The block connectivity array.
- * @param rowOffset Flat offset of the cell's row (`cell * nodes_per_cell`).
- * @param n Number of leading entries to read (the corner count).
- * @param rOut Cleared and filled with @p n coordinates.
- */
-MESHIOPLUSPLUS_API void read_corner_coords(const NDArray& rPoints, std::size_t pointDim, const NDArray& rConn,
-                        std::size_t rowOffset, std::size_t n, std::vector<Vec3>& rOut);
-
-/**
- * @brief Number of corner (linear-parent) nodes of a cell type. Corners are
- * always the leading connectivity entries in meshio/VTK ordering, so a
- * quadratic cell can be reduced to its linear parent by reading the first
- * `cell_corner_count(type)` nodes.
- * @param type The cell type to query.
- * @return The corner count, or 0 for variable-node-count / unsupported types
- *         (`Polygon`, `Polyhedron`, the VTK Lagrange family, `Custom`) — the
- *         caller must skip those.
- */
-MESHIOPLUSPLUS_API int cell_corner_count(CellType type);
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/detail/geometry.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
 /**
  * @file hdf5_util.hpp
@@ -7334,9 +7781,18 @@ struct SilenceErrors {
  * block passes through Linearize unchanged, an already-simplex block passes
  * through Simplexify unchanged, and an already-quadratic block passes through
  * Elevate unchanged. That is what makes the operation safe on a mixed-order
- * mesh. Only genuinely unsupported constructs throw: a polyhedron block cannot
- * be simplexified, and the full-Lagrange targets that need face/body centres
- * (`quad9`, `hexahedron27`) are an explicit non-goal of this version.
+ * mesh. Only genuinely unsupported constructs throw: the full-Lagrange targets
+ * that need face/body centres (`quad9`, `hexahedron27`) are an explicit
+ * non-goal of this version.
+ *
+ * **Simplexify decomposes a polyhedron** (since v9.17.0) into one tetrahedron
+ * per (face, edge-of-that-face), from the face's corner average to the cell's
+ * -- the same fan `detail/polyhedron.hpp` measures, so the children's total
+ * volume equals the parent's exactly. That adds `1 + numFaces` points per cell
+ * rather than a single centroid: a one-point fan about each face's first node
+ * is diagonal-dependent for non-planar faces and inverts on any cell whose
+ * faces are not star-shaped about that node. A cell whose faces are not a
+ * closed orientable surface throws, naming the cell.
  *
  * **Block structure is preserved 1:1 in every mode** -- the output has exactly
  * as many cell blocks as the input, in the same order -- which is what keeps
@@ -7409,10 +7865,12 @@ struct ConvertCellsResult {
  * @param rOptions the mode and flags (defaults to `Linearize`, no parent ids).
  * @return the converted mesh plus the point/cell index maps.
  * @throws std::invalid_argument when a block cannot be converted in the
- *         requested mode (a polyhedron block under `Simplexify`, or a
- *         full-Lagrange target such as `quad9`/`hexahedron27` under `Elevate`).
+ *         requested mode (a full-Lagrange target such as `quad9`/`hexahedron27`
+ *         under `Elevate`, or a polyhedron cell under `Simplexify` whose faces
+ *         are not a closed orientable surface).
  */
-MESHIOPLUSPLUS_API ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions = {});
+MESHIOPLUSPLUS_API ConvertCellsResult convert_cells(const Mesh& rMesh,
+                                                    const ConvertCellsOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/convert_cells.hpp =====
@@ -8398,7 +8856,8 @@ namespace detail {
  * @param pSrc Source buffer, at least `n` elements.
  * @param n Number of `int64_t` elements to copy.
  */
-MESHIOPLUSPLUS_API void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc, std::size_t n);
+MESHIOPLUSPLUS_API void parallel_copy_i64(std::int64_t* pDst, const std::int64_t* pSrc,
+                                          std::size_t n);
 
 /**
  * @brief Extracts rows `[r0, r1)` of a 2-D (or column-vector) `NDArray` into
@@ -8436,8 +8895,8 @@ MESHIOPLUSPLUS_API NDArray slice_rows(const NDArray& rA, std::size_t r0, std::si
  * @throws ReadError on the same unsupported types `reconstruct_cells` rejects,
  *         so a summary never claims a file is readable when it is not.
  */
-MESHIOPLUSPLUS_API std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
-                                           const std::vector<std::int64_t>& rTypes);
+MESHIOPLUSPLUS_API std::vector<CellBlockInfo> summarize_cells(
+    const std::vector<std::int64_t>& rOffsets, const std::vector<std::int64_t>& rTypes);
 
 /** @brief Whether any type in @p rTypes needs `offsets` to be summarized. */
 MESHIOPLUSPLUS_API bool cells_need_offsets(const std::vector<std::int64_t>& rTypes);
@@ -8483,9 +8942,38 @@ MESHIOPLUSPLUS_API bool cells_need_offsets(const std::vector<std::int64_t>& rTyp
  *         by the C++ reader) or is otherwise not in `vtk_to_meshio_type()`,
  *         or if a resolved meshio type has no entry in `num_nodes_per_cell()`.
  */
-MESHIOPLUSPLUS_API void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
-                       const std::vector<std::int64_t>& rTypes,
-                       const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh);
+MESHIOPLUSPLUS_API void reconstruct_cells(
+    const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+    const std::vector<std::int64_t>& rTypes,
+    const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh);
+
+/**
+ * @brief As above, additionally decoding `VTK_POLYHEDRON` (type 42) cells from
+ *        VTU's `faces` / `faceoffsets` arrays.
+ *
+ * An **overload**, never a changed signature: `vtk_cells.hpp` is installed, so
+ * altering the four-argument form would rename a mangled symbol and break an
+ * already-compiled consumer (a Tier A change by `doc/abi.md`). The old form
+ * still exists and still refuses type 42.
+ *
+ * `faces` is VTK's flat stream `[numFaces, [numNodes, nodes...] x numFaces]`
+ * per polyhedral cell, and `faceoffsets` gives each cell's **end** offset into
+ * it, with **-1 for a cell that is not a polyhedron**. That -1 is precisely the
+ * mechanism by which VTU mixes polyhedra with other cell types, which is why
+ * meshio++ supports mixing where the Python reference historically did not: an
+ * OpenFOAM mesh always mixes.
+ *
+ * @param pFaces `faces` stream, or nullptr when the file has none.
+ * @param rFaceOffsets per-cell end offsets into `pFaces` (empty when absent).
+ * @throws ReadError if a type-42 cell has no usable `faces`/`faceoffsets`
+ *         entry, or as for the four-argument form otherwise.
+ */
+MESHIOPLUSPLUS_API void reconstruct_cells(
+    const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+    const std::vector<std::int64_t>& rTypes,
+    const std::unordered_map<std::string, NDArray>& rCellDataRaw,
+    const std::vector<std::int64_t>* pFaces, const std::vector<std::int64_t>& rFaceOffsets,
+    Mesh& rMesh);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -9523,6 +10011,44 @@ MESHIOPLUSPLUS_API void write_cgns(const std::string& rPath, const Mesh& rMesh, 
  *         match its declared element count
  */
 MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
+
+/**
+ * @brief Whether this build carries the official CGNS library (cgnslib / the
+ *        CGNS Mid-Level Library) backend.
+ *
+ * The backend is optional and OFF by default
+ * (`-DMESHIOPLUSPLUS_WITH_CGNSLIB=ON`, bring-your-own via `CGNS_ROOT`). It is
+ * **additive**: the hand-rolled ADF-over-HDF5 reader and writer above are
+ * unchanged and remain the default, so nothing regresses without it.
+ */
+MESHIOPLUSPLUS_API bool cgns_has_cgnslib();
+
+/**
+ * @brief Read a CGNS file through cgnslib, which reaches two things the
+ *        raw-HDF5 reader fundamentally cannot.
+ *
+ * 1. **ADF-container files.** `.cgns` has two on-disk containers, HDF5 and ADF.
+ *    @ref read_cgns speaks HDF5 directly and so can never open an ADF file, no
+ *    matter how much of the spec it implements; much of the real-world corpus
+ *    (including the CGNS project's own example meshes) is ADF.
+ * 2. **`NGON_n` / `NFACE_n` polyhedral sections.** `NGON_n` lists faces as node
+ *    lists, `NFACE_n` each cell as a list of **signed** face ids (the sign
+ *    meaning "traverse this face reversed"). The MLL's
+ *    `cg_poly_elements_read` also absorbs the CGNS 3.x-vs-4.0
+ *    `ElementStartOffset` split, which is the single most error-prone part of
+ *    the encoding and would otherwise have to be re-derived for both layouts.
+ *
+ * `NGON_n` **without** an `NFACE_n` is a face mesh, not a volume one, and maps
+ * to `polygon` blocks; with one, the faces are dereferenced (and reversed where
+ * the id is negative) into `polyhedron<N>` blocks grouped by unique node count
+ * — the same convention the OpenFOAM and EnSight readers use.
+ *
+ * @param rPath filesystem path to read
+ * @return the read Mesh
+ * @throws ReadError when the build has no cgnslib (naming the CMake flag), or
+ *         when cgnslib cannot open or parse the file
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns_mll(const std::string& rPath);
 
 }  // namespace meshioplusplus
 
@@ -11621,10 +12147,15 @@ MESHIOPLUSPLUS_API Mesh read_obj(const std::string& rPath);
  * zero-copy). Boundary faces become `triangle`/`quad`/`polygon<N>` blocks,
  * one per patch/size combination.
  *
- * This reader is **read-only** — there is no OpenFOAM writer at all, in
- * C++ or Python. Only mesh topology is read; OpenFOAM field files (`U`,
- * `p`, `T`, …) under a case's time directories are never read by this
- * module, so no `point_data`/`field_data` is ever produced.
+ * `write_openfoam` (v9.20.0) is the inverse, and is the **only writer in
+ * meshio++ that takes a directory path** — it creates
+ * `<case>/constant/polyMesh/` and writes all five files. It goes through
+ * `detail/face_mesh.hpp`'s global face table, which is also what CGNS's
+ * `NFACE_n` writer uses. ASCII only; a binary polyMesh is a follow-up.
+ *
+ * Only mesh topology is read or written; OpenFOAM field files (`U`, `p`,
+ * `T`, …) under a case's time directories are never touched by this module,
+ * so no `point_data`/`field_data` is ever produced or consumed.
  */
 
 // System includes
@@ -11657,6 +12188,28 @@ struct OpenFoamInfo {
      * groups (see doc/formats/med.md).
      */
     std::map<std::int64_t, std::vector<std::string>> mCellTags;
+
+    /**
+     * `family_id -> patch type` — the `type` entry of the on-disk `boundary`
+     * file (`patch`, `wall`, `symmetry`, `symmetryPlane`, `empty`, `wedge`,
+     * `cyclic`, …), keyed by the **same** negative family id as #mCellTags
+     * rather than by patch name: that key is this format's primary key
+     * everywhere else, and two maps keyed differently invite a bad join.
+     *
+     * A patch whose `type` the file omitted simply has no entry, and the
+     * writer then emits `patch` — OpenFOAM's base type, always safe.
+     * Deliberately **not** `wall`: `wall` selects wall functions and
+     * `nut*WallFunction` boundary behaviour, so guessing it would silently
+     * change a solve's physics.
+     *
+     * Types needing companion keys this struct cannot carry (`cyclic`'s
+     * `neighbourPatch`, `processor`'s `myProcNo`, `mappedWall`'s `sample`,
+     * …) are **downgraded to `patch` with a warning** on write: emitting
+     * them bare produces a case OpenFOAM refuses to load, whereas a
+     * downgraded case loads and solves with boundary conditions the user
+     * can see and fix.
+     */
+    std::map<std::int64_t, std::string> mPatchTypes;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh
@@ -11692,6 +12245,48 @@ struct OpenFoamInfo {
  *         pure-Python reader
  */
 MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
+
+/**
+ * @brief Write a Mesh as an OpenFOAM polyMesh case.
+ *
+ * The **only meshio++ writer that creates a directory**: @p rPath is
+ * resolved exactly as `read_openfoam` resolves it (a `.foam` marker file, a
+ * directory literally named `polyMesh`, or any other directory taken as the
+ * case root), and `<case>/constant/polyMesh/` is created if absent. A
+ * `.foam` target additionally gets its empty marker file written, which is
+ * what makes the case openable by ParaView and by this reader.
+ *
+ * Volume cells become the `faces`/`owner`/`neighbour` triple via
+ * `detail::build_global_faces`, which repairs each cell's winding — so an
+ * inverted cell is written correctly oriented rather than rejected by
+ * `checkMesh`. All four ordering rules OpenFOAM requires (internal faces
+ * first, `owner < neighbour`, faces sorted by owner then neighbour, normals
+ * pointing owner→neighbour) are enforced and then re-validated before
+ * anything is written; a violation is a `WriteError` naming the rule,
+ * because it means an internal bug rather than bad input.
+ *
+ * Boundary patches are recovered from `cell_data["cell_tags"]`'s negative
+ * values together with @p rInfo. A mesh carrying none — anything converted
+ * from another format — gets a single `defaultFaces` patch of type `patch`,
+ * which is what `blockMesh` itself produces and yields a loadable case.
+ * Patches are **not** synthesized from geometry.
+ *
+ * ASCII only: a binary polyMesh is a documented follow-up, so an explicit
+ * binary request fails by name rather than silently writing ASCII.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rMesh the mesh to write; ragged polyhedron blocks are supported
+ *        and are in fact this format's native cell shape
+ * @param rInfo patch names and types, keyed by the same negative family ids
+ *        `read_openfoam` produces (see #OpenFoamInfo). An empty struct is
+ *        valid and yields the `defaultFaces` case above.
+ * @throws WriteError if the mesh has no volume cells, if a 3D block cannot
+ *         contribute faces (which would silently drop solids), if a face is
+ *         shared by three or more cells, or if the output directory cannot
+ *         be created
+ */
+MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
+                                       const OpenFoamInfo& rInfo);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/openfoam.hpp =====
@@ -18032,7 +18627,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 14
+#define MESHIOPLUSPLUS_VERSION_MINOR 22
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -18042,7 +18637,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.14.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.22.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -33893,50 +34488,23 @@ FiniteStats combine_components(const std::vector<FiniteStats>& rStats) {
     return all;
 }
 
-namespace {
-
-/**
- * @brief Unsigned area of a corner polygon (triangle / quad) via the Newell
- * normal. Mirrors `stats_area` in `operations/stats.cpp`. Internal to
- * `cell_measure`, so not exposed in the header.
- * @param rCoords the corner coordinates.
- * @param Corners how many of them form the polygon.
- * @return the unsigned area, or 0 for fewer than 3 corners.
- */
-double dataops_polygon_area(const std::vector<Vec3>& rCoords, int Corners) {
-    if (Corners < 3)
-        return 0.0;
-    Vec3 s = {0, 0, 0};
-    for (int i = 0; i < Corners; ++i)
-        s = vec3_add(s, vec3_cross(rCoords[i], rCoords[(i + 1) % Corners]));
-    return 0.5 * vec3_norm(s);
-}
-
-/**
- * @brief Signed volume of a 3D cell via the divergence theorem over its
- * outward-wound boundary faces. Mirrors `stats_signed_volume`. Internal to
- * `cell_measure`, so not exposed in the header.
- * @param rCoords the cell's corner coordinates.
- * @param Type the cell type, which supplies the face table.
- * @return the signed volume, or NaN for a type with no face table.
- */
-double dataops_cell_signed_volume(const std::vector<Vec3>& rCoords, CellType Type) {
-    const std::vector<CellFaceDef>& faces = cell_faces(Type);
-    if (faces.empty())
-        return std::nan("");
-    double vol6 = 0.0;
-    for (const CellFaceDef& f : faces) {
-        const Vec3 a = rCoords[f.mNodes[0]];
-        for (int i = 1; i + 1 < f.mNumCorners; ++i)
-            vol6 += triple_product(a, rCoords[f.mNodes[i]], rCoords[f.mNodes[i + 1]]);
-    }
-    return vol6 / 6.0;
-}
-
-}  // namespace
-
 double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
                     std::size_t Index) {
+    // 3D first, via the shared polyhedral kernel: it serves a tabulated
+    // hexahedron and a `polyhedron12` through the same code path, which is
+    // what makes the measure of one physical cell independent of whether the
+    // reader happened to classify it as a named type or as a polyhedron.
+    // (openfoam.cpp classifies by an (nfaces, nunique_points) signature, so a
+    // slightly-degenerate hex genuinely lands in the other bucket.)
+    CellRings rings;
+    std::vector<Vec3> ring_coords;
+    if (cell_rings(rCell, Index, rPoints, PointDim, rings, ring_coords)) {
+        orient_rings(rings, ring_coords.data());
+        const PolyMeasure m = poly_measure(rings, ring_coords.data());
+        return std::fabs(m.mVolume);
+    }
+    // Not a closed volume: fall through to the 2D/1D cases, which only a
+    // rectangular block can supply.
     if (rCell.IsRagged() || rCell.IsPolyhedron())
         return std::nan("");
     const CellType ct = cell_type_from_name(rCell.Type());
@@ -33947,12 +34515,8 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
     read_corner_coords(rPoints, PointDim, rCell.Conn(), Index * rCell.NodesPerCell(),
                        static_cast<std::size_t>(corners), coords);
     const int dim = cell_type_dimension(ct);
-    if (dim == 3) {
-        const double v = dataops_cell_signed_volume(coords, ct);
-        return std::isnan(v) ? v : std::fabs(v);
-    }
     if (dim == 2)
-        return dataops_polygon_area(coords, corners);
+        return polygon_area(coords.data(), static_cast<std::size_t>(corners));
     if (dim == 1 && corners >= 2)
         return vec3_norm(vec3_sub(coords[1], coords[0]));
     return std::nan("");
@@ -34215,6 +34779,220 @@ FaceColors resolve_face_colors(const ColorSpec& rSpec, const Mesh& rSource, cons
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/face_color.cpp =====
+// ===== begin src/cpp/src/detail/face_mesh.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+/// Per-block bookkeeping for the two parallel passes: where this block's cells
+/// land in the compact numbering, and where its faces land in the slot space.
+struct FmBlockDesc {
+    std::size_t mBlock = 0;        ///< index into the mesh's cell blocks
+    std::size_t mFirstCell = 0;    ///< first compact cell id
+    std::size_t mNumCells = 0;
+};
+
+/// Does this block bound a volume? Mirrors `cell_rings`' own acceptance rule --
+/// deliberately, so a block can never be counted here and then declined there.
+bool fm_block_has_volume(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return true;
+    if (rBlock.IsRagged())
+        return false;  // 1-level (polygon): a surface cell, no enclosed volume
+    return skin_supported(cell_type_from_name(rBlock.Type()));
+}
+
+}  // namespace
+
+GlobalFaces build_global_faces(const Mesh& rMesh) {
+    return build_global_faces(rMesh, {});
+}
+
+GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>& rBlocks) {
+    GlobalFaces out;
+
+    // Empty means "every block"; that is what the one-argument form passes, so
+    // there is exactly one implementation rather than two that could drift.
+    std::vector<bool> wanted;
+    if (!rBlocks.empty()) {
+        wanted.assign(rMesh.NumCellBlocks(), false);
+        for (std::size_t b : rBlocks)
+            if (b < wanted.size())
+                wanted[b] = true;
+    }
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::vector<std::int64_t> bases = block_bases(rMesh);
+
+    // ---- Phase 0: the compact cell space --------------------------------
+    // Serial and cheap: one pass over the blocks, no per-cell work.
+    std::vector<FmBlockDesc> descs;
+    std::size_t n_cells = 0;
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
+        const auto cb = rMesh.Cells(k);
+        if ((!wanted.empty() && !wanted[k]) || !fm_block_has_volume(cb)) {
+            out.mNonCellBlocks.push_back(k);
+            continue;
+        }
+        FmBlockDesc d;
+        d.mBlock = k;
+        d.mFirstCell = n_cells;
+        d.mNumCells = cb.NumCells();
+        n_cells += d.mNumCells;
+        descs.push_back(d);
+    }
+
+    out.mCellToGlobal.resize(n_cells);
+    for (const FmBlockDesc& d : descs) {
+        const std::int64_t base = bases[d.mBlock];
+        for (std::size_t i = 0; i < d.mNumCells; ++i)
+            out.mCellToGlobal[d.mFirstCell + i] = base + static_cast<std::int64_t>(i);
+    }
+
+    // ---- Phase 1: face counts and ring sizes ----------------------------
+    // `cell_rings` is a gather, so running it twice is cheap; `orient_rings`
+    // (the BFS) runs only in phase 2. Counting first is what lets phase 2 write
+    // straight into pre-sized buffers instead of holding a per-cell vector pair
+    // for the whole mesh -- on a ten-million-cell case that is gigabytes.
+    std::vector<std::int64_t> n_cell_faces(n_cells, 0);
+    for (const FmBlockDesc& d : descs) {
+        const auto cb = rMesh.Cells(d.mBlock);
+        parallel_for(d.mNumCells, [&](std::size_t i) {
+            static thread_local CellRings rings;
+            static thread_local std::vector<Vec3> coords;
+            if (cell_rings(cb, i, points, dim, rings, coords))
+                n_cell_faces[d.mFirstCell + i] = static_cast<std::int64_t>(rings.NumFaces());
+        });
+    }
+
+    out.mCellFaceStart.resize(n_cells + 1);
+    out.mCellFaceStart[0] = 0;
+    for (std::size_t c = 0; c < n_cells; ++c)
+        out.mCellFaceStart[c + 1] = out.mCellFaceStart[c] + n_cell_faces[c];
+    const std::size_t n_slots = static_cast<std::size_t>(out.mCellFaceStart[n_cells]);
+
+    // Ring sizes per slot, then their prefix, so phase 2's writes are disjoint.
+    std::vector<std::int64_t> slot_size(n_slots, 0);
+    for (const FmBlockDesc& d : descs) {
+        const auto cb = rMesh.Cells(d.mBlock);
+        parallel_for(d.mNumCells, [&](std::size_t i) {
+            static thread_local CellRings rings;
+            static thread_local std::vector<Vec3> coords;
+            if (!cell_rings(cb, i, points, dim, rings, coords))
+                return;
+            const std::size_t base =
+                static_cast<std::size_t>(out.mCellFaceStart[d.mFirstCell + i]);
+            for (std::size_t f = 0; f < rings.NumFaces(); ++f)
+                slot_size[base + f] = static_cast<std::int64_t>(rings.FaceSize(f));
+        });
+    }
+
+    std::vector<std::int64_t> slot_start(n_slots + 1);
+    slot_start[0] = 0;
+    for (std::size_t s = 0; s < n_slots; ++s)
+        slot_start[s + 1] = slot_start[s] + slot_size[s];
+
+    // ---- Phase 2: build every cell's outward-wound rings ----------------
+    std::vector<std::int64_t> slot_nodes(static_cast<std::size_t>(slot_start[n_slots]));
+    std::vector<std::uint8_t> cell_flipped(n_cells, 0);
+    std::vector<std::uint8_t> cell_unorientable(n_cells, 0);
+
+    for (const FmBlockDesc& d : descs) {
+        const auto cb = rMesh.Cells(d.mBlock);
+        parallel_for(d.mNumCells, [&](std::size_t i) {
+            static thread_local CellRings rings;
+            static thread_local std::vector<Vec3> coords;
+            const std::size_t cell = d.mFirstCell + i;
+            if (!cell_rings(cb, i, points, dim, rings, coords))
+                return;
+            // Repair unconditionally: `cell_faces.hpp`'s rows are outward on the
+            // REFERENCE element, so an inverted hexahedron yields six inward
+            // normals and every one of its faces would be written misoriented.
+            const RingOrientation ro = orient_rings(rings, coords.data());
+            if (ro == RingOrientation::Repaired)
+                cell_flipped[cell] = 1;
+            else if (ro == RingOrientation::Unorientable)
+                cell_unorientable[cell] = 1;
+
+            const std::size_t base = static_cast<std::size_t>(out.mCellFaceStart[cell]);
+            for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+                const std::uint32_t* ring = rings.Face(f);
+                const std::size_t n = rings.FaceSize(f);
+                std::int64_t* dst = slot_nodes.data() + slot_start[base + f];
+                for (std::size_t k = 0; k < n; ++k)
+                    dst[k] = rings.mNodes[ring[k]];
+            }
+        });
+    }
+
+    for (std::size_t c = 0; c < n_cells; ++c) {
+        out.mNumFlipped += cell_flipped[c];
+        out.mNumUnorientable += cell_unorientable[c];
+    }
+
+    // ---- Phase 3: SERIAL first-seen dedup -------------------------------
+    // Slot order is ascending (compact cell, local face), so face ids -- and
+    // therefore `owner < neighbour`, which the OpenFOAM writer validates rather
+    // than assumes -- do not depend on thread count or hash order.
+    out.mCellFaces.resize(n_slots);
+    out.mFaceStart.push_back(0);
+
+    std::unordered_map<FacetKey, std::int64_t, FacetKeyHash> first_use;
+    first_use.reserve(n_slots);
+
+    for (std::size_t c = 0; c < n_cells; ++c) {
+        const std::size_t lo = static_cast<std::size_t>(out.mCellFaceStart[c]);
+        const std::size_t hi = static_cast<std::size_t>(out.mCellFaceStart[c + 1]);
+        for (std::size_t s = lo; s < hi; ++s) {
+            const std::int64_t* ring = slot_nodes.data() + slot_start[s];
+            const std::size_t n = static_cast<std::size_t>(slot_size[s]);
+            const FacetKey key(ring, n);
+            auto it = first_use.find(key);
+            if (it == first_use.end()) {
+                const std::int64_t fid = static_cast<std::int64_t>(out.NumFaces());
+                out.mFaceNodes.insert(out.mFaceNodes.end(), ring, ring + n);
+                out.mFaceStart.push_back(static_cast<std::int64_t>(out.mFaceNodes.size()));
+                out.mOwner.push_back(static_cast<std::int64_t>(c));
+                out.mNeighbour.push_back(-1);
+                first_use.emplace(key, fid);
+                out.mCellFaces[s] = fid + 1;  // positive: stored as this cell wound it
+            } else {
+                const std::int64_t fid = it->second;
+                if (out.mNeighbour[static_cast<std::size_t>(fid)] < 0)
+                    out.mNeighbour[static_cast<std::size_t>(fid)] = static_cast<std::int64_t>(c);
+                else
+                    ++out.mNumNonManifold;
+                out.mCellFaces[s] = -(fid + 1);  // negative: reversed from stored
+            }
+        }
+    }
+
+    return out;
+}
+
+FaceLookup::FaceLookup(const GlobalFaces& rFaces) {
+    mMap.reserve(rFaces.NumFaces());
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        mMap.emplace(FacetKey(rFaces.Face(f), rFaces.FaceSize(f)), static_cast<std::int64_t>(f));
+}
+
+std::int64_t FaceLookup::Find(const std::int64_t* pIds, std::size_t N) const {
+    const auto it = mMap.find(FacetKey(pIds, N));
+    return it == mMap.end() ? -1 : it->second;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/face_mesh.cpp =====
 // ===== begin src/cpp/src/detail/geometry.cpp =====
 
 namespace meshioplusplus {
@@ -35251,6 +36029,352 @@ NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/node_adjacency.cpp =====
+// ===== begin src/cpp/src/detail/polyhedron.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <unordered_map>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// A directed ring edge, keyed undirected. The BFS below asks "which other face
+// uses this same undirected edge, and in which direction".
+using PolyEdge = std::pair<std::int64_t, std::int64_t>;
+
+struct PolyEdgeHash {
+    std::size_t operator()(const PolyEdge& rE) const {
+        // The surface.cpp mixing constant; the pair is already small ints.
+        const std::size_t a = static_cast<std::size_t>(rE.first);
+        const std::size_t b = static_cast<std::size_t>(rE.second);
+        return a * 0x9E3779B97F4A7C15ULL + b;
+    }
+};
+
+PolyEdge poly_undirected(std::uint32_t a, std::uint32_t b) {
+    return a < b ? PolyEdge{a, b} : PolyEdge{b, a};
+}
+
+// Append `id` to rOut.mNodes if new, and return its local index. Cells have a
+// handful of nodes, so the linear scan beats a hash map comfortably.
+std::uint32_t poly_intern(CellRings& rOut, std::vector<Vec3>& rCoords, std::int64_t Id,
+                          const NDArray& rPoints, std::size_t PointDim) {
+    for (std::size_t i = 0; i < rOut.mNodes.size(); ++i)
+        if (rOut.mNodes[i] == Id)
+            return static_cast<std::uint32_t>(i);
+    rOut.mNodes.push_back(Id);
+    rCoords.push_back(read_point(rPoints, PointDim, Id));
+    return static_cast<std::uint32_t>(rOut.mNodes.size() - 1);
+}
+
+}  // namespace
+
+bool cell_rings(const Mesh::CellView& rBlock, std::size_t Cell, const NDArray& rPoints,
+                std::size_t PointDim, CellRings& rOut, std::vector<Vec3>& rCoords) {
+    rOut.Clear();
+    rCoords.clear();
+
+    if (rBlock.IsPolyhedron()) {
+        const std::size_t nf = rBlock.NumFaces(Cell);
+        if (nf == 0)
+            return false;
+        rOut.mFaceStart.push_back(0);
+        for (std::size_t f = 0; f < nf; ++f) {
+            const auto face = rBlock.Face(Cell, f);
+            for (std::size_t k = 0; k < face.second; ++k)
+                rOut.mFaceNodes.push_back(
+                    poly_intern(rOut, rCoords, face.first[k], rPoints, PointDim));
+            rOut.mFaceStart.push_back(static_cast<std::uint32_t>(rOut.mFaceNodes.size()));
+        }
+        return true;
+    }
+    if (rBlock.IsRagged())
+        return false;  // 1-level (polygon): a surface cell, no enclosed volume
+
+    const CellType ct = cell_type_from_name(rBlock.Type());
+    const std::vector<CellFaceDef>& faces = cell_faces(ct);
+    if (faces.empty())
+        return false;
+    const int corners = cell_corner_count(ct);
+    if (corners <= 0)
+        return false;
+
+    const NDArray& conn = rBlock.Conn();
+    const std::size_t npc = rBlock.NodesPerCell();
+    // Intern the corners in CONNECTIVITY order first, so a tabulated cell's
+    // local ring indices are exactly `cell_faces`' own `mNodes` values. That is
+    // a contract, not an accident: `gradient` carries per-corner field values in
+    // connectivity order and indexes them with the ring, and
+    // `cell_volume_from_corners` hands in corner coordinates the same way.
+    // Interning lazily per face would instead number nodes in face-traversal
+    // order and silently permute both.
+    rOut.mNodes.reserve(static_cast<std::size_t>(corners));
+    rCoords.reserve(static_cast<std::size_t>(corners));
+    for (int i = 0; i < corners; ++i) {
+        const std::int64_t id = read_int(conn, Cell * npc + static_cast<std::size_t>(i));
+        rOut.mNodes.push_back(id);
+        rCoords.push_back(read_point(rPoints, PointDim, id));
+    }
+    rOut.mFaceStart.push_back(0);
+    for (const CellFaceDef& f : faces) {
+        // Corners only, matching every other measure kernel in the repo.
+        for (int i = 0; i < f.mNumCorners; ++i)
+            rOut.mFaceNodes.push_back(f.mNodes[i]);
+        rOut.mFaceStart.push_back(static_cast<std::uint32_t>(rOut.mFaceNodes.size()));
+    }
+    return true;
+}
+
+Vec3 polygon_area_vector(const Vec3* pCoords, const std::uint32_t* pRing, std::size_t N) {
+    // Newell: sum of cross products around the ring. Translation-invariance and
+    // start-node independence both follow from the sum telescoping, which is
+    // what makes it the right primitive for a face whose node order the file
+    // format does not constrain.
+    Vec3 n{0.0, 0.0, 0.0};
+    if (N < 3)
+        return n;
+    for (std::size_t i = 0; i < N; ++i) {
+        const Vec3& a = pCoords[pRing[i]];
+        const Vec3& b = pCoords[pRing[(i + 1) % N]];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    return vec3_scale(n, 0.5);
+}
+
+double polygon_area(const Vec3* pCoords, const std::uint32_t* pRing, std::size_t N) {
+    return vec3_norm(polygon_area_vector(pCoords, pRing, N));
+}
+
+Vec3 polygon_area_vector(const Vec3* pCoords, std::size_t N) {
+    // Same arithmetic as the ring form, with the indirection removed rather
+    // than an identity ring materialized per call.
+    Vec3 n{0.0, 0.0, 0.0};
+    if (N < 3)
+        return n;
+    for (std::size_t i = 0; i < N; ++i) {
+        const Vec3& a = pCoords[i];
+        const Vec3& b = pCoords[(i + 1) % N];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    return vec3_scale(n, 0.5);
+}
+
+double polygon_area(const Vec3* pCoords, std::size_t N) {
+    return vec3_norm(polygon_area_vector(pCoords, N));
+}
+
+double cell_volume_from_corners(const Vec3* pCoords, CellType Type) {
+    const std::vector<CellFaceDef>& faces = cell_faces(Type);
+    if (faces.empty())
+        return std::nan("");
+    const int corners = cell_corner_count(Type);
+    if (corners <= 0)
+        return std::nan("");
+    // The coordinates are already the cell's corners in order, so the rings are
+    // just cell_faces' local indices with an identity node mapping.
+    CellRings rings;
+    rings.mNodes.resize(static_cast<std::size_t>(corners));
+    for (int i = 0; i < corners; ++i)
+        rings.mNodes[static_cast<std::size_t>(i)] = i;
+    rings.mFaceStart.push_back(0);
+    for (const CellFaceDef& f : faces) {
+        for (int i = 0; i < f.mNumCorners; ++i)
+            rings.mFaceNodes.push_back(f.mNodes[i]);
+        rings.mFaceStart.push_back(static_cast<std::uint32_t>(rings.mFaceNodes.size()));
+    }
+    return poly_measure(rings, pCoords).mVolume;
+}
+
+Vec3 polygon_centroid(const Vec3* pCoords, const std::uint32_t* pRing, std::size_t N) {
+    Vec3 c{0.0, 0.0, 0.0};
+    if (N == 0)
+        return c;
+    for (std::size_t i = 0; i < N; ++i)
+        c = vec3_add(c, pCoords[pRing[i]]);
+    return vec3_scale(c, 1.0 / static_cast<double>(N));
+}
+
+RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
+    const std::size_t nf = rRings.NumFaces();
+    if (nf == 0)
+        return RingOrientation::Unorientable;
+
+    // Map each undirected edge to the (face, directed-as-stored) uses of it. A
+    // closed surface uses every undirected edge exactly twice.
+    struct EdgeUse {
+        std::size_t mFace;
+        bool mForward;  // traversed low->high as stored
+    };
+    std::unordered_map<PolyEdge, std::vector<EdgeUse>, PolyEdgeHash> uses;
+    uses.reserve(nf * 4);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t n = rRings.FaceSize(f);
+        if (n < 3)
+            return RingOrientation::Unorientable;
+        const std::uint32_t* ring = rRings.Face(f);
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::uint32_t a = ring[i], b = ring[(i + 1) % n];
+            if (a == b)
+                return RingOrientation::Unorientable;
+            uses[poly_undirected(a, b)].push_back({f, a < b});
+        }
+    }
+    for (const auto& kv : uses)
+        if (kv.second.size() != 2)
+            return RingOrientation::Unorientable;
+
+    // BFS the face dual. Two faces sharing an undirected edge are consistently
+    // wound iff they traverse it in OPPOSITE directions, so an equal
+    // `mForward` means the neighbour must be reversed.
+    std::vector<int> flip(nf, -1);  // -1 unvisited, 0 keep, 1 reverse
+    std::vector<std::size_t> stack;
+    flip[0] = 0;
+    stack.push_back(0);
+    std::size_t visited = 0;
+    while (!stack.empty()) {
+        const std::size_t f = stack.back();
+        stack.pop_back();
+        ++visited;
+        const std::size_t n = rRings.FaceSize(f);
+        const std::uint32_t* ring = rRings.Face(f);
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::uint32_t a = ring[i], b = ring[(i + 1) % n];
+            const auto& u = uses[poly_undirected(a, b)];
+            const EdgeUse& mine = u[0].mFace == f && u[0].mForward == (a < b) ? u[0] : u[1];
+            const EdgeUse& other = (&mine == &u[0]) ? u[1] : u[0];
+            if (other.mFace == f)
+                return RingOrientation::Unorientable;  // a face using its own edge twice
+            // Effective direction of this edge in each face after its own flip.
+            const bool mine_fwd = mine.mForward != (flip[f] == 1);
+            const int want = (other.mForward == mine_fwd) ? 1 : 0;
+            if (flip[other.mFace] == -1) {
+                flip[other.mFace] = want;
+                stack.push_back(other.mFace);
+            } else if (flip[other.mFace] != want) {
+                return RingOrientation::Unorientable;  // non-orientable (Mobius-like)
+            }
+        }
+    }
+    if (visited != nf)
+        return RingOrientation::Unorientable;  // disconnected face set
+
+    bool changed = false;
+    for (std::size_t f = 0; f < nf; ++f) {
+        if (flip[f] == 1) {
+            std::uint32_t* ring = rRings.FaceMutable(f);
+            std::reverse(ring, ring + rRings.FaceSize(f));
+            changed = true;
+        }
+    }
+
+    // Consistent now, but possibly consistently INWARD. One signed-volume probe
+    // decides, and a global reverse fixes it.
+    if (poly_measure(rRings, pCoords).mVolume < 0.0) {
+        for (std::size_t f = 0; f < nf; ++f) {
+            std::uint32_t* ring = rRings.FaceMutable(f);
+            std::reverse(ring, ring + rRings.FaceSize(f));
+        }
+        changed = true;
+    }
+    return changed ? RingOrientation::Repaired : RingOrientation::Consistent;
+}
+
+PolyMeasure poly_measure(const CellRings& rRings, const Vec3* pCoords) {
+    PolyMeasure out;
+    const std::size_t nf = rRings.NumFaces();
+    if (nf == 0 || rRings.mNodes.empty())
+        return out;
+
+    // Recentre on the cell's corner average before any arithmetic. This is
+    // load-bearing, not an optimization: V = sum(x . A) / 3 only telescopes
+    // because sum(A) == 0 over a closed surface, so at |x| ~ 1e8 the raw form
+    // loses eight digits to cancellation and then divides by the result.
+    Vec3 origin{0.0, 0.0, 0.0};
+    const std::size_t nn = rRings.mNodes.size();
+    for (std::size_t i = 0; i < nn; ++i)
+        origin = vec3_add(origin, pCoords[i]);
+    origin = vec3_scale(origin, 1.0 / static_cast<double>(nn));
+
+    std::vector<Vec3> local(nn);
+    for (std::size_t i = 0; i < nn; ++i)
+        local[i] = vec3_sub(pCoords[i], origin);
+
+    double vol6 = 0.0;           // 6 * volume
+    Vec3 moment{0.0, 0.0, 0.0};  // sum over tets of (vol6_i * 4*centroid_i)
+    double area = 0.0;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t n = rRings.FaceSize(f);
+        const std::uint32_t* ring = rRings.Face(f);
+        if (n < 3)
+            continue;
+        // The corner-average fan: apex at the face's own corner average, one
+        // triangle per edge of the ring. See the header for why this apex and
+        // not the ring's first node.
+        const Vec3 fc = polygon_centroid(local.data(), ring, n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const Vec3& a = local[ring[i]];
+            const Vec3& b = local[ring[(i + 1) % n]];
+            const Vec3 cr = vec3_cross(vec3_sub(a, fc), vec3_sub(b, fc));
+            area += 0.5 * vec3_norm(cr);
+            // Signed volume of the tet (origin, fc, a, b), x6.
+            const double t = triple_product(fc, a, b);
+            vol6 += t;
+            // Its centroid is (0 + fc + a + b)/4; accumulate 4*centroid*vol6.
+            const Vec3 s = vec3_add(fc, vec3_add(a, b));
+            moment = vec3_add(moment, vec3_scale(s, t));
+        }
+    }
+
+    out.mVolume = vol6 / 6.0;
+    out.mSurfaceArea = area;
+    out.mClosed = true;
+    out.mOrientable = true;
+    if (std::abs(vol6) > 0.0) {
+        // centroid = sum(v_i * c_i) / sum(v_i), with c_i = s_i/4 and
+        // v_i = t_i/6 -- the constant factors cancel except the 1/4.
+        out.mCentroid = vec3_add(origin, vec3_scale(moment, 0.25 / vol6));
+    } else {
+        out.mCentroid = origin;
+    }
+    return out;
+}
+
+FacetKey::FacetKey(const std::int64_t* pIds, std::size_t N) : mN(N) {
+    if (N <= kInline) {
+        for (std::size_t i = 0; i < N; ++i)
+            mInline[i] = pIds[i];
+        std::sort(mInline.begin(), mInline.begin() + static_cast<std::ptrdiff_t>(N));
+    } else {
+        mHeap.assign(pIds, pIds + N);
+        std::sort(mHeap.begin(), mHeap.end());
+    }
+}
+
+bool FacetKey::operator==(const FacetKey& rOther) const {
+    if (mN != rOther.mN)
+        return false;
+    return std::equal(Data(), Data() + mN, rOther.Data());
+}
+
+std::size_t FacetKeyHash::operator()(const FacetKey& rKey) const {
+    std::size_t h = rKey.Size() * 0x9E3779B97F4A7C15ULL;
+    const std::int64_t* p = rKey.Data();
+    for (std::size_t i = 0; i < rKey.Size(); ++i)
+        h = h * 0x100000001B3ULL + static_cast<std::size_t>(p[i]);
+    return h;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/polyhedron.cpp =====
 // ===== begin src/cpp/src/detail/projection.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -36245,6 +37369,7 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 // ===== end src/cpp/src/detail/subset.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
+#include <map>
 #include <cstring>
 
 // Project includes
@@ -36353,6 +37478,17 @@ bool cells_need_offsets(const std::vector<std::int64_t>& rTypes) {
 void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
                        const std::vector<std::int64_t>& rTypes,
                        const std::unordered_map<std::string, NDArray>& rCellDataRaw, Mesh& rMesh) {
+    // The historical four-argument form: no faces stream, so type 42 still
+    // refuses by name (see the header -- this must stay a distinct symbol).
+    static const std::vector<std::int64_t> kNoFaceOffsets;
+    reconstruct_cells(pConn, rOffsets, rTypes, rCellDataRaw, nullptr, kNoFaceOffsets, rMesh);
+}
+
+void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                       const std::vector<std::int64_t>& rTypes,
+                       const std::unordered_map<std::string, NDArray>& rCellDataRaw,
+                       const std::vector<std::int64_t>* pFaces,
+                       const std::vector<std::int64_t>& rFaceOffsets, Mesh& rMesh) {
     const auto& vmap = vtk_to_meshio_type();
     const std::size_t ncells = rTypes.size();
 
@@ -36368,8 +37504,67 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             ++end;
 
         int vtk_type = static_cast<int>(rTypes[start]);
-        if (vtk_type == 42)
-            throw ReadError("polyhedron cells are not supported by the C++ reader");
+        if (vtk_type == 42) {
+            if (pFaces == nullptr || rFaceOffsets.size() != ncells)
+                throw ReadError(
+                    "VTU: a cell has VTK type 42 (polyhedron) but the file carries no usable "
+                    "'faces'/'faceoffsets' arrays");
+            // Decode this run of polyhedra, then bucket by unique node count
+            // into polyhedron<N> -- the convention the OpenFOAM, EnSight, MED
+            // and CGNS readers all use.
+            std::vector<std::vector<std::vector<std::int64_t>>> cells;
+            std::vector<std::size_t> node_counts;
+            for (std::size_t c = start; c < end; ++c) {
+                // faceoffsets are END offsets, so this cell's stream begins
+                // where the previous polyhedral cell's ended. A non-polyhedral
+                // cell carries -1 and contributes nothing.
+                std::int64_t begin_at = 0;
+                for (std::size_t q = 0; q < c; ++q)
+                    if (rFaceOffsets[q] >= 0)
+                        begin_at = rFaceOffsets[q];
+                const std::int64_t end_at = rFaceOffsets[c];
+                if (end_at < 0 || begin_at > end_at ||
+                    static_cast<std::size_t>(end_at) > pFaces->size())
+                    throw ReadError("VTU: 'faceoffsets' entry is out of range for a polyhedron");
+                std::size_t at = static_cast<std::size_t>(begin_at);
+                const std::int64_t nfaces = (*pFaces)[at++];
+                std::vector<std::vector<std::int64_t>> faces;
+                std::vector<std::int64_t> uniq;
+                for (std::int64_t f = 0; f < nfaces; ++f) {
+                    const std::int64_t nn = (*pFaces)[at++];
+                    std::vector<std::int64_t> ring;
+                    ring.reserve(static_cast<std::size_t>(nn));
+                    for (std::int64_t k = 0; k < nn; ++k)
+                        ring.push_back((*pFaces)[at++]);
+                    uniq.insert(uniq.end(), ring.begin(), ring.end());
+                    faces.push_back(std::move(ring));
+                }
+                std::sort(uniq.begin(), uniq.end());
+                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                node_counts.push_back(uniq.size());
+                cells.push_back(std::move(faces));
+            }
+            std::vector<std::size_t> order;
+            std::map<std::size_t, std::vector<std::size_t>> groups;
+            std::size_t at_row = start;
+            for (std::size_t i = 0; i < cells.size(); ++i) {
+                if (groups.find(node_counts[i]) == groups.end())
+                    order.push_back(node_counts[i]);
+                groups[node_counts[i]].push_back(i);
+            }
+            for (std::size_t n : order) {
+                std::vector<std::vector<std::vector<std::int64_t>>> group;
+                for (std::size_t i : groups[n])
+                    group.push_back(std::move(cells[i]));
+                const std::size_t m = group.size();
+                rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
+                for (const auto& kv : rCellDataRaw)
+                    rMesh.AppendCellData(kv.first, slice_rows(kv.second, at_row, at_row + m));
+                at_row += m;
+            }
+            start = end;
+            continue;
+        }
         auto it = vmap.find(vtk_type);
         if (it == vmap.end())
             throw ReadError("VTK cell type " + std::to_string(vtk_type) +
@@ -39716,6 +40911,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -40001,6 +41197,139 @@ bool cgns_is_reserved_name(const std::string& rName) {
     return !rName.empty() && rName[0] == ' ';
 }
 
+// The two CGNS ElementType_t codes that describe a cell by its FACES rather
+// than by a fixed node count.
+constexpr int kCgnsNgon = 22;   // NGON_n:  a face, given as a node list
+constexpr int kCgnsNface = 23;  // NFACE_n: a cell, given as SIGNED face ids
+
+// meshio++ spells a jagged 2D block `polygon`/`polygon2`/`polygon<N>` and a 3D
+// one `polyhedron<N>`. Both families map to the face-based sections, so the
+// test is on the NAME prefix -- see the note at the writer's validation loop
+// for why `IsRagged()` is the wrong question.
+bool cgns_is_polygon_type(const std::string& rType) {
+    return rType.rfind("polygon", 0) == 0;
+}
+
+bool cgns_is_polyhedron_type(const std::string& rType) {
+    return rType.rfind("polyhedron", 0) == 0;
+}
+
+/// One NGON_n / NFACE_n section, read into flat CSR.
+struct CgnsPolySection {
+    std::string mName;
+    int mCode = 0;
+    std::int64_t mFirst = 0, mLast = 0;
+    std::vector<std::int64_t> mOffsets;  ///< `count + 1` entries into mData
+    std::vector<std::int64_t> mData;     ///< 1-based node ids, or SIGNED face element ids
+    std::size_t Count() const { return mOffsets.empty() ? 0 : mOffsets.size() - 1; }
+};
+
+/**
+ * @brief Read one face-based element section.
+ *
+ * meshio++ writes the CGNS >= 4.0 layout (`ElementStartOffset` beside
+ * `ElementConnectivity`) and reads only that. A CGNS 3.x file instead prefixes
+ * each row with its own length inline, and normalising the two is exactly what
+ * `cg_poly_elements_read` exists for -- so a 3.x file is refused **by name**,
+ * pointing at the optional cgnslib backend, rather than misread.
+ */
+CgnsPolySection cgns_read_poly_section(h5::Hid& rSect, const std::string& rName, int Code) {
+    CgnsPolySection out;
+    out.mName = rName;
+    out.mCode = Code;
+
+    h5::Hid rng = h5::open_group(rSect, "ElementRange");
+    NDArray range = h5::read_dataset(rng, " data");
+    out.mFirst = detail::read_int(range, 0);
+    out.mLast = detail::read_int(range, 1);
+    const std::size_t n = out.mLast >= out.mFirst
+                              ? static_cast<std::size_t>(out.mLast - out.mFirst + 1)
+                              : 0;
+
+    bool has_offset = false;
+    for (const std::string& l : h5::group_links(rSect))
+        if (l == "ElementStartOffset")
+            has_offset = true;
+    if (!has_offset)
+        throw ReadError(detail::format_compat(
+            "CGNS: section '{}' is {} but has no ElementStartOffset, so it uses the CGNS 3.x "
+            "inline-length layout; meshio++'s own reader handles only the 4.0 layout -- rebuild "
+            "with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON to read it",
+            rName, Code == kCgnsNgon ? "NGON_n" : "NFACE_n"));
+
+    h5::Hid og = h5::open_group(rSect, "ElementStartOffset");
+    NDArray off = h5::read_dataset(og, " data");
+    if (off.Size() != n + 1)
+        throw ReadError(detail::format_compat(
+            "CGNS: section '{}' declares {} elements but ElementStartOffset has {} entries "
+            "(expected {})",
+            rName, n, off.Size(), n + 1));
+    out.mOffsets.resize(off.Size());
+    for (std::size_t i = 0; i < off.Size(); ++i)
+        out.mOffsets[i] = detail::read_int(off, i);
+
+    h5::Hid cg = h5::open_group(rSect, "ElementConnectivity");
+    NDArray conn = h5::read_dataset(cg, " data");
+    if (!out.mOffsets.empty() &&
+        out.mOffsets.back() != static_cast<std::int64_t>(conn.Size()))
+        throw ReadError(detail::format_compat(
+            "CGNS: section '{}' has ElementStartOffset ending at {} but ElementConnectivity has "
+            "{} entries",
+            rName, out.mOffsets.back(), conn.Size()));
+    out.mData.resize(conn.Size());
+    for (std::size_t i = 0; i < conn.Size(); ++i)
+        out.mData[i] = detail::read_int(conn, i);
+    return out;
+}
+
+/**
+ * @brief Write one face-based element section.
+ *
+ * CGNS >= 4.0 stores a variable-length section as `ElementStartOffset`
+ * (`nElems + 1` cumulative offsets) beside `ElementConnectivity`; CGNS 3.x
+ * instead prefixed each row with its own length inline. meshio++ writes the
+ * 4.0 layout **only** -- a writer picks its layout, so the version split that
+ * makes `cg_poly_elements_read` worth having on the READ side simply does not
+ * arise here.
+ */
+void cgns_write_poly_section(h5::Hid& rZone, const std::string& rName, int Code,
+                             std::int64_t First, std::int64_t Last,
+                             const std::vector<std::int64_t>& rOffsets,
+                             const std::vector<std::int64_t>& rData, int GzipLevel) {
+    h5::Hid sect = cgns_create_group(rZone, rName);
+    cgns_write_node_attrs(sect, rName, "Elements_t", "I4");
+    {
+        NDArray sdata(DType::Int32, {2});
+        sdata.As<std::int32_t>()[0] = Code;
+        sdata.As<std::int32_t>()[1] = 0;  // ElementSizeBoundary: unsorted
+        h5::write_dataset(sect, " data", sdata);
+    }
+    h5::Hid rng = cgns_create_group(sect, "ElementRange");
+    cgns_write_node_attrs(rng, "ElementRange", "IndexRange_t", cgns_type_code(DType::Int64));
+    {
+        NDArray rdata(DType::Int64, {2});
+        rdata.As<std::int64_t>()[0] = First;
+        rdata.As<std::int64_t>()[1] = Last;
+        h5::write_dataset(rng, " data", rdata);
+    }
+    {
+        NDArray off(DType::Int64, {rOffsets.size()});
+        std::copy(rOffsets.begin(), rOffsets.end(), off.As<std::int64_t>());
+        h5::Hid g = cgns_create_group(sect, "ElementStartOffset");
+        cgns_write_node_attrs(g, "ElementStartOffset", "DataArray_t",
+                              cgns_type_code(DType::Int64));
+        h5::write_dataset(g, " data", off, GzipLevel);
+    }
+    {
+        NDArray conn(DType::Int64, {rData.size()});
+        std::copy(rData.begin(), rData.end(), conn.As<std::int64_t>());
+        h5::Hid g = cgns_create_group(sect, "ElementConnectivity");
+        cgns_write_node_attrs(g, "ElementConnectivity", "DataArray_t",
+                              cgns_type_code(DType::Int64));
+        h5::write_dataset(g, " data", conn, GzipLevel);
+    }
+}
+
 // Whether the root has a child group whose "label" attribute is
 // "CGNSBase_t" -- the structural (not extension/version-based) discriminator
 // between the spec layout and the pre-v9.8.0 legacy one.
@@ -40157,21 +41486,30 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     // Validate every cell type up front (before any file is created) and
     // compute CellDim = the max topological dimension over all blocks.
     int cell_dim = 0;
-    for (const auto cb : rMesh.CellRange()) {
+    // Blocks that go out as NGON_n (2D: their cells ARE faces) and as
+    // NGON_n + NFACE_n (3D: their cells are lists of signed face ids).
+    // Classified by TYPE NAME, not `IsRagged()`: a *uniform* polygon block
+    // (every cell the same node count) stores rectangularly and so is not
+    // structurally ragged, yet still has no fixed-size ElementType_t.
+    std::vector<std::size_t> ngon_blocks, nface_blocks;
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const auto cb = rMesh.Cells(bi);
         const std::string ctype(cb.Type());
-        // polygon/polygon2/polyhedron* are always CGNS-unrepresentable
-        // (MIXED/NGON_n/NFACE_n, not written by meshio++), checked by type
-        // name -- NOT cb.IsRagged() -- because a *uniform* polygon block
-        // (every cell has the same node count) stores rectangularly and so
-        // is not, structurally, ragged; the message must still name the
-        // real reason rather than falling through to the generic
-        // "ordering not yet verified" one. cb.IsRagged() is kept as a
-        // backstop for any other genuinely ragged type.
-        if (ctype == "polygon" || ctype == "polygon2" || ctype.rfind("polyhedron", 0) == 0 ||
-            cb.IsRagged())
+        if (cgns_is_polygon_type(ctype)) {
+            ngon_blocks.push_back(bi);
+            if (cell_dim < 2)
+                cell_dim = 2;
+            continue;
+        }
+        if (cgns_is_polyhedron_type(ctype)) {
+            nface_blocks.push_back(bi);
+            cell_dim = 3;
+            continue;
+        }
+        if (cb.IsRagged())
             throw WriteError(detail::format_compat(
-                "CGNS: cell type '{}' is a ragged block; CGNS has no fixed-size representation "
-                "for it (MIXED/NGON_n/NFACE_n sections are not written by meshio++)",
+                "CGNS: cell type '{}' is a ragged block with no CGNS representation (only "
+                "polygon*/polyhedron* map to NGON_n/NFACE_n)",
                 ctype));
         auto it = cgns_type_table().find(ctype);
         if (it == cgns_type_table().end()) {
@@ -40194,10 +41532,25 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     phys_dim = std::clamp(phys_dim, 1, 3);
     const int cgns_cell_dim = cell_dim > 0 ? cell_dim : phys_dim;
 
+    // NCell counts the zone's cells -- the blocks at CellDim. The face-based
+    // families must be counted explicitly: `cell_type_from_name` does not know
+    // `polygon<N>`/`polyhedron<N>`, so they would report dimension 0 and NCell
+    // would come out too small. That is not cosmetic: cgnscheck sizes its cell
+    // arrays from NCell and then reads NFACE_n, so an undercount corrupts its
+    // heap rather than producing a diagnostic (found exactly that way).
     std::size_t n_cells_at_dim = 0;
-    for (const auto cb : rMesh.CellRange())
-        if (cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == cgns_cell_dim)
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string ctype(cb.Type());
+        int d;
+        if (cgns_is_polygon_type(ctype))
+            d = 2;
+        else if (cgns_is_polyhedron_type(ctype))
+            d = 3;
+        else
+            d = cell_type_dimension(cell_type_from_name(ctype));
+        if (d == cgns_cell_dim)
             n_cells_at_dim += cb.NumCells();
+    }
 
     h5::Hid f = cgns_create_file(rPath);
     cgns_write_attr_str(f, "name", "HDF5 MotherNode", 33);
@@ -40209,7 +41562,15 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     h5::Hid cgver = cgns_create_group(f, "CGNSLibraryVersion");
     cgns_write_node_attrs(cgver, "CGNSLibraryVersion", "CGNSLibraryVersion_t", "R4");
     NDArray ver(DType::Float32, {1});
-    ver.As<float>()[0] = 3.1f;
+    // 4.0 is not cosmetic when a face-based section is present: BELOW it,
+    // NGON_n/NFACE_n use the 3.x layout, where each row is prefixed inline by
+    // its own length instead of being described by ElementStartOffset. cgnslib
+    // switches on this number, so declaring 3.1 while writing 4.0 arrays makes
+    // its reader splice offsets into the connectivity and then corrupt its own
+    // heap -- found with cgnscheck, which aborted rather than diagnosing it.
+    // Files with no such section read identically under either number, so they
+    // keep 3.1 and their bytes are unchanged.
+    ver.As<float>()[0] = (ngon_blocks.empty() && nface_blocks.empty()) ? 3.1f : 4.0f;
     h5::write_dataset(cgver, " data", ver);
 
     h5::Hid base = cgns_create_group(f, "Base");
@@ -40223,7 +41584,8 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
 
     const std::size_t n_points = rMesh.NumPoints();
     const bool wide = n_points > static_cast<std::size_t>(INT32_MAX) ||
-                      n_cells_at_dim > static_cast<std::size_t>(INT32_MAX);
+                      n_cells_at_dim > static_cast<std::size_t>(INT32_MAX) ||
+                      !ngon_blocks.empty() || !nface_blocks.empty();
     const DType zone_dt = wide ? DType::Int64 : DType::Int32;
 
     h5::Hid zone = cgns_create_group(base, "Zone1");
@@ -40271,9 +41633,99 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     // "two sections, one type" restriction.
     std::int64_t next = 1;
     std::unordered_map<std::string, int> type_counts;
+
+    // ---- the face-based sections come first ---------------------------------
+    // NFACE_n references faces by ELEMENT id, so every face must already have
+    // one: the NGON_n section is emitted ahead of the NFACE_n sections that
+    // point into it. Faces are deduplicated across the polyhedral blocks ONLY
+    // (see build_global_faces' block-filtered overload) -- a hexahedron in the
+    // same mesh keeps its own HEXA_8 section, and putting its faces here would
+    // leave NGON_n elements no cell ever references.
+    std::vector<std::int64_t> face_element_id;  // GlobalFaces id -> 1-based element id
+    if (!nface_blocks.empty()) {
+        const detail::GlobalFaces gf = detail::build_global_faces(rMesh, nface_blocks);
+        if (gf.mNumNonManifold > 0)
+            log::warn("CGNS: {} face(s) are shared by three or more cells; NFACE_n still "
+                      "references them correctly, but the mesh is non-manifold",
+                      gf.mNumNonManifold);
+
+        std::vector<std::int64_t> off{0}, data;
+        off.reserve(gf.NumFaces() + 1);
+        for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
+            for (std::size_t j = 0; j < gf.FaceSize(f); ++j)
+                data.push_back(gf.Face(f)[j] + 1);  // CGNS node ids are 1-based
+            off.push_back(static_cast<std::int64_t>(data.size()));
+        }
+        const std::int64_t first = next;
+        const std::int64_t last = next + static_cast<std::int64_t>(gf.NumFaces()) - 1;
+        next = last + 1;
+        face_element_id.resize(gf.NumFaces());
+        for (std::size_t f = 0; f < gf.NumFaces(); ++f)
+            face_element_id[f] = first + static_cast<std::int64_t>(f);
+        cgns_write_poly_section(zone, "NGON_n_1", kCgnsNgon, first, last, off, data, gzip_level);
+
+        // One NFACE_n per polyhedral block, so the reader can rebuild the
+        // blocks rather than one merged one.
+        std::size_t compact = 0;
+        int nface_idx = 0;
+        for (std::size_t bi : nface_blocks) {
+            const std::size_t nc = rMesh.Cells(bi).NumCells();
+            if (nc == 0) {
+                compact += nc;
+                continue;
+            }
+            std::vector<std::int64_t> coff{0}, cdata;
+            for (std::size_t c = compact; c < compact + nc; ++c) {
+                for (std::size_t j = 0; j < gf.NumCellFaces(c); ++j) {
+                    const std::int64_t sid = gf.CellFaces(c)[j];
+                    const std::int64_t fid = face_element_id[static_cast<std::size_t>(
+                        (sid > 0 ? sid : -sid) - 1)];
+                    cdata.push_back(sid > 0 ? fid : -fid);  // sign = "traverse reversed"
+                }
+                coff.push_back(static_cast<std::int64_t>(cdata.size()));
+            }
+            compact += nc;
+            const std::int64_t cf = next;
+            const std::int64_t cl = next + static_cast<std::int64_t>(nc) - 1;
+            next = cl + 1;
+            cgns_write_poly_section(zone, detail::format_compat("NFACE_n_{}", ++nface_idx),
+                                    kCgnsNface, cf, cl, coff, cdata, gzip_level);
+        }
+    }
+    // A 2D jagged block is itself a face list, so it needs no dedup at all.
+    {
+        int idx = nface_blocks.empty() ? 0 : 1;
+        for (std::size_t bi : ngon_blocks) {
+            const auto cb = rMesh.Cells(bi);
+            const std::size_t nc = cb.NumCells();
+            if (nc == 0)
+                continue;
+            std::vector<std::int64_t> off{0}, data;
+            for (std::size_t i = 0; i < nc; ++i) {
+                if (cb.IsRagged()) {
+                    const std::int64_t* row = cb.Row(i);
+                    for (std::size_t j = 0; j < cb.RowSize(i); ++j)
+                        data.push_back(row[j] + 1);
+                } else {
+                    const std::size_t npc = cb.NodesPerCell();
+                    for (std::size_t j = 0; j < npc; ++j)
+                        data.push_back(detail::read_int(cb.Conn(), i * npc + j) + 1);
+                }
+                off.push_back(static_cast<std::int64_t>(data.size()));
+            }
+            const std::int64_t first = next;
+            const std::int64_t last = next + static_cast<std::int64_t>(nc) - 1;
+            next = last + 1;
+            cgns_write_poly_section(zone, detail::format_compat("NGON_n_{}", ++idx), kCgnsNgon,
+                                    first, last, off, data, gzip_level);
+        }
+    }
+
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
         const auto cb = rMesh.Cells(k);
         const std::string ctype(cb.Type());
+        if (cgns_is_polygon_type(ctype) || cgns_is_polyhedron_type(ctype))
+            continue;  // already emitted above as NGON_n / NFACE_n
         const CgnsTypeInfo& info = cgns_type_table().at(ctype);
         const std::size_t npc = cb.NodesPerCell();
         const std::size_t nc = cb.NumCells();
@@ -40423,6 +41875,23 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
 }
 
 Mesh read_cgns(const std::string& rPath) {
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    // With cgnslib built, IT is the reader: the input is not ours, and the MLL
+    // reaches things this raw-HDF5 path fundamentally cannot -- the ADF
+    // container, links, multiple bases, and NGON_n/NFACE_n polyhedral sections.
+    //
+    // The pre-v9.8.0 legacy layout has no ADF node attributes at all, so the
+    // MLL rejects it; that ONE case falls through to the hand-rolled path
+    // below. This is a narrow, specific fallback and not a blanket catch: a
+    // genuine MLL error still surfaces, or a corrupt file would be silently
+    // re-read by a reader that cannot diagnose it either.
+    try {
+        return read_cgns_mll(rPath);
+    } catch (const ReadError&) {
+        // fall through to the structural probe, which either reads the legacy
+        // layout or reports its own (more specific) error
+    }
+#endif
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -40542,6 +42011,36 @@ Mesh read_cgns(const std::string& rPath) {
         std::sort(sects.begin(), sects.end(),
                   [](const Sect& a, const Sect& b) { return a.mFirst < b.mFirst; });
 
+        // --- pre-pass: the face-based (NGON_n / NFACE_n) sections ------------
+        // Read ahead of the main loop for two reasons. An NFACE_n may legally
+        // precede the NGON_n it points into, and -- the load-bearing one -- an
+        // NGON_n becomes a `polygon` cell block ONLY when no NFACE_n references
+        // it: otherwise it is the shared face pool, not a set of cells, and
+        // emitting it as one would double every polyhedron's geometry.
+        std::map<std::int64_t, CgnsPolySection> poly;  // keyed by ElementRange start
+        bool any_nface = false;
+        for (const Sect& sec : sects) {
+            h5::Hid s = h5::open_group(zone, sec.mName);
+            NDArray sdata = h5::read_dataset(s, " data");
+            if (sdata.Size() < 1)
+                continue;
+            const int code = static_cast<int>(detail::read_int(sdata, 0));
+            if (code != kCgnsNgon && code != kCgnsNface)
+                continue;
+            poly.emplace(sec.mFirst, cgns_read_poly_section(s, sec.mName, code));
+            any_nface = any_nface || code == kCgnsNface;
+        }
+        // Which NGON element ids are referenced by some NFACE_n cell.
+        std::set<std::int64_t> ngon_used;
+        if (any_nface) {
+            for (const auto& kv : poly) {
+                if (kv.second.mCode != kCgnsNface)
+                    continue;
+                for (std::int64_t v : kv.second.mData)
+                    ngon_used.insert(v < 0 ? -v : v);
+            }
+        }
+
         for (const Sect& sec : sects) {
             h5::Hid s = h5::open_group(zone, sec.mName);
             NDArray sdata = h5::read_dataset(s, " data");
@@ -40550,12 +42049,102 @@ Mesh read_cgns(const std::string& rPath) {
                     "CGNS: section '{}' has a malformed Elements_t descriptor", sec.mName));
             const int code = static_cast<int>(detail::read_int(sdata, 0));
 
-            if (code == 20 || code == 22 || code == 23) {
+            if (code == kCgnsNgon || code == kCgnsNface) {
+                const CgnsPolySection& ps = poly.at(sec.mFirst);
+                const std::size_t nc = ps.Count();
+                if (nc == 0)
+                    continue;
+
+                if (code == kCgnsNgon) {
+                    // A face pool referenced by some NFACE_n is not a set of
+                    // cells; emitting it as one would duplicate every
+                    // polyhedron's geometry.
+                    bool referenced = false;
+                    for (std::int64_t e = ps.mFirst; e <= ps.mLast && !referenced; ++e)
+                        referenced = ngon_used.count(e) != 0;
+                    if (referenced)
+                        continue;
+
+                    std::vector<std::vector<std::int64_t>> rows(nc);
+                    for (std::size_t i = 0; i < nc; ++i) {
+                        const std::size_t lo = static_cast<std::size_t>(ps.mOffsets[i]);
+                        const std::size_t hi = static_cast<std::size_t>(ps.mOffsets[i + 1]);
+                        rows[i].reserve(hi - lo);
+                        for (std::size_t j = lo; j < hi; ++j)
+                            rows[i].push_back(ps.mData[j] - 1 + point_offset);
+                    }
+                    // Grouped by node count, the convention the OpenFOAM and
+                    // EnSight readers already use.
+                    std::map<std::size_t, std::vector<std::vector<std::int64_t>>> by_n;
+                    for (auto& r : rows)
+                        by_n[r.size()].push_back(std::move(r));
+                    for (auto& kv : by_n) {
+                        const std::size_t cnt = kv.second.size();
+                        mesh.AddPolygonBlock("polygon" + std::to_string(kv.first),
+                                             std::move(kv.second));
+                        zone_block_cells.push_back(cnt);
+                    }
+                    continue;
+                }
+
+                // NFACE_n: dereference each signed face id into its node ring,
+                // reversing where the sign says so.
+                std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
+                for (std::size_t i = 0; i < nc; ++i) {
+                    const std::size_t lo = static_cast<std::size_t>(ps.mOffsets[i]);
+                    const std::size_t hi = static_cast<std::size_t>(ps.mOffsets[i + 1]);
+                    for (std::size_t j = lo; j < hi; ++j) {
+                        const std::int64_t sid = ps.mData[j];
+                        const std::int64_t fid = sid < 0 ? -sid : sid;
+                        // Locate the NGON section holding element id `fid`.
+                        const CgnsPolySection* src = nullptr;
+                        for (const auto& kv : poly) {
+                            if (kv.second.mCode == kCgnsNgon && fid >= kv.second.mFirst &&
+                                fid <= kv.second.mLast) {
+                                src = &kv.second;
+                                break;
+                            }
+                        }
+                        if (!src)
+                            throw ReadError(detail::format_compat(
+                                "CGNS: section '{}' references face element {}, which no NGON_n "
+                                "section defines",
+                                sec.mName, fid));
+                        const std::size_t fi = static_cast<std::size_t>(fid - src->mFirst);
+                        const std::size_t flo = static_cast<std::size_t>(src->mOffsets[fi]);
+                        const std::size_t fhi = static_cast<std::size_t>(src->mOffsets[fi + 1]);
+                        std::vector<std::int64_t> ring;
+                        ring.reserve(fhi - flo);
+                        for (std::size_t k = flo; k < fhi; ++k)
+                            ring.push_back(src->mData[k] - 1 + point_offset);
+                        if (sid < 0)
+                            std::reverse(ring.begin(), ring.end());
+                        cells[i].push_back(std::move(ring));
+                    }
+                }
+                // Grouped by DISTINCT node count -> polyhedron<N>, matching the
+                // OpenFOAM/EnSight/cgnslib readers.
+                std::map<std::size_t, std::vector<std::vector<std::vector<std::int64_t>>>> by_n;
+                for (auto& c : cells) {
+                    std::set<std::int64_t> uniq;
+                    for (const auto& f : c)
+                        uniq.insert(f.begin(), f.end());
+                    by_n[uniq.size()].push_back(std::move(c));
+                }
+                for (auto& kv : by_n) {
+                    const std::size_t cnt = kv.second.size();
+                    mesh.AddPolyhedronBlock("polyhedron" + std::to_string(kv.first),
+                                            std::move(kv.second));
+                    zone_block_cells.push_back(cnt);
+                }
+                continue;
+            }
+            if (code == 20) {
                 const auto& names = cgns_code_to_name();
                 auto nit = names.find(code);
                 throw ReadError(detail::format_compat(
-                    "CGNS: element section '{}' has ElementType {} ({}); MIXED, NGON_n and "
-                    "NFACE_n sections are not supported.",
+                    "CGNS: element section '{}' has ElementType {} ({}); MIXED sections are not "
+                    "supported.",
                     sec.mName, nit != names.end() ? nit->second : "?", code));
             }
             const auto& code_map = cgns_code_to_meshio();
@@ -40715,6 +42304,563 @@ Mesh read_cgns(const std::string& rPath) {
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/formats/cgns.cpp =====
+// ===== begin src/cpp/src/formats/cgns_mll.cpp =====
+
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+
+// System includes
+#include <algorithm>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
+
+// Project includes
+
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+#include <cgnslib.h>
+#endif
+
+namespace meshioplusplus {
+
+bool cgns_has_cgnslib() {
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    return true;
+#else
+    return false;
+#endif
+}
+
+#ifndef MESHIOPLUSPLUS_HAS_CGNSLIB
+
+Mesh read_cgns_mll(const std::string& rPath) {
+    // Always present and throwing by name -- the partition_kahip_parts
+    // contract. A link error would break the Python-fallback contract, and a
+    // silent downgrade to the raw-HDF5 reader would answer a question the
+    // caller did not ask (that reader cannot open an ADF file at all).
+    throw ReadError(detail::format_compat(
+        "meshio++: cannot read '{}' through cgnslib: this build has no cgnslib support "
+        "(rebuild with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON and CGNS_ROOT pointing at an install)",
+        rPath));
+}
+
+#else
+
+namespace {
+
+/// Raise with cgnslib's own error text, which is the only useful diagnostic it
+/// gives -- the return code alone says nothing about what was wrong.
+[[noreturn]] void cgns_mll_fail(const std::string& rWhat, const std::string& rPath) {
+    throw ReadError(detail::format_compat("meshio++: CGNS (cgnslib): {} while reading '{}': {}",
+                                          rWhat, rPath, cg_get_error()));
+}
+
+/// RAII for the library's integer file handle: every early return below would
+/// otherwise leak it, and cgnslib keeps global state per open file.
+class CgnsFile {
+public:
+    CgnsFile(const std::string& rPath) : mPath(rPath) {
+        if (cg_open(rPath.c_str(), CG_MODE_READ, &mFn) != CG_OK)
+            cgns_mll_fail("cg_open failed", rPath);
+    }
+    ~CgnsFile() {
+        if (mFn >= 0)
+            cg_close(mFn);
+    }
+    CgnsFile(const CgnsFile&) = delete;
+    CgnsFile& operator=(const CgnsFile&) = delete;
+    int Fn() const { return mFn; }
+
+private:
+    std::string mPath;
+    int mFn = -1;
+};
+
+/// meshio++ name for a fixed-size CGNS ElementType_t, or empty when the type is
+/// one this reader deliberately does not claim (see the header).
+std::string cgns_mll_meshio_name(CGNS_ENUMT(ElementType_t) type) {
+    switch (type) {
+        case CGNS_ENUMV(NODE):
+            return "vertex";
+        case CGNS_ENUMV(BAR_2):
+            return "line";
+        case CGNS_ENUMV(BAR_3):
+            return "line3";
+        case CGNS_ENUMV(TRI_3):
+            return "triangle";
+        case CGNS_ENUMV(TRI_6):
+            return "triangle6";
+        case CGNS_ENUMV(QUAD_4):
+            return "quad";
+        case CGNS_ENUMV(QUAD_8):
+            return "quad8";
+        case CGNS_ENUMV(QUAD_9):
+            return "quad9";
+        case CGNS_ENUMV(TETRA_4):
+            return "tetra";
+        case CGNS_ENUMV(TETRA_10):
+            return "tetra10";
+        case CGNS_ENUMV(PYRA_5):
+            return "pyramid";
+        case CGNS_ENUMV(PYRA_13):
+            return "pyramid13";
+        case CGNS_ENUMV(PYRA_14):
+            return "pyramid14";
+        case CGNS_ENUMV(PENTA_6):
+            return "wedge";
+        case CGNS_ENUMV(PENTA_15):
+            return "wedge15";
+        case CGNS_ENUMV(PENTA_18):
+            return "wedge18";
+        case CGNS_ENUMV(HEXA_8):
+            return "hexahedron";
+        case CGNS_ENUMV(HEXA_20):
+            return "hexahedron20";
+        case CGNS_ENUMV(HEXA_27):
+            return "hexahedron27";
+        default:
+            return std::string();
+    }
+}
+
+/// The SIDS<->meshio node permutation for the types whose orderings differ.
+/// Self-inverse, so one table serves both directions -- the same tables
+/// cgns.cpp's cgns_type_table() carries, restated here rather than exported
+/// because that one is file-private and its shape (name + code + perm) does not
+/// fit a lookup keyed on the MLL's enum.
+const std::vector<int>* cgns_mll_perm(const std::string& rName) {
+    static const std::map<std::string, std::vector<int> > perms = {
+        {"wedge15", {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}},
+        {"hexahedron20", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"hexahedron27", {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 16, 17,
+                          18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26}},
+    };
+    auto it = perms.find(rName);
+    return it == perms.end() ? nullptr : &it->second;
+}
+
+/// One section's raw description, gathered before anything is decoded.
+struct MllSection {
+    int mIndex = 0;
+    std::string mName;
+    CGNS_ENUMT(ElementType_t) mType = CGNS_ENUMV(ElementTypeNull);
+    cgsize_t mStart = 0;
+    cgsize_t mEnd = 0;
+};
+
+/// Read one fixed-size section into a rectangular block.
+void cgns_mll_read_fixed(int fn, int B, int Z, const MllSection& rSec, const std::string& rMeshio,
+                         const std::string& rPath, Mesh& rMesh) {
+    const int npc = [&] {
+        int n = 0;
+        cg_npe(rSec.mType, &n);
+        return n;
+    }();
+    if (npc <= 0)
+        cgns_mll_fail("cg_npe returned no node count for section '" + rSec.mName + "'", rPath);
+
+    const std::size_t ncells = static_cast<std::size_t>(rSec.mEnd - rSec.mStart + 1);
+    std::vector<cgsize_t> raw(ncells * static_cast<std::size_t>(npc));
+    if (cg_elements_read(fn, B, Z, rSec.mIndex, raw.data(), nullptr) != CG_OK)
+        cgns_mll_fail("cg_elements_read failed for section '" + rSec.mName + "'", rPath);
+
+    NDArray conn = NDArray::Uninit(DType::Int64, {ncells, static_cast<std::size_t>(npc)});
+    std::int64_t* dst = conn.As<std::int64_t>();
+    const std::vector<int>* perm = cgns_mll_perm(rMeshio);
+    for (std::size_t c = 0; c < ncells; ++c) {
+        for (int k = 0; k < npc; ++k) {
+            // CGNS node ids are 1-based; the permutation is self-inverse, so
+            // the same scatter serves read and write.
+            const std::int64_t v =
+                static_cast<std::int64_t>(raw[c * static_cast<std::size_t>(npc) + k]) - 1;
+            dst[c * static_cast<std::size_t>(npc) + (perm ? (*perm)[k] : k)] = v;
+        }
+    }
+    rMesh.AddCellBlock(rMeshio, std::move(conn));
+}
+
+/// A face list decoded from an NGON_n section: CSR over 0-based node ids.
+struct MllFaces {
+    std::vector<std::int64_t> mNodes;
+    std::vector<std::int64_t> mOffsets;  // numFaces + 1
+    cgsize_t mFirstId = 0;               // the section's ElementRange start
+    std::size_t Count() const { return mOffsets.empty() ? 0 : mOffsets.size() - 1; }
+};
+
+MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
+                            const std::string& rPath) {
+    const std::size_t nfaces = static_cast<std::size_t>(rSec.mEnd - rSec.mStart + 1);
+    cgsize_t data_size = 0;
+    if (cg_ElementDataSize(fn, B, Z, rSec.mIndex, &data_size) != CG_OK)
+        cgns_mll_fail("cg_ElementDataSize failed for NGON_n section '" + rSec.mName + "'", rPath);
+
+    std::vector<cgsize_t> elems(static_cast<std::size_t>(data_size));
+    std::vector<cgsize_t> offsets(nfaces + 1, 0);
+    // cg_poly_elements_read is what makes this worth doing at all: it presents
+    // both the CGNS 3.x layout (each face prefixed by its node count) and the
+    // 4.0 one (a separate ElementStartOffset array) through this one shape.
+    if (cg_poly_elements_read(fn, B, Z, rSec.mIndex, elems.data(), offsets.data(), nullptr) !=
+        CG_OK)
+        cgns_mll_fail("cg_poly_elements_read failed for NGON_n section '" + rSec.mName + "'",
+                      rPath);
+
+    MllFaces out;
+    out.mFirstId = rSec.mStart;
+    out.mOffsets.reserve(nfaces + 1);
+    out.mNodes.reserve(static_cast<std::size_t>(data_size));
+    out.mOffsets.push_back(0);
+    for (std::size_t f = 0; f < nfaces; ++f) {
+        for (cgsize_t i = offsets[f]; i < offsets[f + 1]; ++i)
+            out.mNodes.push_back(static_cast<std::int64_t>(elems[static_cast<std::size_t>(i)]) - 1);
+        out.mOffsets.push_back(static_cast<std::int64_t>(out.mNodes.size()));
+    }
+    return out;
+}
+
+/// Rejoin `<base>_0.._k-1` siblings into one k-component array, mirroring
+/// cgns.cpp's cgns_read_solution. Names with no such contiguous run stay scalar.
+void cgns_mll_group_components(const std::vector<std::string>& rNames,
+                               std::vector<std::string>& rBases,
+                               std::vector<std::vector<std::size_t> >& rGroups) {
+    std::vector<char> taken(rNames.size(), 0);
+    for (std::size_t i = 0; i < rNames.size(); ++i) {
+        if (taken[i])
+            continue;
+        const std::string& n = rNames[i];
+        const std::size_t us = n.rfind('_');
+        bool grouped = false;
+        if (us != std::string::npos && us + 1 < n.size() &&
+            n.find_first_not_of("0123456789", us + 1) == std::string::npos &&
+            n.substr(us + 1) == "0") {
+            const std::string base = n.substr(0, us);
+            std::vector<std::size_t> run{i};
+            for (std::size_t k = 1;; ++k) {
+                const std::string want = base + "_" + std::to_string(k);
+                std::size_t found = rNames.size();
+                for (std::size_t j = 0; j < rNames.size(); ++j)
+                    if (!taken[j] && j != i && rNames[j] == want)
+                        found = j;
+                if (found == rNames.size())
+                    break;
+                run.push_back(found);
+            }
+            if (run.size() > 1) {
+                for (std::size_t j : run)
+                    taken[j] = 1;
+                rBases.push_back(base);
+                rGroups.push_back(std::move(run));
+                grouped = true;
+            }
+        }
+        if (!grouped) {
+            taken[i] = 1;
+            rBases.push_back(n);
+            rGroups.push_back({i});
+        }
+    }
+}
+
+/// Read every FlowSolution_t into point_data / cell_data.
+void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& rMesh,
+                             const std::string& rPath) {
+    int nsols = 0;
+    if (cg_nsols(fn, B, Z, &nsols) != CG_OK || nsols < 1)
+        return;
+
+    // cell_data is per-BLOCK in meshio++ but per-ZONE in CGNS, so a zone-wide
+    // array is split back across the blocks in ElementRange order -- the same
+    // rule cgns.cpp applies, and the reason a mixed-dimension mesh cannot carry
+    // it at all.
+    std::vector<std::size_t> block_cells;
+    for (const auto cb : rMesh.CellRange())
+        block_cells.push_back(cb.NumCells());
+    std::size_t total_cells = 0;
+    for (std::size_t n : block_cells)
+        total_cells += n;
+
+    for (int S = 1; S <= nsols; ++S) {
+        char sol_name[33] = {0};
+        CGNS_ENUMT(GridLocation_t) loc = CGNS_ENUMV(GridLocationNull);
+        if (cg_sol_info(fn, B, Z, S, sol_name, &loc) != CG_OK)
+            cgns_mll_fail("cg_sol_info failed", rPath);
+        if (loc != CGNS_ENUMV(Vertex) && loc != CGNS_ENUMV(CellCenter)) {
+            log::warn(
+                "CGNS (cgnslib): FlowSolution '{}' has GridLocation {} (only Vertex and "
+                "CellCenter are mapped); skipping it",
+                sol_name, static_cast<int>(loc));
+            continue;
+        }
+        const bool vertex = loc == CGNS_ENUMV(Vertex);
+        const std::size_t rows = vertex ? NumPoints : total_cells;
+        if (rows == 0)
+            continue;
+
+        int nfields = 0;
+        if (cg_nfields(fn, B, Z, S, &nfields) != CG_OK)
+            cgns_mll_fail("cg_nfields failed", rPath);
+        std::vector<std::string> names;
+        for (int F = 1; F <= nfields; ++F) {
+            CGNS_ENUMT(DataType_t) dt = CGNS_ENUMV(DataTypeNull);
+            char fname[33] = {0};
+            if (cg_field_info(fn, B, Z, S, F, &dt, fname) != CG_OK)
+                cgns_mll_fail("cg_field_info failed", rPath);
+            names.emplace_back(fname);
+        }
+
+        std::vector<std::string> bases;
+        std::vector<std::vector<std::size_t> > groups;
+        cgns_mll_group_components(names, bases, groups);
+
+        const cgsize_t rmin = 1;
+        const cgsize_t rmax = static_cast<cgsize_t>(rows);
+        for (std::size_t g = 0; g < groups.size(); ++g) {
+            const std::size_t ncomp = groups[g].size();
+            std::vector<double> buf(rows);
+            NDArray arr = ncomp == 1 ? NDArray::Uninit(DType::Float64, {rows})
+                                     : NDArray::Uninit(DType::Float64, {rows, ncomp});
+            double* dst = arr.As<double>();
+            for (std::size_t k = 0; k < ncomp; ++k) {
+                if (cg_field_read(fn, B, Z, S, names[groups[g][k]].c_str(), CGNS_ENUMV(RealDouble),
+                                  &rmin, &rmax, buf.data()) != CG_OK)
+                    cgns_mll_fail("cg_field_read failed for '" + names[groups[g][k]] + "'", rPath);
+                for (std::size_t r = 0; r < rows; ++r)
+                    dst[r * ncomp + k] = buf[r];
+            }
+            if (vertex) {
+                rMesh.AddPointData(bases[g], std::move(arr));
+            } else {
+                std::vector<NDArray> blocks;
+                std::size_t at = 0;
+                for (std::size_t n : block_cells) {
+                    NDArray b = ncomp == 1 ? NDArray::Uninit(DType::Float64, {n})
+                                           : NDArray::Uninit(DType::Float64, {n, ncomp});
+                    std::memcpy(b.Data(), arr.As<double>() + at * ncomp,
+                                n * ncomp * sizeof(double));
+                    blocks.push_back(std::move(b));
+                    at += n;
+                }
+                rMesh.AddCellData(bases[g], std::move(blocks));
+            }
+        }
+    }
+}
+
+}  // namespace
+
+Mesh read_cgns_mll(const std::string& rPath) {
+    CgnsFile file(rPath);
+    const int fn = file.Fn();
+
+    int nbases = 0;
+    if (cg_nbases(fn, &nbases) != CG_OK || nbases < 1)
+        cgns_mll_fail("no CGNSBase_t found", rPath);
+    if (nbases > 1)
+        log::warn("CGNS (cgnslib): '{}' has {} bases; reading the first only", rPath, nbases);
+    const int B = 1;
+
+    char base_name[33] = {0};
+    int cell_dim = 0, phys_dim = 0;
+    if (cg_base_read(fn, B, base_name, &cell_dim, &phys_dim) != CG_OK)
+        cgns_mll_fail("cg_base_read failed", rPath);
+
+    int nzones = 0;
+    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
+        cgns_mll_fail("no Zone_t found", rPath);
+    if (nzones > 1)
+        log::warn("CGNS (cgnslib): '{}' has {} zones; reading the first only", rPath, nzones);
+    const int Z = 1;
+
+    CGNS_ENUMT(ZoneType_t) ztype = CGNS_ENUMV(ZoneTypeNull);
+    if (cg_zone_type(fn, B, Z, &ztype) != CG_OK)
+        cgns_mll_fail("cg_zone_type failed", rPath);
+    if (ztype != CGNS_ENUMV(Unstructured))
+        throw ReadError(detail::format_compat(
+            "meshio++: CGNS (cgnslib): '{}' zone 1 is Structured; meshio++ reads unstructured "
+            "zones only",
+            rPath));
+
+    char zone_name[33] = {0};
+    cgsize_t zsize[9] = {0};
+    if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
+        cgns_mll_fail("cg_zone_read failed", rPath);
+    const std::size_t npoints = static_cast<std::size_t>(zsize[0]);
+
+    // --- coordinates -------------------------------------------------------
+    int ncoords = 0;
+    if (cg_ncoords(fn, B, Z, &ncoords) != CG_OK)
+        cgns_mll_fail("cg_ncoords failed", rPath);
+    const std::size_t dim = static_cast<std::size_t>(std::max(2, std::min(3, ncoords)));
+
+    Mesh mesh;
+    {
+        NDArray points = NDArray::Uninit(DType::Float64, {npoints, dim});
+        double* dst = points.As<double>();
+        std::vector<double> buf(npoints);
+        const cgsize_t rmin = 1;
+        const cgsize_t rmax = static_cast<cgsize_t>(npoints);
+        static const char* kNames[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
+        for (std::size_t d = 0; d < dim; ++d) {
+            if (cg_coord_read(fn, B, Z, kNames[d], CGNS_ENUMV(RealDouble), &rmin, &rmax,
+                              buf.data()) != CG_OK)
+                cgns_mll_fail(std::string("cg_coord_read failed for ") + kNames[d], rPath);
+            for (std::size_t i = 0; i < npoints; ++i)
+                dst[i * dim + d] = buf[i];
+        }
+        mesh.AssignPoints(std::move(points));
+    }
+
+    // --- sections ----------------------------------------------------------
+    int nsections = 0;
+    if (cg_nsections(fn, B, Z, &nsections) != CG_OK)
+        cgns_mll_fail("cg_nsections failed", rPath);
+
+    std::vector<MllSection> secs;
+    for (int S = 1; S <= nsections; ++S) {
+        MllSection sec;
+        sec.mIndex = S;
+        char name[33] = {0};
+        int nbndry = 0, parent_flag = 0;
+        if (cg_section_read(fn, B, Z, S, name, &sec.mType, &sec.mStart, &sec.mEnd, &nbndry,
+                            &parent_flag) != CG_OK)
+            cgns_mll_fail("cg_section_read failed", rPath);
+        sec.mName = name;
+        secs.push_back(std::move(sec));
+    }
+    // Ascending ElementRange, which reproduces a writer's own block order.
+    std::sort(secs.begin(), secs.end(),
+              [](const MllSection& a, const MllSection& b) { return a.mStart < b.mStart; });
+
+    // NGON_n/NFACE_n are read together: NFACE_n's cells reference face ids that
+    // only NGON_n can resolve, so both are gathered before either is emitted.
+    std::vector<MllFaces> ngons;
+    std::vector<const MllSection*> nfaces;
+    for (const MllSection& sec : secs) {
+        if (sec.mType == CGNS_ENUMV(NGON_n)) {
+            ngons.push_back(cgns_mll_read_ngon(fn, B, Z, sec, rPath));
+            continue;
+        }
+        if (sec.mType == CGNS_ENUMV(NFACE_n)) {
+            nfaces.push_back(&sec);
+            continue;
+        }
+        if (sec.mType == CGNS_ENUMV(MIXED))
+            throw ReadError(detail::format_compat(
+                "meshio++: CGNS (cgnslib): element section '{}' has ElementType MIXED (20); "
+                "MIXED sections are not supported.",
+                sec.mName));
+        const std::string meshio = cgns_mll_meshio_name(sec.mType);
+        if (meshio.empty())
+            throw ReadError(detail::format_compat(
+                "meshio++: CGNS (cgnslib): element section '{}' has ElementType {}, whose node "
+                "ordering meshio++ has not verified (the cubic/quartic Lagrange family); "
+                "refusing to guess.",
+                sec.mName, static_cast<int>(sec.mType)));
+        cgns_mll_read_fixed(fn, B, Z, sec, meshio, rPath, mesh);
+    }
+
+    if (!ngons.empty() && nfaces.empty()) {
+        // Faces with no cells referencing them: a face mesh, not a volume one.
+        for (const MllFaces& faces : ngons) {
+            std::vector<std::vector<std::int64_t> > rows(faces.Count());
+            for (std::size_t f = 0; f < faces.Count(); ++f)
+                rows[f].assign(faces.mNodes.begin() + faces.mOffsets[f],
+                               faces.mNodes.begin() + faces.mOffsets[f + 1]);
+            if (!rows.empty())
+                mesh.AddPolygonBlock("polygon", std::move(rows));
+        }
+    } else if (!nfaces.empty()) {
+        if (ngons.empty())
+            throw ReadError(detail::format_compat(
+                "meshio++: CGNS (cgnslib): '{}' has an NFACE_n section but no NGON_n to resolve "
+                "its face ids against",
+                rPath));
+        // One flat face table across every NGON_n section, indexed by the CGNS
+        // element id the NFACE_n entries carry.
+        std::map<cgsize_t, std::pair<const MllFaces*, std::size_t> > by_id;
+        for (const MllFaces& faces : ngons)
+            for (std::size_t f = 0; f < faces.Count(); ++f)
+                by_id.emplace(faces.mFirstId + static_cast<cgsize_t>(f), std::make_pair(&faces, f));
+
+        for (const MllSection* sec : nfaces) {
+            const std::size_t ncells = static_cast<std::size_t>(sec->mEnd - sec->mStart + 1);
+            cgsize_t data_size = 0;
+            if (cg_ElementDataSize(fn, B, Z, sec->mIndex, &data_size) != CG_OK)
+                cgns_mll_fail("cg_ElementDataSize failed for NFACE_n '" + sec->mName + "'", rPath);
+            std::vector<cgsize_t> elems(static_cast<std::size_t>(data_size));
+            std::vector<cgsize_t> offsets(ncells + 1, 0);
+            if (cg_poly_elements_read(fn, B, Z, sec->mIndex, elems.data(), offsets.data(),
+                                      nullptr) != CG_OK)
+                cgns_mll_fail("cg_poly_elements_read failed for NFACE_n '" + sec->mName + "'",
+                              rPath);
+
+            // Group by unique node count into polyhedron<N>, the convention the
+            // OpenFOAM and EnSight readers already use.
+            std::vector<std::vector<std::vector<std::int64_t> > > cells(ncells);
+            std::vector<std::size_t> node_counts(ncells, 0);
+            for (std::size_t c = 0; c < ncells; ++c) {
+                std::vector<std::int64_t> uniq;
+                for (cgsize_t i = offsets[c]; i < offsets[c + 1]; ++i) {
+                    const cgsize_t signed_id = elems[static_cast<std::size_t>(i)];
+                    const cgsize_t id = signed_id < 0 ? -signed_id : signed_id;
+                    auto it = by_id.find(id);
+                    if (it == by_id.end())
+                        throw ReadError(detail::format_compat(
+                            "meshio++: CGNS (cgnslib): NFACE_n section '{}' references face id "
+                            "{}, which no NGON_n section defines",
+                            sec->mName, static_cast<long long>(id)));
+                    const MllFaces& faces = *it->second.first;
+                    const std::size_t f = it->second.second;
+                    std::vector<std::int64_t> ring(faces.mNodes.begin() + faces.mOffsets[f],
+                                                   faces.mNodes.begin() + faces.mOffsets[f + 1]);
+                    // A negative id means "this face, traversed the other way"
+                    // -- CGNS's way of orienting a shared face outward from
+                    // each of the two cells that use it.
+                    if (signed_id < 0)
+                        std::reverse(ring.begin(), ring.end());
+                    uniq.insert(uniq.end(), ring.begin(), ring.end());
+                    cells[c].push_back(std::move(ring));
+                }
+                std::sort(uniq.begin(), uniq.end());
+                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                node_counts[c] = uniq.size();
+            }
+
+            std::vector<std::size_t> order;
+            std::map<std::size_t, std::vector<std::size_t> > groups;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                if (groups.find(node_counts[c]) == groups.end())
+                    order.push_back(node_counts[c]);
+                groups[node_counts[c]].push_back(c);
+            }
+            for (std::size_t n : order) {
+                std::vector<std::vector<std::vector<std::int64_t> > > group;
+                group.reserve(groups[n].size());
+                for (std::size_t c : groups[n])
+                    group.push_back(std::move(cells[c]));
+                mesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
+            }
+        }
+    }
+
+    // --- FlowSolution_t ----------------------------------------------------
+    //
+    // CGNS has no component concept, so a k-component meshio++ array is stored
+    // as k siblings suffixed `_0.._k-1` and rejoined here from a CONTIGUOUS
+    // run starting at 0 -- exactly the convention cgns.cpp writes and
+    // documents. Anything else (a lone `foo_7`, a gap) stays a scalar under its
+    // literal name; guessing would invent components.
+    cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath);
+
+    return mesh;
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_CGNSLIB
+
+}  // namespace meshioplusplus
+
+#endif  // MESHIOPLUSPLUS_HAS_HDF5
+// ===== end src/cpp/src/formats/cgns_mll.cpp =====
 // ===== begin src/cpp/src/formats/dex.cpp =====
 #include <fstream>
 #include <sstream>
@@ -41827,11 +43973,27 @@ void ensight_append_i32(std::vector<char>& rOut, std::int64_t v) {
 }
 
 // Validate the mesh and return one keyword entry per cell block.
+// The two ragged keywords have no fixed node count, so they cannot live in
+// ensight_type_table() (which is keyed on a meshio type name and carries one).
+// `mNumNodes < 0` is the marker the geo writers branch on.
+const EnsightTypeEntry kEnsightNsided = {"nsided", "", -1};
+const EnsightTypeEntry kEnsightNfaced = {"nfaced", "", -2};
+
 std::vector<const EnsightTypeEntry*> ensight_writable_blocks(const Mesh& rMesh) {
     std::vector<const EnsightTypeEntry*> entries;
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged())
-            throw WriteError("EnSight: writing nsided/nfaced (ragged) blocks is not supported");
+        // Ragged blocks are EnSight's own `nsided` / `nfaced`, whose wire
+        // format is the exact inverse of what the reader already parses: a
+        // per-cell count run, then (for nfaced) a per-face size run, then the
+        // node ids. No orientation contract, no global face table.
+        if (cb.IsPolyhedron()) {
+            entries.push_back(&kEnsightNfaced);
+            continue;
+        }
+        if (cb.IsRagged()) {
+            entries.push_back(&kEnsightNsided);
+            continue;
+        }
         const EnsightTypeEntry* entry = ensight_entry_from_meshio(cb.Type());
         if (entry == nullptr)
             throw WriteError("EnSight: cell type '" + cb.Type() + "' has no EnSight keyword");
@@ -41881,6 +44043,47 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
         out += "\n";
         std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(ne));
         out += buf;
+        if (entry->mNumNodes == -2) {
+            // nfaced: faces-per-cell, then nodes-per-face, then the node ids --
+            // the three runs read_faces consumes, in the same order.
+            for (std::size_t r = 0; r < ne; ++r) {
+                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(cb.NumFaces(r)));
+                out += buf;
+            }
+            for (std::size_t r = 0; r < ne; ++r)
+                for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                    std::snprintf(buf, sizeof(buf), "%10lld\n",
+                                  static_cast<long long>(cb.Face(r, f).second));
+                    out += buf;
+                }
+            for (std::size_t r = 0; r < ne; ++r)
+                for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                    const auto face = cb.Face(r, f);
+                    for (std::size_t k = 0; k < face.second; ++k) {
+                        std::snprintf(buf, sizeof(buf), "%10lld",
+                                      static_cast<long long>(face.first[k]) + 1);
+                        out += buf;
+                    }
+                    out += "\n";
+                }
+            continue;
+        }
+        if (entry->mNumNodes == -1) {
+            // nsided: nodes-per-cell, then the node ids.
+            for (std::size_t r = 0; r < ne; ++r) {
+                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(cb.RowSize(r)));
+                out += buf;
+            }
+            for (std::size_t r = 0; r < ne; ++r) {
+                for (std::size_t k = 0; k < cb.RowSize(r); ++k) {
+                    std::snprintf(buf, sizeof(buf), "%10lld",
+                                  static_cast<long long>(cb.Row(r)[k]) + 1);
+                    out += buf;
+                }
+                out += "\n";
+            }
+            continue;
+        }
         for (std::size_t r = 0; r < ne; ++r) {
             for (std::size_t j = 0; j < npc; ++j) {
                 const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
@@ -41941,6 +44144,40 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
 
         ensight_append_str80(out, entry->mKeyword);
         ensight_append_i32(out, static_cast<std::int64_t>(ne));
+        if (entry->mNumNodes < 0) {
+            // nsided / nfaced: the same three (or two) runs as the ASCII path,
+            // as int32 -- which is exactly what read_binary_faces consumes.
+            std::vector<std::int32_t> counts;
+            std::vector<std::int32_t> sizes;
+            std::vector<std::int32_t> nodes;
+            const bool faced = entry->mNumNodes == -2;
+            for (std::size_t r = 0; r < ne; ++r) {
+                if (faced) {
+                    counts.push_back(static_cast<std::int32_t>(cb.NumFaces(r)));
+                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                        const auto face = cb.Face(r, f);
+                        sizes.push_back(static_cast<std::int32_t>(face.second));
+                        for (std::size_t k = 0; k < face.second; ++k)
+                            nodes.push_back(static_cast<std::int32_t>(face.first[k]) + 1);
+                    }
+                } else {
+                    counts.push_back(static_cast<std::int32_t>(cb.RowSize(r)));
+                    for (std::size_t k = 0; k < cb.RowSize(r); ++k)
+                        nodes.push_back(static_cast<std::int32_t>(cb.Row(r)[k]) + 1);
+                }
+            }
+            auto append = [&out](const std::vector<std::int32_t>& v) {
+                if (v.empty())
+                    return;
+                const char* q = reinterpret_cast<const char*>(v.data());
+                out.insert(out.end(), q, q + v.size() * sizeof(std::int32_t));
+            };
+            append(counts);
+            if (faced)
+                append(sizes);
+            append(nodes);
+            continue;
+        }
         std::vector<std::int32_t> flat(ne * npc);
         for (std::size_t r = 0; r < ne; ++r)
             for (std::size_t j = 0; j < npc; ++j) {
@@ -48035,7 +50272,8 @@ const std::unordered_map<std::string, std::string>& meshio_to_med() {
         {"triangle", "TR3"},   {"triangle6", "TR6"},    {"triangle7", "TR7"}, {"quad", "QU4"},
         {"quad8", "QU8"},      {"quad9", "QU9"},        {"tetra", "TE4"},     {"tetra10", "T10"},
         {"hexahedron", "HE8"}, {"hexahedron20", "H20"}, {"pyramid", "PY5"},   {"pyramid13", "P13"},
-        {"wedge", "PE6"},      {"wedge15", "P15"},      {"polygon", "POG"},   {"polygon2", "POG2"}};
+        {"wedge", "PE6"},      {"wedge15", "P15"},      {"polygon", "POG"},   {"polygon2", "POG2"},
+        {"polyhedron", "POE"}};
     return m;
 }
 
@@ -49106,7 +51344,52 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             throw ReadError(detail::format_compat("MED: unsupported cell type {}", med_type));
         h5::Hid g = h5::open_group(mai, med_type);
 
-        if (med_type == "POG" || med_type == "POG2") {
+        if (med_type == "POE") {
+            // MED_POLYHEDRON: NOD (flat nodes) + INN (face -> NOD) + IND
+            // (cell -> face), all 1-based. Regrouped back into polyhedron<N>
+            // by unique node count on the way out, the same bucketing the
+            // OpenFOAM, EnSight and CGNS readers use.
+            NDArray nod = h5::read_dataset(g, "NOD");
+            NDArray inn = h5::read_dataset(g, "INN");
+            NDArray ind = h5::read_dataset(g, "IND");
+            const std::size_t ncells = ind.Size() > 0 ? ind.Size() - 1 : 0;
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(ncells);
+            std::vector<std::size_t> node_counts(ncells, 0);
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const std::int64_t f0 = detail::read_int(ind, c) - 1;
+                const std::int64_t f1 = detail::read_int(ind, c + 1) - 1;
+                std::vector<std::int64_t> uniq;
+                for (std::int64_t f = f0; f < f1; ++f) {
+                    const std::int64_t a = detail::read_int(inn, static_cast<std::size_t>(f)) - 1;
+                    const std::int64_t b =
+                        detail::read_int(inn, static_cast<std::size_t>(f) + 1) - 1;
+                    std::vector<std::int64_t> face;
+                    for (std::int64_t j = a; j < b; ++j)
+                        face.push_back(detail::read_int(nod, static_cast<std::size_t>(j)) - 1);
+                    uniq.insert(uniq.end(), face.begin(), face.end());
+                    cells[c].push_back(std::move(face));
+                }
+                std::sort(uniq.begin(), uniq.end());
+                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                node_counts[c] = uniq.size();
+            }
+            std::vector<std::size_t> order;
+            std::map<std::size_t, std::vector<std::size_t>> groups;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                if (groups.find(node_counts[c]) == groups.end())
+                    order.push_back(node_counts[c]);
+                groups[node_counts[c]].push_back(c);
+            }
+            for (std::size_t n : order) {
+                std::vector<std::vector<std::vector<std::int64_t>>> group;
+                group.reserve(groups[n].size());
+                for (std::size_t c : groups[n])
+                    group.push_back(std::move(cells[c]));
+                const std::string tname = "polyhedron" + std::to_string(n);
+                mesh.AddPolyhedronBlock(tname, std::move(group));
+                cell_types.push_back(tname);
+            }
+        } else if (med_type == "POG" || med_type == "POG2") {
             // Ragged polygons: flat 1-based NOD + 1-based INN offsets.
             NDArray nod = h5::read_dataset(g, "NOD");
             NDArray inn = h5::read_dataset(g, "INN");
@@ -49400,7 +51683,15 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     std::vector<std::string> cell_type_order;
     std::unordered_map<std::string, std::vector<std::size_t>> blocks_by_type;
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
-        const std::string ctype(rMesh.Cells(k).Type());
+        std::string ctype(rMesh.Cells(k).Type());
+        // Every `polyhedron<N>` collapses to one key. MED holds ONE section per
+        // type inside a MAI group, so grouping on the exact type string would
+        // try to create POE three times over for a mesh carrying polyhedron4,
+        // polyhedron5 and polyhedron8 -- an invalid file, and a group-creation
+        // failure rather than a clean error. The node count is a meshio++
+        // bucketing convention, not part of the MED type.
+        if (ctype.rfind("polyhedron", 0) == 0)
+            ctype = "polyhedron";
         if (meshio_to_med().find(ctype) == meshio_to_med().end())
             throw WriteError(detail::format_compat("MED: unsupported cell type {}", ctype));
         if (!blocks_by_type.count(ctype))
@@ -49411,12 +51702,13 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     for (const std::string& ctype : cell_type_order) {
         const std::vector<std::size_t>& idxs = blocks_by_type[ctype];
         const bool is_ragged_type = (ctype == "polygon" || ctype == "polygon2");
+        const bool is_polyhedron_type = (ctype == "polyhedron");
 
         // Blocks of the same type must agree on node count to be merged into
         // one section -- unlike merge.cpp's grouping (keyed on Type() alone,
         // trusting the first contributor), a disagreement here is a checked
         // error rather than a silently truncated/garbled NOD array.
-        if (!is_ragged_type) {
+        if (!is_ragged_type && !is_polyhedron_type) {
             const std::size_t npc = rMesh.Cells(idxs[0]).NodesPerCell();
             for (std::size_t bi : idxs)
                 if (rMesh.Cells(bi).NodesPerCell() != npc)
@@ -49435,7 +51727,39 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         for (std::size_t bi : idxs)
             n_total += rMesh.Cells(bi).NumCells();
 
-        if (is_ragged_type) {
+        if (is_polyhedron_type) {
+            // MED_POLYHEDRON needs THREE 1-based arrays where a polygon needs
+            // two: NOD (every face's nodes, flat), INN (face -> start in NOD),
+            // and IND (cell -> start in the face list). Concatenated across
+            // every contributing block, in block order.
+            std::vector<std::int64_t> nod;
+            std::vector<std::int64_t> inn = {1};
+            std::vector<std::int64_t> ind = {1};
+            for (std::size_t bi : idxs) {
+                const auto cb = rMesh.Cells(bi);
+                for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+                    for (std::size_t f = 0; f < cb.NumFaces(i); ++f) {
+                        const auto face = cb.Face(i, f);
+                        for (std::size_t j = 0; j < face.second; ++j)
+                            nod.push_back(face.first[j] + 1);
+                        inn.push_back(inn.back() + static_cast<std::int64_t>(face.second));
+                    }
+                    ind.push_back(static_cast<std::int64_t>(inn.size()));
+                }
+            }
+            auto to_arr = [](const std::vector<std::int64_t>& v) {
+                NDArray a(DType::Int64, {v.size()});
+                for (std::size_t i = 0; i < v.size(); ++i)
+                    a.As<std::int64_t>()[i] = v[i];
+                return a;
+            };
+            h5::write_dataset(g, "NOD", to_arr(nod));
+            h5::write_dataset(g, "INN", to_arr(inn));
+            h5::write_dataset(g, "IND", to_arr(ind));
+            h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
+            h5::write_attr_int(d, "CGT", 1);
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
+        } else if (is_ragged_type) {
             // Ragged: flat 1-based NOD + 1-based INN offsets, concatenated
             // across every contributing block in order.
             std::vector<std::int64_t> nod;
@@ -51503,6 +53827,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <sstream>
 #include <string>
@@ -51743,9 +54068,45 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
 // OpenFOAM's own on-disk `boundary` field names (`nFaces`/`startFace`).
 struct Patch {
     std::string mName;
+    std::string mType;  ///< the `type` entry; empty when the file omitted it
     std::int64_t mNFaces = 0;
     std::int64_t mStartFace = 0;
 };
+
+/**
+ * @brief Read the value of key @p pKey from a `boundary` sub-dictionary body.
+ *
+ * `nFaces`/`startFace` are read with `atoll`, but `type` is a word, so it needs
+ * real tokenising. The word-boundary guard matters: a bare `find("type")` also
+ * matches `physicalType` and `patchType`, both of which are legal entries in the
+ * same dictionary and neither of which is the patch's type.
+ *
+ * @return the value token, or "" when the key is absent.
+ */
+std::string openfoam_dict_word(const std::string& rBlock, const char* pKey) {
+    const std::size_t klen = std::strlen(pKey);
+    std::size_t p = 0;
+    while ((p = rBlock.find(pKey, p)) != std::string::npos) {
+        const bool left_ok = p == 0 || std::isspace(static_cast<unsigned char>(rBlock[p - 1])) ||
+                             rBlock[p - 1] == ';';
+        const std::size_t after = p + klen;
+        const bool right_ok =
+            after < rBlock.size() && std::isspace(static_cast<unsigned char>(rBlock[after]));
+        if (!left_ok || !right_ok) {
+            p = after;
+            continue;
+        }
+        std::size_t a = after;
+        while (a < rBlock.size() && std::isspace(static_cast<unsigned char>(rBlock[a])))
+            ++a;
+        std::size_t b = a;
+        while (b < rBlock.size() && !std::isspace(static_cast<unsigned char>(rBlock[b])) &&
+               rBlock[b] != ';')
+            ++b;
+        return rBlock.substr(a, b - a);
+    }
+    return "";
+}
 
 std::vector<Patch> parse_boundary(const std::string& rBody) {
     // Find `name { ... }` blocks with nFaces/startFace.
@@ -51765,12 +54126,28 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
         std::string name = rBody.substr(start, i - start);
         skip_ws(i);
         if (i < n && rBody[i] == '{') {
-            std::size_t close = rBody.find('}', i);
+            // Match the brace by DEPTH, not by the first '}': real patches nest
+            // (a `cyclicAMI` carries `transform { ... }`, a `mappedWall` carries
+            // `sample { ... }`), and taking the first close truncates the block
+            // and then resumes scanning from inside it, inventing patches.
+            std::size_t close = std::string::npos;
+            int depth = 0;
+            for (std::size_t p = i; p < n; ++p) {
+                if (rBody[p] == '{') {
+                    ++depth;
+                } else if (rBody[p] == '}') {
+                    if (--depth == 0) {
+                        close = p;
+                        break;
+                    }
+                }
+            }
             if (close == std::string::npos)
                 break;
             std::string block = rBody.substr(i + 1, close - i - 1);
             Patch pt;
             pt.mName = name;
+            pt.mType = openfoam_dict_word(block, "type");
             bool has_n = false, has_s = false;
             std::size_t np = block.find("nFaces");
             if (np != std::string::npos) {
@@ -52214,6 +54591,8 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
     for (std::size_t pidx = 0; pidx < boundary.size(); ++pidx) {
         std::int64_t fam = -(static_cast<std::int64_t>(pidx) + 1);
         rInfo.mCellTags[fam] = {boundary[pidx].mName};
+        if (!boundary[pidx].mType.empty())
+            rInfo.mPatchTypes[fam] = boundary[pidx].mType;
         for (std::int64_t fid = boundary[pidx].mStartFace;
              fid < boundary[pidx].mStartFace + boundary[pidx].mNFaces; ++fid) {
             if (fid < 0 || static_cast<std::size_t>(fid) >= faces.size())
@@ -52266,6 +54645,550 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
     if (!cell_tags.empty())
         mesh.AddCellData("cell_tags", std::move(cell_tags));
     return mesh;
+}
+
+// ==========================================================================
+//                                  WRITER
+// ==========================================================================
+
+namespace {
+
+/// One boundary patch as it will be written.
+struct FoamPatchOut {
+    std::string mName;
+    std::string mType = "patch";
+    std::int64_t mNFaces = 0;
+    std::int64_t mStartFace = 0;
+};
+
+/// The written face order plus the patch table describing its tail.
+struct FoamFaceOrder {
+    std::vector<std::int64_t> mNewToOld;  ///< written face id -> GlobalFaces id
+    std::int64_t mNumInternal = 0;
+    std::vector<FoamPatchOut> mPatches;  ///< ascending mStartFace
+};
+
+/**
+ * @brief Patch types that survive a round trip unchanged.
+ *
+ * Everything else needs companion dictionary entries `OpenFoamInfo` does not
+ * carry -- `cyclic`/`cyclicAMI` need `neighbourPatch`, `processor` needs
+ * `myProcNo`/`neighbProcNo`, `mapped*` needs `sample*` -- and OpenFOAM refuses
+ * to *load* a case whose patch declares such a type without them. Downgrading
+ * to `patch` yields a case that loads and solves with visibly wrong boundary
+ * conditions, which is strictly better than one that does not open.
+ */
+bool foam_type_is_self_contained(const std::string& rType) {
+    return rType == "patch" || rType == "wall" || rType == "symmetry" ||
+           rType == "symmetryPlane" || rType == "empty" || rType == "wedge";
+}
+
+/// Resolve the polyMesh directory. One function for both directions, so the
+/// reader's resolution and the writer's cannot drift apart.
+fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
+    if (rPath.extension() == ".foam") {
+        const fs::path c = rPath.parent_path() / "constant" / "polyMesh";
+        if (ForWrite || fs::exists(c))
+            return c;
+    }
+    if (rPath.filename() == "polyMesh" && (ForWrite || fs::is_directory(rPath)))
+        return rPath;
+    if (!ForWrite) {
+        for (const fs::path& c : {rPath / "constant" / "polyMesh", rPath / "polyMesh"}) {
+            if (fs::exists(c))
+                return c;
+        }
+        return {};
+    }
+    return rPath / "constant" / "polyMesh";
+}
+
+/// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
+/// but the rest is what makes the file legible to OpenFOAM itself.
+void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
+    rOs << "/*--------------------------------*- C++ -*----------------------------------*\\\n"
+           "| =========                 |                                                 |\n"
+           "| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |\n"
+           "|  \\\\    /   O peration     |                                                 |\n"
+           "|   \\\\  /    A nd           | Written by meshio++                             |\n"
+           "|    \\\\/     M anipulation  |                                                 |\n"
+           "\\*---------------------------------------------------------------------------*/\n"
+           "FoamFile\n"
+           "{\n"
+           "    version     2.0;\n"
+           "    format      ascii;\n"
+           "    class       "
+        << rClass
+        << ";\n"
+           "    location    \"constant/polyMesh\";\n"
+           "    object      "
+        << rObject
+        << ";\n"
+           "}\n"
+           "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n\n";
+}
+
+/**
+ * @brief Assign every boundary face to a patch.
+ *
+ * @return per-`GlobalFaces`-face patch index, `-1` for internal or unassigned.
+ */
+struct FoamPatchAssignment {
+    std::vector<std::int64_t> mFacePatch;
+    std::vector<FoamPatchOut> mPatches;
+    std::int64_t mNumOrphan = 0;         ///< 2D cell matching no face at all
+    std::int64_t mNumInternalTagged = 0;  ///< 2D cell matching an INTERNAL face
+};
+
+FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalFaces& rFaces,
+                                        const OpenFoamInfo& rInfo) {
+    FoamPatchAssignment out;
+    out.mFacePatch.assign(rFaces.NumFaces(), -1);
+
+    // Family ids in the reader's own order (ascending -fam == ascending patch
+    // index), so an OpenFOAM round trip preserves the boundary file's order.
+    std::vector<std::int64_t> fams;
+    for (const auto& kv : rInfo.mCellTags)
+        fams.push_back(kv.first);
+    std::sort(fams.begin(), fams.end(), [](std::int64_t a, std::int64_t b) { return a > b; });
+
+    std::unordered_map<std::int64_t, std::size_t> fam_to_patch;
+    for (std::int64_t fam : fams) {
+        FoamPatchOut p;
+        const auto& names = rInfo.mCellTags.at(fam);
+        p.mName = names.empty() ? ("patch" + std::to_string(-fam)) : names.front();
+        const auto it = rInfo.mPatchTypes.find(fam);
+        if (it != rInfo.mPatchTypes.end() && !it->second.empty()) {
+            if (foam_type_is_self_contained(it->second)) {
+                p.mType = it->second;
+            } else {
+                log::warn(
+                    "OpenFOAM: patch '{}' has type '{}', which needs dictionary entries meshio++ "
+                    "does not carry; writing 'patch' instead so the case still loads",
+                    p.mName, it->second);
+            }
+        }
+        fam_to_patch[fam] = out.mPatches.size();
+        out.mPatches.push_back(std::move(p));
+    }
+
+    const detail::FaceLookup lookup(rFaces);
+    const bool have_tags = rMesh.HasCellData("cell_tags");
+
+    for (std::size_t block : rFaces.mNonCellBlocks) {
+        const auto cb = rMesh.Cells(block);
+        if (cell_type_dimension(cell_type_from_name(cb.Type())) != 2)
+            continue;
+        const NDArray* tags =
+            have_tags && rMesh.CellDataNumBlocks("cell_tags") == rMesh.NumCellBlocks()
+                ? &rMesh.CellData("cell_tags", block)
+                : nullptr;
+
+        std::vector<std::int64_t> ids;
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            ids.clear();
+            if (cb.IsRagged()) {
+                const std::size_t n = cb.RowSize(i);
+                const std::int64_t* row = cb.Row(i);
+                ids.assign(row, row + n);
+            } else {
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t k = 0; k < npc; ++k)
+                    ids.push_back(detail::read_int(cb.Conn(), i * npc + k));
+            }
+            const std::int64_t fid = lookup.Find(ids.data(), ids.size());
+            if (fid < 0) {
+                ++out.mNumOrphan;
+                continue;
+            }
+            if (rFaces.mNeighbour[static_cast<std::size_t>(fid)] >= 0) {
+                // A face between two cells cannot also be a patch member --
+                // OpenFOAM would refuse the case. Legitimate input (an interior
+                // baffle), so drop it rather than throw.
+                ++out.mNumInternalTagged;
+                continue;
+            }
+            if (out.mFacePatch[static_cast<std::size_t>(fid)] >= 0)
+                continue;  // first claim wins
+            std::int64_t fam = 0;
+            if (tags && i < tags->Shape()[0])
+                fam = detail::read_int(*tags, i);
+            const auto it = fam_to_patch.find(fam);
+            if (fam < 0 && it != fam_to_patch.end())
+                out.mFacePatch[static_cast<std::size_t>(fid)] =
+                    static_cast<std::int64_t>(it->second);
+        }
+    }
+
+    // Everything still unassigned joins `defaultFaces` -- blockMesh's own name
+    // for exactly this, so the result is a valid single-patch case rather than
+    // an error or an invented decomposition.
+    std::int64_t n_unassigned = 0;
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (rFaces.mNeighbour[f] < 0 && out.mFacePatch[f] < 0)
+            ++n_unassigned;
+    if (n_unassigned > 0) {
+        const std::int64_t idx = static_cast<std::int64_t>(out.mPatches.size());
+        FoamPatchOut p;
+        p.mName = "defaultFaces";
+        p.mType = "patch";
+        out.mPatches.push_back(std::move(p));
+        for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+            if (rFaces.mNeighbour[f] < 0 && out.mFacePatch[f] < 0)
+                out.mFacePatch[f] = idx;
+    }
+
+    // An empty patch is legal but checkMesh flags it, and its emptiness always
+    // means something went wrong upstream.
+    std::vector<std::int64_t> counts(out.mPatches.size(), 0);
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (out.mFacePatch[f] >= 0)
+            ++counts[static_cast<std::size_t>(out.mFacePatch[f])];
+    std::vector<FoamPatchOut> kept;
+    std::vector<std::int64_t> remap(out.mPatches.size(), -1);
+    for (std::size_t p = 0; p < out.mPatches.size(); ++p) {
+        if (counts[p] == 0) {
+            log::warn("OpenFOAM: patch '{}' has no faces and is not written",
+                      out.mPatches[p].mName);
+            continue;
+        }
+        remap[p] = static_cast<std::int64_t>(kept.size());
+        kept.push_back(out.mPatches[p]);
+    }
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (out.mFacePatch[f] >= 0)
+            out.mFacePatch[f] = remap[static_cast<std::size_t>(out.mFacePatch[f])];
+    out.mPatches = std::move(kept);
+    return out;
+}
+
+/// Order the faces the way OpenFOAM requires.
+FoamFaceOrder foam_order_faces(const detail::GlobalFaces& rFaces,
+                               const FoamPatchAssignment& rAssign) {
+    FoamFaceOrder order;
+    order.mPatches = rAssign.mPatches;
+
+    std::vector<std::int64_t> internal, boundary;
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        (rFaces.mNeighbour[f] >= 0 ? internal : boundary).push_back(static_cast<std::int64_t>(f));
+
+    // Upper-triangular order. The face id is a THIRD key, not decoration: two
+    // cells can share two distinct faces, so (owner, neighbour) alone is not a
+    // strict weak ordering and std::sort would be undefined behaviour on it.
+    std::sort(internal.begin(), internal.end(), [&](std::int64_t a, std::int64_t b) {
+        const std::size_t ia = static_cast<std::size_t>(a), ib = static_cast<std::size_t>(b);
+        if (rFaces.mOwner[ia] != rFaces.mOwner[ib])
+            return rFaces.mOwner[ia] < rFaces.mOwner[ib];
+        if (rFaces.mNeighbour[ia] != rFaces.mNeighbour[ib])
+            return rFaces.mNeighbour[ia] < rFaces.mNeighbour[ib];
+        return a < b;
+    });
+    // Boundary faces contiguous per patch, patches in table order.
+    std::stable_sort(boundary.begin(), boundary.end(), [&](std::int64_t a, std::int64_t b) {
+        return rAssign.mFacePatch[static_cast<std::size_t>(a)] <
+               rAssign.mFacePatch[static_cast<std::size_t>(b)];
+    });
+
+    order.mNumInternal = static_cast<std::int64_t>(internal.size());
+    order.mNewToOld = std::move(internal);
+    order.mNewToOld.insert(order.mNewToOld.end(), boundary.begin(), boundary.end());
+
+    std::int64_t start = order.mNumInternal;
+    for (std::size_t p = 0; p < order.mPatches.size(); ++p) {
+        std::int64_t n = 0;
+        for (std::int64_t f : boundary)
+            if (rAssign.mFacePatch[static_cast<std::size_t>(f)] == static_cast<std::int64_t>(p))
+                ++n;
+        order.mPatches[p].mStartFace = start;
+        order.mPatches[p].mNFaces = n;
+        start += n;
+    }
+    return order;
+}
+
+/**
+ * @brief Check every clause of the polyMesh ordering contract.
+ *
+ * Runs in release builds too, deliberately: release is exactly where someone
+ * writes a ten-million-cell case, the cost is a handful of flops per face
+ * against ASCII formatting that costs far more, and a failure means we were
+ * about to hand a solver a corrupt mesh.
+ *
+ * @return "" when valid, else the first violated clause, named.
+ */
+std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFaceOrder& rOrder,
+                                const FoamPatchAssignment& rAssign, const NDArray& rPoints,
+                                std::size_t PointDim, std::size_t NumPoints) {
+    const std::size_t nf = rOrder.mNewToOld.size();
+    if (nf != rFaces.NumFaces())
+        return "C0: the written face list does not cover every face";
+
+    // Cell centroids, for the two normal-direction clauses.
+    std::vector<detail::Vec3> centroid(rFaces.NumCells(), detail::Vec3{0, 0, 0});
+    for (std::size_t c = 0; c < rFaces.NumCells(); ++c) {
+        detail::Vec3 acc{0, 0, 0};
+        std::size_t n = 0;
+        for (std::size_t k = 0; k < rFaces.NumCellFaces(c); ++k) {
+            const std::size_t f =
+                static_cast<std::size_t>(std::abs(rFaces.CellFaces(c)[k]) - 1);
+            for (std::size_t j = 0; j < rFaces.FaceSize(f); ++j) {
+                const detail::Vec3 p =
+                    detail::read_point(rPoints, PointDim, rFaces.Face(f)[j]);
+                acc[0] += p[0];
+                acc[1] += p[1];
+                acc[2] += p[2];
+                ++n;
+            }
+        }
+        if (n)
+            for (int a = 0; a < 3; ++a)
+                acc[a] /= static_cast<double>(n);
+        centroid[c] = acc;
+    }
+
+    std::vector<detail::Vec3> ring;
+    for (std::size_t i = 0; i < nf; ++i) {
+        const std::size_t f = static_cast<std::size_t>(rOrder.mNewToOld[i]);
+        const bool is_internal = i < static_cast<std::size_t>(rOrder.mNumInternal);
+
+        // C2: internal faces first.
+        if (is_internal != (rFaces.mNeighbour[f] >= 0))
+            return detail::format_compat(
+                "C2: face {} is {} but sits in the {} range", i,
+                rFaces.mNeighbour[f] >= 0 ? "internal" : "boundary",
+                is_internal ? "internal" : "boundary");
+
+        // C7: node ids in range, ring big enough to bound an area.
+        if (rFaces.FaceSize(f) < 3)
+            return detail::format_compat("C7: face {} has fewer than three nodes", i);
+        for (std::size_t k = 0; k < rFaces.FaceSize(f); ++k) {
+            const std::int64_t id = rFaces.Face(f)[k];
+            if (id < 0 || static_cast<std::size_t>(id) >= NumPoints)
+                return detail::format_compat("C7: face {} references node {}, out of range", i,
+                                             id);
+        }
+
+        ring.clear();
+        for (std::size_t k = 0; k < rFaces.FaceSize(f); ++k)
+            ring.push_back(detail::read_point(rPoints, PointDim, rFaces.Face(f)[k]));
+        const detail::Vec3 nrm = detail::polygon_area_vector(ring.data(), ring.size());
+        detail::Vec3 fc{0, 0, 0};
+        for (const detail::Vec3& p : ring)
+            for (int a = 0; a < 3; ++a)
+                fc[a] += p[a] / static_cast<double>(ring.size());
+
+        if (is_internal) {
+            // C1: owner < neighbour.
+            if (!(rFaces.mOwner[f] < rFaces.mNeighbour[f]))
+                return detail::format_compat("C1: face {} has owner {} >= neighbour {}", i,
+                                             rFaces.mOwner[f], rFaces.mNeighbour[f]);
+            // C3: strictly increasing (owner, neighbour).
+            if (i > 0) {
+                const std::size_t g = static_cast<std::size_t>(rOrder.mNewToOld[i - 1]);
+                const bool ok = rFaces.mOwner[g] < rFaces.mOwner[f] ||
+                                (rFaces.mOwner[g] == rFaces.mOwner[f] &&
+                                 rFaces.mNeighbour[g] <= rFaces.mNeighbour[f]);
+                if (!ok)
+                    return detail::format_compat(
+                        "C3: face {} has (owner,neighbour)=({},{}) after ({},{})", i,
+                        rFaces.mOwner[f], rFaces.mNeighbour[f], rFaces.mOwner[g],
+                        rFaces.mNeighbour[g]);
+            }
+            // C4: normal points owner -> neighbour.
+            const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
+            const detail::Vec3& cn = centroid[static_cast<std::size_t>(rFaces.mNeighbour[f])];
+            const double d = nrm[0] * (cn[0] - co[0]) + nrm[1] * (cn[1] - co[1]) +
+                             nrm[2] * (cn[2] - co[2]);
+            if (!(d > 0.0))
+                return detail::format_compat(
+                    "C4: internal face {} does not point from owner to neighbour", i);
+        } else {
+            // C5: boundary normal points out of the domain.
+            const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
+            const double d = nrm[0] * (fc[0] - co[0]) + nrm[1] * (fc[1] - co[1]) +
+                             nrm[2] * (fc[2] - co[2]);
+            if (!(d > 0.0))
+                return detail::format_compat("C5: boundary face {} is wound inward", i);
+        }
+    }
+
+    // C6: patches partition the boundary range exactly -- AND every face in a
+    // patch's range really belongs to that patch. Checking only that the
+    // start/count table tiles the range is not enough: the table is built by
+    // counting, so it describes a contiguity the face order may simply not
+    // have, and the resulting case is silently wrong.
+    std::int64_t expect = rOrder.mNumInternal;
+    for (std::size_t p = 0; p < rOrder.mPatches.size(); ++p) {
+        const FoamPatchOut& patch = rOrder.mPatches[p];
+        if (patch.mStartFace != expect)
+            return detail::format_compat("C6: patch '{}' starts at {}, expected {}", patch.mName,
+                                         patch.mStartFace, expect);
+        for (std::int64_t i = patch.mStartFace; i < patch.mStartFace + patch.mNFaces; ++i) {
+            const std::size_t f = static_cast<std::size_t>(rOrder.mNewToOld[
+                static_cast<std::size_t>(i)]);
+            if (rAssign.mFacePatch[f] != static_cast<std::int64_t>(p))
+                return detail::format_compat(
+                    "C6: face {} sits in patch '{}'s range but belongs to patch {}", i,
+                    patch.mName, rAssign.mFacePatch[f]);
+        }
+        expect += patch.mNFaces;
+    }
+    if (expect != static_cast<std::int64_t>(nf))
+        return detail::format_compat("C6: patches cover {} faces, expected {}",
+                                     expect - rOrder.mNumInternal,
+                                     static_cast<std::int64_t>(nf) - rOrder.mNumInternal);
+    return "";
+}
+
+std::ofstream foam_open(const fs::path& rPath) {
+    std::ofstream f(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("OpenFOAM: could not open for writing: " + rPath.string());
+    return f;
+}
+
+}  // namespace
+
+void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo) {
+    const detail::GlobalFaces faces = detail::build_global_faces(rMesh);
+
+    if (faces.NumCells() == 0)
+        throw WriteError(
+            "OpenFOAM: the mesh has no volume cells; a polyMesh needs at least one "
+            "tetra/pyramid/wedge/hexahedron/polyhedron cell");
+    // A 3D block we could not turn into faces would be a silently dropped solid.
+    for (std::size_t block : faces.mNonCellBlocks) {
+        const auto cb = rMesh.Cells(block);
+        const std::string type(cb.Type());
+        if (cell_type_dimension(cell_type_from_name(type)) == 3)
+            throw WriteError(detail::format_compat(
+                "OpenFOAM: cell type '{}' is 3D but has no face topology in meshio++, so writing "
+                "it would silently drop those cells",
+                type));
+    }
+    if (faces.mNumNonManifold > 0)
+        throw WriteError(detail::format_compat(
+            "OpenFOAM: {} face(s) are shared by three or more cells; a polyMesh face has at most "
+            "an owner and one neighbour",
+            faces.mNumNonManifold));
+    if (faces.mNumUnorientable > 0)
+        log::warn("OpenFOAM: {} cell(s) are not closed orientable surfaces; their faces are "
+                  "written with the winding they arrived with",
+                  faces.mNumUnorientable);
+    if (faces.mNumFlipped > 0)
+        log::info("OpenFOAM: rewound {} inverted cell(s) so their faces point outward",
+                  faces.mNumFlipped);
+
+    const FoamPatchAssignment assign = foam_assign_patches(rMesh, faces, rInfo);
+    if (assign.mNumOrphan > 0)
+        log::warn("OpenFOAM: {} boundary cell(s) match no cell face and are not written",
+                  assign.mNumOrphan);
+    if (assign.mNumInternalTagged > 0)
+        log::warn("OpenFOAM: {} boundary cell(s) coincide with an INTERNAL face; OpenFOAM cannot "
+                  "put such a face on a patch, so they are not written",
+                  assign.mNumInternalTagged);
+
+    const FoamFaceOrder order = foam_order_faces(faces, assign);
+    const std::string bad = foam_validate_order(faces, order, assign, rMesh.Points(),
+                                                rMesh.PointDim(), rMesh.NumPoints());
+    if (!bad.empty())
+        throw WriteError("OpenFOAM: internal error, the written face order violates " + bad);
+
+    const fs::path poly = foam_polymesh_dir(fs::path(rPath), /*ForWrite=*/true);
+    std::error_code ec;
+    fs::create_directories(poly, ec);
+    if (ec && !fs::is_directory(poly))
+        throw WriteError("OpenFOAM: could not create directory " + poly.string() + ": " +
+                         ec.message());
+    if (fs::path(rPath).extension() == ".foam") {
+        // The marker file is what makes the case openable by ParaView and by
+        // this reader's own `.foam` branch.
+        std::ofstream marker(rPath, std::ios::binary);
+    }
+
+    // Companion files this writer does not produce but OpenFOAM would read.
+    // Leaving a stale one behind corrupts the case, so remove exactly these --
+    // never the whole directory, which may hold a user's own files.
+    for (const char* name : {"cellZones", "faceZones", "pointZones", "meshModifiers",
+                             "boundaryProcAddressing", "cellProcAddressing",
+                             "faceProcAddressing", "pointProcAddressing", "cellLevel",
+                             "pointLevel", "level0Edge", "refinementHistory", "surfaceIndex"}) {
+        std::error_code rc;
+        if (fs::remove(poly / name, rc))
+            log::info("OpenFOAM: removed stale {}", name);
+    }
+
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t np = rMesh.NumPoints();
+
+    {
+        std::ofstream f = foam_open(poly / "points");
+        foam_write_header(f, "vectorField", "points");
+        // The count MUST be on a line of its own: every ASCII parser here takes
+        // "the first line that is entirely digits" as the count, so `8(` would
+        // be read as data and the list would come back EMPTY, not as an error.
+        f << np << "\n(\n";
+        f << std::setprecision(16);
+        for (std::size_t i = 0; i < np; ++i) {
+            const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+            f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
+        }
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "faces");
+        foam_write_header(f, "faceList", "faces");
+        f << order.mNewToOld.size() << "\n(\n";
+        for (std::int64_t old : order.mNewToOld) {
+            const std::size_t fi = static_cast<std::size_t>(old);
+            f << faces.FaceSize(fi) << "(";
+            for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
+                f << (k ? " " : "") << faces.Face(fi)[k];
+            f << ")\n";
+        }
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "owner");
+        foam_write_header(f, "labelList", "owner");
+        f << order.mNewToOld.size() << "\n(\n";
+        for (std::int64_t old : order.mNewToOld)
+            f << faces.mOwner[static_cast<std::size_t>(old)] << "\n";
+        f << ")\n";
+    }
+    {
+        // Always written, even with zero entries: a stale `neighbour` left from
+        // a previous, larger case is one of the nastiest ways to corrupt one.
+        // OpenFOAM's `neighbour` holds ONLY internal faces -- our own reader
+        // also accepts a -1-padded full-length list, which is exactly why a
+        // round trip through it is a weak oracle for this writer.
+        std::ofstream f = foam_open(poly / "neighbour");
+        foam_write_header(f, "labelList", "neighbour");
+        f << order.mNumInternal << "\n(\n";
+        for (std::int64_t i = 0; i < order.mNumInternal; ++i)
+            f << faces.mNeighbour[static_cast<std::size_t>(order.mNewToOld[
+                  static_cast<std::size_t>(i)])]
+              << "\n";
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "boundary");
+        foam_write_header(f, "polyBoundaryMesh", "boundary");
+        f << order.mPatches.size() << "\n(\n";
+        for (const FoamPatchOut& p : order.mPatches) {
+            f << "    " << p.mName << "\n    {\n";
+            f << "        type            " << p.mType << ";\n";
+            f << "        nFaces          " << p.mNFaces << ";\n";
+            f << "        startFace       " << p.mStartFace << ";\n";
+            f << "    }\n";
+        }
+        f << ")\n";
+    }
+
+    log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)",
+              poly.string(), faces.NumCells(), order.mNewToOld.size(), order.mNumInternal,
+              order.mPatches.size());
 }
 
 }  // namespace meshioplusplus
@@ -58149,11 +61072,6 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
 void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.Type().rfind("polyhedron", 0) == 0)
-            throw WriteError("C++ VTU writer does not support polyhedron cells");
-    }
-
     std::ofstream os(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -58216,32 +61134,82 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         // Per-block offsets are closed-form (conn_base + (r+1)*k), so rows are
         // independent and each block fills in parallel.
         const auto& tmap = meshio_to_vtk_type();
-        std::size_t total_conn = 0, ncells = 0;
+        std::size_t ncells = 0;
+        bool any_polyhedron = false;
         for (const auto cb : rMesh.CellRange()) {
-            total_conn += cb.NumCells() * cols(cb.Conn());
             ncells += cb.NumCells();
+            if (cb.IsPolyhedron())
+                any_polyhedron = true;
         }
-        std::vector<std::int64_t> connectivity(total_conn), offsets(ncells), types(ncells);
-        std::size_t conn_base = 0, cell_base = 0;
+        std::vector<std::int64_t> connectivity, offsets, types;
+        offsets.reserve(ncells);
+        types.reserve(ncells);
+        // VTK_POLYHEDRON's face stream, and one END offset per cell into it.
+        // A NON-polyhedral cell carries -1 -- that is exactly how VTU expresses
+        // a mesh mixing polyhedra with other types, which is why meshio++
+        // supports mixing where the Python reference historically did not (an
+        // OpenFOAM mesh always mixes hexahedra, polyhedra and boundary faces).
+        std::vector<std::int64_t> faces, face_offsets;
+        if (any_polyhedron)
+            face_offsets.reserve(ncells);
+
         for (const auto cb : rMesh.CellRange()) {
-            const NDArray& conn = cb.Conn();
             const std::size_t nc = cb.NumCells();
+            if (cb.IsPolyhedron()) {
+                for (std::size_t r = 0; r < nc; ++r) {
+                    // The cell-node connectivity VTK wants is the SORTED UNIQUE
+                    // node set of the cell; the face structure lives entirely
+                    // in `faces`. Sorted-unique matches the Python reference
+                    // exactly -- a different order would give ParaView a
+                    // different point set for the same cell.
+                    std::vector<std::int64_t> uniq;
+                    faces.push_back(static_cast<std::int64_t>(cb.NumFaces(r)));
+                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                        const auto face = cb.Face(r, f);
+                        faces.push_back(static_cast<std::int64_t>(face.second));
+                        for (std::size_t j = 0; j < face.second; ++j) {
+                            faces.push_back(face.first[j]);
+                            uniq.push_back(face.first[j]);
+                        }
+                    }
+                    std::sort(uniq.begin(), uniq.end());
+                    uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                    connectivity.insert(connectivity.end(), uniq.begin(), uniq.end());
+                    offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
+                    types.push_back(42);
+                    face_offsets.push_back(static_cast<std::int64_t>(faces.size()));
+                }
+                continue;
+            }
+            if (cb.IsRagged()) {
+                // A jagged polygon block: VTK_POLYGON with a per-cell size.
+                for (std::size_t r = 0; r < nc; ++r) {
+                    for (std::size_t j = 0; j < cb.RowSize(r); ++j)
+                        connectivity.push_back(cb.Row(r)[j]);
+                    offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
+                    types.push_back(7);  // VTK_POLYGON
+                    if (any_polyhedron)
+                        face_offsets.push_back(-1);
+                }
+                continue;
+            }
+            const NDArray& conn = cb.Conn();
             const std::size_t k = cols(conn);
             std::vector<int> order = meshio_to_vtk_order(cb.Type());
             auto it = tmap.find(cb.Type());
             if (it == tmap.end())
                 throw WriteError("Unknown cell type for VTU: " + cb.Type());
             const std::int64_t vtk_type = it->second;
-            parallel_for(nc, [&](std::size_t r) {
+            for (std::size_t r = 0; r < nc; ++r) {
                 for (std::size_t j = 0; j < k; ++j) {
-                    std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    connectivity[conn_base + r * k + j] = read_int(conn, r * k + col);
+                    const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                    connectivity.push_back(read_int(conn, r * k + col));
                 }
-                offsets[cell_base + r] = static_cast<std::int64_t>(conn_base + (r + 1) * k);
-                types[cell_base + r] = vtk_type;
-            });
-            conn_base += nc * k;
-            cell_base += nc;
+                offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
+                types.push_back(vtk_type);
+                if (any_polyhedron)
+                    face_offsets.push_back(-1);
+            }
         }
 
         auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
@@ -58260,6 +61228,10 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         emit_i64("connectivity", connectivity);
         emit_i64("offsets", offsets);
         emit_i64("types", types);
+        if (any_polyhedron) {
+            emit_i64("faces", faces);
+            emit_i64("faceoffsets", face_offsets);
+        }
         os << "</Cells>\n";
     }
 
@@ -58431,6 +61403,8 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
 
     Mesh mesh;
     std::vector<std::int64_t> conn, offsets, types;
+    // VTU's polyhedral stream; empty when the file has none.
+    std::vector<std::int64_t> faces, face_offsets;
     std::unordered_map<std::string, NDArray> cell_data_raw;
 
     for (pugi::xml_node child : piece.children()) {
@@ -58454,8 +61428,10 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
                     offsets = vtu_to_int64(arr);
                 else if (name == "types")
                     types = vtu_to_int64(arr);
-                else if (name == "faces" || name == "faceoffsets")
-                    throw ReadError("polyhedron VTU not supported by the C++ reader");
+                else if (name == "faces")
+                    faces = vtu_to_int64(arr);
+                else if (name == "faceoffsets")
+                    face_offsets = vtu_to_int64(arr);
             }
         } else if (tag == "PointData") {
             if (!want_data)
@@ -58489,7 +61465,8 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
-    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw, mesh);
+    detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
+                              faces.empty() ? nullptr : &faces, face_offsets, mesh);
     return mesh;
 }
 
@@ -59824,31 +62801,6 @@ std::int64_t clean_build_weld_map(const NDArray& rPts, std::size_t n, std::size_
     return static_cast<std::int64_t>(rRepSource.size());
 }
 
-// Unsigned area of a 2D corner polygon (triangle / quad, Newell normal).
-double clean_area(const std::vector<Vec3>& rC, int corners) {
-    if (corners < 3)
-        return 0.0;
-    Vec3 s = {0, 0, 0};
-    for (int i = 0; i < corners; ++i)
-        s = detail::vec3_add(s, detail::vec3_cross(rC[i], rC[(i + 1) % corners]));
-    return 0.5 * detail::vec3_norm(s);
-}
-
-// Unsigned volume of a 3D cell via the divergence theorem over its outward-wound
-// boundary faces (triangulated fan). NaN for types without a face table.
-double clean_volume(const std::vector<Vec3>& rC, CellType ct) {
-    const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
-    if (faces.empty())
-        return std::nan("");
-    double vol6 = 0.0;
-    for (const detail::CellFaceDef& f : faces) {
-        const Vec3 a = rC[f.mNodes[0]];
-        for (int i = 1; i + 1 < f.mNumCorners; ++i)
-            vol6 += detail::triple_product(a, rC[f.mNodes[i]], rC[f.mNodes[i + 1]]);
-    }
-    return std::abs(vol6 / 6.0);
-}
-
 }  // namespace
 
 CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
@@ -59897,29 +62849,137 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
 
         if (cb.IsPolyhedron()) {
             bo.kind = 2;
+            // Degenerate/duplicate detection for polyhedra (v9.16.1). Before
+            // that these branches kept every cell unconditionally, so a welded
+            // polyhedron that had collapsed to nothing survived `clean` while
+            // the equivalent hexahedron did not.
+            //
+            // "Degenerate" here is: a face that lost corners to the weld and is
+            // no longer a polygon, a face set that is no longer a closed
+            // orientable surface, or a volume that is negligible next to the
+            // cell's own size. "Duplicate" keys on the SET OF FACES (each face
+            // a sorted node set, the whole cell then sorted), so two cells that
+            // list the same faces in a different order or with different
+            // per-face rotations still collide -- a plain sorted node list
+            // could not tell a cube from a differently-connected solid on the
+            // same eight nodes.
+            std::unordered_set<std::string> seen_poly;
             for (std::size_t c = 0; c < nc; ++c) {
                 std::vector<std::vector<std::int64_t>> cell(cb.NumFaces(c));
+                bool degenerate = false;
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                     auto face = cb.Face(c, f);
                     cell[f].reserve(face.second);
-                    for (std::size_t k = 0; k < face.second; ++k) {
-                        std::int64_t r = weld_rep[static_cast<std::size_t>(face.first[k])];
-                        cell[f].push_back(r);
-                        rep_used[static_cast<std::size_t>(r)] = 1;
+                    for (std::size_t k = 0; k < face.second; ++k)
+                        cell[f].push_back(weld_rep[static_cast<std::size_t>(face.first[k])]);
+                    if (rOpts.drop_degenerate) {
+                        std::vector<std::int64_t> u(cell[f]);
+                        std::sort(u.begin(), u.end());
+                        if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) <
+                            3)
+                            degenerate = true;  // the face collapsed below a triangle
                     }
                 }
+                if (rOpts.drop_degenerate && !degenerate) {
+                    // Measure it through the shared kernel, on the WELDED nodes.
+                    detail::CellRings rings;
+                    std::vector<Vec3> coords;
+                    rings.mFaceStart.push_back(0);
+                    for (const std::vector<std::int64_t>& face : cell) {
+                        for (std::int64_t id : face) {
+                            std::uint32_t local = 0;
+                            while (local < rings.mNodes.size() && rings.mNodes[local] != id)
+                                ++local;
+                            if (local == rings.mNodes.size()) {
+                                rings.mNodes.push_back(id);
+                                coords.push_back(detail::read_point(
+                                    points, dim, rep_source[static_cast<std::size_t>(id)]));
+                            }
+                            rings.mFaceNodes.push_back(local);
+                        }
+                        rings.mFaceStart.push_back(
+                            static_cast<std::uint32_t>(rings.mFaceNodes.size()));
+                    }
+                    if (detail::orient_rings(rings, coords.data()) ==
+                        detail::RingOrientation::Unorientable) {
+                        degenerate = true;
+                    } else {
+                        const detail::PolyMeasure pm = detail::poly_measure(rings, coords.data());
+                        const double scale = pm.mSurfaceArea * std::sqrt(pm.mSurfaceArea);
+                        if (!(std::abs(pm.mVolume) > eps * scale))
+                            degenerate = true;
+                    }
+                }
+                if (degenerate) {
+                    ++res.mCellsDroppedDegenerate;
+                    continue;
+                }
+                if (rOpts.drop_duplicate_cells) {
+                    std::vector<std::string> face_keys;
+                    face_keys.reserve(cell.size());
+                    for (const std::vector<std::int64_t>& face : cell) {
+                        std::vector<std::int64_t> sorted(face);
+                        std::sort(sorted.begin(), sorted.end());
+                        sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+                        std::string k;
+                        for (std::int64_t v : sorted) {
+                            k.append(reinterpret_cast<const char*>(&v), sizeof(v));
+                            k.push_back(',');
+                        }
+                        face_keys.push_back(std::move(k));
+                    }
+                    std::sort(face_keys.begin(), face_keys.end());
+                    std::string key;
+                    for (const std::string& k : face_keys) {
+                        key += k;
+                        key.push_back(';');
+                    }
+                    if (!seen_poly.insert(std::move(key)).second) {
+                        ++res.mCellsDroppedDuplicate;
+                        continue;
+                    }
+                }
+                for (const std::vector<std::int64_t>& face : cell)
+                    for (std::int64_t r : face)
+                        rep_used[static_cast<std::size_t>(r)] = 1;
                 bo.polyh.push_back(std::move(cell));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
         } else if (cb.IsRagged()) {
             bo.kind = 1;
+            std::unordered_set<std::string> seen_rows;
             for (std::size_t c = 0; c < nc; ++c) {
                 std::vector<std::int64_t> row(cb.RowSize(c));
-                for (std::size_t k = 0; k < cb.RowSize(c); ++k) {
-                    std::int64_t r = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
-                    row[k] = r;
-                    rep_used[static_cast<std::size_t>(r)] = 1;
+                for (std::size_t k = 0; k < cb.RowSize(c); ++k)
+                    row[k] = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
+                if (rOpts.drop_degenerate) {
+                    std::vector<std::int64_t> u(row);
+                    std::sort(u.begin(), u.end());
+                    if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) < 3) {
+                        ++res.mCellsDroppedDegenerate;
+                        continue;  // fewer than three distinct nodes is not a polygon
+                    }
+                    std::vector<Vec3> coords(row.size());
+                    for (std::size_t k = 0; k < row.size(); ++k)
+                        coords[k] = detail::read_point(
+                            points, dim, rep_source[static_cast<std::size_t>(row[k])]);
+                    if (!(detail::polygon_area(coords.data(), coords.size()) > eps)) {
+                        ++res.mCellsDroppedDegenerate;
+                        continue;
+                    }
                 }
+                if (rOpts.drop_duplicate_cells) {
+                    std::vector<std::int64_t> sorted(row);
+                    std::sort(sorted.begin(), sorted.end());
+                    std::string key(reinterpret_cast<const char*>(sorted.data()),
+                                    sorted.size() * sizeof(std::int64_t));
+                    if (!seen_rows.insert(std::move(key)).second) {
+                        ++res.mCellsDroppedDuplicate;
+                        continue;
+                    }
+                }
+                for (std::int64_t r : row)
+                    rep_used[static_cast<std::size_t>(r)] = 1;
                 bo.poly_rows.push_back(std::move(row));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
@@ -59954,9 +63014,10 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                                 points, dim, rep_source[static_cast<std::size_t>(row[i])]);
                         double measure = std::nan("");
                         if (cdim == 2)
-                            measure = clean_area(coords, corner_count);
+                            measure = detail::polygon_area(coords.data(),
+                                                           static_cast<std::size_t>(corner_count));
                         else if (cdim == 3)
-                            measure = clean_volume(coords, ct);
+                            measure = std::abs(detail::cell_volume_from_corners(coords.data(), ct));
                         if (!std::isnan(measure) && measure < eps)
                             degenerate = true;
                     }
@@ -60535,10 +63596,6 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     // a purely linear mesh.
     bool needs_linearize = false;
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron())
-            throw std::invalid_argument("convert_cells: cannot simplexify polyhedron cell block '" +
-                                        std::string(cb.Type()) +
-                                        "' (2-level ragged blocks have no simplex template)");
         if (cb.IsRagged())
             continue;
         const CellType type = cell_type_from_name(std::string(cb.Type()));
@@ -60550,6 +63607,12 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     if (needs_linearize)
         prepared = ccells_linearize(rMesh, /*RecordParentIds=*/false);
     const Mesh& mesh = needs_linearize ? prepared.mMesh : rMesh;
+
+    // New points appended by the polyhedral fan, each recorded as the list of
+    // existing nodes it averages -- coordinates and point_data both derive from
+    // that one list, so they cannot drift apart.
+    const std::size_t num_points = mesh.NumPoints();
+    std::vector<std::vector<std::int64_t>> new_point_src;
 
     const std::size_t nblocks = mesh.NumCellBlocks();
     std::vector<CcellsOutBlock> staged;
@@ -60565,6 +63628,65 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         firsts.resize(ncells);
 
         const CellType type = cell_type_from_name(std::string(cb.Type()));
+
+        // Polyhedra fan into tetrahedra: one tet per (face, edge-of-that-face)
+        // from the face's corner average to the cell's, adding 1 + numFaces
+        // points per cell.
+        //
+        // NOT a single centroid point with a fan about each face's first node,
+        // which is the obvious cheaper scheme and is wrong twice over: it is
+        // diagonal-dependent for non-planar faces (so two cells sharing one
+        // would disagree), and it produces inverted tets on any cell whose
+        // faces are not star-shaped about whichever node happens to be listed
+        // first. Using the SAME fan detail/polyhedron.hpp measures also buys a
+        // hard oracle -- the simplexified mesh's total volume equals the
+        // original's exactly, both being literally the same sum.
+        if (cb.IsPolyhedron()) {
+            CcellsOutBlock out;
+            out.mType = cell_type_name(CellType::Tetra);
+            out.mNodesPerCell = 4;
+            detail::CellRings rings;
+            std::vector<detail::Vec3> coords;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 4);
+                if (!detail::cell_rings(cb, c, mesh.Points(), mesh.PointDim(), rings, coords))
+                    continue;  // no faces at all: contributes nothing
+                if (detail::orient_rings(rings, coords.data()) ==
+                    detail::RingOrientation::Unorientable)
+                    throw std::invalid_argument(
+                        "convert_cells: cannot simplexify cell " + std::to_string(c) +
+                        " of polyhedron block '" + std::string(cb.Type()) +
+                        "': its faces are not a closed orientable surface, so it bounds no "
+                        "volume to decompose");
+                // One new point for the cell centroid, then one per face.
+                const std::int64_t cell_pt =
+                    static_cast<std::int64_t>(num_points + new_point_src.size());
+                new_point_src.push_back(rings.mNodes);
+                for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+                    const std::uint32_t* ring = rings.Face(f);
+                    const std::size_t m = rings.FaceSize(f);
+                    const std::int64_t face_pt =
+                        static_cast<std::int64_t>(num_points + new_point_src.size());
+                    std::vector<std::int64_t> face_nodes(m);
+                    for (std::size_t k = 0; k < m; ++k)
+                        face_nodes[k] = rings.mNodes[ring[k]];
+                    new_point_src.push_back(std::move(face_nodes));
+                    for (std::size_t k = 0; k < m; ++k) {
+                        // (cell centroid, face centroid, a, b) is positively
+                        // oriented for an outward-wound face -- the same
+                        // determinant poly_measure accumulates.
+                        out.mConn.push_back(cell_pt);
+                        out.mConn.push_back(face_pt);
+                        out.mConn.push_back(rings.mNodes[ring[k]]);
+                        out.mConn.push_back(rings.mNodes[ring[(k + 1) % m]]);
+                        parents.push_back(static_cast<std::int64_t>(c));
+                    }
+                }
+            }
+            staged.push_back(std::move(out));
+            ++bi;
+            continue;
+        }
 
         // Polygons fan into (n-2) triangles around node 0. This covers both
         // storage shapes: a jagged block (rows of differing length) and a
@@ -60640,10 +63762,57 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     }
 
     Mesh out;
-    out.AssignPoints(detail::data_owned_copy(mesh.Points()));
+    if (new_point_src.empty()) {
+        out.AssignPoints(detail::data_owned_copy(mesh.Points()));
+    } else {
+        // Originals, then one appended row per new point: the arithmetic mean
+        // of its source nodes. Order-independent, so neighbouring cells that
+        // share a face agree on that face's centroid bit for bit.
+        const NDArray& points = mesh.Points();
+        const std::size_t dim = detail::cols(points);
+        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
+        std::memcpy(np.Data(), points.Data(), points.Nbytes());
+        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
+            const std::vector<std::int64_t>& src = new_point_src[i];
+            for (std::size_t d = 0; d < dim; ++d) {
+                double sum = 0.0;
+                for (std::int64_t nid : src)
+                    sum += detail::read_double(points, static_cast<std::size_t>(nid) * dim + d);
+                detail::write_double(np, (num_points + i) * dim + d,
+                                     sum / static_cast<double>(src.size()));
+            }
+        });
+        out.AssignPoints(std::move(np));
+    }
     for (CcellsOutBlock& block : staged)
         ccells_emit_block(out, block, nullptr);
-    ccells_copy_point_data(mesh, out);
+    if (new_point_src.empty()) {
+        ccells_copy_point_data(mesh, out);
+    } else {
+        for (const std::string& name : mesh.PointDataNames()) {
+            const NDArray& a = mesh.PointData(name);
+            if (detail::rows(a) != num_points) {
+                out.AddPointData(name, detail::data_owned_copy(a));
+                continue;  // not per-point data; copy verbatim rather than mangle
+            }
+            const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
+            std::vector<std::size_t> shape = a.Shape();
+            shape[0] = num_points + new_point_src.size();
+            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+            std::memcpy(b.Data(), a.Data(), a.Nbytes());
+            parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
+                const std::vector<std::int64_t>& src = new_point_src[i];
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    for (std::int64_t nid : src)
+                        sum += detail::read_double(a, static_cast<std::size_t>(nid) * ncomp + k);
+                    detail::write_double(b, (num_points + i) * ncomp + k,
+                                         sum / static_cast<double>(src.size()));
+                }
+            });
+            out.AddPointData(name, std::move(b));
+        }
+    }
     ccells_copy_field_data(mesh, out);
 
     // cell_data: replicate each parent's row to its children. An array whose
@@ -62799,7 +65968,8 @@ void decim_check_blocks(const Mesh& rMesh) {
         if (cb.IsPolyhedron())
             throw std::invalid_argument(
                 "meshio++: decimate: mesh contains a polyhedron cell block; decimate operates on "
-                "surface meshes (extract_surface first)");
+                "surface meshes -- run extract_surface first (or convert_cells(simplexify) "
+                "if you wanted the volume decomposed instead)");
         const CellType ct = cell_type_from_name(std::string(cb.Type()));
         const int dim = cell_type_dimension(ct);
         if (dim == 3)
@@ -64402,6 +67572,10 @@ struct GradCell {
     bool mSupported = false;      ///< Whether the cell can be differentiated at all.
     CellType mType = CellType::Custom;
     int mDim = -1;
+    /// The cell's boundary as face rings, indexing `mCorners`/`mValues`. Empty
+    /// for a 2D/1D cell. This is what makes Green-Gauss polyhedral: a
+    /// `polyhedron12` and a `hexahedron` differ only in what fills this.
+    detail::CellRings mRings;
 };
 
 /// Reads the leading `NumCorners` connectivity entries of one cell.
@@ -64426,17 +67600,34 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
     rOut.mCorners.clear();
     rOut.mValues.clear();
     rOut.mValue0.assign(NumComp, 0.0);
-    if (rBlock.IsRagged() || rBlock.IsPolyhedron() || NumCorners == 0)
-        return;
+    rOut.mRings.Clear();
 
     static thread_local std::vector<std::int64_t> nodes;
-    grad_corner_nodes(rBlock, Cell, NumCorners, nodes);
+    static thread_local std::vector<Vec3> ring_coords;
+    // The rings are filled for every 3D cell, tabulated or polyhedral, and are
+    // what Green-Gauss integrates over. `cell_rings` interns a tabulated cell's
+    // nodes in CONNECTIVITY order, so the ring indices line up with
+    // mCorners/mValues below either way -- that is the contract this relies on.
+    const bool has_rings =
+        detail::cell_rings(rBlock, Cell, rPoints, PointDim, rOut.mRings, ring_coords);
+    if (rBlock.IsPolyhedron()) {
+        if (!has_rings)
+            return;
+        nodes = rOut.mRings.mNodes;
+    } else {
+        // 2D/1D cells legitimately have no rings; they take the corner-ring
+        // path further down and never reach grad_green_gauss_3d.
+        if (rBlock.IsRagged() || NumCorners == 0)
+            return;
+        grad_corner_nodes(rBlock, Cell, NumCorners, nodes);
+    }
     for (std::int64_t nid : nodes)
         if (nid < 0 || static_cast<std::size_t>(nid) >= NumPoints)
             return;
+    const std::size_t ncorners = nodes.size();
 
-    rOut.mCorners.reserve(NumCorners);
-    rOut.mValues.reserve(NumCorners * NumComp);
+    rOut.mCorners.reserve(ncorners);
+    rOut.mValues.reserve(ncorners * NumComp);
     for (std::int64_t nid : nodes) {
         rOut.mCorners.push_back(detail::read_point(rPoints, PointDim, nid));
         for (std::size_t k = 0; k < NumComp; ++k)
@@ -64448,17 +67639,17 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
     Vec3 origin{0.0, 0.0, 0.0};
     for (const Vec3& r_p : rOut.mCorners)
         origin = detail::vec3_add(origin, r_p);
-    const double inv = 1.0 / static_cast<double>(NumCorners);
+    const double inv = 1.0 / static_cast<double>(ncorners);
     origin = detail::vec3_scale(origin, inv);
     for (std::size_t k = 0; k < NumComp; ++k) {
         double s = 0.0;
-        for (std::size_t i = 0; i < NumCorners; ++i)
+        for (std::size_t i = 0; i < ncorners; ++i)
             s += rOut.mValues[i * NumComp + k];
         rOut.mValue0[k] = s * inv;
     }
     for (Vec3& r_p : rOut.mCorners)
         r_p = detail::vec3_sub(r_p, origin);
-    for (std::size_t i = 0; i < NumCorners; ++i)
+    for (std::size_t i = 0; i < ncorners; ++i)
         for (std::size_t k = 0; k < NumComp; ++k)
             rOut.mValues[i * NumComp + k] -= rOut.mValue0[k];
     rOut.mOrigin = origin;
@@ -64471,22 +67662,26 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
 /// (`[component][derivative]`), or returns false when the cell's fan volume is
 /// degenerate relative to its own size.
 bool grad_green_gauss_3d(const GradCell& rCell, std::size_t NumComp, double* pOut) {
-    const std::vector<detail::CellFaceDef>& r_faces = detail::cell_faces(rCell.mType);
-    if (r_faces.empty())
+    // Face rings rather than `cell_faces(mType)`: that is the ONLY difference
+    // between differentiating a hexahedron and a `polyhedron12`, which is what
+    // makes Green-Gauss naturally polyhedral. The arithmetic below is unchanged.
+    const std::size_t nfaces = rCell.mRings.NumFaces();
+    if (nfaces == 0)
         return false;
 
     std::vector<double> num(NumComp * 3, 0.0);
     double volume = 0.0;
     double area_scale = 0.0;
 
-    for (const detail::CellFaceDef& r_face : r_faces) {
-        const std::size_t m = r_face.mNumCorners;
+    for (std::size_t fi = 0; fi < nfaces; ++fi) {
+        const std::uint32_t* p_ring = rCell.mRings.Face(fi);
+        const std::size_t m = rCell.mRings.FaceSize(fi);
         // Face centre and face-centre value: the fan apex. For linear f the
         // corner average is the ONLY apex whose value is known exactly without
         // shape functions -- see the header. Do not switch to the area centroid.
         Vec3 c{0.0, 0.0, 0.0};
         for (std::size_t i = 0; i < m; ++i)
-            c = detail::vec3_add(c, rCell.mCorners[r_face.mNodes[i]]);
+            c = detail::vec3_add(c, rCell.mCorners[p_ring[i]]);
         const double inv_m = 1.0 / static_cast<double>(m);
         c = detail::vec3_scale(c, inv_m);
 
@@ -64495,25 +67690,25 @@ bool grad_green_gauss_3d(const GradCell& rCell, std::size_t NumComp, double* pOu
         for (std::size_t k = 0; k < NumComp; ++k) {
             double s = 0.0;
             for (std::size_t i = 0; i < m; ++i)
-                s += rCell.mValues[static_cast<std::size_t>(r_face.mNodes[i]) * NumComp + k];
+                s += rCell.mValues[static_cast<std::size_t>(p_ring[i]) * NumComp + k];
             fc[k] = s * inv_m;
         }
 
         for (std::size_t i = 0; i < m; ++i) {
-            const std::size_t a = r_face.mNodes[i];
-            const std::size_t b = r_face.mNodes[(i + 1) % m];
+            const std::size_t a = p_ring[i];
+            const std::size_t b = p_ring[(i + 1) % m];
             const Vec3& r_pa = rCell.mCorners[a];
             const Vec3& r_pb = rCell.mCorners[b];
             const Vec3 av = detail::vec3_scale(
                 detail::vec3_cross(detail::vec3_sub(r_pa, c), detail::vec3_sub(r_pb, c)), 0.5);
-            const Vec3 xj = detail::vec3_scale(detail::vec3_add(detail::vec3_add(c, r_pa), r_pb),
-                                               1.0 / 3.0);
+            const Vec3 xj =
+                detail::vec3_scale(detail::vec3_add(detail::vec3_add(c, r_pa), r_pb), 1.0 / 3.0);
             volume += detail::vec3_dot(xj, av) * (1.0 / 3.0);
             area_scale += detail::vec3_norm(av);
             for (std::size_t k = 0; k < NumComp; ++k) {
-                const double fj = (fc[k] + rCell.mValues[a * NumComp + k] +
-                                   rCell.mValues[b * NumComp + k]) *
-                                  (1.0 / 3.0);
+                const double fj =
+                    (fc[k] + rCell.mValues[a * NumComp + k] + rCell.mValues[b * NumComp + k]) *
+                    (1.0 / 3.0);
                 num[k * 3 + 0] += fj * av[0];
                 num[k * 3 + 1] += fj * av[1];
                 num[k * 3 + 2] += fj * av[2];
@@ -64593,7 +67788,8 @@ bool grad_green_gauss_1d(const GradCell& rCell, std::size_t NumComp, double* pOu
         return false;
     const Vec3 dir = detail::vec3_scale(t, 1.0 / len);
     for (std::size_t k = 0; k < NumComp; ++k) {
-        const double slope = (rCell.mValues[1 * NumComp + k] - rCell.mValues[0 * NumComp + k]) / len;
+        const double slope =
+            (rCell.mValues[1 * NumComp + k] - rCell.mValues[0 * NumComp + k]) / len;
         pOut[k * 3 + 0] = slope * dir[0];
         pOut[k * 3 + 1] = slope * dir[1];
         pOut[k * 3 + 2] = slope * dir[2];
@@ -64858,25 +68054,23 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             std::to_string(field_comp) +
             " components; divergence and curl need a vector field of 2 or 3");
 
-    const std::string out_name =
-        rOptions.mOutputName.empty() ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
+    const std::string out_name = rOptions.mOutputName.empty()
+                                     ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
                                      : rOptions.mOutputName;
     if (!rOptions.mOverwrite) {
         const bool taken = rOptions.mLocation == DataLocation::Point ? rMesh.HasPointData(out_name)
                                                                      : rMesh.HasCellData(out_name);
         if (taken)
-            throw std::invalid_argument(std::string(kGradPrefix) + "'" + out_name +
-                                        "' already exists in " +
-                                        data_location_name(rOptions.mLocation) +
-                                        " (pass overwrite=true to replace it)");
+            throw std::invalid_argument(
+                std::string(kGradPrefix) + "'" + out_name + "' already exists in " +
+                data_location_name(rOptions.mLocation) + " (pass overwrite=true to replace it)");
     }
 
     // The field components actually differentiated: one when a component was
     // selected, all of them otherwise.
     const std::size_t work_comp = rOptions.mComponent.has_value() ? 1 : field_comp;
-    const std::size_t comp_base = rOptions.mComponent.has_value()
-                                      ? static_cast<std::size_t>(*rOptions.mComponent)
-                                      : 0;
+    const std::size_t comp_base =
+        rOptions.mComponent.has_value() ? static_cast<std::size_t>(*rOptions.mComponent) : 0;
     const std::size_t out_comp = grad_out_components(rOptions.mOperator, work_comp);
 
     // Geometry, connectivity, regions, property sets and every existing array
@@ -64914,7 +68108,18 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
     std::vector<CellType> types(nblocks, CellType::Custom);
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        if (cb.IsPolyhedron()) {
+            // Polyhedra are 3D by definition and carry their own faces, so the
+            // corner-count and face-table checks below have nothing to say
+            // about them. `corners` stays 0: grad_load_cell reads the count
+            // from the cell's own rings, which vary per cell.
+            if (dim != 3)
+                continue;
+            types[b] = CellType::Polyhedron;
+            eligible[b] = 1;
+            continue;
+        }
+        if (cb.IsRagged())
             continue;
         const CellType t = cell_type_from_name(cb.Type());
         types[b] = t;
@@ -65020,13 +68225,11 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                         const std::size_t g = static_cast<std::size_t>(nb);
                         if (!cell_ok[g])
                             continue;
-                        stencil.mOffsets.push_back(
-                            Vec3{cell_x[g * 3 + 0] - cell.mOrigin[0],
-                                 cell_x[g * 3 + 1] - cell.mOrigin[1],
-                                 cell_x[g * 3 + 2] - cell.mOrigin[2]});
+                        stencil.mOffsets.push_back(Vec3{cell_x[g * 3 + 0] - cell.mOrigin[0],
+                                                        cell_x[g * 3 + 1] - cell.mOrigin[1],
+                                                        cell_x[g * 3 + 2] - cell.mOrigin[2]});
                         for (std::size_t k = 0; k < work_comp; ++k)
-                            stencil.mDeltas.push_back(cell_f[g * work_comp + k] -
-                                                      cell.mValue0[k]);
+                            stencil.mDeltas.push_back(cell_f[g * work_comp + k] - cell.mValue0[k]);
                     }
                     Vec3 nrm{0.0, 0.0, 0.0};
                     const Vec3* p_normal = nullptr;
@@ -65058,8 +68261,7 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 flag_skipped[c] = 1;
                 return;
             }
-            grad_apply_operator(rOptions.mOperator, grad.data(), work_comp,
-                                pdst + c * out_comp);
+            grad_apply_operator(rOptions.mOperator, grad.data(), work_comp, pdst + c * out_comp);
         });
 
         for (std::size_t c = 0; c < ncells; ++c) {
@@ -67084,17 +70286,13 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
 
 // Sorted corner ids of one facet, padded with -1 up to 4 entries (surface.cpp's
 // facet-key idiom; the padding lets triangular and quadrilateral facets share
-// one map with no discriminator).
-using PartitionFacetKey = std::array<std::int64_t, 4>;
-
-struct PartitionFacetKeyHash {
-    std::size_t operator()(const PartitionFacetKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+// Sorted corner ids of one facet, of any arity. detail::FacetKey rather than
+// the fixed array<int64_t,4> this used before v9.16.1: a polyhedron's face can
+// have any number of corners, and ONE shared key type is what lets a
+// hexahedron and a polyhedron that meet on a face become dual-graph
+// neighbours instead of two isolated vertices.
+using PartitionFacetKey = detail::FacetKey;
+using PartitionFacetKeyHash = detail::FacetKeyHash;
 
 // The corner-node rows of a cell type's facets in the dual-graph sense: faces
 // for 3D cells, edges for 2D cells, empty (isolated vertex) otherwise.
@@ -67149,20 +70347,49 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
 
     // Per-block facet tables + the flat record-buffer layout.
     struct BlockDesc {
-        const NDArray* mpConn;
-        std::size_t mNpc;
-        std::size_t mNumCells;
+        const NDArray* mpConn = nullptr;
+        std::size_t mNpc = 0;
+        std::size_t mNumCells = 0;
         std::vector<PartitionFacetDef> mFacets;
-        std::size_t mFirstFacet;
-        std::int64_t mGlobalCellBase;
+        std::size_t mFirstFacet = 0;
+        std::int64_t mGlobalCellBase = 0;
+        bool mPolyhedron = false;
+        std::size_t mBlock = 0;
+        std::vector<std::size_t> mFaceStart;  // mNumCells + 1
     };
     std::vector<BlockDesc> descs;
     std::size_t total_facets = 0;
     std::int64_t global_cell_base = 0;
+    std::size_t block_index = 0;
     for (const auto cb : rMesh.CellRange()) {
+        const std::size_t this_block = block_index++;
         const std::int64_t base = global_cell_base;
         global_cell_base += static_cast<std::int64_t>(cb.NumCells());
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        if (cb.IsPolyhedron()) {
+            // A polyhedron carries its own faces, so it needs no table -- it was
+            // an isolated vertex before v9.16.1 purely because the key could not
+            // hold an arbitrary face. KaHIP then saw a graph with no edges and
+            // produced an arbitrary (balanced but cut-blind) partition.
+            if (dual_dim != 3)
+                continue;
+            BlockDesc d;
+            d.mPolyhedron = true;
+            d.mBlock = this_block;
+            d.mNumCells = cb.NumCells();
+            d.mFirstFacet = total_facets;
+            d.mGlobalCellBase = base;
+            d.mFaceStart.reserve(d.mNumCells + 1);
+            std::size_t at = 0;
+            d.mFaceStart.push_back(0);
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                at += cb.NumFaces(c);
+                d.mFaceStart.push_back(at);
+            }
+            total_facets += at;
+            descs.push_back(std::move(d));
+            continue;
+        }
+        if (cb.IsRagged())
             continue;  // isolated vertices (no facet table)
         const CellType ct = cell_type_from_name(cb.Type());
         if (cell_type_dimension(ct) != dual_dim)
@@ -67184,6 +70411,19 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
     // Phase 1: build facet keys into disjoint slots (parallel-safe).
     std::vector<PartitionFacetRecord> recs(total_facets);
     for (const BlockDesc& d : descs) {
+        if (d.mPolyhedron) {
+            const auto cb = rMesh.Cells(d.mBlock);
+            parallel_for(d.mNumCells, [&](std::size_t cell) {
+                const std::size_t nf = cb.NumFaces(cell);
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const auto face = cb.Face(cell, f);
+                    PartitionFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[cell] + f];
+                    r.mKey = PartitionFacetKey(face.first, face.second);
+                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
+                }
+            });
+            continue;
+        }
         const NDArray& conn = *d.mpConn;
         const std::size_t npc = d.mNpc;
         const std::size_t fpc = d.mFacets.size();
@@ -67191,10 +70431,10 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
             const std::size_t cell = j / fpc;
             const PartitionFacetDef& facet = d.mFacets[j % fpc];
             PartitionFacetRecord& r = recs[d.mFirstFacet + j];
-            r.mKey = {-1, -1, -1, -1};
+            std::array<std::int64_t, 4> ids{};
             for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
-                r.mKey[k] = detail::read_int(conn, cell * npc + facet.mNodes[k]);
-            std::sort(r.mKey.begin(), r.mKey.end());
+                ids[k] = detail::read_int(conn, cell * npc + facet.mNodes[k]);
+            r.mKey = PartitionFacetKey(ids.data(), facet.mNumCorners);
             r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
         });
     }
@@ -69258,8 +72498,44 @@ QualityReport compute_quality(const Mesh& rMesh) {
         const std::size_t nc = cb.NumCells();
         rep.mNumCells += static_cast<std::int64_t>(nc);
         std::vector<CellMetrics> vals(nc);
-        const QualityFamily family =
-            (cb.IsRagged() || cb.IsPolyhedron()) ? QualityFamily::None : quality_family(ct);
+        if (cb.IsPolyhedron()) {
+            // A REDUCED set, deliberately: volume, inverted and degenerate are
+            // the three that are well defined for a cell bounded by arbitrary
+            // polygons. Aspect ratio, skewness, warpage and the angle metrics
+            // are all defined against a reference element a polyhedron does not
+            // have; inventing plausible-looking numbers for them would be worse
+            // than NaN, which is `compute_quality`'s standing convention for a
+            // metric that does not apply.
+            //
+            // "Inverted" here means UNORIENTABLE, not negative-volume: a
+            // polyhedron's stored winding is not a contract (doc/polyhedra.md),
+            // so there is no convention for a cell to violate -- what a cell can
+            // fail to be is a closed orientable surface.
+            parallel_for(nc, [&](std::size_t i) {
+                CellMetrics& v = vals[i];
+                v.fill(QUALITY_NAN);
+                detail::CellRings rings;
+                std::vector<Vec3> coords;
+                if (!detail::cell_rings(cb, i, points, pdim, rings, coords))
+                    return;
+                const bool orientable = detail::orient_rings(rings, coords.data()) !=
+                                        detail::RingOrientation::Unorientable;
+                v[QM_INVERTED] = orientable ? 0.0 : 1.0;
+                if (!orientable) {
+                    v[QM_DEGENERATE] = 1.0;
+                    return;
+                }
+                const detail::PolyMeasure pm = detail::poly_measure(rings, coords.data());
+                v[QM_VOLUME] = std::abs(pm.mVolume);
+                // Relative to the cell's own size, never an absolute epsilon --
+                // the same rule grad_green_gauss_3d uses.
+                const double scale = pm.mSurfaceArea * std::sqrt(pm.mSurfaceArea);
+                v[QM_DEGENERATE] = (std::abs(pm.mVolume) > eps * scale) ? 0.0 : 1.0;
+            });
+            block_vals.push_back(std::move(vals));
+            continue;
+        }
+        const QualityFamily family = cb.IsRagged() ? QualityFamily::None : quality_family(ct);
         if (family == QualityFamily::None) {
             for (CellMetrics& v : vals)
                 v.fill(QUALITY_NAN);
@@ -69467,7 +72743,8 @@ struct RefineBlockDesc {
 void refine_check_block(const Mesh::CellView& rBlock) {
     if (rBlock.IsRagged())
         throw std::invalid_argument(
-            "refine: cannot refine ragged cell block '" + std::string(rBlock.Type()) +
+            "refine: cannot refine ragged cell block (run convert_cells(simplexify) first) '" +
+            std::string(rBlock.Type()) +
             "' (polygon/polyhedron blocks have no same-type subdivision template)");
     const CellType type = cell_type_from_name(std::string(rBlock.Type()));
     if (detail::refine_type_supported(type))
@@ -71823,6 +75100,7 @@ NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& r
 // How a cell's orientation can be checked. Cells with no signed measure at all
 // never enter the table, so `None` is not represented here.
 enum class SmoothMeasure : std::uint8_t {
+    PolyFan,     ///< polyhedron: the kernel's corner-average fan over the cell's own faces
     FaceFan,     ///< 3D volume cell: signed volume by the outward face fan.
     Shoelace2D,  ///< 2D cell in a 2D mesh: signed area.
     NormalFlip,  ///< 2D cell in a 3D mesh: did the facet normal fold over?
@@ -71837,6 +75115,13 @@ struct SmoothCellTable {
     std::vector<SmoothMeasure> mMeasure;      // size numMeasurable
     std::vector<std::int32_t> mFaceTable;     // index into mFaceTables, or -1
     std::vector<const std::vector<detail::CellFaceDef>*> mFaceTables;
+    // Polyhedron cells only. A polyhedron's faces belong to the CELL, not to
+    // its type, so they cannot share a per-type table like the others: each
+    // cell's rings are appended here and located by mPolyStart/mPolyNumFaces.
+    std::vector<std::int64_t> mPolyStart;       // per cell: index into mPolyFaceStart, or -1
+    std::vector<std::uint32_t> mPolyNumFaces;   // per cell: 0 unless PolyFan
+    std::vector<std::uint32_t> mPolyFaceStart;  // concatenated (nfaces + 1) runs
+    std::vector<std::uint32_t> mPolyFaceNodes;  // concatenated local ring indices
 
     std::size_t NumCells() const { return mMeasure.size(); }
 };
@@ -71847,8 +75132,44 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
     std::unordered_map<int, std::int32_t> face_table_ids;
 
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged() || cb.IsPolyhedron())
-            continue;  // no signed measure -- skipped, not pinned (see the header)
+        if (cb.IsPolyhedron()) {
+            // Each cell contributes its own rings. Before v9.16.0 polyhedron
+            // blocks were skipped here, which meant smooth MOVED their nodes
+            // with no inversion guard at all -- silently, since nothing pins
+            // them either.
+            detail::CellRings rings;
+            std::vector<detail::Vec3> coords;
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                if (!detail::cell_rings(cb, c, rMesh.Points(), rMesh.PointDim(), rings, coords))
+                    continue;
+                bool ok = true;
+                const std::size_t first = t.mCornerNodes.size();
+                for (std::int64_t id : rings.mNodes) {
+                    if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                        ok = false;
+                        break;
+                    }
+                    t.mCornerNodes.push_back(id);
+                }
+                if (!ok) {
+                    t.mCornerNodes.resize(first);
+                    continue;
+                }
+                t.mPolyStart.push_back(static_cast<std::int64_t>(t.mPolyFaceStart.size()));
+                t.mPolyNumFaces.push_back(static_cast<std::uint32_t>(rings.NumFaces()));
+                const std::uint32_t base = static_cast<std::uint32_t>(t.mPolyFaceNodes.size());
+                for (std::uint32_t v : rings.mFaceStart)
+                    t.mPolyFaceStart.push_back(base + v);
+                t.mPolyFaceNodes.insert(t.mPolyFaceNodes.end(), rings.mFaceNodes.begin(),
+                                        rings.mFaceNodes.end());
+                t.mMeasure.push_back(SmoothMeasure::PolyFan);
+                t.mFaceTable.push_back(-1);
+                t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));
+            }
+            continue;
+        }
+        if (cb.IsRagged())
+            continue;  // 1-level polygons: no enclosed volume to check
         const CellType ct = cell_type_from_name(cb.Type());
         const int corners = detail::cell_corner_count(ct);
         if (corners <= 0)
@@ -71894,6 +75215,8 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
             }
             t.mMeasure.push_back(measure);
             t.mFaceTable.push_back(face_id);
+            t.mPolyStart.push_back(-1);
+            t.mPolyNumFaces.push_back(0);
             t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));
         }
     }
@@ -71943,6 +75266,42 @@ double smooth_facefan_volume(const SmoothCornerReader& rAt, std::size_t NumCorne
         for (std::uint8_t k = 0; k < f.mNumCorners; ++k) {
             const Vec3 a = rAt(f.mNodes[k]);
             const Vec3 b = rAt(f.mNodes[(k + 1) % f.mNumCorners]);
+            vol += detail::triple_product(detail::vec3_sub(a, cc), detail::vec3_sub(b, cc),
+                                          detail::vec3_sub(fc, cc)) /
+                   6.0;
+        }
+    }
+    return vol;
+}
+
+// The polyhedral twin of smooth_facefan_volume: identical arithmetic, but the
+// faces come from the CELL's own rings (stored per cell in the table) rather
+// than from a per-type `cell_faces` table. Same corner-average fan as
+// detail/polyhedron.hpp's poly_measure, so the two agree in sign.
+double smooth_polyfan_volume(const SmoothCornerReader& rAt, std::size_t NumCorners,
+                             const SmoothCellTable& rTable, std::size_t Cell) {
+    const std::int64_t start = rTable.mPolyStart[Cell];
+    const std::size_t nfaces = rTable.mPolyNumFaces[Cell];
+    if (start < 0 || nfaces == 0)
+        return 0.0;
+    const std::uint32_t* face_start =
+        rTable.mPolyFaceStart.data() + static_cast<std::size_t>(start);
+
+    Vec3 cc = {0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < NumCorners; ++k)
+        cc = detail::vec3_add(cc, rAt(k));
+    cc = detail::vec3_scale(cc, 1.0 / static_cast<double>(NumCorners));
+    double vol = 0.0;
+    for (std::size_t f = 0; f < nfaces; ++f) {
+        const std::uint32_t* ring = rTable.mPolyFaceNodes.data() + face_start[f];
+        const std::size_t m = face_start[f + 1] - face_start[f];
+        Vec3 fc = {0.0, 0.0, 0.0};
+        for (std::size_t k = 0; k < m; ++k)
+            fc = detail::vec3_add(fc, rAt(ring[k]));
+        fc = detail::vec3_scale(fc, 1.0 / static_cast<double>(m));
+        for (std::size_t k = 0; k < m; ++k) {
+            const Vec3 a = rAt(ring[k]);
+            const Vec3 b = rAt(ring[(k + 1) % m]);
             vol += detail::triple_product(detail::vec3_sub(a, cc), detail::vec3_sub(b, cc),
                                           detail::vec3_sub(fc, cc)) /
                    6.0;
@@ -72019,6 +75378,18 @@ bool smooth_cell_flips(std::size_t Cell, const SmoothCellTable& rTable,
     SmoothCornerReader after{&rXyz, corners, Node, &rCand};
 
     switch (rTable.mMeasure[Cell]) {
+        case SmoothMeasure::PolyFan: {
+            // Measured WITHOUT re-orienting: a polyhedron's stored winding is
+            // arbitrary but fixed for the whole run, so the sign is consistent
+            // between `before` and `after` -- which is all "do no harm" needs.
+            // Orienting here would repair the winding on every probe and hide
+            // exactly the flip the guard exists to catch.
+            const double v0 = smooth_polyfan_volume(before, ncorner, rTable, Cell);
+            if (v0 == 0.0)
+                return false;  // degenerate on arrival: no constraint
+            const double v1 = smooth_polyfan_volume(after, ncorner, rTable, Cell);
+            return (v0 > 0.0) ? (v1 <= 0.0) : (v1 >= 0.0);
+        }
         case SmoothMeasure::FaceFan: {
             const std::vector<detail::CellFaceDef>& faces =
                 *rTable.mFaceTables[static_cast<std::size_t>(rTable.mFaceTable[Cell])];
@@ -72078,18 +75449,13 @@ SmoothCsr smooth_build_incidence(const SmoothCellTable& rTable, std::size_t n) {
 
 // --- boundary + feature detection -------------------------------------------
 
-// Sorted corner ids of one facet, padded with -1 up to 4 entries. Node ids are
-// non-negative, so a triangle key {-1,a,b,c} can never collide with a quad key.
-using SmoothFacetKey = std::array<std::int64_t, 4>;
-
-struct SmoothFacetKeyHash {
-    std::size_t operator()(const SmoothFacetKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+// Sorted corner ids of one facet, of any arity. detail::FacetKey rather than
+// the fixed array<int64_t,4> this used before v9.16.1, for the reason
+// surface.cpp switched: a polyhedron's face can have any number of corners, and
+// ONE shared key type is what lets a hexahedron and a polyhedron meeting on a
+// face cancel each other out instead of both reporting it as boundary.
+using SmoothFacetKey = detail::FacetKey;
+using SmoothFacetKeyHash = detail::FacetKeyHash;
 
 // One facet of a cell, corners only: unifies CellFaceDef (3D) and CellEdgeDef
 // (2D) so the two-phase extractor is dimension-agnostic.
@@ -72104,10 +75470,14 @@ struct SmoothFacetBlock {
     std::size_t mNumCells = 0;
     std::vector<SmoothFacetDef> mFacets;
     std::size_t mFirstFacet = 0;
+    // Polyhedron blocks: faces per cell vary, so record offsets are tabulated.
+    bool mPolyhedron = false;
+    std::size_t mBlock = 0;
+    std::vector<std::size_t> mFaceStart;  // mNumCells + 1
 };
 
 struct SmoothFacetRecord {
-    SmoothFacetKey mKey = {-1, -1, -1, -1};
+    SmoothFacetKey mKey;
     std::uint32_t mBlock = 0;
     std::uint32_t mCell = 0;
     std::uint32_t mSlot = 0;
@@ -72154,8 +75524,29 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
                           std::vector<SmoothBoundaryFacet>* pFacets) {
     std::vector<SmoothFacetBlock> blocks;
     std::size_t total_facets = 0;
+    std::size_t block_index = 0;
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        const std::size_t this_block = block_index++;
+        if (cb.IsPolyhedron()) {
+            if (!FaceMode)
+                continue;  // a polyhedron has no 2D boundary edges to mark
+            SmoothFacetBlock b;
+            b.mPolyhedron = true;
+            b.mBlock = this_block;
+            b.mNumCells = cb.NumCells();
+            b.mFirstFacet = total_facets;
+            b.mFaceStart.reserve(b.mNumCells + 1);
+            std::size_t at = 0;
+            b.mFaceStart.push_back(0);
+            for (std::size_t c = 0; c < b.mNumCells; ++c) {
+                at += cb.NumFaces(c);
+                b.mFaceStart.push_back(at);
+            }
+            total_facets += at;
+            blocks.push_back(std::move(b));
+            continue;
+        }
+        if (cb.IsRagged())
             continue;
         const CellType ct = cell_type_from_name(cb.Type());
         if (cell_type_dimension(ct) != (FaceMode ? 3 : 2))
@@ -72178,6 +75569,21 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
     std::vector<SmoothFacetRecord> recs(total_facets);
     for (std::uint32_t bi = 0; bi < blocks.size(); ++bi) {
         const SmoothFacetBlock& b = blocks[bi];
+        if (b.mPolyhedron) {
+            const auto cb = rMesh.Cells(b.mBlock);
+            parallel_for(b.mNumCells, [&, bi](std::size_t cell) {
+                const std::size_t nf = cb.NumFaces(cell);
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const auto face = cb.Face(cell, f);
+                    SmoothFacetRecord& r = recs[b.mFirstFacet + b.mFaceStart[cell] + f];
+                    r.mKey = SmoothFacetKey(face.first, face.second);
+                    r.mBlock = bi;
+                    r.mCell = static_cast<std::uint32_t>(cell);
+                    r.mSlot = static_cast<std::uint32_t>(f);
+                }
+            });
+            continue;
+        }
         const NDArray& conn = *b.mpConn;
         const std::size_t npc = b.mNpc;
         const std::size_t fpc = b.mFacets.size();
@@ -72186,10 +75592,11 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             const std::size_t slot = j % fpc;
             const SmoothFacetDef& fd = b.mFacets[slot];
             SmoothFacetRecord& r = recs[b.mFirstFacet + j];
-            r.mKey = {-1, -1, -1, -1};
-            for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k)
-                r.mKey[k] = detail::read_int(conn, cell * npc + fd.mNodes[k]);
-            std::sort(r.mKey.begin(), r.mKey.end());
+            std::array<std::int64_t, 4> ids{};
+            const std::uint8_t nk = fd.mNumCorners < 4 ? fd.mNumCorners : 4;
+            for (std::uint8_t k = 0; k < nk; ++k)
+                ids[k] = detail::read_int(conn, cell * npc + fd.mNodes[k]);
+            r.mKey = SmoothFacetKey(ids.data(), nk);
             r.mBlock = bi;
             r.mCell = static_cast<std::uint32_t>(cell);
             r.mSlot = static_cast<std::uint32_t>(slot);
@@ -72207,6 +75614,40 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
         if (counts[r.mKey] != 1)
             continue;
         const SmoothFacetBlock& b = blocks[r.mBlock];
+        if (b.mPolyhedron) {
+            const auto cb = rMesh.Cells(b.mBlock);
+            const auto face =
+                cb.Face(static_cast<std::size_t>(r.mCell), static_cast<std::size_t>(r.mSlot));
+            bool ok = true;
+            for (std::size_t k = 0; k < face.second; ++k) {
+                const std::int64_t id = face.first[k];
+                if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                    ok = false;
+                    break;
+                }
+                rBoundary[static_cast<std::size_t>(id)] = 1;
+            }
+            if (!ok || pFacets == nullptr || face.second < 3)
+                continue;
+            // One normal for the whole face, computed over ALL its corners.
+            // SmoothBoundaryFacet holds at most four node ids, so an n-gon is
+            // emitted as several records sharing that normal -- every corner
+            // then takes part in the feature test, which a single truncated
+            // record would silently deny to corners 5+.
+            std::vector<std::int64_t> ids(face.first, face.first + face.second);
+            const SmoothCornerReader at{&rXyz, ids.data(), -1, nullptr};
+            const Vec3 nrm = detail::vec3_normalize(smooth_newell_normal(at, ids.size()));
+            for (std::size_t base = 0; base < ids.size(); base += 4) {
+                SmoothBoundaryFacet bf;
+                bf.mNormal = nrm;
+                const std::size_t take = std::min<std::size_t>(4, ids.size() - base);
+                bf.mNumCorners = static_cast<std::uint8_t>(take);
+                for (std::size_t k = 0; k < take; ++k)
+                    bf.mNodes[k] = ids[base + k];
+                pFacets->push_back(bf);
+            }
+            continue;
+        }
         const SmoothFacetDef& fd = b.mFacets[r.mSlot];
         const std::size_t row = static_cast<std::size_t>(r.mCell) * b.mNpc;
 
@@ -72941,39 +76382,24 @@ namespace {
 
 using detail::Vec3;
 
-// Unsigned area of a corner polygon (triangle / quad) via the Newell normal.
-double stats_area(const std::vector<Vec3>& rC, int corners) {
-    if (corners < 3)
-        return 0.0;
-    Vec3 s = {0, 0, 0};
-    for (int i = 0; i < corners; ++i)
-        s = detail::vec3_add(s, detail::vec3_cross(rC[i], rC[(i + 1) % corners]));
-    return 0.5 * detail::vec3_norm(s);
-}
-
-// Signed volume of a 3D cell via the divergence theorem over its outward-wound
-// boundary faces (triangulated fan). NaN for types without a face table.
-double stats_signed_volume(const std::vector<Vec3>& rC, CellType ct) {
-    const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
-    if (faces.empty())
-        return std::nan("");
-    double vol6 = 0.0;
-    for (const detail::CellFaceDef& f : faces) {
-        const Vec3 a = rC[f.mNodes[0]];
-        for (int i = 1; i + 1 < f.mNumCorners; ++i)
-            vol6 += detail::triple_product(a, rC[f.mNodes[i]], rC[f.mNodes[i + 1]]);
-    }
-    return vol6 / 6.0;
-}
-
 // Sum the areas of the triangle/quad facets of a (linearized) surface mesh.
 double stats_surface_area(const Mesh& rSurf) {
     const NDArray& points = rSurf.Points();
     const std::size_t pdim = rSurf.PointDim();
     double area = 0.0;
     for (const auto cb : rSurf.CellRange()) {
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        if (cb.IsPolyhedron())
+            continue;  // a volume cell, not a facet of one
+        if (cb.IsRagged()) {
+            for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+                const std::size_t n = cb.RowSize(i);
+                std::vector<Vec3> coords(n);
+                for (std::size_t k = 0; k < n; ++k)
+                    coords[k] = detail::read_point(points, pdim, cb.Row(i)[k]);
+                area += detail::polygon_area(coords.data(), n);
+            }
             continue;
+        }
         const CellType ct = cell_type_from_name(cb.Type());
         const int cc = detail::cell_corner_count(ct);
         if (cell_type_dimension(ct) != 2 || (cc != 3 && cc != 4))
@@ -72986,7 +76412,7 @@ double stats_surface_area(const Mesh& rSurf) {
             std::vector<Vec3> coords;
             detail::read_corner_coords(points, pdim, conn, i * npc, static_cast<std::size_t>(cc),
                                        coords);
-            vals[i] = stats_area(coords, cc);
+            vals[i] = detail::polygon_area(coords.data(), static_cast<std::size_t>(cc));
         });
         for (double v : vals)
             area += v;
@@ -73071,8 +76497,61 @@ StatsReport compute_stats(const Mesh& rMesh) {
             rep.mCellTypeCounts[it->second].second += static_cast<std::int64_t>(nc);
         }
 
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        if (cb.IsPolyhedron()) {
+            // A polyhedron block's face winding is NOT a contract -- meshio++
+            // repairs it rather than requiring it (doc/polyhedra.md) -- so
+            // "inverted" is not a question one can ask of such a cell: there is
+            // no convention for it to violate. Orient, then take the (now
+            // positive) volume. What IS meaningful is an unorientable cell,
+            // which is the polyhedral analogue of degenerate and is counted as
+            // such rather than silently contributing zero.
+            any_3d = true;
+            std::vector<double> vals(nc);
+            parallel_for(nc, [&](std::size_t i) {
+                detail::CellRings rings;
+                std::vector<Vec3> coords;
+                if (!detail::cell_rings(cb, i, points, dim, rings, coords)) {
+                    vals[i] = std::nan("");
+                    return;
+                }
+                if (detail::orient_rings(rings, coords.data()) ==
+                    detail::RingOrientation::Unorientable) {
+                    vals[i] = std::nan("");
+                    return;
+                }
+                vals[i] = std::abs(detail::poly_measure(rings, coords.data()).mVolume);
+            });
+            std::size_t n_bad = 0;
+            for (double v : vals) {
+                if (std::isnan(v)) {
+                    ++n_bad;
+                    continue;
+                }
+                rep.mSignedVolume += v;
+                rep.mUnsignedVolume += v;
+            }
+            if (n_bad > 0)
+                log::warn(
+                    "stats: {} polyhedron cell(s) in block '{}' are not closed orientable "
+                    "surfaces; their volume is not defined and is excluded",
+                    n_bad, type);
             continue;
+        }
+        if (cb.IsRagged()) {
+            // 1-level ragged (jagged polygons): a surface, so it contributes
+            // area. Before v9.16.0 such a block contributed nothing at all.
+            std::vector<double> vals(nc);
+            parallel_for(nc, [&](std::size_t i) {
+                const std::size_t n = cb.RowSize(i);
+                std::vector<Vec3> coords(n);
+                for (std::size_t k = 0; k < n; ++k)
+                    coords[k] = detail::read_point(points, dim, cb.Row(i)[k]);
+                vals[i] = detail::polygon_area(coords.data(), n);
+            });
+            for (double v : vals)
+                rep.mTotalArea += v;
+            continue;
+        }
         const int cc = detail::cell_corner_count(ct);
         const int cdim = cell_type_dimension(ct);
         if (cc <= 0)
@@ -73086,18 +76565,23 @@ StatsReport compute_stats(const Mesh& rMesh) {
                 std::vector<Vec3> coords;
                 detail::read_corner_coords(points, dim, conn, i * npc, static_cast<std::size_t>(cc),
                                            coords);
-                vals[i] = stats_area(coords, cc);
+                vals[i] = detail::polygon_area(coords.data(), static_cast<std::size_t>(cc));
             });
             for (double v : vals)
                 rep.mTotalArea += v;
         } else if (cdim == 3) {
+            // Deliberately NOT oriented: `cell_faces`' rows are canonically
+            // outward-wound, so the sign here genuinely measures whether the
+            // CELL is inverted. Repairing the winding first would make every
+            // cell positive and silently zero `mNumInverted`.
             any_3d = true;
             std::vector<double> vals(nc);
             parallel_for(nc, [&](std::size_t i) {
+                detail::CellRings rings;
                 std::vector<Vec3> coords;
-                detail::read_corner_coords(points, dim, conn, i * npc, static_cast<std::size_t>(cc),
-                                           coords);
-                vals[i] = stats_signed_volume(coords, ct);
+                vals[i] = detail::cell_rings(cb, i, points, dim, rings, coords)
+                              ? detail::poly_measure(rings, coords.data()).mVolume
+                              : std::nan("");
             });
             for (double v : vals) {
                 if (std::isnan(v))
@@ -73191,27 +76675,24 @@ bool surface_skin_block_supported(CellType type, bool is_ragged) {
     return cell_type_dimension(type) == 3 && !is_ragged && detail::skin_supported(type);
 }
 
-// --- facet key + hash (identical to the legacy skin hashing) ----------------
+// --- facet key + hash -------------------------------------------------------
+//
+// detail::FacetKey rather than the fixed array<int64_t,4> this used before
+// v9.16.0: a polyhedron's face can have any number of corners. It keeps a
+// 4-entry inline fast path, so a triangle or quad still costs no allocation and
+// the rectangular path is unchanged. Sharing ONE key type across both is what
+// lets a hexahedron and a polyhedron that meet on a face cancel each other out
+// -- with two key types they would each report that face as boundary.
 
-// Sorted corner ids of one facet, padded with -1 up to 4 entries.
-using SurfaceFacetKey = std::array<std::int64_t, 4>;
-
-struct SurfaceFacetKeyHash {
-    std::size_t operator()(const SurfaceFacetKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+using SurfaceFacetKey = detail::FacetKey;
+using SurfaceFacetKeyHash = detail::FacetKeyHash;
 
 SurfaceFacetKey surface_facet_key(const NDArray& rConn, std::size_t rowOffset,
                                   const SurfaceFacetDef& rFacet) {
-    SurfaceFacetKey key = {-1, -1, -1, -1};
+    std::array<std::int64_t, 4> ids{};
     for (std::uint8_t k = 0; k < rFacet.mNumCorners; ++k)
-        key[k] = detail::read_int(rConn, rowOffset + rFacet.mNodes[k]);
-    std::sort(key.begin(), key.end());
-    return key;
+        ids[k] = detail::read_int(rConn, rowOffset + rFacet.mNodes[k]);
+    return SurfaceFacetKey(ids.data(), rFacet.mNumCorners);
 }
 
 // --- canonical output buckets -----------------------------------------------
@@ -73255,13 +76736,18 @@ std::size_t surface_out_type_nodes(SurfaceMode mode, std::size_t index) {
 // --- per-block enumeration descriptor ---------------------------------------
 
 struct SurfaceBlockDesc {
-    const NDArray* mpConn;
-    std::size_t mNpc;
-    std::size_t mNumCells;
-    std::vector<SurfaceFacetDef> mFacets;
-    std::size_t mFacetsPerCell;
-    std::size_t mFirstFacet;       // offset into the flat record buffer
-    std::int64_t mGlobalCellBase;  // input-cell index of this block's cell 0
+    const NDArray* mpConn = nullptr;  // rectangular blocks only
+    std::size_t mNpc = 0;
+    std::size_t mNumCells = 0;
+    std::vector<SurfaceFacetDef> mFacets;  // rectangular blocks only
+    std::size_t mFacetsPerCell = 0;        // rectangular blocks only
+    std::size_t mFirstFacet = 0;           // offset into the flat record buffer
+    std::int64_t mGlobalCellBase = 0;      // input-cell index of this block's cell 0
+    // Polyhedron blocks: faces per cell vary, so the flat record offsets are
+    // tabulated instead of computed as cell * mFacetsPerCell.
+    bool mPolyhedron = false;
+    std::size_t mBlock = 0;               // index into the mesh's cell blocks
+    std::vector<std::size_t> mFaceStart;  // mNumCells + 1 record offsets
 };
 
 // One facet occurrence recorded in phase 1 (keys built in parallel).
@@ -73312,7 +76798,9 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
                                   : (cell_type_dimension(ct) == 2 && !cb.IsPolyhedron());
         if (!same_dim)
             continue;
-        if (!cb.IsRagged() && !cb.IsPolyhedron() && surface_mode_supported(ct, mode)) {
+        // A polyhedron block carries its own faces, so it is supported by
+        // construction -- there is no table for it to be missing from.
+        if (cb.IsPolyhedron() || (!cb.IsRagged() && surface_mode_supported(ct, mode))) {
             any_supported = true;
         } else {
             log::warn("{}: {} cell block '{}' is not supported; skipping it.", pOpName, noun,
@@ -73336,7 +76824,29 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         const bool same_dim = mode == SurfaceMode::Face
                                   ? (cell_type_dimension(ct) == 3 || cb.IsPolyhedron())
                                   : (cell_type_dimension(ct) == 2 && !cb.IsPolyhedron());
-        if (!same_dim || cb.IsRagged() || cb.IsPolyhedron() || !surface_mode_supported(ct, mode))
+        if (!same_dim)
+            continue;
+        if (cb.IsPolyhedron()) {
+            // Variable faces per cell: tabulate the record offsets instead of
+            // computing them from a constant facets-per-cell.
+            SurfaceBlockDesc d;
+            d.mPolyhedron = true;
+            d.mBlock = block_idx - 1;
+            d.mNumCells = cb.NumCells();
+            d.mFirstFacet = total_facets;
+            d.mGlobalCellBase = base;
+            d.mFaceStart.reserve(d.mNumCells + 1);
+            std::size_t at = 0;
+            d.mFaceStart.push_back(0);
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                at += cb.NumFaces(c);
+                d.mFaceStart.push_back(at);
+            }
+            total_facets += at;
+            descs.push_back(std::move(d));
+            continue;
+        }
+        if (cb.IsRagged() || !surface_mode_supported(ct, mode))
             continue;
         SurfaceBlockDesc d;
         d.mpConn = &cb.Conn();
@@ -73354,6 +76864,22 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     std::vector<SurfaceFacetRecord> recs(total_facets);
     for (std::uint32_t di = 0; di < descs.size(); ++di) {
         const SurfaceBlockDesc& d = descs[di];
+        if (d.mPolyhedron) {
+            const auto cb = rMesh.Cells(d.mBlock);
+            parallel_for(d.mNumCells, [&, di](std::size_t c) {
+                const std::size_t nf = cb.NumFaces(c);
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const auto face = cb.Face(c, f);
+                    SurfaceFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[c] + f];
+                    r.mKey = SurfaceFacetKey(face.first, face.second);
+                    r.mDesc = di;
+                    r.mCell = static_cast<std::uint32_t>(c);
+                    r.mSlot = static_cast<std::uint32_t>(f);
+                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(c);
+                }
+            });
+            continue;
+        }
         const NDArray& conn = *d.mpConn;
         const std::size_t npc = d.mNpc;
         const std::size_t fpc = d.mFacetsPerCell;
@@ -73380,10 +76906,33 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     const std::size_t num_out = surface_num_out_types(mode);
     std::vector<std::vector<std::int64_t>> out_conn(num_out);
     std::vector<std::vector<std::int64_t>> out_parent(num_out);
+    // A polyhedral face may be an n-gon, which no fixed-width bucket can hold;
+    // those go to a ragged `polygon` block emitted alongside the fixed ones.
+    std::vector<std::vector<std::int64_t>> poly_rows;
+    std::vector<std::int64_t> poly_parent;
     for (const SurfaceFacetRecord& r : recs) {
         if (face_count[r.mKey] != 1)
             continue;
         const SurfaceBlockDesc& d = descs[r.mDesc];
+        if (d.mPolyhedron) {
+            const auto cb = rMesh.Cells(d.mBlock);
+            const auto face =
+                cb.Face(static_cast<std::size_t>(r.mCell), static_cast<std::size_t>(r.mSlot));
+            if (face.second == 3 || face.second == 4) {
+                const std::size_t bucket = surface_out_type_index(
+                    mode, face.second == 3 ? CellType::Triangle : CellType::Quad);
+                std::vector<std::int64_t>& dst = out_conn[bucket];
+                for (std::size_t k = 0; k < face.second; ++k)
+                    dst.push_back(face.first[k]);
+                if (recordParentIds)
+                    out_parent[bucket].push_back(r.mParent);
+            } else {
+                poly_rows.emplace_back(face.first, face.first + face.second);
+                if (recordParentIds)
+                    poly_parent.push_back(r.mParent);
+            }
+            continue;
+        }
         const NDArray& conn = *d.mpConn;
         const std::size_t row_offset = static_cast<std::size_t>(r.mCell) * d.mNpc;
         const SurfaceFacetDef& facet = d.mFacets[r.mSlot];
@@ -73404,6 +76953,9 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     std::vector<char> used(num_points, 0);
     for (const std::vector<std::int64_t>& conn : out_conn)
         for (std::int64_t id : conn)
+            used[static_cast<std::size_t>(id)] = 1;
+    for (const std::vector<std::int64_t>& row : poly_rows)
+        for (std::int64_t id : row)
             used[static_cast<std::size_t>(id)] = 1;
     std::vector<std::int64_t> remap(num_points, -1);
     std::size_t num_used = 0;
@@ -73444,6 +76996,18 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
             const std::vector<std::int64_t>& par = out_parent[t];
             NDArray pblock = NDArray::Uninit(DType::Int64, {par.size(), 1});
             std::memcpy(pblock.Data(), par.data(), par.size() * sizeof(std::int64_t));
+            parent_blocks.push_back(std::move(pblock));
+        }
+    }
+    if (!poly_rows.empty()) {
+        for (std::vector<std::int64_t>& row : poly_rows)
+            for (std::int64_t& id : row)
+                id = remap[static_cast<std::size_t>(id)];
+        surface.AddPolygonBlock("polygon", std::move(poly_rows));
+        if (recordParentIds) {
+            NDArray pblock = NDArray::Uninit(DType::Int64, {poly_parent.size(), 1});
+            std::memcpy(pblock.Data(), poly_parent.data(),
+                        poly_parent.size() * sizeof(std::int64_t));
             parent_blocks.push_back(std::move(pblock));
         }
     }
@@ -74224,7 +77788,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets side channel in v1
              meshioplusplus::write_ansysinp(p, mm, info);
          }},
-    // openfoam is read-only in the C++ core (see openfoam.hpp) -> no writer entry.
+        {"openfoam",
+         [](const std::string& p, const Mesh& mm) {
+             // No patch-name/type side channel here, so this yields a single
+             // `defaultFaces` patch -- a valid, loadable case (see
+             // write_openfoam). The flat bindings get that rather than an error.
+             meshioplusplus::OpenFoamInfo info;
+             meshioplusplus::write_openfoam(p, mm, info);
+         }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"cgns", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},
@@ -74281,6 +77852,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".fem", "nastran"},
         {".vol", "netgen"},
         {".obj", "obj"},
+        // OpenFOAM: the `.foam` marker file. A case *directory* has no
+        // extension at all, so that form still needs an explicit format.
+        {".foam", "openfoam"},
         {".off", "off"},
         {".post", "permas"},
         {".dato", "permas"},
@@ -74458,6 +78032,11 @@ const char* registry_compiled_out(const std::string& rFormat) {
     if (rFormat == "exodus")
         return "netCDF";
 #endif
+    // Deliberately NOT an arm for cgns/cgnslib: the format is fully readable
+    // and writable without it (the hand-rolled ADF-over-HDF5 path), so
+    // reporting it "compiled out" would be wrong. The cgnslib-only
+    // capabilities -- ADF containers and NGON_n/NFACE_n -- report themselves
+    // by name from read_cgns_mll instead.
     return nullptr;
 }
 

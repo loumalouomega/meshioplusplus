@@ -209,6 +209,11 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_netcdf__") = false;
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    m.attr("__has_cgnslib__") = true;
+#else
+    m.attr("__has_cgnslib__") = false;
+#endif
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
     m.attr("__has_zlib__") = true;
 #else
@@ -1827,9 +1832,13 @@ finalizes.
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     // CGNS writer / reader (.cgns).
+    // `allow_ragged`: polygon/polyhedron blocks became NGON_n/NFACE_n
+    // sections in v9.21.0, so they must reach the C++ writer rather than being
+    // bounced back to the (deliberately NGON-less) Python twin.
     m.def("cgns_write", [](const std::string& path, py::object pymesh, int gzip_level) {
         meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         meshioplusplus::write_cgns(path, cpp, gzip_level);
     });
     m.def("cgns_read", [](const std::string& path) {
@@ -1991,7 +2000,7 @@ finalizes.
         return pymesh;
     });
 
-    // OpenFOAM polyMesh reader (read-only). Boundary patch names are
+    // OpenFOAM polyMesh reader. Boundary patch names and types are
     // mesh.cell_tags, carried through the OpenFoamInfo side-channel.
     m.def("openfoam_read", [](const std::string& path) {
         meshioplusplus::OpenFoamInfo info;
@@ -2002,8 +2011,36 @@ finalizes.
             ctags[py::int_(kv.first)] = kv.second;
         pymesh.attr("cell_tags") = ctags;
         pymesh.attr("point_tags") = py::dict();
+        py::dict ptypes;
+        for (const auto& kv : info.mPatchTypes)
+            ptypes[py::int_(kv.first)] = kv.second;
+        pymesh.attr("openfoam_patch_types") = ptypes;
         return pymesh;
     });
+
+    // OpenFOAM polyMesh writer. `allow_ragged` is mandatory: a polyhedron block
+    // is this format's native cell shape, and the reader emits them, so a
+    // round-trip write would otherwise throw on our own output.
+    m.def(
+        "openfoam_write",
+        [](const std::string& path, py::object pymesh, py::dict cell_tags, py::dict patch_types) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::OpenFoamInfo info;
+            for (auto item : cell_tags) {
+                std::vector<std::string> names;
+                for (auto n : py::cast<py::iterable>(item.second))
+                    names.push_back(py::cast<std::string>(n));
+                info.mCellTags[py::cast<std::int64_t>(item.first)] = std::move(names);
+            }
+            for (auto item : patch_types)
+                info.mPatchTypes[py::cast<std::int64_t>(item.first)] =
+                    py::cast<std::string>(item.second);
+            meshioplusplus::write_openfoam(path, cpp, info);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("cell_tags") = py::dict(),
+        py::arg("patch_types") = py::dict());
 
     // WKT (TIN) writer / reader (.wkt).
     m.def("wkt_write", [](const std::string& path, py::object pymesh) {

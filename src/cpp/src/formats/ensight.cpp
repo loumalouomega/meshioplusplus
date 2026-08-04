@@ -708,11 +708,27 @@ void ensight_append_i32(std::vector<char>& rOut, std::int64_t v) {
 }
 
 // Validate the mesh and return one keyword entry per cell block.
+// The two ragged keywords have no fixed node count, so they cannot live in
+// ensight_type_table() (which is keyed on a meshio type name and carries one).
+// `mNumNodes < 0` is the marker the geo writers branch on.
+const EnsightTypeEntry kEnsightNsided = {"nsided", "", -1};
+const EnsightTypeEntry kEnsightNfaced = {"nfaced", "", -2};
+
 std::vector<const EnsightTypeEntry*> ensight_writable_blocks(const Mesh& rMesh) {
     std::vector<const EnsightTypeEntry*> entries;
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged())
-            throw WriteError("EnSight: writing nsided/nfaced (ragged) blocks is not supported");
+        // Ragged blocks are EnSight's own `nsided` / `nfaced`, whose wire
+        // format is the exact inverse of what the reader already parses: a
+        // per-cell count run, then (for nfaced) a per-face size run, then the
+        // node ids. No orientation contract, no global face table.
+        if (cb.IsPolyhedron()) {
+            entries.push_back(&kEnsightNfaced);
+            continue;
+        }
+        if (cb.IsRagged()) {
+            entries.push_back(&kEnsightNsided);
+            continue;
+        }
         const EnsightTypeEntry* entry = ensight_entry_from_meshio(cb.Type());
         if (entry == nullptr)
             throw WriteError("EnSight: cell type '" + cb.Type() + "' has no EnSight keyword");
@@ -762,6 +778,47 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
         out += "\n";
         std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(ne));
         out += buf;
+        if (entry->mNumNodes == -2) {
+            // nfaced: faces-per-cell, then nodes-per-face, then the node ids --
+            // the three runs read_faces consumes, in the same order.
+            for (std::size_t r = 0; r < ne; ++r) {
+                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(cb.NumFaces(r)));
+                out += buf;
+            }
+            for (std::size_t r = 0; r < ne; ++r)
+                for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                    std::snprintf(buf, sizeof(buf), "%10lld\n",
+                                  static_cast<long long>(cb.Face(r, f).second));
+                    out += buf;
+                }
+            for (std::size_t r = 0; r < ne; ++r)
+                for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                    const auto face = cb.Face(r, f);
+                    for (std::size_t k = 0; k < face.second; ++k) {
+                        std::snprintf(buf, sizeof(buf), "%10lld",
+                                      static_cast<long long>(face.first[k]) + 1);
+                        out += buf;
+                    }
+                    out += "\n";
+                }
+            continue;
+        }
+        if (entry->mNumNodes == -1) {
+            // nsided: nodes-per-cell, then the node ids.
+            for (std::size_t r = 0; r < ne; ++r) {
+                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(cb.RowSize(r)));
+                out += buf;
+            }
+            for (std::size_t r = 0; r < ne; ++r) {
+                for (std::size_t k = 0; k < cb.RowSize(r); ++k) {
+                    std::snprintf(buf, sizeof(buf), "%10lld",
+                                  static_cast<long long>(cb.Row(r)[k]) + 1);
+                    out += buf;
+                }
+                out += "\n";
+            }
+            continue;
+        }
         for (std::size_t r = 0; r < ne; ++r) {
             for (std::size_t j = 0; j < npc; ++j) {
                 const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
@@ -822,6 +879,40 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
 
         ensight_append_str80(out, entry->mKeyword);
         ensight_append_i32(out, static_cast<std::int64_t>(ne));
+        if (entry->mNumNodes < 0) {
+            // nsided / nfaced: the same three (or two) runs as the ASCII path,
+            // as int32 -- which is exactly what read_binary_faces consumes.
+            std::vector<std::int32_t> counts;
+            std::vector<std::int32_t> sizes;
+            std::vector<std::int32_t> nodes;
+            const bool faced = entry->mNumNodes == -2;
+            for (std::size_t r = 0; r < ne; ++r) {
+                if (faced) {
+                    counts.push_back(static_cast<std::int32_t>(cb.NumFaces(r)));
+                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                        const auto face = cb.Face(r, f);
+                        sizes.push_back(static_cast<std::int32_t>(face.second));
+                        for (std::size_t k = 0; k < face.second; ++k)
+                            nodes.push_back(static_cast<std::int32_t>(face.first[k]) + 1);
+                    }
+                } else {
+                    counts.push_back(static_cast<std::int32_t>(cb.RowSize(r)));
+                    for (std::size_t k = 0; k < cb.RowSize(r); ++k)
+                        nodes.push_back(static_cast<std::int32_t>(cb.Row(r)[k]) + 1);
+                }
+            }
+            auto append = [&out](const std::vector<std::int32_t>& v) {
+                if (v.empty())
+                    return;
+                const char* q = reinterpret_cast<const char*>(v.data());
+                out.insert(out.end(), q, q + v.size() * sizeof(std::int32_t));
+            };
+            append(counts);
+            if (faced)
+                append(sizes);
+            append(nodes);
+            continue;
+        }
         std::vector<std::int32_t> flat(ne * npc);
         for (std::size_t r = 0; r < ne; ++r)
             for (std::size_t j = 0; j < npc; ++j) {

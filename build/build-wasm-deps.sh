@@ -41,11 +41,14 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # used to make cross-compiling HDF5 painful.
 HDF5_VERSION="1.14.6"
 NETCDF_VERSION="4.9.3"
+CGNS_VERSION="4.5.2"
 HDF5_SHA256="e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b"
 NETCDF_SHA256="990f46d49525d6ab5dc4249f8684c6deeaf54de6fec63a187e9fb382cc0ffdff"
+CGNS_SHA256="95075e1fd0b51d97b1b96b73ebe03b1a551fbcc9cd2b2b6f487ccccedcff5964"
 
 WITH_HDF5="yes"
 WITH_NETCDF="yes"
+WITH_CGNS="yes"
 PREFIX=""
 PRINT_PREFIX="no"
 FORCE="no"
@@ -58,11 +61,12 @@ Usage: $0 [options]
   --print-prefix            print the default prefix and exit
   --without-hdf5            skip HDF5 (implies --without-netcdf)
   --without-netcdf          skip netCDF
+  --without-cgnslib         skip cgnslib (the CGNS MLL backend)
   --force                   rebuild even if the prefix already looks complete
   --jobs <n>                parallel build jobs (default: all cores)
   -h, --help                this help
 
-Pinned versions: HDF5 $HDF5_VERSION, netcdf-c $NETCDF_VERSION
+Pinned versions: HDF5 $HDF5_VERSION, netcdf-c $NETCDF_VERSION, cgnslib $CGNS_VERSION
 EOF
 }
 
@@ -70,7 +74,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --prefix) PREFIX="$2"; shift 2 ;;
         --print-prefix) PRINT_PREFIX="yes"; shift ;;
-        --without-hdf5) WITH_HDF5="no"; WITH_NETCDF="no"; shift ;;
+        --without-hdf5) WITH_HDF5="no"; WITH_NETCDF="no"; WITH_CGNS="no"; shift ;;
+        --without-cgnslib) WITH_CGNS="no"; shift ;;
         --without-netcdf) WITH_NETCDF="no"; shift ;;
         --force) FORCE="yes"; shift ;;
         --jobs) JOBS="$2"; shift 2 ;;
@@ -83,7 +88,7 @@ done
 # directory instead of half-overwriting the old one (and so CI's cache key can
 # simply be the directory name).
 DEPS_ROOT="$SCRIPT_DIR/wasm-deps"
-[ -n "$PREFIX" ] || PREFIX="$DEPS_ROOT/hdf5-$HDF5_VERSION-netcdf-$NETCDF_VERSION"
+[ -n "$PREFIX" ] || PREFIX="$DEPS_ROOT/hdf5-$HDF5_VERSION-netcdf-$NETCDF_VERSION-cgns-$CGNS_VERSION"
 
 if [ "$PRINT_PREFIX" = "yes" ]; then
     echo "$PREFIX"
@@ -162,6 +167,7 @@ echo "== meshio++ WASM dependency build =="
 echo "  prefix:   $PREFIX"
 echo "  hdf5:     $([ "$WITH_HDF5" = yes ] && echo "$HDF5_VERSION" || echo "(skipped)")"
 echo "  netcdf:   $([ "$WITH_NETCDF" = yes ] && echo "$NETCDF_VERSION" || echo "(skipped)")"
+echo "  cgnslib:  $([ "$WITH_CGNS" = yes ] && echo "$CGNS_VERSION" || echo "(skipped)")"
 echo "  emcc:     $(command -v emcc)"
 echo "  sysroot:  $SYSROOT"
 echo "  jobs:     $JOBS"
@@ -331,6 +337,84 @@ if [ "$WITH_NETCDF" = "yes" ]; then
     fi
 fi
 
+# --------------------------------------------------------------------------
+# cgnslib (the CGNS Mid-Level Library)
+#
+# meshio++ reads and writes CGNS itself, over raw HDF5, so this is strictly
+# an ADDITION: it buys ADF-backed containers (which are not HDF5 at all and
+# so unreachable from the hand-rolled path by construction) and the CGNS 3.x
+# NGON_n/NFACE_n section layout. The 4.0 layout, and everything else, works
+# without it -- see doc/formats/cgns.md.
+#
+# Fortran, the tools and the tests are all off: only the C MLL is linked, and
+# the tools want X11/Tcl, which do not exist on this target.
+# --------------------------------------------------------------------------
+if [ "$WITH_CGNS" = "yes" ]; then
+    if [ "$FORCE" = "no" ] && [ -f "$PREFIX/lib/libcgns.a" ]; then
+        echo "== cgnslib $CGNS_VERSION already installed, skipping (use --force to rebuild) =="
+    else
+        echo "== fetching cgnslib $CGNS_VERSION =="
+        fetch "https://github.com/CGNS/CGNS/archive/refs/tags/v$CGNS_VERSION.tar.gz" \
+              "cgns-$CGNS_VERSION.tar.gz" "$CGNS_SHA256"
+        rm -rf "$WORK_DIR/CGNS-$CGNS_VERSION" "$WORK_DIR/build-cgns"
+        tar -xzf "$DL_DIR/cgns-$CGNS_VERSION.tar.gz" -C "$WORK_DIR"
+        apply_patches "CGNS-$CGNS_VERSION" "$WORK_DIR/CGNS-$CGNS_VERSION"
+
+        echo "== configuring cgnslib =="
+        # cgsize_t is 32-bit here and there is no way to change that:
+        # CGNS's own CMakeLists FORCES CGNS_ENABLE_64BIT off whenever
+        # CMAKE_SIZEOF_VOID_P <= 4, which wasm32 is. That is fine -- 
+        # `cgns_mll.cpp` is written in terms of `cgsize_t` throughout rather
+        # than a fixed width, so it compiles and reads correctly either way,
+        # and the ~2^31 element ceiling is far beyond anything a browser tab
+        # loads. Do NOT "fix" this by passing CGNS_ENABLE_64BIT=ON; it is
+        # accepted and then silently overridden, which is worse than not
+        # passing it because it reads like a guarantee.
+        # NOTE the source dir is the TOP LEVEL, not src/: the root
+        # CMakeLists runs the CHECK_TYPE_SIZE calls that src/CMakeLists.txt
+        # then reads to pick cgsize_t's underlying type. Configuring src/
+        # directly leaves them empty and fails with "Can't find suitable
+        # int64_t", which reads like a cross-compilation problem but is not.
+        emcmake cmake -S "$WORK_DIR/CGNS-$CGNS_VERSION" -B "$WORK_DIR/build-cgns" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_PREFIX_PATH="$PREFIX" \
+            -DCMAKE_FIND_ROOT_PATH="$PREFIX" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCGNS_BUILD_SHARED=OFF \
+            -DCGNS_USE_SHARED=OFF \
+            -DCGNS_ENABLE_HDF5=ON \
+            -DCGNS_ENABLE_FORTRAN=OFF \
+            -DCGNS_ENABLE_PARALLEL=OFF \
+            -DCGNS_ENABLE_TESTS=OFF \
+            -DCGNS_BUILD_TESTING=OFF \
+            -DCGNS_BUILD_CGNSTOOLS=OFF \
+            -DHDF5_NEED_ZLIB=ON \
+            -DHDF5_INCLUDE_PATH="$PREFIX/include" \
+            -DHDF5_LIBRARY="$PREFIX/lib/libhdf5.a"
+
+        echo "== building cgnslib =="
+        cmake --build "$WORK_DIR/build-cgns" -j "$JOBS"
+        cmake --install "$WORK_DIR/build-cgns"
+
+        # Same class of fixup as HDF5's and netCDF's above: cgnslib's exported
+        # link interface names imported targets its own config package does
+        # not create on this target. Rewrite them to archive paths so the
+        # installed package is self-contained, hdf5 before zlib since wasm-ld
+        # resolves archives in command-line order.
+        echo "== fixing up the exported cgnslib link interface =="
+        for f in "$PREFIX/lib/cmake/cgns"/*.cmake "$PREFIX/cmake"/cgns*.cmake; do
+            [ -f "$f" ] || continue
+            sed -i.bak \
+                -e "s|hdf5-static|$PREFIX/lib/libhdf5.a|g" \
+                -e "s|hdf5::hdf5-static|$PREFIX/lib/libhdf5.a|g" \
+                -e "s|HDF5::HDF5|$PREFIX/lib/libhdf5.a|g" \
+                -e "s|ZLIB::ZLIB|$ZLIB_LIBRARY|g" "$f"
+            rm -f "$f.bak"
+        done
+    fi
+fi
+
 # $ZLIB_LIBRARY is Emscripten's zlib PORT archive, which lives under
 # `em-config CACHE` -- i.e. under $EMSDK, which on CI is a fresh directory
 # named after the *current job's* runner-assigned temp dir every single run.
@@ -357,7 +441,9 @@ fi
 # wrapper (and its `>`) is left alone and the generator expression stays
 # well-formed.
 for target_file in "$PREFIX/cmake/hdf5-targets.cmake" \
-                    "$PREFIX/lib/cmake/netCDF/netCDFTargets.cmake"; do
+                    "$PREFIX/lib/cmake/netCDF/netCDFTargets.cmake" \
+                    "$PREFIX/lib/cmake/cgns"/*.cmake \
+                    "$PREFIX/cmake"/cgns*.cmake; do
     [ -f "$target_file" ] || continue
     sed -i.bak \
         "s#[A-Za-z0-9_./-]*/sysroot/lib/wasm32-emscripten/libz\\.a#${ZLIB_LIBRARY}#g" \

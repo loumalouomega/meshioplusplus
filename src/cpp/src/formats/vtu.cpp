@@ -53,11 +53,6 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
 void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.Type().rfind("polyhedron", 0) == 0)
-            throw WriteError("C++ VTU writer does not support polyhedron cells");
-    }
-
     std::ofstream os(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -120,32 +115,82 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         // Per-block offsets are closed-form (conn_base + (r+1)*k), so rows are
         // independent and each block fills in parallel.
         const auto& tmap = meshio_to_vtk_type();
-        std::size_t total_conn = 0, ncells = 0;
+        std::size_t ncells = 0;
+        bool any_polyhedron = false;
         for (const auto cb : rMesh.CellRange()) {
-            total_conn += cb.NumCells() * cols(cb.Conn());
             ncells += cb.NumCells();
+            if (cb.IsPolyhedron())
+                any_polyhedron = true;
         }
-        std::vector<std::int64_t> connectivity(total_conn), offsets(ncells), types(ncells);
-        std::size_t conn_base = 0, cell_base = 0;
+        std::vector<std::int64_t> connectivity, offsets, types;
+        offsets.reserve(ncells);
+        types.reserve(ncells);
+        // VTK_POLYHEDRON's face stream, and one END offset per cell into it.
+        // A NON-polyhedral cell carries -1 -- that is exactly how VTU expresses
+        // a mesh mixing polyhedra with other types, which is why meshio++
+        // supports mixing where the Python reference historically did not (an
+        // OpenFOAM mesh always mixes hexahedra, polyhedra and boundary faces).
+        std::vector<std::int64_t> faces, face_offsets;
+        if (any_polyhedron)
+            face_offsets.reserve(ncells);
+
         for (const auto cb : rMesh.CellRange()) {
-            const NDArray& conn = cb.Conn();
             const std::size_t nc = cb.NumCells();
+            if (cb.IsPolyhedron()) {
+                for (std::size_t r = 0; r < nc; ++r) {
+                    // The cell-node connectivity VTK wants is the SORTED UNIQUE
+                    // node set of the cell; the face structure lives entirely
+                    // in `faces`. Sorted-unique matches the Python reference
+                    // exactly -- a different order would give ParaView a
+                    // different point set for the same cell.
+                    std::vector<std::int64_t> uniq;
+                    faces.push_back(static_cast<std::int64_t>(cb.NumFaces(r)));
+                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                        const auto face = cb.Face(r, f);
+                        faces.push_back(static_cast<std::int64_t>(face.second));
+                        for (std::size_t j = 0; j < face.second; ++j) {
+                            faces.push_back(face.first[j]);
+                            uniq.push_back(face.first[j]);
+                        }
+                    }
+                    std::sort(uniq.begin(), uniq.end());
+                    uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                    connectivity.insert(connectivity.end(), uniq.begin(), uniq.end());
+                    offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
+                    types.push_back(42);
+                    face_offsets.push_back(static_cast<std::int64_t>(faces.size()));
+                }
+                continue;
+            }
+            if (cb.IsRagged()) {
+                // A jagged polygon block: VTK_POLYGON with a per-cell size.
+                for (std::size_t r = 0; r < nc; ++r) {
+                    for (std::size_t j = 0; j < cb.RowSize(r); ++j)
+                        connectivity.push_back(cb.Row(r)[j]);
+                    offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
+                    types.push_back(7);  // VTK_POLYGON
+                    if (any_polyhedron)
+                        face_offsets.push_back(-1);
+                }
+                continue;
+            }
+            const NDArray& conn = cb.Conn();
             const std::size_t k = cols(conn);
             std::vector<int> order = meshio_to_vtk_order(cb.Type());
             auto it = tmap.find(cb.Type());
             if (it == tmap.end())
                 throw WriteError("Unknown cell type for VTU: " + cb.Type());
             const std::int64_t vtk_type = it->second;
-            parallel_for(nc, [&](std::size_t r) {
+            for (std::size_t r = 0; r < nc; ++r) {
                 for (std::size_t j = 0; j < k; ++j) {
-                    std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    connectivity[conn_base + r * k + j] = read_int(conn, r * k + col);
+                    const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
+                    connectivity.push_back(read_int(conn, r * k + col));
                 }
-                offsets[cell_base + r] = static_cast<std::int64_t>(conn_base + (r + 1) * k);
-                types[cell_base + r] = vtk_type;
-            });
-            conn_base += nc * k;
-            cell_base += nc;
+                offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
+                types.push_back(vtk_type);
+                if (any_polyhedron)
+                    face_offsets.push_back(-1);
+            }
         }
 
         auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
@@ -164,6 +209,10 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         emit_i64("connectivity", connectivity);
         emit_i64("offsets", offsets);
         emit_i64("types", types);
+        if (any_polyhedron) {
+            emit_i64("faces", faces);
+            emit_i64("faceoffsets", face_offsets);
+        }
         os << "</Cells>\n";
     }
 

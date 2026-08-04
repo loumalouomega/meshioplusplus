@@ -216,7 +216,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 9
-#define MIO_VERSION_MINOR 14
+#define MIO_VERSION_MINOR 22
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1676,6 +1676,56 @@ MIO_API mio_status mio_mesh_add_cell_block(mio_mesh* mesh, const char* cell_type
                                            mio_dtype dtype, const void* connectivity);
 
 /**
+ * Append one 1-level ragged (jagged polygon) cell block, in flat CSR form.
+ *
+ * @param cell_type   meshio type name, e.g. "polygon" or "polygon2".
+ * @param num_cells   number of cells in the block.
+ * @param row_offsets `num_cells + 1` entries: each cell's start index into
+ *                    `nodes`. Must be non-decreasing, start at 0 and end at
+ *                    `num_nodes`, so cell `c`'s node ids are
+ *                    `nodes[row_offsets[c] .. row_offsets[c + 1])`.
+ * @param nodes       every row's 0-based node ids concatenated.
+ * @param num_nodes   length of `nodes`.
+ *
+ * Both arrays are int64 -- unlike mio_mesh_add_cell_block there is no `dtype`
+ * parameter. A CSR pair is two arrays that must agree, one dtype covering both
+ * invites the wrong pairing and two doubles the arity for no real gain; offsets
+ * are inherently int64-ranged; and the int32 path on the rectangular setter
+ * exists because numpy/Fortran meshes commonly *are* int32 rectangular, which a
+ * hand-built CSR is not. Widen int32 ragged data once into a scratch buffer.
+ */
+MIO_API mio_status mio_mesh_add_polygon_block(mio_mesh* mesh, const char* cell_type,
+                                              int64_t num_cells, const int64_t* row_offsets,
+                                              const int64_t* nodes, int64_t num_nodes);
+
+/**
+ * Append one 2-level ragged (polyhedron) cell block, in flat CSR form: each
+ * cell is a list of faces, each face a list of node ids.
+ *
+ * @param cell_type    meshio type name, e.g. "polyhedron" or "polyhedron12".
+ * @param num_cells    number of cells in the block.
+ * @param cell_offsets `num_cells + 1` entries: each cell's start index into the
+ *                     FACE list (not into `nodes`), ending at `num_faces`.
+ * @param num_faces    total number of faces across every cell.
+ * @param face_offsets `num_faces + 1` entries: each face's start index into
+ *                     `nodes`, ending at `num_nodes`.
+ * @param nodes        every face's 0-based node ids concatenated.
+ * @param num_nodes    length of `nodes`.
+ *
+ * So face `f` of cell `c` spans
+ * `nodes[face_offsets[cell_offsets[c] + f] .. face_offsets[cell_offsets[c] + f + 1])`.
+ * This is exactly the shape the JS API calls `{data, faceOffsets, cellOffsets}`.
+ *
+ * Faces should be wound so their right-hand normal points out of the cell, but
+ * meshio++ does not require it: the geometric kernels repair an inconsistent
+ * winding rather than rejecting it. See doc/polyhedra.md.
+ */
+MIO_API mio_status mio_mesh_add_polyhedron_block(mio_mesh* mesh, const char* cell_type,
+                                                 int64_t num_cells, const int64_t* cell_offsets,
+                                                 int64_t num_faces, const int64_t* face_offsets,
+                                                 const int64_t* nodes, int64_t num_nodes);
+
+/**
  * Attach a named per-point data array. `shape[0]` must equal the number of
  * points (e.g. `{num_points}` for a scalar field, `{num_points, 3}` for a
  * vector field).
@@ -1714,21 +1764,111 @@ MIO_API int64_t mio_mesh_num_cell_blocks(const mio_mesh* mesh);
 /**
  * Describe cell block `block`. Any out-param may be NULL.
  * A ragged block (`is_ragged == 1`: polygons/polyhedra of varying size)
- * reports `nodes_per_cell == 0` and its connectivity is not accessible
- * through this API (v1 limitation).
+ * reports `nodes_per_cell == 0`; read its connectivity with
+ * mio_poly_conn_create(), and use mio_mesh_cell_block_info_ex() to learn
+ * whether it is 1-level (polygon) or 2-level (polyhedron).
  */
 MIO_API mio_status mio_mesh_cell_block_info(const mio_mesh* mesh, int64_t block,
                                             int64_t* num_cells, int64_t* nodes_per_cell,
                                             int32_t* is_ragged);
+
+/**
+ * One cell block's full shape -- the growable successor to the five-argument
+ * mio_mesh_cell_block_info(), which cannot gain an out-param without breaking
+ * ABI and so stays supported unchanged. Grows only into `reserved`, exactly
+ * like mio_read_opts / mio_write_opts.
+ */
+typedef struct mio_cell_block_info {
+    int64_t num_cells;
+    int64_t nodes_per_cell; /**< 0 for a ragged block. */
+    int32_t is_ragged;      /**< 1 for a polygon or polyhedron block. */
+    int32_t is_polyhedron;  /**< 1 for a 2-level block; implies `is_ragged`. */
+    int64_t num_faces;      /**< total faces; `num_cells` unless `is_polyhedron`. */
+    int64_t num_nodes;      /**< total node ids the block stores. */
+    int64_t reserved[6];
+} mio_cell_block_info;
+
+/**
+ * Fill `out` with cell block `block`'s shape.
+ *
+ * Note `num_faces` / `num_nodes` are an O(cells) walk on the MESHIO backend,
+ * which stores ragged blocks as nested vectors rather than CSR -- fine to size
+ * a buffer with, not something to call per cell in a loop.
+ */
+MIO_API mio_status mio_mesh_cell_block_info_ex(const mio_mesh* mesh, int64_t block,
+                                               mio_cell_block_info* out);
 
 /** Copy cell block `block`'s meshio type name into `buf` (string rule 5). */
 MIO_API int64_t mio_mesh_cell_block_type(const mio_mesh* mesh, int64_t block, char* buf,
                                          int64_t buflen);
 
 /** Borrow cell block `block`'s row-major `(num_cells, nodes_per_cell)`
- *  0-based connectivity. Fails with MIO_ERR_UNSUPPORTED on a ragged block. */
+ *  0-based connectivity. Fails with MIO_ERR_UNSUPPORTED on a ragged block,
+ *  which has no rectangular buffer to borrow -- use mio_poly_conn_create(). */
 MIO_API mio_status mio_mesh_cell_block_conn(const mio_mesh* mesh, int64_t block, const void** conn,
                                             mio_dtype* dtype);
+
+/* ---------------------------------------------------------------------
+ * Ragged (polygon / polyhedron) connectivity
+ *
+ * A ragged block's connectivity has no single rectangular buffer to borrow, so
+ * it is read through an owning flat-CSR *snapshot* rather than a rule-3 borrow:
+ * the MESHIO backend stores nested vectors and the KRATOS backend rebuilds its
+ * blocks lazily, so there is no offsets array inside the mesh to point at. The
+ * snapshot is therefore independent of the mesh once created -- it stays valid
+ * across mutating calls, unlike every other getter here -- and must be released
+ * with mio_poly_conn_free().
+ *
+ * Layout, identical to the JS boundary's and to the setters above:
+ *   nodes         concatenated 0-based node ids of every face
+ *   face_offsets  num_faces + 1 entries, each face's start in `nodes`
+ *   cell_offsets  num_cells + 1 entries, each cell's start in the FACE list
+ *
+ * A 1-level (polygon) block has exactly one face per cell: `face_offsets` is
+ * then what the JS API calls `rowOffsets`, and `cell_offsets` is NULL with a
+ * count of 0 -- a NULL nobody can mistake for data, rather than a synthesized
+ * 0,1,2,... identity that looks like information.
+ *
+ * See doc/polyhedra.md.
+ * --------------------------------------------------------------------- */
+
+/** Opaque snapshot of one ragged block's connectivity. Free with
+ *  mio_poly_conn_free(). */
+typedef struct mio_poly_conn mio_poly_conn;
+
+/** Fixed-size description of a snapshot's CSR shape. */
+typedef struct mio_poly_conn_shape {
+    int32_t is_polyhedron; /**< 1 = 2-level (cell -> faces -> nodes), 0 = 1-level. */
+    int32_t reserved0;
+    int64_t num_cells;
+    int64_t num_faces; /**< 2-level: total faces. 1-level: equal to `num_cells`. */
+    int64_t num_nodes; /**< length of the node array. */
+    int64_t reserved[4];
+} mio_poly_conn_shape;
+
+/**
+ * Snapshot cell block `block`'s ragged connectivity.
+ * Fails with MIO_ERR_UNSUPPORTED on a rectangular block -- use
+ * mio_mesh_cell_block_conn(), which borrows and does not copy.
+ * @return a handle (free with mio_poly_conn_free), or NULL on failure.
+ */
+MIO_API mio_poly_conn* mio_poly_conn_create(const mio_mesh* mesh, int64_t block);
+
+/** Fill `out` with the snapshot's shape. */
+MIO_API mio_status mio_poly_conn_get_shape(const mio_poly_conn* poly, mio_poly_conn_shape* out);
+
+/** Borrow the concatenated node ids. `count` may be NULL. */
+MIO_API const int64_t* mio_poly_conn_nodes(const mio_poly_conn* poly, int64_t* count);
+
+/** Borrow the `num_faces + 1` face offsets into the node array. */
+MIO_API const int64_t* mio_poly_conn_face_offsets(const mio_poly_conn* poly, int64_t* count);
+
+/** Borrow the `num_cells + 1` cell offsets into the face list.
+ *  Returns NULL with `*count = 0` for a 1-level (polygon) block. */
+MIO_API const int64_t* mio_poly_conn_cell_offsets(const mio_poly_conn* poly, int64_t* count);
+
+/** Destroy a snapshot. Safe to call with NULL. */
+MIO_API void mio_poly_conn_free(mio_poly_conn* poly);
 
 /** @return the number of named point-data arrays, or -1 if `mesh` is NULL. */
 MIO_API int64_t mio_mesh_num_point_data(const mio_mesh* mesh);

@@ -1,9 +1,11 @@
 import pathlib
+import tempfile
 
 import numpy as np
 import pytest
 
 import meshioplusplus
+from meshioplusplus.vtu import _vtu
 
 from . import helpers
 
@@ -99,3 +101,49 @@ def test_vtu_not_xml_raises(tmp_path):
     p.write_text("this is not xml at all")
     with pytest.raises(meshioplusplus.ReadError):
         meshioplusplus.read(p, file_format="vtu")
+
+
+def test_polyhedra_mix_with_other_cell_types_both_engines():
+    """VTU's `faceoffsets` carries -1 for a non-polyhedral cell, which is
+    exactly how the format expresses a mixed mesh -- and an OpenFOAM mesh always
+    mixes. The C++ and Python paths must agree, because Windows CI builds native
+    paths off and runs the reference implementation.
+    """
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        float,
+    )
+    tet_faces = [
+        np.array([0, 2, 1]),
+        np.array([0, 1, 3]),
+        np.array([1, 2, 3]),
+        np.array([2, 0, 3]),
+    ]
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [
+            ("triangle", np.array([[4, 5, 6]])),
+            ("polyhedron4", [tet_faces]),
+        ],
+    )
+
+    for writer, reader, tag in (
+        (_vtu.write, _vtu.read, "python"),
+        (meshioplusplus.vtu.write, meshioplusplus.vtu.read, "shim"),
+    ):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "mixed.vtu"
+            writer(p, mesh)
+            out = reader(p)
+            types = [c.type for c in out.cells]
+            assert any(t.startswith("polyhedron") for t in types), (tag, types)
+            assert "triangle" in types, (tag, types)

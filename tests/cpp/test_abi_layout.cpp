@@ -63,6 +63,9 @@
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/write_options.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 
@@ -106,6 +109,21 @@ MIO_ABI_LAYOUT(meshioplusplus::WriteOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 256, 8);
+
+// The format side-channel structs. NONE of these was pinned before v9.20.0,
+// which is exactly what made growing one *look* free: `MedInfo` gained four
+// members in v9.9.0 and `OpenFoamInfo` gains one here, and in both cases the
+// layout snapshot -- the Tier A guard -- had nothing to say. They travel by
+// reference through exported `read_*`/`write_*` functions, so they are as much
+// a boundary type as `ReadOptions` is.
+//
+// Only the three unconditional ones are here: `MedInfo` and `ExodusInfo` exist
+// only in an HDF5 / netCDF build, so pinning them would make this snapshot say
+// different things in different configurations -- which is the one property a
+// layout snapshot must not have.
+MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 72, 8);
 
 // The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
 // `run_sequence_pipeline(const SequencePipeline&)` are exported, and both
@@ -165,6 +183,9 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::PropertyValue>("PropertyValue");
     report<meshioplusplus::PropertySet>("PropertySet");
     report<meshioplusplus::MeshMetadata>("MeshMetadata");
+    report<meshioplusplus::OpenFoamInfo>("OpenFoamInfo");
+    report<meshioplusplus::GmshInfo>("GmshInfo");
+    report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::PipelineStep>("PipelineStep");
     report<meshioplusplus::PipelineInput>("PipelineInput");
     report<meshioplusplus::PipelineOutput>("PipelineOutput");

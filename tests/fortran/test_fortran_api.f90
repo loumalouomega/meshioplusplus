@@ -47,7 +47,7 @@ program test_fortran_api
     call check(len(mio_mesh_backend()) > 0, 'mio_mesh_backend() is non-empty')
     call check(mio_format_readable('vtu'), 'vtu is readable')
     call check(mio_format_writable('vtu'), 'vtu is writable')
-    call check(.not. mio_format_writable('openfoam'), 'openfoam is read-only')
+    call check(mio_format_writable('openfoam'), 'openfoam is writable since v9.20.0')
     call check(.not. mio_format_readable('nonexistent'), 'unknown format is not readable')
 
     ! ---- build a small tet mesh from arrays ----------------------------
@@ -825,6 +825,9 @@ program test_fortran_api
     call check(ierr == 0, 'fan-out wrote the third step')
     call r%free()
 
+    ! ---- ragged (polygon / polyhedron) connectivity ---------------------
+    call check_ragged()
+
     if (fails /= 0) then
         write (error_unit, '(a,i0,a)') 'test_fortran_api: ', fails, ' check(s) FAILED'
         error stop 1
@@ -832,6 +835,80 @@ program test_fortran_api
     write (*, '(a)') 'test_fortran_api: all checks passed'
 
 contains
+
+    !> Build a jagged polygon block and a polyhedron block through the module,
+    !> read both back, and assert the documented 1-based slice identity. Before
+    !> meshio++ 9.15 the C ABI could do neither.
+    subroutine check_ragged()
+        type(mio_mesh) :: pm
+        real(real64) :: pts(3, 5)
+        integer(int64) :: row_off(3), poly_nodes(7)
+        integer(int64) :: cell_off(3), face_off(8), face_nodes(21)
+        integer(int64), allocatable :: g_row(:), g_nodes(:), g_cell(:), g_face(:)
+        integer :: ierr2, j
+
+        pts = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                       1.0_real64, 0.0_real64, 0.0_real64, &
+                       1.0_real64, 1.0_real64, 0.0_real64, &
+                       0.0_real64, 1.0_real64, 0.0_real64, &
+                       2.0_real64, 0.5_real64, 0.0_real64], [3, 5])
+        call pm%create()
+        call pm%set_points(pts)
+
+        ! A quad then a triangle: 1-based offsets, so cell c spans
+        ! nodes(row_off(c) : row_off(c + 1) - 1).
+        row_off = [1_int64, 5_int64, 8_int64]
+        poly_nodes = [1_int64, 2_int64, 3_int64, 4_int64, 2_int64, 5_int64, 3_int64]
+        call pm%add_polygon_block('polygon', row_off, poly_nodes, stat=ierr2)
+        call check(ierr2 == 0, 'add_polygon_block succeeds')
+
+        ! A 4-face tetrahedron then a 3-face sliver -- deliberately different
+        ! face counts, so cell_offsets carries real information.
+        cell_off = [1_int64, 5_int64, 8_int64]
+        face_off = [1_int64, 4_int64, 7_int64, 10_int64, 13_int64, 16_int64, 19_int64, 22_int64]
+        face_nodes = [1_int64, 2_int64, 3_int64, 1_int64, 4_int64, 2_int64, &
+                      2_int64, 4_int64, 3_int64, 3_int64, 4_int64, 1_int64, &
+                      2_int64, 3_int64, 5_int64, 3_int64, 4_int64, 5_int64, &
+                      4_int64, 2_int64, 5_int64]
+        call pm%add_polyhedron_block('polyhedron', cell_off, face_off, face_nodes, stat=ierr2)
+        call check(ierr2 == 0, 'add_polyhedron_block succeeds')
+
+        call check(pm%num_cell_blocks() == 2_int64, 'ragged mesh has two blocks')
+        call check(pm%cell_block_is_ragged(1), 'polygon block reports ragged')
+        call check(.not. pm%cell_block_is_polyhedron(1), 'polygon block is not 2-level')
+        call check(pm%cell_block_is_polyhedron(2), 'polyhedron block is 2-level')
+        call check(pm%cell_block_num_cells(1) == 2_int64, 'polygon block cell count')
+        call check(pm%cell_block_nodes_per_cell(1) == 0_int64, 'ragged nodes_per_cell is 0')
+
+        call pm%get_polygon_block(1, g_row, g_nodes, stat=ierr2)
+        call check(ierr2 == 0, 'get_polygon_block succeeds')
+        call check(size(g_row) == 3, 'polygon row_offsets has num_cells + 1 entries')
+        call check(all(g_row == row_off), 'polygon row_offsets round-trip (1-based)')
+        call check(all(g_nodes == poly_nodes), 'polygon nodes round-trip (1-based)')
+        ! The documented slice identity, checked rather than described.
+        call check(size(g_nodes(g_row(1):g_row(2) - 1)) == 4, 'polygon cell 1 has 4 nodes')
+        call check(all(g_nodes(g_row(2):g_row(3) - 1) == [2_int64, 5_int64, 3_int64]), &
+                   'polygon cell 2 slices to its own node list')
+
+        call pm%get_polyhedron_block(2, g_cell, g_face, g_nodes, stat=ierr2)
+        call check(ierr2 == 0, 'get_polyhedron_block succeeds')
+        call check(all(g_cell == cell_off), 'polyhedron cell_offsets round-trip')
+        call check(all(g_face == face_off), 'polyhedron face_offsets round-trip')
+        call check(all(g_nodes == face_nodes), 'polyhedron nodes round-trip')
+        ! Face 1 of cell 2 -- j = cell_offsets(c) + f - 1.
+        j = int(g_cell(2))
+        call check(all(g_nodes(g_face(j):g_face(j + 1) - 1) == [2_int64, 3_int64, 5_int64]), &
+                   'polyhedron cell 2 face 1 slices to its own node list')
+
+        ! Each accessor refuses the other kind by name rather than returning
+        ! something wrong.
+        call pm%get_polyhedron_block(1, g_cell, g_face, g_nodes, stat=ierr2)
+        call check(ierr2 /= 0, 'get_polyhedron_block rejects a 1-level block')
+        call pm%get_polygon_block(2, g_row, g_nodes, stat=ierr2)
+        call check(ierr2 /= 0, 'get_polygon_block rejects a 2-level block')
+
+        call pm%free()
+    end subroutine
 
     subroutine check(ok, what)
         logical, intent(in) :: ok

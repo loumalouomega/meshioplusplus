@@ -188,9 +188,10 @@ them:
 * the **`frozen` pin mask** of `smooth` and `decimate`;
 * **per-cell-type counts** in the statistics report — use `cell_block_types`
   with `cell_block_info` instead;
-* **ragged block connectivity** (polygons and polyhedra of varying size).
-  `cell_block_info(m, i).is_ragged` reports them; `connectivity` then throws
-  rather than returning something wrong;
+* ~~ragged block connectivity~~ — **closed in v9.15.0**. `polygon_block` and
+  `polyhedron_block` read them as nested 1-based vectors; `add_polygon_block!`
+  and `add_polyhedron_block!` build them. `connectivity` still throws, since a
+  ragged block has no matrix;
 * the combined **`data_manage`** — the `data_drop` / `data_keep` /
   `data_rename` primitives compose to the same effect.
 

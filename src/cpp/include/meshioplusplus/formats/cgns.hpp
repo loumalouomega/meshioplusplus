@@ -119,6 +119,44 @@ MESHIOPLUSPLUS_API void write_cgns(const std::string& rPath, const Mesh& rMesh, 
  */
 MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
 
+/**
+ * @brief Whether this build carries the official CGNS library (cgnslib / the
+ *        CGNS Mid-Level Library) backend.
+ *
+ * The backend is optional and OFF by default
+ * (`-DMESHIOPLUSPLUS_WITH_CGNSLIB=ON`, bring-your-own via `CGNS_ROOT`). It is
+ * **additive**: the hand-rolled ADF-over-HDF5 reader and writer above are
+ * unchanged and remain the default, so nothing regresses without it.
+ */
+MESHIOPLUSPLUS_API bool cgns_has_cgnslib();
+
+/**
+ * @brief Read a CGNS file through cgnslib, which reaches two things the
+ *        raw-HDF5 reader fundamentally cannot.
+ *
+ * 1. **ADF-container files.** `.cgns` has two on-disk containers, HDF5 and ADF.
+ *    @ref read_cgns speaks HDF5 directly and so can never open an ADF file, no
+ *    matter how much of the spec it implements; much of the real-world corpus
+ *    (including the CGNS project's own example meshes) is ADF.
+ * 2. **`NGON_n` / `NFACE_n` polyhedral sections.** `NGON_n` lists faces as node
+ *    lists, `NFACE_n` each cell as a list of **signed** face ids (the sign
+ *    meaning "traverse this face reversed"). The MLL's
+ *    `cg_poly_elements_read` also absorbs the CGNS 3.x-vs-4.0
+ *    `ElementStartOffset` split, which is the single most error-prone part of
+ *    the encoding and would otherwise have to be re-derived for both layouts.
+ *
+ * `NGON_n` **without** an `NFACE_n` is a face mesh, not a volume one, and maps
+ * to `polygon` blocks; with one, the faces are dereferenced (and reversed where
+ * the id is negative) into `polyhedron<N>` blocks grouped by unique node count
+ * — the same convention the OpenFOAM and EnSight readers use.
+ *
+ * @param rPath filesystem path to read
+ * @return the read Mesh
+ * @throws ReadError when the build has no cgnslib (naming the CMake flag), or
+ *         when cgnslib cannot open or parse the file
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns_mll(const std::string& rPath);
+
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

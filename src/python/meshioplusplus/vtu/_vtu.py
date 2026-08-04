@@ -250,24 +250,67 @@ def _organize_cells(point_offsets, cells, cell_data_raw):
             break
 
     if polyhedral_mesh:
-        # The current implementation assumes a single set of cells, and cannot mix
-        # polyhedral cells with other cell types. It may be possible to do away with
-        # these limitations, but for the moment, this is what is available.
+        # A single <Piece> only -- multi-piece polyhedral files remain
+        # unsupported here, as before.
         if len(cells) > 1:
             raise ValueError("Implementation assumes single set of cells")
-        if np.any(cells[0]["types"] != 42):
-            raise ValueError("Cannot handle combinations of polyhedra with other cells")
 
-        # Polyhedra are specified by their faces and faceoffsets; see the function
-        # _polyhedron_cells_from_data for more information.
-        faces = cells[0]["faces"]
-        faceoffsets = cells[0]["faceoffsets"]
-        cls, cell_data = _polyhedron_cells_from_data(
-            cells[0]["offsets"], faces, faceoffsets, cell_data_raw[0]
-        )
-        # Organize polyhedra in cell blocks according to the number of nodes per cell.
-        for tp, c in cls.items():
-            out_cells.append(CellBlock(tp, c))
+        types = cells[0]["types"].ravel()
+        if np.all(types == 42):
+            # Every cell is a polyhedron: the historical fast path, unchanged.
+            cls, cell_data = _polyhedron_cells_from_data(
+                cells[0]["offsets"],
+                cells[0]["faces"],
+                cells[0]["faceoffsets"],
+                cell_data_raw[0],
+            )
+            for tp, c in cls.items():
+                out_cells.append(CellBlock(tp, c))
+        else:
+            # MIXED. `faceoffsets` carries -1 for a cell that is not a
+            # polyhedron, which is exactly how VTU expresses this -- an
+            # OpenFOAM mesh always mixes hexahedra, polyhedra and boundary
+            # faces. Before v9.19.0 this raised "Cannot handle combinations of
+            # polyhedra with other cells"; the C++ reader handles it, and this
+            # twin must agree or a no-core build (Windows CI) would refuse a
+            # file every other build reads.
+            offsets = cells[0]["offsets"].ravel()
+            conn = cells[0]["connectivity"].ravel()
+            faces = np.asarray(cells[0]["faces"]).ravel()
+            faceoffsets = np.asarray(cells[0]["faceoffsets"]).ravel()
+            cell_data = {}
+            # Walk contiguous runs of same-"is it a polyhedron" so the output
+            # block order follows the file's own cell order.
+            is_poly = types == 42
+            start = 0
+            n = len(types)
+            while start < n:
+                end = start + 1
+                while end < n and is_poly[end] == is_poly[start]:
+                    end += 1
+                sub_raw = {k: v[start:end] for k, v in cell_data_raw[0].items()}
+                if is_poly[start]:
+                    cls, cd = _polyhedron_cells_from_data(
+                        offsets[start:end],
+                        faces,
+                        faceoffsets[start:end],
+                        sub_raw,
+                    )
+                    for tp, c in cls.items():
+                        out_cells.append(CellBlock(tp, c))
+                else:
+                    first_node = 0 if start == 0 else offsets[start - 1]
+                    blocks, cd = vtk_cells_from_data(
+                        conn[first_node : offsets[end - 1]],
+                        offsets[start:end] - first_node,
+                        types[start:end],
+                        sub_raw,
+                    )
+                    for c in blocks:
+                        out_cells.append(CellBlock(c.type, c.data + first_node))
+                for k, v in cd.items():
+                    cell_data.setdefault(k, []).extend(v)
+                start = end
 
     else:
         for offset, cls, cdr in zip(point_offsets, cells, cell_data_raw):
@@ -743,14 +786,9 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             is_polyhedron_grid = True
             break
 
-    # The current implementation cannot mix polyhedral cells with other cell types.
-    # To write such meshes, represent all cells as polyhedra.
-    if is_polyhedron_grid:
-        for c in mesh.cells:
-            if c.type[:10] != "polyhedron":
-                raise ValueError(
-                    "VTU export cannot mix polyhedral cells with other cell types"
-                )
+    # Mixing polyhedra with other cell types IS expressible: `faceoffsets`
+    # carries -1 for a non-polyhedral cell. See the reader above and
+    # doc/polyhedra.md; the C++ writer does the same.
 
     if not binary:
         warn("VTU ASCII files are only meant for debugging.")
@@ -961,10 +999,23 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             con = []
             num_nodes_per_cell = []
             for block in mesh.cells:
+                if not block.type.startswith("polyhedron"):
+                    # A non-polyhedral block in a mixed grid keeps its ordinary
+                    # connectivity; only its `faceoffsets` entry is special
+                    # (-1, written below). Before v9.19.0 this loop assumed
+                    # every block was polyhedral, because mixing was refused.
+                    d = block.data
+                    new_order = meshio_to_vtk_order(block.type)
+                    if new_order is not None:
+                        d = d[:, new_order]
+                    for row in d:
+                        con += row.tolist()
+                        num_nodes_per_cell.append(len(row))
+                    continue
                 for cell in block.data:
                     nodes_this_cell = []
                     for face in cell:
-                        nodes_this_cell += face.tolist()
+                        nodes_this_cell += np.asarray(face).tolist()
                     unique_nodes = np.unique(nodes_this_cell).tolist()
 
                     con += unique_nodes
@@ -1017,6 +1068,14 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
                 faces += faces_loc
                 faceoffsets += faceoffsets_loc
                 key = "polyhedron"
+            elif is_polyhedron_grid:
+                # -1 per cell: the format's own way of saying "this cell is not
+                # a polyhedron, it has no entry in the faces stream". Without
+                # these the faceoffsets array would be shorter than the cell
+                # count and every polyhedron after the first ordinary block
+                # would be mis-located.
+                assert faceoffsets is not None
+                faceoffsets += [-1] * len(cell_block)
 
             types_array.append(np.full(len(cell_block), meshio_to_vtk_type[key]))
 

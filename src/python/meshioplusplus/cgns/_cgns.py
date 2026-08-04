@@ -323,15 +323,19 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
         # regardless of whether this particular block happens to be uniform
         # -- checked by type name, not by whether `.data` is a Python list,
         # since a uniform polygon block is stored as a plain ndarray.
-        if (
-            cb.type == "polygon"
-            or cb.type == "polygon2"
-            or cb.type.startswith("polyhedron")
-        ):
+        if cb.type.startswith("polygon") or cb.type.startswith("polyhedron"):
+            # NGON_n/NFACE_n write is C++-core-only (v9.21.0). Deliberately not
+            # reimplemented here: the writer deduplicates faces and repairs each
+            # cell's winding, and the repair is a discrete branch on the sign of
+            # an enclosed volume -- two implementations of such a branch can
+            # land on opposite sides for a near-degenerate cell and then diverge
+            # macroscopically, the same reasoning that keeps `smooth`'s
+            # inversion guard out of its numpy fallback. It is also unreachable
+            # in practice: `_core` ships in every wheel.
             raise WriteError(
-                f"CGNS: cell type '{cb.type}' is a ragged block; CGNS has no "
-                "fixed-size representation for it (MIXED/NGON_n/NFACE_n "
-                "sections are not written by meshio++)"
+                f"CGNS: cell type '{cb.type}' needs an NGON_n/NFACE_n section, "
+                "which the pure-Python writer does not produce; this requires "
+                "the compiled core (meshioplusplus._core.cgns_write)"
             )
         if cb.type not in _CGNS_TYPES:
             if cb.type in topological_dimension:
@@ -636,11 +640,21 @@ def _read_spec(f):
                 )
             code = int(sdata[0])
 
-            if code in (20, 22, 23):
+            if code == 20:
                 raise ReadError(
                     f"CGNS: element section '{sname}' has ElementType "
-                    f"{_CODE_TO_CGNS_NAME.get(code, '?')} ({code}); MIXED, NGON_n "
-                    "and NFACE_n sections are not supported."
+                    f"{_CODE_TO_CGNS_NAME.get(code, '?')} ({code}); MIXED "
+                    "sections are not supported."
+                )
+            if code in (22, 23):
+                # The C++ core reads these (v9.21.0); the pure-Python twin does
+                # not, so say which path is needed rather than claiming the
+                # format is unsupported.
+                raise ReadError(
+                    f"CGNS: element section '{sname}' has ElementType "
+                    f"{_CODE_TO_CGNS_NAME.get(code, '?')} ({code}); polyhedral "
+                    "sections need the compiled core "
+                    "(meshioplusplus._core.cgns_read)"
                 )
             meshio_type = _CODE_TO_TYPE.get(code)
             if meshio_type is None:

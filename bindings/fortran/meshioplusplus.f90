@@ -138,6 +138,33 @@ module meshioplusplus
         integer(c_int64_t) :: stride         !< 2 for SIDE, else 1
     end type
 
+    ! One cell block's full shape (bind(c); layout must match
+    ! mio_cell_block_info in meshioplusplus.h). Deliberately NOT named
+    ! mio_cell_block_info -- that name is already this module's own metadata
+    ! summary type, which is a different thing (it carries the type NAME and
+    ! comes from a file summary, not from a live mesh). Private, like every
+    ! other c_mio_* interop detail; the public surface is the scalar
+    ! cell_block_* queries below.
+    type, bind(c) :: c_mio_cell_block_info
+        integer(c_int64_t) :: num_cells
+        integer(c_int64_t) :: nodes_per_cell   !< 0 when ragged
+        integer(c_int32_t) :: is_ragged
+        integer(c_int32_t) :: is_polyhedron    !< implies is_ragged
+        integer(c_int64_t) :: num_faces
+        integer(c_int64_t) :: num_nodes
+        integer(c_int64_t) :: reserved(6)
+    end type
+
+    ! One ragged block's CSR shape (bind(c); matches mio_poly_conn_shape).
+    type, bind(c) :: c_mio_poly_conn_shape
+        integer(c_int32_t) :: is_polyhedron
+        integer(c_int32_t) :: reserved0
+        integer(c_int64_t) :: num_cells
+        integer(c_int64_t) :: num_faces
+        integer(c_int64_t) :: num_nodes
+        integer(c_int64_t) :: reserved(4)
+    end type
+
     integer, parameter :: MIO_MAX_NDIM = 8
     integer, parameter :: STRBUF_LEN = 4096
 
@@ -287,6 +314,8 @@ module meshioplusplus
         procedure, private :: mesh_add_cell_block_i32
         procedure, private :: mesh_add_cell_block_i64
         generic :: add_cell_block => mesh_add_cell_block_i32, mesh_add_cell_block_i64
+        procedure :: add_polygon_block => mesh_add_polygon_block
+        procedure :: add_polyhedron_block => mesh_add_polyhedron_block
         procedure, private :: mesh_add_point_data_r1
         procedure, private :: mesh_add_point_data_r2
         generic :: add_point_data => mesh_add_point_data_r1, mesh_add_point_data_r2
@@ -302,7 +331,10 @@ module meshioplusplus
         procedure :: cell_block_num_cells => mesh_cell_block_num_cells
         procedure :: cell_block_nodes_per_cell => mesh_cell_block_nodes_per_cell
         procedure :: cell_block_is_ragged => mesh_cell_block_is_ragged
+        procedure :: cell_block_is_polyhedron => mesh_cell_block_is_polyhedron
         procedure :: get_cell_block => mesh_get_cell_block
+        procedure :: get_polygon_block => mesh_get_polygon_block
+        procedure :: get_polyhedron_block => mesh_get_polyhedron_block
         procedure :: num_point_data => mesh_num_point_data
         procedure :: point_data_name => mesh_point_data_name
         procedure, private :: mesh_get_point_data_r1
@@ -1417,6 +1449,80 @@ module meshioplusplus
             integer(c_int32_t), intent(out) :: is_ragged
             integer(c_int) :: s
         end function
+
+        function c_mio_mesh_cell_block_info_ex(h, block, out) &
+                bind(c, name="mio_mesh_cell_block_info_ex") result(s)
+            import :: c_ptr, c_int, c_int64_t, c_mio_cell_block_info
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: block
+            type(c_mio_cell_block_info), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_mesh_add_polygon_block(h, ctype, num_cells, row_offsets, nodes, &
+                                              num_nodes) &
+                bind(c, name="mio_mesh_add_polygon_block") result(s)
+            import :: c_ptr, c_char, c_int, c_int64_t
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: ctype
+            integer(c_int64_t), value :: num_cells, num_nodes
+            integer(c_int64_t), dimension(*), intent(in) :: row_offsets, nodes
+            integer(c_int) :: s
+        end function
+
+        function c_mio_mesh_add_polyhedron_block(h, ctype, num_cells, cell_offsets, num_faces, &
+                                                 face_offsets, nodes, num_nodes) &
+                bind(c, name="mio_mesh_add_polyhedron_block") result(s)
+            import :: c_ptr, c_char, c_int, c_int64_t
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: ctype
+            integer(c_int64_t), value :: num_cells, num_faces, num_nodes
+            integer(c_int64_t), dimension(*), intent(in) :: cell_offsets, face_offsets, nodes
+            integer(c_int) :: s
+        end function
+
+        function c_mio_poly_conn_create(h, block) bind(c, name="mio_poly_conn_create") result(p)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: block
+            type(c_ptr) :: p
+        end function
+
+        function c_mio_poly_conn_get_shape(p, out) &
+                bind(c, name="mio_poly_conn_get_shape") result(s)
+            import :: c_ptr, c_int, c_mio_poly_conn_shape
+            type(c_ptr), value :: p
+            type(c_mio_poly_conn_shape), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_poly_conn_nodes(p, count) bind(c, name="mio_poly_conn_nodes") result(q)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: p
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: q
+        end function
+
+        function c_mio_poly_conn_face_offsets(p, count) &
+                bind(c, name="mio_poly_conn_face_offsets") result(q)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: p
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: q
+        end function
+
+        function c_mio_poly_conn_cell_offsets(p, count) &
+                bind(c, name="mio_poly_conn_cell_offsets") result(q)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: p
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: q
+        end function
+
+        subroutine c_mio_poly_conn_free(p) bind(c, name="mio_poly_conn_free")
+            import :: c_ptr
+            type(c_ptr), value :: p
+        end subroutine
 
         function c_mio_mesh_cell_block_type(h, block, buf, buflen) &
                 bind(c, name="mio_mesh_cell_block_type") result(n)
@@ -3479,6 +3585,69 @@ contains
                            stat, errmsg)
     end subroutine
 
+    !> Append a 1-level ragged (jagged polygon) cell block.
+    !>
+    !> `row_offsets(num_cells + 1)` and `nodes(:)` are BOTH 1-based on this
+    !> side: `nodes(row_offsets(c) : row_offsets(c + 1) - 1)` is cell `c`'s node
+    !> list. The offsets are shifted as well as the node ids because they index
+    !> a Fortran array -- the same reasoning that makes MED's own INN 1-based.
+    subroutine mesh_add_polygon_block(self, cell_type, row_offsets, nodes, stat, errmsg)
+        class(mio_mesh), intent(inout) :: self
+        character(*), intent(in) :: cell_type
+        integer(int64), intent(in) :: row_offsets(:), nodes(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int64_t), allocatable :: c_off(:), c_nodes(:)
+        if (size(row_offsets) < 1) then
+            call handle_failure('add_polygon_block', &
+                                'row_offsets must have num_cells + 1 entries', stat, errmsg)
+            return
+        end if
+        call ensure_handle(self, stat, errmsg)
+        if (.not. c_associated(self%handle)) return
+        c_off = int(row_offsets, c_int64_t) - 1_c_int64_t
+        c_nodes = int(nodes, c_int64_t) - 1_c_int64_t
+        call handle_status(c_mio_mesh_add_polygon_block(self%handle, c_str(cell_type), &
+                                                        int(size(row_offsets) - 1, c_int64_t), &
+                                                        c_off, c_nodes, &
+                                                        int(size(nodes), c_int64_t)), &
+                           'add_polygon_block', stat, errmsg)
+    end subroutine
+
+    !> Append a 2-level ragged (polyhedron) cell block: each cell is a list of
+    !> faces, each face a list of node ids.
+    !>
+    !> `cell_offsets(num_cells + 1)` indexes the FACE list,
+    !> `face_offsets(num_faces + 1)` indexes `nodes`, and all three are 1-based
+    !> here, so face `f` of cell `c` is
+    !> `nodes(face_offsets(j) : face_offsets(j + 1) - 1)` with
+    !> `j = cell_offsets(c) + f - 1`.
+    subroutine mesh_add_polyhedron_block(self, cell_type, cell_offsets, face_offsets, nodes, &
+                                         stat, errmsg)
+        class(mio_mesh), intent(inout) :: self
+        character(*), intent(in) :: cell_type
+        integer(int64), intent(in) :: cell_offsets(:), face_offsets(:), nodes(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int64_t), allocatable :: c_cells(:), c_faces(:), c_nodes(:)
+        if (size(cell_offsets) < 1 .or. size(face_offsets) < 1) then
+            call handle_failure('add_polyhedron_block', &
+                                'cell_offsets and face_offsets must each have one more entry '// &
+                                'than the count they describe', stat, errmsg)
+            return
+        end if
+        call ensure_handle(self, stat, errmsg)
+        if (.not. c_associated(self%handle)) return
+        c_cells = int(cell_offsets, c_int64_t) - 1_c_int64_t
+        c_faces = int(face_offsets, c_int64_t) - 1_c_int64_t
+        c_nodes = int(nodes, c_int64_t) - 1_c_int64_t
+        call handle_status(c_mio_mesh_add_polyhedron_block( &
+                           self%handle, c_str(cell_type), &
+                           int(size(cell_offsets) - 1, c_int64_t), c_cells, &
+                           int(size(face_offsets) - 1, c_int64_t), c_faces, c_nodes, &
+                           int(size(nodes), c_int64_t)), 'add_polyhedron_block', stat, errmsg)
+    end subroutine
+
     !> Attach a scalar per-point field: `data(num_points)`.
     subroutine mesh_add_point_data_r1(self, name, data, stat, errmsg)
         class(mio_mesh), intent(inout) :: self
@@ -3678,6 +3847,130 @@ contains
         if (c_mio_mesh_cell_block_info(self%handle, int(block - 1, c_int64_t), nc, npc, &
                                        ragged) == 0_c_int) mesh_cell_block_is_ragged = ragged /= 0
     end function
+
+    !> Whether 1-based cell block `block` is 2-level ragged (a polyhedron block:
+    !> each cell a list of faces). Implies `cell_block_is_ragged`.
+    logical function mesh_cell_block_is_polyhedron(self, block)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in) :: block
+        type(c_mio_cell_block_info) :: info
+        mesh_cell_block_is_polyhedron = .false.
+        if (c_mio_mesh_cell_block_info_ex(self%handle, int(block - 1, c_int64_t), info) &
+            == 0_c_int) mesh_cell_block_is_polyhedron = info%is_polyhedron /= 0
+    end function
+
+    !> Copy 1-based ragged cell block `block` into a 1-based CSR pair,
+    !> `row_offsets(num_cells + 1)` and `nodes(:)`, both allocated here.
+    !> Cell `c`'s node list is `nodes(row_offsets(c) : row_offsets(c + 1) - 1)`.
+    !>
+    !> Fails on a rectangular block (use `get_cell_block`) and on a polyhedron
+    !> block (use `get_polyhedron_block`).
+    subroutine mesh_get_polygon_block(self, block, row_offsets, nodes, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in) :: block
+        integer(int64), allocatable, intent(out) :: row_offsets(:), nodes(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(c_ptr) :: poly, p
+        type(c_mio_poly_conn_shape) :: shape
+        integer(c_int64_t) :: n
+        integer(c_int64_t), pointer :: vals(:)
+
+        allocate (row_offsets(0), nodes(0))
+        poly = c_mio_poly_conn_create(self%handle, int(block - 1, c_int64_t))
+        if (.not. c_associated(poly)) then
+            call handle_failure('get_polygon_block', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (c_mio_poly_conn_get_shape(poly, shape) /= 0_c_int) then
+            call c_mio_poly_conn_free(poly)
+            call handle_failure('get_polygon_block', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (shape%is_polyhedron /= 0) then
+            call c_mio_poly_conn_free(poly)
+            call handle_failure('get_polygon_block', &
+                                'cell block is a polyhedron block; use get_polyhedron_block', &
+                                stat, errmsg)
+            return
+        end if
+        p = c_mio_poly_conn_face_offsets(poly, n)
+        deallocate (row_offsets)
+        allocate (row_offsets(max(n, 0_c_int64_t)))
+        if (c_associated(p) .and. n > 0) then
+            call c_f_pointer(p, vals, [n])
+            row_offsets = vals + 1_int64
+        end if
+        p = c_mio_poly_conn_nodes(poly, n)
+        deallocate (nodes)
+        allocate (nodes(max(n, 0_c_int64_t)))
+        if (c_associated(p) .and. n > 0) then
+            call c_f_pointer(p, vals, [n])
+            nodes = vals + 1_int64
+        end if
+        call c_mio_poly_conn_free(poly)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Copy 1-based polyhedron cell block `block` into a 1-based CSR triple,
+    !> all allocated here: `cell_offsets(num_cells + 1)` indexes the FACE list,
+    !> `face_offsets(num_faces + 1)` indexes `nodes`. Face `f` of cell `c` is
+    !> `nodes(face_offsets(j) : face_offsets(j + 1) - 1)` with
+    !> `j = cell_offsets(c) + f - 1`.
+    subroutine mesh_get_polyhedron_block(self, block, cell_offsets, face_offsets, nodes, &
+                                         stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in) :: block
+        integer(int64), allocatable, intent(out) :: cell_offsets(:), face_offsets(:), nodes(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(c_ptr) :: poly, p
+        type(c_mio_poly_conn_shape) :: shape
+        integer(c_int64_t) :: n
+        integer(c_int64_t), pointer :: vals(:)
+
+        allocate (cell_offsets(0), face_offsets(0), nodes(0))
+        poly = c_mio_poly_conn_create(self%handle, int(block - 1, c_int64_t))
+        if (.not. c_associated(poly)) then
+            call handle_failure('get_polyhedron_block', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (c_mio_poly_conn_get_shape(poly, shape) /= 0_c_int) then
+            call c_mio_poly_conn_free(poly)
+            call handle_failure('get_polyhedron_block', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (shape%is_polyhedron == 0) then
+            call c_mio_poly_conn_free(poly)
+            call handle_failure('get_polyhedron_block', &
+                                'cell block is a 1-level polygon block; use get_polygon_block', &
+                                stat, errmsg)
+            return
+        end if
+        p = c_mio_poly_conn_cell_offsets(poly, n)
+        deallocate (cell_offsets)
+        allocate (cell_offsets(max(n, 0_c_int64_t)))
+        if (c_associated(p) .and. n > 0) then
+            call c_f_pointer(p, vals, [n])
+            cell_offsets = vals + 1_int64
+        end if
+        p = c_mio_poly_conn_face_offsets(poly, n)
+        deallocate (face_offsets)
+        allocate (face_offsets(max(n, 0_c_int64_t)))
+        if (c_associated(p) .and. n > 0) then
+            call c_f_pointer(p, vals, [n])
+            face_offsets = vals + 1_int64
+        end if
+        p = c_mio_poly_conn_nodes(poly, n)
+        deallocate (nodes)
+        allocate (nodes(max(n, 0_c_int64_t)))
+        if (c_associated(p) .and. n > 0) then
+            call c_f_pointer(p, vals, [n])
+            nodes = vals + 1_int64
+        end if
+        call c_mio_poly_conn_free(poly)
+        call clear_status(stat, errmsg)
+    end subroutine
 
     !> Copy 1-based cell block `block` into `conn(nodes_per_cell, num_cells)`
     !> (allocated here), shifting the 0-based core indices to 1-based.

@@ -213,7 +213,7 @@ These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [R](/r)
 - **point / cell sets beyond regions** never reach the C++ core at all;
 - the **`frozen` pin mask** of `smooth` and `decimate`;
 - **per-cell-type counts** in `stats` — use `cell_block_types` with `cell_block_info`;
-- **ragged block connectivity** (polygons and polyhedra of varying size): `cell_block_info(m, i).is_ragged` reports them, and `connectivity` then throws rather than returning something wrong;
+- ~~ragged block connectivity~~ — **closed in v9.15.0**: `polygon_block` / `polyhedron_block` read them as nested 1-based vectors and `add_polygon_block!` / `add_polyhedron_block!` build them. `connectivity` still throws, since a ragged block has no matrix. See [Polyhedra and ragged cells](/polyhedra);
 - the combined **`data_manage`** — `data_drop` / `data_keep` / `data_rename` compose to the same effect;
 - **Exodus provenance strings** (`qa_records` / `info_records`): they ride the `ExodusInfo` side channel, which like `MedInfo` does not cross the flat ABI, so `mesh.info` has no counterpart here. Geometry, data, regions and time steps are unaffected.
 

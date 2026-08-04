@@ -999,6 +999,7 @@ step('every binding is reachable through the wrapper', () => {
         'partitionLabels',
         'stats',
         'meshBackend',
+        'hasCgnslib',
         'parallelBackend',
         // The transient-XDMF surface is a handle, so the wrapper forwards one
         // factory rather than the seven raw xdmfSeries* bindings; the series
@@ -1035,10 +1036,11 @@ step('availableFormats reports what this build can read and write', () => {
     const { readers, writers } = m.availableFormats();
     assert.ok(Array.isArray(readers) && Array.isArray(writers));
     assert.ok(readers.includes('vtu') && writers.includes('vtu'));
-    // The two lists genuinely differ: openfoam is read-only, svg/tikz are
-    // write-only. A viewer that assumes one list would offer broken menu items.
-    assert.ok(readers.includes('openfoam') && !writers.includes('openfoam'));
+    // The two lists genuinely differ: svg/tikz are write-only. A viewer that
+    // assumes one list would offer broken menu items.
     assert.ok(writers.includes('svg') && !readers.includes('svg'));
+    // openfoam was read-only until v9.20.0 -- this step used to assert that.
+    assert.ok(readers.includes('openfoam') && writers.includes('openfoam'));
     // The HDF5- and netCDF-backed formats are in this build too (the wasm32
     // libhdf5/libnetcdf come from build/build-wasm-deps.sh) -- if any of these
     // is missing, the artifact was linked without its dependency and the
@@ -1054,6 +1056,26 @@ step('availableFormats reports what this build can read and write', () => {
     // before this entry, WASM could select only the lossy 4.1 writer and had
     // no way to reach the one that round-trips region MEMBERSHIP.
     assert.ok(writers.includes('gmsh22') && !readers.includes('gmsh22'));
+});
+
+step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {
+    // The only writer that creates a directory rather than a file, so it is
+    // the only one whose MEMFS behaviour is not covered by every other step.
+    const hex = {
+        points: new Float64Array([
+            0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+            0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1,
+        ]),
+        dim: 3,
+        cells: [{ type: 'hexahedron', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7]), nodesPerCell: 8 }],
+    };
+    m.writeMesh('/of/case.foam', hex, 'openfoam');
+    for (const f of ['points', 'faces', 'owner', 'neighbour', 'boundary'])
+        assert.ok(m.FS.readFile(`/of/constant/polyMesh/${f}`).length > 0, `missing ${f}`);
+
+    const back = m.readMesh('/of/case.foam', 'openfoam');
+    assert.equal(back.points.length, 24);
+    assert.ok(back.cells.some((c) => c.type === 'hexahedron'));
 });
 
 step('gmsh22 round-trips a region-only mesh; gmsh (4.1) needs entity structure', () => {
@@ -1720,11 +1742,83 @@ step('ragged (polyhedron) cell blocks cross the JS boundary as CSR arrays', () =
     assert.deepEqual(Array.from(cb.faceOffsets), Array.from(tetra.cells[0].faceOffsets));
     assert.deepEqual(Array.from(cb.cellOffsets), Array.from(tetra.cells[0].cellOffsets));
 
-    // A format with no polyhedron support must still fail cleanly (a
-    // catchable Error naming the reason), never a WASM abort.
+    // MED gained MED_POLYHEDRON (POE) in v9.19.0, so this now ROUND-TRIPS
+    // rather than throwing -- which is what this step used to assert.
+    m.writeMesh('/polyhedron.med', tetra, 'med');
+    const back = m.readMesh('/polyhedron.med', 'med');
+    assert.equal(back.cells.length, 1);
+    assert.ok(back.cells[0].cellOffsets, 'a polyhedron block must come back 2-level');
+    assert.equal(back.cells[0].cellOffsets.length, 2);
+    assert.equal(back.cells[0].faceOffsets.length, 5); // 4 faces + 1
+
+    // A format that genuinely cannot hold a polyhedron must still fail cleanly
+    // -- a catchable Error naming the reason, never a WASM abort. VTP is the
+    // honest example: PolyData is 2-D by definition.
     assert.throws(
-        () => m.writeMesh('/polyhedron.med', tetra, 'med'),
+        () => m.writeMesh('/polyhedron.vtp', tetra, 'vtp'),
         (err) => err instanceof Error && /polyhedron/.test(err.message),
+    );
+});
+
+step('malformed ragged CSR offsets fail by name, not by reading out of range', () => {
+    // val_to_mesh is hostile to caller input by contract: the offsets are the
+    // one way a JS caller can steer a read past the end of `data`. The polygon
+    // branch always checked this; the polyhedron branch's faceOffsets did not
+    // until v9.15.0, which is what this pins.
+    const base = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        dim: 3,
+    };
+    const withCells = (cells) => ({ ...base, cells });
+
+    // faceOffsets running past the end of `data`.
+    assert.throws(
+        () =>
+            m.clean(
+                withCells([
+                    {
+                        type: 'polyhedron',
+                        data: new Int32Array([0, 1, 2]),
+                        faceOffsets: new Int32Array([0, 99]),
+                        cellOffsets: new Int32Array([0, 1]),
+                    },
+                ]),
+                false, 0.0, false, false, false,
+            ),
+        (err) => err instanceof Error && /faceOffsets/.test(err.message),
+    );
+
+    // cellOffsets naming a face the faceOffsets array does not have.
+    assert.throws(
+        () =>
+            m.clean(
+                withCells([
+                    {
+                        type: 'polyhedron',
+                        data: new Int32Array([0, 1, 2]),
+                        faceOffsets: new Int32Array([0, 3]),
+                        cellOffsets: new Int32Array([0, 5]),
+                    },
+                ]),
+                false, 0.0, false, false, false,
+            ),
+        (err) => err instanceof Error && /cellOffsets/.test(err.message),
+    );
+
+    // rowOffsets running past the end of `data`.
+    assert.throws(
+        () =>
+            m.clean(
+                withCells([
+                    {
+                        type: 'polygon',
+                        data: new Int32Array([0, 1, 2]),
+                        rowOffsets: new Int32Array([0, 42]),
+                    },
+                ]),
+                false, 0.0, false, false, false,
+            ),
+        (err) => err instanceof Error && /rowOffsets/.test(err.message),
     );
 });
 
@@ -1902,6 +1996,14 @@ step('XDMF time series: misuse throws readable JS Errors, never a WASM abort', (
 // Both must be present, since the loader auto-selects between them at runtime.
 // ---------------------------------------------------------------------------
 const mSeq = await loadMeshioPlusPlus({}, { variant: 'seq' });
+
+step('hasCgnslib reports whether the CGNS MLL is linked into this artifact', () => {
+    // Without a probe, a build that silently dropped cgnslib reads every file
+    // we produce ourselves identically -- the regression would surface only on
+    // a user's ADF-backed file. This artifact is built with it.
+    assert.equal(typeof m.hasCgnslib(), 'boolean');
+    assert.ok(m.hasCgnslib(), 'this artifact should be linked against cgnslib');
+});
 
 step('sequential (seq) build loads and reports the seq parallel backend', () => {
     assert.equal(mSeq.parallelBackend(), 'seq');

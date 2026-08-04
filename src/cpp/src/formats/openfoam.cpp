@@ -24,6 +24,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <sstream>
 #include <string>
@@ -35,7 +36,9 @@
 
 // Project includes
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -269,9 +272,45 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
 // OpenFOAM's own on-disk `boundary` field names (`nFaces`/`startFace`).
 struct Patch {
     std::string mName;
+    std::string mType;  ///< the `type` entry; empty when the file omitted it
     std::int64_t mNFaces = 0;
     std::int64_t mStartFace = 0;
 };
+
+/**
+ * @brief Read the value of key @p pKey from a `boundary` sub-dictionary body.
+ *
+ * `nFaces`/`startFace` are read with `atoll`, but `type` is a word, so it needs
+ * real tokenising. The word-boundary guard matters: a bare `find("type")` also
+ * matches `physicalType` and `patchType`, both of which are legal entries in the
+ * same dictionary and neither of which is the patch's type.
+ *
+ * @return the value token, or "" when the key is absent.
+ */
+std::string openfoam_dict_word(const std::string& rBlock, const char* pKey) {
+    const std::size_t klen = std::strlen(pKey);
+    std::size_t p = 0;
+    while ((p = rBlock.find(pKey, p)) != std::string::npos) {
+        const bool left_ok = p == 0 || std::isspace(static_cast<unsigned char>(rBlock[p - 1])) ||
+                             rBlock[p - 1] == ';';
+        const std::size_t after = p + klen;
+        const bool right_ok =
+            after < rBlock.size() && std::isspace(static_cast<unsigned char>(rBlock[after]));
+        if (!left_ok || !right_ok) {
+            p = after;
+            continue;
+        }
+        std::size_t a = after;
+        while (a < rBlock.size() && std::isspace(static_cast<unsigned char>(rBlock[a])))
+            ++a;
+        std::size_t b = a;
+        while (b < rBlock.size() && !std::isspace(static_cast<unsigned char>(rBlock[b])) &&
+               rBlock[b] != ';')
+            ++b;
+        return rBlock.substr(a, b - a);
+    }
+    return "";
+}
 
 std::vector<Patch> parse_boundary(const std::string& rBody) {
     // Find `name { ... }` blocks with nFaces/startFace.
@@ -291,12 +330,28 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
         std::string name = rBody.substr(start, i - start);
         skip_ws(i);
         if (i < n && rBody[i] == '{') {
-            std::size_t close = rBody.find('}', i);
+            // Match the brace by DEPTH, not by the first '}': real patches nest
+            // (a `cyclicAMI` carries `transform { ... }`, a `mappedWall` carries
+            // `sample { ... }`), and taking the first close truncates the block
+            // and then resumes scanning from inside it, inventing patches.
+            std::size_t close = std::string::npos;
+            int depth = 0;
+            for (std::size_t p = i; p < n; ++p) {
+                if (rBody[p] == '{') {
+                    ++depth;
+                } else if (rBody[p] == '}') {
+                    if (--depth == 0) {
+                        close = p;
+                        break;
+                    }
+                }
+            }
             if (close == std::string::npos)
                 break;
             std::string block = rBody.substr(i + 1, close - i - 1);
             Patch pt;
             pt.mName = name;
+            pt.mType = openfoam_dict_word(block, "type");
             bool has_n = false, has_s = false;
             std::size_t np = block.find("nFaces");
             if (np != std::string::npos) {
@@ -740,6 +795,8 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
     for (std::size_t pidx = 0; pidx < boundary.size(); ++pidx) {
         std::int64_t fam = -(static_cast<std::int64_t>(pidx) + 1);
         rInfo.mCellTags[fam] = {boundary[pidx].mName};
+        if (!boundary[pidx].mType.empty())
+            rInfo.mPatchTypes[fam] = boundary[pidx].mType;
         for (std::int64_t fid = boundary[pidx].mStartFace;
              fid < boundary[pidx].mStartFace + boundary[pidx].mNFaces; ++fid) {
             if (fid < 0 || static_cast<std::size_t>(fid) >= faces.size())
@@ -792,6 +849,550 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
     if (!cell_tags.empty())
         mesh.AddCellData("cell_tags", std::move(cell_tags));
     return mesh;
+}
+
+// ==========================================================================
+//                                  WRITER
+// ==========================================================================
+
+namespace {
+
+/// One boundary patch as it will be written.
+struct FoamPatchOut {
+    std::string mName;
+    std::string mType = "patch";
+    std::int64_t mNFaces = 0;
+    std::int64_t mStartFace = 0;
+};
+
+/// The written face order plus the patch table describing its tail.
+struct FoamFaceOrder {
+    std::vector<std::int64_t> mNewToOld;  ///< written face id -> GlobalFaces id
+    std::int64_t mNumInternal = 0;
+    std::vector<FoamPatchOut> mPatches;  ///< ascending mStartFace
+};
+
+/**
+ * @brief Patch types that survive a round trip unchanged.
+ *
+ * Everything else needs companion dictionary entries `OpenFoamInfo` does not
+ * carry -- `cyclic`/`cyclicAMI` need `neighbourPatch`, `processor` needs
+ * `myProcNo`/`neighbProcNo`, `mapped*` needs `sample*` -- and OpenFOAM refuses
+ * to *load* a case whose patch declares such a type without them. Downgrading
+ * to `patch` yields a case that loads and solves with visibly wrong boundary
+ * conditions, which is strictly better than one that does not open.
+ */
+bool foam_type_is_self_contained(const std::string& rType) {
+    return rType == "patch" || rType == "wall" || rType == "symmetry" ||
+           rType == "symmetryPlane" || rType == "empty" || rType == "wedge";
+}
+
+/// Resolve the polyMesh directory. One function for both directions, so the
+/// reader's resolution and the writer's cannot drift apart.
+fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
+    if (rPath.extension() == ".foam") {
+        const fs::path c = rPath.parent_path() / "constant" / "polyMesh";
+        if (ForWrite || fs::exists(c))
+            return c;
+    }
+    if (rPath.filename() == "polyMesh" && (ForWrite || fs::is_directory(rPath)))
+        return rPath;
+    if (!ForWrite) {
+        for (const fs::path& c : {rPath / "constant" / "polyMesh", rPath / "polyMesh"}) {
+            if (fs::exists(c))
+                return c;
+        }
+        return {};
+    }
+    return rPath / "constant" / "polyMesh";
+}
+
+/// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
+/// but the rest is what makes the file legible to OpenFOAM itself.
+void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
+    rOs << "/*--------------------------------*- C++ -*----------------------------------*\\\n"
+           "| =========                 |                                                 |\n"
+           "| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |\n"
+           "|  \\\\    /   O peration     |                                                 |\n"
+           "|   \\\\  /    A nd           | Written by meshio++                             |\n"
+           "|    \\\\/     M anipulation  |                                                 |\n"
+           "\\*---------------------------------------------------------------------------*/\n"
+           "FoamFile\n"
+           "{\n"
+           "    version     2.0;\n"
+           "    format      ascii;\n"
+           "    class       "
+        << rClass
+        << ";\n"
+           "    location    \"constant/polyMesh\";\n"
+           "    object      "
+        << rObject
+        << ";\n"
+           "}\n"
+           "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n\n";
+}
+
+/**
+ * @brief Assign every boundary face to a patch.
+ *
+ * @return per-`GlobalFaces`-face patch index, `-1` for internal or unassigned.
+ */
+struct FoamPatchAssignment {
+    std::vector<std::int64_t> mFacePatch;
+    std::vector<FoamPatchOut> mPatches;
+    std::int64_t mNumOrphan = 0;         ///< 2D cell matching no face at all
+    std::int64_t mNumInternalTagged = 0;  ///< 2D cell matching an INTERNAL face
+};
+
+FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalFaces& rFaces,
+                                        const OpenFoamInfo& rInfo) {
+    FoamPatchAssignment out;
+    out.mFacePatch.assign(rFaces.NumFaces(), -1);
+
+    // Family ids in the reader's own order (ascending -fam == ascending patch
+    // index), so an OpenFOAM round trip preserves the boundary file's order.
+    std::vector<std::int64_t> fams;
+    for (const auto& kv : rInfo.mCellTags)
+        fams.push_back(kv.first);
+    std::sort(fams.begin(), fams.end(), [](std::int64_t a, std::int64_t b) { return a > b; });
+
+    std::unordered_map<std::int64_t, std::size_t> fam_to_patch;
+    for (std::int64_t fam : fams) {
+        FoamPatchOut p;
+        const auto& names = rInfo.mCellTags.at(fam);
+        p.mName = names.empty() ? ("patch" + std::to_string(-fam)) : names.front();
+        const auto it = rInfo.mPatchTypes.find(fam);
+        if (it != rInfo.mPatchTypes.end() && !it->second.empty()) {
+            if (foam_type_is_self_contained(it->second)) {
+                p.mType = it->second;
+            } else {
+                log::warn(
+                    "OpenFOAM: patch '{}' has type '{}', which needs dictionary entries meshio++ "
+                    "does not carry; writing 'patch' instead so the case still loads",
+                    p.mName, it->second);
+            }
+        }
+        fam_to_patch[fam] = out.mPatches.size();
+        out.mPatches.push_back(std::move(p));
+    }
+
+    const detail::FaceLookup lookup(rFaces);
+    const bool have_tags = rMesh.HasCellData("cell_tags");
+
+    for (std::size_t block : rFaces.mNonCellBlocks) {
+        const auto cb = rMesh.Cells(block);
+        if (cell_type_dimension(cell_type_from_name(cb.Type())) != 2)
+            continue;
+        const NDArray* tags =
+            have_tags && rMesh.CellDataNumBlocks("cell_tags") == rMesh.NumCellBlocks()
+                ? &rMesh.CellData("cell_tags", block)
+                : nullptr;
+
+        std::vector<std::int64_t> ids;
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            ids.clear();
+            if (cb.IsRagged()) {
+                const std::size_t n = cb.RowSize(i);
+                const std::int64_t* row = cb.Row(i);
+                ids.assign(row, row + n);
+            } else {
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t k = 0; k < npc; ++k)
+                    ids.push_back(detail::read_int(cb.Conn(), i * npc + k));
+            }
+            const std::int64_t fid = lookup.Find(ids.data(), ids.size());
+            if (fid < 0) {
+                ++out.mNumOrphan;
+                continue;
+            }
+            if (rFaces.mNeighbour[static_cast<std::size_t>(fid)] >= 0) {
+                // A face between two cells cannot also be a patch member --
+                // OpenFOAM would refuse the case. Legitimate input (an interior
+                // baffle), so drop it rather than throw.
+                ++out.mNumInternalTagged;
+                continue;
+            }
+            if (out.mFacePatch[static_cast<std::size_t>(fid)] >= 0)
+                continue;  // first claim wins
+            std::int64_t fam = 0;
+            if (tags && i < tags->Shape()[0])
+                fam = detail::read_int(*tags, i);
+            const auto it = fam_to_patch.find(fam);
+            if (fam < 0 && it != fam_to_patch.end())
+                out.mFacePatch[static_cast<std::size_t>(fid)] =
+                    static_cast<std::int64_t>(it->second);
+        }
+    }
+
+    // Everything still unassigned joins `defaultFaces` -- blockMesh's own name
+    // for exactly this, so the result is a valid single-patch case rather than
+    // an error or an invented decomposition.
+    std::int64_t n_unassigned = 0;
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (rFaces.mNeighbour[f] < 0 && out.mFacePatch[f] < 0)
+            ++n_unassigned;
+    if (n_unassigned > 0) {
+        const std::int64_t idx = static_cast<std::int64_t>(out.mPatches.size());
+        FoamPatchOut p;
+        p.mName = "defaultFaces";
+        p.mType = "patch";
+        out.mPatches.push_back(std::move(p));
+        for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+            if (rFaces.mNeighbour[f] < 0 && out.mFacePatch[f] < 0)
+                out.mFacePatch[f] = idx;
+    }
+
+    // An empty patch is legal but checkMesh flags it, and its emptiness always
+    // means something went wrong upstream.
+    std::vector<std::int64_t> counts(out.mPatches.size(), 0);
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (out.mFacePatch[f] >= 0)
+            ++counts[static_cast<std::size_t>(out.mFacePatch[f])];
+    std::vector<FoamPatchOut> kept;
+    std::vector<std::int64_t> remap(out.mPatches.size(), -1);
+    for (std::size_t p = 0; p < out.mPatches.size(); ++p) {
+        if (counts[p] == 0) {
+            log::warn("OpenFOAM: patch '{}' has no faces and is not written",
+                      out.mPatches[p].mName);
+            continue;
+        }
+        remap[p] = static_cast<std::int64_t>(kept.size());
+        kept.push_back(out.mPatches[p]);
+    }
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        if (out.mFacePatch[f] >= 0)
+            out.mFacePatch[f] = remap[static_cast<std::size_t>(out.mFacePatch[f])];
+    out.mPatches = std::move(kept);
+    return out;
+}
+
+/// Order the faces the way OpenFOAM requires.
+FoamFaceOrder foam_order_faces(const detail::GlobalFaces& rFaces,
+                               const FoamPatchAssignment& rAssign) {
+    FoamFaceOrder order;
+    order.mPatches = rAssign.mPatches;
+
+    std::vector<std::int64_t> internal, boundary;
+    for (std::size_t f = 0; f < rFaces.NumFaces(); ++f)
+        (rFaces.mNeighbour[f] >= 0 ? internal : boundary).push_back(static_cast<std::int64_t>(f));
+
+    // Upper-triangular order. The face id is a THIRD key, not decoration: two
+    // cells can share two distinct faces, so (owner, neighbour) alone is not a
+    // strict weak ordering and std::sort would be undefined behaviour on it.
+    std::sort(internal.begin(), internal.end(), [&](std::int64_t a, std::int64_t b) {
+        const std::size_t ia = static_cast<std::size_t>(a), ib = static_cast<std::size_t>(b);
+        if (rFaces.mOwner[ia] != rFaces.mOwner[ib])
+            return rFaces.mOwner[ia] < rFaces.mOwner[ib];
+        if (rFaces.mNeighbour[ia] != rFaces.mNeighbour[ib])
+            return rFaces.mNeighbour[ia] < rFaces.mNeighbour[ib];
+        return a < b;
+    });
+    // Boundary faces contiguous per patch, patches in table order.
+    std::stable_sort(boundary.begin(), boundary.end(), [&](std::int64_t a, std::int64_t b) {
+        return rAssign.mFacePatch[static_cast<std::size_t>(a)] <
+               rAssign.mFacePatch[static_cast<std::size_t>(b)];
+    });
+
+    order.mNumInternal = static_cast<std::int64_t>(internal.size());
+    order.mNewToOld = std::move(internal);
+    order.mNewToOld.insert(order.mNewToOld.end(), boundary.begin(), boundary.end());
+
+    std::int64_t start = order.mNumInternal;
+    for (std::size_t p = 0; p < order.mPatches.size(); ++p) {
+        std::int64_t n = 0;
+        for (std::int64_t f : boundary)
+            if (rAssign.mFacePatch[static_cast<std::size_t>(f)] == static_cast<std::int64_t>(p))
+                ++n;
+        order.mPatches[p].mStartFace = start;
+        order.mPatches[p].mNFaces = n;
+        start += n;
+    }
+    return order;
+}
+
+/**
+ * @brief Check every clause of the polyMesh ordering contract.
+ *
+ * Runs in release builds too, deliberately: release is exactly where someone
+ * writes a ten-million-cell case, the cost is a handful of flops per face
+ * against ASCII formatting that costs far more, and a failure means we were
+ * about to hand a solver a corrupt mesh.
+ *
+ * @return "" when valid, else the first violated clause, named.
+ */
+std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFaceOrder& rOrder,
+                                const FoamPatchAssignment& rAssign, const NDArray& rPoints,
+                                std::size_t PointDim, std::size_t NumPoints) {
+    const std::size_t nf = rOrder.mNewToOld.size();
+    if (nf != rFaces.NumFaces())
+        return "C0: the written face list does not cover every face";
+
+    // Cell centroids, for the two normal-direction clauses.
+    std::vector<detail::Vec3> centroid(rFaces.NumCells(), detail::Vec3{0, 0, 0});
+    for (std::size_t c = 0; c < rFaces.NumCells(); ++c) {
+        detail::Vec3 acc{0, 0, 0};
+        std::size_t n = 0;
+        for (std::size_t k = 0; k < rFaces.NumCellFaces(c); ++k) {
+            const std::size_t f =
+                static_cast<std::size_t>(std::abs(rFaces.CellFaces(c)[k]) - 1);
+            for (std::size_t j = 0; j < rFaces.FaceSize(f); ++j) {
+                const detail::Vec3 p =
+                    detail::read_point(rPoints, PointDim, rFaces.Face(f)[j]);
+                acc[0] += p[0];
+                acc[1] += p[1];
+                acc[2] += p[2];
+                ++n;
+            }
+        }
+        if (n)
+            for (int a = 0; a < 3; ++a)
+                acc[a] /= static_cast<double>(n);
+        centroid[c] = acc;
+    }
+
+    std::vector<detail::Vec3> ring;
+    for (std::size_t i = 0; i < nf; ++i) {
+        const std::size_t f = static_cast<std::size_t>(rOrder.mNewToOld[i]);
+        const bool is_internal = i < static_cast<std::size_t>(rOrder.mNumInternal);
+
+        // C2: internal faces first.
+        if (is_internal != (rFaces.mNeighbour[f] >= 0))
+            return detail::format_compat(
+                "C2: face {} is {} but sits in the {} range", i,
+                rFaces.mNeighbour[f] >= 0 ? "internal" : "boundary",
+                is_internal ? "internal" : "boundary");
+
+        // C7: node ids in range, ring big enough to bound an area.
+        if (rFaces.FaceSize(f) < 3)
+            return detail::format_compat("C7: face {} has fewer than three nodes", i);
+        for (std::size_t k = 0; k < rFaces.FaceSize(f); ++k) {
+            const std::int64_t id = rFaces.Face(f)[k];
+            if (id < 0 || static_cast<std::size_t>(id) >= NumPoints)
+                return detail::format_compat("C7: face {} references node {}, out of range", i,
+                                             id);
+        }
+
+        ring.clear();
+        for (std::size_t k = 0; k < rFaces.FaceSize(f); ++k)
+            ring.push_back(detail::read_point(rPoints, PointDim, rFaces.Face(f)[k]));
+        const detail::Vec3 nrm = detail::polygon_area_vector(ring.data(), ring.size());
+        detail::Vec3 fc{0, 0, 0};
+        for (const detail::Vec3& p : ring)
+            for (int a = 0; a < 3; ++a)
+                fc[a] += p[a] / static_cast<double>(ring.size());
+
+        if (is_internal) {
+            // C1: owner < neighbour.
+            if (!(rFaces.mOwner[f] < rFaces.mNeighbour[f]))
+                return detail::format_compat("C1: face {} has owner {} >= neighbour {}", i,
+                                             rFaces.mOwner[f], rFaces.mNeighbour[f]);
+            // C3: strictly increasing (owner, neighbour).
+            if (i > 0) {
+                const std::size_t g = static_cast<std::size_t>(rOrder.mNewToOld[i - 1]);
+                const bool ok = rFaces.mOwner[g] < rFaces.mOwner[f] ||
+                                (rFaces.mOwner[g] == rFaces.mOwner[f] &&
+                                 rFaces.mNeighbour[g] <= rFaces.mNeighbour[f]);
+                if (!ok)
+                    return detail::format_compat(
+                        "C3: face {} has (owner,neighbour)=({},{}) after ({},{})", i,
+                        rFaces.mOwner[f], rFaces.mNeighbour[f], rFaces.mOwner[g],
+                        rFaces.mNeighbour[g]);
+            }
+            // C4: normal points owner -> neighbour.
+            const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
+            const detail::Vec3& cn = centroid[static_cast<std::size_t>(rFaces.mNeighbour[f])];
+            const double d = nrm[0] * (cn[0] - co[0]) + nrm[1] * (cn[1] - co[1]) +
+                             nrm[2] * (cn[2] - co[2]);
+            if (!(d > 0.0))
+                return detail::format_compat(
+                    "C4: internal face {} does not point from owner to neighbour", i);
+        } else {
+            // C5: boundary normal points out of the domain.
+            const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
+            const double d = nrm[0] * (fc[0] - co[0]) + nrm[1] * (fc[1] - co[1]) +
+                             nrm[2] * (fc[2] - co[2]);
+            if (!(d > 0.0))
+                return detail::format_compat("C5: boundary face {} is wound inward", i);
+        }
+    }
+
+    // C6: patches partition the boundary range exactly -- AND every face in a
+    // patch's range really belongs to that patch. Checking only that the
+    // start/count table tiles the range is not enough: the table is built by
+    // counting, so it describes a contiguity the face order may simply not
+    // have, and the resulting case is silently wrong.
+    std::int64_t expect = rOrder.mNumInternal;
+    for (std::size_t p = 0; p < rOrder.mPatches.size(); ++p) {
+        const FoamPatchOut& patch = rOrder.mPatches[p];
+        if (patch.mStartFace != expect)
+            return detail::format_compat("C6: patch '{}' starts at {}, expected {}", patch.mName,
+                                         patch.mStartFace, expect);
+        for (std::int64_t i = patch.mStartFace; i < patch.mStartFace + patch.mNFaces; ++i) {
+            const std::size_t f = static_cast<std::size_t>(rOrder.mNewToOld[
+                static_cast<std::size_t>(i)]);
+            if (rAssign.mFacePatch[f] != static_cast<std::int64_t>(p))
+                return detail::format_compat(
+                    "C6: face {} sits in patch '{}'s range but belongs to patch {}", i,
+                    patch.mName, rAssign.mFacePatch[f]);
+        }
+        expect += patch.mNFaces;
+    }
+    if (expect != static_cast<std::int64_t>(nf))
+        return detail::format_compat("C6: patches cover {} faces, expected {}",
+                                     expect - rOrder.mNumInternal,
+                                     static_cast<std::int64_t>(nf) - rOrder.mNumInternal);
+    return "";
+}
+
+std::ofstream foam_open(const fs::path& rPath) {
+    std::ofstream f(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("OpenFOAM: could not open for writing: " + rPath.string());
+    return f;
+}
+
+}  // namespace
+
+void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo) {
+    const detail::GlobalFaces faces = detail::build_global_faces(rMesh);
+
+    if (faces.NumCells() == 0)
+        throw WriteError(
+            "OpenFOAM: the mesh has no volume cells; a polyMesh needs at least one "
+            "tetra/pyramid/wedge/hexahedron/polyhedron cell");
+    // A 3D block we could not turn into faces would be a silently dropped solid.
+    for (std::size_t block : faces.mNonCellBlocks) {
+        const auto cb = rMesh.Cells(block);
+        const std::string type(cb.Type());
+        if (cell_type_dimension(cell_type_from_name(type)) == 3)
+            throw WriteError(detail::format_compat(
+                "OpenFOAM: cell type '{}' is 3D but has no face topology in meshio++, so writing "
+                "it would silently drop those cells",
+                type));
+    }
+    if (faces.mNumNonManifold > 0)
+        throw WriteError(detail::format_compat(
+            "OpenFOAM: {} face(s) are shared by three or more cells; a polyMesh face has at most "
+            "an owner and one neighbour",
+            faces.mNumNonManifold));
+    if (faces.mNumUnorientable > 0)
+        log::warn("OpenFOAM: {} cell(s) are not closed orientable surfaces; their faces are "
+                  "written with the winding they arrived with",
+                  faces.mNumUnorientable);
+    if (faces.mNumFlipped > 0)
+        log::info("OpenFOAM: rewound {} inverted cell(s) so their faces point outward",
+                  faces.mNumFlipped);
+
+    const FoamPatchAssignment assign = foam_assign_patches(rMesh, faces, rInfo);
+    if (assign.mNumOrphan > 0)
+        log::warn("OpenFOAM: {} boundary cell(s) match no cell face and are not written",
+                  assign.mNumOrphan);
+    if (assign.mNumInternalTagged > 0)
+        log::warn("OpenFOAM: {} boundary cell(s) coincide with an INTERNAL face; OpenFOAM cannot "
+                  "put such a face on a patch, so they are not written",
+                  assign.mNumInternalTagged);
+
+    const FoamFaceOrder order = foam_order_faces(faces, assign);
+    const std::string bad = foam_validate_order(faces, order, assign, rMesh.Points(),
+                                                rMesh.PointDim(), rMesh.NumPoints());
+    if (!bad.empty())
+        throw WriteError("OpenFOAM: internal error, the written face order violates " + bad);
+
+    const fs::path poly = foam_polymesh_dir(fs::path(rPath), /*ForWrite=*/true);
+    std::error_code ec;
+    fs::create_directories(poly, ec);
+    if (ec && !fs::is_directory(poly))
+        throw WriteError("OpenFOAM: could not create directory " + poly.string() + ": " +
+                         ec.message());
+    if (fs::path(rPath).extension() == ".foam") {
+        // The marker file is what makes the case openable by ParaView and by
+        // this reader's own `.foam` branch.
+        std::ofstream marker(rPath, std::ios::binary);
+    }
+
+    // Companion files this writer does not produce but OpenFOAM would read.
+    // Leaving a stale one behind corrupts the case, so remove exactly these --
+    // never the whole directory, which may hold a user's own files.
+    for (const char* name : {"cellZones", "faceZones", "pointZones", "meshModifiers",
+                             "boundaryProcAddressing", "cellProcAddressing",
+                             "faceProcAddressing", "pointProcAddressing", "cellLevel",
+                             "pointLevel", "level0Edge", "refinementHistory", "surfaceIndex"}) {
+        std::error_code rc;
+        if (fs::remove(poly / name, rc))
+            log::info("OpenFOAM: removed stale {}", name);
+    }
+
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t np = rMesh.NumPoints();
+
+    {
+        std::ofstream f = foam_open(poly / "points");
+        foam_write_header(f, "vectorField", "points");
+        // The count MUST be on a line of its own: every ASCII parser here takes
+        // "the first line that is entirely digits" as the count, so `8(` would
+        // be read as data and the list would come back EMPTY, not as an error.
+        f << np << "\n(\n";
+        f << std::setprecision(16);
+        for (std::size_t i = 0; i < np; ++i) {
+            const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+            f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
+        }
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "faces");
+        foam_write_header(f, "faceList", "faces");
+        f << order.mNewToOld.size() << "\n(\n";
+        for (std::int64_t old : order.mNewToOld) {
+            const std::size_t fi = static_cast<std::size_t>(old);
+            f << faces.FaceSize(fi) << "(";
+            for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
+                f << (k ? " " : "") << faces.Face(fi)[k];
+            f << ")\n";
+        }
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "owner");
+        foam_write_header(f, "labelList", "owner");
+        f << order.mNewToOld.size() << "\n(\n";
+        for (std::int64_t old : order.mNewToOld)
+            f << faces.mOwner[static_cast<std::size_t>(old)] << "\n";
+        f << ")\n";
+    }
+    {
+        // Always written, even with zero entries: a stale `neighbour` left from
+        // a previous, larger case is one of the nastiest ways to corrupt one.
+        // OpenFOAM's `neighbour` holds ONLY internal faces -- our own reader
+        // also accepts a -1-padded full-length list, which is exactly why a
+        // round trip through it is a weak oracle for this writer.
+        std::ofstream f = foam_open(poly / "neighbour");
+        foam_write_header(f, "labelList", "neighbour");
+        f << order.mNumInternal << "\n(\n";
+        for (std::int64_t i = 0; i < order.mNumInternal; ++i)
+            f << faces.mNeighbour[static_cast<std::size_t>(order.mNewToOld[
+                  static_cast<std::size_t>(i)])]
+              << "\n";
+        f << ")\n";
+    }
+    {
+        std::ofstream f = foam_open(poly / "boundary");
+        foam_write_header(f, "polyBoundaryMesh", "boundary");
+        f << order.mPatches.size() << "\n(\n";
+        for (const FoamPatchOut& p : order.mPatches) {
+            f << "    " << p.mName << "\n    {\n";
+            f << "        type            " << p.mType << ";\n";
+            f << "        nFaces          " << p.mNFaces << ";\n";
+            f << "        startFace       " << p.mStartFace << ";\n";
+            f << "    }\n";
+        }
+        f << ")\n";
+    }
+
+    log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)",
+              poly.string(), faces.NumCells(), order.mNewToOld.size(), order.mNumInternal,
+              order.mPatches.size());
 }
 
 }  // namespace meshioplusplus

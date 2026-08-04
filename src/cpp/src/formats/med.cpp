@@ -55,7 +55,8 @@ const std::unordered_map<std::string, std::string>& meshio_to_med() {
         {"triangle", "TR3"},   {"triangle6", "TR6"},    {"triangle7", "TR7"}, {"quad", "QU4"},
         {"quad8", "QU8"},      {"quad9", "QU9"},        {"tetra", "TE4"},     {"tetra10", "T10"},
         {"hexahedron", "HE8"}, {"hexahedron20", "H20"}, {"pyramid", "PY5"},   {"pyramid13", "P13"},
-        {"wedge", "PE6"},      {"wedge15", "P15"},      {"polygon", "POG"},   {"polygon2", "POG2"}};
+        {"wedge", "PE6"},      {"wedge15", "P15"},      {"polygon", "POG"},   {"polygon2", "POG2"},
+        {"polyhedron", "POE"}};
     return m;
 }
 
@@ -1126,7 +1127,52 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             throw ReadError(detail::format_compat("MED: unsupported cell type {}", med_type));
         h5::Hid g = h5::open_group(mai, med_type);
 
-        if (med_type == "POG" || med_type == "POG2") {
+        if (med_type == "POE") {
+            // MED_POLYHEDRON: NOD (flat nodes) + INN (face -> NOD) + IND
+            // (cell -> face), all 1-based. Regrouped back into polyhedron<N>
+            // by unique node count on the way out, the same bucketing the
+            // OpenFOAM, EnSight and CGNS readers use.
+            NDArray nod = h5::read_dataset(g, "NOD");
+            NDArray inn = h5::read_dataset(g, "INN");
+            NDArray ind = h5::read_dataset(g, "IND");
+            const std::size_t ncells = ind.Size() > 0 ? ind.Size() - 1 : 0;
+            std::vector<std::vector<std::vector<std::int64_t>>> cells(ncells);
+            std::vector<std::size_t> node_counts(ncells, 0);
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const std::int64_t f0 = detail::read_int(ind, c) - 1;
+                const std::int64_t f1 = detail::read_int(ind, c + 1) - 1;
+                std::vector<std::int64_t> uniq;
+                for (std::int64_t f = f0; f < f1; ++f) {
+                    const std::int64_t a = detail::read_int(inn, static_cast<std::size_t>(f)) - 1;
+                    const std::int64_t b =
+                        detail::read_int(inn, static_cast<std::size_t>(f) + 1) - 1;
+                    std::vector<std::int64_t> face;
+                    for (std::int64_t j = a; j < b; ++j)
+                        face.push_back(detail::read_int(nod, static_cast<std::size_t>(j)) - 1);
+                    uniq.insert(uniq.end(), face.begin(), face.end());
+                    cells[c].push_back(std::move(face));
+                }
+                std::sort(uniq.begin(), uniq.end());
+                uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                node_counts[c] = uniq.size();
+            }
+            std::vector<std::size_t> order;
+            std::map<std::size_t, std::vector<std::size_t>> groups;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                if (groups.find(node_counts[c]) == groups.end())
+                    order.push_back(node_counts[c]);
+                groups[node_counts[c]].push_back(c);
+            }
+            for (std::size_t n : order) {
+                std::vector<std::vector<std::vector<std::int64_t>>> group;
+                group.reserve(groups[n].size());
+                for (std::size_t c : groups[n])
+                    group.push_back(std::move(cells[c]));
+                const std::string tname = "polyhedron" + std::to_string(n);
+                mesh.AddPolyhedronBlock(tname, std::move(group));
+                cell_types.push_back(tname);
+            }
+        } else if (med_type == "POG" || med_type == "POG2") {
             // Ragged polygons: flat 1-based NOD + 1-based INN offsets.
             NDArray nod = h5::read_dataset(g, "NOD");
             NDArray inn = h5::read_dataset(g, "INN");
@@ -1420,7 +1466,15 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     std::vector<std::string> cell_type_order;
     std::unordered_map<std::string, std::vector<std::size_t>> blocks_by_type;
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
-        const std::string ctype(rMesh.Cells(k).Type());
+        std::string ctype(rMesh.Cells(k).Type());
+        // Every `polyhedron<N>` collapses to one key. MED holds ONE section per
+        // type inside a MAI group, so grouping on the exact type string would
+        // try to create POE three times over for a mesh carrying polyhedron4,
+        // polyhedron5 and polyhedron8 -- an invalid file, and a group-creation
+        // failure rather than a clean error. The node count is a meshio++
+        // bucketing convention, not part of the MED type.
+        if (ctype.rfind("polyhedron", 0) == 0)
+            ctype = "polyhedron";
         if (meshio_to_med().find(ctype) == meshio_to_med().end())
             throw WriteError(detail::format_compat("MED: unsupported cell type {}", ctype));
         if (!blocks_by_type.count(ctype))
@@ -1431,12 +1485,13 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
     for (const std::string& ctype : cell_type_order) {
         const std::vector<std::size_t>& idxs = blocks_by_type[ctype];
         const bool is_ragged_type = (ctype == "polygon" || ctype == "polygon2");
+        const bool is_polyhedron_type = (ctype == "polyhedron");
 
         // Blocks of the same type must agree on node count to be merged into
         // one section -- unlike merge.cpp's grouping (keyed on Type() alone,
         // trusting the first contributor), a disagreement here is a checked
         // error rather than a silently truncated/garbled NOD array.
-        if (!is_ragged_type) {
+        if (!is_ragged_type && !is_polyhedron_type) {
             const std::size_t npc = rMesh.Cells(idxs[0]).NodesPerCell();
             for (std::size_t bi : idxs)
                 if (rMesh.Cells(bi).NodesPerCell() != npc)
@@ -1455,7 +1510,39 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
         for (std::size_t bi : idxs)
             n_total += rMesh.Cells(bi).NumCells();
 
-        if (is_ragged_type) {
+        if (is_polyhedron_type) {
+            // MED_POLYHEDRON needs THREE 1-based arrays where a polygon needs
+            // two: NOD (every face's nodes, flat), INN (face -> start in NOD),
+            // and IND (cell -> start in the face list). Concatenated across
+            // every contributing block, in block order.
+            std::vector<std::int64_t> nod;
+            std::vector<std::int64_t> inn = {1};
+            std::vector<std::int64_t> ind = {1};
+            for (std::size_t bi : idxs) {
+                const auto cb = rMesh.Cells(bi);
+                for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+                    for (std::size_t f = 0; f < cb.NumFaces(i); ++f) {
+                        const auto face = cb.Face(i, f);
+                        for (std::size_t j = 0; j < face.second; ++j)
+                            nod.push_back(face.first[j] + 1);
+                        inn.push_back(inn.back() + static_cast<std::int64_t>(face.second));
+                    }
+                    ind.push_back(static_cast<std::int64_t>(inn.size()));
+                }
+            }
+            auto to_arr = [](const std::vector<std::int64_t>& v) {
+                NDArray a(DType::Int64, {v.size()});
+                for (std::size_t i = 0; i < v.size(); ++i)
+                    a.As<std::int64_t>()[i] = v[i];
+                return a;
+            };
+            h5::write_dataset(g, "NOD", to_arr(nod));
+            h5::write_dataset(g, "INN", to_arr(inn));
+            h5::write_dataset(g, "IND", to_arr(ind));
+            h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
+            h5::write_attr_int(d, "CGT", 1);
+            h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
+        } else if (is_ragged_type) {
             // Ragged: flat 1-based NOD + 1-based INN offsets, concatenated
             // across every contributing block in order.
             std::vector<std::int64_t> nod;

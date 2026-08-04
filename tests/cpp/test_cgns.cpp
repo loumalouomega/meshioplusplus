@@ -19,10 +19,13 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include <hdf5.h>
@@ -32,6 +35,10 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+#include <cgnslib.h>
+#endif
+#include "meshioplusplus/operations/stats.hpp"
 
 using meshioplusplus::detail::read_double;  // NOLINT
 namespace h5 = meshioplusplus::h5;
@@ -349,11 +356,27 @@ TEST(Cgns, LegacyRead) {
     std::filesystem::remove(p, ec);
 }
 
-TEST(Cgns, UnsupportedCellTypeThrows) {
-    meshioplusplus::Mesh m = mt::tri_mesh();
-    m.AddPolygonBlock("polygon", {{0, 1, 2}});
+// A jagged polygon block used to be refused outright; since v9.21.0 it is an
+// NGON_n section -- which is what this step used to assert the opposite of.
+TEST(Cgns, PolygonBlockRoundTripsAsNgon) {
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}}));
+    m.AddPolygonBlock("polygon", {{0, 1, 2, 3}, {1, 4, 2}});
     std::string p = mt::temp_path(".cgns");
-    EXPECT_THROW(meshioplusplus::write_cgns(p, m, -1), meshioplusplus::WriteError);
+    meshioplusplus::write_cgns(p, m, -1);
+
+    meshioplusplus::Mesh out = meshioplusplus::read_cgns(p);
+    EXPECT_EQ(out.NumPoints(), 5u);
+    // Grouped by node count, so the quad and the triangle land in two blocks.
+    std::size_t n3 = 0, n4 = 0;
+    for (const auto cb : out.CellRange()) {
+        if (cb.Type() == "polygon3")
+            n3 += cb.NumCells();
+        if (cb.Type() == "polygon4")
+            n4 += cb.NumCells();
+    }
+    EXPECT_EQ(n3, 1u);
+    EXPECT_EQ(n4, 1u);
     std::error_code ec;
     std::filesystem::remove(p, ec);
 }
@@ -600,6 +623,342 @@ TEST(CgnsOrdering, PermutationsAreInvolutions) {
         std::error_code ec;
         std::filesystem::remove(p, ec);
     }
+}
+
+// --- the cgnslib (MLL) backend ----------------------------------------------
+//
+// Two capabilities justify the optional dependency, and both are things the
+// raw-HDF5 reader in cgns.cpp fundamentally cannot have. Everything else about
+// the backend is covered for free by the suite above, which runs through it
+// whenever the flag is on.
+
+TEST(CgnsMll, ReportsWhetherTheBackendIsBuilt) {
+    // The predicate must agree with the macro, or every skip below is a lie.
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    EXPECT_TRUE(meshioplusplus::cgns_has_cgnslib());
+#else
+    EXPECT_FALSE(meshioplusplus::cgns_has_cgnslib());
+    // Compiled out, the entry point still exists and throws NAMING the flag --
+    // the partition_kahip_parts contract. A link error would break the
+    // Python-fallback shim; a silent downgrade would answer a different
+    // question than the caller asked.
+    EXPECT_THROW(meshioplusplus::read_cgns_mll("nonexistent.cgns"), meshioplusplus::ReadError);
+    try {
+        meshioplusplus::read_cgns_mll("nonexistent.cgns");
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("MESHIOPLUSPLUS_WITH_CGNSLIB"), std::string::npos);
+    }
+#endif
+}
+
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+
+TEST(CgnsMll, ReadsAnAdfContainerTheRawHdf5ReaderCannotOpen) {
+    // `.cgns` has two on-disk containers. cgns.cpp speaks HDF5 directly, so an
+    // ADF file is not merely unimplemented there -- it is unreachable by
+    // construction. This is the strongest single argument for the backend, and
+    // it is what makes the CGNS project's own example meshes usable.
+    if (!std::system("command -v cgnsconvert > /dev/null 2>&1") == 0)
+        GTEST_SKIP() << "cgnsconvert not on PATH";
+
+    const mt::Mesh m =
+        mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
+    const std::string hdf5 = mt::temp_path("_mll_hdf5.cgns");
+    const std::string adf = mt::temp_path("_mll_adf.cgns");
+    meshioplusplus::write_cgns(hdf5, m, -1);
+
+    // `-a` rewrites into the ADF container through cgnslib's own API.
+    const std::string cmd = "cgnsconvert -a '" + hdf5 + "' '" + adf + "' > /dev/null 2>&1";
+    if (std::system(cmd.c_str()) != 0) {
+        std::remove(hdf5.c_str());
+        GTEST_SKIP() << "cgnsconvert -a failed (this cgnslib may be built without ADF)";
+    }
+
+    // The MLL reads it...
+    const mt::Mesh via_mll = meshioplusplus::read_cgns_mll(adf);
+    EXPECT_EQ(via_mll.NumPoints(), 4u);
+    ASSERT_EQ(via_mll.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(via_mll.Cells(0).Type()), "tetra");
+
+    std::remove(hdf5.c_str());
+    std::remove(adf.c_str());
+}
+
+TEST(CgnsMll, ReadsNgonNfacePolyhedralSections) {
+    // The other capability: NGON_n lists faces, NFACE_n lists each cell as
+    // SIGNED face ids (negative = traverse that face reversed, which is how
+    // CGNS orients a shared face outward from each of the two cells using it).
+    // Written here through cgnslib's own API, so the bytes are the MLL's and
+    // the test is not merely reading back our own idea of the encoding.
+    const std::string path = mt::temp_path("_mll_ngon.cgns");
+    std::remove(path.c_str());
+
+    int fn = 0, B = 0, Z = 0, S = 0;
+    ASSERT_EQ(cg_open(path.c_str(), CG_MODE_WRITE, &fn), CG_OK) << cg_get_error();
+    ASSERT_EQ(cg_base_write(fn, "Base", 3, 3, &B), CG_OK);
+
+    // A unit cube: 8 points, 6 quad faces, 1 cell.
+    cgsize_t zsize[3] = {8, 1, 0};
+    ASSERT_EQ(cg_zone_write(fn, B, "Zone", zsize, CGNS_ENUMV(Unstructured), &Z), CG_OK);
+    const double x[8] = {0, 1, 1, 0, 0, 1, 1, 0};
+    const double y[8] = {0, 0, 1, 1, 0, 0, 1, 1};
+    const double z[8] = {0, 0, 0, 0, 1, 1, 1, 1};
+    int c = 0;
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateX", x, &c), CG_OK);
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateY", y, &c), CG_OK);
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateZ", z, &c), CG_OK);
+
+    // NGON_n: the cube's six quads, 1-based, outward.
+    const cgsize_t faces[24] = {1, 4, 3, 2, 5, 6, 7, 8, 1, 2, 6, 5,
+                                3, 4, 8, 7, 1, 5, 8, 4, 2, 3, 7, 6};
+    cgsize_t face_off[7] = {0, 4, 8, 12, 16, 20, 24};
+    ASSERT_EQ(
+        cg_poly_section_write(fn, B, Z, "Faces", CGNS_ENUMV(NGON_n), 1, 6, 0, faces, face_off, &S),
+        CG_OK)
+        << cg_get_error();
+
+    // NFACE_n: one cell referencing all six faces (ids 1..6).
+    const cgsize_t cells[6] = {1, 2, 3, 4, 5, 6};
+    cgsize_t cell_off[2] = {0, 6};
+    ASSERT_EQ(
+        cg_poly_section_write(fn, B, Z, "Cells", CGNS_ENUMV(NFACE_n), 7, 7, 0, cells, cell_off, &S),
+        CG_OK)
+        << cg_get_error();
+    ASSERT_EQ(cg_close(fn), CG_OK);
+
+    const mt::Mesh got = meshioplusplus::read_cgns_mll(path);
+    EXPECT_EQ(got.NumPoints(), 8u);
+    ASSERT_EQ(got.NumCellBlocks(), 1u);
+    const auto cb = got.Cells(0);
+    EXPECT_TRUE(cb.IsPolyhedron());
+    EXPECT_EQ(std::string(cb.Type()), "polyhedron8");
+    ASSERT_EQ(cb.NumCells(), 1u);
+    EXPECT_EQ(cb.NumFaces(0), 6u);
+
+    // The geometry must actually be the unit cube -- reading six faces of the
+    // right arity proves nothing about whether the node ids landed correctly.
+    EXPECT_NEAR(meshioplusplus::compute_stats(got).mUnsignedVolume, 1.0, 1e-12);
+
+    std::remove(path.c_str());
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_CGNSLIB
+
+
+// --------------------------------------------------------------------------
+// NGON_n / NFACE_n -- polyhedral cells, hand-rolled in both directions
+// --------------------------------------------------------------------------
+
+namespace {
+
+// Unit cube as a polyhedron block, faces wound outward.
+meshioplusplus::Mesh cgns_poly_cube() {
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0},
+                                    {1, 0, 0},
+                                    {1, 1, 0},
+                                    {0, 1, 0},
+                                    {0, 0, 1},
+                                    {1, 0, 1},
+                                    {1, 1, 1},
+                                    {0, 1, 1}}));
+    m.AddPolyhedronBlock("polyhedron8", {{{
+                                             {0, 3, 2, 1},
+                                             {4, 5, 6, 7},
+                                             {0, 1, 5, 4},
+                                             {2, 3, 7, 6},
+                                             {1, 2, 6, 5},
+                                             {0, 4, 7, 3},
+                                         }}});
+    return m;
+}
+
+// Total volume via the geometric kernel -- the oracle that a face list came
+// back with the right node ids AND the right winding. Cell counts cannot see
+// either.
+double cgns_total_volume(const meshioplusplus::Mesh& rM) {
+    double v = 0.0;
+    meshioplusplus::detail::CellRings rings;
+    std::vector<meshioplusplus::detail::Vec3> coords;
+    for (const auto cb : rM.CellRange()) {
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            if (!meshioplusplus::detail::cell_rings(cb, i, rM.Points(), rM.PointDim(), rings,
+                                                    coords))
+                continue;
+            meshioplusplus::detail::orient_rings(rings, coords.data());
+            v += meshioplusplus::detail::poly_measure(rings, coords.data()).mVolume;
+        }
+    }
+    return v;
+}
+
+}  // namespace
+
+TEST(CgnsPoly, APolyhedronRoundTripsThroughNgonAndNface) {
+    const meshioplusplus::Mesh m = cgns_poly_cube();
+    std::string p = mt::temp_path(".cgns");
+    meshioplusplus::write_cgns(p, m, -1);
+
+    const meshioplusplus::Mesh out = meshioplusplus::read_cgns(p);
+    EXPECT_EQ(out.NumPoints(), 8u);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(out.Cells(0).Type(), "polyhedron8");
+    EXPECT_EQ(out.Cells(0).NumCells(), 1u);
+    EXPECT_EQ(out.Cells(0).NumFaces(0), 6u);
+    // The oracle: right ids, right winding.
+    EXPECT_NEAR(cgns_total_volume(out), 1.0, 1e-12);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+// The face pool must NOT come back as cells of its own -- that would double
+// every polyhedron's geometry while leaving the cell count looking plausible.
+TEST(CgnsPoly, TheSharedNgonFacePoolIsNotEmittedAsCells) {
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0},
+                                    {1, 0, 0},
+                                    {1, 1, 0},
+                                    {0, 1, 0},
+                                    {0, 0, 1},
+                                    {1, 0, 1},
+                                    {1, 1, 1},
+                                    {0, 1, 1},
+                                    {2, 0, 0},
+                                    {2, 1, 0},
+                                    {2, 1, 1},
+                                    {2, 0, 1}}));
+    // Two cubes sharing the plane x = 1, so one face is genuinely internal.
+    m.AddPolyhedronBlock("polyhedron8", {{
+                                             {
+                                                 {0, 3, 2, 1},
+                                                 {4, 5, 6, 7},
+                                                 {0, 1, 5, 4},
+                                                 {2, 3, 7, 6},
+                                                 {1, 2, 6, 5},
+                                                 {0, 4, 7, 3},
+                                             },
+                                             {
+                                                 {1, 2, 9, 8},
+                                                 {5, 11, 10, 6},
+                                                 {1, 8, 11, 5},
+                                                 {2, 6, 10, 9},
+                                                 {8, 9, 10, 11},
+                                                 {1, 5, 6, 2},
+                                             },
+                                         }});
+    std::string p = mt::temp_path(".cgns");
+    meshioplusplus::write_cgns(p, m, -1);
+
+    const meshioplusplus::Mesh out = meshioplusplus::read_cgns(p);
+    std::size_t ncells = 0, npoly2d = 0;
+    for (const auto cb : out.CellRange()) {
+        if (std::string(cb.Type()).rfind("polyhedron", 0) == 0)
+            ncells += cb.NumCells();
+        if (std::string(cb.Type()).rfind("polygon", 0) == 0)
+            npoly2d += cb.NumCells();
+    }
+    EXPECT_EQ(ncells, 2u);
+    EXPECT_EQ(npoly2d, 0u) << "the NGON_n face pool was emitted as polygon cells too";
+    EXPECT_NEAR(cgns_total_volume(out), 2.0, 1e-12);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+// Mixing is the case that makes the block-filtered face table necessary: a
+// hexahedron keeps its HEXA_8 section, and its faces must NOT land in the
+// NGON_n pool as elements nothing references.
+TEST(CgnsPoly, AHexahedronAndAPolyhedronCoexistInOneFile) {
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0},
+                                    {1, 0, 0},
+                                    {1, 1, 0},
+                                    {0, 1, 0},
+                                    {0, 0, 1},
+                                    {1, 0, 1},
+                                    {1, 1, 1},
+                                    {0, 1, 1},
+                                    {2, 0, 0},
+                                    {2, 1, 0},
+                                    {2, 1, 1},
+                                    {2, 0, 1}}));
+    m.AddCellBlock("hexahedron", mt::conn_from({{0, 1, 2, 3, 4, 5, 6, 7}}));
+    m.AddPolyhedronBlock("polyhedron8", {{{
+                                             {1, 2, 9, 8},
+                                             {5, 11, 10, 6},
+                                             {1, 8, 11, 5},
+                                             {2, 6, 10, 9},
+                                             {8, 9, 10, 11},
+                                             {1, 5, 6, 2},
+                                         }}});
+    std::string p = mt::temp_path(".cgns");
+    meshioplusplus::write_cgns(p, m, -1);
+
+    const meshioplusplus::Mesh out = meshioplusplus::read_cgns(p);
+    bool has_hex = false, has_poly = false;
+    for (const auto cb : out.CellRange()) {
+        has_hex = has_hex || cb.Type() == "hexahedron";
+        has_poly = has_poly || std::string(cb.Type()).rfind("polyhedron", 0) == 0;
+    }
+    EXPECT_TRUE(has_hex) << "the hexahedron was not kept as a HEXA_8 section";
+    EXPECT_TRUE(has_poly);
+    EXPECT_NEAR(cgns_total_volume(out), 2.0, 1e-12);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+// The CGNS 3.x inline-length layout must be refused BY NAME, pointing at the
+// cgnslib backend, rather than misread as the 4.0 one.
+TEST(CgnsPoly, A3xLayoutSectionIsRefusedByName) {
+    const meshioplusplus::Mesh m = cgns_poly_cube();
+    std::string p = mt::temp_path(".cgns");
+    meshioplusplus::write_cgns(p, m, -1);
+
+    // Delete ElementStartOffset from the NGON section -> a 3.x-shaped file.
+    {
+        h5::Hid f = h5::open_file_rw(p);
+        H5Ldelete(f, "/Base/Zone1/NGON_n_1/ElementStartOffset", H5P_DEFAULT);
+    }
+    try {
+        meshioplusplus::read_cgns(p);
+        ADD_FAILURE() << "a 3.x-layout section was read rather than refused";
+    } catch (const meshioplusplus::ReadError& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("CGNSLIB"), std::string::npos) << msg;
+    }
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+
+// The declared CGNSLibraryVersion is load-bearing for a face-based file, not
+// cosmetic: BELOW 4.0 cgnslib reads NGON_n/NFACE_n with the 3.x inline-length
+// layout, so a file declaring 3.1 while writing ElementStartOffset arrays makes
+// cgnslib splice the offsets into the connectivity and then corrupt its own
+// heap. cgnscheck aborted rather than diagnosing it, so nothing but this test
+// stands between a regression here and silently unreadable files.
+TEST(CgnsPoly, AFaceBasedFileDeclaresCgns40) {
+    auto version_of = [](const meshioplusplus::Mesh& m) {
+        std::string p = mt::temp_path(".cgns");
+        meshioplusplus::write_cgns(p, m, -1);
+        float v = 0.0f;
+        {
+            h5::SilenceErrors silence;
+            h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+            h5::Hid g = h5::open_group(f, "CGNSLibraryVersion");
+            meshioplusplus::NDArray d = h5::read_dataset(g, " data");
+            v = static_cast<float>(read_double(d, 0));
+        }
+        std::error_code ec;
+        std::filesystem::remove(p, ec);
+        return v;
+    };
+    EXPECT_GE(version_of(cgns_poly_cube()), 4.0f);
+    // A file with no face-based section reads identically under either number,
+    // so its bytes are deliberately left alone.
+    EXPECT_LT(version_of(mt::tet_mesh()), 4.0f);
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

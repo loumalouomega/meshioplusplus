@@ -40,6 +40,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_adjacency.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
@@ -76,6 +77,10 @@ struct GradCell {
     bool mSupported = false;      ///< Whether the cell can be differentiated at all.
     CellType mType = CellType::Custom;
     int mDim = -1;
+    /// The cell's boundary as face rings, indexing `mCorners`/`mValues`. Empty
+    /// for a 2D/1D cell. This is what makes Green-Gauss polyhedral: a
+    /// `polyhedron12` and a `hexahedron` differ only in what fills this.
+    detail::CellRings mRings;
 };
 
 /// Reads the leading `NumCorners` connectivity entries of one cell.
@@ -100,17 +105,34 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
     rOut.mCorners.clear();
     rOut.mValues.clear();
     rOut.mValue0.assign(NumComp, 0.0);
-    if (rBlock.IsRagged() || rBlock.IsPolyhedron() || NumCorners == 0)
-        return;
+    rOut.mRings.Clear();
 
     static thread_local std::vector<std::int64_t> nodes;
-    grad_corner_nodes(rBlock, Cell, NumCorners, nodes);
+    static thread_local std::vector<Vec3> ring_coords;
+    // The rings are filled for every 3D cell, tabulated or polyhedral, and are
+    // what Green-Gauss integrates over. `cell_rings` interns a tabulated cell's
+    // nodes in CONNECTIVITY order, so the ring indices line up with
+    // mCorners/mValues below either way -- that is the contract this relies on.
+    const bool has_rings =
+        detail::cell_rings(rBlock, Cell, rPoints, PointDim, rOut.mRings, ring_coords);
+    if (rBlock.IsPolyhedron()) {
+        if (!has_rings)
+            return;
+        nodes = rOut.mRings.mNodes;
+    } else {
+        // 2D/1D cells legitimately have no rings; they take the corner-ring
+        // path further down and never reach grad_green_gauss_3d.
+        if (rBlock.IsRagged() || NumCorners == 0)
+            return;
+        grad_corner_nodes(rBlock, Cell, NumCorners, nodes);
+    }
     for (std::int64_t nid : nodes)
         if (nid < 0 || static_cast<std::size_t>(nid) >= NumPoints)
             return;
+    const std::size_t ncorners = nodes.size();
 
-    rOut.mCorners.reserve(NumCorners);
-    rOut.mValues.reserve(NumCorners * NumComp);
+    rOut.mCorners.reserve(ncorners);
+    rOut.mValues.reserve(ncorners * NumComp);
     for (std::int64_t nid : nodes) {
         rOut.mCorners.push_back(detail::read_point(rPoints, PointDim, nid));
         for (std::size_t k = 0; k < NumComp; ++k)
@@ -122,17 +144,17 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
     Vec3 origin{0.0, 0.0, 0.0};
     for (const Vec3& r_p : rOut.mCorners)
         origin = detail::vec3_add(origin, r_p);
-    const double inv = 1.0 / static_cast<double>(NumCorners);
+    const double inv = 1.0 / static_cast<double>(ncorners);
     origin = detail::vec3_scale(origin, inv);
     for (std::size_t k = 0; k < NumComp; ++k) {
         double s = 0.0;
-        for (std::size_t i = 0; i < NumCorners; ++i)
+        for (std::size_t i = 0; i < ncorners; ++i)
             s += rOut.mValues[i * NumComp + k];
         rOut.mValue0[k] = s * inv;
     }
     for (Vec3& r_p : rOut.mCorners)
         r_p = detail::vec3_sub(r_p, origin);
-    for (std::size_t i = 0; i < NumCorners; ++i)
+    for (std::size_t i = 0; i < ncorners; ++i)
         for (std::size_t k = 0; k < NumComp; ++k)
             rOut.mValues[i * NumComp + k] -= rOut.mValue0[k];
     rOut.mOrigin = origin;
@@ -145,22 +167,26 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
 /// (`[component][derivative]`), or returns false when the cell's fan volume is
 /// degenerate relative to its own size.
 bool grad_green_gauss_3d(const GradCell& rCell, std::size_t NumComp, double* pOut) {
-    const std::vector<detail::CellFaceDef>& r_faces = detail::cell_faces(rCell.mType);
-    if (r_faces.empty())
+    // Face rings rather than `cell_faces(mType)`: that is the ONLY difference
+    // between differentiating a hexahedron and a `polyhedron12`, which is what
+    // makes Green-Gauss naturally polyhedral. The arithmetic below is unchanged.
+    const std::size_t nfaces = rCell.mRings.NumFaces();
+    if (nfaces == 0)
         return false;
 
     std::vector<double> num(NumComp * 3, 0.0);
     double volume = 0.0;
     double area_scale = 0.0;
 
-    for (const detail::CellFaceDef& r_face : r_faces) {
-        const std::size_t m = r_face.mNumCorners;
+    for (std::size_t fi = 0; fi < nfaces; ++fi) {
+        const std::uint32_t* p_ring = rCell.mRings.Face(fi);
+        const std::size_t m = rCell.mRings.FaceSize(fi);
         // Face centre and face-centre value: the fan apex. For linear f the
         // corner average is the ONLY apex whose value is known exactly without
         // shape functions -- see the header. Do not switch to the area centroid.
         Vec3 c{0.0, 0.0, 0.0};
         for (std::size_t i = 0; i < m; ++i)
-            c = detail::vec3_add(c, rCell.mCorners[r_face.mNodes[i]]);
+            c = detail::vec3_add(c, rCell.mCorners[p_ring[i]]);
         const double inv_m = 1.0 / static_cast<double>(m);
         c = detail::vec3_scale(c, inv_m);
 
@@ -169,25 +195,25 @@ bool grad_green_gauss_3d(const GradCell& rCell, std::size_t NumComp, double* pOu
         for (std::size_t k = 0; k < NumComp; ++k) {
             double s = 0.0;
             for (std::size_t i = 0; i < m; ++i)
-                s += rCell.mValues[static_cast<std::size_t>(r_face.mNodes[i]) * NumComp + k];
+                s += rCell.mValues[static_cast<std::size_t>(p_ring[i]) * NumComp + k];
             fc[k] = s * inv_m;
         }
 
         for (std::size_t i = 0; i < m; ++i) {
-            const std::size_t a = r_face.mNodes[i];
-            const std::size_t b = r_face.mNodes[(i + 1) % m];
+            const std::size_t a = p_ring[i];
+            const std::size_t b = p_ring[(i + 1) % m];
             const Vec3& r_pa = rCell.mCorners[a];
             const Vec3& r_pb = rCell.mCorners[b];
             const Vec3 av = detail::vec3_scale(
                 detail::vec3_cross(detail::vec3_sub(r_pa, c), detail::vec3_sub(r_pb, c)), 0.5);
-            const Vec3 xj = detail::vec3_scale(detail::vec3_add(detail::vec3_add(c, r_pa), r_pb),
-                                               1.0 / 3.0);
+            const Vec3 xj =
+                detail::vec3_scale(detail::vec3_add(detail::vec3_add(c, r_pa), r_pb), 1.0 / 3.0);
             volume += detail::vec3_dot(xj, av) * (1.0 / 3.0);
             area_scale += detail::vec3_norm(av);
             for (std::size_t k = 0; k < NumComp; ++k) {
-                const double fj = (fc[k] + rCell.mValues[a * NumComp + k] +
-                                   rCell.mValues[b * NumComp + k]) *
-                                  (1.0 / 3.0);
+                const double fj =
+                    (fc[k] + rCell.mValues[a * NumComp + k] + rCell.mValues[b * NumComp + k]) *
+                    (1.0 / 3.0);
                 num[k * 3 + 0] += fj * av[0];
                 num[k * 3 + 1] += fj * av[1];
                 num[k * 3 + 2] += fj * av[2];
@@ -267,7 +293,8 @@ bool grad_green_gauss_1d(const GradCell& rCell, std::size_t NumComp, double* pOu
         return false;
     const Vec3 dir = detail::vec3_scale(t, 1.0 / len);
     for (std::size_t k = 0; k < NumComp; ++k) {
-        const double slope = (rCell.mValues[1 * NumComp + k] - rCell.mValues[0 * NumComp + k]) / len;
+        const double slope =
+            (rCell.mValues[1 * NumComp + k] - rCell.mValues[0 * NumComp + k]) / len;
         pOut[k * 3 + 0] = slope * dir[0];
         pOut[k * 3 + 1] = slope * dir[1];
         pOut[k * 3 + 2] = slope * dir[2];
@@ -532,25 +559,23 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             std::to_string(field_comp) +
             " components; divergence and curl need a vector field of 2 or 3");
 
-    const std::string out_name =
-        rOptions.mOutputName.empty() ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
+    const std::string out_name = rOptions.mOutputName.empty()
+                                     ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
                                      : rOptions.mOutputName;
     if (!rOptions.mOverwrite) {
         const bool taken = rOptions.mLocation == DataLocation::Point ? rMesh.HasPointData(out_name)
                                                                      : rMesh.HasCellData(out_name);
         if (taken)
-            throw std::invalid_argument(std::string(kGradPrefix) + "'" + out_name +
-                                        "' already exists in " +
-                                        data_location_name(rOptions.mLocation) +
-                                        " (pass overwrite=true to replace it)");
+            throw std::invalid_argument(
+                std::string(kGradPrefix) + "'" + out_name + "' already exists in " +
+                data_location_name(rOptions.mLocation) + " (pass overwrite=true to replace it)");
     }
 
     // The field components actually differentiated: one when a component was
     // selected, all of them otherwise.
     const std::size_t work_comp = rOptions.mComponent.has_value() ? 1 : field_comp;
-    const std::size_t comp_base = rOptions.mComponent.has_value()
-                                      ? static_cast<std::size_t>(*rOptions.mComponent)
-                                      : 0;
+    const std::size_t comp_base =
+        rOptions.mComponent.has_value() ? static_cast<std::size_t>(*rOptions.mComponent) : 0;
     const std::size_t out_comp = grad_out_components(rOptions.mOperator, work_comp);
 
     // Geometry, connectivity, regions, property sets and every existing array
@@ -588,7 +613,18 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
     std::vector<CellType> types(nblocks, CellType::Custom);
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        if (cb.IsPolyhedron()) {
+            // Polyhedra are 3D by definition and carry their own faces, so the
+            // corner-count and face-table checks below have nothing to say
+            // about them. `corners` stays 0: grad_load_cell reads the count
+            // from the cell's own rings, which vary per cell.
+            if (dim != 3)
+                continue;
+            types[b] = CellType::Polyhedron;
+            eligible[b] = 1;
+            continue;
+        }
+        if (cb.IsRagged())
             continue;
         const CellType t = cell_type_from_name(cb.Type());
         types[b] = t;
@@ -694,13 +730,11 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                         const std::size_t g = static_cast<std::size_t>(nb);
                         if (!cell_ok[g])
                             continue;
-                        stencil.mOffsets.push_back(
-                            Vec3{cell_x[g * 3 + 0] - cell.mOrigin[0],
-                                 cell_x[g * 3 + 1] - cell.mOrigin[1],
-                                 cell_x[g * 3 + 2] - cell.mOrigin[2]});
+                        stencil.mOffsets.push_back(Vec3{cell_x[g * 3 + 0] - cell.mOrigin[0],
+                                                        cell_x[g * 3 + 1] - cell.mOrigin[1],
+                                                        cell_x[g * 3 + 2] - cell.mOrigin[2]});
                         for (std::size_t k = 0; k < work_comp; ++k)
-                            stencil.mDeltas.push_back(cell_f[g * work_comp + k] -
-                                                      cell.mValue0[k]);
+                            stencil.mDeltas.push_back(cell_f[g * work_comp + k] - cell.mValue0[k]);
                     }
                     Vec3 nrm{0.0, 0.0, 0.0};
                     const Vec3* p_normal = nullptr;
@@ -732,8 +766,7 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 flag_skipped[c] = 1;
                 return;
             }
-            grad_apply_operator(rOptions.mOperator, grad.data(), work_comp,
-                                pdst + c * out_comp);
+            grad_apply_operator(rOptions.mOperator, grad.data(), work_comp, pdst + c * out_comp);
         });
 
         for (std::size_t c = 0; c < ncells; ++c) {

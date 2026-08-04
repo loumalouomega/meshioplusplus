@@ -170,6 +170,8 @@ const poly = {
 m.writeMesh('/ragged.med', poly, 'med'); // MED is the ragged-polygon-capable writer (POG/POG2)
 ```
 
+These are the same three arrays the [C API](/c_api) hands out through its `mio_poly_conn` snapshot and the Fortran/Julia/R bindings expose in each language's own shape — see [Polyhedra and ragged cells](/polyhedra) for the shared vocabulary and the winding rule. Malformed offsets (non-monotonic, or running past the end of `data`) throw naming the offending array rather than reading out of range.
+
 `readMesh` reports whichever shape the source held; `writeMesh` accepts either, and the target format's own writer decides what it can represent — MED writes ragged polygons directly, but no C++ format writer accepts a polyhedron block yet (a documented, pre-existing gap distinct from the JS boundary itself, which does carry polyhedron blocks correctly through operations like `clean`/`merge`/`convert_cells`), so writing one throws naming the format rather than silently dropping data.
 
 ## Mesh operations
@@ -352,9 +354,9 @@ not appear in `availableFormats()`.
 
 ## Format support
 
-**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 41 readable and 43 writable format keys (`openfoam` is read-only; `svg`, `tikz` and `gmsh22` are write-only).
+**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 41 readable and 44 writable format keys (`svg`, `tikz` and `gmsh22` are write-only). `openfoam` became writable in v9.20.0.
 
-`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `mdpa` (Kratos; mesh-level blocks only — see [MDPA](./formats/mdpa.md#c-core)), `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (**read-only**, matching the C++/Python core), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
+`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `mdpa` (Kratos; mesh-level blocks only — see [MDPA](./formats/mdpa.md#c-core)), `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (read/write; writing creates a `constant/polyMesh` directory in MEMFS), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
 
 Ask the loaded module rather than trusting this list — it is generated from the same registry the build actually links:
 
@@ -364,7 +366,7 @@ const { readers, writers } = m.availableFormats();
 
 ### What the HDF5/netCDF formats cost, and what changed
 
-- **The `.wasm` is ~5.5 MB, up from ~2.3 MB** (the published npm tarball is ~1.8 MB, since the binary compresses about 3:1 and browsers fetch it compressed). libhdf5 and libnetcdf are statically linked, and they are real bytes. If you do not need these five formats, build your own artifact with `./build/configure-wasm.sh --without-hdf5 --build` (see below) — the JS API is identical and `availableFormats()` reports the smaller set.
+- **The `.wasm` is ~6.3 MB sequential / ~6.7 MB threaded, up from ~2.3 MB before HDF5/netCDF** (the published npm tarball is roughly a third of that, since the binary compresses about 3:1 and browsers fetch it compressed). libhdf5, libnetcdf and libcgns are statically linked, and they are real bytes — though cgnslib itself is the cheap one, adding about **290 KB** (measured, v9.22.0), because it is a thin layer over the HDF5 already there. If you do not need these formats, build your own artifact with `./build/configure-wasm.sh --without-hdf5 --build`, or keep HDF5 and drop only the CGNS MLL with `--without-cgnslib` (see below) — the JS API is identical either way, and `availableFormats()` reports the smaller set while `hasCgnslib()` reports whether the MLL is present.
 - **Breaking: `.xdmf` now writes an HDF companion file.** The registry's XDMF writer default follows the build, exactly as it does natively: with HDF5 present it emits `Format="HDF"` heavy data into a sibling `<base>.h5` and leaves only the XML skeleton in the `.xdmf`. A caller that used to pull one file out of the virtual filesystem must now pull **two**. Reading is unaffected (all three data formats are read).
 - **MED writes plain fields, but not the enhanced ones.** The C++ MED writer handles ordinary `point_data`/`cell_data` — the single-timestep `CHA` common case, including multi-component fields since v9.9.0 — so a field-carrying mesh writes fine here. What it cannot do is the constructs the Python reference writer alone implements (units, multi-timestep metadata, component names supplied via `med:nom`, named profiles, ELNO/ELGA), and this build has no Python to defer to, so those throw by name. MED geometry, `point_tags`/`cell_tags`, families, named regions and `med:num` global numbering are all written normally. See [MED quirks](./formats/med.md#quirks-limitations).
 - **`sniffFormat` still cannot identify them.** A plain HDF5 magic number says nothing about which of `med`/`cgns`/`h5m`/`hmf`/XDMF-HDF a file is, so the sniffer deliberately never claims it. Use the extension, or pass `format` explicitly.
@@ -447,6 +449,14 @@ Neither is a system library on this target, and meshio++'s CMake never downloads
 `configure-wasm.sh` runs it automatically the first time (several minutes) and passes the prefix to CMake via `CMAKE_FIND_ROOT_PATH` — the required knob, since the Emscripten toolchain re-roots every `find_package` at its sysroot, which makes `CMAKE_PREFIX_PATH` and `HINTS` alone ineffective. Pass `--deps-prefix` to reuse a prefix you already have.
 
 Both libraries are built static, `-Oz`, against Emscripten's own zlib port, with everything that assumes an OS this target does not have switched off: HDF5 without threadsafe/MPI/plugins and without the ROS3, direct, mirror and subfiling VFDs; netCDF without DAP, DAP4, byterange, NCZarr, S3, libxml2 (it falls back to its bundled `ezxml`), the `dlopen` plugin loader and mmap. Two upstream-neutral fix-ups are applied and documented in the script: a one-hunk patch guarding HDF5's `feclearexcept(FE_INVALID)` (wasm defines no floating-point exception flags at all), and a rewrite of the exported CMake link interfaces, which name imported targets (`ZLIB::ZLIB`, `HDF5::HDF5`, `hdf5::hdf5_hl`) that no single `find_package` in a consumer defines.
+
+**cgnslib is linked in too** (v9.22.0), cross-compiled by the same
+`build/build-wasm-deps.sh` as a third pinned + SHA256-checked source build. It is
+strictly an *addition*: meshio++ reads and writes CGNS itself over raw HDF5,
+including polyhedral `NGON_n`/`NFACE_n` sections since v9.21.0, so what the MLL
+buys here is **ADF-backed containers** — which are not HDF5 at all, and so are
+unreachable from the hand-rolled path by construction — and the **CGNS 3.x**
+section layout. `--without-cgnslib` drops it and keeps everything else.
 
 **The wasm stack is sized for them.** `CMakeLists.txt` links the wasm target with `-sSTACK_SIZE=4MB`, well above Emscripten's 64 KiB default, because HDF5's and netCDF-4's frames overrun it. That overrun is silent — the stack grows down into the static data segment — and cost a real bug during development: one Exodus write clobbered libc++'s locale facets, after which every ASCII reader in the module trapped. `-sSTACK_OVERFLOW_CHECK=1` is on so a recurrence aborts loudly instead.
 

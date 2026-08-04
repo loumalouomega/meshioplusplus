@@ -40,6 +40,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_edges.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -97,27 +98,24 @@ bool surface_skin_block_supported(CellType type, bool is_ragged) {
     return cell_type_dimension(type) == 3 && !is_ragged && detail::skin_supported(type);
 }
 
-// --- facet key + hash (identical to the legacy skin hashing) ----------------
+// --- facet key + hash -------------------------------------------------------
+//
+// detail::FacetKey rather than the fixed array<int64_t,4> this used before
+// v9.16.0: a polyhedron's face can have any number of corners. It keeps a
+// 4-entry inline fast path, so a triangle or quad still costs no allocation and
+// the rectangular path is unchanged. Sharing ONE key type across both is what
+// lets a hexahedron and a polyhedron that meet on a face cancel each other out
+// -- with two key types they would each report that face as boundary.
 
-// Sorted corner ids of one facet, padded with -1 up to 4 entries.
-using SurfaceFacetKey = std::array<std::int64_t, 4>;
-
-struct SurfaceFacetKeyHash {
-    std::size_t operator()(const SurfaceFacetKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+using SurfaceFacetKey = detail::FacetKey;
+using SurfaceFacetKeyHash = detail::FacetKeyHash;
 
 SurfaceFacetKey surface_facet_key(const NDArray& rConn, std::size_t rowOffset,
                                   const SurfaceFacetDef& rFacet) {
-    SurfaceFacetKey key = {-1, -1, -1, -1};
+    std::array<std::int64_t, 4> ids{};
     for (std::uint8_t k = 0; k < rFacet.mNumCorners; ++k)
-        key[k] = detail::read_int(rConn, rowOffset + rFacet.mNodes[k]);
-    std::sort(key.begin(), key.end());
-    return key;
+        ids[k] = detail::read_int(rConn, rowOffset + rFacet.mNodes[k]);
+    return SurfaceFacetKey(ids.data(), rFacet.mNumCorners);
 }
 
 // --- canonical output buckets -----------------------------------------------
@@ -161,13 +159,18 @@ std::size_t surface_out_type_nodes(SurfaceMode mode, std::size_t index) {
 // --- per-block enumeration descriptor ---------------------------------------
 
 struct SurfaceBlockDesc {
-    const NDArray* mpConn;
-    std::size_t mNpc;
-    std::size_t mNumCells;
-    std::vector<SurfaceFacetDef> mFacets;
-    std::size_t mFacetsPerCell;
-    std::size_t mFirstFacet;       // offset into the flat record buffer
-    std::int64_t mGlobalCellBase;  // input-cell index of this block's cell 0
+    const NDArray* mpConn = nullptr;  // rectangular blocks only
+    std::size_t mNpc = 0;
+    std::size_t mNumCells = 0;
+    std::vector<SurfaceFacetDef> mFacets;  // rectangular blocks only
+    std::size_t mFacetsPerCell = 0;        // rectangular blocks only
+    std::size_t mFirstFacet = 0;           // offset into the flat record buffer
+    std::int64_t mGlobalCellBase = 0;      // input-cell index of this block's cell 0
+    // Polyhedron blocks: faces per cell vary, so the flat record offsets are
+    // tabulated instead of computed as cell * mFacetsPerCell.
+    bool mPolyhedron = false;
+    std::size_t mBlock = 0;               // index into the mesh's cell blocks
+    std::vector<std::size_t> mFaceStart;  // mNumCells + 1 record offsets
 };
 
 // One facet occurrence recorded in phase 1 (keys built in parallel).
@@ -218,7 +221,9 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
                                   : (cell_type_dimension(ct) == 2 && !cb.IsPolyhedron());
         if (!same_dim)
             continue;
-        if (!cb.IsRagged() && !cb.IsPolyhedron() && surface_mode_supported(ct, mode)) {
+        // A polyhedron block carries its own faces, so it is supported by
+        // construction -- there is no table for it to be missing from.
+        if (cb.IsPolyhedron() || (!cb.IsRagged() && surface_mode_supported(ct, mode))) {
             any_supported = true;
         } else {
             log::warn("{}: {} cell block '{}' is not supported; skipping it.", pOpName, noun,
@@ -242,7 +247,29 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         const bool same_dim = mode == SurfaceMode::Face
                                   ? (cell_type_dimension(ct) == 3 || cb.IsPolyhedron())
                                   : (cell_type_dimension(ct) == 2 && !cb.IsPolyhedron());
-        if (!same_dim || cb.IsRagged() || cb.IsPolyhedron() || !surface_mode_supported(ct, mode))
+        if (!same_dim)
+            continue;
+        if (cb.IsPolyhedron()) {
+            // Variable faces per cell: tabulate the record offsets instead of
+            // computing them from a constant facets-per-cell.
+            SurfaceBlockDesc d;
+            d.mPolyhedron = true;
+            d.mBlock = block_idx - 1;
+            d.mNumCells = cb.NumCells();
+            d.mFirstFacet = total_facets;
+            d.mGlobalCellBase = base;
+            d.mFaceStart.reserve(d.mNumCells + 1);
+            std::size_t at = 0;
+            d.mFaceStart.push_back(0);
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                at += cb.NumFaces(c);
+                d.mFaceStart.push_back(at);
+            }
+            total_facets += at;
+            descs.push_back(std::move(d));
+            continue;
+        }
+        if (cb.IsRagged() || !surface_mode_supported(ct, mode))
             continue;
         SurfaceBlockDesc d;
         d.mpConn = &cb.Conn();
@@ -260,6 +287,22 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     std::vector<SurfaceFacetRecord> recs(total_facets);
     for (std::uint32_t di = 0; di < descs.size(); ++di) {
         const SurfaceBlockDesc& d = descs[di];
+        if (d.mPolyhedron) {
+            const auto cb = rMesh.Cells(d.mBlock);
+            parallel_for(d.mNumCells, [&, di](std::size_t c) {
+                const std::size_t nf = cb.NumFaces(c);
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const auto face = cb.Face(c, f);
+                    SurfaceFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[c] + f];
+                    r.mKey = SurfaceFacetKey(face.first, face.second);
+                    r.mDesc = di;
+                    r.mCell = static_cast<std::uint32_t>(c);
+                    r.mSlot = static_cast<std::uint32_t>(f);
+                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(c);
+                }
+            });
+            continue;
+        }
         const NDArray& conn = *d.mpConn;
         const std::size_t npc = d.mNpc;
         const std::size_t fpc = d.mFacetsPerCell;
@@ -286,10 +329,33 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     const std::size_t num_out = surface_num_out_types(mode);
     std::vector<std::vector<std::int64_t>> out_conn(num_out);
     std::vector<std::vector<std::int64_t>> out_parent(num_out);
+    // A polyhedral face may be an n-gon, which no fixed-width bucket can hold;
+    // those go to a ragged `polygon` block emitted alongside the fixed ones.
+    std::vector<std::vector<std::int64_t>> poly_rows;
+    std::vector<std::int64_t> poly_parent;
     for (const SurfaceFacetRecord& r : recs) {
         if (face_count[r.mKey] != 1)
             continue;
         const SurfaceBlockDesc& d = descs[r.mDesc];
+        if (d.mPolyhedron) {
+            const auto cb = rMesh.Cells(d.mBlock);
+            const auto face =
+                cb.Face(static_cast<std::size_t>(r.mCell), static_cast<std::size_t>(r.mSlot));
+            if (face.second == 3 || face.second == 4) {
+                const std::size_t bucket = surface_out_type_index(
+                    mode, face.second == 3 ? CellType::Triangle : CellType::Quad);
+                std::vector<std::int64_t>& dst = out_conn[bucket];
+                for (std::size_t k = 0; k < face.second; ++k)
+                    dst.push_back(face.first[k]);
+                if (recordParentIds)
+                    out_parent[bucket].push_back(r.mParent);
+            } else {
+                poly_rows.emplace_back(face.first, face.first + face.second);
+                if (recordParentIds)
+                    poly_parent.push_back(r.mParent);
+            }
+            continue;
+        }
         const NDArray& conn = *d.mpConn;
         const std::size_t row_offset = static_cast<std::size_t>(r.mCell) * d.mNpc;
         const SurfaceFacetDef& facet = d.mFacets[r.mSlot];
@@ -310,6 +376,9 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     std::vector<char> used(num_points, 0);
     for (const std::vector<std::int64_t>& conn : out_conn)
         for (std::int64_t id : conn)
+            used[static_cast<std::size_t>(id)] = 1;
+    for (const std::vector<std::int64_t>& row : poly_rows)
+        for (std::int64_t id : row)
             used[static_cast<std::size_t>(id)] = 1;
     std::vector<std::int64_t> remap(num_points, -1);
     std::size_t num_used = 0;
@@ -350,6 +419,18 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
             const std::vector<std::int64_t>& par = out_parent[t];
             NDArray pblock = NDArray::Uninit(DType::Int64, {par.size(), 1});
             std::memcpy(pblock.Data(), par.data(), par.size() * sizeof(std::int64_t));
+            parent_blocks.push_back(std::move(pblock));
+        }
+    }
+    if (!poly_rows.empty()) {
+        for (std::vector<std::int64_t>& row : poly_rows)
+            for (std::int64_t& id : row)
+                id = remap[static_cast<std::size_t>(id)];
+        surface.AddPolygonBlock("polygon", std::move(poly_rows));
+        if (recordParentIds) {
+            NDArray pblock = NDArray::Uninit(DType::Int64, {poly_parent.size(), 1});
+            std::memcpy(pblock.Data(), poly_parent.data(),
+                        poly_parent.size() * sizeof(std::int64_t));
             parent_blocks.push_back(std::move(pblock));
         }
     }

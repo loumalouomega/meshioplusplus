@@ -54,7 +54,8 @@
  *  | 2   | v9.1.0             | `GeometricalEntity`, `ModelPart`, `MdpaInfo`, … |
  *  | 3   | v9.2.0 .. v9.4.1   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
  *  | 4   | v9.5.0 .. v9.8.0   | `RefineOptions` gained selection/closure fields |
- *  | 5   | v9.9.0             | `MedInfo` gained four lenient-read fields       |
+ *  | 5   | v9.9.0 .. v9.19.0  | `MedInfo` gained four lenient-read fields       |
+ *  | 6   | v9.20.0            | `OpenFoamInfo` gained `mPatchTypes`             |
  *
  * ### This is the ONE place the number is written
  *
@@ -73,4 +74,4 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 5
+#define MESHIOPLUSPLUS_ABI_VERSION 6

@@ -81,15 +81,34 @@ def _poly_area(corners):
 
 
 def _signed_volume(corner_coords, faces):
-    # Divergence-theorem volume over triangulated outward faces.
-    nc = corner_coords.shape[0]
+    # Divergence-theorem volume over the outward faces, each fanned about its
+    # OWN corner average -- the twin of detail/polyhedron.hpp's poly_measure.
+    #
+    # Before v9.16.0 both sides fanned about the face's first node instead. That
+    # apex is a function of the cell's storage rather than of the face, so two
+    # cells sharing a warped quad could split it along different diagonals; the
+    # corner average is a function of the face alone and cannot. See
+    # doc/polyhedra.md. The two agree exactly for planar faces and differ only
+    # on warped ones, so this must move in lockstep with the C++ side or a
+    # Python-fallback build (Windows CI) reports different volumes from a
+    # native one.
+    nc, k, _ = corner_coords.shape
+    # Recentre on the cell's corner average: V = sum(x . A)/3 only telescopes
+    # because sum(A) == 0, so far from the origin the raw form cancels away its
+    # own significant digits.
+    origin = corner_coords.sum(axis=1) / float(k)
+    local = corner_coords - origin[:, None, :]
     vol6 = np.zeros(nc, dtype=np.float64)
     for f in faces:
-        a = corner_coords[:, f[0]]
-        for i in range(1, len(f) - 1):
-            b = corner_coords[:, f[i]]
-            c = corner_coords[:, f[i + 1]]
-            vol6 += np.einsum("ij,ij->i", a, np.cross(b, c))
+        m = len(f)
+        fc = np.zeros((nc, 3), dtype=np.float64)
+        for idx in f:
+            fc = fc + local[:, idx]
+        fc = fc / float(m)
+        for i in range(m):
+            a = local[:, f[i]]
+            b = local[:, f[(i + 1) % m]]
+            vol6 += np.einsum("ij,ij->i", fc, np.cross(a, b))
     return vol6 / 6.0
 
 

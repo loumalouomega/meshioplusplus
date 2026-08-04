@@ -36,6 +36,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_edges.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/node_adjacency.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -132,6 +133,7 @@ NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& r
 // How a cell's orientation can be checked. Cells with no signed measure at all
 // never enter the table, so `None` is not represented here.
 enum class SmoothMeasure : std::uint8_t {
+    PolyFan,     ///< polyhedron: the kernel's corner-average fan over the cell's own faces
     FaceFan,     ///< 3D volume cell: signed volume by the outward face fan.
     Shoelace2D,  ///< 2D cell in a 2D mesh: signed area.
     NormalFlip,  ///< 2D cell in a 3D mesh: did the facet normal fold over?
@@ -146,6 +148,13 @@ struct SmoothCellTable {
     std::vector<SmoothMeasure> mMeasure;      // size numMeasurable
     std::vector<std::int32_t> mFaceTable;     // index into mFaceTables, or -1
     std::vector<const std::vector<detail::CellFaceDef>*> mFaceTables;
+    // Polyhedron cells only. A polyhedron's faces belong to the CELL, not to
+    // its type, so they cannot share a per-type table like the others: each
+    // cell's rings are appended here and located by mPolyStart/mPolyNumFaces.
+    std::vector<std::int64_t> mPolyStart;       // per cell: index into mPolyFaceStart, or -1
+    std::vector<std::uint32_t> mPolyNumFaces;   // per cell: 0 unless PolyFan
+    std::vector<std::uint32_t> mPolyFaceStart;  // concatenated (nfaces + 1) runs
+    std::vector<std::uint32_t> mPolyFaceNodes;  // concatenated local ring indices
 
     std::size_t NumCells() const { return mMeasure.size(); }
 };
@@ -156,8 +165,44 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
     std::unordered_map<int, std::int32_t> face_table_ids;
 
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged() || cb.IsPolyhedron())
-            continue;  // no signed measure -- skipped, not pinned (see the header)
+        if (cb.IsPolyhedron()) {
+            // Each cell contributes its own rings. Before v9.16.0 polyhedron
+            // blocks were skipped here, which meant smooth MOVED their nodes
+            // with no inversion guard at all -- silently, since nothing pins
+            // them either.
+            detail::CellRings rings;
+            std::vector<detail::Vec3> coords;
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                if (!detail::cell_rings(cb, c, rMesh.Points(), rMesh.PointDim(), rings, coords))
+                    continue;
+                bool ok = true;
+                const std::size_t first = t.mCornerNodes.size();
+                for (std::int64_t id : rings.mNodes) {
+                    if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                        ok = false;
+                        break;
+                    }
+                    t.mCornerNodes.push_back(id);
+                }
+                if (!ok) {
+                    t.mCornerNodes.resize(first);
+                    continue;
+                }
+                t.mPolyStart.push_back(static_cast<std::int64_t>(t.mPolyFaceStart.size()));
+                t.mPolyNumFaces.push_back(static_cast<std::uint32_t>(rings.NumFaces()));
+                const std::uint32_t base = static_cast<std::uint32_t>(t.mPolyFaceNodes.size());
+                for (std::uint32_t v : rings.mFaceStart)
+                    t.mPolyFaceStart.push_back(base + v);
+                t.mPolyFaceNodes.insert(t.mPolyFaceNodes.end(), rings.mFaceNodes.begin(),
+                                        rings.mFaceNodes.end());
+                t.mMeasure.push_back(SmoothMeasure::PolyFan);
+                t.mFaceTable.push_back(-1);
+                t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));
+            }
+            continue;
+        }
+        if (cb.IsRagged())
+            continue;  // 1-level polygons: no enclosed volume to check
         const CellType ct = cell_type_from_name(cb.Type());
         const int corners = detail::cell_corner_count(ct);
         if (corners <= 0)
@@ -203,6 +248,8 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
             }
             t.mMeasure.push_back(measure);
             t.mFaceTable.push_back(face_id);
+            t.mPolyStart.push_back(-1);
+            t.mPolyNumFaces.push_back(0);
             t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));
         }
     }
@@ -252,6 +299,42 @@ double smooth_facefan_volume(const SmoothCornerReader& rAt, std::size_t NumCorne
         for (std::uint8_t k = 0; k < f.mNumCorners; ++k) {
             const Vec3 a = rAt(f.mNodes[k]);
             const Vec3 b = rAt(f.mNodes[(k + 1) % f.mNumCorners]);
+            vol += detail::triple_product(detail::vec3_sub(a, cc), detail::vec3_sub(b, cc),
+                                          detail::vec3_sub(fc, cc)) /
+                   6.0;
+        }
+    }
+    return vol;
+}
+
+// The polyhedral twin of smooth_facefan_volume: identical arithmetic, but the
+// faces come from the CELL's own rings (stored per cell in the table) rather
+// than from a per-type `cell_faces` table. Same corner-average fan as
+// detail/polyhedron.hpp's poly_measure, so the two agree in sign.
+double smooth_polyfan_volume(const SmoothCornerReader& rAt, std::size_t NumCorners,
+                             const SmoothCellTable& rTable, std::size_t Cell) {
+    const std::int64_t start = rTable.mPolyStart[Cell];
+    const std::size_t nfaces = rTable.mPolyNumFaces[Cell];
+    if (start < 0 || nfaces == 0)
+        return 0.0;
+    const std::uint32_t* face_start =
+        rTable.mPolyFaceStart.data() + static_cast<std::size_t>(start);
+
+    Vec3 cc = {0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < NumCorners; ++k)
+        cc = detail::vec3_add(cc, rAt(k));
+    cc = detail::vec3_scale(cc, 1.0 / static_cast<double>(NumCorners));
+    double vol = 0.0;
+    for (std::size_t f = 0; f < nfaces; ++f) {
+        const std::uint32_t* ring = rTable.mPolyFaceNodes.data() + face_start[f];
+        const std::size_t m = face_start[f + 1] - face_start[f];
+        Vec3 fc = {0.0, 0.0, 0.0};
+        for (std::size_t k = 0; k < m; ++k)
+            fc = detail::vec3_add(fc, rAt(ring[k]));
+        fc = detail::vec3_scale(fc, 1.0 / static_cast<double>(m));
+        for (std::size_t k = 0; k < m; ++k) {
+            const Vec3 a = rAt(ring[k]);
+            const Vec3 b = rAt(ring[(k + 1) % m]);
             vol += detail::triple_product(detail::vec3_sub(a, cc), detail::vec3_sub(b, cc),
                                           detail::vec3_sub(fc, cc)) /
                    6.0;
@@ -328,6 +411,18 @@ bool smooth_cell_flips(std::size_t Cell, const SmoothCellTable& rTable,
     SmoothCornerReader after{&rXyz, corners, Node, &rCand};
 
     switch (rTable.mMeasure[Cell]) {
+        case SmoothMeasure::PolyFan: {
+            // Measured WITHOUT re-orienting: a polyhedron's stored winding is
+            // arbitrary but fixed for the whole run, so the sign is consistent
+            // between `before` and `after` -- which is all "do no harm" needs.
+            // Orienting here would repair the winding on every probe and hide
+            // exactly the flip the guard exists to catch.
+            const double v0 = smooth_polyfan_volume(before, ncorner, rTable, Cell);
+            if (v0 == 0.0)
+                return false;  // degenerate on arrival: no constraint
+            const double v1 = smooth_polyfan_volume(after, ncorner, rTable, Cell);
+            return (v0 > 0.0) ? (v1 <= 0.0) : (v1 >= 0.0);
+        }
         case SmoothMeasure::FaceFan: {
             const std::vector<detail::CellFaceDef>& faces =
                 *rTable.mFaceTables[static_cast<std::size_t>(rTable.mFaceTable[Cell])];
@@ -387,18 +482,13 @@ SmoothCsr smooth_build_incidence(const SmoothCellTable& rTable, std::size_t n) {
 
 // --- boundary + feature detection -------------------------------------------
 
-// Sorted corner ids of one facet, padded with -1 up to 4 entries. Node ids are
-// non-negative, so a triangle key {-1,a,b,c} can never collide with a quad key.
-using SmoothFacetKey = std::array<std::int64_t, 4>;
-
-struct SmoothFacetKeyHash {
-    std::size_t operator()(const SmoothFacetKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+// Sorted corner ids of one facet, of any arity. detail::FacetKey rather than
+// the fixed array<int64_t,4> this used before v9.16.1, for the reason
+// surface.cpp switched: a polyhedron's face can have any number of corners, and
+// ONE shared key type is what lets a hexahedron and a polyhedron meeting on a
+// face cancel each other out instead of both reporting it as boundary.
+using SmoothFacetKey = detail::FacetKey;
+using SmoothFacetKeyHash = detail::FacetKeyHash;
 
 // One facet of a cell, corners only: unifies CellFaceDef (3D) and CellEdgeDef
 // (2D) so the two-phase extractor is dimension-agnostic.
@@ -413,10 +503,14 @@ struct SmoothFacetBlock {
     std::size_t mNumCells = 0;
     std::vector<SmoothFacetDef> mFacets;
     std::size_t mFirstFacet = 0;
+    // Polyhedron blocks: faces per cell vary, so record offsets are tabulated.
+    bool mPolyhedron = false;
+    std::size_t mBlock = 0;
+    std::vector<std::size_t> mFaceStart;  // mNumCells + 1
 };
 
 struct SmoothFacetRecord {
-    SmoothFacetKey mKey = {-1, -1, -1, -1};
+    SmoothFacetKey mKey;
     std::uint32_t mBlock = 0;
     std::uint32_t mCell = 0;
     std::uint32_t mSlot = 0;
@@ -463,8 +557,29 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
                           std::vector<SmoothBoundaryFacet>* pFacets) {
     std::vector<SmoothFacetBlock> blocks;
     std::size_t total_facets = 0;
+    std::size_t block_index = 0;
     for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged() || cb.IsPolyhedron())
+        const std::size_t this_block = block_index++;
+        if (cb.IsPolyhedron()) {
+            if (!FaceMode)
+                continue;  // a polyhedron has no 2D boundary edges to mark
+            SmoothFacetBlock b;
+            b.mPolyhedron = true;
+            b.mBlock = this_block;
+            b.mNumCells = cb.NumCells();
+            b.mFirstFacet = total_facets;
+            b.mFaceStart.reserve(b.mNumCells + 1);
+            std::size_t at = 0;
+            b.mFaceStart.push_back(0);
+            for (std::size_t c = 0; c < b.mNumCells; ++c) {
+                at += cb.NumFaces(c);
+                b.mFaceStart.push_back(at);
+            }
+            total_facets += at;
+            blocks.push_back(std::move(b));
+            continue;
+        }
+        if (cb.IsRagged())
             continue;
         const CellType ct = cell_type_from_name(cb.Type());
         if (cell_type_dimension(ct) != (FaceMode ? 3 : 2))
@@ -487,6 +602,21 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
     std::vector<SmoothFacetRecord> recs(total_facets);
     for (std::uint32_t bi = 0; bi < blocks.size(); ++bi) {
         const SmoothFacetBlock& b = blocks[bi];
+        if (b.mPolyhedron) {
+            const auto cb = rMesh.Cells(b.mBlock);
+            parallel_for(b.mNumCells, [&, bi](std::size_t cell) {
+                const std::size_t nf = cb.NumFaces(cell);
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const auto face = cb.Face(cell, f);
+                    SmoothFacetRecord& r = recs[b.mFirstFacet + b.mFaceStart[cell] + f];
+                    r.mKey = SmoothFacetKey(face.first, face.second);
+                    r.mBlock = bi;
+                    r.mCell = static_cast<std::uint32_t>(cell);
+                    r.mSlot = static_cast<std::uint32_t>(f);
+                }
+            });
+            continue;
+        }
         const NDArray& conn = *b.mpConn;
         const std::size_t npc = b.mNpc;
         const std::size_t fpc = b.mFacets.size();
@@ -495,10 +625,11 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             const std::size_t slot = j % fpc;
             const SmoothFacetDef& fd = b.mFacets[slot];
             SmoothFacetRecord& r = recs[b.mFirstFacet + j];
-            r.mKey = {-1, -1, -1, -1};
-            for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k)
-                r.mKey[k] = detail::read_int(conn, cell * npc + fd.mNodes[k]);
-            std::sort(r.mKey.begin(), r.mKey.end());
+            std::array<std::int64_t, 4> ids{};
+            const std::uint8_t nk = fd.mNumCorners < 4 ? fd.mNumCorners : 4;
+            for (std::uint8_t k = 0; k < nk; ++k)
+                ids[k] = detail::read_int(conn, cell * npc + fd.mNodes[k]);
+            r.mKey = SmoothFacetKey(ids.data(), nk);
             r.mBlock = bi;
             r.mCell = static_cast<std::uint32_t>(cell);
             r.mSlot = static_cast<std::uint32_t>(slot);
@@ -516,6 +647,40 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
         if (counts[r.mKey] != 1)
             continue;
         const SmoothFacetBlock& b = blocks[r.mBlock];
+        if (b.mPolyhedron) {
+            const auto cb = rMesh.Cells(b.mBlock);
+            const auto face =
+                cb.Face(static_cast<std::size_t>(r.mCell), static_cast<std::size_t>(r.mSlot));
+            bool ok = true;
+            for (std::size_t k = 0; k < face.second; ++k) {
+                const std::int64_t id = face.first[k];
+                if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                    ok = false;
+                    break;
+                }
+                rBoundary[static_cast<std::size_t>(id)] = 1;
+            }
+            if (!ok || pFacets == nullptr || face.second < 3)
+                continue;
+            // One normal for the whole face, computed over ALL its corners.
+            // SmoothBoundaryFacet holds at most four node ids, so an n-gon is
+            // emitted as several records sharing that normal -- every corner
+            // then takes part in the feature test, which a single truncated
+            // record would silently deny to corners 5+.
+            std::vector<std::int64_t> ids(face.first, face.first + face.second);
+            const SmoothCornerReader at{&rXyz, ids.data(), -1, nullptr};
+            const Vec3 nrm = detail::vec3_normalize(smooth_newell_normal(at, ids.size()));
+            for (std::size_t base = 0; base < ids.size(); base += 4) {
+                SmoothBoundaryFacet bf;
+                bf.mNormal = nrm;
+                const std::size_t take = std::min<std::size_t>(4, ids.size() - base);
+                bf.mNumCorners = static_cast<std::uint8_t>(take);
+                for (std::size_t k = 0; k < take; ++k)
+                    bf.mNodes[k] = ids[base + k];
+                pFacets->push_back(bf);
+            }
+            continue;
+        }
         const SmoothFacetDef& fd = b.mFacets[r.mSlot];
         const std::size_t row = static_cast<std::size_t>(r.mCell) * b.mNpc;
 

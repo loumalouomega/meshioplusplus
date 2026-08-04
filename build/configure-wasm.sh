@@ -43,6 +43,7 @@ BUILD_TYPE="Release"
 WITH_ZLIB="ON"
 WITH_HDF5="ON"
 WITH_NETCDF="ON"
+WITH_CGNSLIB="ON"
 DEPS_PREFIX=""
 DO_BUILD="no"
 SEQ_ONLY="no"
@@ -55,6 +56,10 @@ Usage: $0 [options]
                                   built-in port (default: on)
   --with-hdf5 / --without-hdf5   CGNS/H5M/HMF/MED + XDMF-HDF (default: on)
   --with-netcdf / --without-netcdf
+  --with-cgnslib / --without-cgnslib
+                                  the CGNS MLL backend: ADF containers and the
+                                  CGNS 3.x NGON_n layout. Everything else in
+                                  CGNS works without it (doc/formats/cgns.md).
                                  Exodus (default: on; needs HDF5)
   --deps-prefix <dir>            prefix holding the wasm32 HDF5/netCDF build
                                   (default: build-wasm-deps.sh --print-prefix)
@@ -72,7 +77,9 @@ while [ $# -gt 0 ]; do
         --with-zlib) WITH_ZLIB="ON"; shift ;;
         --without-zlib) WITH_ZLIB="OFF"; shift ;;
         --with-hdf5) WITH_HDF5="ON"; shift ;;
-        --without-hdf5) WITH_HDF5="OFF"; WITH_NETCDF="OFF"; shift ;;
+        --without-hdf5) WITH_HDF5="OFF"; WITH_NETCDF="OFF"; WITH_CGNSLIB="OFF"; shift ;;
+        --with-cgnslib) WITH_CGNSLIB="ON"; shift ;;
+        --without-cgnslib) WITH_CGNSLIB="OFF"; shift ;;
         --with-netcdf) WITH_NETCDF="ON"; shift ;;
         --without-netcdf) WITH_NETCDF="OFF"; shift ;;
         --deps-prefix) DEPS_PREFIX="$2"; shift 2 ;;
@@ -119,10 +126,12 @@ FIND_ROOT_ARG=""
 if [ "$WITH_HDF5" = "ON" ]; then
     [ -n "$DEPS_PREFIX" ] || DEPS_PREFIX=$("$SCRIPT_DIR/build-wasm-deps.sh" --print-prefix)
     if [ ! -f "$DEPS_PREFIX/lib/libhdf5.a" ] ||
-       { [ "$WITH_NETCDF" = "ON" ] && [ ! -f "$DEPS_PREFIX/lib/libnetcdf.a" ]; }; then
+       { [ "$WITH_NETCDF" = "ON" ] && [ ! -f "$DEPS_PREFIX/lib/libnetcdf.a" ]; } ||
+       { [ "$WITH_CGNSLIB" = "ON" ] && [ ! -f "$DEPS_PREFIX/lib/libcgns.a" ]; }; then
         echo "== building the wasm HDF5/netCDF dependencies (one-off, several minutes) =="
         deps_args="--prefix $DEPS_PREFIX"
         [ "$WITH_NETCDF" = "ON" ] || deps_args="$deps_args --without-netcdf"
+        [ "$WITH_CGNSLIB" = "ON" ] || deps_args="$deps_args --without-cgnslib"
         # shellcheck disable=SC2086
         "$SCRIPT_DIR/build-wasm-deps.sh" $deps_args
         echo
@@ -165,6 +174,7 @@ configure_variant() {
     echo "  zlib:      $WITH_ZLIB"
     echo "  hdf5:      $WITH_HDF5"
     echo "  netcdf:    $WITH_NETCDF"
+    echo "  cgnslib:   $WITH_CGNSLIB"
     [ "$WITH_HDF5" = "OFF" ] || echo "  deps:      $DEPS_PREFIX"
     echo "  emcc:      $(command -v emcc)"
     echo
@@ -185,6 +195,7 @@ configure_variant() {
         -DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE \
         -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
         -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
+        -DMESHIOPLUSPLUS_WITH_CGNSLIB="$WITH_CGNSLIB" \
         -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB"
 
     if [ "$WITH_ZLIB" = "ON" ]; then

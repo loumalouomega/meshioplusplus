@@ -79,6 +79,7 @@ export cell_type_num_nodes, cell_type_dimension, reader_supports_options, read_m
 export num_points, point_dim, num_cells, num_cell_blocks
 export cell_block_info, cell_block_type, cell_block_types
 export points, points_ptr, connectivity, connectivity_ptr
+export polygon_block, polyhedron_block
 export num_point_data, num_cell_data, num_field_data
 export point_data_names, cell_data_names, field_data_names
 export point_data, point_data_ptr, cell_data, cell_data_ptr, field_data, field_data_ptr
@@ -86,6 +87,7 @@ export cell_data_num_blocks
 
 # Building
 export set_points!, add_cell_block!, add_point_data!, append_cell_data!, add_field_data!
+export add_polygon_block!, add_polyhedron_block!
 export regions, add_region!
 
 # Operations

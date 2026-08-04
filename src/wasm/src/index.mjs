@@ -44,10 +44,38 @@ function resolveVariant(variant) {
 }
 
 /**
- * @typedef {Object} CellBlock
+ * A rectangular (uniform node count) group of cells.
+ * @typedef {Object} RectangularCellBlock
  * @property {string} type - meshio++ cell type name (e.g. "triangle", "tetra10").
  * @property {Int32Array} data - flat, row-major connectivity (numCells * nodesPerCell).
  * @property {number} nodesPerCell
+ */
+
+/**
+ * A 1-level ragged (jagged polygon) block: rows of varying node count, so
+ * there is no single `nodesPerCell`. Two flat CSR arrays instead of a nested
+ * array of arrays, which embind has no efficient representation for.
+ * @typedef {Object} PolygonCellBlock
+ * @property {string} type
+ * @property {Int32Array} data - every row's node ids concatenated.
+ * @property {Int32Array} rowOffsets - each cell's start in `data` (numCells + 1).
+ */
+
+/**
+ * A 2-level ragged (polyhedron) block: each cell a list of faces, each face a
+ * list of node ids.
+ * @typedef {Object} PolyhedronCellBlock
+ * @property {string} type
+ * @property {Int32Array} data - every face's node ids concatenated.
+ * @property {Int32Array} faceOffsets - each face's start in `data` (totalFaces + 1).
+ * @property {Int32Array} cellOffsets - each cell's start in the face list (numCells + 1).
+ */
+
+/**
+ * One homogeneous group of cells. Which shape it is is told by key presence:
+ * `cellOffsets` means polyhedron, `rowOffsets` means polygon, `nodesPerCell`
+ * means rectangular. See doc/polyhedra.md.
+ * @typedef {RectangularCellBlock | PolygonCellBlock | PolyhedronCellBlock} CellBlock
  */
 
 /**
@@ -106,6 +134,7 @@ function resolveVariant(variant) {
  *   topologicalDimension: () => Object<string, number>,
  *   meshBackend: () => string,
  *   parallelBackend: () => string,
+ *   hasCgnslib: () => boolean,
  *   availableFormats: () => {readers: string[], writers: string[]},
  *   extractSurface: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
  *   extractSkin: (mesh: Mesh, linearize?: boolean) => Mesh,
@@ -232,6 +261,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // "seq" for the sequential artifact, "openmp" for the threaded
         // meshioplusplus_wasm_mt one -- which of the two this instance loaded.
         parallelBackend: () => Module.parallelBackend(),
+        hasCgnslib: () => Module.hasCgnslib(),
         // What this build can actually read/write, both sorted. Prefer this
         // over a hardcoded table: a few formats are read-only (openfoam) or
         // write-only (svg/tikz), and the HDF5/netCDF-backed ones are present

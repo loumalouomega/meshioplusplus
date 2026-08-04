@@ -8,6 +8,405 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.22.0 (2026-08-04)
+
+**cgnslib cross-compiled for WebAssembly**, so the browser build reaches parity
+with a native cgnslib-enabled one. This is strictly an *addition*: meshio++
+reads and writes CGNS itself over raw HDF5, polyhedral `NGON_n`/`NFACE_n`
+sections included since v9.21.0. What the MLL buys in WASM is **ADF-backed
+containers** — which are not HDF5 at all, and so are unreachable from the
+hand-rolled path by construction — and the **CGNS 3.x** section layout.
+
+- `build/build-wasm-deps.sh` gains a third pinned + SHA256-checked source build
+  (cgnslib 4.5.2) beside HDF5 1.14.6 and netcdf-c 4.9.3, with
+  `--without-cgnslib` to skip it. The prefix name grows accordingly, which
+  invalidates CI's `actions/cache` key automatically (it hashes the script).
+  `configure-wasm.sh` gains `--with-cgnslib` / `--without-cgnslib`.
+- **`hasCgnslib()`** — a new JS binding (bound, forwarded and declared, plus a
+  smoke step and an entry in the exhaustive forward guard). Without a probe, a
+  build that silently dropped the dependency reads every file meshio++ produces
+  itself identically, and the regression would surface only on a user's ADF
+  file.
+- **Size cost is small**: about **290 KB**, measured — the `.wasm` goes to
+  ~6.3 MB sequential / ~6.7 MB threaded. cgnslib is a thin layer over the HDF5
+  that was already linked in.
+
+Two things about building it are worth not rediscovering, both recorded as
+comments in the script:
+
+- **Configure the TOP-LEVEL directory, not `src/`.** The root `CMakeLists.txt`
+  runs the `CHECK_TYPE_SIZE` calls that `src/CMakeLists.txt` reads to pick
+  `cgsize_t`'s underlying type; configuring the subdirectory leaves them empty
+  and fails with `Can't find suitable int64_t`, which reads like a
+  cross-compilation problem and is not.
+- **`CGNS_ENABLE_64BIT` cannot be turned on here.** cgnslib forces it off
+  whenever `CMAKE_SIZEOF_VOID_P <= 4`, which wasm32 is, so `cgsize_t` is
+  32-bit regardless. That is fine — `cgns_mll.cpp` is written in terms of
+  `cgsize_t` throughout rather than a fixed width — but the flag is
+  deliberately *not* passed, since an option that is accepted and then silently
+  overridden reads like a guarantee.
+
+## v9.21.0 (2026-08-04)
+
+**CGNS `NGON_n`/`NFACE_n` — polyhedral cells, hand-rolled in both directions.**
+This closes the last bullet of the roadmap's polyhedral-meshes section: every
+polyhedral writer now exists, and polyhedral CGNS works in the default build,
+the PyPI wheels and WASM rather than only on a build with the optional
+[cgnslib backend](doc/formats/cgns.md).
+
+Hand-rolling the **write** side is what made hand-rolling the read side
+obligatory too. Writing has no CGNS 3.x-vs-4.0 `ElementStartOffset` split to
+absorb — the writer picks its layout — so the reason cgnslib was needed on read
+does not apply; but a build able to write a file it cannot read back would be
+worse than either extreme. cgnslib remains the answer for ADF containers and for
+files written in the 3.x layout, which the hand-rolled reader refuses **by
+name** rather than misreading.
+
+- `NGON_n` is emitted ahead of the `NFACE_n` sections that point into it, and
+  its faces are deduplicated across the **polyhedral blocks only**, via a new
+  block-filtered overload of `detail::build_global_faces`. A mesh mixing
+  hexahedra with polyhedra keeps ordinary `HEXA_8` sections for the former;
+  putting their faces in the pool would leave `NGON_n` elements no `NFACE_n`
+  cell ever references. A 2D jagged block needs no dedup at all — its cells
+  *are* faces — so it becomes an `NGON_n` on its own.
+- On read, an `NGON_n` becomes `polygon<N>` blocks **only when no `NFACE_n`
+  references it**; otherwise it is the shared face pool, and emitting it as
+  cells would duplicate every polyhedron's geometry while leaving the cell
+  count looking plausible.
+
+**Two bugs found by cgnscheck, neither of which any internal check could see.**
+Both made cgnslib corrupt its own heap and abort rather than report anything, so
+the tests assert the *return code* as much as the absence of `ERROR` lines:
+
+- `NCell` omitted the polyhedral blocks, because `cell_type_from_name` does not
+  know `polygon<N>`/`polyhedron<N>` and they reported dimension 0. cgnscheck
+  sizes its cell arrays from `NCell` and then reads `NFACE_n`.
+- The file declared `CGNSLibraryVersion` **3.1**. Below 4.0, cgnslib reads
+  `NGON_n` with the 3.x inline-length layout — so it spliced our
+  `ElementStartOffset` array into the connectivity. A face-based file now
+  declares 4.0; a file without such a section reads identically under either
+  number and keeps 3.1, so its bytes are unchanged.
+
+- **The h5py twin deliberately does not implement this** and says so by name,
+  pointing at the compiled core. The writer deduplicates faces and repairs each
+  cell's winding, and the repair is a discrete branch on the sign of an enclosed
+  volume — two implementations of such a branch can land on opposite sides for a
+  near-degenerate cell and then diverge macroscopically, the reasoning that
+  already keeps `smooth`'s inversion guard out of its numpy fallback. It is also
+  unreachable in practice, since `_core` ships in every wheel. This keeps
+  `test_structural_parity_with_cpp`, the byte-for-byte C++/Python oracle, exact.
+
+- `cgns_write`'s pybind binding now passes `allow_ragged=true`; without it a
+  polyhedral mesh never reached the C++ writer at all.
+
+## v9.20.0 (2026-08-04)
+
+The **OpenFOAM polyMesh writer** — the last of the roadmap's polyhedral writers,
+and the last read-only format in the tree. Round-tripping an OpenFOAM case is the
+headline outcome; a mesh from any other format converts into one too.
+
+**`MESHIOPLUSPLUS_ABI_VERSION` 5 → 6**, because `OpenFoamInfo` gained a data
+member (Tier A).
+
+**Breaking (C++ ABI only):** `OpenFoamInfo` gained `mPatchTypes`, so its layout
+changed. A C++ consumer that compiled against v9.19.0 headers and passes an
+`OpenFoamInfo&` must be recompiled — which the bumped `SOVERSION`
+(`libmeshioplusplus_core_*.so.6`) and `detail/abi_version_check.hpp` both enforce
+at link time rather than leaving to chance. The C ABI, Python, WASM, Fortran,
+Julia and R surfaces are all unaffected.
+
+- **`detail/face_mesh.hpp`** — `build_global_faces` re-expresses a mesh's volume
+  cells as a globally deduplicated face list with owner/neighbour pairing. Two
+  formats are *defined* in those terms rather than in terms of cells: OpenFOAM's
+  polyMesh literally is this structure on disk, and CGNS's `NGON_n`/`NFACE_n`
+  pair is the same thing, so cell rows are stored in CGNS's own **signed 1-based**
+  encoding and the CGNS writer (next release) copies a row with an element-id
+  offset and no per-entry branch.
+
+  Three decisions worth recording. Cells are numbered in a **compact volume-cell
+  space**, not `block_bases`' block-major one: every mesh `read_openfoam`
+  produces carries its boundary faces as 2D blocks, so in the global numbering
+  "cell 8" is routinely a quad. Winding is **repaired unconditionally** —
+  `cell_faces.hpp`'s rows are outward on the *reference* element, so an inverted
+  hexahedron yields six inward normals and `checkMesh` would reject every one of
+  its faces. And one `detail::FacetKey` serves both cell kinds, which is what
+  makes a hexahedron and a polyhedron meeting on a face meet on *one* face.
+
+- **`write_openfoam`** — the only meshio++ writer that creates a **directory**.
+  All four ordering rules OpenFOAM requires (internal faces first, `owner <
+  neighbour`, faces sorted by owner then neighbour, normals owner→neighbour) are
+  enforced and then re-validated before anything is written, with one check per
+  clause naming the clause it broke; the validator runs in release builds too,
+  since release is where large cases get written and its failure means a corrupt
+  mesh was about to reach a solver. `.foam` is now in the registry's extension
+  table, so `write("case.foam", mesh)` infers the format — previously
+  `resolve_format` threw on it, and the flat bindings could not read a case by
+  extension either.
+
+  A mesh with no patch tags — anything converted from another format — gets a
+  single `defaultFaces` patch of type `patch`, which is what `blockMesh` itself
+  produces. Patches are never synthesized from geometry.
+
+- **Two reader fixes** came with it. `parse_boundary` now reads each patch's
+  `type` (the **Python reader always has**; the C++ one was behind), and it
+  matches braces by **depth** rather than taking the first `}` — so a patch
+  carrying a nested sub-dictionary, as every `cyclicAMI` and `mappedWall` does,
+  is no longer truncated into garbage patches. The second fix is not optional
+  given the first: without it, `type` would be read from a truncated block.
+
+- Patch types needing companion dictionary entries `OpenFoamInfo` cannot carry
+  (`cyclic`, `processor`, `mapped*`, …) are **downgraded to `patch` with a
+  warning**. Emitting them bare produces a case OpenFOAM refuses to *load*;
+  a downgraded case loads and solves with boundary conditions the user can see
+  and fix. An unknown type writes `patch`, never `wall` — `wall` selects wall
+  functions, so guessing it would silently change a solve's physics.
+
+- `tests/cpp/test_abi_layout.cpp` now pins `OpenFoamInfo`, `GmshInfo` and
+  `MdpaInfo`. It pinned **no** format side-channel struct before, which is
+  exactly what made growing one look free — `MedInfo` gained four members in
+  v9.9.0 with the Tier A guard silent. (`MedInfo` and `ExodusInfo` stay unpinned:
+  they exist only in an HDF5 / netCDF build, and a layout snapshot that says
+  different things in different configurations is worse than none.)
+
+- **No Python fallback writer**, deliberately. A twin would have to re-implement
+  the per-cell winding repair, a discrete branch on the sign of an enclosed
+  volume, and two implementations of such a branch can land on opposite sides
+  for a near-degenerate cell — the reasoning that already keeps `smooth`'s
+  inversion guard out of its numpy fallback. It would also be dead code:
+  `openfoam_write` needs no optional dependency, so it is present in every wheel
+  and every source build with Python bindings. The writer is registered only when
+  the core provides it, so `meshioplusplus.write` never advertises a format that
+  always raises.
+
+## v9.19.0 (2026-08-04)
+
+The polyhedral **writers** — the fifth item of the roadmap's polyhedral-meshes
+section. Three formats that could read a polyhedron but never write one now
+round-trip it.
+
+- **EnSight `nfaced` / `nsided`**, ASCII and binary. The cheapest of the three:
+  the wire format is a direct CSR dump (a per-cell count run, then a per-face
+  size run, then the node ids) with no orientation contract and no global face
+  table, so the writer is the reader's exact inverse and a round trip against
+  it is a complete oracle. The blocker was structural, not conceptual —
+  `ensight_writable_blocks` returns one `EnsightTypeEntry*` per block and the
+  table had no entry for a type with no fixed node count.
+- **MED `POE`** (`MED_POLYHEDRON`), which needs **three** 1-based arrays where a
+  polygon needs two: `NOD`, `INN` (face → `NOD`) and `IND` (cell → face). MED
+  holds one section per type inside a `MAI` group, so every `polyhedron<N>`
+  block is canonicalised to a single `POE` on write and regrouped by unique node
+  count on read; grouping on the exact meshio type string would try to create
+  `POE` once per node count and fail at group creation. This also corrects
+  `doc/formats/med.md`, which claimed polyhedra were "Python-only for MED" —
+  **neither** path had a `POE` entry.
+- **VTU `VTK_POLYHEDRON` (type 42)**, both directions. The reader previously
+  threw on merely *seeing* the `faces` array name, before checking whether any
+  cell was type 42.
+  - **Mixing polyhedra with other cell types works**, where the Python
+    reference historically refused it. That was an implementation limit, not a
+    format one: `faceoffsets` carries **-1** for a non-polyhedral cell, which
+    *is* the mixing mechanism — and an OpenFOAM mesh always mixes hexahedra,
+    polyhedra and boundary faces, so inheriting the restriction would have
+    defeated the point.
+  - `_vtu.py` was relaxed **in lockstep**, on both the read and write sides.
+    That is not optional: Windows CI builds every native path off and runs the
+    reference implementation, so a C++-only capability would be green on Linux
+    and red on Windows. The shim also stops diverting polyhedral meshes to
+    Python.
+  - The reader reaches type 42 through a **new overload** of
+    `detail::reconstruct_cells`; `detail/vtk_cells.hpp` is an installed header,
+    so changing the existing signature would have renamed a mangled symbol.
+
+All three bucket polyhedra into `polyhedron<N>` by unique node count on read —
+the convention the OpenFOAM, EnSight, MED and CGNS readers already shared.
+
+Also: a `cgnslib` **vcpkg feature** (depending on upstream's `cgns` port), which
+is the usual route on Windows, alongside the Conan `with_cgnslib` option added
+in v9.18.0. `doc/formats/cgns.md` now lists how to get cgnslib per platform.
+
+## v9.18.0 (2026-08-04)
+
+An optional backend built on the **official CGNS library** (cgnslib, the CGNS
+Mid-Level Library), closing the roadmap's `NGON_n`/`NFACE_n` item on the read
+side. `-DMESHIOPLUSPLUS_WITH_CGNSLIB=ON`, **OFF by default and bring-your-own**
+via `CGNS_ROOT` — never vendored, never downloaded, exactly the KaHIP policy.
+
+It is **additive**. The hand-rolled ADF-over-HDF5 reader and writer are
+unchanged and remain the default, so a build without the flag behaves exactly as
+before: no format disappears, the WASM artifact is untouched, and the C++/Python
+byte-parity oracle still holds.
+
+What it buys, both being things the raw-HDF5 path cannot have at all:
+
+- **ADF-container files.** `.cgns` has two on-disk containers. `read_cgns`
+  speaks HDF5 directly, so an ADF file is not merely unimplemented there — it is
+  unreachable by construction, and much of the real-world corpus (including the
+  CGNS project's own example meshes, which the roadmap wanted as polyhedral
+  fixtures) is ADF.
+- **`NGON_n` / `NFACE_n` polyhedral sections.** `NGON_n` lists faces; `NFACE_n`
+  lists each cell as **signed** face ids, the sign meaning "traverse this face
+  reversed" — CGNS's way of orienting a shared face outward from both cells
+  using it. `cg_poly_elements_read` also absorbs the CGNS 3.x-vs-4.0
+  `ElementStartOffset` split, the most error-prone part of the encoding and the
+  single strongest reason to use the MLL rather than hand-roll it. `NGON_n`
+  **without** an `NFACE_n` is a face mesh and maps to `polygon` blocks.
+
+Routing: **read** goes through the MLL whenever it is built (the input is not
+ours, and the MLL is strictly more capable), with one narrow fallback — the
+pre-v9.8.0 legacy layout, which has no ADF node attributes and which the MLL
+rejects. That is a specific fallback, not a blanket `catch (...)`: a genuine MLL
+error still surfaces. **Write** is untouched and stays on the hand-rolled path.
+The consequence is a free cross-engine check: on a cgnslib build the existing
+CGNS suite writes with one engine and reads with the other, and all of it passes.
+
+The MLL reader is a **superset**, not a divergence: it reads `FlowSolution_t`
+(with the same `_0.._k-1` component rejoin convention) and refuses `MIXED` and
+the unverified cubic/quartic Lagrange family by name, matching the hand-rolled
+reader rather than silently skipping them.
+
+`meshioplusplus.cgns.read` no longer falls back to the h5py reference when the
+file is not HDF5 — the fallback cannot answer that question and would report a
+confusing signature error instead of the real one (the `xdmf` `time_step`
+precedent). `_core.__has_cgnslib__` and `cgns_has_cgnslib()` report the build.
+
+## v9.17.0 (2026-08-04)
+
+`convert_cells(simplexify)` decomposes polyhedra into tetrahedra — the escape
+hatch that makes the remaining resolution-changing operations work on them, and
+the fourth item of the roadmap's polyhedral-meshes section.
+
+- **One tetrahedron per (face, edge-of-that-face)**, from the face's corner
+  average to the cell's — the *same* fan `detail/polyhedron.hpp` measures. So
+  the children's total volume equals the parent's **exactly**, which is a hard
+  oracle rather than a tolerance, and every child comes out positively oriented.
+- That adds `1 + numFaces` points per cell rather than a single centroid.
+  A one-point fan about each face's first node is cheaper and wrong twice over:
+  it is diagonal-dependent for non-planar faces (so two cells sharing one would
+  disagree), and it inverts on any cell whose faces are not star-shaped about
+  whichever node happens to be listed first.
+- **`slice`, `isosurface` and `interpolate --barycentric` become
+  polyhedron-capable with no further code**, since all three go through
+  `marching_prepare` → simplexify. Verified by test rather than assumed.
+- Point-adding follows the `elevate` precedent: new coordinates and every
+  `point_data` array's new rows are the mean of the same recorded source-node
+  list, so they cannot drift apart, and block structure stays 1:1 so the
+  `cell_data` and `mCellMaps` contracts are untouched.
+- A polyhedron whose faces are **not a closed orientable surface** throws,
+  naming the cell — it bounds no volume to decompose. `refine` and `decimate`
+  still raise on ragged blocks, but now point at `convert_cells(simplexify)` by
+  name.
+
+The pure-numpy `convert_cells` fallback remains rectangular-only and raises
+`NotImplementedError` for ragged blocks, as before; this is a C++-core
+capability.
+
+## v9.16.0 (2026-08-04)
+
+A geometric kernel for cells bounded by arbitrary polygonal faces
+(`detail/polyhedron.hpp`), and the operations that were silently skipping
+polyhedra wired onto it — the second item of the roadmap's polyhedral-meshes
+section. See [`doc/polyhedra.md`](doc/polyhedra.md).
+
+- **Breaking:** the signed volume of a cell with **non-planar faces** changes.
+  `stats`, `cell_measure` (and so `data_average`'s measure weighting) and
+  `clean`'s degeneracy test each carried their own copy of a divergence-theorem
+  volume that fanned every face about its *first node*; all three now share the
+  kernel, which fans about the face's **corner average**. Planar faces are
+  unaffected. The apex is now a function of the face alone rather than of the
+  cell's storage, so two cells meeting on a warped quad triangulate it
+  identically instead of possibly choosing different diagonals — pinned by
+  `PolyhedronKernel.CellsSharingAWarpedFaceAgreeOnIt`, which fails against the
+  old decomposition. `_stats.py`'s numpy twin moved in lockstep, since a
+  Python-fallback build (Windows CI) would otherwise report different volumes
+  from a native one; `test_cpp_matches_python` gained a warped fixture, because
+  a cube cannot tell the two apart (a parallelogram's corner average *is* its
+  area centroid).
+- **Winding is repaired, not required.** Real meshes arrive inconsistently
+  wound — including this repository's own long-standing `polyhedron5` fixture,
+  whose cells traverse a shared edge in the same direction from two faces — so
+  `orient_rings` fixes it per cell (BFS over the faces' shared-edge dual, then a
+  global flip if the volume came out negative) and reports `Unorientable` only
+  when the face set is genuinely not a closed orientable surface.
+- **`gradient` is polyhedral**, which is what the roadmap meant by Green-Gauss
+  being *naturally* polyhedral: it now integrates over the cell's own face
+  rings, so a `polyhedron` block goes through exactly the same code as a
+  `hexahedron` and recovers a linear field's gradient just as exactly.
+- **`extract_surface` / `extract_skin` handle polyhedra**, including faces of
+  any arity (a pentagon lands in a ragged `polygon` block rather than being
+  dropped). The facet key is now `detail::FacetKey` — variable arity with a
+  4-entry inline fast path — for **one** shared key type, which is what lets a
+  hexahedron and a polyhedron that meet on a face cancel each other out.
+- **`compute_quality` reports a reduced set** for polyhedra — volume, inverted,
+  degenerate — and leaves every metric defined against a reference element the
+  cell does not have as `NaN`, rather than inventing a plausible number.
+  `QualityReport`'s layout is unchanged.
+- **`smooth`'s inversion guard covers polyhedra.** It previously skipped them
+  when building its measurable-cell table while nothing pinned their nodes
+  either, so their nodes were moved with no guard at all — silently.
+- `stats` also now counts a ragged `polygon` block's area, which it previously
+  ignored entirely.
+
+- **`smooth`'s boundary marking** covers them too, so `fix_boundary` now
+  actually pins a polyhedral mesh's outer nodes; previously *nothing* pinned
+  them and a purely polyhedral mesh quietly shrank under smoothing. An n-gon
+  boundary face is emitted as several feature records sharing one normal, so
+  every corner takes part in feature detection rather than only the first four.
+- **`partition`'s KaHIP dual graph** connects polyhedra sharing a face.
+  Previously they were isolated vertices, so KaHIP saw a graph with no edges and
+  returned a balanced but cut-blind partition — silently. (The default SFC
+  method was never affected; it works off cell centroids.)
+- **`clean` drops degenerate and duplicate polyhedra**, which it previously kept
+  unconditionally while dropping the equivalent hexahedron. The duplicate key is
+  the sorted set of sorted faces, so the same solid still collides with itself
+  when its faces are relisted in another order or with reversed windings, and
+  two different solids on the same node set do not collide.
+
+Both `smooth`'s boundary marking and `partition`'s dual graph moved to
+`detail::FacetKey` for this, joining `extract_surface`: **one** facet key type
+across cell shapes is what lets a hexahedron and a polyhedron that meet on a
+face see each other at all.
+
+## v9.15.0 (2026-08-04)
+
+Polyhedral connectivity across the flat C ABI — the first item of the roadmap's
+polyhedral-meshes section, and the one everything else in it depended on.
+Ragged blocks (jagged polygons, and polyhedra given as a list of faces per
+cell) could previously be *reported* by the C API and then neither built nor
+read: `mio_mesh_cell_block_conn` returned `MIO_ERR_UNSUPPORTED` and there was
+no setter at all. Both halves are closed, in C, Fortran, Julia and R. New
+concept page: [`doc/polyhedra.md`](doc/polyhedra.md).
+
+- **Reading** goes through a new opaque `mio_poly_conn` **snapshot**
+  (`_create` / `_get_shape` / `_nodes` / `_face_offsets` / `_cell_offsets` /
+  `_free`) carrying the flat CSR triple the JS boundary already used. It is an
+  owning copy rather than the ABI's usual zero-copy borrow — and so, unusually,
+  stays valid across mutating calls — because the `MESHIO` mesh backend stores
+  ragged blocks as nested vectors with no offsets array to point at and the
+  `KRATOS` backend rebuilds its blocks lazily.
+- **Building** is `mio_mesh_add_polygon_block` / `mio_mesh_add_polyhedron_block`,
+  int64-only (a CSR pair is two arrays that must agree; one `dtype` covering
+  both invites the wrong pairing). Malformed offsets — not starting at 0, not
+  monotonic, not ending at the total — are rejected by name rather than read
+  past.
+- **`mio_mesh_cell_block_info_ex`** reports `is_polyhedron`, `num_faces` and
+  `num_nodes` over a reserved-tail struct, the growable successor to the
+  five-argument `mio_mesh_cell_block_info`, which is unchanged.
+- Each language gets its **natural** shape over the one flat ABI, the same
+  policy that already gives all of them column-major arrays and 1-based
+  indices: Fortran the CSR triple (`m%get_polygon_block` /
+  `m%get_polyhedron_block`, offsets shifted to 1-based along with the node ids
+  because they index a Fortran array), Julia nested vectors (`polygon_block` /
+  `polyhedron_block`), R nested lists (`mio_polygon_block()` /
+  `mio_polyhedron_block()`), each with the matching setter.
+- **WASM** needed no new binding — ragged blocks already rode the mesh object —
+  but its `val_to_mesh` polyhedron branch now validates `faceOffsets` the way
+  the polygon branch always validated `rowOffsets`; a malformed one used to
+  build an out-of-range iterator pair. Two stale doc comments claiming ragged
+  blocks throw were also corrected.
+- The C API gtests that used to assert ragged blocks were *inaccessible* now
+  assert they round-trip, and no longer need HDF5 to build a ragged mesh — a
+  real coverage gain on builds without it.
+
 ## v9.14.0 (2026-08-03)
 
 Original MDPA ids preserved on write — the write half of the roadmap's MDPA

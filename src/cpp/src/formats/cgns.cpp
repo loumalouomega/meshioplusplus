@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -30,6 +31,7 @@
 // Project includes
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/format_compat.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -314,6 +316,139 @@ bool cgns_is_reserved_name(const std::string& rName) {
     return !rName.empty() && rName[0] == ' ';
 }
 
+// The two CGNS ElementType_t codes that describe a cell by its FACES rather
+// than by a fixed node count.
+constexpr int kCgnsNgon = 22;   // NGON_n:  a face, given as a node list
+constexpr int kCgnsNface = 23;  // NFACE_n: a cell, given as SIGNED face ids
+
+// meshio++ spells a jagged 2D block `polygon`/`polygon2`/`polygon<N>` and a 3D
+// one `polyhedron<N>`. Both families map to the face-based sections, so the
+// test is on the NAME prefix -- see the note at the writer's validation loop
+// for why `IsRagged()` is the wrong question.
+bool cgns_is_polygon_type(const std::string& rType) {
+    return rType.rfind("polygon", 0) == 0;
+}
+
+bool cgns_is_polyhedron_type(const std::string& rType) {
+    return rType.rfind("polyhedron", 0) == 0;
+}
+
+/// One NGON_n / NFACE_n section, read into flat CSR.
+struct CgnsPolySection {
+    std::string mName;
+    int mCode = 0;
+    std::int64_t mFirst = 0, mLast = 0;
+    std::vector<std::int64_t> mOffsets;  ///< `count + 1` entries into mData
+    std::vector<std::int64_t> mData;     ///< 1-based node ids, or SIGNED face element ids
+    std::size_t Count() const { return mOffsets.empty() ? 0 : mOffsets.size() - 1; }
+};
+
+/**
+ * @brief Read one face-based element section.
+ *
+ * meshio++ writes the CGNS >= 4.0 layout (`ElementStartOffset` beside
+ * `ElementConnectivity`) and reads only that. A CGNS 3.x file instead prefixes
+ * each row with its own length inline, and normalising the two is exactly what
+ * `cg_poly_elements_read` exists for -- so a 3.x file is refused **by name**,
+ * pointing at the optional cgnslib backend, rather than misread.
+ */
+CgnsPolySection cgns_read_poly_section(h5::Hid& rSect, const std::string& rName, int Code) {
+    CgnsPolySection out;
+    out.mName = rName;
+    out.mCode = Code;
+
+    h5::Hid rng = h5::open_group(rSect, "ElementRange");
+    NDArray range = h5::read_dataset(rng, " data");
+    out.mFirst = detail::read_int(range, 0);
+    out.mLast = detail::read_int(range, 1);
+    const std::size_t n = out.mLast >= out.mFirst
+                              ? static_cast<std::size_t>(out.mLast - out.mFirst + 1)
+                              : 0;
+
+    bool has_offset = false;
+    for (const std::string& l : h5::group_links(rSect))
+        if (l == "ElementStartOffset")
+            has_offset = true;
+    if (!has_offset)
+        throw ReadError(detail::format_compat(
+            "CGNS: section '{}' is {} but has no ElementStartOffset, so it uses the CGNS 3.x "
+            "inline-length layout; meshio++'s own reader handles only the 4.0 layout -- rebuild "
+            "with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON to read it",
+            rName, Code == kCgnsNgon ? "NGON_n" : "NFACE_n"));
+
+    h5::Hid og = h5::open_group(rSect, "ElementStartOffset");
+    NDArray off = h5::read_dataset(og, " data");
+    if (off.Size() != n + 1)
+        throw ReadError(detail::format_compat(
+            "CGNS: section '{}' declares {} elements but ElementStartOffset has {} entries "
+            "(expected {})",
+            rName, n, off.Size(), n + 1));
+    out.mOffsets.resize(off.Size());
+    for (std::size_t i = 0; i < off.Size(); ++i)
+        out.mOffsets[i] = detail::read_int(off, i);
+
+    h5::Hid cg = h5::open_group(rSect, "ElementConnectivity");
+    NDArray conn = h5::read_dataset(cg, " data");
+    if (!out.mOffsets.empty() &&
+        out.mOffsets.back() != static_cast<std::int64_t>(conn.Size()))
+        throw ReadError(detail::format_compat(
+            "CGNS: section '{}' has ElementStartOffset ending at {} but ElementConnectivity has "
+            "{} entries",
+            rName, out.mOffsets.back(), conn.Size()));
+    out.mData.resize(conn.Size());
+    for (std::size_t i = 0; i < conn.Size(); ++i)
+        out.mData[i] = detail::read_int(conn, i);
+    return out;
+}
+
+/**
+ * @brief Write one face-based element section.
+ *
+ * CGNS >= 4.0 stores a variable-length section as `ElementStartOffset`
+ * (`nElems + 1` cumulative offsets) beside `ElementConnectivity`; CGNS 3.x
+ * instead prefixed each row with its own length inline. meshio++ writes the
+ * 4.0 layout **only** -- a writer picks its layout, so the version split that
+ * makes `cg_poly_elements_read` worth having on the READ side simply does not
+ * arise here.
+ */
+void cgns_write_poly_section(h5::Hid& rZone, const std::string& rName, int Code,
+                             std::int64_t First, std::int64_t Last,
+                             const std::vector<std::int64_t>& rOffsets,
+                             const std::vector<std::int64_t>& rData, int GzipLevel) {
+    h5::Hid sect = cgns_create_group(rZone, rName);
+    cgns_write_node_attrs(sect, rName, "Elements_t", "I4");
+    {
+        NDArray sdata(DType::Int32, {2});
+        sdata.As<std::int32_t>()[0] = Code;
+        sdata.As<std::int32_t>()[1] = 0;  // ElementSizeBoundary: unsorted
+        h5::write_dataset(sect, " data", sdata);
+    }
+    h5::Hid rng = cgns_create_group(sect, "ElementRange");
+    cgns_write_node_attrs(rng, "ElementRange", "IndexRange_t", cgns_type_code(DType::Int64));
+    {
+        NDArray rdata(DType::Int64, {2});
+        rdata.As<std::int64_t>()[0] = First;
+        rdata.As<std::int64_t>()[1] = Last;
+        h5::write_dataset(rng, " data", rdata);
+    }
+    {
+        NDArray off(DType::Int64, {rOffsets.size()});
+        std::copy(rOffsets.begin(), rOffsets.end(), off.As<std::int64_t>());
+        h5::Hid g = cgns_create_group(sect, "ElementStartOffset");
+        cgns_write_node_attrs(g, "ElementStartOffset", "DataArray_t",
+                              cgns_type_code(DType::Int64));
+        h5::write_dataset(g, " data", off, GzipLevel);
+    }
+    {
+        NDArray conn(DType::Int64, {rData.size()});
+        std::copy(rData.begin(), rData.end(), conn.As<std::int64_t>());
+        h5::Hid g = cgns_create_group(sect, "ElementConnectivity");
+        cgns_write_node_attrs(g, "ElementConnectivity", "DataArray_t",
+                              cgns_type_code(DType::Int64));
+        h5::write_dataset(g, " data", conn, GzipLevel);
+    }
+}
+
 // Whether the root has a child group whose "label" attribute is
 // "CGNSBase_t" -- the structural (not extension/version-based) discriminator
 // between the spec layout and the pre-v9.8.0 legacy one.
@@ -470,21 +605,30 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     // Validate every cell type up front (before any file is created) and
     // compute CellDim = the max topological dimension over all blocks.
     int cell_dim = 0;
-    for (const auto cb : rMesh.CellRange()) {
+    // Blocks that go out as NGON_n (2D: their cells ARE faces) and as
+    // NGON_n + NFACE_n (3D: their cells are lists of signed face ids).
+    // Classified by TYPE NAME, not `IsRagged()`: a *uniform* polygon block
+    // (every cell the same node count) stores rectangularly and so is not
+    // structurally ragged, yet still has no fixed-size ElementType_t.
+    std::vector<std::size_t> ngon_blocks, nface_blocks;
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const auto cb = rMesh.Cells(bi);
         const std::string ctype(cb.Type());
-        // polygon/polygon2/polyhedron* are always CGNS-unrepresentable
-        // (MIXED/NGON_n/NFACE_n, not written by meshio++), checked by type
-        // name -- NOT cb.IsRagged() -- because a *uniform* polygon block
-        // (every cell has the same node count) stores rectangularly and so
-        // is not, structurally, ragged; the message must still name the
-        // real reason rather than falling through to the generic
-        // "ordering not yet verified" one. cb.IsRagged() is kept as a
-        // backstop for any other genuinely ragged type.
-        if (ctype == "polygon" || ctype == "polygon2" || ctype.rfind("polyhedron", 0) == 0 ||
-            cb.IsRagged())
+        if (cgns_is_polygon_type(ctype)) {
+            ngon_blocks.push_back(bi);
+            if (cell_dim < 2)
+                cell_dim = 2;
+            continue;
+        }
+        if (cgns_is_polyhedron_type(ctype)) {
+            nface_blocks.push_back(bi);
+            cell_dim = 3;
+            continue;
+        }
+        if (cb.IsRagged())
             throw WriteError(detail::format_compat(
-                "CGNS: cell type '{}' is a ragged block; CGNS has no fixed-size representation "
-                "for it (MIXED/NGON_n/NFACE_n sections are not written by meshio++)",
+                "CGNS: cell type '{}' is a ragged block with no CGNS representation (only "
+                "polygon*/polyhedron* map to NGON_n/NFACE_n)",
                 ctype));
         auto it = cgns_type_table().find(ctype);
         if (it == cgns_type_table().end()) {
@@ -507,10 +651,25 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     phys_dim = std::clamp(phys_dim, 1, 3);
     const int cgns_cell_dim = cell_dim > 0 ? cell_dim : phys_dim;
 
+    // NCell counts the zone's cells -- the blocks at CellDim. The face-based
+    // families must be counted explicitly: `cell_type_from_name` does not know
+    // `polygon<N>`/`polyhedron<N>`, so they would report dimension 0 and NCell
+    // would come out too small. That is not cosmetic: cgnscheck sizes its cell
+    // arrays from NCell and then reads NFACE_n, so an undercount corrupts its
+    // heap rather than producing a diagnostic (found exactly that way).
     std::size_t n_cells_at_dim = 0;
-    for (const auto cb : rMesh.CellRange())
-        if (cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == cgns_cell_dim)
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string ctype(cb.Type());
+        int d;
+        if (cgns_is_polygon_type(ctype))
+            d = 2;
+        else if (cgns_is_polyhedron_type(ctype))
+            d = 3;
+        else
+            d = cell_type_dimension(cell_type_from_name(ctype));
+        if (d == cgns_cell_dim)
             n_cells_at_dim += cb.NumCells();
+    }
 
     h5::Hid f = cgns_create_file(rPath);
     cgns_write_attr_str(f, "name", "HDF5 MotherNode", 33);
@@ -522,7 +681,15 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     h5::Hid cgver = cgns_create_group(f, "CGNSLibraryVersion");
     cgns_write_node_attrs(cgver, "CGNSLibraryVersion", "CGNSLibraryVersion_t", "R4");
     NDArray ver(DType::Float32, {1});
-    ver.As<float>()[0] = 3.1f;
+    // 4.0 is not cosmetic when a face-based section is present: BELOW it,
+    // NGON_n/NFACE_n use the 3.x layout, where each row is prefixed inline by
+    // its own length instead of being described by ElementStartOffset. cgnslib
+    // switches on this number, so declaring 3.1 while writing 4.0 arrays makes
+    // its reader splice offsets into the connectivity and then corrupt its own
+    // heap -- found with cgnscheck, which aborted rather than diagnosing it.
+    // Files with no such section read identically under either number, so they
+    // keep 3.1 and their bytes are unchanged.
+    ver.As<float>()[0] = (ngon_blocks.empty() && nface_blocks.empty()) ? 3.1f : 4.0f;
     h5::write_dataset(cgver, " data", ver);
 
     h5::Hid base = cgns_create_group(f, "Base");
@@ -536,7 +703,8 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
 
     const std::size_t n_points = rMesh.NumPoints();
     const bool wide = n_points > static_cast<std::size_t>(INT32_MAX) ||
-                      n_cells_at_dim > static_cast<std::size_t>(INT32_MAX);
+                      n_cells_at_dim > static_cast<std::size_t>(INT32_MAX) ||
+                      !ngon_blocks.empty() || !nface_blocks.empty();
     const DType zone_dt = wide ? DType::Int64 : DType::Int32;
 
     h5::Hid zone = cgns_create_group(base, "Zone1");
@@ -584,9 +752,99 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     // "two sections, one type" restriction.
     std::int64_t next = 1;
     std::unordered_map<std::string, int> type_counts;
+
+    // ---- the face-based sections come first ---------------------------------
+    // NFACE_n references faces by ELEMENT id, so every face must already have
+    // one: the NGON_n section is emitted ahead of the NFACE_n sections that
+    // point into it. Faces are deduplicated across the polyhedral blocks ONLY
+    // (see build_global_faces' block-filtered overload) -- a hexahedron in the
+    // same mesh keeps its own HEXA_8 section, and putting its faces here would
+    // leave NGON_n elements no cell ever references.
+    std::vector<std::int64_t> face_element_id;  // GlobalFaces id -> 1-based element id
+    if (!nface_blocks.empty()) {
+        const detail::GlobalFaces gf = detail::build_global_faces(rMesh, nface_blocks);
+        if (gf.mNumNonManifold > 0)
+            log::warn("CGNS: {} face(s) are shared by three or more cells; NFACE_n still "
+                      "references them correctly, but the mesh is non-manifold",
+                      gf.mNumNonManifold);
+
+        std::vector<std::int64_t> off{0}, data;
+        off.reserve(gf.NumFaces() + 1);
+        for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
+            for (std::size_t j = 0; j < gf.FaceSize(f); ++j)
+                data.push_back(gf.Face(f)[j] + 1);  // CGNS node ids are 1-based
+            off.push_back(static_cast<std::int64_t>(data.size()));
+        }
+        const std::int64_t first = next;
+        const std::int64_t last = next + static_cast<std::int64_t>(gf.NumFaces()) - 1;
+        next = last + 1;
+        face_element_id.resize(gf.NumFaces());
+        for (std::size_t f = 0; f < gf.NumFaces(); ++f)
+            face_element_id[f] = first + static_cast<std::int64_t>(f);
+        cgns_write_poly_section(zone, "NGON_n_1", kCgnsNgon, first, last, off, data, gzip_level);
+
+        // One NFACE_n per polyhedral block, so the reader can rebuild the
+        // blocks rather than one merged one.
+        std::size_t compact = 0;
+        int nface_idx = 0;
+        for (std::size_t bi : nface_blocks) {
+            const std::size_t nc = rMesh.Cells(bi).NumCells();
+            if (nc == 0) {
+                compact += nc;
+                continue;
+            }
+            std::vector<std::int64_t> coff{0}, cdata;
+            for (std::size_t c = compact; c < compact + nc; ++c) {
+                for (std::size_t j = 0; j < gf.NumCellFaces(c); ++j) {
+                    const std::int64_t sid = gf.CellFaces(c)[j];
+                    const std::int64_t fid = face_element_id[static_cast<std::size_t>(
+                        (sid > 0 ? sid : -sid) - 1)];
+                    cdata.push_back(sid > 0 ? fid : -fid);  // sign = "traverse reversed"
+                }
+                coff.push_back(static_cast<std::int64_t>(cdata.size()));
+            }
+            compact += nc;
+            const std::int64_t cf = next;
+            const std::int64_t cl = next + static_cast<std::int64_t>(nc) - 1;
+            next = cl + 1;
+            cgns_write_poly_section(zone, detail::format_compat("NFACE_n_{}", ++nface_idx),
+                                    kCgnsNface, cf, cl, coff, cdata, gzip_level);
+        }
+    }
+    // A 2D jagged block is itself a face list, so it needs no dedup at all.
+    {
+        int idx = nface_blocks.empty() ? 0 : 1;
+        for (std::size_t bi : ngon_blocks) {
+            const auto cb = rMesh.Cells(bi);
+            const std::size_t nc = cb.NumCells();
+            if (nc == 0)
+                continue;
+            std::vector<std::int64_t> off{0}, data;
+            for (std::size_t i = 0; i < nc; ++i) {
+                if (cb.IsRagged()) {
+                    const std::int64_t* row = cb.Row(i);
+                    for (std::size_t j = 0; j < cb.RowSize(i); ++j)
+                        data.push_back(row[j] + 1);
+                } else {
+                    const std::size_t npc = cb.NodesPerCell();
+                    for (std::size_t j = 0; j < npc; ++j)
+                        data.push_back(detail::read_int(cb.Conn(), i * npc + j) + 1);
+                }
+                off.push_back(static_cast<std::int64_t>(data.size()));
+            }
+            const std::int64_t first = next;
+            const std::int64_t last = next + static_cast<std::int64_t>(nc) - 1;
+            next = last + 1;
+            cgns_write_poly_section(zone, detail::format_compat("NGON_n_{}", ++idx), kCgnsNgon,
+                                    first, last, off, data, gzip_level);
+        }
+    }
+
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
         const auto cb = rMesh.Cells(k);
         const std::string ctype(cb.Type());
+        if (cgns_is_polygon_type(ctype) || cgns_is_polyhedron_type(ctype))
+            continue;  // already emitted above as NGON_n / NFACE_n
         const CgnsTypeInfo& info = cgns_type_table().at(ctype);
         const std::size_t npc = cb.NodesPerCell();
         const std::size_t nc = cb.NumCells();
@@ -736,6 +994,23 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
 }
 
 Mesh read_cgns(const std::string& rPath) {
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    // With cgnslib built, IT is the reader: the input is not ours, and the MLL
+    // reaches things this raw-HDF5 path fundamentally cannot -- the ADF
+    // container, links, multiple bases, and NGON_n/NFACE_n polyhedral sections.
+    //
+    // The pre-v9.8.0 legacy layout has no ADF node attributes at all, so the
+    // MLL rejects it; that ONE case falls through to the hand-rolled path
+    // below. This is a narrow, specific fallback and not a blanket catch: a
+    // genuine MLL error still surfaces, or a corrupt file would be silently
+    // re-read by a reader that cannot diagnose it either.
+    try {
+        return read_cgns_mll(rPath);
+    } catch (const ReadError&) {
+        // fall through to the structural probe, which either reads the legacy
+        // layout or reports its own (more specific) error
+    }
+#endif
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -855,6 +1130,36 @@ Mesh read_cgns(const std::string& rPath) {
         std::sort(sects.begin(), sects.end(),
                   [](const Sect& a, const Sect& b) { return a.mFirst < b.mFirst; });
 
+        // --- pre-pass: the face-based (NGON_n / NFACE_n) sections ------------
+        // Read ahead of the main loop for two reasons. An NFACE_n may legally
+        // precede the NGON_n it points into, and -- the load-bearing one -- an
+        // NGON_n becomes a `polygon` cell block ONLY when no NFACE_n references
+        // it: otherwise it is the shared face pool, not a set of cells, and
+        // emitting it as one would double every polyhedron's geometry.
+        std::map<std::int64_t, CgnsPolySection> poly;  // keyed by ElementRange start
+        bool any_nface = false;
+        for (const Sect& sec : sects) {
+            h5::Hid s = h5::open_group(zone, sec.mName);
+            NDArray sdata = h5::read_dataset(s, " data");
+            if (sdata.Size() < 1)
+                continue;
+            const int code = static_cast<int>(detail::read_int(sdata, 0));
+            if (code != kCgnsNgon && code != kCgnsNface)
+                continue;
+            poly.emplace(sec.mFirst, cgns_read_poly_section(s, sec.mName, code));
+            any_nface = any_nface || code == kCgnsNface;
+        }
+        // Which NGON element ids are referenced by some NFACE_n cell.
+        std::set<std::int64_t> ngon_used;
+        if (any_nface) {
+            for (const auto& kv : poly) {
+                if (kv.second.mCode != kCgnsNface)
+                    continue;
+                for (std::int64_t v : kv.second.mData)
+                    ngon_used.insert(v < 0 ? -v : v);
+            }
+        }
+
         for (const Sect& sec : sects) {
             h5::Hid s = h5::open_group(zone, sec.mName);
             NDArray sdata = h5::read_dataset(s, " data");
@@ -863,12 +1168,102 @@ Mesh read_cgns(const std::string& rPath) {
                     "CGNS: section '{}' has a malformed Elements_t descriptor", sec.mName));
             const int code = static_cast<int>(detail::read_int(sdata, 0));
 
-            if (code == 20 || code == 22 || code == 23) {
+            if (code == kCgnsNgon || code == kCgnsNface) {
+                const CgnsPolySection& ps = poly.at(sec.mFirst);
+                const std::size_t nc = ps.Count();
+                if (nc == 0)
+                    continue;
+
+                if (code == kCgnsNgon) {
+                    // A face pool referenced by some NFACE_n is not a set of
+                    // cells; emitting it as one would duplicate every
+                    // polyhedron's geometry.
+                    bool referenced = false;
+                    for (std::int64_t e = ps.mFirst; e <= ps.mLast && !referenced; ++e)
+                        referenced = ngon_used.count(e) != 0;
+                    if (referenced)
+                        continue;
+
+                    std::vector<std::vector<std::int64_t>> rows(nc);
+                    for (std::size_t i = 0; i < nc; ++i) {
+                        const std::size_t lo = static_cast<std::size_t>(ps.mOffsets[i]);
+                        const std::size_t hi = static_cast<std::size_t>(ps.mOffsets[i + 1]);
+                        rows[i].reserve(hi - lo);
+                        for (std::size_t j = lo; j < hi; ++j)
+                            rows[i].push_back(ps.mData[j] - 1 + point_offset);
+                    }
+                    // Grouped by node count, the convention the OpenFOAM and
+                    // EnSight readers already use.
+                    std::map<std::size_t, std::vector<std::vector<std::int64_t>>> by_n;
+                    for (auto& r : rows)
+                        by_n[r.size()].push_back(std::move(r));
+                    for (auto& kv : by_n) {
+                        const std::size_t cnt = kv.second.size();
+                        mesh.AddPolygonBlock("polygon" + std::to_string(kv.first),
+                                             std::move(kv.second));
+                        zone_block_cells.push_back(cnt);
+                    }
+                    continue;
+                }
+
+                // NFACE_n: dereference each signed face id into its node ring,
+                // reversing where the sign says so.
+                std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
+                for (std::size_t i = 0; i < nc; ++i) {
+                    const std::size_t lo = static_cast<std::size_t>(ps.mOffsets[i]);
+                    const std::size_t hi = static_cast<std::size_t>(ps.mOffsets[i + 1]);
+                    for (std::size_t j = lo; j < hi; ++j) {
+                        const std::int64_t sid = ps.mData[j];
+                        const std::int64_t fid = sid < 0 ? -sid : sid;
+                        // Locate the NGON section holding element id `fid`.
+                        const CgnsPolySection* src = nullptr;
+                        for (const auto& kv : poly) {
+                            if (kv.second.mCode == kCgnsNgon && fid >= kv.second.mFirst &&
+                                fid <= kv.second.mLast) {
+                                src = &kv.second;
+                                break;
+                            }
+                        }
+                        if (!src)
+                            throw ReadError(detail::format_compat(
+                                "CGNS: section '{}' references face element {}, which no NGON_n "
+                                "section defines",
+                                sec.mName, fid));
+                        const std::size_t fi = static_cast<std::size_t>(fid - src->mFirst);
+                        const std::size_t flo = static_cast<std::size_t>(src->mOffsets[fi]);
+                        const std::size_t fhi = static_cast<std::size_t>(src->mOffsets[fi + 1]);
+                        std::vector<std::int64_t> ring;
+                        ring.reserve(fhi - flo);
+                        for (std::size_t k = flo; k < fhi; ++k)
+                            ring.push_back(src->mData[k] - 1 + point_offset);
+                        if (sid < 0)
+                            std::reverse(ring.begin(), ring.end());
+                        cells[i].push_back(std::move(ring));
+                    }
+                }
+                // Grouped by DISTINCT node count -> polyhedron<N>, matching the
+                // OpenFOAM/EnSight/cgnslib readers.
+                std::map<std::size_t, std::vector<std::vector<std::vector<std::int64_t>>>> by_n;
+                for (auto& c : cells) {
+                    std::set<std::int64_t> uniq;
+                    for (const auto& f : c)
+                        uniq.insert(f.begin(), f.end());
+                    by_n[uniq.size()].push_back(std::move(c));
+                }
+                for (auto& kv : by_n) {
+                    const std::size_t cnt = kv.second.size();
+                    mesh.AddPolyhedronBlock("polyhedron" + std::to_string(kv.first),
+                                            std::move(kv.second));
+                    zone_block_cells.push_back(cnt);
+                }
+                continue;
+            }
+            if (code == 20) {
                 const auto& names = cgns_code_to_name();
                 auto nit = names.find(code);
                 throw ReadError(detail::format_compat(
-                    "CGNS: element section '{}' has ElementType {} ({}); MIXED, NGON_n and "
-                    "NFACE_n sections are not supported.",
+                    "CGNS: element section '{}' has ElementType {} ({}); MIXED sections are not "
+                    "supported.",
                     sec.mName, nit != names.end() ? nit->second : "?", code));
             }
             const auto& code_map = cgns_code_to_meshio();

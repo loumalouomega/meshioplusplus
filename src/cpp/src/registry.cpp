@@ -256,7 +256,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets side channel in v1
              meshioplusplus::write_ansysinp(p, mm, info);
          }},
-    // openfoam is read-only in the C++ core (see openfoam.hpp) -> no writer entry.
+        {"openfoam",
+         [](const std::string& p, const Mesh& mm) {
+             // No patch-name/type side channel here, so this yields a single
+             // `defaultFaces` patch -- a valid, loadable case (see
+             // write_openfoam). The flat bindings get that rather than an error.
+             meshioplusplus::OpenFoamInfo info;
+             meshioplusplus::write_openfoam(p, mm, info);
+         }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"cgns", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},
@@ -313,6 +320,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".fem", "nastran"},
         {".vol", "netgen"},
         {".obj", "obj"},
+        // OpenFOAM: the `.foam` marker file. A case *directory* has no
+        // extension at all, so that form still needs an explicit format.
+        {".foam", "openfoam"},
         {".off", "off"},
         {".post", "permas"},
         {".dato", "permas"},
@@ -490,6 +500,11 @@ const char* registry_compiled_out(const std::string& rFormat) {
     if (rFormat == "exodus")
         return "netCDF";
 #endif
+    // Deliberately NOT an arm for cgns/cgnslib: the format is fully readable
+    // and writable without it (the hand-rolled ADF-over-HDF5 path), so
+    // reporting it "compiled out" would be wrong. The cgnslib-only
+    // capabilities -- ADF containers and NGON_n/NFACE_n -- report themselves
+    // by name from read_cgns_mll instead.
     return nullptr;
 }
 

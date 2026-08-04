@@ -3,7 +3,7 @@ test_that("build information is available", {
   expect_true(mio_mesh_backend() %in% c("meshio", "native", "kratos"))
   expect_true(mio_format_readable("vtu"))
   expect_true(mio_format_writable("vtu"))
-  expect_false(mio_format_writable("openfoam")) # read-only format
+  expect_true(mio_format_writable("openfoam")) # writable since v9.20.0
   expect_false(mio_format_readable("nonexistent"))
   expect_equal(mio_cell_type_num_nodes("tetra10"), 10L)
   expect_equal(mio_cell_type_dimension("triangle"), 2L)
@@ -65,6 +65,52 @@ test_that("mio_connectivity is 1-based and mio_connectivity_raw is 0-based", {
   expect_equal(c1, CONN)
   # Exactly the documented relationship between the two accessors.
   expect_equal(c1, c0 + 1)
+})
+
+test_that("ragged polygon and polyhedron blocks round-trip as lists", {
+  # Before meshio++ 9.15 the C ABI could neither build nor read one of these.
+  m <- mio_mesh()
+  on.exit(mio_release(m))
+  mio_set_points(m, matrix(c(
+    0, 0, 0,
+    1, 0, 0,
+    1, 1, 0,
+    0, 1, 0,
+    2, 0.5, 0
+  ), nrow = 3))
+
+  # A quad then a triangle -- the point of a jagged block.
+  rows <- list(c(1, 2, 3, 4), c(2, 5, 3))
+  mio_add_polygon_block(m, "polygon", rows)
+  # A 4-face tetrahedron then a 3-face sliver: different face counts, so the
+  # cell offsets carry real information.
+  cells <- list(
+    list(c(1, 2, 3), c(1, 4, 2), c(2, 4, 3), c(3, 4, 1)),
+    list(c(2, 3, 5), c(3, 4, 5), c(4, 2, 5))
+  )
+  mio_add_polyhedron_block(m, "polyhedron", cells)
+
+  expect_equal(mio_num_cell_blocks(m), 2)
+  i1 <- mio_cell_block_info(m, 1)
+  expect_true(i1$is_ragged)
+  expect_false(i1$is_polyhedron)
+  expect_equal(i1$num_cells, 2)
+  expect_equal(i1$nodes_per_cell, 0)
+  expect_equal(i1$num_faces, 2)
+  expect_equal(i1$num_nodes, 7)
+  i2 <- mio_cell_block_info(m, 2)
+  expect_true(i2$is_polyhedron)
+  expect_equal(i2$num_faces, 7)
+  expect_equal(i2$num_nodes, 21)
+
+  expect_equal(mio_polygon_block(m, 1), rows)
+  expect_equal(mio_polyhedron_block(m, 2), cells)
+
+  # Each accessor refuses the wrong shape by name rather than returning
+  # something plausible-but-wrong.
+  expect_error(mio_polyhedron_block(m, 1), "polygon")
+  expect_error(mio_polygon_block(m, 2), "polyhedron")
+  expect_error(mio_connectivity(m, 1), "ragged")
 })
 
 test_that("data arrays carry their stored dtype as an attribute", {
