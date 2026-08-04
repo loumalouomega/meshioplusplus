@@ -209,6 +209,11 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_netcdf__") = false;
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    m.attr("__has_cgnslib__") = true;
+#else
+    m.attr("__has_cgnslib__") = false;
+#endif
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
     m.attr("__has_zlib__") = true;
 #else

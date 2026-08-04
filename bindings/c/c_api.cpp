@@ -102,6 +102,20 @@ struct mio_regions {
     std::vector<meshioplusplus::Region> mRegions;
 };
 
+struct mio_poly_conn {
+    // Likewise a snapshot rather than a rule-3 borrow, and for a stronger
+    // reason: the MESHIO backend stores ragged blocks as nested vectors, so no
+    // offsets array exists inside the mesh to point at, and only NativeMesh
+    // keeps real CSR -- which c_api.cpp cannot reach, since it compiles under
+    // all three backends. Built from the uniform API's RowSize/Row/NumFaces/
+    // Face exactly as bindings/wasm/js_bindings.cpp does.
+    bool mIsPolyhedron = false;
+    std::int64_t mNumCells = 0;
+    std::vector<std::int64_t> mNodes;
+    std::vector<std::int64_t> mFaceOffsets;
+    std::vector<std::int64_t> mCellOffsets;  // empty for a 1-level block
+};
+
 struct mio_reorder_result {
     mio_mesh mMesh;  // owns the renumbered mesh; borrowed via mio_reorder_result_mesh
     meshioplusplus::NDArray mNodePerm;
@@ -2196,6 +2210,98 @@ mio_status mio_mesh_add_cell_block(mio_mesh* mesh, const char* cell_type, int64_
     });
 }
 
+namespace {
+
+// Validate one CSR offsets array of `count + 1` entries spanning [0, total].
+// A malformed offsets array is the one way a caller can make the ragged setters
+// read out of bounds, so every property is checked rather than assumed.
+mio_status poly_check_offsets(const std::int64_t* pOffsets, std::int64_t Count, std::int64_t Total,
+                              const char* pWhat) {
+    if (!pOffsets)
+        return fail(MIO_ERR_INVALID_ARG, "meshio++: " + std::string(pWhat) + " is NULL (expected " +
+                                             std::to_string(Count + 1) + " entries)");
+    if (pOffsets[0] != 0)
+        return fail(MIO_ERR_INVALID_ARG, "meshio++: " + std::string(pWhat) + "[0] must be 0, got " +
+                                             std::to_string(pOffsets[0]));
+    for (std::int64_t i = 0; i < Count; ++i)
+        if (pOffsets[i + 1] < pOffsets[i])
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: " + std::string(pWhat) + " must be non-decreasing (entry " +
+                            std::to_string(i + 1) + " is " + std::to_string(pOffsets[i + 1]) +
+                            " after " + std::to_string(pOffsets[i]) + ")");
+    if (pOffsets[Count] != Total)
+        return fail(MIO_ERR_INVALID_ARG,
+                    "meshio++: " + std::string(pWhat) + "[" + std::to_string(Count) + "] must be " +
+                        std::to_string(Total) + ", got " + std::to_string(pOffsets[Count]));
+    return MIO_OK;
+}
+
+// Node ids are checked non-negative but deliberately NOT range-checked against
+// NumPoints(): points may legitimately be assigned after cells, and no other
+// setter on this ABI range-checks either.
+mio_status poly_check_nodes(const std::int64_t* pNodes, std::int64_t Count) {
+    if (Count > 0 && !pNodes)
+        return fail(MIO_ERR_INVALID_ARG, "meshio++: nodes is NULL");
+    for (std::int64_t i = 0; i < Count; ++i)
+        if (pNodes[i] < 0)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: node id at index " + std::to_string(i) +
+                                                 " is negative (" + std::to_string(pNodes[i]) +
+                                                 "); connectivity is 0-based");
+    return MIO_OK;
+}
+
+}  // namespace
+
+mio_status mio_mesh_add_polygon_block(mio_mesh* mesh, const char* cell_type, int64_t num_cells,
+                                      const int64_t* row_offsets, const int64_t* nodes,
+                                      int64_t num_nodes) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || !cell_type || num_cells < 0 || num_nodes < 0)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: bad mio_mesh_add_polygon_block argument");
+        if (mio_status s = poly_check_offsets(row_offsets, num_cells, num_nodes, "row_offsets");
+            s != MIO_OK)
+            return s;
+        if (mio_status s = poly_check_nodes(nodes, num_nodes); s != MIO_OK)
+            return s;
+        std::vector<std::vector<std::int64_t>> rows(static_cast<std::size_t>(num_cells));
+        for (std::int64_t c = 0; c < num_cells; ++c)
+            rows[static_cast<std::size_t>(c)].assign(nodes + row_offsets[c],
+                                                     nodes + row_offsets[c + 1]);
+        mesh->mMesh.AddPolygonBlock(cell_type, std::move(rows));
+        return MIO_OK;
+    });
+}
+
+mio_status mio_mesh_add_polyhedron_block(mio_mesh* mesh, const char* cell_type, int64_t num_cells,
+                                         const int64_t* cell_offsets, int64_t num_faces,
+                                         const int64_t* face_offsets, const int64_t* nodes,
+                                         int64_t num_nodes) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || !cell_type || num_cells < 0 || num_faces < 0 || num_nodes < 0)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: bad mio_mesh_add_polyhedron_block argument");
+        if (mio_status s = poly_check_offsets(cell_offsets, num_cells, num_faces, "cell_offsets");
+            s != MIO_OK)
+            return s;
+        if (mio_status s = poly_check_offsets(face_offsets, num_faces, num_nodes, "face_offsets");
+            s != MIO_OK)
+            return s;
+        if (mio_status s = poly_check_nodes(nodes, num_nodes); s != MIO_OK)
+            return s;
+        std::vector<std::vector<std::vector<std::int64_t>>> cells(
+            static_cast<std::size_t>(num_cells));
+        for (std::int64_t c = 0; c < num_cells; ++c) {
+            auto& r_cell = cells[static_cast<std::size_t>(c)];
+            r_cell.resize(static_cast<std::size_t>(cell_offsets[c + 1] - cell_offsets[c]));
+            for (std::int64_t f = cell_offsets[c]; f < cell_offsets[c + 1]; ++f)
+                r_cell[static_cast<std::size_t>(f - cell_offsets[c])].assign(
+                    nodes + face_offsets[f], nodes + face_offsets[f + 1]);
+        }
+        mesh->mMesh.AddPolyhedronBlock(cell_type, std::move(cells));
+        return MIO_OK;
+    });
+}
+
 mio_status mio_mesh_add_point_data(mio_mesh* mesh, const char* name, mio_dtype dtype, int32_t ndim,
                                    const int64_t* shape, const void* data) {
     return guarded([&]() -> mio_status {
@@ -2292,6 +2398,74 @@ mio_status mio_mesh_cell_block_info(const mio_mesh* mesh, int64_t block, int64_t
     });
 }
 
+namespace {
+
+// The one place a CellView is unrolled into flat CSR. Shared by
+// mio_mesh_cell_block_info_ex (which needs the totals) and mio_poly_conn_create
+// (which needs the arrays), so the two can never report different shapes.
+// Goes through the uniform API only, hence it compiles under all three
+// backends -- see the mio_poly_conn comment above.
+void poly_flatten(const meshioplusplus::Mesh::CellView& rView, mio_poly_conn& rOut) {
+    const std::size_t ncells = rView.NumCells();
+    rOut.mIsPolyhedron = rView.IsPolyhedron();
+    rOut.mNumCells = static_cast<std::int64_t>(ncells);
+    rOut.mFaceOffsets.push_back(0);
+    if (rOut.mIsPolyhedron) {
+        rOut.mCellOffsets.push_back(0);
+        for (std::size_t c = 0; c < ncells; ++c) {
+            for (std::size_t f = 0; f < rView.NumFaces(c); ++f) {
+                const auto face = rView.Face(c, f);
+                rOut.mNodes.insert(rOut.mNodes.end(), face.first, face.first + face.second);
+                rOut.mFaceOffsets.push_back(static_cast<std::int64_t>(rOut.mNodes.size()));
+            }
+            rOut.mCellOffsets.push_back(static_cast<std::int64_t>(rOut.mFaceOffsets.size() - 1));
+        }
+    } else {
+        // 1-level: one face per cell, so face_offsets IS the row-offsets array
+        // and cell_offsets stays empty (reported as NULL).
+        for (std::size_t c = 0; c < ncells; ++c) {
+            const std::int64_t* p_row = rView.Row(c);
+            rOut.mNodes.insert(rOut.mNodes.end(), p_row, p_row + rView.RowSize(c));
+            rOut.mFaceOffsets.push_back(static_cast<std::int64_t>(rOut.mNodes.size()));
+        }
+    }
+}
+
+}  // namespace
+
+mio_status mio_mesh_cell_block_info_ex(const mio_mesh* mesh, int64_t block,
+                                       mio_cell_block_info* out) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || !out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh or out is NULL");
+        if (!block_in_range(mesh, block))
+            return fail(MIO_ERR_NOT_FOUND,
+                        "meshio++: cell block " + std::to_string(block) + " out of range");
+        const auto view = mesh->mMesh.Cells(static_cast<std::size_t>(block));
+        *out = mio_cell_block_info{};
+        out->num_cells = static_cast<int64_t>(view.NumCells());
+        out->nodes_per_cell = static_cast<int64_t>(view.NodesPerCell());
+        out->is_ragged = view.IsRagged() ? 1 : 0;
+        out->is_polyhedron = view.IsPolyhedron() ? 1 : 0;
+        if (!view.IsRagged()) {
+            out->num_faces = out->num_cells;
+            out->num_nodes = out->num_cells * out->nodes_per_cell;
+        } else if (view.IsPolyhedron()) {
+            for (std::size_t c = 0; c < view.NumCells(); ++c) {
+                const std::size_t nf = view.NumFaces(c);
+                out->num_faces += static_cast<int64_t>(nf);
+                for (std::size_t f = 0; f < nf; ++f)
+                    out->num_nodes += static_cast<int64_t>(view.Face(c, f).second);
+            }
+        } else {
+            out->num_faces = out->num_cells;
+            for (std::size_t c = 0; c < view.NumCells(); ++c)
+                out->num_nodes += static_cast<int64_t>(view.RowSize(c));
+        }
+        return MIO_OK;
+    });
+}
+
 int64_t mio_mesh_cell_block_type(const mio_mesh* mesh, int64_t block, char* buf, int64_t buflen) {
     return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
         if (!block_in_range(mesh, block))
@@ -2315,10 +2489,84 @@ mio_status mio_mesh_cell_block_conn(const mio_mesh* mesh, int64_t block, const v
         const auto view = mesh->mMesh.Cells(static_cast<std::size_t>(block));
         if (view.IsRagged())
             return fail(MIO_ERR_UNSUPPORTED,
-                        "meshio++: ragged cell blocks are not accessible through the C API yet");
+                        "meshio++: cell block " + std::to_string(block) +
+                            " is ragged and has no rectangular connectivity to borrow; "
+                            "read it with mio_poly_conn_create()");
         const NDArray& c = view.Conn();
         return array_out(c, conn, dtype, nullptr, nullptr);
     });
+}
+
+/* Ragged connectivity: an owning snapshot rather than a rule-3 borrow. See the
+ * mio_poly_conn struct comment above and doc/polyhedra.md. */
+
+mio_poly_conn* mio_poly_conn_create(const mio_mesh* mesh, int64_t block) {
+    return guarded_ptr(static_cast<mio_poly_conn*>(nullptr), [&]() -> mio_poly_conn* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!block_in_range(mesh, block))
+            throw meshioplusplus::ReadError("meshio++: cell block " + std::to_string(block) +
+                                            " out of range");
+        const auto view = mesh->mMesh.Cells(static_cast<std::size_t>(block));
+        if (!view.IsRagged())
+            throw meshioplusplus::ReadError(
+                "meshio++: cell block " + std::to_string(block) +
+                " is rectangular; borrow it with mio_mesh_cell_block_conn()");
+        // Filled by value first, so a throw mid-flatten cannot leak the handle.
+        mio_poly_conn poly;
+        poly_flatten(view, poly);
+        return new mio_poly_conn(std::move(poly));
+    });
+}
+
+mio_status mio_poly_conn_get_shape(const mio_poly_conn* poly, mio_poly_conn_shape* out) {
+    return guarded([&]() -> mio_status {
+        if (!poly || !out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: poly or out is NULL");
+        *out = mio_poly_conn_shape{};
+        out->is_polyhedron = poly->mIsPolyhedron ? 1 : 0;
+        out->num_cells = poly->mNumCells;
+        out->num_faces = static_cast<int64_t>(poly->mFaceOffsets.size()) - 1;
+        out->num_nodes = static_cast<int64_t>(poly->mNodes.size());
+        return MIO_OK;
+    });
+}
+
+namespace {
+
+const int64_t* poly_array_out(const mio_poly_conn* pPoly, const std::vector<std::int64_t>& rVec,
+                              int64_t* pCount) {
+    if (!pPoly)
+        throw meshioplusplus::ReadError("meshio++: poly is NULL");
+    if (pCount)
+        *pCount = static_cast<int64_t>(rVec.size());
+    return rVec.empty() ? nullptr : rVec.data();
+}
+
+}  // namespace
+
+const int64_t* mio_poly_conn_nodes(const mio_poly_conn* poly, int64_t* count) {
+    return guarded_ptr(static_cast<const int64_t*>(nullptr), [&]() -> const int64_t* {
+        return poly_array_out(poly, poly->mNodes, count);
+    });
+}
+
+const int64_t* mio_poly_conn_face_offsets(const mio_poly_conn* poly, int64_t* count) {
+    return guarded_ptr(static_cast<const int64_t*>(nullptr), [&]() -> const int64_t* {
+        return poly_array_out(poly, poly->mFaceOffsets, count);
+    });
+}
+
+const int64_t* mio_poly_conn_cell_offsets(const mio_poly_conn* poly, int64_t* count) {
+    // Empty (so NULL, count 0) for a 1-level block: a NULL nobody can mistake
+    // for data, rather than a synthesized identity that looks like information.
+    return guarded_ptr(static_cast<const int64_t*>(nullptr), [&]() -> const int64_t* {
+        return poly_array_out(poly, poly->mCellOffsets, count);
+    });
+}
+
+void mio_poly_conn_free(mio_poly_conn* poly) {
+    delete poly;
 }
 
 /* Named-data accessors: the three families (point/cell/field) share the same

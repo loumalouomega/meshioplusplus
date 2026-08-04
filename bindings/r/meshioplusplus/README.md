@@ -157,9 +157,10 @@ of them:
 * the **`frozen` pin mask** of `mio_smooth()` and `mio_decimate()`;
 * **per-cell-type counts** in `mio_stats()` — use `mio_cell_block_types()` with
   `mio_cell_block_info()` instead;
-* **ragged block connectivity** (polygons and polyhedra of varying size).
-  `mio_cell_block_info()$is_ragged` reports them; `mio_connectivity()` then
-  raises an error rather than returning something wrong;
+* ~~ragged block connectivity~~ — **closed in v9.15.0**. `mio_polygon_block()`
+  and `mio_polyhedron_block()` read them as nested 1-based lists;
+  `mio_add_polygon_block()` and `mio_add_polyhedron_block()` build them.
+  `mio_connectivity()` still raises, since a ragged block has no matrix;
 * the combined **`data_manage`** — `mio_data_drop()` / `mio_data_keep()` /
   `mio_data_rename()` compose to the same effect.
 

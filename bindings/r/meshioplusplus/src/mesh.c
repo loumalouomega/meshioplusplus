@@ -283,18 +283,22 @@ SEXP R_mio_num_cell_blocks(SEXP mesh) {
 }
 
 SEXP R_mio_cell_block_info(SEXP mesh, SEXP block) {
-    int64_t nc = 0, npc = 0;
-    int32_t ragged = 0;
-    mio_r_check(mio_mesh_cell_block_info(mio_r_mesh(mesh), mio_r_int64(block, "block"), &nc,
-                                         &npc, &ragged),
-                "cell_block_info");
-    SEXP a = PROTECT(Rf_ScalarReal((double)nc));
-    SEXP b = PROTECT(Rf_ScalarReal((double)npc));
-    SEXP c = PROTECT(Rf_ScalarLogical(ragged != 0));
-    const char *names[] = {"num_cells", "nodes_per_cell", "is_ragged"};
-    SEXP values[] = {a, b, c};
-    SEXP out = PROTECT(mio_r_named_list(3, names, values));
-    UNPROTECT(4);
+    mio_cell_block_info info;
+    memset(&info, 0, sizeof(info));
+    mio_r_check(
+        mio_mesh_cell_block_info_ex(mio_r_mesh(mesh), mio_r_int64(block, "block"), &info),
+        "cell_block_info");
+    SEXP a = PROTECT(Rf_ScalarReal((double)info.num_cells));
+    SEXP b = PROTECT(Rf_ScalarReal((double)info.nodes_per_cell));
+    SEXP c = PROTECT(Rf_ScalarLogical(info.is_ragged != 0));
+    SEXP d = PROTECT(Rf_ScalarLogical(info.is_polyhedron != 0));
+    SEXP e = PROTECT(Rf_ScalarReal((double)info.num_faces));
+    SEXP f = PROTECT(Rf_ScalarReal((double)info.num_nodes));
+    const char *names[] = {"num_cells", "nodes_per_cell", "is_ragged",
+                           "is_polyhedron", "num_faces", "num_nodes"};
+    SEXP values[] = {a, b, c, d, e, f};
+    SEXP out = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(7);
     return out;
 }
 
@@ -341,8 +345,9 @@ static SEXP conn_matrix(SEXP mesh, SEXP block, int shift) {
     int32_t ragged = 0;
     mio_r_check(mio_mesh_cell_block_info(m, b, &nc, &npc, &ragged), "cell_block_info");
     if (ragged) {
-        Rf_error("cell block %d is ragged (polygons or polyhedra of varying size); "
-                 "its connectivity is not reachable through the meshio++ C API",
+        Rf_error("cell block %d is ragged (polygons or polyhedra of varying size), so it has "
+                 "no connectivity matrix; read it with mio_polygon_block() or "
+                 "mio_polyhedron_block()",
                  (int)(b + 1));
     }
     const void *conn = NULL;
@@ -362,6 +367,180 @@ static SEXP conn_matrix(SEXP mesh, SEXP block, int shift) {
 
 SEXP R_mio_connectivity(SEXP mesh, SEXP block) { return conn_matrix(mesh, block, 1); }
 SEXP R_mio_connectivity_raw(SEXP mesh, SEXP block) { return conn_matrix(mesh, block, 0); }
+
+/* --- ragged (polygon / polyhedron) connectivity ------------------------- *
+ *
+ * The C ABI carries these as flat CSR, but R has lists, so that is what comes
+ * back -- the same reasoning that gives Fortran the CSR triple (no ragged
+ * array type) and Julia nested vectors. Each language gets its natural shape
+ * over one ABI, exactly as column-major matrices and 1-based indices already
+ * do. Node ids are 1-based here, like every other copying accessor.          */
+
+/* One cell's nodes, 1-based, from a half-open span of the flat node array. */
+static SEXP poly_span(const int64_t *nodes, int64_t from, int64_t to) {
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)(to - from)));
+    double *dst = REAL(out);
+    for (int64_t i = from; i < to; ++i) {
+        dst[i - from] = (double)(nodes[i] + 1);
+    }
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP R_mio_polygon_block(SEXP mesh, SEXP block) {
+    const mio_mesh *m = mio_r_mesh(mesh);
+    int64_t b = mio_r_int64(block, "block");
+    mio_poly_conn *pc = (mio_poly_conn *)mio_r_check_ptr(mio_poly_conn_create(m, b), "poly_conn");
+    mio_poly_conn_shape shape;
+    memset(&shape, 0, sizeof(shape));
+    if (mio_poly_conn_get_shape(pc, &shape) != MIO_OK) {
+        mio_poly_conn_free(pc);
+        mio_r_fail("poly_conn_get_shape");
+    }
+    if (shape.is_polyhedron) {
+        mio_poly_conn_free(pc);
+        Rf_error("cell block %d is a polyhedron block; use mio_polyhedron_block()",
+                 (int)(b + 1));
+    }
+    const int64_t *nodes = mio_poly_conn_nodes(pc, NULL);
+    const int64_t *rows = mio_poly_conn_face_offsets(pc, NULL);
+    if (shape.num_cells > 0 && (nodes == NULL || rows == NULL)) {
+        mio_poly_conn_free(pc);
+        mio_r_fail("poly_conn arrays");
+    }
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)shape.num_cells));
+    for (int64_t c = 0; c < shape.num_cells; ++c) {
+        SET_VECTOR_ELT(out, (R_xlen_t)c, poly_span(nodes, rows[c], rows[c + 1]));
+    }
+    mio_poly_conn_free(pc);
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP R_mio_polyhedron_block(SEXP mesh, SEXP block) {
+    const mio_mesh *m = mio_r_mesh(mesh);
+    int64_t b = mio_r_int64(block, "block");
+    mio_poly_conn *pc = (mio_poly_conn *)mio_r_check_ptr(mio_poly_conn_create(m, b), "poly_conn");
+    mio_poly_conn_shape shape;
+    memset(&shape, 0, sizeof(shape));
+    if (mio_poly_conn_get_shape(pc, &shape) != MIO_OK) {
+        mio_poly_conn_free(pc);
+        mio_r_fail("poly_conn_get_shape");
+    }
+    if (!shape.is_polyhedron) {
+        mio_poly_conn_free(pc);
+        Rf_error("cell block %d is a 1-level polygon block; use mio_polygon_block()",
+                 (int)(b + 1));
+    }
+    const int64_t *nodes = mio_poly_conn_nodes(pc, NULL);
+    const int64_t *faces = mio_poly_conn_face_offsets(pc, NULL);
+    const int64_t *cells = mio_poly_conn_cell_offsets(pc, NULL);
+    if (shape.num_cells > 0 && (nodes == NULL || faces == NULL || cells == NULL)) {
+        mio_poly_conn_free(pc);
+        mio_r_fail("poly_conn arrays");
+    }
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)shape.num_cells));
+    for (int64_t c = 0; c < shape.num_cells; ++c) {
+        SEXP cell = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)(cells[c + 1] - cells[c])));
+        for (int64_t f = cells[c]; f < cells[c + 1]; ++f) {
+            SET_VECTOR_ELT(cell, (R_xlen_t)(f - cells[c]),
+                           poly_span(nodes, faces[f], faces[f + 1]));
+        }
+        SET_VECTOR_ELT(out, (R_xlen_t)c, cell);
+        UNPROTECT(1); /* cell */
+    }
+    mio_poly_conn_free(pc);
+    UNPROTECT(1);
+    return out;
+}
+
+/* Flatten a list of 1-based numeric vectors into the 0-based CSR pair the ABI
+ * takes. `offsets` gets count + 1 entries; both buffers are caller-owned. */
+static void poly_flatten_rows(SEXP rows, int64_t **offsets, int64_t **nodes, int64_t *num_nodes) {
+    R_xlen_t n = Rf_xlength(rows);
+    R_xlen_t total = 0;
+    for (R_xlen_t i = 0; i < n; ++i) {
+        total += Rf_xlength(VECTOR_ELT(rows, i));
+    }
+    *offsets = (int64_t *)R_alloc((size_t)n + 1, sizeof(int64_t));
+    *nodes = (int64_t *)R_alloc((size_t)(total > 0 ? total : 1), sizeof(int64_t));
+    (*offsets)[0] = 0;
+    R_xlen_t at = 0;
+    for (R_xlen_t i = 0; i < n; ++i) {
+        SEXP row = PROTECT(Rf_coerceVector(VECTOR_ELT(rows, i), REALSXP));
+        R_xlen_t k = Rf_xlength(row);
+        for (R_xlen_t j = 0; j < k; ++j) {
+            double v = REAL(row)[j];
+            if (!R_FINITE(v) || v < 1.0) {
+                UNPROTECT(1);
+                Rf_error("connectivity is 1-based here; got %g", v);
+            }
+            (*nodes)[at++] = (int64_t)v - 1;
+        }
+        UNPROTECT(1);
+        (*offsets)[i + 1] = (int64_t)at;
+    }
+    *num_nodes = (int64_t)total;
+}
+
+SEXP R_mio_add_polygon_block(SEXP mesh, SEXP cell_type, SEXP rows) {
+    if (TYPEOF(rows) != VECSXP) {
+        Rf_error("`rows` must be a list of numeric vectors, one per cell");
+    }
+    int64_t *offsets = NULL, *nodes = NULL, num_nodes = 0;
+    poly_flatten_rows(rows, &offsets, &nodes, &num_nodes);
+    mio_r_check(mio_mesh_add_polygon_block(mio_r_mesh(mesh), mio_r_string(cell_type, "cell_type"),
+                                           (int64_t)Rf_xlength(rows), offsets, nodes, num_nodes),
+                "add_polygon_block");
+    return R_NilValue;
+}
+
+SEXP R_mio_add_polyhedron_block(SEXP mesh, SEXP cell_type, SEXP cells) {
+    if (TYPEOF(cells) != VECSXP) {
+        Rf_error("`cells` must be a list of cells, each a list of numeric face vectors");
+    }
+    R_xlen_t ncells = Rf_xlength(cells);
+    R_xlen_t nfaces = 0, total = 0;
+    for (R_xlen_t c = 0; c < ncells; ++c) {
+        SEXP cell = VECTOR_ELT(cells, c);
+        if (TYPEOF(cell) != VECSXP) {
+            Rf_error("cell %d must be a list of numeric face vectors", (int)(c + 1));
+        }
+        nfaces += Rf_xlength(cell);
+        for (R_xlen_t f = 0; f < Rf_xlength(cell); ++f) {
+            total += Rf_xlength(VECTOR_ELT(cell, f));
+        }
+    }
+    int64_t *cell_offsets = (int64_t *)R_alloc((size_t)ncells + 1, sizeof(int64_t));
+    int64_t *face_offsets = (int64_t *)R_alloc((size_t)nfaces + 1, sizeof(int64_t));
+    int64_t *nodes = (int64_t *)R_alloc((size_t)(total > 0 ? total : 1), sizeof(int64_t));
+    cell_offsets[0] = 0;
+    face_offsets[0] = 0;
+    R_xlen_t face_at = 0, at = 0;
+    for (R_xlen_t c = 0; c < ncells; ++c) {
+        SEXP cell = VECTOR_ELT(cells, c);
+        for (R_xlen_t f = 0; f < Rf_xlength(cell); ++f) {
+            SEXP face = PROTECT(Rf_coerceVector(VECTOR_ELT(cell, f), REALSXP));
+            for (R_xlen_t j = 0; j < Rf_xlength(face); ++j) {
+                double v = REAL(face)[j];
+                if (!R_FINITE(v) || v < 1.0) {
+                    UNPROTECT(1);
+                    Rf_error("connectivity is 1-based here; got %g", v);
+                }
+                nodes[at++] = (int64_t)v - 1;
+            }
+            UNPROTECT(1);
+            face_offsets[++face_at] = (int64_t)at;
+        }
+        cell_offsets[c + 1] = (int64_t)face_at;
+    }
+    mio_r_check(mio_mesh_add_polyhedron_block(mio_r_mesh(mesh),
+                                              mio_r_string(cell_type, "cell_type"),
+                                              (int64_t)ncells, cell_offsets, (int64_t)nfaces,
+                                              face_offsets, nodes, (int64_t)total),
+                "add_polyhedron_block");
+    return R_NilValue;
+}
 
 /* --- data arrays -------------------------------------------------------- */
 

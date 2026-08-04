@@ -200,8 +200,9 @@ val ndarray_to_int32_array(const NDArray& rA) {
  * Before v9.9.0 there was no such metadata and every array round-tripped as
  * a scalar, silently reshaping an `(n,3)` vector field to `(3n,1)`.
  *
- * @throws meshioplusplus::ReadError if any cell block is ragged (polygon/
- *   polyhedron with varying node counts) -- not supported by the v1 JS API.
+ * Ragged blocks cross as flat CSR instead of `data`/`nodesPerCell`: a polygon
+ * block as `{data, rowOffsets}` and a polyhedron block as `{data, faceOffsets,
+ * cellOffsets}`, discriminated by key presence. See doc/polyhedra.md.
  */
 val mesh_to_val(const Mesh& rMesh) {
     val out = val::object();
@@ -399,12 +400,15 @@ std::vector<std::size_t> js_data_shape(std::size_t rLen, std::size_t k, const st
  * array's shape intact. Omitting them (or the whole object) means every array
  * is a scalar, which is what every pre-v9.9.0 caller expressed.
  *
+ * Ragged blocks are accepted in the same flat-CSR shape `mesh_to_val` emits:
+ * `rowOffsets` for a polygon block, `cellOffsets` + `faceOffsets` for a
+ * polyhedron block. See doc/polyhedra.md.
+ *
  * @throws meshioplusplus::WriteError on malformed input (points/cell-block
  *   lengths not divisible by their declared dim/nodesPerCell, a data array's
- *   length not divisible by its declared component count, or a non-positive
- *   /non-integer component count). Ragged cell blocks cannot be constructed
- *   through this API at all (there is no way to express them in the flat
- *   typed-array shape) -- mirrors `py_to_mesh`'s `allow_ragged=false` default.
+ *   length not divisible by its declared component count, a non-positive
+ *   /non-integer component count, or CSR offsets that are empty or out of
+ *   range).
  */
 Mesh val_to_mesh(const val& rObj) {
     Mesh mesh;
@@ -440,9 +444,16 @@ Mesh val_to_mesh(const val& rObj) {
                     if (f < 0 || static_cast<std::size_t>(f) + 1 >= face_offsets.size())
                         throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                                          "' cellOffsets out of range");
-                    faces.emplace_back(
-                        flat.begin() + face_offsets[static_cast<std::size_t>(f)],
-                        flat.begin() + face_offsets[static_cast<std::size_t>(f) + 1]);
+                    // faceOffsets is checked here rather than assumed: a
+                    // non-monotonic or over-long entry would otherwise build
+                    // an out-of-range iterator pair straight into flat. The
+                    // polygon branch below has always checked this.
+                    const std::int64_t start = face_offsets[static_cast<std::size_t>(f)];
+                    const std::int64_t end = face_offsets[static_cast<std::size_t>(f) + 1];
+                    if (start < 0 || end < start || static_cast<std::size_t>(end) > flat.size())
+                        throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
+                                                         "' faceOffsets out of range");
+                    faces.emplace_back(flat.begin() + start, flat.begin() + end);
                 }
                 cells_of_faces.push_back(std::move(faces));
             }
