@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "9.14.0",
+  "version": "9.19.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
@@ -59,6 +59,19 @@
     },
     "kahip": {
       "description": "KaHIP partition backend (no vcpkg port exists: supply an install and set KAHIP_ROOT)"
+    },
+    "cgnslib": {
+      "description": "Official CGNS library backend: ADF-container files and NGON_n/NFACE_n polyhedral sections (needs the hdf5 feature)",
+      "dependencies": [
+        "cgns",
+        {
+          "name": "meshioplusplus",
+          "default-features": false,
+          "features": [
+            "hdf5"
+          ]
+        }
+      ]
     },
     "cxx-api": {
       "description": "The full C++ API (meshioplusplus::core) alongside the flat C API"

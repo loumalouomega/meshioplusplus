@@ -27,6 +27,7 @@ vcpkg_check_features(
         zstd    MESHIOPLUSPLUS_WITH_ZSTD
         lz4     MESHIOPLUSPLUS_WITH_LZ4
         kahip   MESHIOPLUSPLUS_WITH_KAHIP
+        cgnslib MESHIOPLUSPLUS_WITH_CGNSLIB
         cxx-api MESHIOPLUSPLUS_INSTALL_CPP
 )
 
