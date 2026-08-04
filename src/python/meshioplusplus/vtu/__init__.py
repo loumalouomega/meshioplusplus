@@ -5,10 +5,6 @@ from ._vtu import read as _py_read
 from ._vtu import write as _py_write
 
 
-def _has_polyhedron(mesh):
-    return any(c.type.startswith("polyhedron") for c in mesh.cells)
-
-
 def read(filename, points_only=False, arrays=None):
     """Read a VTU file.
 
@@ -46,12 +42,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         cpp_compression_ok = False
     if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
         cpp_compression_ok = False
-    if (
-        header_type is None
-        and cpp_compression_ok
-        and not is_buffer(filename, "w")
-        and not _has_polyhedron(mesh)
-    ):
+    if header_type is None and cpp_compression_ok and not is_buffer(filename, "w"):
         try:
             _core.vtu_write_codec(str(filename), mesh, binary, _CPP_CODECS[compression])
             return
