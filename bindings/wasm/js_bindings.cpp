@@ -82,6 +82,7 @@
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -1460,6 +1461,25 @@ std::string parallel_backend_js() {
 }
 
 /**
+ * @brief Whether the optional cgnslib (CGNS MLL) backend is linked in.
+ *
+ * CGNS itself works either way -- meshio++ reads and writes it over raw HDF5,
+ * polyhedral `NGON_n`/`NFACE_n` sections included. What this reports is whether
+ * **ADF-backed containers** (which are not HDF5 at all) and the **CGNS 3.x**
+ * section layout are reachable. Exposed so the smoke test can *assert* the
+ * artifact was linked against it: without a probe, a build that silently
+ * dropped the dependency reads identically for every file we produce ourselves,
+ * and the regression would surface only on a user's ADF file.
+ */
+bool has_cgnslib_js() {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    return meshioplusplus::cgns_has_cgnslib();
+#else
+    return false;
+#endif
+}
+
+/**
  * @brief The format names this build can actually read and write.
  *
  * `{readers: [...], writers: [...]}`, both sorted (the registry tables are
@@ -2415,6 +2435,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("topologicalDimension", &topological_dimension_js);
     emscripten::function("meshBackend", &mesh_backend_js);
     emscripten::function("parallelBackend", &parallel_backend_js);
+    emscripten::function("hasCgnslib", &has_cgnslib_js);
     emscripten::function("availableFormats", &available_formats_js);
     emscripten::function("extractSurface", &extract_surface_js);
     emscripten::function("extractSkin", &extract_skin_js);

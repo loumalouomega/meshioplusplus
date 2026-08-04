@@ -134,6 +134,7 @@ function resolveVariant(variant) {
  *   topologicalDimension: () => Object<string, number>,
  *   meshBackend: () => string,
  *   parallelBackend: () => string,
+ *   hasCgnslib: () => boolean,
  *   availableFormats: () => {readers: string[], writers: string[]},
  *   extractSurface: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
  *   extractSkin: (mesh: Mesh, linearize?: boolean) => Mesh,
@@ -260,6 +261,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // "seq" for the sequential artifact, "openmp" for the threaded
         // meshioplusplus_wasm_mt one -- which of the two this instance loaded.
         parallelBackend: () => Module.parallelBackend(),
+        hasCgnslib: () => Module.hasCgnslib(),
         // What this build can actually read/write, both sorted. Prefer this
         // over a hardcoded table: a few formats are read-only (openfoam) or
         // write-only (svg/tikz), and the HDF5/netCDF-backed ones are present

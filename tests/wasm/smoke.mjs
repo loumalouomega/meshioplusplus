@@ -999,6 +999,7 @@ step('every binding is reachable through the wrapper', () => {
         'partitionLabels',
         'stats',
         'meshBackend',
+        'hasCgnslib',
         'parallelBackend',
         // The transient-XDMF surface is a handle, so the wrapper forwards one
         // factory rather than the seven raw xdmfSeries* bindings; the series
@@ -1995,6 +1996,14 @@ step('XDMF time series: misuse throws readable JS Errors, never a WASM abort', (
 // Both must be present, since the loader auto-selects between them at runtime.
 // ---------------------------------------------------------------------------
 const mSeq = await loadMeshioPlusPlus({}, { variant: 'seq' });
+
+step('hasCgnslib reports whether the CGNS MLL is linked into this artifact', () => {
+    // Without a probe, a build that silently dropped cgnslib reads every file
+    // we produce ourselves identically -- the regression would surface only on
+    // a user's ADF-backed file. This artifact is built with it.
+    assert.equal(typeof m.hasCgnslib(), 'boolean');
+    assert.ok(m.hasCgnslib(), 'this artifact should be linked against cgnslib');
+});
 
 step('sequential (seq) build loads and reports the seq parallel backend', () => {
     assert.equal(mSeq.parallelBackend(), 'seq');

@@ -8,6 +8,44 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.22.0 (2026-08-04)
+
+**cgnslib cross-compiled for WebAssembly**, so the browser build reaches parity
+with a native cgnslib-enabled one. This is strictly an *addition*: meshio++
+reads and writes CGNS itself over raw HDF5, polyhedral `NGON_n`/`NFACE_n`
+sections included since v9.21.0. What the MLL buys in WASM is **ADF-backed
+containers** — which are not HDF5 at all, and so are unreachable from the
+hand-rolled path by construction — and the **CGNS 3.x** section layout.
+
+- `build/build-wasm-deps.sh` gains a third pinned + SHA256-checked source build
+  (cgnslib 4.5.2) beside HDF5 1.14.6 and netcdf-c 4.9.3, with
+  `--without-cgnslib` to skip it. The prefix name grows accordingly, which
+  invalidates CI's `actions/cache` key automatically (it hashes the script).
+  `configure-wasm.sh` gains `--with-cgnslib` / `--without-cgnslib`.
+- **`hasCgnslib()`** — a new JS binding (bound, forwarded and declared, plus a
+  smoke step and an entry in the exhaustive forward guard). Without a probe, a
+  build that silently dropped the dependency reads every file meshio++ produces
+  itself identically, and the regression would surface only on a user's ADF
+  file.
+- **Size cost is small**: about **290 KB**, measured — the `.wasm` goes to
+  ~6.3 MB sequential / ~6.7 MB threaded. cgnslib is a thin layer over the HDF5
+  that was already linked in.
+
+Two things about building it are worth not rediscovering, both recorded as
+comments in the script:
+
+- **Configure the TOP-LEVEL directory, not `src/`.** The root `CMakeLists.txt`
+  runs the `CHECK_TYPE_SIZE` calls that `src/CMakeLists.txt` reads to pick
+  `cgsize_t`'s underlying type; configuring the subdirectory leaves them empty
+  and fails with `Can't find suitable int64_t`, which reads like a
+  cross-compilation problem and is not.
+- **`CGNS_ENABLE_64BIT` cannot be turned on here.** cgnslib forces it off
+  whenever `CMAKE_SIZEOF_VOID_P <= 4`, which wasm32 is, so `cgsize_t` is
+  32-bit regardless. That is fine — `cgns_mll.cpp` is written in terms of
+  `cgsize_t` throughout rather than a fixed width — but the flag is
+  deliberately *not* passed, since an option that is accepted and then silently
+  overridden reads like a guarantee.
+
 ## v9.21.0 (2026-08-04)
 
 **CGNS `NGON_n`/`NFACE_n` — polyhedral cells, hand-rolled in both directions.**

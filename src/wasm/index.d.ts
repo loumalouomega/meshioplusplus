@@ -788,6 +788,14 @@ export interface MeshioPlusPlusModule {
   parallelBackend(): string;
 
   /**
+   * Whether the optional cgnslib (CGNS MLL) backend is linked in.
+   *
+   * CGNS works either way; this reports whether ADF-backed containers and the
+   * CGNS 3.x `NGON_n` section layout are reachable.
+   */
+  hasCgnslib(): boolean;
+
+  /**
    * The format names this build can actually read and write, both sorted.
    *
    * Prefer this over a hardcoded table when building a file-picker filter or a

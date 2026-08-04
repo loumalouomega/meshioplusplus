@@ -61,7 +61,7 @@ jobs:
           path: build/wasm-deps/hdf5-*-netcdf-*
           key: wasm-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/patches/*.patch') }}
 
-      - name: Build the wasm HDF5/netCDF dependencies
+      - name: Build the wasm HDF5/netCDF/cgnslib dependencies
         run: ./build/build-wasm-deps.sh
 
       - name: Configure + build (WASM)
