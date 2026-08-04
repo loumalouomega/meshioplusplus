@@ -1720,11 +1720,83 @@ step('ragged (polyhedron) cell blocks cross the JS boundary as CSR arrays', () =
     assert.deepEqual(Array.from(cb.faceOffsets), Array.from(tetra.cells[0].faceOffsets));
     assert.deepEqual(Array.from(cb.cellOffsets), Array.from(tetra.cells[0].cellOffsets));
 
-    // A format with no polyhedron support must still fail cleanly (a
-    // catchable Error naming the reason), never a WASM abort.
+    // MED gained MED_POLYHEDRON (POE) in v9.19.0, so this now ROUND-TRIPS
+    // rather than throwing -- which is what this step used to assert.
+    m.writeMesh('/polyhedron.med', tetra, 'med');
+    const back = m.readMesh('/polyhedron.med', 'med');
+    assert.equal(back.cells.length, 1);
+    assert.ok(back.cells[0].cellOffsets, 'a polyhedron block must come back 2-level');
+    assert.equal(back.cells[0].cellOffsets.length, 2);
+    assert.equal(back.cells[0].faceOffsets.length, 5); // 4 faces + 1
+
+    // A format that genuinely cannot hold a polyhedron must still fail cleanly
+    // -- a catchable Error naming the reason, never a WASM abort. VTP is the
+    // honest example: PolyData is 2-D by definition.
     assert.throws(
-        () => m.writeMesh('/polyhedron.med', tetra, 'med'),
+        () => m.writeMesh('/polyhedron.vtp', tetra, 'vtp'),
         (err) => err instanceof Error && /polyhedron/.test(err.message),
+    );
+});
+
+step('malformed ragged CSR offsets fail by name, not by reading out of range', () => {
+    // val_to_mesh is hostile to caller input by contract: the offsets are the
+    // one way a JS caller can steer a read past the end of `data`. The polygon
+    // branch always checked this; the polyhedron branch's faceOffsets did not
+    // until v9.15.0, which is what this pins.
+    const base = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        dim: 3,
+    };
+    const withCells = (cells) => ({ ...base, cells });
+
+    // faceOffsets running past the end of `data`.
+    assert.throws(
+        () =>
+            m.clean(
+                withCells([
+                    {
+                        type: 'polyhedron',
+                        data: new Int32Array([0, 1, 2]),
+                        faceOffsets: new Int32Array([0, 99]),
+                        cellOffsets: new Int32Array([0, 1]),
+                    },
+                ]),
+                false, 0.0, false, false, false,
+            ),
+        (err) => err instanceof Error && /faceOffsets/.test(err.message),
+    );
+
+    // cellOffsets naming a face the faceOffsets array does not have.
+    assert.throws(
+        () =>
+            m.clean(
+                withCells([
+                    {
+                        type: 'polyhedron',
+                        data: new Int32Array([0, 1, 2]),
+                        faceOffsets: new Int32Array([0, 3]),
+                        cellOffsets: new Int32Array([0, 5]),
+                    },
+                ]),
+                false, 0.0, false, false, false,
+            ),
+        (err) => err instanceof Error && /cellOffsets/.test(err.message),
+    );
+
+    // rowOffsets running past the end of `data`.
+    assert.throws(
+        () =>
+            m.clean(
+                withCells([
+                    {
+                        type: 'polygon',
+                        data: new Int32Array([0, 1, 2]),
+                        rowOffsets: new Int32Array([0, 42]),
+                    },
+                ]),
+                false, 0.0, false, false, false,
+            ),
+        (err) => err instanceof Error && /rowOffsets/.test(err.message),
     );
 });
 
