@@ -8,6 +8,33 @@ from meshioplusplus import compute_stats
 from meshioplusplus._stats import _compute_stats_py
 
 
+def _warped_hex():
+    """A hexahedron with one corner pulled out of plane, so two of its faces are
+    genuinely non-planar.
+
+    A cube cannot distinguish the corner-average fan from a fan about the face's
+    first node -- a parallelogram's corner average *is* its area centroid -- so
+    the C++/Python parity test below would pass with the two implementations
+    silently disagreeing. This fixture is what makes that test an oracle.
+    """
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1.6, 1.4, 1.3],
+            [0, 1, 1],
+        ],
+        float,
+    )
+    return meshioplusplus.Mesh(
+        pts, [("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]]))]
+    )
+
+
 def _cube_hex():
     pts = np.array(
         [
@@ -114,7 +141,7 @@ def test_cpp_matches_python():
     pytest.importorskip("meshioplusplus._core")
     from meshioplusplus import _core
 
-    for mesh in (_cube_hex(), _cube_tets()):
+    for mesh in (_cube_hex(), _cube_tets(), _warped_hex()):
         got = _core.compute_stats(mesh)
         ref = _compute_stats_py(mesh)
         assert abs(got["total_area"] - ref["total_area"]) < 1e-9

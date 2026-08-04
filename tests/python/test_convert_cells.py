@@ -128,13 +128,18 @@ def test_simplexify_replicates_cell_data_one_array_per_block():
     assert out.cell_data["convert:parent_cell"][0].tolist() == [0] * 6
 
 
-def test_simplexify_polyhedron_raises():
+def test_simplexify_polyhedron_fans_into_tetrahedra():
+    """Since v9.17.0 a polyhedron decomposes instead of raising."""
     pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], float)
     mesh = meshioplusplus.Mesh(
-        pts, [("polyhedron4", [[[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]]])]
+        pts, [("polyhedron4", [[[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]]])]
     )
-    with pytest.raises(Exception):
-        convert_cells(mesh, mode="simplexify")
+    out = convert_cells(mesh, mode="simplexify")
+    assert len(out.cells) == 1
+    assert out.cells[0].type == "tetra"
+    # 4 faces x 3 edges = 12 children; 1 cell centroid + 4 face centroids added.
+    assert len(out.cells[0].data) == 12
+    assert len(out.points) == 4 + 5
 
 
 # --------------------------------------------------------------------------- #
