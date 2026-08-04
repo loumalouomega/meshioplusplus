@@ -48,7 +48,11 @@ tetra dihedral `≈ 70.53°`.
 
 Quadratic and higher-order variants (`tetra10`, `hexahedron20`/`27`,
 `quad8`/`9`, `triangle6`, `wedge15`, `pyramid13`/`14`) are scored on their
-corners. Ragged/polyhedron and other unsupported blocks contribute all-`NaN`
+corners. **Polyhedron blocks** get a reduced set since v9.16.0 — `volume`,
+`inverted` and `degenerate`, computed through `detail/polyhedron.hpp`; every
+metric defined against a reference element the cell does not have stays `NaN`,
+and `inverted` there means *unorientable* rather than negative-volume (see
+[Polyhedra](/polyhedra)). Ragged polygon and other unsupported blocks contribute all-`NaN`
 arrays and are excluded from the summaries and counts.
 
 ## The report

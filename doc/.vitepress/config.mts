@@ -45,6 +45,7 @@ export default defineConfig({
           { text: "Named regions", link: "/regions" },
           { text: "C++ mesh backends", link: "/cpp_backends" },
           { text: "Cell types", link: "/cell_types" },
+          { text: "Polyhedra and ragged cells", link: "/polyhedra" },
         ],
       },
       {

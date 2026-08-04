@@ -170,6 +170,8 @@ const poly = {
 m.writeMesh('/ragged.med', poly, 'med'); // MED is the ragged-polygon-capable writer (POG/POG2)
 ```
 
+These are the same three arrays the [C API](/c_api) hands out through its `mio_poly_conn` snapshot and the Fortran/Julia/R bindings expose in each language's own shape — see [Polyhedra and ragged cells](/polyhedra) for the shared vocabulary and the winding rule. Malformed offsets (non-monotonic, or running past the end of `data`) throw naming the offending array rather than reading out of range.
+
 `readMesh` reports whichever shape the source held; `writeMesh` accepts either, and the target format's own writer decides what it can represent — MED writes ragged polygons directly, but no C++ format writer accepts a polyhedron block yet (a documented, pre-existing gap distinct from the JS boundary itself, which does carry polyhedron blocks correctly through operations like `clean`/`merge`/`convert_cells`), so writing one throws naming the format rather than silently dropping data.
 
 ## Mesh operations

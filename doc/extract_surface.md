@@ -55,7 +55,11 @@ still cancel shared facets correctly.
   `"surface:parent_cell"` giving, for each output facet, the global index of
   the unique input cell that owns it (counted block-major over every input cell
   of every block). Point compaction does not affect it — it is per-output-cell.
-- **Unsupported same-dimension blocks** (`polyhedron*`, ragged blocks, Lagrange
+- **Polyhedron blocks are supported** since v9.16.0: a cell's own faces are
+  hashed like any others, so a polyhedron and a hexahedron meeting on a face
+  cancel each other out, and a face of any arity is emitted (one with more than
+  four corners becomes a row of a ragged `polygon` block).
+- **Unsupported same-dimension blocks** (ragged polygon blocks, Lagrange
   and very-high-order types) are skipped with a warning. If no supported 2D/3D
   block exists, `ValueError` is raised.
 

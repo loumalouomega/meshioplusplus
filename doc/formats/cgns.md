@@ -129,6 +129,68 @@ be listed in, and a solution present on only some zones has no defensible
 filler; a multi-zone file's solutions are skipped with a warning. meshio++'s own
 writer always emits one zone.
 
+## The optional cgnslib backend
+
+Since v9.18.0 meshio++ can additionally read CGNS through the **official CGNS
+library** (cgnslib, the Mid-Level Library), behind
+`-DMESHIOPLUSPLUS_WITH_CGNSLIB=ON`. It is **OFF by default and bring-your-own**
+(`CGNS_ROOT`) — never vendored, never downloaded, exactly the policy
+[KaHIP](/partition) follows. cgnslib is Zlib-licensed and ships its own CMake
+config package, so no Find module is needed and the exported meshio++ package
+stays relocatable.
+
+The backend is **additive**: everything above still works without it, byte for
+byte. What it adds is two things the raw-HDF5 reader cannot have at all:
+
+- **ADF-container files.** `.cgns` has two on-disk containers, HDF5 and ADF.
+  The reader above speaks HDF5 directly, so an ADF file is unreachable by
+  construction rather than merely unimplemented — and much of the real-world
+  corpus is ADF.
+- **`NGON_n` / `NFACE_n` polyhedral sections.** `NGON_n` lists faces as node
+  lists; `NFACE_n` lists each cell as **signed** face ids, where the sign means
+  "traverse this face reversed" (CGNS's way of orienting a shared face outward
+  from each of the two cells that use it). They map to `polyhedron<N>` blocks,
+  grouped by unique node count like the OpenFOAM and EnSight readers.
+  `cg_poly_elements_read` also absorbs the CGNS 3.x-vs-4.0
+  `ElementStartOffset` split, which is the most error-prone part of the
+  encoding and the single strongest reason to use the MLL here.
+
+**Routing.** Read goes through the MLL whenever it is built — the input is not
+ours and the MLL is strictly more capable — with one narrow exception: the
+pre-v9.8.0 legacy layout, which has no ADF node attributes and which the MLL
+rejects, falls through to the hand-rolled path. That is a *specific* fallback,
+not a blanket catch, so a genuine MLL error still surfaces. **Write is
+untouched** and stays on the hand-rolled path: switching engines for meshes it
+already handles would churn bytes for no benefit and would cost the
+C++/Python byte-parity oracle. A useful consequence is that on a cgnslib build
+the whole CGNS test suite becomes a cross-engine check for free.
+
+**The Python reference reader is h5py-based** and so has neither capability. It
+is not a fallback for them either: `meshioplusplus.cgns.read` re-raises rather
+than falling back when the file is not HDF5, because the reference reader would
+report a confusing signature error instead of the real one.
+
+`_core.__has_cgnslib__` (Python) and `cgns_has_cgnslib()` (C++) report whether
+the backend is present; `read_cgns_mll` always exists and throws naming the
+CMake flag when it is not.
+
+### Getting cgnslib
+
+It is plain C with a CMake build and works on every platform meshio++ targets,
+Windows/MSVC included — there is nothing Unix-specific about it.
+
+| | |
+| --- | --- |
+| vcpkg | the `cgnslib` feature of this port, which depends on upstream's `cgns` port — the usual route on Windows |
+| Conan | the `with_cgnslib` option. cgnslib is **not** on ConanCenter, so this only flips the CMake flag; supply an install and set `CGNS_ROOT` (the same status KaHIP has) |
+| Debian / Ubuntu | `libcgns-dev` |
+| conda-forge | `cgns` — note the package omits the `libz.so` dev symlink its own exported CMake target names, and its cgnslib is linked against conda's HDF5, so take **both** from the same prefix |
+| From source | `cmake -DCGNS_ENABLE_HDF5=ON`; point meshio++ at it with `CGNS_ROOT` or `CGNS_DIR` |
+
+meshio++'s own Windows CI leg builds every native path off and exercises the
+Python fallbacks, so no optional C++ dependency is tested there — that is a CI
+policy of this repository, not a limitation of cgnslib.
+
 ## Quirks & limitations
 
 - **Backward compatible with the pre-v9.8.0 layout.** The reader's spec/legacy discriminator is *structural*: a root child group whose `label` attribute is `"CGNSBase_t"` selects the new path; its absence falls back to a near-verbatim copy of the old reader (same messages, same `tetra`-only, `Base`/`Zone1`/`GridElements` layout) — the old writer emitted no node attributes at all, so the absence is unambiguous. This also covers files written by upstream `meshio`, whose CGNS writer uses the same historical layout. Nothing writes the legacy layout anymore.

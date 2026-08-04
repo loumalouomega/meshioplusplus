@@ -32,7 +32,8 @@ points = mp.cell_data_to_point_data(mesh, keys=["stress"], weighted=True)
 1D cell, area for a 2D cell, volume for a 3D one. On a mesh with cells of very
 different sizes the two differ substantially; on a uniform mesh they coincide.
 
-Cells whose measure cannot be computed — ragged polygon and polyhedron blocks —
+Cells whose measure cannot be computed — ragged polygon blocks; a polyhedron
+block's volume **is** computable since v9.16.0 —
 fall back to a unit weight, with one warning per call.
 
 ## Components and data types

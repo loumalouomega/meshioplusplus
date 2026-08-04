@@ -137,7 +137,10 @@ has no intrinsic orientation. Smoothing needs only the weaker, purely relative
 question *did this facet just fold back over itself?*, so it asks that one, and a
 triangle surface mesh is guarded rather than left free to fold.
 
-Cells with no signed measure at all (`line`, polyhedron, `custom`) are **skipped,
+Polyhedron cells **do** have a signed measure since v9.16.0 (the corner-average
+fan over the cell's own faces), so the guard covers them — and their boundary is
+detected too, so `fix_boundary` pins their outer nodes.
+Cells with no signed measure at all (`line`, `custom`) are **skipped,
 not pinned**: a missing safety check is not a missing target, and pinning there
 would freeze an entire beam-element curve for no geometric reason.
 
