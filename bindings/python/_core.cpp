@@ -90,6 +90,7 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -932,6 +933,151 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("array"), py::arg("isovalues"), py::arg("component") = -1,
         py::arg("record_parent_ids") = false);
+
+    // Regular grids. `grid` builds a lattice from nothing -- the library's first
+    // mesh *generator* -- and `voxelize` builds one around a mesh, optionally
+    // keeping only the cells its surface passes through or encloses.
+    m.def(
+        "grid",
+        [](const std::array<std::int64_t, 3>& dims, const std::array<double, 3>& origin,
+           const std::array<double, 3>& spacing, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::grid(dims, origin, spacing, max_cells));
+        },
+        py::arg("dims"), py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+        py::arg("spacing") = std::array<double, 3>{{1.0, 1.0, 1.0}},
+        py::arg("max_cells") = 20000000);
+
+    m.def(
+        "voxelize",
+        [](py::object pymesh, py::object resolution, py::object cell_size, py::object bounds,
+           double padding, double padding_relative, const std::string& fill,
+           bool attach_occupancy, std::int64_t max_cells, const std::string& sign,
+           const std::string& watertight_check) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::VoxelOptions options;
+            if (!resolution.is_none())
+                options.mResolution = resolution.cast<std::array<std::int64_t, 3>>();
+            if (!cell_size.is_none())
+                options.mCellSize = cell_size.cast<double>();
+            if (!bounds.is_none())
+                options.mBounds = bounds.cast<std::array<double, 6>>();
+            options.mPadding = padding;
+            options.mPaddingRelative = padding_relative;
+            options.mFill = meshioplusplus::voxel_fill_from_name(fill);
+            options.mAttachOccupancy = attach_occupancy;
+            options.mMaxCells = max_cells;
+            options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(sign);
+            options.mDistance.mWatertightCheck =
+                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
+            meshioplusplus::VoxelResult r = meshioplusplus::voxelize(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["dims"] = r.mDims;
+            out["origin"] = r.mOrigin;
+            out["spacing"] = r.mSpacing;
+            out["num_occupied"] = r.mNumOccupied;
+            return out;
+        },
+        py::arg("mesh"), py::arg("resolution") = py::none(), py::arg("cell_size") = py::none(),
+        py::arg("bounds") = py::none(), py::arg("padding") = 0.0,
+        py::arg("padding_relative") = 0.0, py::arg("fill") = "all",
+        py::arg("attach_occupancy") = false, py::arg("max_cells") = 20000000,
+        py::arg("sign") = "pseudonormal", py::arg("watertight_check") = "warn");
+
+    // Distance to a surface. `sample_distance` takes bare query points;
+    // `distance_to_surface` attaches the result to a mesh as ordinary data.
+    m.def(
+        "sample_distance",
+        [](py::object pysurface, py::array points, const std::string& sign,
+           const std::string& weight, double band, const std::string& watertight_check,
+           const std::string& surface_region, double grid_cell_size, double max_winding_work) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh surface = meshioplusplus_py::py_to_mesh(
+                pysurface, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SurfaceDistanceOptions options;
+            options.mSign = meshioplusplus::sdf_sign_from_name(sign);
+            options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
+            options.mBand = band;
+            options.mWatertightCheck =
+                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
+            options.mSurfaceRegion = surface_region;
+            options.mGridCellSize = grid_cell_size;
+            options.mMaxWindingWork = max_winding_work;
+            meshioplusplus_py::PyMeshRefs qrefs;
+            py::array contiguous = meshioplusplus_py::ensure_contiguous(points, qrefs);
+            meshioplusplus::NDArray query = meshioplusplus_py::view_from_numpy(contiguous);
+            return meshioplusplus_py::numpy_from_ndarray(
+                meshioplusplus::sample_distance(surface, query, options));
+        },
+        py::arg("surface"), py::arg("points"), py::arg("sign") = "pseudonormal",
+        py::arg("weight") = "angle", py::arg("band") = 0.0,
+        py::arg("watertight_check") = "warn", py::arg("surface_region") = "",
+        py::arg("grid_cell_size") = 0.0, py::arg("max_winding_work") = 2.0e9);
+
+    m.def(
+        "distance_to_surface",
+        [](py::object pyquery, py::object pysurface, const std::string& sign,
+           const std::string& weight, const std::string& location, double band,
+           bool record_closest_cell, bool record_inside, const std::string& watertight_check,
+           const std::string& surface_region, double grid_cell_size, double max_winding_work) {
+            meshioplusplus_py::PyMeshRefs qrefs;
+            meshioplusplus::Mesh query = meshioplusplus_py::py_to_mesh(
+                pyquery, qrefs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus_py::PyMeshRefs srefs;
+            meshioplusplus::Mesh surface = meshioplusplus_py::py_to_mesh(
+                pysurface, srefs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SurfaceDistanceOptions options;
+            options.mSign = meshioplusplus::sdf_sign_from_name(sign);
+            options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
+            options.mLocation = meshioplusplus::sdf_location_from_name(location);
+            options.mBand = band;
+            options.mRecordClosestCell = record_closest_cell;
+            options.mRecordInside = record_inside;
+            options.mWatertightCheck =
+                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
+            options.mSurfaceRegion = surface_region;
+            options.mGridCellSize = grid_cell_size;
+            options.mMaxWindingWork = max_winding_work;
+            meshioplusplus::SurfaceDistanceResult r =
+                meshioplusplus::distance_to_surface(query, surface, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_banded"] = r.mNumBanded;
+            py::dict q;
+            q["boundary_edges"] = r.mQuality.mBoundaryEdges;
+            q["non_manifold_edges"] = r.mQuality.mNonManifoldEdges;
+            q["inconsistent_pairs"] = r.mQuality.mInconsistentPairs;
+            q["degenerate_triangles"] = r.mQuality.mDegenerateTriangles;
+            q["watertight"] = r.mQuality.mWatertight;
+            out["quality"] = q;
+            return out;
+        },
+        py::arg("query"), py::arg("surface"), py::arg("sign") = "pseudonormal",
+        py::arg("weight") = "angle", py::arg("location") = "corner", py::arg("band") = 0.0,
+        py::arg("record_closest_cell") = false, py::arg("record_inside") = false,
+        py::arg("watertight_check") = "warn", py::arg("surface_region") = "",
+        py::arg("grid_cell_size") = 0.0, py::arg("max_winding_work") = 2.0e9);
+
+    m.def(
+        "surface_watertight_check",
+        [](py::object pysurface) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh surface = meshioplusplus_py::py_to_mesh(
+                pysurface, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            const meshioplusplus::SurfaceQuality q =
+                meshioplusplus::surface_watertight_check(surface);
+            py::dict out;
+            out["boundary_edges"] = q.mBoundaryEdges;
+            out["non_manifold_edges"] = q.mNonManifoldEdges;
+            out["inconsistent_pairs"] = q.mInconsistentPairs;
+            out["degenerate_triangles"] = q.mDegenerateTriangles;
+            out["watertight"] = q.mWatertight;
+            return out;
+        },
+        py::arg("surface"));
 
     // Field differential operators: the gradient / divergence / curl of a
     // point_data field, by Green-Gauss or least squares. `component` is negative
