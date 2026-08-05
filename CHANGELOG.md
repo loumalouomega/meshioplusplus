@@ -8,6 +8,69 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.24.0 (2026-08-05)
+
+**Regular grids and signed distance to a surface** — the one spatial-query
+primitive meshio++ did not have. `extract_surface` gives you a skin, `slice` cuts
+it and `isosurface` contours a field on it, but nothing answered *"how far is
+this point from the surface, and which side is it on?"* — the thing collision
+detection, offsetting, inside/outside queries and voxel-style ML preprocessing
+all reduce to.
+
+- **`grid(dims, origin, spacing)`** — a regular hexahedron lattice from nothing.
+  The library's first mesh *generator*: every other operation transforms a mesh
+  you already have.
+- **`voxelize(mesh, ...)`** — a grid around a mesh, keeping the whole bounding
+  box (`fill="all"`), only the cells a surface triangle passes through
+  (`"surface"`, by exact separating-axis overlap, not a bounding-box test), or
+  only the cells inside it (`"inside"`).
+- **`sample_distance` / `distance_to_surface` / `surface_watertight_check`** —
+  signed distance at arbitrary points or attached to a mesh as `sdf:distance`,
+  plus what is wrong with a skin reported in numbers rather than a bare flag.
+- **The output is an ordinary `Mesh`** — one `hexahedron` block over a shared
+  corner lattice — and that is the whole design. Every writer, `view`/`screenshot`,
+  `crop`, `split`, `--color-by` and `isosurface` already work on it, with no new
+  code and no new file format. `custom` cells were rejected because
+  `cell_type_num_nodes(Custom) == -1` makes a block invisible to `stats`,
+  `quality`, `gradient` and `refine`, forfeiting exactly that property.
+- Exposed on **every surface**: Python, C, Fortran, Julia, R, WASM, both CLIs
+  (`voxelize`), five MCP tools, a `Voxelize` pipeline op and a browser-viewer
+  chip. Documented in [`doc/voxelize.md`](doc/voxelize.md) and
+  [`doc/sdf.md`](doc/sdf.md).
+
+Three findings from building it, each worth not rediscovering:
+
+- **A reentrant corner does NOT expose the classic sign bug.** The standard
+  mistake is taking the sign from the nearest *triangle's* normal instead of the
+  nearest *feature's* pseudonormal, and the obvious fixture for it is a concave
+  edge — where, it turns out, both incident faces give the correct sign and the
+  naive method passes. The failure needs two nearly *opposite* normals, i.e. a
+  sharp spike. `tests/cpp/test_surface_distance.cpp` uses a sliver prism whose
+  tip subtends ~1.7° and demonstrates the naive method getting it wrong, rather
+  than asserting the right answer and hoping.
+- **The accelerator is provably unobservable, and that paid for itself.** Every
+  candidate comparison is totally ordered on `(squared distance, triangle id)`,
+  so the bucket grid cannot change the answer. Sizing buckets by the mean
+  triangle alone made a 64³ inside-fill of the 112k-triangle Stanford bunny take
+  19.1 s; adding the domain extent to the rule cut it to 2.9 s with
+  **byte-identical** output. It also means the numpy reference needs no
+  accelerator at all — a brute-force scan is the same computation, which is why
+  the two are bit-identical.
+- **The numpy twin caught a real C++ bug.** Point compaction after a selective
+  fill numbered survivors on first encounter rather than in ascending order,
+  making the point ids depend on the hexahedron's node order — a traversal detail
+  no caller should be able to observe. Fixed in C++, not papered over in numpy.
+
+No ABI change (`MESHIOPLUSPLUS_ABI_VERSION` stays 6): the six new installed
+headers are entirely additive. `operations/sdf.hpp` nevertheless ships its
+octree fields populated-but-reserved, because `SdfOptions` and `VoxelOptions`
+embed `SurfaceDistanceOptions` by value and growing it later would be a silent
+Tier A break — the v9.12.0 pipeline lesson, applied in advance.
+
+`compute_sdf` (generate a grid *and* fill it, including an adaptive octree) is
+declared but throws by name; compose `voxelize` with `distance_to_surface` in the
+meantime.
+
 ## v9.23.0 (2026-08-04)
 
 **`refine(closure="balanced")` no longer tears the mesh across passes, and
