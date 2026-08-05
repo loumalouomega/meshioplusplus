@@ -828,6 +828,9 @@ program test_fortran_api
     ! ---- ragged (polygon / polyhedron) connectivity ---------------------
     call check_ragged()
 
+    ! ---- regular grids and signed distance -------------------------------
+    call check_grids_and_distance()
+
     if (fails /= 0) then
         write (error_unit, '(a,i0,a)') 'test_fortran_api: ', fails, ' check(s) FAILED'
         error stop 1
@@ -908,6 +911,90 @@ contains
         call check(ierr2 /= 0, 'get_polygon_block rejects a 2-level block')
 
         call pm%free()
+    end subroutine
+
+    !> grid / voxelize / watertight / sample_distance / distance_to_surface.
+    !> The cube's exact SDF is known in closed form, so the distances are
+    !> asserted against it rather than against another run of the same code.
+    subroutine check_grids_and_distance()
+        type(mio_mesh) :: g, cube, vox, field
+        type(mio_surface_quality) :: q
+        real(real64) :: pts(3, 8), query(3, 3), d(3)
+        real(real64) :: origin(3), spacing(3)
+        integer(int64) :: tri(3, 12), dims(3), occupied
+        integer :: ierr
+
+        ! A lattice from nothing: 2 x 2 x 2 cells means 27 points.
+        g = mio_grid([2, 2, 2], stat=ierr)
+        call check(ierr == 0, 'grid built')
+        call check(g%num_points() == 27_int64, 'grid has 27 points')
+        call check(g%num_cell_blocks() == 1_int64, 'grid has one block')
+        call g%free()
+
+        ! An empty lattice is a legal request, not an error.
+        g = mio_grid([0, 0, 0], stat=ierr)
+        call check(ierr == 0, 'an empty grid is not an error')
+        call check(g%num_points() == 0_int64, 'an empty grid has no points')
+        call g%free()
+
+        ! The unit cube as a closed, outward-wound triangle surface.
+        pts = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 1d0, 0d0, &
+                       0d0, 0d0, 1d0, 1d0, 0d0, 1d0, 1d0, 1d0, 1d0, 0d0, 1d0, 1d0], [3, 8])
+        tri = reshape([1_int64, 3_int64, 2_int64, 1_int64, 4_int64, 3_int64, &
+                       5_int64, 6_int64, 7_int64, 5_int64, 7_int64, 8_int64, &
+                       1_int64, 2_int64, 6_int64, 1_int64, 6_int64, 5_int64, &
+                       2_int64, 3_int64, 7_int64, 2_int64, 7_int64, 6_int64, &
+                       3_int64, 4_int64, 8_int64, 3_int64, 8_int64, 7_int64, &
+                       4_int64, 1_int64, 5_int64, 4_int64, 5_int64, 8_int64], [3, 12])
+        call cube%create()
+        call cube%set_points(pts, stat=ierr)
+        call check(ierr == 0, 'cube points set')
+        call cube%add_cell_block('triangle', tri, stat=ierr)
+        call check(ierr == 0, 'cube triangles set')
+
+        q = cube%watertight_check(stat=ierr)
+        call check(ierr == 0, 'watertight check ran')
+        call check(q%watertight /= 0, 'the cube is watertight')
+        call check(q%boundary_edges == 0_int64, 'the cube has no boundary edges')
+
+        vox = cube%voxelize(resolution=[4, 4, 4], dims=dims, origin=origin, &
+                            spacing=spacing, num_occupied=occupied, stat=ierr)
+        call check(ierr == 0, 'voxelize ran')
+        call check(occupied == 64_int64, 'voxelize all kept 64 cells')
+        call check(dims(1) == 4_int64, 'voxelize reported the cell counts')
+        call check(abs(spacing(1) - 0.25d0) < 1d-12, 'voxelize reported the cell size')
+        call check(abs(origin(1)) < 1d-12, 'voxelize reported the origin')
+        call vox%free()
+
+        vox = cube%voxelize(resolution=[5, 5, 5], &
+                            bounds=[-0.5d0, -0.5d0, -0.5d0, 1.5d0, 1.5d0, 1.5d0], &
+                            fill='inside', watertight_check='off', &
+                            num_occupied=occupied, stat=ierr)
+        call check(ierr == 0, 'voxelize inside ran')
+        call check(occupied == 27_int64, 'voxelize inside kept the 27 interior cells')
+        call vox%free()
+
+        ! An unknown fill fails by name rather than silently defaulting.
+        vox = cube%voxelize(resolution=[2, 2, 2], fill='solid', stat=ierr)
+        call check(ierr /= 0, 'an unknown fill is refused')
+
+        ! The centre is 0.5 inside; the other two are 1.0 outside.
+        query = reshape([0.5d0, 0.5d0, 0.5d0, 2d0, 0.5d0, 0.5d0, -1d0, 0.5d0, 0.5d0], [3, 3])
+        d = cube%sample_distance(query, watertight_check='off', stat=ierr)
+        call check(ierr == 0, 'sample_distance ran')
+        call check(abs(d(1) + 0.5d0) < 1d-12, 'the cube centre is 0.5 inside')
+        call check(abs(d(2) - 1d0) < 1d-12, 'a point 1 unit out reads +1')
+        call check(abs(d(3) - 1d0) < 1d-12, 'the other side reads +1 too')
+
+        g = mio_grid([2, 2, 2], origin=[-0.5d0, -0.5d0, -0.5d0], &
+                     spacing=[1d0, 1d0, 1d0], stat=ierr)
+        call check(ierr == 0, 'query grid built')
+        field = g%distance_to_surface(cube, watertight_check='off', stat=ierr)
+        call check(ierr == 0, 'distance_to_surface ran')
+        call check(field%num_point_data() == 1_int64, 'sdf:distance was attached')
+        call field%free()
+        call g%free()
+        call cube%free()
     end subroutine
 
     subroutine check(ok, what)

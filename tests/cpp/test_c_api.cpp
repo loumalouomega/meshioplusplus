@@ -2371,3 +2371,188 @@ TEST(CApi, SequenceErrorsAreReportedNotCrashed) {
     mio_sequence_free(seq);
     std::filesystem::remove_all(dir);
 }
+
+// --- regular grids and signed distance --------------------------------------
+
+namespace {
+
+/// The unit cube [0,1]^3 as a closed, outward-wound triangle surface.
+mio_mesh* capi_cube_surface() {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> tris = {0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+                                            1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7};
+    mio_mesh* m = mio_mesh_create();
+    EXPECT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    EXPECT_EQ(mio_mesh_add_cell_block(m, "triangle", 12, 3, MIO_INT64, tris.data()), MIO_OK);
+    return m;
+}
+
+}  // namespace
+
+TEST(CApi, GridBuildsALattice) {
+    const std::int64_t dims[3] = {2, 3, 4};
+    const double origin[3] = {-1.0, 0.0, 0.5};
+    const double spacing[3] = {0.5, 2.0, 0.25};
+    mio_mesh* g = mio_grid(dims, origin, spacing, 20000000);
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(g), 3 * 4 * 5);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(g), 1);
+    EXPECT_EQ(block_type(g, 0), "hexahedron");
+    std::int64_t num_cells = 0, npc = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(g, 0, &num_cells, &npc, nullptr), MIO_OK);
+    EXPECT_EQ(num_cells, 24);
+    EXPECT_EQ(npc, 8);
+    mio_mesh_free(g);
+
+    // NULL dims and an exceeded budget both fail rather than crash.
+    EXPECT_EQ(mio_grid(nullptr, origin, spacing, 0), nullptr);
+    const std::int64_t big[3] = {100, 100, 100};
+    EXPECT_EQ(mio_grid(big, nullptr, nullptr, 1000), nullptr);
+}
+
+TEST(CApi, GridDefaultsOriginAndSpacingWhenNull) {
+    const std::int64_t dims[3] = {1, 1, 1};
+    mio_mesh* g = mio_grid(dims, nullptr, nullptr, 0);
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(g), 8);
+    mio_mesh_free(g);
+}
+
+TEST(CApi, VoxelOptsInitDefaultsAndVoxelize) {
+    mio_voxel_opts opts;
+    mio_voxel_opts_init(&opts);
+    EXPECT_EQ(opts.fill, MIO_VOXEL_ALL);
+    EXPECT_EQ(opts.sign, MIO_SDF_PSEUDONORMAL);
+    EXPECT_EQ(opts.max_cells, 20000000);
+    EXPECT_EQ(opts.resolution, nullptr);
+
+    mio_mesh* cube = capi_cube_surface();
+    const std::int64_t res[3] = {4, 4, 4};
+    opts.resolution = res;
+
+    std::int64_t dims[3] = {0, 0, 0};
+    double origin[3] = {0, 0, 0}, spacing[3] = {0, 0, 0};
+    std::int64_t occupied = -1;
+    mio_mesh* g = mio_voxelize(cube, &opts, dims, origin, spacing, &occupied);
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(occupied, 64);
+    EXPECT_EQ(dims[0], 4);
+    EXPECT_DOUBLE_EQ(spacing[0], 0.25);
+    EXPECT_DOUBLE_EQ(origin[0], 0.0);
+    mio_mesh_free(g);
+
+    // Every out-param is nullable.
+    mio_mesh* g2 = mio_voxelize(cube, &opts, nullptr, nullptr, nullptr, nullptr);
+    ASSERT_NE(g2, nullptr);
+    mio_mesh_free(g2);
+
+    // NULL options is an error, not a default: a resolution must be chosen.
+    EXPECT_EQ(mio_voxelize(cube, nullptr, nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, VoxelizeInsideKeepsTheInterior) {
+    mio_mesh* cube = capi_cube_surface();
+    mio_voxel_opts opts;
+    mio_voxel_opts_init(&opts);
+    const std::int64_t res[3] = {5, 5, 5};
+    const double bounds[6] = {-0.5, -0.5, -0.5, 1.5, 1.5, 1.5};
+    opts.resolution = res;
+    opts.bounds = bounds;
+    opts.fill = MIO_VOXEL_INSIDE;
+    opts.watertight_check = MIO_SDF_WATERTIGHT_OFF;
+
+    std::int64_t occupied = -1;
+    mio_mesh* g = mio_voxelize(cube, &opts, nullptr, nullptr, nullptr, &occupied);
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(occupied, 27);
+    mio_mesh_free(g);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, VoxelizeRejectsAnUnknownFill) {
+    mio_mesh* cube = capi_cube_surface();
+    mio_voxel_opts opts;
+    mio_voxel_opts_init(&opts);
+    const std::int64_t res[3] = {2, 2, 2};
+    opts.resolution = res;
+    opts.fill = 99;  // drift guard: an out-of-range enum fails, never reinterprets
+    EXPECT_EQ(mio_voxelize(cube, &opts, nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, SurfaceWatertightCheckCountsDefects) {
+    mio_mesh* cube = capi_cube_surface();
+    mio_surface_quality q;
+    ASSERT_EQ(mio_surface_watertight_check(cube, &q), MIO_OK);
+    EXPECT_NE(q.watertight, 0);
+    EXPECT_EQ(q.boundary_edges, 0);
+    EXPECT_EQ(q.degenerate_triangles, 0);
+    mio_mesh_free(cube);
+
+    // A lone triangle is a sheet: three boundary edges, reported as a number.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    const std::vector<std::int64_t> tri = {0, 1, 2};
+    mio_mesh* sheet = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(sheet, MIO_FLOAT64, 3, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(sheet, "triangle", 1, 3, MIO_INT64, tri.data()), MIO_OK);
+    ASSERT_EQ(mio_surface_watertight_check(sheet, &q), MIO_OK);
+    EXPECT_EQ(q.watertight, 0);
+    EXPECT_EQ(q.boundary_edges, 3);
+    mio_mesh_free(sheet);
+
+    EXPECT_EQ(mio_surface_watertight_check(nullptr, &q), MIO_ERR_INVALID_ARG);
+}
+
+TEST(CApi, SampleDistanceWritesIntoTheCallersBuffer) {
+    mio_mesh* cube = capi_cube_surface();
+    mio_sdf_opts opts;
+    mio_sdf_opts_init(&opts);
+    opts.watertight_check = MIO_SDF_WATERTIGHT_OFF;
+
+    const double points[9] = {0.5, 0.5, 0.5, 2.0, 0.5, 0.5, -1.0, 0.5, 0.5};
+    double out[3] = {0, 0, 0};
+    ASSERT_EQ(mio_sample_distance(cube, points, 3, &opts, out), MIO_OK);
+    EXPECT_NEAR(out[0], -0.5, 1e-12);  // the centre, inside
+    EXPECT_NEAR(out[1], 1.0, 1e-12);
+    EXPECT_NEAR(out[2], 1.0, 1e-12);
+
+    // NULL options means the defaults, not a failure.
+    ASSERT_EQ(mio_sample_distance(cube, points, 1, nullptr, out), MIO_OK);
+    EXPECT_NEAR(out[0], -0.5, 1e-12);
+
+    // Zero queries is a no-op, not an error; NULL buffers are refused.
+    EXPECT_EQ(mio_sample_distance(cube, points, 0, &opts, out), MIO_OK);
+    EXPECT_EQ(mio_sample_distance(cube, nullptr, 1, &opts, out), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_sample_distance(cube, points, 1, &opts, nullptr), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_sample_distance(nullptr, points, 1, &opts, out), MIO_ERR_INVALID_ARG);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, DistanceToSurfaceAttachesPointData) {
+    mio_mesh* cube = capi_cube_surface();
+    const std::int64_t dims[3] = {2, 2, 2};
+    const double origin[3] = {-0.5, -0.5, -0.5};
+    const double spacing[3] = {1.0, 1.0, 1.0};
+    mio_mesh* q = mio_grid(dims, origin, spacing, 0);
+    ASSERT_NE(q, nullptr);
+
+    mio_sdf_opts opts;
+    mio_sdf_opts_init(&opts);
+    opts.watertight_check = MIO_SDF_WATERTIGHT_OFF;
+    opts.record_inside = 1;
+
+    std::int64_t banded = -1;
+    mio_surface_quality quality;
+    mio_mesh* out = mio_distance_to_surface(q, cube, &opts, &banded, &quality);
+    ASSERT_NE(out, nullptr);
+    EXPECT_EQ(banded, 0);  // no band in force
+    EXPECT_NE(quality.watertight, 0);
+    EXPECT_EQ(mio_mesh_num_point_data(out), 2);  // sdf:distance and sdf:inside
+    mio_mesh_free(out);
+
+    EXPECT_EQ(mio_distance_to_surface(nullptr, cube, &opts, nullptr, nullptr), nullptr);
+    mio_mesh_free(q);
+    mio_mesh_free(cube);
+}
