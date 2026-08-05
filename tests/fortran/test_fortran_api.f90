@@ -917,11 +917,11 @@ contains
     !> The cube's exact SDF is known in closed form, so the distances are
     !> asserted against it rather than against another run of the same code.
     subroutine check_grids_and_distance()
-        type(mio_mesh) :: g, cube, vox, field
+        type(mio_mesh) :: g, cube, vox, field, sdf, kept
         type(mio_surface_quality) :: q
         real(real64) :: pts(3, 8), query(3, 3), d(3)
         real(real64) :: origin(3), spacing(3)
-        integer(int64) :: tri(3, 12), dims(3), occupied
+        integer(int64) :: tri(3, 12), dims(3), occupied, depth
         integer :: ierr
 
         ! A lattice from nothing: 2 x 2 x 2 cells means 27 points.
@@ -992,6 +992,50 @@ contains
         field = g%distance_to_surface(cube, watertight_check='off', stat=ierr)
         call check(ierr == 0, 'distance_to_surface ran')
         call check(field%num_point_data() == 1_int64, 'sdf:distance was attached')
+        call field%free()
+        call g%free()
+
+        ! compute_sdf: the grid and the field in one call.
+        sdf = cube%compute_sdf(resolution=[4, 4, 4], watertight_check='off', &
+                               dims=dims, origin=origin, spacing=spacing, depth=depth, &
+                               stat=ierr)
+        call check(ierr == 0, 'compute_sdf voxel ran')
+        call check(dims(1) == 4_int64, 'compute_sdf reported the root cell counts')
+        call check(depth == 0_int64, 'a voxel grid has no octree depth')
+        call check(sdf%num_point_data() == 1_int64, 'sdf:distance was attached')
+        call check(sdf%cell_block_num_cells(1) == 64_int64, 'compute_sdf built 4^3 cells')
+        call sdf%free()
+
+        ! The octree refines only near the surface: more than the root, far less
+        ! than the uniform grid of the same finest resolution.
+        sdf = cube%compute_sdf(structure='octree', root_resolution=4_int64, &
+                               max_depth=2_int64, watertight_check='off', &
+                               depth=depth, stat=ierr)
+        call check(ierr == 0, 'compute_sdf octree ran')
+        call check(depth == 2_int64, 'the octree ran two passes')
+        call check(sdf%cell_block_num_cells(1) > 64_int64, 'the octree refined')
+        call check(sdf%cell_block_num_cells(1) < 4096_int64, 'the octree is not uniform')
+        call sdf%free()
+
+        ! resolution/cell_size size a voxel grid; an octree's finest cell is
+        ! already determined, so passing one is an error, not a preference.
+        sdf = cube%compute_sdf(structure='octree', resolution=[4, 4, 4], stat=ierr)
+        call check(ierr /= 0, 'octree refuses a voxel sizing')
+
+        ! The predicate crop, composed with the distance field: the inside.
+        g = mio_grid([4, 4, 4], origin=[-0.5d0, -0.5d0, -0.5d0], &
+                     spacing=[0.5d0, 0.5d0, 0.5d0], stat=ierr)
+        field = g%distance_to_surface(cube, location='center', watertight_check='off', &
+                                      stat=ierr)
+        call check(ierr == 0, 'cell-centred distance ran')
+        kept = field%crop_predicate('sdf:distance', compare='<', value=0.0d0, stat=ierr)
+        call check(ierr == 0, 'crop_predicate ran')
+        call check(kept%cell_block_num_cells(1) == 8_int64, &
+                   'the eight cells inside the unit cube were kept')
+        call kept%free()
+        ! An unknown array fails by name rather than keeping everything.
+        kept = field%crop_predicate('nope', stat=ierr)
+        call check(ierr /= 0, 'crop_predicate refuses an unknown array')
         call field%free()
         call g%free()
         call cube%free()
