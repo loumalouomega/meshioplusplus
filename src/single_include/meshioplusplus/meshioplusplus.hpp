@@ -7421,6 +7421,152 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/file_source.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/grid_lattice.hpp =====
+/**
+ * @file detail/grid_lattice.hpp
+ * @brief The single owner of the **regular hexahedron lattice**: an axis-aligned
+ * box of `nx * ny * nz` cells over a corner point grid, as an ordinary `Mesh`.
+ *
+ * Three consumers need exactly this object and must not disagree about its
+ * numbering:
+ *  - `grid()`, the public primitive constructor;
+ *  - `voxelize()`, whose dense output *is* a lattice;
+ *  - a future `read_vti`, since VTK ImageData is an implicit lattice that has to
+ *    be expanded into explicit cells before it can be a `Mesh`.
+ *
+ * ### The numbering is inherited, not invented
+ *
+ * Points run **x fastest, then y, then z**, and cells run in that same order:
+ *
+ * ```
+ * vid(i, j, k) = (k * (ny + 1) + j) * (nx + 1) + i
+ * cid(i, j, k) = (k *  ny      + j) *  nx      + i
+ * ```
+ *
+ * with each cell's eight nodes in the meshio/VTK `hexahedron` winding (bottom
+ * ring counter-clockwise, then the top ring), so `detail/cell_faces.hpp`'s
+ * "base (0,1,2,3) normal points toward the top (4,5,6,7)" holds and every cell of
+ * a positively-spaced lattice is a right parallelepiped with unit scaled
+ * Jacobian. That is a free structural oracle: a transposed axis shows up as an
+ * inverted cell, not as a subtly wrong picture.
+ *
+ * This is the ordering the repo's existing C++/Python byte-identity fixtures
+ * already agree on (`tests/cpp/test_refine.cpp`'s `hex_grid`, and its twin in
+ * `tests/python/test_refine.py`). A handful of older fixtures use a transposed
+ * linearization; they are deliberately left alone, since changing them would
+ * rewrite committed expected values for no gain.
+ *
+ * x-fastest is also VTK ImageData's own ordering, which is what will make the
+ * `.vti` writer a straight copy and what makes `cell_data` reshape to
+ * `arr[z, y, x]` — the C-order tensor layout voxel tooling expects.
+ *
+ * ### Two properties worth stating as contracts
+ *
+ * **Shared corners are deduplicated arithmetically.** Neighbouring cells reference
+ * the same node because the index formula says so — there is no hash, no
+ * tolerance and no welding pass, so conformity and determinism here are
+ * structural rather than defended.
+ *
+ * **Coordinates are `origin + index * spacing`, never accumulated.** An
+ * accumulating `x += h` makes the last plane's coordinates depend on `nx` in the
+ * low bits, which would make the numpy twin's loop-versus-`arange` choice
+ * observable.
+ *
+ * Free functions in `meshioplusplus::detail`, called once per operation rather
+ * than per element, so their bodies live in
+ * `src/cpp/src/detail/grid_lattice.cpp` — the convention
+ * `detail/cell_adjacency.hpp` and `detail/subset.hpp` follow. Anonymous-namespace
+ * helpers there are prefixed `lat_`; note `grid_` is already owned by
+ * `detail/spatial_hash.hpp`'s `grid_quantize`, which is a different thing
+ * entirely (a bucket hash, not a mesh).
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The geometry of a regular lattice: where it starts, how big a cell is,
+ * and how many there are along each axis.
+ *
+ * A cell count of zero on any axis describes an empty lattice, which is a legal
+ * (if useless) request rather than an error -- `grid(0, 0, 0)` is an empty mesh,
+ * not a throw.
+ */
+struct LatticeSpec {
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};   ///< The lo corner.
+    std::array<double, 3> mSpacing{{1.0, 1.0, 1.0}};  ///< Cell size per axis.
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};     ///< Cell counts per axis.
+};
+
+/// Number of points a lattice has: `(nx + 1)(ny + 1)(nz + 1)`.
+MESHIOPLUSPLUS_API std::int64_t lattice_num_points(const LatticeSpec& rSpec);
+
+/// Number of cells a lattice has: `nx * ny * nz`.
+MESHIOPLUSPLUS_API std::int64_t lattice_num_cells(const LatticeSpec& rSpec);
+
+/**
+ * @brief Build the lattice from `rSpec` bounds.
+ * @param rLo the lo corner of the box to cover.
+ * @param rHi the hi corner; each component must be >= the matching `rLo`.
+ * @param rDims cell counts per axis.
+ * @return the spec whose origin is `rLo` and whose spacing divides the box
+ *         exactly into `rDims` cells. An axis with zero cells gets zero spacing.
+ */
+MESHIOPLUSPLUS_API LatticeSpec lattice_from_bounds(const std::array<double, 3>& rLo,
+                                                   const std::array<double, 3>& rHi,
+                                                   const std::array<std::int64_t, 3>& rDims);
+
+/**
+ * @brief Build the lattice covering `rLo`..`rHi` with cells of at most
+ *        `rCellSize`, growing the box up rather than shrinking a cell.
+ *
+ * Each axis gets `ceil(extent / cell)` cells (at least one when the extent is
+ * positive), so the lattice covers the box completely and its hi corner may sit
+ * slightly beyond `rHi`. Covering is the property callers depend on; an exactly
+ * fitting box would need a per-axis cell size that is not the one asked for.
+ */
+MESHIOPLUSPLUS_API LatticeSpec lattice_from_cell_size(const std::array<double, 3>& rLo,
+                                                      const std::array<double, 3>& rHi,
+                                                      const std::array<double, 3>& rCellSize);
+
+/**
+ * @brief Materialize a lattice as a `Mesh` with one `hexahedron` cell block.
+ * @param rSpec the lattice geometry.
+ * @return the mesh; points are Float64 `(n, 3)`, connectivity Int64 `(m, 8)`.
+ *         An empty lattice yields a mesh with no points and no cell block at all
+ *         rather than a zero-row one, so `NumCellBlocks() == 0` says "nothing
+ *         here" without a caller having to look at the row count.
+ */
+MESHIOPLUSPLUS_API Mesh lattice_build_mesh(const LatticeSpec& rSpec);
+
+/**
+ * @brief The axis-aligned bounding box of a mesh's points.
+ *
+ * Hoisted verbatim out of `compute_stats`, which computes the same reduction as
+ * part of a much larger report. `min`/`max` are associative and exact, so the
+ * chunked parallel form and a serial one agree bit-for-bit -- unlike the
+ * centroid sum in the same loop, which is order-dependent and deliberately stays
+ * in `stats.cpp`.
+ *
+ * @param rMesh the mesh to measure.
+ * @param rLo receives the lo corner; unchanged axes beyond `PointDim()` read 0.
+ * @param rHi receives the hi corner.
+ * @return false when the mesh has no points, in which case `rLo`/`rHi` are zeroed
+ *         -- an empty bbox has no defensible value and callers must decide.
+ */
+MESHIOPLUSPLUS_API bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo,
+                                   std::array<double, 3>& rHi);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/grid_lattice.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
 /**
  * @file hdf5_util.hpp
@@ -8143,6 +8289,188 @@ MESHIOPLUSPLUS_API NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::si
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
+/**
+ * @file detail/point_triangle.hpp
+ * @brief The closest point on a triangle to a query point, and **which feature
+ * of the triangle it lies on**.
+ *
+ * The feature is not diagnostic decoration: it is what selects the normal used
+ * to sign a distance. A closest point in the triangle's interior takes the
+ * triangle's own normal; one on an edge or at a vertex must take a blend of the
+ * incident faces' normals, or the sign comes out wrong on the concave side of
+ * every crease. See `operations/sdf.hpp`.
+ *
+ * ### The method, and the one that looks like it but is wrong
+ *
+ * This is Ericson's barycentric region classification (*Real-Time Collision
+ * Detection*, §5.1.5). The tempting alternative -- project onto the triangle's
+ * plane and clamp the barycentric coordinates into range -- is **wrong for
+ * obtuse triangles**, where the clamped point can land on the far edge rather
+ * than the near one, and is the commonest way this gets shipped broken.
+ *
+ * The seven regions are mutually exclusive and exhaustive with the comparisons
+ * written exactly as they are. Every branch tests a quantity built by the same
+ * sequence of multiplications and subtractions on both sides of its boundary, so
+ * there is no configuration in which two regions both claim a point or neither
+ * does.
+ *
+ * ### Why it is arranged for a bit-exact numpy twin
+ *
+ * There is not one transcendental function here: the whole computation is
+ * `+ - * /` and comparisons, and `sqrt` is left to the caller so that a
+ * min-reduction over many triangles can compare squared distances. IEEE requires
+ * both `/` and `sqrt` to be correctly rounded, so a numpy transcription that
+ * follows this expression order produces bit-identical results -- which is what
+ * `tests/python/test_surface_distance.py::test_cpp_matches_python` asserts.
+ *
+ * A degenerate (zero-area) triangle is handled explicitly rather than left to
+ * chance: it makes the denominator zero, and dividing by it would poison a
+ * min-reduction with a NaN that then wins every comparison.
+ *
+ * Header-only and inline: this runs once per (query, candidate triangle) pair,
+ * which is the hottest loop in the whole feature. `detail::` helpers are exempt
+ * from the unique-prefix rule that `src/cpp/src/**.cpp` follows.
+ */
+
+// System includes
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Which feature of a triangle a closest point lies on.
+enum class TriangleFeature {
+    VertexA = 0,
+    VertexB = 1,
+    VertexC = 2,
+    EdgeAB = 3,
+    EdgeBC = 4,
+    EdgeCA = 5,
+    Face = 6,
+};
+
+/// The closest point on a triangle, and where on it.
+struct PointTriangleHit {
+    Vec3 mPoint{0.0, 0.0, 0.0};   ///< The closest point itself.
+    double mDistanceSq = 0.0;     ///< Its squared distance from the query.
+    TriangleFeature mFeature = TriangleFeature::Face;  ///< Which feature it is on.
+};
+
+/**
+ * @brief The closest point on triangle (A, B, C) to P.
+ *
+ * The expression order is load-bearing -- see the file comment. Do not
+ * "simplify" it, and in particular do not reorder the region tests: they are
+ * arranged so that each one can assume the preceding ones failed.
+ */
+inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA, const Vec3& rB,
+                                                  const Vec3& rC) {
+    PointTriangleHit hit;
+    const Vec3 ab = vec3_sub(rB, rA);
+    const Vec3 ac = vec3_sub(rC, rA);
+    const Vec3 ap = vec3_sub(rP, rA);
+    const double d1 = vec3_dot(ab, ap);
+    const double d2 = vec3_dot(ac, ap);
+    if (d1 <= 0.0 && d2 <= 0.0) {
+        hit.mPoint = rA;
+        hit.mFeature = TriangleFeature::VertexA;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const Vec3 bp = vec3_sub(rP, rB);
+    const double d3 = vec3_dot(ab, bp);
+    const double d4 = vec3_dot(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) {
+        hit.mPoint = rB;
+        hit.mFeature = TriangleFeature::VertexB;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+        const double v = d1 / (d1 - d3);
+        hit.mPoint = vec3_add(rA, vec3_scale(ab, v));
+        hit.mFeature = TriangleFeature::EdgeAB;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const Vec3 cp = vec3_sub(rP, rC);
+    const double d5 = vec3_dot(ab, cp);
+    const double d6 = vec3_dot(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) {
+        hit.mPoint = rC;
+        hit.mFeature = TriangleFeature::VertexC;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+        const double w = d2 / (d2 - d6);
+        hit.mPoint = vec3_add(rA, vec3_scale(ac, w));
+        hit.mFeature = TriangleFeature::EdgeCA;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+        const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        hit.mPoint = vec3_add(rB, vec3_scale(vec3_sub(rC, rB), w));
+        hit.mFeature = TriangleFeature::EdgeBC;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const double den = va + vb + vc;
+    if (!(den > 0.0)) {
+        // Degenerate triangle: no interior to project into, and the face branch
+        // below would divide by zero and hand a NaN to a min-reduction, where it
+        // would then win every comparison. Fall back to the three edges, taking
+        // the nearest and breaking ties by edge ordinal so the answer does not
+        // depend on how the compiler ordered the comparisons.
+        const Vec3 ends[3][2] = {{rA, rB}, {rB, rC}, {rC, rA}};
+        const TriangleFeature feats[3] = {TriangleFeature::EdgeAB, TriangleFeature::EdgeBC,
+                                          TriangleFeature::EdgeCA};
+        bool first = true;
+        for (std::size_t e = 0; e < 3; ++e) {
+            const Vec3 d = vec3_sub(ends[e][1], ends[e][0]);
+            const double len2 = vec3_norm_sq(d);
+            double t = 0.0;
+            if (len2 > 0.0) {
+                t = vec3_dot(vec3_sub(rP, ends[e][0]), d) / len2;
+                t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+            }
+            const Vec3 q = vec3_add(ends[e][0], vec3_scale(d, t));
+            const double d2q = vec3_norm_sq(vec3_sub(rP, q));
+            if (first || d2q < hit.mDistanceSq) {
+                first = false;
+                hit.mPoint = q;
+                hit.mDistanceSq = d2q;
+                hit.mFeature = feats[e];
+            }
+        }
+        return hit;
+    }
+
+    const double inv = 1.0 / den;
+    const double v = vb * inv;
+    const double w = vc * inv;
+    hit.mPoint = vec3_add(rA, vec3_add(vec3_scale(ab, v), vec3_scale(ac, w)));
+    hit.mFeature = TriangleFeature::Face;
+    hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+    return hit;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/refine_templates.hpp =====
 /**
  * @file refine_templates.hpp
@@ -8800,6 +9128,597 @@ MESHIOPLUSPLUS_API SubsetResult build_cell_subset(const Mesh& rMesh,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/subset.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/sdf.hpp =====
+/**
+ * @file operations/sdf.hpp
+ * @brief Distance to a surface: how far a point is from a triangle skin, and
+ * which side of it the point is on.
+ *
+ * This is the primitive collision detection, offsetting, inside/outside queries
+ * and voxel-style preprocessing all reduce to, and the one spatial query
+ * meshio++ did not have. `extract_surface` gives you the skin, `slice` cuts it
+ * and `isosurface` contours a field on it -- but nothing answered "how far is
+ * this point from the surface".
+ *
+ * ### What lives here
+ *
+ * - `sample_distance` -- distances at arbitrary query points, the batch form.
+ * - `distance_to_surface` -- the same, attached to a query mesh as `point_data`.
+ * - `surface_watertight_check` -- what is wrong with this skin, in numbers.
+ *
+ * `compute_sdf` (the umbrella that generates its own grid) is declared here too
+ * but is not implemented yet; calling it throws by name. The types it needs are
+ * nevertheless **complete in this header from the first release**, deliberately:
+ * `SdfOptions` embeds `SurfaceDistanceOptions` by value, so adding a member to
+ * the inner struct later would shift the outer struct's tail under a consumer
+ * compiled against the older header -- a silent Tier A ABI break, and exactly the
+ * `Pipeline`-embeds-`PipelineInput` trap `doc/abi_reviews.md` records for
+ * v9.12.0. Shipping the full layout up front means every later release changes
+ * function declarations only, which is unambiguously additive.
+ *
+ * ### The sign is the hard part
+ *
+ * An unsigned distance is a minimisation and has no interesting failure mode. A
+ * *signed* distance needs to know which side of the surface the query is on, and
+ * the standard mistake -- taking the sign from the nearest **triangle's** normal
+ * -- is exactly right on convex geometry and exactly wrong on the concave side
+ * of every crease. The fix is the angle-weighted **pseudonormal** (Baerentzen &
+ * Aanaes): the sign comes from the normal of the nearest *feature*, which is the
+ * triangle only when the closest point lies in its interior, and is a blend of
+ * the incident faces' normals when it lies on an edge or at a vertex.
+ *
+ * For a skin that is not watertight -- which real STLs frequently are not -- the
+ * pseudonormal is not merely inaccurate, it is undefined, so `SdfSign` also
+ * offers the generalized winding number, which is robust to holes,
+ * self-intersection and inconsistent winding at the cost of being O(number of
+ * triangles) per query with no acceleration structure that helps.
+ *
+ * @see doc/sdf.md
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The Float64 signed distance array. Negative inside, by the usual convention.
+inline constexpr const char* kSdfDistanceName = "sdf:distance";
+
+/// The Int64 0/1 array marking values that were actually computed rather than
+/// clamped to the band limit. Attached whenever a band is in force, and
+/// **not optional**: a clamped value is byte-indistinguishable from a computed
+/// one, so without this array a caller cannot tell the difference.
+inline constexpr const char* kSdfBandName = "sdf:band";
+
+/// The Int64 0/1 array marking points inside the surface (opt-in).
+inline constexpr const char* kSdfInsideName = "sdf:inside";
+
+/// The Int64 array naming the nearest **input** cell per query (opt-in).
+inline constexpr const char* kSdfClosestCellName = "sdf:closest_cell";
+
+/// How to decide which side of the surface a query point is on.
+enum class SdfSign {
+    /// No sign at all: the distance is the unsigned nearest-point distance.
+    /// The only mode that is meaningful on an open sheet.
+    Unsigned = 0,
+    /// The angle-weighted pseudonormal of the nearest *feature* (face, edge or
+    /// vertex). Exact for a watertight, consistently wound surface, and costs
+    /// nothing beyond the nearest-triangle query that already ran.
+    Pseudonormal = 1,
+    /// The generalized winding number. Robust to holes, self-intersections and
+    /// per-component orientation flips, but **O(number of triangles) per query**
+    /// -- there is no acceleration structure short of a fast-multipole
+    /// expansion, which is a project in its own right. Pair it with a band.
+    WindingNumber = 2,
+};
+
+/// How the incident faces are weighted when building a vertex pseudonormal.
+enum class SdfPseudonormalWeight {
+    /// Weight each incident face by the angle it subtends at the vertex. The
+    /// geometrically correct choice (Baerentzen & Aanaes) and the default.
+    Angle = 0,
+    /// Weight by face area. Not exact at a *vertex*, but exact at edges and
+    /// faces, which is where nearly every nearest point on a fine mesh lands.
+    /// It exists because it is free of `acos`, and therefore has a bit-exact
+    /// numpy twin -- see `doc/sdf.md` on why that is worth a second mode.
+    Area = 1,
+};
+
+/// Where a distance is evaluated on a mesh.
+enum class SdfLocation {
+    Corner = 0,  ///< At the points, as `point_data`.
+    Center = 1,  ///< At the cell centroids, as `cell_data`.
+};
+
+/// What `compute_sdf` generates to carry the field.
+enum class SdfStructure {
+    Voxel = 0,   ///< A dense uniform lattice over the (padded) bounding box.
+    Octree = 1,  ///< Adaptive, refined near the surface. Reserved until v9.26.0.
+};
+
+/// What to do when the surface turns out not to be watertight.
+enum class SdfWatertightCheck {
+    Off = 0,    ///< Do not look.
+    Warn = 1,   ///< Log the counts by name and carry on. The default.
+    Error = 2,  ///< Throw, naming the counts.
+};
+
+/// Parse an `SdfSign` name (`unsigned`, `pseudonormal`, `winding-number`).
+MESHIOPLUSPLUS_API SdfSign sdf_sign_from_name(const std::string& rName);
+/// Parse an `SdfPseudonormalWeight` name (`angle`, `area`).
+MESHIOPLUSPLUS_API SdfPseudonormalWeight sdf_weight_from_name(const std::string& rName);
+/// Parse an `SdfLocation` name (`corner`/`point`, `center`/`cell`).
+MESHIOPLUSPLUS_API SdfLocation sdf_location_from_name(const std::string& rName);
+/// Parse an `SdfStructure` name (`voxel`, `octree`).
+MESHIOPLUSPLUS_API SdfStructure sdf_structure_from_name(const std::string& rName);
+/// Parse an `SdfWatertightCheck` name (`off`, `warn`, `error`).
+MESHIOPLUSPLUS_API SdfWatertightCheck sdf_watertight_check_from_name(const std::string& rName);
+
+/**
+ * @brief What is wrong with a surface, in numbers rather than a bare bool.
+ *
+ * "Your STL has 12 boundary edges" is actionable; "not watertight" is not. All
+ * four edge counts are reported separately because they need different fixes.
+ */
+struct SurfaceQuality {
+    /// Edges used by exactly one triangle: the surface has a hole or is a sheet.
+    std::int64_t mBoundaryEdges = 0;
+    /// Edges used by three or more triangles: the surface is non-manifold.
+    std::int64_t mNonManifoldEdges = 0;
+    /// Edges whose two triangles wind the same way, i.e. disagree about which
+    /// side is out. A sign computed from these is meaningless locally.
+    std::int64_t mInconsistentPairs = 0;
+    /// Triangles with zero area. They carry no normal and are skipped.
+    std::int64_t mDegenerateTriangles = 0;
+    /// True when all four counts are zero.
+    bool mWatertight = false;
+};
+
+/// Options shared by every distance query.
+struct SurfaceDistanceOptions {
+    /// How to sign the distance.
+    SdfSign mSign = SdfSign::Pseudonormal;
+    /// How to weight incident faces at a vertex (`Pseudonormal` only).
+    SdfPseudonormalWeight mWeight = SdfPseudonormalWeight::Angle;
+    /// Where to evaluate, for the mesh-taking entry points.
+    SdfLocation mLocation = SdfLocation::Corner;
+    /// Distances beyond this are clamped to it and marked in `sdf:band`.
+    /// Non-positive means the full field, computed everywhere.
+    double mBand = 0.0;
+    /// Attach `sdf:closest_cell`.
+    bool mRecordClosestCell = false;
+    /// Attach `sdf:inside`.
+    bool mRecordInside = false;
+    /// What to do about a surface that is not watertight.
+    SdfWatertightCheck mWatertightCheck = SdfWatertightCheck::Warn;
+    /// Restrict the surface to a named `Cell` region; empty means all of it.
+    std::string mSurfaceRegion;
+    /// Bucket size of the search grid; 0 derives one from the triangle sizes.
+    ///
+    /// This is a tuning knob, but it is public mainly so that the accelerator
+    /// can be *proved* not to affect the answer: the same query at several cell
+    /// sizes must give byte-identical distances and nearest-cell ids. See
+    /// `doc/sdf.md`.
+    double mGridCellSize = 0.0;
+    /// Refuse a `WindingNumber` query whose `n_query * n_tri` exceeds this,
+    /// naming the option, rather than silently running for an hour.
+    double mMaxWindingWork = 2.0e9;
+};
+
+/// The result of `distance_to_surface`: the query mesh plus what was found.
+struct SurfaceDistanceResult {
+    /// The query mesh with the distance arrays attached.
+    Mesh mMesh;
+    /// What was wrong with the surface (all zeros when `mWatertightCheck` is Off).
+    SurfaceQuality mQuality;
+    /// How many queries were clamped to the band rather than computed.
+    std::int64_t mNumBanded = 0;
+};
+
+/**
+ * @brief What is wrong with @p rSurface, without computing any distances.
+ * @param rSurface a triangle (or triangulatable) surface mesh.
+ * @return the four edge counts and the resulting verdict.
+ * @throws std::invalid_argument on a volume or polyhedron block.
+ */
+MESHIOPLUSPLUS_API SurfaceQuality surface_watertight_check(const Mesh& rSurface);
+
+/**
+ * @brief Distances from arbitrary points to a surface.
+ * @param rSurface the surface to measure against.
+ * @param rPoints Float64 `(n, 2)` or `(n, 3)` query coordinates; a 2-D array is
+ *        z-padded, matching `detail::read_point`.
+ * @param rOptions sign, band and accelerator settings.
+ * @return a Float64 `(n,)` array of signed distances.
+ * @throws std::invalid_argument on a mis-shaped query array, a surface with no
+ *         triangles, or a `WindingNumber` request exceeding `mMaxWindingWork`.
+ */
+MESHIOPLUSPLUS_API NDArray sample_distance(const Mesh& rSurface, const NDArray& rPoints,
+                                           const SurfaceDistanceOptions& rOptions = {});
+
+/**
+ * @brief Attach distances from a query mesh's points (or cell centres) to a
+ *        surface.
+ * @param rQuery the mesh to annotate; its geometry is copied unchanged.
+ * @param rSurface the surface to measure against.
+ * @param rOptions sign, location, band and accelerator settings.
+ * @return the annotated mesh plus the surface verdict and the banded count.
+ */
+MESHIOPLUSPLUS_API SurfaceDistanceResult distance_to_surface(
+    const Mesh& rQuery, const Mesh& rSurface, const SurfaceDistanceOptions& rOptions = {});
+
+// --- the umbrella operation (types complete; implementation lands later) -----
+
+/// `field_data` keys describing the generated grid. They are numeric, so they
+/// cross every binding -- but note **no file format persists arbitrary
+/// `field_data`**, so a written-and-reread grid loses them and they are
+/// recovered from the geometry instead. See `doc/sdf.md`.
+inline constexpr const char* kSdfOriginName = "sdf:origin";
+inline constexpr const char* kSdfSpacingName = "sdf:spacing";
+inline constexpr const char* kSdfDimsName = "sdf:dims";
+inline constexpr const char* kSdfBoundsName = "sdf:bounds";
+inline constexpr const char* kSdfMaxDepthName = "sdf:max_depth";
+inline constexpr const char* kSdfStructureName = "sdf:structure";
+
+/// Options for `compute_sdf`: generate a grid, then fill it with distances.
+struct SdfOptions {
+    /// Which structure to generate.
+    SdfStructure mStructure = SdfStructure::Voxel;
+    /// Cell counts per axis; unset derives them from `mCellSize`.
+    std::optional<std::array<std::int64_t, 3>> mResolution;
+    /// Cell size; unset derives it from `mResolution`.
+    std::optional<double> mCellSize;
+    /// Explicit bounds `{lo[3], hi[3]}`; unset uses the surface's bounding box.
+    std::optional<std::array<double, 6>> mBounds;
+    /// Padding added to every side, in world units.
+    double mPadding = 0.0;
+    /// Padding added to every side, as a fraction of the bounding-box diagonal.
+    /// An SDF that stops at the surface is not much use, hence the non-zero
+    /// default.
+    double mPaddingRelative = 0.1;
+    /// Octree: cell count per axis of the root lattice. Reserved until v9.26.0.
+    std::int64_t mRootResolution = 8;
+    /// Octree: how many refinement passes. Reserved until v9.26.0.
+    std::int64_t mMaxDepth = 4;
+    /// Octree: refine a cell while `|distance| <= mBandCells * cell diagonal`.
+    /// Reserved until v9.26.0.
+    double mBandCells = 1.0;
+    /// Octree: attach `refine:level`. Reserved until v9.26.0.
+    bool mRecordLevels = true;
+    /// Refuse to generate more cells than this, naming the option.
+    std::int64_t mMaxCells = 20000000;
+    /// How the distances themselves are computed.
+    ///
+    /// **Embedded by value on purpose, and the reason this whole header ships
+    /// complete**: growing `SurfaceDistanceOptions` later would move everything
+    /// after it here.
+    SurfaceDistanceOptions mDistance;
+};
+
+/// The result of `compute_sdf`: the generated grid and what was found.
+struct SdfResult {
+    Mesh mMesh;                                        ///< The grid, carrying `sdf:distance`.
+    SurfaceQuality mQuality;                           ///< The surface verdict.
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};      ///< Root cell counts.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};    ///< Lattice lo corner.
+    std::array<double, 3> mSpacing{{0.0, 0.0, 0.0}};   ///< Finest cell size.
+    std::int64_t mMaxDepth = 0;                        ///< 0 for a dense grid.
+    std::int64_t mNumBanded = 0;                       ///< Queries clamped to the band.
+};
+
+/**
+ * @brief Generate a grid over @p rSurface and fill it with signed distances.
+ * @note Not implemented yet -- throws naming the release that adds it. The
+ *       declaration and the option/result layouts are final from v9.24.0 so that
+ *       adding the implementation is a pure `.cpp` change.
+ */
+MESHIOPLUSPLUS_API SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/sdf.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/surface_distance.hpp =====
+/**
+ * @file detail/surface_distance.hpp
+ * @brief The signed-distance kernel: a triangle soup, its pseudonormal tables,
+ * a bucket-grid accelerator, and the nearest-point query over them.
+ *
+ * `operations/sdf.cpp` is the driver; everything geometric lives here so that it
+ * can be tested against closed-form distance fields with no grid, no mesh
+ * generation and no binding in the way.
+ *
+ * ### The accelerator is deliberately not a BVH
+ *
+ * `detail/spatial_hash.hpp` already provides `InsertBox` (which exists precisely
+ * to register a simplex's quantized bounding box) and `ForEachInShell` with a
+ * documented stopping rule, and `interpolate.cpp` already runs an expanding-shell
+ * nearest search over it. The workload here -- many queries against a
+ * roughly uniform triangle soup -- is the uniform grid's best case and the BVH's
+ * worst.
+ *
+ * The decisive reason, though, is not speed: **a BVH would make the accelerator
+ * observable in the output.** Its build order and split heuristic determine the
+ * order candidates are visited in, which determines which of two equidistant
+ * triangles wins. The grid can be made provably unobservable instead, by giving
+ * every comparison a total order -- `(distance squared, triangle id)` -- so that
+ * the answer cannot depend on visit order at all. `SurfaceDistanceOptions`
+ * exposes `mGridCellSize` mainly so a test can *prove* that: the same query at
+ * several bucket sizes must return byte-identical distances and nearest cells.
+ *
+ * ### The sign
+ *
+ * `closest_point_on_triangle` reports which feature of the triangle the nearest
+ * point lies on, and that selects the normal:
+ *
+ *  - face   -> the triangle's own normal;
+ *  - edge   -> the sum of the two incident triangles' unit normals;
+ *  - vertex -> the angle-weighted sum of the incident triangles' unit normals.
+ *
+ * Using the nearest *triangle's* normal in all three cases is the classic bug:
+ * exactly right on convex geometry, exactly wrong on the concave side of every
+ * crease, and it renders beautifully either way.
+ *
+ * Building those tables is the one place with a floating-point ordering hazard,
+ * because summing unit normals in a non-deterministic order changes the last
+ * bits and a last-bit change can flip a sign at a near-tangent query point. The
+ * tables are therefore accumulated by a **serial** pass in ascending
+ * (triangle, corner) order -- the phase-split idiom `surface.cpp` uses.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief A surface reduced to triangles, with each triangle remembering which
+ * input cell it came from.
+ *
+ * The provenance matters because `sdf:closest_cell` must name a cell of the
+ * mesh the caller passed in, not of a triangulation they never saw.
+ */
+struct TriangleSoup {
+    /// Corner coordinates, three per triangle, in `(a, b, c)` order.
+    std::vector<Vec3> mCorners;
+    /// Per triangle, the global (block-major) index of the input cell it came from.
+    std::vector<std::int64_t> mSourceCell;
+    /// Per triangle, the three vertex ids in the *welded* numbering below.
+    std::vector<std::array<std::int64_t, 3>> mVertices;
+    /// Distinct vertex positions, indexed by the ids in `mVertices`.
+    std::vector<Vec3> mPoints;
+
+    std::size_t NumTriangles() const { return mSourceCell.size(); }
+};
+
+/**
+ * @brief Reduce a surface mesh to a triangle soup.
+ * @param rSurface the mesh; `triangle` blocks are taken as they are, `quad` and
+ *        rectangular `polygon` blocks are fanned exactly as
+ *        `convert_cells(Simplexify)` fans them so the two cannot disagree.
+ * @param rRegion restrict to this named `Cell` region; empty takes everything.
+ * @throws std::invalid_argument on a 3-D or polyhedron block (pointing at
+ *         `extract_surface`), on a higher-order block (pointing at `linearize`),
+ *         and on an unknown region name.
+ */
+MESHIOPLUSPLUS_API TriangleSoup build_triangle_soup(const Mesh& rSurface,
+                                                    const std::string& rRegion);
+
+/// The four edge defect counts of a soup, and the resulting verdict.
+MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup);
+
+/// An undirected edge, as the sorted pair of its endpoints' vertex ids.
+using SurfaceEdgeKey = std::array<std::int64_t, 2>;
+
+/// Hash for `SurfaceEdgeKey`, the `GridKeyHash` mixing constant and shape.
+struct SurfaceEdgeKeyHash {
+    std::size_t operator()(const SurfaceEdgeKey& rKey) const {
+        std::size_t h = 0;
+        for (std::int64_t v : rKey)
+            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+/**
+ * @brief A soup prepared for querying: the accelerator plus the normal tables.
+ *
+ * Held by value and moved; building one is O(triangles) and is paid once per
+ * call rather than once per query, which is why the public API is a batch one.
+ */
+struct DistanceQuery {
+    const TriangleSoup* mpSoup = nullptr;
+    /// The bucket grid, holding triangle ids by quantized bounding box.
+    SpatialGrid mGrid{1.0};
+    /// Per triangle, its unnormalized normal (`cross(ab, ac)`).
+    std::vector<Vec3> mFaceNormal;
+    /// Per welded vertex, the weighted sum of incident unit face normals.
+    std::vector<Vec3> mVertexNormal;
+    /// Per edge (sorted endpoint ids), the sum of incident unit face normals.
+    std::unordered_map<SurfaceEdgeKey, Vec3, SurfaceEdgeKeyHash> mEdgeNormal;
+    /// The bucket size actually used, after the auto rule or the caller's override.
+    double mCellSize = 1.0;
+};
+
+/// Build the accelerator and normal tables for @p rSoup.
+MESHIOPLUSPLUS_API DistanceQuery build_distance_query(const TriangleSoup& rSoup,
+                                                      const SurfaceDistanceOptions& rOptions);
+
+/// What a single query point resolved to.
+struct DistanceHit {
+    double mSignedDistance = 0.0;   ///< Negative inside, per the usual convention.
+    std::int64_t mSourceCell = -1;  ///< Nearest input cell, or -1 outside the band.
+    bool mInBand = true;            ///< False when the value was clamped to the band.
+};
+
+/**
+ * @brief Distances from @p rPoints to the soup @p rQuery was built from.
+ *
+ * Parallel over query points, which are independent; each point's own search is
+ * serial and totally ordered, so the result does not depend on thread count.
+ */
+MESHIOPLUSPLUS_API std::vector<DistanceHit> query_distances(
+    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints,
+    const SurfaceDistanceOptions& rOptions);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/surface_distance.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/tri_box.hpp =====
+/**
+ * @file detail/tri_box.hpp
+ * @brief Exact triangle / axis-aligned-box overlap, by the separating axis
+ * theorem.
+ *
+ * `voxelize(VoxelFill::Surface)` needs to know which voxels a triangle passes
+ * through, and "does the triangle's bounding box overlap the voxel" is not that
+ * question -- a long thin diagonal triangle overlaps a great many boxes it never
+ * actually enters. This is the exact test.
+ *
+ * ### The thirteen axes
+ *
+ * Two convex bodies are disjoint exactly when some axis separates their
+ * projections, and for a triangle against an axis-aligned box it suffices to try
+ * thirteen: the box's three face normals, the triangle's own normal, and the
+ * nine cross products of the triangle's three edges with the box's three axes
+ * (Akenine-Moller, *Fast 3D Triangle-Box Overlap Testing*). Dropping any of the
+ * nine cross-product axes gives a test that is right for most configurations and
+ * wrong for the edge-on ones, which is a bad failure to ship because it looks
+ * like an off-by-one in the grid rather than a wrong predicate.
+ *
+ * ### Touching counts as overlapping
+ *
+ * The separation test is `min > rad || max < -rad`, so a triangle lying exactly
+ * on a voxel's face is *not* separated and marks both neighbouring voxels. That
+ * is deliberate: the alternative -- picking one side -- needs a tie-break rule
+ * that has no geometric justification, and marking both keeps the occupied set a
+ * closed cover of the surface, which is what a voxelization is for.
+ *
+ * Nothing here is transcendental: it is all `+ - *` and comparisons, so a numpy
+ * transcription is bit-identical. Header-only and inline, because this runs once
+ * per (triangle, candidate voxel) pair.
+ */
+
+// System includes
+#include <cmath>
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace tri_box_impl {
+
+/// One separating-axis test: the three projections against the box's radius.
+inline bool separated(double p0, double p1, double p2, double rad) {
+    const double lo = p0 < p1 ? (p0 < p2 ? p0 : p2) : (p1 < p2 ? p1 : p2);
+    const double hi = p0 > p1 ? (p0 > p2 ? p0 : p2) : (p1 > p2 ? p1 : p2);
+    return lo > rad || hi < -rad;
+}
+
+/// Does the plane through @p rV with normal @p rNormal reach the box?
+inline bool plane_box_overlap(const Vec3& rNormal, const Vec3& rV, const Vec3& rHalf) {
+    Vec3 vmin{0.0, 0.0, 0.0};
+    Vec3 vmax{0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < 3; ++k) {
+        if (rNormal[k] > 0.0) {
+            vmin[k] = -rHalf[k] - rV[k];
+            vmax[k] = rHalf[k] - rV[k];
+        } else {
+            vmin[k] = rHalf[k] - rV[k];
+            vmax[k] = -rHalf[k] - rV[k];
+        }
+    }
+    if (vec3_dot(rNormal, vmin) > 0.0)
+        return false;
+    return vec3_dot(rNormal, vmax) >= 0.0;
+}
+
+}  // namespace tri_box_impl
+
+/**
+ * @brief Does triangle (@p rA, @p rB, @p rC) overlap the axis-aligned box
+ *        centred at @p rCentre with half-extents @p rHalf?
+ *
+ * Touching counts as overlapping -- see the file comment.
+ */
+inline bool tri_box_overlap(const Vec3& rCentre, const Vec3& rHalf, const Vec3& rA, const Vec3& rB,
+                            const Vec3& rC) {
+    using tri_box_impl::plane_box_overlap;
+    using tri_box_impl::separated;
+
+    // Work in the box's frame: the box becomes [-half, half] about the origin.
+    const Vec3 v0 = vec3_sub(rA, rCentre);
+    const Vec3 v1 = vec3_sub(rB, rCentre);
+    const Vec3 v2 = vec3_sub(rC, rCentre);
+
+    const Vec3 e0 = vec3_sub(v1, v0);
+    const Vec3 e1 = vec3_sub(v2, v1);
+    const Vec3 e2 = vec3_sub(v0, v2);
+
+    // The nine edge x axis tests. Each cross product with a unit axis has a
+    // closed form, written out rather than built through vec3_cross so the two
+    // zero components are never computed or compared.
+    const Vec3 edges[3] = {e0, e1, e2};
+    const Vec3 verts[3] = {v0, v1, v2};
+    for (std::size_t e = 0; e < 3; ++e) {
+        const double ex = std::fabs(edges[e][0]);
+        const double ey = std::fabs(edges[e][1]);
+        const double ez = std::fabs(edges[e][2]);
+
+        // axis = cross(x_hat, edge) = (0, -ez, ey)
+        {
+            double p[3];
+            for (std::size_t i = 0; i < 3; ++i)
+                p[i] = -edges[e][2] * verts[i][1] + edges[e][1] * verts[i][2];
+            if (separated(p[0], p[1], p[2], ez * rHalf[1] + ey * rHalf[2]))
+                return false;
+        }
+        // axis = cross(y_hat, edge) = (ez, 0, -ex)
+        {
+            double p[3];
+            for (std::size_t i = 0; i < 3; ++i)
+                p[i] = edges[e][2] * verts[i][0] - edges[e][0] * verts[i][2];
+            if (separated(p[0], p[1], p[2], ez * rHalf[0] + ex * rHalf[2]))
+                return false;
+        }
+        // axis = cross(z_hat, edge) = (-ey, ex, 0)
+        {
+            double p[3];
+            for (std::size_t i = 0; i < 3; ++i)
+                p[i] = -edges[e][1] * verts[i][0] + edges[e][0] * verts[i][1];
+            if (separated(p[0], p[1], p[2], ey * rHalf[0] + ex * rHalf[1]))
+                return false;
+        }
+    }
+
+    // The three box face normals: the triangle's own bounding box against the box.
+    for (std::size_t k = 0; k < 3; ++k)
+        if (separated(v0[k], v1[k], v2[k], rHalf[k]))
+            return false;
+
+    // The triangle's plane.
+    return plane_box_overlap(vec3_cross(e0, e1), v0, rHalf);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/tri_box.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/vtk_cells.hpp =====
 /**
  * @file vtk_cells.hpp
@@ -17993,6 +18912,134 @@ MESHIOPLUSPLUS_API Mesh transform(const Mesh& rMesh, const AffineTransform& rXfo
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/transform.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/voxelize.hpp =====
+/**
+ * @file operations/voxelize.hpp
+ * @brief Regular hexahedron grids: `grid` builds one from nothing, `voxelize`
+ * builds one around a mesh and optionally marks which cells the mesh occupies.
+ *
+ * ### The output is an ordinary `Mesh`, and that is the whole design
+ *
+ * A voxel grid is one `hexahedron` cell block over a shared corner lattice --
+ * not a bespoke in-memory object with its own accessors. Once it *is* a `Mesh`,
+ * every writer already handles it, `view`/`screenshot` already render it,
+ * `crop`/`split`/`data calc` already operate on it, `--color-by` already colours
+ * it, and `isosurface` already contours whatever field it carries. None of that
+ * needed a line of new code, and none of it would have been available from a
+ * dedicated grid type.
+ *
+ * `custom` was considered for the adaptive case and rejected: `CellType::Custom`
+ * reports -1 nodes and -1 dimension, which makes the block invisible to `stats`,
+ * `quality`, `surface`, `gradient` and `refine` and unwritable by most formats --
+ * forfeiting exactly the property that motivates the choice. A new `voxel` cell
+ * type was rejected too: VTK's type 11 is deliberately unmapped in this codebase,
+ * and adding it would mean a row in all 41 format tables to buy an implicit node
+ * ordering nothing needs.
+ *
+ * ### `grid` is a primitive constructor, not a byproduct
+ *
+ * The lattice `voxelize` needs is also the mesh-generation primitive the library
+ * has never had -- everything else transforms a mesh you already have. It is
+ * exposed as `grid` for that reason, over the same
+ * `detail/grid_lattice.hpp` that owns the numbering.
+ *
+ * @see doc/voxelize.md, detail/grid_lattice.hpp
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The Int64 0/1 `cell_data` array marking cells the input mesh occupies.
+inline constexpr const char* kVoxelOccupancyName = "voxel:occupancy";
+
+/// Which cells of the lattice to keep.
+enum class VoxelFill {
+    /// Every cell of the bounding box. The input mesh contributes only its
+    /// bounding box, so this is a background grid rather than a shape.
+    All = 0,
+    /// Only cells a surface triangle passes through, by exact triangle/box
+    /// overlap. Needs no distance and no closed surface -- it works on an open
+    /// sheet, which `Inside` cannot.
+    Surface = 1,
+    /// Only cells whose centre is inside the surface. Needs a sign, and
+    /// therefore a surface that is closed enough for the chosen `SdfSign`.
+    Inside = 2,
+};
+
+/// Parse a `VoxelFill` name (`all`, `surface`, `inside`).
+MESHIOPLUSPLUS_API VoxelFill voxel_fill_from_name(const std::string& rName);
+
+/// Options for `voxelize`.
+struct VoxelOptions {
+    /// Cell counts per axis. Exactly one of this and `mCellSize` must be set.
+    std::optional<std::array<std::int64_t, 3>> mResolution;
+    /// Cell size (cubic). Exactly one of this and `mResolution` must be set.
+    std::optional<double> mCellSize;
+    /// Explicit bounds `{lo[3], hi[3]}`; unset uses the input's bounding box.
+    std::optional<std::array<double, 6>> mBounds;
+    /// Padding added to every side, in world units.
+    double mPadding = 0.0;
+    /// Padding added to every side, as a fraction of the bounding-box diagonal.
+    double mPaddingRelative = 0.0;
+    /// Which cells to keep.
+    VoxelFill mFill = VoxelFill::All;
+    /// Attach `voxel:occupancy` instead of dropping the cells it would mark.
+    /// With `VoxelFill::All` this is the only way occupancy is reported at all.
+    bool mAttachOccupancy = false;
+    /// Refuse to generate more cells than this, naming the option. The default
+    /// is a little above 256^3, which is ~1.5 GB of points and connectivity;
+    /// 512^3 would be ~11.8 GB, which is why there is a limit at all.
+    std::int64_t mMaxCells = 20000000;
+    /// How `VoxelFill::Inside` decides what is inside.
+    SurfaceDistanceOptions mDistance;
+};
+
+/// The result of `voxelize`: the grid and the lattice it came from.
+struct VoxelResult {
+    Mesh mMesh;                                       ///< The grid.
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};     ///< Cell counts per axis.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};   ///< Lattice lo corner.
+    std::array<double, 3> mSpacing{{0.0, 0.0, 0.0}};  ///< Cell size per axis.
+    /// How many cells the fill rule kept (equal to the total for `All`).
+    std::int64_t mNumOccupied = 0;
+};
+
+/**
+ * @brief Build a regular hexahedron lattice from nothing.
+ * @param rDims cell counts per axis; a zero on any axis yields an empty mesh.
+ * @param rOrigin the lo corner.
+ * @param rSpacing cell size per axis.
+ * @return a mesh with one `hexahedron` block, points x-fastest.
+ * @throws std::invalid_argument on a negative count or a non-positive spacing,
+ *         and when the cell count exceeds @p MaxCells.
+ */
+MESHIOPLUSPLUS_API Mesh grid(const std::array<std::int64_t, 3>& rDims,
+                             const std::array<double, 3>& rOrigin = {{0.0, 0.0, 0.0}},
+                             const std::array<double, 3>& rSpacing = {{1.0, 1.0, 1.0}},
+                             std::int64_t MaxCells = 20000000);
+
+/**
+ * @brief Build a regular grid over @p rMesh and mark or keep the cells it fills.
+ * @param rMesh the mesh to voxelize; used for its bounding box, and for its
+ *        surface when `mFill` is not `All`.
+ * @param rOptions resolution/cell size, bounds, padding and the fill rule.
+ * @return the grid plus the lattice geometry and the occupied-cell count.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set, on a non-positive resolution or cell size, on
+ *         inverted bounds, and when the lattice would exceed `mMaxCells`.
+ */
+MESHIOPLUSPLUS_API VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/voxelize.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/parallel.hpp =====
 /**
  * @file parallel.hpp
@@ -35128,6 +36175,205 @@ int cell_corner_count(CellType type) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/geometry.cpp =====
+// ===== begin src/cpp/src/detail/grid_lattice.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// The number of cells an axis needs to cover `extent` with cells of at most
+// `cell`. A non-positive extent needs none; a non-positive cell size is the
+// caller's error and is reported by lattice_from_cell_size, not here.
+std::int64_t lat_axis_count(double extent, double cell) {
+    if (!(extent > 0.0) || !(cell > 0.0))
+        return 0;
+    const double n = std::ceil(extent / cell);
+    // A hostile ratio (a denormal cell size against a huge extent) would
+    // overflow the cast; clamping here keeps the error a named one from the
+    // caller's own budget check rather than undefined behaviour.
+    if (!(n < 9.0e18))
+        return std::numeric_limits<std::int64_t>::max();
+    return static_cast<std::int64_t>(n);
+}
+
+}  // namespace
+
+std::int64_t lattice_num_points(const LatticeSpec& rSpec) {
+    if (rSpec.mDims[0] < 0 || rSpec.mDims[1] < 0 || rSpec.mDims[2] < 0)
+        return 0;
+    return (rSpec.mDims[0] + 1) * (rSpec.mDims[1] + 1) * (rSpec.mDims[2] + 1);
+}
+
+std::int64_t lattice_num_cells(const LatticeSpec& rSpec) {
+    if (rSpec.mDims[0] <= 0 || rSpec.mDims[1] <= 0 || rSpec.mDims[2] <= 0)
+        return 0;
+    return rSpec.mDims[0] * rSpec.mDims[1] * rSpec.mDims[2];
+}
+
+LatticeSpec lattice_from_bounds(const std::array<double, 3>& rLo, const std::array<double, 3>& rHi,
+                                const std::array<std::int64_t, 3>& rDims) {
+    LatticeSpec spec;
+    spec.mOrigin = rLo;
+    spec.mDims = rDims;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const std::int64_t n = rDims[k] < 0 ? 0 : rDims[k];
+        spec.mDims[k] = n;
+        spec.mSpacing[k] = n > 0 ? (rHi[k] - rLo[k]) / static_cast<double>(n) : 0.0;
+    }
+    return spec;
+}
+
+LatticeSpec lattice_from_cell_size(const std::array<double, 3>& rLo,
+                                   const std::array<double, 3>& rHi,
+                                   const std::array<double, 3>& rCellSize) {
+    LatticeSpec spec;
+    spec.mOrigin = rLo;
+    for (std::size_t k = 0; k < 3; ++k) {
+        spec.mDims[k] = lat_axis_count(rHi[k] - rLo[k], rCellSize[k]);
+        // The requested size is honoured exactly and the box grows to fit, so
+        // the lattice covers the input rather than clipping it. Recomputing the
+        // spacing from the (possibly larger) extent instead would silently hand
+        // back cells of a different size than were asked for.
+        spec.mSpacing[k] = spec.mDims[k] > 0 ? rCellSize[k] : 0.0;
+    }
+    return spec;
+}
+
+Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
+    Mesh out;
+    const std::int64_t ncells = lattice_num_cells(rSpec);
+    if (ncells <= 0) {
+        // No cells means no lattice. Emitting an empty points array and no block
+        // at all is what lets a caller test NumCellBlocks() rather than a row
+        // count.
+        out.AssignPoints(NDArray(DType::Float64, {std::size_t{0}, std::size_t{3}}));
+        return out;
+    }
+
+    const std::int64_t nx = rSpec.mDims[0];
+    const std::int64_t ny = rSpec.mDims[1];
+    const std::int64_t nz = rSpec.mDims[2];
+    const std::int64_t px = nx + 1;
+    const std::int64_t py = ny + 1;
+    const std::int64_t npoints = lattice_num_points(rSpec);
+
+    NDArray points = NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(npoints),
+                                                      std::size_t{3}});
+    {
+        double* dst = points.As<double>();
+        const double ox = rSpec.mOrigin[0], oy = rSpec.mOrigin[1], oz = rSpec.mOrigin[2];
+        const double hx = rSpec.mSpacing[0], hy = rSpec.mSpacing[1], hz = rSpec.mSpacing[2];
+        parallel_for_bw(static_cast<std::size_t>(npoints), [&](std::size_t p) {
+            const std::int64_t g = static_cast<std::int64_t>(p);
+            const std::int64_t i = g % px;
+            const std::int64_t j = (g / px) % py;
+            const std::int64_t k = g / (px * py);
+            // origin + index * spacing, never an accumulation: the coordinate of
+            // a point must not depend on how many points precede it.
+            dst[p * 3 + 0] = ox + static_cast<double>(i) * hx;
+            dst[p * 3 + 1] = oy + static_cast<double>(j) * hy;
+            dst[p * 3 + 2] = oz + static_cast<double>(k) * hz;
+        });
+    }
+    out.AssignPoints(std::move(points));
+
+    NDArray conn = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ncells),
+                                                  std::size_t{8}});
+    {
+        std::int64_t* dst = conn.As<std::int64_t>();
+        parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
+            const std::int64_t g = static_cast<std::int64_t>(c);
+            const std::int64_t i = g % nx;
+            const std::int64_t j = (g / nx) % ny;
+            const std::int64_t k = g / (nx * ny);
+            const std::int64_t base = (k * py + j) * px + i;
+            const std::int64_t top = base + px * py;
+            // The meshio/VTK hexahedron winding: bottom ring counter-clockwise,
+            // then the top ring, so the base normal points at the top face.
+            dst[c * 8 + 0] = base;
+            dst[c * 8 + 1] = base + 1;
+            dst[c * 8 + 2] = base + px + 1;
+            dst[c * 8 + 3] = base + px;
+            dst[c * 8 + 4] = top;
+            dst[c * 8 + 5] = top + 1;
+            dst[c * 8 + 6] = top + px + 1;
+            dst[c * 8 + 7] = top + px;
+        });
+    }
+    out.AddCellBlock("hexahedron", std::move(conn));
+    return out;
+}
+
+bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo, std::array<double, 3>& rHi) {
+    rLo = {0.0, 0.0, 0.0};
+    rHi = {0.0, 0.0, 0.0};
+    const std::size_t n = rMesh.NumPoints();
+    if (n == 0)
+        return false;
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t ddim = dim < 3 ? dim : 3;
+    if (ddim == 0)
+        return false;
+
+    // Chunked parallel reduction, then a serial combine. min/max are associative
+    // and exact, so the chunking is not observable -- which is exactly why only
+    // the bbox was hoisted here and stats.cpp's centroid sum was not.
+    const std::size_t grain = 4096;
+    const std::size_t nchunks = (n + grain - 1) / grain;
+    std::vector<std::array<double, 3>> pmin(nchunks), pmax(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            std::array<double, 3> lmin = {std::numeric_limits<double>::infinity(),
+                                          std::numeric_limits<double>::infinity(),
+                                          std::numeric_limits<double>::infinity()};
+            std::array<double, 3> lmax = {-std::numeric_limits<double>::infinity(),
+                                          -std::numeric_limits<double>::infinity(),
+                                          -std::numeric_limits<double>::infinity()};
+            const std::size_t start = ci * grain;
+            const std::size_t stop = n < start + grain ? n : start + grain;
+            for (std::size_t g = start; g < stop; ++g)
+                for (std::size_t d = 0; d < ddim; ++d) {
+                    const double v = read_double(points, g * dim + d);
+                    lmin[d] = lmin[d] < v ? lmin[d] : v;
+                    lmax[d] = lmax[d] > v ? lmax[d] : v;
+                }
+            pmin[ci] = lmin;
+            pmax[ci] = lmax;
+        },
+        1);
+
+    std::array<double, 3> gmin = {std::numeric_limits<double>::infinity(),
+                                  std::numeric_limits<double>::infinity(),
+                                  std::numeric_limits<double>::infinity()};
+    std::array<double, 3> gmax = {-std::numeric_limits<double>::infinity(),
+                                  -std::numeric_limits<double>::infinity(),
+                                  -std::numeric_limits<double>::infinity()};
+    for (std::size_t ci = 0; ci < nchunks; ++ci)
+        for (std::size_t d = 0; d < 3; ++d) {
+            gmin[d] = gmin[d] < pmin[ci][d] ? gmin[d] : pmin[ci][d];
+            gmax[d] = gmax[d] > pmax[ci][d] ? gmax[d] : pmax[ci][d];
+        }
+    for (std::size_t d = 0; d < ddim; ++d) {
+        rLo[d] = gmin[d];
+        rHi[d] = gmax[d];
+    }
+    return true;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/grid_lattice.cpp =====
 // ===== begin src/cpp/src/detail/hdf5_util.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
@@ -37395,6 +38641,459 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/subset.cpp =====
+// ===== begin src/cpp/src/detail/surface_distance.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr const char* kSdPrefix = "meshio++: surface distance: ";
+
+// The cells a named Cell region selects, as a per-global-cell flag. An empty
+// name means "everything", which is reported as an empty vector rather than an
+// all-true one so the caller can skip the test entirely.
+std::vector<char> sd_region_mask(const Mesh& rMesh, const std::string& rRegion) {
+    if (rRegion.empty())
+        return {};
+    const std::size_t idx = rMesh.FindRegion(rRegion, RegionKind::Cell);
+    if (idx == Mesh::npos) {
+        std::string names;
+        for (const std::string& n : rMesh.RegionNames())
+            names += (names.empty() ? "" : ", ") + n;
+        throw std::invalid_argument(std::string(kSdPrefix) + "no cell region named '" + rRegion +
+                                    "' (available: " + (names.empty() ? "none" : names) + ")");
+    }
+    const std::vector<std::int64_t> bases = block_bases(rMesh);
+    std::vector<char> mask(static_cast<std::size_t>(total_cells(bases)), 0);
+    const NDArray& entries = rMesh.Region(idx).mEntries;
+    for (std::size_t e = 0; e < entries.Size(); ++e) {
+        const std::int64_t g = read_int(entries, e);
+        if (g >= 0 && static_cast<std::size_t>(g) < mask.size())
+            mask[static_cast<std::size_t>(g)] = 1;
+    }
+    return mask;
+}
+
+// The angle triangle (a, b, c) subtends at corner a. Used only as a positive
+// weight on a unit normal, so its last-ulp behaviour cannot change a sign
+// except where the distance is already zero to within rounding -- see
+// doc/sdf.md on the one place the numpy twin excludes.
+double sd_corner_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+    const Vec3 u = vec3_sub(rB, rA);
+    const Vec3 v = vec3_sub(rC, rA);
+    const double nu = vec3_norm(u);
+    const double nv = vec3_norm(v);
+    if (!(nu > 0.0) || !(nv > 0.0))
+        return 0.0;
+    double c = vec3_dot(u, v) / (nu * nv);
+    c = c < -1.0 ? -1.0 : (c > 1.0 ? 1.0 : c);
+    return std::acos(c);
+}
+
+}  // namespace
+
+TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegion) {
+    TriangleSoup soup;
+    const std::size_t dim = rSurface.PointDim();
+    const NDArray& points = rSurface.Points();
+    soup.mPoints.resize(rSurface.NumPoints());
+    for (std::size_t p = 0; p < rSurface.NumPoints(); ++p)
+        soup.mPoints[p] = read_point(points, dim, static_cast<std::int64_t>(p));
+
+    const std::vector<char> mask = sd_region_mask(rSurface, rRegion);
+    const std::vector<std::int64_t> bases = block_bases(rSurface);
+
+    std::size_t bi = 0;
+    for (const auto cb : rSurface.CellRange()) {
+        const std::int64_t base = bases[bi++];
+        const std::string type(cb.Type());
+        const CellType ct = cell_type_from_name(type);
+
+        if (cb.IsPolyhedron() || cell_type_dimension(ct) == 3)
+            throw std::invalid_argument(
+                std::string(kSdPrefix) + "cell block '" + type +
+                "' is a volume; distance is measured to a surface (run extract_surface first)");
+
+        // A block whose cells happen to share a node count stores rectangularly
+        // and so is not IsRagged(), which is why the type name is what decides
+        // whether it is a polygon -- the trap cgns.cpp records.
+        const bool polygon = type.rfind("polygon", 0) == 0;
+        if (!polygon && ct != CellType::Triangle && ct != CellType::Quad) {
+            if (cell_type_dimension(ct) < 2)
+                continue;  // lines and vertices carry no area; silently skipped
+            throw std::invalid_argument(std::string(kSdPrefix) + "cell block '" + type +
+                                        "' is not a linear surface cell (linearize the mesh "
+                                        "first, then run extract_surface if needed)");
+        }
+
+        const std::size_t ncells = cb.NumCells();
+        for (std::size_t c = 0; c < ncells; ++c) {
+            const std::int64_t global = base + static_cast<std::int64_t>(c);
+            if (!mask.empty() && !mask[static_cast<std::size_t>(global)])
+                continue;
+
+            // Gather this cell's corners, ragged or not.
+            std::vector<std::int64_t> ids;
+            if (cb.IsRagged()) {
+                const std::size_t n = cb.RowSize(c);
+                const std::int64_t* row = cb.Row(c);
+                ids.assign(row, row + n);
+            } else {
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                ids.resize(npc);
+                for (std::size_t i = 0; i < npc; ++i)
+                    ids[i] = read_int(conn, c * npc + i);
+            }
+            if (ids.size() < 3)
+                continue;
+
+            // The same fan convert_cells(Simplexify) uses: corner 0 to every
+            // non-adjacent edge. Transcribing a different fan here would make
+            // the two disagree about which diagonal a quad is split on.
+            for (std::size_t k = 1; k + 1 < ids.size(); ++k) {
+                const std::array<std::int64_t, 3> tri{ids[0], ids[k], ids[k + 1]};
+                soup.mVertices.push_back(tri);
+                soup.mSourceCell.push_back(global);
+                for (std::size_t i = 0; i < 3; ++i)
+                    soup.mCorners.push_back(soup.mPoints[static_cast<std::size_t>(tri[i])]);
+            }
+        }
+    }
+    return soup;
+}
+
+SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
+    SurfaceQuality q;
+    const std::size_t ntri = rSoup.NumTriangles();
+
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const Vec3& a = rSoup.mCorners[t * 3 + 0];
+        const Vec3& b = rSoup.mCorners[t * 3 + 1];
+        const Vec3& c = rSoup.mCorners[t * 3 + 2];
+        if (!(vec3_norm_sq(vec3_cross(vec3_sub(b, a), vec3_sub(c, a))) > 0.0))
+            ++q.mDegenerateTriangles;
+    }
+
+    // Per undirected edge: how many triangles use it, and how many use it in the
+    // low->high direction. A consistently wound closed surface has every edge
+    // used exactly twice, once in each direction.
+    std::unordered_map<SurfaceEdgeKey, std::array<std::int64_t, 2>, SurfaceEdgeKeyHash> edges;
+    edges.reserve(ntri * 3 * 2);
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
+        for (std::size_t e = 0; e < 3; ++e) {
+            const std::int64_t u = v[e];
+            const std::int64_t w = v[(e + 1) % 3];
+            const SurfaceEdgeKey key{u < w ? u : w, u < w ? w : u};
+            std::array<std::int64_t, 2>& rec = edges[key];
+            ++rec[0];
+            if (u < w)
+                ++rec[1];
+        }
+    }
+    for (const auto& kv : edges) {
+        const std::int64_t used = kv.second[0];
+        const std::int64_t forward = kv.second[1];
+        if (used == 1)
+            ++q.mBoundaryEdges;
+        else if (used > 2)
+            ++q.mNonManifoldEdges;
+        else if (used == 2 && forward != 1)
+            ++q.mInconsistentPairs;  // both the same way round: they disagree on "out"
+    }
+    q.mWatertight = q.mBoundaryEdges == 0 && q.mNonManifoldEdges == 0 &&
+                    q.mInconsistentPairs == 0 && q.mDegenerateTriangles == 0;
+    return q;
+}
+
+DistanceQuery build_distance_query(const TriangleSoup& rSoup,
+                                   const SurfaceDistanceOptions& rOptions) {
+    const std::size_t ntri = rSoup.NumTriangles();
+    if (ntri == 0)
+        throw std::invalid_argument(std::string(kSdPrefix) +
+                                    "the surface has no triangles to measure against");
+
+    DistanceQuery q;
+    q.mpSoup = &rSoup;
+    q.mFaceNormal.resize(ntri);
+
+    // Bucket size. It affects only how many candidates each query examines --
+    // never the answer, because every comparison below is totally ordered -- so
+    // the rule here is a pure performance heuristic. That is not a throwaway
+    // remark: it is what let this rule be retuned after measurement without
+    // re-validating a single distance, and `TheBucketSizeDoesNotChangeTheAnswer`
+    // is the proof.
+    //
+    // Sizing buckets by the mean triangle alone is the obvious rule and the wrong
+    // one. On a finely tessellated model the triangles are tiny, so the buckets
+    // are tiny, and a query far from the surface has to expand through hundreds
+    // of empty shells before it finds anything -- a 64^3 inside-fill of the
+    // 112k-triangle Stanford bunny took 19 seconds that way. The domain's own
+    // size has to enter the rule, so the base is the extent divided by the cube
+    // root of the triangle count (roughly "one bucket per triangle's worth of
+    // volume"), floored at the mean triangle so buckets never split a single
+    // triangle needlessly and capped a few multiples above it.
+    double cell = rOptions.mGridCellSize;
+    if (!(cell > 0.0)) {
+        Vec3 lo = rSoup.mCorners[0];
+        Vec3 hi = lo;
+        double sum = 0.0;
+        for (std::size_t t = 0; t < ntri; ++t) {
+            Vec3 tlo = rSoup.mCorners[t * 3];
+            Vec3 thi = tlo;
+            for (std::size_t i = 1; i < 3; ++i)
+                for (std::size_t k = 0; k < 3; ++k) {
+                    const double v = rSoup.mCorners[t * 3 + i][k];
+                    tlo[k] = tlo[k] < v ? tlo[k] : v;
+                    thi[k] = thi[k] > v ? thi[k] : v;
+                }
+            for (std::size_t k = 0; k < 3; ++k) {
+                lo[k] = lo[k] < tlo[k] ? lo[k] : tlo[k];
+                hi[k] = hi[k] > thi[k] ? hi[k] : thi[k];
+            }
+            sum += vec3_norm(vec3_sub(thi, tlo));
+        }
+        const double mean_tri = sum / static_cast<double>(ntri);
+        double extent = 0.0;
+        for (std::size_t k = 0; k < 3; ++k)
+            extent = extent > (hi[k] - lo[k]) ? extent : (hi[k] - lo[k]);
+        const double base = extent / std::cbrt(static_cast<double>(ntri));
+        cell = base < mean_tri ? mean_tri : (base > 8.0 * mean_tri ? 8.0 * mean_tri : base);
+    }
+    if (!(cell > 0.0))
+        cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
+    q.mCellSize = cell;
+    q.mGrid = SpatialGrid(cell);
+
+    // Serial ascending insert. The bucket contents order is not observable given
+    // the tie-break, but keeping the insert serial costs nothing here and keeps
+    // the structure's documented determinism contract intact.
+    for (std::size_t t = 0; t < ntri; ++t) {
+        Vec3 lo = rSoup.mCorners[t * 3];
+        Vec3 hi = lo;
+        for (std::size_t i = 1; i < 3; ++i)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double v = rSoup.mCorners[t * 3 + i][k];
+                lo[k] = lo[k] < v ? lo[k] : v;
+                hi[k] = hi[k] > v ? hi[k] : v;
+            }
+        q.mGrid.InsertBox(q.mGrid.KeyOf(lo.data()), q.mGrid.KeyOf(hi.data()),
+                          static_cast<std::int64_t>(t));
+    }
+
+    // Face normals, then the vertex and edge tables. The table pass is SERIAL
+    // and in ascending (triangle, corner) order: summing unit normals in a
+    // different order changes the last bits, and a last-bit change can flip the
+    // sign of a query point sitting almost exactly on the surface.
+    q.mVertexNormal.assign(rSoup.mPoints.size(), Vec3{0.0, 0.0, 0.0});
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const Vec3& a = rSoup.mCorners[t * 3 + 0];
+        const Vec3& b = rSoup.mCorners[t * 3 + 1];
+        const Vec3& c = rSoup.mCorners[t * 3 + 2];
+        q.mFaceNormal[t] = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
+    }
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const Vec3 n = q.mFaceNormal[t];
+        const double len = vec3_norm(n);
+        if (!(len > 0.0))
+            continue;  // degenerate: no direction to contribute
+        const Vec3 unit = vec3_scale(n, 1.0 / len);
+        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
+        const Vec3* corner = &rSoup.mCorners[t * 3];
+        for (std::size_t i = 0; i < 3; ++i) {
+            const double w =
+                rOptions.mWeight == SdfPseudonormalWeight::Angle
+                    ? sd_corner_angle(corner[i], corner[(i + 1) % 3], corner[(i + 2) % 3])
+                    : len;  // area weighting: |cross| is twice the area, a positive scale
+            Vec3& acc = q.mVertexNormal[static_cast<std::size_t>(v[i])];
+            acc = vec3_add(acc, vec3_scale(unit, w));
+
+            const std::int64_t p = v[i];
+            const std::int64_t r = v[(i + 1) % 3];
+            const SurfaceEdgeKey key{p < r ? p : r, p < r ? r : p};
+            Vec3& e = q.mEdgeNormal[key];
+            e = vec3_add(e, unit);
+        }
+    }
+    return q;
+}
+
+std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
+                                         const std::vector<Vec3>& rPoints,
+                                         const SurfaceDistanceOptions& rOptions) {
+    const TriangleSoup& soup = *rQuery.mpSoup;
+    const std::size_t ntri = soup.NumTriangles();
+    const std::size_t n = rPoints.size();
+    std::vector<DistanceHit> out(n);
+
+    if (rOptions.mSign == SdfSign::WindingNumber && rOptions.mMaxWindingWork > 0.0) {
+        const double work = static_cast<double>(n) * static_cast<double>(ntri);
+        if (work > rOptions.mMaxWindingWork)
+            throw std::invalid_argument(
+                std::string(kSdPrefix) + "sign='winding-number' is O(triangles) per query and " +
+                std::to_string(n) + " queries x " + std::to_string(ntri) + " triangles exceeds " +
+                "max_winding_work (raise it, use a band, or use sign='pseudonormal')");
+    }
+
+    const double band = rOptions.mBand;
+    const bool banded = band > 0.0;
+    const double band2 = band * band;
+    // With a band there is no point expanding past it: a hit found beyond this
+    // radius would be clamped anyway.
+    const std::int64_t max_shell =
+        banded ? static_cast<std::int64_t>(std::ceil(band / rQuery.mCellSize)) + 1
+               : std::numeric_limits<std::int64_t>::max();
+
+    parallel_for(n, [&](std::size_t p) {
+        const Vec3& query = rPoints[p];
+        const GridKey centre = rQuery.mGrid.KeyOf(query.data());
+
+        double best_d2 = std::numeric_limits<double>::infinity();
+        std::int64_t best_tri = -1;
+        PointTriangleHit best_hit;
+
+        // The largest shell radius that can still reach an occupied bucket. Note
+        // ForEachInShell clamps to the occupied box, so an empty shell does NOT
+        // mean "no more candidates" for a query far outside it -- without this
+        // bound the loop would stop early on exactly those points.
+        std::int64_t reach = 0;
+        if (!rQuery.mGrid.Empty()) {
+            const GridKey lo = rQuery.mGrid.OccupiedLo();
+            const GridKey hi = rQuery.mGrid.OccupiedHi();
+            const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
+            const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
+            const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
+            reach = std::max(dx, std::max(dy, dz));
+        }
+        if (reach > max_shell)
+            reach = max_shell;
+
+        for (std::int64_t r = 0; r <= reach; ++r) {
+            // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
+            // away, so once that bound exceeds the best found there is nothing
+            // left to find.
+            if (r >= 1 && best_tri >= 0) {
+                const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
+                if (bound > 0.0 && bound * bound > best_d2)
+                    break;
+            }
+            rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
+                for (std::int64_t t : rIds) {
+                    const std::size_t ti = static_cast<std::size_t>(t);
+                    const PointTriangleHit hit = closest_point_on_triangle(
+                        query, soup.mCorners[ti * 3 + 0], soup.mCorners[ti * 3 + 1],
+                        soup.mCorners[ti * 3 + 2]);
+                    // The total order that makes the accelerator unobservable:
+                    // distance first, then the triangle id, so two equidistant
+                    // triangles always resolve the same way regardless of which
+                    // bucket happened to be visited first.
+                    if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
+                        best_d2 = hit.mDistanceSq;
+                        best_tri = t;
+                        best_hit = hit;
+                    }
+                }
+            });
+        }
+
+        DistanceHit& res = out[p];
+        if (best_tri < 0) {
+            // Nothing within reach: only possible under a band.
+            res.mSignedDistance = band;
+            res.mSourceCell = -1;
+            res.mInBand = false;
+            return;
+        }
+        const double dist = std::sqrt(best_d2);
+        if (banded && best_d2 > band2) {
+            res.mSignedDistance = band;
+            res.mSourceCell = -1;
+            res.mInBand = false;
+            return;
+        }
+        res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(best_tri)];
+        res.mInBand = true;
+
+        if (rOptions.mSign == SdfSign::Unsigned) {
+            res.mSignedDistance = dist;
+            return;
+        }
+        if (rOptions.mSign == SdfSign::WindingNumber) {
+            // Van Oosterom-Strackee solid angle, summed in ascending triangle
+            // order. O(triangles) per query, which is why it is guarded above.
+            double w = 0.0;
+            for (std::size_t t = 0; t < ntri; ++t) {
+                const Vec3 a = vec3_sub(soup.mCorners[t * 3 + 0], query);
+                const Vec3 b = vec3_sub(soup.mCorners[t * 3 + 1], query);
+                const Vec3 c = vec3_sub(soup.mCorners[t * 3 + 2], query);
+                const double la = vec3_norm(a);
+                const double lb = vec3_norm(b);
+                const double lc = vec3_norm(c);
+                const double num = triple_product(a, b, c);
+                const double den = la * lb * lc + vec3_dot(a, b) * lc + vec3_dot(b, c) * la +
+                                   vec3_dot(c, a) * lb;
+                w += 2.0 * std::atan2(num, den);
+            }
+            const bool inside = w / (4.0 * 3.14159265358979323846) > 0.5;
+            res.mSignedDistance = inside ? -dist : dist;
+            return;
+        }
+
+        // Pseudonormal: the normal of the nearest FEATURE, not of the nearest
+        // triangle. Using the triangle's own normal here is right on convex
+        // geometry and wrong on the concave side of every crease.
+        const std::size_t ti = static_cast<std::size_t>(best_tri);
+        const std::array<std::int64_t, 3>& v = soup.mVertices[ti];
+        Vec3 normal = rQuery.mFaceNormal[ti];
+        switch (best_hit.mFeature) {
+            case TriangleFeature::VertexA:
+                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[0])];
+                break;
+            case TriangleFeature::VertexB:
+                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[1])];
+                break;
+            case TriangleFeature::VertexC:
+                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[2])];
+                break;
+            case TriangleFeature::EdgeAB:
+            case TriangleFeature::EdgeBC:
+            case TriangleFeature::EdgeCA: {
+                const std::size_t e = best_hit.mFeature == TriangleFeature::EdgeAB
+                                          ? 0
+                                          : (best_hit.mFeature == TriangleFeature::EdgeBC ? 1 : 2);
+                const std::int64_t a = v[e];
+                const std::int64_t b = v[(e + 1) % 3];
+                const SurfaceEdgeKey key{a < b ? a : b, a < b ? b : a};
+                auto it = rQuery.mEdgeNormal.find(key);
+                if (it != rQuery.mEdgeNormal.end())
+                    normal = it->second;
+                break;
+            }
+            case TriangleFeature::Face:
+            default:
+                break;
+        }
+        const double side = vec3_dot(vec3_sub(query, best_hit.mPoint), normal);
+        res.mSignedDistance = side < 0.0 ? -dist : dist;
+    });
+
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_distance.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <map>
@@ -70996,6 +72695,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
+        {"Voxelize",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
+          "AttachOccupancy", "MaxCells", "Sign"}},
         {"Transform",
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
@@ -71320,6 +73022,34 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
     }
+    if (op == "Voxelize") {
+        // A regular grid around the mesh. Unlike every other step this one does
+        // not transform its input's geometry -- it replaces it -- which is
+        // exactly why it is useful as a pipeline step: read a skin, voxelize it,
+        // write a grid.
+        VoxelOptions opts;
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution = std::array<std::int64_t, 3>{{resolution[0], resolution[1],
+                                                            resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{{bounds[0], bounds[1], bounds[2], bounds[3],
+                                                   bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.0);
+        opts.mFill = voxel_fill_from_name(pipe_text(rStep, "Fill", "all"));
+        opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        VoxelResult r = voxelize(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
+        return std::move(r.mMesh);
+    }
+
     if (op == "Isosurface") {
         // The level set of a scalar point_data field -- slice's data-driven
         // sibling, a surface one topological dimension lower.
@@ -74401,6 +76131,277 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/reorder.cpp =====
+// ===== begin src/cpp/src/operations/sdf.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kSdfPrefix = "meshio++: sdf: ";
+
+// The query points a mesh contributes, as a flat Float64 (n, 3) array: its own
+// points, or its cell centroids.
+std::vector<detail::Vec3> sdfop_query_points(const Mesh& rMesh, SdfLocation Location) {
+    std::vector<detail::Vec3> out;
+    const std::size_t dim = rMesh.PointDim();
+    if (Location == SdfLocation::Corner) {
+        const std::size_t n = rMesh.NumPoints();
+        out.resize(n);
+        const NDArray& points = rMesh.Points();
+        parallel_for_bw(n, [&](std::size_t p) {
+            out[p] = detail::read_point(points, dim, static_cast<std::int64_t>(p));
+        });
+        return out;
+    }
+
+    // Cell centres: the corner average, accumulated in connectivity order so the
+    // numpy twin can reproduce it without a summation-order argument.
+    const NDArray& points = rMesh.Points();
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        const std::size_t base = out.size();
+        out.resize(base + ncells);
+        if (cb.IsRagged()) {
+            for (std::size_t c = 0; c < ncells; ++c) {
+                detail::Vec3 sum{0.0, 0.0, 0.0};
+                std::size_t count = 0;
+                if (cb.IsPolyhedron()) {
+                    for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                        const auto face = cb.Face(c, f);
+                        for (std::size_t i = 0; i < face.second; ++i) {
+                            sum = detail::vec3_add(
+                                sum, detail::read_point(points, dim, face.first[i]));
+                            ++count;
+                        }
+                    }
+                } else {
+                    const std::size_t n = cb.RowSize(c);
+                    const std::int64_t* row = cb.Row(c);
+                    for (std::size_t i = 0; i < n; ++i) {
+                        sum = detail::vec3_add(sum, detail::read_point(points, dim, row[i]));
+                        ++count;
+                    }
+                }
+                out[base + c] =
+                    count == 0 ? sum : detail::vec3_scale(sum, 1.0 / static_cast<double>(count));
+            }
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t npc = cb.NodesPerCell();
+        const double inv = npc == 0 ? 0.0 : 1.0 / static_cast<double>(npc);
+        parallel_for_bw(ncells, [&](std::size_t c) {
+            detail::Vec3 sum{0.0, 0.0, 0.0};
+            for (std::size_t i = 0; i < npc; ++i)
+                sum = detail::vec3_add(
+                    sum, detail::read_point(points, dim, detail::read_int(conn, c * npc + i)));
+            out[base + c] = detail::vec3_scale(sum, inv);
+        });
+    }
+    return out;
+}
+
+// Report a surface's defects at the requested severity.
+void sdfop_report_quality(const SurfaceQuality& rQuality, SdfWatertightCheck Check) {
+    if (Check == SdfWatertightCheck::Off || rQuality.mWatertight)
+        return;
+    const std::string what =
+        "the surface is not watertight: " + std::to_string(rQuality.mBoundaryEdges) +
+        " boundary edge(s), " + std::to_string(rQuality.mNonManifoldEdges) +
+        " non-manifold edge(s), " + std::to_string(rQuality.mInconsistentPairs) +
+        " inconsistently wound pair(s), " + std::to_string(rQuality.mDegenerateTriangles) +
+        " degenerate triangle(s)";
+    if (Check == SdfWatertightCheck::Error)
+        throw std::invalid_argument(std::string(kSdfPrefix) + what);
+    log::warn("{}{} -- the sign may be wrong near the defects; consider sign='winding-number'.",
+              kSdfPrefix, what);
+}
+
+}  // namespace
+
+SdfSign sdf_sign_from_name(const std::string& rName) {
+    if (rName == "unsigned")
+        return SdfSign::Unsigned;
+    if (rName == "pseudonormal")
+        return SdfSign::Pseudonormal;
+    if (rName == "winding-number" || rName == "winding_number")
+        return SdfSign::WindingNumber;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown sign '" + rName +
+                                "' (expected one of: unsigned, pseudonormal, winding-number)");
+}
+
+SdfPseudonormalWeight sdf_weight_from_name(const std::string& rName) {
+    if (rName == "angle")
+        return SdfPseudonormalWeight::Angle;
+    if (rName == "area")
+        return SdfPseudonormalWeight::Area;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown weight '" + rName +
+                                "' (expected one of: angle, area)");
+}
+
+SdfLocation sdf_location_from_name(const std::string& rName) {
+    if (rName == "corner" || rName == "point")
+        return SdfLocation::Corner;
+    if (rName == "center" || rName == "centre" || rName == "cell")
+        return SdfLocation::Center;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown location '" + rName +
+                                "' (expected one of: corner, center)");
+}
+
+SdfStructure sdf_structure_from_name(const std::string& rName) {
+    if (rName == "voxel")
+        return SdfStructure::Voxel;
+    if (rName == "octree")
+        return SdfStructure::Octree;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown structure '" + rName +
+                                "' (expected one of: voxel, octree)");
+}
+
+SdfWatertightCheck sdf_watertight_check_from_name(const std::string& rName) {
+    if (rName == "off")
+        return SdfWatertightCheck::Off;
+    if (rName == "warn")
+        return SdfWatertightCheck::Warn;
+    if (rName == "error")
+        return SdfWatertightCheck::Error;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown watertight check '" + rName +
+                                "' (expected one of: off, warn, error)");
+}
+
+SurfaceQuality surface_watertight_check(const Mesh& rSurface) {
+    const detail::TriangleSoup soup = detail::build_triangle_soup(rSurface, "");
+    return detail::soup_quality(soup);
+}
+
+NDArray sample_distance(const Mesh& rSurface, const NDArray& rPoints,
+                        const SurfaceDistanceOptions& rOptions) {
+    const std::size_t dim = detail::cols(rPoints);
+    if (rPoints.Ndim() != 2 || (dim != 2 && dim != 3))
+        throw std::invalid_argument(std::string(kSdfPrefix) +
+                                    "query points must be a 2-D (n, 2) or (n, 3) array");
+    const std::size_t n = detail::rows(rPoints);
+    std::vector<detail::Vec3> queries(n);
+    parallel_for_bw(n, [&](std::size_t p) {
+        queries[p] = detail::read_point(rPoints, dim, static_cast<std::int64_t>(p));
+    });
+
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(rSurface, rOptions.mSurfaceRegion);
+    sdfop_report_quality(detail::soup_quality(soup), rOptions.mWatertightCheck);
+
+    detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
+    std::vector<detail::DistanceHit> hits = detail::query_distances(query, queries, rOptions);
+
+    NDArray out = NDArray::Uninit(DType::Float64, {n});
+    double* dst = out.As<double>();
+    parallel_for_bw(n, [&](std::size_t p) { dst[p] = hits[p].mSignedDistance; });
+    return out;
+}
+
+SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurface,
+                                          const SurfaceDistanceOptions& rOptions) {
+    SurfaceDistanceResult result;
+    result.mMesh = detail::clone_mesh(rQuery, [](DataLocation, const std::string&, std::string&) {
+        return true;  // geometry and every existing array pass through unchanged
+    });
+
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(rSurface, rOptions.mSurfaceRegion);
+    result.mQuality = detail::soup_quality(soup);
+    sdfop_report_quality(result.mQuality, rOptions.mWatertightCheck);
+
+    const std::vector<detail::Vec3> queries = sdfop_query_points(rQuery, rOptions.mLocation);
+    detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
+    const std::vector<detail::DistanceHit> hits =
+        detail::query_distances(query, queries, rOptions);
+    const std::size_t n = hits.size();
+
+    NDArray dist = NDArray::Uninit(DType::Float64, {n});
+    double* pd = dist.As<double>();
+    parallel_for_bw(n, [&](std::size_t p) { pd[p] = hits[p].mSignedDistance; });
+
+    const bool banded = rOptions.mBand > 0.0;
+    NDArray band;
+    if (banded) {
+        band = NDArray::Uninit(DType::Int64, {n});
+        std::int64_t* pb = band.As<std::int64_t>();
+        parallel_for_bw(n, [&](std::size_t p) { pb[p] = hits[p].mInBand ? 1 : 0; });
+        for (std::size_t p = 0; p < n; ++p)
+            result.mNumBanded += hits[p].mInBand ? 0 : 1;
+    }
+    NDArray inside;
+    if (rOptions.mRecordInside) {
+        inside = NDArray::Uninit(DType::Int64, {n});
+        std::int64_t* pi = inside.As<std::int64_t>();
+        parallel_for_bw(n, [&](std::size_t p) {
+            pi[p] = hits[p].mSignedDistance < 0.0 ? 1 : 0;
+        });
+    }
+    NDArray closest;
+    if (rOptions.mRecordClosestCell) {
+        closest = NDArray::Uninit(DType::Int64, {n});
+        std::int64_t* pc = closest.As<std::int64_t>();
+        parallel_for_bw(n, [&](std::size_t p) { pc[p] = hits[p].mSourceCell; });
+    }
+
+    if (rOptions.mLocation == SdfLocation::Corner) {
+        result.mMesh.AddPointData(kSdfDistanceName, std::move(dist));
+        if (banded)
+            result.mMesh.AddPointData(kSdfBandName, std::move(band));
+        if (rOptions.mRecordInside)
+            result.mMesh.AddPointData(kSdfInsideName, std::move(inside));
+        if (rOptions.mRecordClosestCell)
+            result.mMesh.AddPointData(kSdfClosestCellName, std::move(closest));
+        return result;
+    }
+
+    // Cell data is per block, so split the flat run back up along the block
+    // boundaries it was built from.
+    const auto split = [&](NDArray& rFlat) {
+        std::vector<NDArray> blocks;
+        std::size_t base = 0;
+        for (const auto cb : result.mMesh.CellRange()) {
+            const std::size_t ncells = cb.NumCells();
+            NDArray b = NDArray::Uninit(rFlat.Dtype(), {ncells});
+            const std::size_t width = rFlat.Nbytes() / (rFlat.Size() == 0 ? 1 : rFlat.Size());
+            std::memcpy(b.Data(), rFlat.Data() + base * width, ncells * width);
+            blocks.push_back(std::move(b));
+            base += ncells;
+        }
+        return blocks;
+    };
+    result.mMesh.AddCellData(kSdfDistanceName, split(dist));
+    if (banded)
+        result.mMesh.AddCellData(kSdfBandName, split(band));
+    if (rOptions.mRecordInside)
+        result.mMesh.AddCellData(kSdfInsideName, split(inside));
+    if (rOptions.mRecordClosestCell)
+        result.mMesh.AddCellData(kSdfClosestCellName, split(closest));
+    return result;
+}
+
+SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions) {
+    (void)rSurface;
+    (void)rOptions;
+    // The types are final from v9.24.0 precisely so that adding this body later
+    // is a pure .cpp change; see operations/sdf.hpp on why the layout ships
+    // ahead of the implementation.
+    throw std::invalid_argument(
+        std::string(kSdfPrefix) +
+        "compute_sdf is not implemented yet (it lands in v9.25.0); compose voxelize() with "
+        "distance_to_surface() in the meantime");
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/sdf.cpp =====
 // ===== begin src/cpp/src/operations/sequence.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -77586,6 +79587,387 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/transform.cpp =====
+// ===== begin src/cpp/src/operations/voxelize.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kVoxPrefix = "meshio++: voxelize: ";
+
+// The cell budget check, shared by grid() and voxelize(). It is a *named*
+// refusal rather than an allocation failure because the failure mode it guards
+// is mundane and predictable: 512^3 is 134 million cells and ~11.8 GB of points
+// and connectivity, which a user asks for by typo far more often than on
+// purpose.
+void vox_check_budget(std::int64_t Cells, std::int64_t MaxCells, const char* pPrefix) {
+    if (MaxCells <= 0 || Cells <= MaxCells)
+        return;
+    throw std::invalid_argument(std::string(pPrefix) + "the requested grid has " +
+                                std::to_string(Cells) + " cells, above the limit of " +
+                                std::to_string(MaxCells) +
+                                " (raise max_cells, coarsen the resolution, or use a band)");
+}
+
+// The bounding box a voxelization covers: the caller's, or the mesh's own, in
+// both cases grown by the padding.
+std::array<double, 6> vox_resolve_bounds(const Mesh& rMesh, const VoxelOptions& rOptions) {
+    std::array<double, 3> lo{{0.0, 0.0, 0.0}};
+    std::array<double, 3> hi{{0.0, 0.0, 0.0}};
+    if (rOptions.mBounds.has_value()) {
+        const std::array<double, 6>& b = *rOptions.mBounds;
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = b[k];
+            hi[k] = b[k + 3];
+            if (!(hi[k] >= lo[k]))
+                throw std::invalid_argument(
+                    std::string(kVoxPrefix) + "bounds are inverted on axis " + std::to_string(k) +
+                    " (lo " + std::to_string(lo[k]) + " > hi " + std::to_string(hi[k]) + ")");
+        }
+    } else if (!detail::point_bbox(rMesh, lo, hi)) {
+        throw std::invalid_argument(std::string(kVoxPrefix) +
+                                    "the mesh has no points, so it has no bounding box to "
+                                    "voxelize (pass explicit bounds)");
+    }
+
+    double diag = 0.0;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const double e = hi[k] - lo[k];
+        diag += e * e;
+    }
+    diag = std::sqrt(diag);
+    const double pad = rOptions.mPadding + rOptions.mPaddingRelative * diag;
+    if (pad < 0.0)
+        throw std::invalid_argument(std::string(kVoxPrefix) + "padding is negative");
+    for (std::size_t k = 0; k < 3; ++k) {
+        lo[k] -= pad;
+        hi[k] += pad;
+    }
+    return {lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]};
+}
+
+// The lattice a voxelization runs on. Exactly one of resolution and cell size
+// must be given: defaulting one of them would silently pick a grid the caller
+// did not choose, and for an object whose cost is cubic in that choice that is
+// not a kindness.
+detail::LatticeSpec vox_resolve_lattice(const Mesh& rMesh, const VoxelOptions& rOptions) {
+    if (rOptions.mResolution.has_value() == rOptions.mCellSize.has_value())
+        throw std::invalid_argument(std::string(kVoxPrefix) +
+                                    "give exactly one of resolution and cell_size");
+
+    const std::array<double, 6> b = vox_resolve_bounds(rMesh, rOptions);
+    const std::array<double, 3> lo{{b[0], b[1], b[2]}};
+    const std::array<double, 3> hi{{b[3], b[4], b[5]}};
+
+    detail::LatticeSpec spec;
+    if (rOptions.mResolution.has_value()) {
+        const std::array<std::int64_t, 3>& r = *rOptions.mResolution;
+        for (std::size_t k = 0; k < 3; ++k)
+            if (r[k] <= 0)
+                throw std::invalid_argument(std::string(kVoxPrefix) +
+                                            "resolution must be positive on every axis, got " +
+                                            std::to_string(r[k]) + " on axis " +
+                                            std::to_string(k));
+        spec = detail::lattice_from_bounds(lo, hi, r);
+    } else {
+        const double cell = *rOptions.mCellSize;
+        if (!(cell > 0.0))
+            throw std::invalid_argument(std::string(kVoxPrefix) + "cell_size must be positive");
+        spec = detail::lattice_from_cell_size(lo, hi, {{cell, cell, cell}});
+        for (std::size_t k = 0; k < 3; ++k)
+            if (spec.mDims[k] <= 0)
+                throw std::invalid_argument(
+                    std::string(kVoxPrefix) +
+                    "the bounding box is degenerate on axis " + std::to_string(k) +
+                    ", so a cell size cannot fill it (pass an explicit resolution or bounds)");
+    }
+    vox_check_budget(detail::lattice_num_cells(spec), rOptions.mMaxCells, kVoxPrefix);
+    return spec;
+}
+
+// Which cells the fill rule keeps, as a per-cell flag. An empty result means
+// "all of them", which lets the caller skip the subsetting pass entirely.
+std::vector<char> vox_occupancy(const Mesh& rMesh, const detail::LatticeSpec& rSpec,
+                                const VoxelOptions& rOptions) {
+    if (rOptions.mFill == VoxelFill::All)
+        return {};
+
+    const std::int64_t ncells = detail::lattice_num_cells(rSpec);
+    std::vector<char> occupied(static_cast<std::size_t>(ncells), 0);
+    const std::int64_t nx = rSpec.mDims[0];
+    const std::int64_t ny = rSpec.mDims[1];
+
+    if (rOptions.mFill == VoxelFill::Surface) {
+        // Exact triangle/box overlap, not a bounding-box test: a long diagonal
+        // triangle overlaps far more boxes than it enters.
+        const detail::TriangleSoup soup =
+            detail::build_triangle_soup(rMesh, rOptions.mDistance.mSurfaceRegion);
+        const detail::Vec3 half{{rSpec.mSpacing[0] * 0.5, rSpec.mSpacing[1] * 0.5,
+                                 rSpec.mSpacing[2] * 0.5}};
+        // Serial over triangles, each touching only the voxels of its own
+        // bounding box: a parallel pass would race on the shared flag array for
+        // no real gain, since the inner box is small.
+        for (std::size_t t = 0; t < soup.NumTriangles(); ++t) {
+            const detail::Vec3& a = soup.mCorners[t * 3 + 0];
+            const detail::Vec3& b = soup.mCorners[t * 3 + 1];
+            const detail::Vec3& c = soup.mCorners[t * 3 + 2];
+            std::array<std::int64_t, 3> lo{}, hi{};
+            bool skip = false;
+            for (std::size_t k = 0; k < 3; ++k) {
+                if (!(rSpec.mSpacing[k] > 0.0)) {
+                    skip = true;
+                    break;
+                }
+                const double tlo = std::min(a[k], std::min(b[k], c[k]));
+                const double thi = std::max(a[k], std::max(b[k], c[k]));
+                double flo = std::floor((tlo - rSpec.mOrigin[k]) / rSpec.mSpacing[k]);
+                double fhi = std::floor((thi - rSpec.mOrigin[k]) / rSpec.mSpacing[k]);
+                flo = flo < 0.0 ? 0.0 : flo;
+                const double last = static_cast<double>(rSpec.mDims[k] - 1);
+                fhi = fhi > last ? last : fhi;
+                if (fhi < flo) {
+                    skip = true;
+                    break;
+                }
+                lo[k] = static_cast<std::int64_t>(flo);
+                hi[k] = static_cast<std::int64_t>(fhi);
+            }
+            if (skip)
+                continue;
+            for (std::int64_t k = lo[2]; k <= hi[2]; ++k)
+                for (std::int64_t j = lo[1]; j <= hi[1]; ++j)
+                    for (std::int64_t i = lo[0]; i <= hi[0]; ++i) {
+                        const std::int64_t cid = (k * ny + j) * nx + i;
+                        if (occupied[static_cast<std::size_t>(cid)])
+                            continue;
+                        const detail::Vec3 centre{
+                            {rSpec.mOrigin[0] + (static_cast<double>(i) + 0.5) * rSpec.mSpacing[0],
+                             rSpec.mOrigin[1] + (static_cast<double>(j) + 0.5) * rSpec.mSpacing[1],
+                             rSpec.mOrigin[2] +
+                                 (static_cast<double>(k) + 0.5) * rSpec.mSpacing[2]}};
+                        if (detail::tri_box_overlap(centre, half, a, b, c))
+                            occupied[static_cast<std::size_t>(cid)] = 1;
+                    }
+        }
+        return occupied;
+    }
+
+    // Inside: sign the distance at each cell centre. This is the only fill that
+    // needs a closed surface, and it says so through the watertight check rather
+    // than by quietly producing a hollow result.
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(rMesh, rOptions.mDistance.mSurfaceRegion);
+    std::vector<detail::Vec3> centres(static_cast<std::size_t>(ncells));
+    parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
+        const std::int64_t g = static_cast<std::int64_t>(c);
+        const std::int64_t i = g % nx;
+        const std::int64_t j = (g / nx) % ny;
+        const std::int64_t k = g / (nx * ny);
+        centres[c] = detail::Vec3{
+            {rSpec.mOrigin[0] + (static_cast<double>(i) + 0.5) * rSpec.mSpacing[0],
+             rSpec.mOrigin[1] + (static_cast<double>(j) + 0.5) * rSpec.mSpacing[1],
+             rSpec.mOrigin[2] + (static_cast<double>(k) + 0.5) * rSpec.mSpacing[2]}};
+    });
+
+    SurfaceDistanceOptions dopts = rOptions.mDistance;
+    if (dopts.mSign == SdfSign::Unsigned)
+        throw std::invalid_argument(std::string(kVoxPrefix) +
+                                    "fill 'inside' needs a sign, but sign='unsigned' was given");
+    dopts.mBand = 0.0;  // a band would clamp the very sign this fill depends on
+    const detail::DistanceQuery query = detail::build_distance_query(soup, dopts);
+    const std::vector<detail::DistanceHit> hits =
+        detail::query_distances(query, centres, dopts);
+    parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
+        occupied[c] = hits[c].mSignedDistance < 0.0 ? 1 : 0;
+    });
+    return occupied;
+}
+
+// Emit only the flagged cells, compacting the points they reference in ascending
+// order so the output does not depend on traversal.
+Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>& rOccupied,
+                      std::int64_t Kept) {
+    Mesh out;
+    const std::int64_t nx = rSpec.mDims[0];
+    const std::int64_t ny = rSpec.mDims[1];
+    const std::int64_t px = nx + 1;
+    const std::int64_t py = ny + 1;
+    const std::int64_t npoints = detail::lattice_num_points(rSpec);
+    const std::int64_t ncells = detail::lattice_num_cells(rSpec);
+
+    // Two passes: mark which points the kept cells reference, then number them in
+    // ASCENDING original order. That is surface.cpp's used/remap pattern, and the
+    // ascending part is load-bearing rather than incidental -- numbering on first
+    // encounter instead would make the point ids depend on the hexahedron's node
+    // order, which is a traversal detail no caller should be able to observe (and
+    // which the numpy twin would then have to replicate rather than simply sort).
+    std::vector<char> used(static_cast<std::size_t>(npoints), 0);
+    std::vector<std::int64_t> kept_cells;
+    kept_cells.reserve(static_cast<std::size_t>(Kept));
+    for (std::int64_t c = 0; c < ncells; ++c) {
+        if (!rOccupied[static_cast<std::size_t>(c)])
+            continue;
+        kept_cells.push_back(c);
+        const std::int64_t i = c % nx;
+        const std::int64_t j = (c / nx) % ny;
+        const std::int64_t k = c / (nx * ny);
+        const std::int64_t base = (k * py + j) * px + i;
+        const std::int64_t top = base + px * py;
+        const std::int64_t nodes[8] = {base, base + 1, base + px + 1, base + px,
+                                       top,  top + 1,  top + px + 1,  top + px};
+        for (std::int64_t nd : nodes)
+            used[static_cast<std::size_t>(nd)] = 1;
+    }
+
+    std::vector<std::int64_t> remap(static_cast<std::size_t>(npoints), -1);
+    std::int64_t next = 0;
+    for (std::int64_t p = 0; p < npoints; ++p)
+        if (used[static_cast<std::size_t>(p)])
+            remap[static_cast<std::size_t>(p)] = next++;
+
+    std::vector<std::int64_t> conn;
+    conn.reserve(static_cast<std::size_t>(Kept) * 8);
+    for (std::int64_t c : kept_cells) {
+        const std::int64_t i = c % nx;
+        const std::int64_t j = (c / nx) % ny;
+        const std::int64_t k = c / (nx * ny);
+        const std::int64_t base = (k * py + j) * px + i;
+        const std::int64_t top = base + px * py;
+        const std::int64_t nodes[8] = {base, base + 1, base + px + 1, base + px,
+                                       top,  top + 1,  top + px + 1,  top + px};
+        for (std::int64_t nd : nodes)
+            conn.push_back(remap[static_cast<std::size_t>(nd)]);
+    }
+
+    NDArray points = NDArray::Uninit(DType::Float64,
+                                     {static_cast<std::size_t>(next), std::size_t{3}});
+    double* pdst = points.As<double>();
+    parallel_for_bw(static_cast<std::size_t>(npoints), [&](std::size_t p) {
+        const std::int64_t slot = remap[p];
+        if (slot < 0)
+            return;
+        const std::int64_t g = static_cast<std::int64_t>(p);
+        const std::int64_t i = g % px;
+        const std::int64_t j = (g / px) % py;
+        const std::int64_t k = g / (px * py);
+        pdst[slot * 3 + 0] = rSpec.mOrigin[0] + static_cast<double>(i) * rSpec.mSpacing[0];
+        pdst[slot * 3 + 1] = rSpec.mOrigin[1] + static_cast<double>(j) * rSpec.mSpacing[1];
+        pdst[slot * 3 + 2] = rSpec.mOrigin[2] + static_cast<double>(k) * rSpec.mSpacing[2];
+    });
+    out.AssignPoints(std::move(points));
+
+    if (Kept > 0) {
+        NDArray block = NDArray::Uninit(DType::Int64,
+                                        {static_cast<std::size_t>(Kept), std::size_t{8}});
+        std::memcpy(block.Data(), conn.data(), conn.size() * sizeof(std::int64_t));
+        out.AddCellBlock("hexahedron", std::move(block));
+    }
+    return out;
+}
+
+}  // namespace
+
+VoxelFill voxel_fill_from_name(const std::string& rName) {
+    if (rName == "all")
+        return VoxelFill::All;
+    if (rName == "surface")
+        return VoxelFill::Surface;
+    if (rName == "inside")
+        return VoxelFill::Inside;
+    throw std::invalid_argument(std::string(kVoxPrefix) + "unknown fill '" + rName +
+                                "' (expected one of: all, surface, inside)");
+}
+
+Mesh grid(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& rOrigin,
+          const std::array<double, 3>& rSpacing, std::int64_t MaxCells) {
+    constexpr const char* prefix = "meshio++: grid: ";
+    for (std::size_t k = 0; k < 3; ++k) {
+        if (rDims[k] < 0)
+            throw std::invalid_argument(std::string(prefix) +
+                                        "cell counts must not be negative, got " +
+                                        std::to_string(rDims[k]) + " on axis " +
+                                        std::to_string(k));
+        if (rDims[k] > 0 && !(rSpacing[k] > 0.0))
+            throw std::invalid_argument(std::string(prefix) +
+                                        "spacing must be positive on every axis with cells, got " +
+                                        std::to_string(rSpacing[k]) + " on axis " +
+                                        std::to_string(k));
+    }
+    detail::LatticeSpec spec;
+    spec.mOrigin = rOrigin;
+    spec.mSpacing = rSpacing;
+    spec.mDims = rDims;
+    vox_check_budget(detail::lattice_num_cells(spec), MaxCells, prefix);
+    return detail::lattice_build_mesh(spec);
+}
+
+VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& rOptions) {
+    const detail::LatticeSpec spec = vox_resolve_lattice(rMesh, rOptions);
+
+    VoxelResult result;
+    result.mDims = spec.mDims;
+    result.mOrigin = spec.mOrigin;
+    result.mSpacing = spec.mSpacing;
+
+    // Every point and cell of the output is new, so nothing can be remapped --
+    // the same situation slice/isosurface/extract_surface are in.
+    detail::warn_regions_dropped(rMesh, "voxelize");
+
+    const std::int64_t ncells = detail::lattice_num_cells(spec);
+    const std::vector<char> occupied = vox_occupancy(rMesh, spec, rOptions);
+
+    if (rOptions.mFill == VoxelFill::All || occupied.empty()) {
+        result.mMesh = detail::lattice_build_mesh(spec);
+        result.mNumOccupied = ncells;
+        if (rOptions.mAttachOccupancy && ncells > 0) {
+            // Every cell is kept, so occupancy is all ones -- constant, but
+            // emitted anyway so that a caller can switch fill modes without
+            // their downstream pipeline discovering the array has vanished.
+            NDArray occ = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ncells)});
+            std::int64_t* dst = occ.As<std::int64_t>();
+            parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) { dst[c] = 1; });
+            std::vector<NDArray> blocks;
+            blocks.push_back(std::move(occ));
+            result.mMesh.AddCellData(kVoxelOccupancyName, std::move(blocks));
+        }
+        return result;
+    }
+
+    // A selective fill keeps a subset of the cells. Building the full lattice and
+    // then subsetting it would cost the memory the budget check exists to avoid,
+    // so the kept cells are emitted directly and the points they reference are
+    // compacted in ascending order -- surface.cpp's used/remap pattern, which is
+    // what makes the output independent of which thread found which cell.
+    std::int64_t nkept = 0;
+    for (std::int64_t c = 0; c < ncells; ++c)
+        nkept += occupied[static_cast<std::size_t>(c)] ? 1 : 0;
+    result.mNumOccupied = nkept;
+    result.mMesh = vox_build_subset(spec, occupied, nkept);
+    if (rOptions.mAttachOccupancy && nkept > 0) {
+        NDArray occ = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(nkept)});
+        std::int64_t* dst = occ.As<std::int64_t>();
+        parallel_for_bw(static_cast<std::size_t>(nkept), [&](std::size_t c) { dst[c] = 1; });
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(occ));
+        result.mMesh.AddCellData(kVoxelOccupancyName, std::move(blocks));
+    }
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/voxelize.cpp =====
 // ===== begin src/cpp/src/read_options.cpp =====
 #include <algorithm>
 #include <cstddef>
