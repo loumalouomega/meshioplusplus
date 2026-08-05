@@ -386,3 +386,209 @@ def test_the_numpy_reference_refuses_the_winding_number():
 
     with pytest.raises(NotImplementedError, match="winding-number"):
         _sample_py(_box(1.0), np.zeros((1, 3)), "winding-number", "angle", 0.0)
+
+
+# --------------------------------------------------------------------------- #
+# compute_sdf: the umbrella                                                    #
+# --------------------------------------------------------------------------- #
+def _sphere(subdivisions=2, radius=0.4):
+    """A subdivided octahedron.
+
+    Used instead of the cube fixtures for anything that compares two *fields*: a
+    cube's signed distance is piecewise linear near its faces, so interpolating
+    it from a coarser grid reproduces it exactly and a "field attached one pass
+    too early" bug changes nothing at all. That was measured against the C++
+    suite, not assumed -- see tests/cpp/test_compute_sdf.cpp.
+    """
+    pts = [
+        np.array(p, dtype=float)
+        for p in [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+    ]
+    tris = [
+        (0, 2, 4),
+        (2, 1, 4),
+        (1, 3, 4),
+        (3, 0, 4),
+        (2, 0, 5),
+        (1, 2, 5),
+        (3, 1, 5),
+        (0, 3, 5),
+    ]
+    for _ in range(subdivisions):
+        mid = {}
+
+        def midpoint(a, b):
+            key = (min(a, b), max(a, b))
+            if key in mid:
+                return mid[key]
+            m = (pts[a] + pts[b]) * 0.5
+            m = m / np.sqrt(m @ m)
+            pts.append(m)
+            mid[key] = len(pts) - 1
+            return mid[key]
+
+        nxt = []
+        for t in tris:
+            a, b, c = midpoint(t[0], t[1]), midpoint(t[1], t[2]), midpoint(t[2], t[0])
+            nxt += [(t[0], a, c), (a, t[1], b), (c, b, t[2]), (a, b, c)]
+        tris = nxt
+    return meshioplusplus.Mesh(
+        np.array(pts) * radius, [("triangle", np.array(tris, dtype=np.int64))]
+    )
+
+
+def test_compute_sdf_voxel_is_the_grid_plus_the_field():
+    m = meshioplusplus.compute_sdf(_unit_cube(), resolution=(8, 8, 8))
+    assert len(m.cells) == 1 and len(m.cells[0].data) == 512
+    assert m.point_data["sdf:distance"].shape == (9**3,)
+    # The header describes the grid it generated.
+    assert np.array_equal(m.field_data["sdf:dims"], [8, 8, 8])
+    assert int(m.field_data["sdf:structure"][0]) == 0
+    assert int(m.field_data["sdf:max_depth"][0]) == 0
+    # The default relative padding is non-zero: a field that stops at the surface
+    # is not much use.
+    assert m.field_data["sdf:origin"][0] < 0.0
+
+
+def test_compute_sdf_field_is_the_distance():
+    m, report = meshioplusplus.compute_sdf(
+        _box(1.0), resolution=(6, 6, 6), padding_relative=0.25, return_report=True
+    )
+    assert report["quality"]["watertight"]
+    d = m.point_data["sdf:distance"]
+    for p, got in zip(m.points, d):
+        assert abs(got - _box_sdf(np.asarray(p), 1.0)) < 1e-12
+
+
+def test_compute_sdf_octree_refines_only_near_the_surface():
+    m, report = meshioplusplus.compute_sdf(
+        _sphere(),
+        structure="octree",
+        root_resolution=8,
+        max_depth=2,
+        return_report=True,
+    )
+    assert report["max_depth"] == 2
+    n = sum(len(cb.data) for cb in m.cells)
+    assert 8**3 < n < 32**3
+    assert "refine:level" in m.cell_data
+
+
+def test_compute_sdf_octree_contour_equals_the_uniform_grids():
+    """The justification for the structure, as an oracle.
+
+    The octree's zero level set must be the uniform grid's at the same finest
+    resolution -- from fewer cells. This is the C++ suite's headline test; here
+    it also proves the Python-visible path composes correctly.
+    """
+    surface = _sphere(3)
+    uni = meshioplusplus.compute_sdf(surface, resolution=(32, 32, 32))
+    oct_ = meshioplusplus.compute_sdf(
+        surface, structure="octree", root_resolution=8, max_depth=2
+    )
+    assert sum(len(c.data) for c in oct_.cells) < sum(len(c.data) for c in uni.cells)
+    cu = meshioplusplus.isosurface(uni, "sdf:distance", [0.0])
+    co = meshioplusplus.isosurface(oct_, "sdf:distance", [0.0])
+    assert sum(len(c.data) for c in co.cells) == sum(len(c.data) for c in cu.cells)
+
+
+def test_compute_sdf_bad_arguments_raise_by_name():
+    s = _unit_cube()
+    with pytest.raises(ValueError, match="exactly one"):
+        meshioplusplus.compute_sdf(s)
+    with pytest.raises(ValueError, match="unknown structure"):
+        meshioplusplus.compute_sdf(s, structure="quadtree", resolution=(2, 2, 2))
+    # resolution/cell_size size a voxel grid; an octree's finest cell is already
+    # determined by root_resolution and max_depth.
+    with pytest.raises(ValueError, match="octree"):
+        meshioplusplus.compute_sdf(s, structure="octree", resolution=(2, 2, 2))
+    with pytest.raises(ValueError, match="root_resolution"):
+        meshioplusplus.compute_sdf(s, structure="octree", root_resolution=0)
+    with pytest.raises(ValueError, match="band_cells"):
+        meshioplusplus.compute_sdf(s, structure="octree", band_cells=0.0)
+    with pytest.raises(ValueError, match="max_cells|above the limit"):
+        meshioplusplus.compute_sdf(s, resolution=(200, 200, 200), max_cells=1000)
+
+
+@pytest.mark.parametrize(
+    "structure, kwargs",
+    [
+        ("voxel", dict(resolution=(5, 5, 5))),
+        ("octree", dict(root_resolution=4, max_depth=2)),
+    ],
+)
+def test_compute_sdf_cpp_matches_python(structure, kwargs):
+    """Byte-identity across the C++-core/numpy-fallback boundary.
+
+    Composition parity: the voxel path is `grid` + `distance_to_surface`, the
+    octree path adds `refine`, and all three are already pinned twins -- so what
+    this actually checks is that the *driver* (the band selection and the
+    diagonal it is measured against) is transcribed correctly.
+    """
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus._sdf import _compute_sdf_py
+
+    surface = _sphere(2)
+    dkw = dict(
+        sign="pseudonormal",
+        weight="angle",
+        location="corner",
+        band=0.0,
+        record_closest_cell=False,
+        record_inside=False,
+        watertight_check="off",
+        surface_region="",
+        grid_cell_size=0.0,
+        max_winding_work=2.0e9,
+    )
+    got = core.compute_sdf(
+        surface,
+        structure,
+        list(kwargs["resolution"]) if "resolution" in kwargs else None,
+        None,
+        None,
+        0.0,
+        0.1,
+        int(kwargs.get("root_resolution", 8)),
+        int(kwargs.get("max_depth", 4)),
+        1.0,
+        True,
+        20000000,
+        dkw["sign"],
+        dkw["weight"],
+        dkw["location"],
+        dkw["band"],
+        False,
+        False,
+        dkw["watertight_check"],
+        "",
+        0.0,
+        2.0e9,
+    )
+    want = _compute_sdf_py(
+        surface,
+        structure,
+        {
+            "resolution": kwargs.get("resolution"),
+            "cell_size": None,
+            "bounds": None,
+            "padding": 0.0,
+            "padding_relative": 0.1,
+            "root_resolution": kwargs.get("root_resolution", 8),
+            "max_depth": kwargs.get("max_depth", 4),
+            "band_cells": 1.0,
+            "record_levels": True,
+            "max_cells": 20000000,
+        },
+        dkw,
+    )
+    assert got["max_depth"] == want["max_depth"]
+    assert got["dims"] == want["dims"]
+    a, b = np.asarray(got["mesh"].points), np.asarray(want["mesh"].points)
+    assert a.dtype == b.dtype and a.tobytes() == b.tobytes()
+    ca = np.asarray(got["mesh"].cells[0].data)
+    cb = np.asarray(want["mesh"].cells[0].data)
+    assert ca.dtype == cb.dtype and ca.tobytes() == cb.tobytes()
+    fa = np.asarray(got["mesh"].point_data["sdf:distance"])
+    fb = np.asarray(want["mesh"].point_data["sdf:distance"])
+    assert fa.dtype == fb.dtype and fa.tobytes() == fb.tobytes()
