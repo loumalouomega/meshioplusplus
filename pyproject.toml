@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "9.26.0"
+version = "9.27.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -68,6 +68,12 @@ arrow = ["pyarrow>=14"]
 # entry points need the extra.
 pandas = ["pandas>=2.0"]
 polars = ["polars>=1.0"]
+# The `write_dataset(format="zarr")` chunked-dataset backend (parquet rides
+# [arrow]; hdf5 rides h5py from [all]). Works with zarr-python 2.x and 3.x.
+# There is deliberately NO extra for torch/jax (to_torch/to_jax): torch's
+# default Linux wheel bundles CUDA at ~900 MB and JAX's accelerator variants
+# live in its own extras -- the CuPy no-extra precedent (see doc/ml.md).
+zarr = ["zarr>=2.16"]
 interop = [
     "pyvista>=0.44",
     "trimesh>=4.0",
