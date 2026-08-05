@@ -6,37 +6,6 @@ This document lists what is *not* built. Items are grouped by theme, each with a
 
 Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **XL** = a project in its own right.
 
-Multi-file / transient workflows (glob input, fan-in/fan-out, per-step pipeline
-execution, and Python's `TimeSeries` for random-access "hold a series as one
-value") shipped in full in v9.12.0 across every language surface including
-WASM — see [`doc/sequences.md`](sequences.md) — and so no longer appears here.
-
-Polyhedral meshes are first-class end to end as of v9.22.0: ragged blocks cross
-the flat C ABI in both directions, a geometric kernel measures them, they
-decompose into tetrahedra, and MED, EnSight, VTU, OpenFOAM and CGNS all read
-*and* write them — see [`doc/polyhedra.md`](polyhedra.md) — and so no longer
-appears here. Two leftovers live where they belong rather than here: OpenFOAM's
-writer is ASCII-only (a per-format encoding gap, recorded under
-[Quirks & limitations](formats/openfoam.md#quirks-limitations)), and `refine`
-and `decimate` still raise on a polyhedron, which is a refinement gap and is
-listed as one below.
-
-MDPA's arbitrary/gapped node ids (v9.13.0, read side) and original-id
-preservation on write, including a fixed `SubModelPart` stale-reference bug
-found along the way (v9.14.0, write side) shipped in full — see
-[`doc/formats/mdpa.md`](formats/mdpa.md#original-ids-preserved-on-write-v9-14-0)
-— and so no longer appears here.
-
-Signed distance fields for skin meshes, including the octree, shipped in full
-across v9.24.0 and v9.25.0: `grid`, `voxelize`, `sample_distance`,
-`distance_to_surface`, `surface_watertight_check` and `compute_sdf` (dense or
-adaptive) are live on every surface, `.vti` is the dense voxel dump, and both
-offsetting and inside/outside predicates turned out to *compose* rather than
-need operations of their own (`isosurface` at a non-zero level, and `crop`'s
-general `where=`) — see [`doc/sdf.md`](sdf.md), [`doc/voxelize.md`](voxelize.md),
-[`doc/formats/vti.md`](formats/vti.md) and [`doc/crop.md`](crop.md). It no longer
-appears here.
-
 ---
 
 ## 1. Machine-learning data handling
