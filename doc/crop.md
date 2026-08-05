@@ -53,6 +53,8 @@ f = meshioplusplus.distance_to_surface(mesh, skin, location="center")
 inside = meshioplusplus.crop(f, where=("sdf:distance", "<", 0.0))
 ```
 
+![crop(where=('sdf:distance', '<', 0.0)) keeping the inside of the bracket](/images/crop_where_sdf.png)
+
 and the same one mode also crops by `quality:*`, by a material id, by
 `partition:part`, or by anything [`data calc`](/data_operations) can produce. A
 dedicated crop-by-surface would have served exactly one of those.

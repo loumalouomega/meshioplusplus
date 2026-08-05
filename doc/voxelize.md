@@ -12,6 +12,8 @@ shell = mp.voxelize(mp.read("bunny.stl"), resolution=[64, 64, 64], fill="surface
 solid = mp.voxelize(mp.read("bunny.stl"), resolution=[64, 64, 64], fill="inside")
 ```
 
+![voxelize's three fill modes around the bracket's surface: all, surface, inside](/images/voxelize_fills.png)
+
 ## The output is an ordinary mesh, and that is the whole design
 
 A voxel grid here is one `hexahedron` cell block over a shared corner lattice —

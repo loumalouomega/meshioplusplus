@@ -153,6 +153,8 @@ That is the justification for the structure and it is also the test:
 `ComputeSdf.TheOctreeContourEqualsTheUniformGridsFromFewerCells`.
 :::
 
+![The octree's cell size grows visibly away from the surface; the uniform grid's does not, for the same contour](/images/octree_levels.png)
+
 `resolution`/`cell_size` size a **voxel** grid. With `structure="octree"` they are
 an **error**, not a preference: its finest cell is `root_resolution / 2**max_depth`
 and is therefore already determined, so accepting either would silently ignore
@@ -198,6 +200,8 @@ field = mp.compute_sdf(skin, resolution=(128,) * 3, padding_relative=0.3)
 shell = mp.isosurface(field, "sdf:distance", [-r, 0.0, r])
 inner, original, outer = mp.split(shell, by="region", tag="iso:index").values()
 ```
+
+![Inner, original and outer offset surfaces from one compute_sdf field, coloured by iso:value](/images/sdf_offset_shells.png)
 
 Two things to get right, both of which the composition makes explicit rather
 than hiding: the padding must exceed `r`, or the offset is clipped by the box;
