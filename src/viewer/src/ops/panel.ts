@@ -63,6 +63,7 @@ export class OpsPanel {
         this.wireSection();
         this.wireIsosurface();
         this.wireGradient();
+        this.wireVoxelize();
         this.renderChips();
     }
 
@@ -423,6 +424,20 @@ export class OpsPanel {
                     | 'green-gauss'
                     | 'least-squares',
                 location: $<HTMLSelectElement>('op-grad-location').value as 'point' | 'cell',
+            });
+        });
+    }
+
+    private wireVoxelize(): void {
+        $('op-vox-apply').addEventListener('click', () => {
+            const n = Math.max(1, Number($<HTMLInputElement>('op-vox-resolution').value) || 32);
+            this.push({
+                ...OP_DEFAULTS.voxelize,
+                resolution: [n, n, n],
+                fill: $<HTMLSelectElement>('op-vox-fill').value as
+                    | 'all'
+                    | 'surface'
+                    | 'inside',
             });
         });
     }

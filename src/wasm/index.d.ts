@@ -294,6 +294,23 @@ export type OpSpec =
       location?: 'point' | 'cell';
       output?: string;
       component?: number;
+    }
+  | {
+      /**
+       * A regular grid around the mesh. The ONLY step that replaces its input's
+       * geometry rather than transforming it: what comes out is a lattice, not
+       * the mesh that went in. Give exactly one of `resolution` and `cellSize`.
+       */
+      op: 'voxelize';
+      resolution?: number[];
+      cellSize?: number;
+      bounds?: number[];
+      padding?: number;
+      paddingRelative?: number;
+      fill?: VoxelFill;
+      attachOccupancy?: boolean;
+      maxCells?: number;
+      sign?: SdfSign;
     };
 
 /** Per-operation counters and caveats from a pipeline run. */
@@ -304,6 +321,18 @@ export interface OpReport {
 
 /** `gradient`'s differential operator. See doc/gradient.md. */
 export type GradientOperator = 'gradient' | 'divergence' | 'curl';
+
+/** Which cells `voxelize` keeps. See doc/voxelize.md. */
+export type VoxelFill = 'all' | 'surface' | 'inside';
+
+/** How a signed distance decides which side of the surface a point is on. */
+export type SdfSign = 'unsigned' | 'pseudonormal' | 'winding-number';
+
+/** Where a distance is evaluated on a mesh. */
+export type SdfLocation = 'corner' | 'center';
+
+/** What to do about a surface that is not watertight. */
+export type SdfWatertightCheck = 'off' | 'warn' | 'error';
 
 /** `gradient`'s reconstruction method. See doc/gradient.md. */
 export type GradientMethod = 'green-gauss' | 'least-squares';
@@ -952,6 +981,75 @@ export interface MeshioPlusPlusModule {
     component?: number,
     recordParentIds?: boolean,
   ): Mesh;
+
+  /**
+   * A regular hexahedron lattice from nothing — the only entry point here that
+   * creates a mesh rather than transforming one. Points run x fastest, then y,
+   * then z; every cell is a right parallelepiped.
+   * @throws {Error} on a negative cell count, a non-positive spacing, or a grid
+   *   above `maxCells`.
+   */
+  grid(dims: number[], origin?: number[] | null, spacing?: number[] | null,
+       maxCells?: number): Mesh;
+
+  /**
+   * Build a regular grid around a mesh. Give exactly one of `resolution` and
+   * `cellSize`; `fill` selects the whole bounding box, only the cells a triangle
+   * passes through, or only the cells inside the surface.
+   * @throws {Error} when neither or both size options are given, on an unknown
+   *   `fill`/`sign`, or when the grid exceeds `maxCells`.
+   */
+  voxelize(
+    mesh: Mesh,
+    resolution?: number[] | null,
+    cellSize?: number,
+    bounds?: number[] | null,
+    padding?: number,
+    paddingRelative?: number,
+    fill?: VoxelFill,
+    sign?: SdfSign,
+    attachOccupancy?: boolean,
+    maxCells?: number,
+    watertightCheck?: SdfWatertightCheck,
+  ): {
+    mesh: Mesh;
+    dims: number[];
+    origin: number[];
+    spacing: number[];
+    numOccupied: number;
+  };
+
+  /** What is wrong with a surface, in numbers rather than a bare flag. */
+  surfaceWatertightCheck(mesh: Mesh): {
+    boundaryEdges: number;
+    nonManifoldEdges: number;
+    inconsistentPairs: number;
+    degenerateTriangles: number;
+    watertight: boolean;
+  };
+
+  /**
+   * Signed distances from a flat `[x0,y0,z0, x1,y1,z1, …]` array of query points
+   * to a surface. Negative is inside.
+   * @throws {Error} when the array length is not a multiple of three, or the
+   *   surface has no triangles.
+   */
+  sampleDistance(surface: Mesh, points: number[], sign?: SdfSign, band?: number,
+                 watertightCheck?: SdfWatertightCheck): Float64Array;
+
+  /**
+   * Attach the signed distance from a query mesh's points (or cell centres) to a
+   * surface, as `sdf:distance`.
+   */
+  distanceToSurface(
+    query: Mesh,
+    surface: Mesh,
+    sign?: SdfSign,
+    location?: SdfLocation,
+    band?: number,
+    recordInside?: boolean,
+    watertightCheck?: SdfWatertightCheck,
+  ): { mesh: Mesh; numBanded: number; quality: object };
 
   /**
    * Field differential operators: the gradient, divergence or curl of a

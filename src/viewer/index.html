@@ -266,6 +266,29 @@
             </p>
             <button type="button" id="op-grad-apply">Apply</button>
           </details>
+
+          <details class="op">
+            <summary>Voxelize</summary>
+            <label
+              ><span>resolution</span>
+              <input id="op-vox-resolution" type="number" min="1" max="256" value="32"
+            /></label>
+            <label
+              ><span>fill</span>
+              <select id="op-vox-fill">
+                <option value="surface">surface</option>
+                <option value="inside">inside</option>
+                <option value="all">all</option>
+              </select></label
+            >
+            <p class="hint" id="op-vox-note">
+              A regular grid around the mesh. Unlike every other operation here
+              this one <em>replaces</em> the geometry — what you see afterwards is
+              the lattice, not the mesh that went in. Undo restores it.
+              <code>inside</code> needs a watertight surface.
+            </p>
+            <button type="button" id="op-vox-apply">Apply</button>
+          </details>
         </section>
 
         <section id="convert-section" hidden>

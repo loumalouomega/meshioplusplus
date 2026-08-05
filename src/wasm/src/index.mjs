@@ -152,6 +152,11 @@ function resolveVariant(variant) {
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
+ *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
+ *   voxelize: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, fill?: string, sign?: string, attachOccupancy?: boolean, maxCells?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], numOccupied: number},
+ *   surfaceWatertightCheck: (mesh: Mesh) => {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean},
+ *   sampleDistance: (surface: Mesh, points: number[], sign?: string, band?: number, watertightCheck?: string) => Float64Array,
+ *   distanceToSurface: (query: Mesh, surface: Mesh, sign?: string, location?: string, band?: number, recordInside?: boolean, watertightCheck?: string) => {mesh: Mesh, numBanded: number, quality: object},
  *   gradient: (mesh: Mesh, array: string, operator?: string, method?: string, location?: string, output?: string, component?: number, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
@@ -351,6 +356,37 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             Module.cropPlane(mesh, point, normal, mode, recordIds),
         slice: (mesh, origin, normal, recordParentIds = false) =>
             Module.slice(mesh, origin, normal, recordParentIds),
+        grid: (dims, origin = null, spacing = null, maxCells = 20000000) =>
+            Module.grid(dims, origin, spacing, maxCells),
+        voxelize: (
+            mesh,
+            resolution = null,
+            cellSize = 0,
+            bounds = null,
+            padding = 0,
+            paddingRelative = 0,
+            fill = 'all',
+            sign = 'pseudonormal',
+            attachOccupancy = false,
+            maxCells = 20000000,
+            watertightCheck = 'warn',
+        ) =>
+            Module.voxelize(mesh, resolution, cellSize, bounds, padding, paddingRelative,
+                fill, sign, attachOccupancy, maxCells, watertightCheck),
+        surfaceWatertightCheck: (mesh) => Module.surfaceWatertightCheck(mesh),
+        sampleDistance: (surface, points, sign = 'pseudonormal', band = 0, watertightCheck = 'warn') =>
+            Module.sampleDistance(surface, points, sign, band, watertightCheck),
+        distanceToSurface: (
+            query,
+            surface,
+            sign = 'pseudonormal',
+            location = 'corner',
+            band = 0,
+            recordInside = false,
+            watertightCheck = 'warn',
+        ) =>
+            Module.distanceToSurface(query, surface, sign, location, band, recordInside,
+                watertightCheck),
         isosurface: (mesh, array, isovalues, component = -1, recordParentIds = false) =>
             Module.isosurface(
                 mesh,

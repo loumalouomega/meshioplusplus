@@ -107,6 +107,22 @@ export type OpSpec =
           method: 'green-gauss' | 'least-squares';
           location: 'point' | 'cell';
           output: string;
+      }
+    | {
+          /**
+           * A regular hexahedron grid around the mesh. The ONLY op here that
+           * replaces the geometry rather than transforming it: the lattice is
+           * what you see afterwards, not the mesh that went in. Undo restores
+           * it, since the pipeline is replayed against the original bytes.
+           */
+          op: 'voxelize';
+          /**
+           * Cell counts per axis. The panel offers one number and sends it three
+           * times: the spec goes to `convertSurfaceOps` verbatim, so it has to be
+           * the wire shape rather than a friendlier one.
+           */
+          resolution: number[];
+          fill: 'all' | 'surface' | 'inside';
       };
 
 export type OpName = OpSpec['op'];
@@ -226,6 +242,7 @@ export const OP_DEFAULTS: { [K in OpName]: Extract<OpSpec, { op: K }> } = {
         location: 'point',
         output: '',
     },
+    voxelize: { op: 'voxelize', resolution: [32, 32, 32], fill: 'surface' },
 };
 
 /** Human label for a pipeline chip. */
@@ -253,5 +270,7 @@ export function describeOp(spec: OpSpec): string {
             return `isosurface · ${spec.array} = ${spec.isovalue}`;
         case 'gradient':
             return `${spec.operator} · ${spec.array}`;
+        case 'voxelize':
+            return `voxelize · ${spec.fill} ${spec.resolution[0]}³`;
     }
 }
