@@ -72,6 +72,7 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -420,6 +421,9 @@ void print_usage(std::ostream& os) {
           "  clean                   Weld / prune / de-dup a mesh\n"
           "  crop                    Subset by bounding box or half-space\n"
           "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
+          "  voxelize                Regular hexahedron grid around a mesh\n"
+          "                            exactly one of --resolution/--cell-size;\n"
+          "                            --fill all|surface|inside\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
           "  split                   Partition into multiple files "
@@ -1234,6 +1238,79 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     Mesh out = meshioplusplus::slice(mesh, options);
 
     write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_voxelize(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"resolution", {}, true},
+                                  {"cell-size", {}, true},
+                                  {"bounds", {}, true},
+                                  {"padding", {}, true},
+                                  {"padding-relative", {}, true},
+                                  {"fill", {}, true},
+                                  {"sign", {}, true},
+                                  {"attach-occupancy", {}, false},
+                                  {"max-cells", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("voxelize requires exactly INFILE and OUTFILE");
+
+    const bool has_res = p.values.count("resolution") != 0;
+    const bool has_cell = p.values.count("cell-size") != 0;
+    if (has_res == has_cell)
+        throw std::runtime_error("voxelize: give exactly one of --resolution and --cell-size");
+
+    meshioplusplus::VoxelOptions options;
+    if (has_res) {
+        // parse_doubles rather than the int64 parser, which is defined further
+        // down this file; the values are small counts either way.
+        auto v = parse_doubles(opt_value(p, "resolution"));
+        if (v.size() != 3)
+            throw std::runtime_error("voxelize: --resolution expects 'nx,ny,nz'");
+        options.mResolution = std::array<std::int64_t, 3>{{static_cast<std::int64_t>(v[0]),
+                                                          static_cast<std::int64_t>(v[1]),
+                                                          static_cast<std::int64_t>(v[2])}};
+    } else {
+        options.mCellSize = std::stod(opt_value(p, "cell-size"));
+    }
+    // Negatives need the --bounds= form (the parser rule shared with --bbox).
+    if (p.values.count("bounds")) {
+        auto v = parse_doubles(opt_value(p, "bounds"));
+        if (v.size() != 6)
+            throw std::runtime_error("voxelize: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
+        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
+    }
+    if (p.values.count("padding"))
+        options.mPadding = std::stod(opt_value(p, "padding"));
+    if (p.values.count("padding-relative"))
+        options.mPaddingRelative = std::stod(opt_value(p, "padding-relative"));
+    options.mFill = meshioplusplus::voxel_fill_from_name(opt_value(p, "fill", "all"));
+    options.mDistance.mSign =
+        meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
+    options.mAttachOccupancy = has_flag(p, "attach-occupancy");
+    if (p.values.count("max-cells"))
+        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    // Only the inside fill depends on the surface being closed, so only it warns.
+    options.mDistance.mWatertightCheck = options.mFill == meshioplusplus::VoxelFill::Inside
+                                             ? meshioplusplus::SdfWatertightCheck::Warn
+                                             : meshioplusplus::SdfWatertightCheck::Off;
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::VoxelResult r = meshioplusplus::voxelize(mesh, options);
+
+    if (!has_flag(p, "quiet")) {
+        std::cout << "voxelized (" << opt_value(p, "fill", "all") << ")\n";
+        std::cout << "  grid:           " << r.mDims[0] << " x " << r.mDims[1] << " x "
+                  << r.mDims[2] << "\n";
+        std::cout << "  cell size:      " << r.mSpacing[0] << ", " << r.mSpacing[1] << ", "
+                  << r.mSpacing[2] << "\n";
+        std::cout << "  cells kept:     " << r.mNumOccupied << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -2527,6 +2604,8 @@ int main(int argc, char** argv) {
             return cmd_slice(rest);
         if (cmd == "isosurface")
             return cmd_isosurface(rest);
+        if (cmd == "voxelize")
+            return cmd_voxelize(rest);
         if (cmd == "split")
             return cmd_split(rest);
         if (cmd == "regions")

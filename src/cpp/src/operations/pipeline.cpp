@@ -48,6 +48,7 @@
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -233,6 +234,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
+        {"Voxelize",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
+          "AttachOccupancy", "MaxCells", "Sign"}},
         {"Transform",
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
@@ -557,6 +561,34 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
     }
+    if (op == "Voxelize") {
+        // A regular grid around the mesh. Unlike every other step this one does
+        // not transform its input's geometry -- it replaces it -- which is
+        // exactly why it is useful as a pipeline step: read a skin, voxelize it,
+        // write a grid.
+        VoxelOptions opts;
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution = std::array<std::int64_t, 3>{{resolution[0], resolution[1],
+                                                            resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{{bounds[0], bounds[1], bounds[2], bounds[3],
+                                                   bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.0);
+        opts.mFill = voxel_fill_from_name(pipe_text(rStep, "Fill", "all"));
+        opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        VoxelResult r = voxelize(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
+        return std::move(r.mMesh);
+    }
+
     if (op == "Isosurface") {
         // The level set of a scalar point_data field -- slice's data-driven
         // sibling, a surface one topological dimension lower.
