@@ -2452,6 +2452,105 @@ TEST(CApi, VoxelOptsInitDefaultsAndVoxelize) {
     mio_mesh_free(cube);
 }
 
+TEST(CApi, ComputeSdfOptsInitDefaultsAndVoxelStructure) {
+    mio_compute_sdf_opts opts;
+    mio_compute_sdf_opts_init(&opts);
+    EXPECT_EQ(opts.structure, MIO_SDF_VOXEL);
+    EXPECT_EQ(opts.root_resolution, 8);
+    EXPECT_EQ(opts.max_depth, 4);
+    EXPECT_DOUBLE_EQ(opts.band_cells, 1.0);
+    EXPECT_DOUBLE_EQ(opts.padding_relative, 0.1);
+    EXPECT_EQ(opts.max_cells, 20000000);
+    EXPECT_EQ(opts.resolution, nullptr);
+    // The embedded distance options are initialized too, or a caller who only
+    // touched the outer struct would get sign = Unsigned by accident.
+    EXPECT_EQ(opts.distance.sign, MIO_SDF_PSEUDONORMAL);
+    EXPECT_DOUBLE_EQ(opts.distance.max_winding_work, 2.0e9);
+
+    mio_mesh* cube = capi_cube_surface();
+    const std::int64_t res[3] = {4, 4, 4};
+    opts.resolution = res;
+    opts.distance.watertight_check = MIO_SDF_WATERTIGHT_OFF;
+
+    std::int64_t dims[3] = {0, 0, 0}, depth = -1, banded = -1;
+    double origin[3] = {0, 0, 0}, spacing[3] = {0, 0, 0};
+    mio_surface_quality q{};
+    mio_mesh* g = mio_compute_sdf(cube, &opts, dims, origin, spacing, &depth, &banded, &q);
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(dims[0], 4);
+    EXPECT_EQ(depth, 0);
+    EXPECT_EQ(banded, 0);
+    EXPECT_NE(q.watertight, 0);
+    EXPECT_EQ(mio_mesh_num_point_data(g), 1);
+    mio_mesh_free(g);
+
+    // Every out-param is nullable.
+    mio_mesh* g2 =
+        mio_compute_sdf(cube, &opts, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    ASSERT_NE(g2, nullptr);
+    mio_mesh_free(g2);
+
+    // NULL options is an error, not a default: a sizing must be chosen.
+    EXPECT_EQ(mio_compute_sdf(cube, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr),
+              nullptr);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, ComputeSdfOctreeRefinesAndRejectsAVoxelSizing) {
+    mio_mesh* cube = capi_cube_surface();
+    mio_compute_sdf_opts opts;
+    mio_compute_sdf_opts_init(&opts);
+    opts.structure = MIO_SDF_OCTREE;
+    opts.root_resolution = 4;
+    opts.max_depth = 2;
+    opts.distance.watertight_check = MIO_SDF_WATERTIGHT_OFF;
+
+    std::int64_t depth = -1;
+    mio_mesh* g = mio_compute_sdf(cube, &opts, nullptr, nullptr, nullptr, &depth, nullptr, nullptr);
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(depth, 2);
+    std::int64_t nc = 0, npc = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(g, 0, &nc, &npc, nullptr), MIO_OK);
+    EXPECT_GT(nc, 64);
+    EXPECT_LT(nc, 16 * 16 * 16);
+    mio_mesh_free(g);
+
+    // resolution/cell_size size a voxel grid; an octree's finest cell is already
+    // determined, so accepting either would silently ignore one of the two.
+    const std::int64_t res[3] = {8, 8, 8};
+    opts.resolution = res;
+    EXPECT_EQ(mio_compute_sdf(cube, &opts, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr),
+              nullptr);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, CropPredicate) {
+    mio_mesh* m = mio_mesh_create();
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0,
+                                     0, 1, 0, 1, 1, 0, 2, 1, 0, 3, 1, 0};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    const std::vector<std::int64_t> conn = {0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6};
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 3, 4, MIO_INT64, conn.data()), MIO_OK);
+    const std::vector<double> t = {0.0, 1.0, 2.0};
+    const std::int64_t shape[1] = {3};
+    ASSERT_EQ(mio_mesh_append_cell_data(m, "t", MIO_FLOAT64, 1, shape, t.data()), MIO_OK);
+
+    mio_mesh* kept = mio_crop_predicate(m, "t", MIO_REFINE_LT, 1.5, 0);
+    ASSERT_NE(kept, nullptr);
+    std::int64_t nc = 0, npc = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(kept, 0, &nc, &npc, nullptr), MIO_OK);
+    EXPECT_EQ(nc, 2);
+    EXPECT_EQ(mio_mesh_num_points(kept), 6);
+    mio_mesh_free(kept);
+
+    // An unknown array and an out-of-range comparison both fail rather than
+    // defaulting.
+    EXPECT_EQ(mio_crop_predicate(m, "nope", MIO_REFINE_LT, 0.0, 0), nullptr);
+    EXPECT_EQ(mio_crop_predicate(m, "t", 99, 0.0, 0), nullptr);
+    EXPECT_EQ(mio_crop_predicate(nullptr, "t", MIO_REFINE_LT, 0.0, 0), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, VoxelizeInsideKeepsTheInterior) {
     mio_mesh* cube = capi_cube_surface();
     mio_voxel_opts opts;
