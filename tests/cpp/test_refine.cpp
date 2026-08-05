@@ -760,6 +760,231 @@ TEST(RefineSelective, TheConformingClosuresLeaveNoHangingArray) {
     }
 }
 
+// --- multi-pass balanced: tearing, and reporting every constrained node -----
+//
+// Two more counting oracles, for the two things a *second* balanced pass can get
+// wrong. Both are computed from the output's geometry and connectivity alone, so
+// neither shares a code path with refine's own bookkeeping, and
+// `TheTearAndReportOraclesActuallyFire` asserts each of them fires.
+
+// (4) Distinct node ids at the same position, both referenced by cells: the mesh
+// is torn, not merely 1-irregular. New nodes are order-independent corner means,
+// so equality here is exact rather than approximate.
+std::size_t count_torn_positions(const Mesh& rMesh) {
+    const std::size_t dim = rMesh.PointDim();
+    const double* p = rMesh.Points().As<double>();
+    std::set<std::int64_t> used;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::int64_t* conn = cb.Conn().As<std::int64_t>();
+        for (std::size_t i = 0; i < cb.NumCells() * cb.NodesPerCell(); ++i)
+            used.insert(conn[i]);
+    }
+    std::map<std::array<double, 3>, std::size_t> counts;
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
+        if (used.find(static_cast<std::int64_t>(i)) == used.end())
+            continue;
+        std::array<double, 3> key{0, 0, 0};
+        for (std::size_t k = 0; k < dim && k < 3; ++k)
+            key[k] = p[i * dim + k];
+        ++counts[key];
+    }
+    std::size_t torn = 0;
+    for (const auto& [pos, n] : counts)
+        torn += n > 1 ? 1 : 0;
+    return torn;
+}
+
+// (5) Constrained nodes the `refine:hanging` array fails to name. A node is
+// constrained when it sits at an edge midpoint or quad-face centre of a cell
+// that does not reference it. Both entity kinds matter: an edge-only oracle
+// silently passes a mesh whose face centres are unreported.
+std::size_t count_unreported_hanging(const Mesh& rMesh) {
+    const std::size_t dim = rMesh.PointDim();
+    const double* p = rMesh.Points().As<double>();
+    const auto coord = [&](std::int64_t node, std::size_t k) {
+        return p[static_cast<std::size_t>(node) * dim + k];
+    };
+    std::map<std::array<double, 3>, std::int64_t> at;
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
+        std::array<double, 3> key{0, 0, 0};
+        for (std::size_t k = 0; k < dim && k < 3; ++k)
+            key[k] = p[i * dim + k];
+        at.emplace(key, static_cast<std::int64_t>(i));
+    }
+
+    std::set<std::int64_t> constrained;
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType type = meshioplusplus::cell_type_from_name(std::string(cb.Type()));
+        const std::size_t npc = cb.NodesPerCell();
+        const std::int64_t* conn = cb.Conn().As<std::int64_t>();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            const std::int64_t* row = conn + c * npc;
+            std::set<std::int64_t> own(row, row + npc);
+            std::vector<std::array<double, 3>> spots;
+            for (const d::CellEdgePair& e : d::cell_refine_edges(type)) {
+                std::array<double, 3> mid{0, 0, 0};
+                for (std::size_t k = 0; k < dim && k < 3; ++k)
+                    mid[k] = (coord(row[e[0]], k) + coord(row[e[1]], k)) * 0.5;
+                spots.push_back(mid);
+            }
+            for (const d::CellQuadFace& f : d::cell_refine_quad_faces(type)) {
+                std::array<double, 3> ctr{0, 0, 0};
+                for (std::size_t k = 0; k < dim && k < 3; ++k)
+                    ctr[k] = (coord(row[f[0]], k) + coord(row[f[1]], k) + coord(row[f[2]], k) +
+                              coord(row[f[3]], k)) *
+                             0.25;
+                spots.push_back(ctr);
+            }
+            for (const std::array<double, 3>& s : spots) {
+                auto it = at.find(s);
+                if (it != at.end() && own.find(it->second) == own.end())
+                    constrained.insert(it->second);
+            }
+        }
+    }
+
+    std::set<std::int64_t> reported;
+    if (rMesh.HasPointData("refine:hanging")) {
+        const NDArray& a = rMesh.PointData("refine:hanging");
+        for (std::size_t i = 0; i < rMesh.NumPoints(); ++i)
+            if (meshioplusplus::detail::read_int(a, i) != 0)
+                reported.insert(static_cast<std::int64_t>(i));
+    }
+    std::size_t missed = 0;
+    for (std::int64_t node : constrained)
+        missed += reported.find(node) == reported.end() ? 1 : 0;
+    // A node reported but not constrained is just as wrong, and would otherwise
+    // let a "mark everything" implementation pass.
+    for (std::int64_t node : reported)
+        missed += constrained.find(node) == constrained.end() ? 1 : 0;
+    return missed;
+}
+
+TEST(RefineSelective, TheTearAndReportOraclesActuallyFire) {
+    // (4) fires on a mesh carrying two referenced nodes at one position.
+    {
+        Mesh m = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {1, 0, 0}}, "triangle",
+                               {{0, 1, 2}, {0, 2, 3}, {4, 2, 3}});
+        EXPECT_EQ(count_torn_positions(m), 1u) << "the tear oracle does not fire";
+        Mesh clean = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, "triangle",
+                                   {{0, 1, 2}, {0, 2, 3}});
+        EXPECT_EQ(count_torn_positions(clean), 0u);
+    }
+    // (5) fires on a mesh with a genuine hanging node and no array to name it:
+    // the big triangle spans the edge whose midpoint node 4 occupies.
+    {
+        Mesh m = mt::make_mesh({{0, 0, 0}, {2, 0, 0}, {1, 2, 0}, {2, 2, 0}, {1, 0, 0}}, "triangle",
+                               {{0, 1, 2}, {1, 3, 2}, {0, 4, 2}});
+        EXPECT_GT(count_unreported_hanging(m), 0u) << "the report oracle does not fire";
+    }
+}
+
+TEST(RefineSelective, MultiPassBalancedDoesNotTearTheMesh) {
+    // Refining one cell twice draws its coarse neighbours in by the balance rule.
+    // Each of those already carries hanging nodes from the first pass, and their
+    // own refinement must reuse them rather than allocate a coincident second
+    // node -- which is what refine:entity is for.
+    for (int levels : {2, 3}) {
+        Mesh m = hex_grid(4);
+        RefineOptions o = cells_opt({0}, RefineClosure::Balanced);
+        o.mLevels = levels;
+        o.mRecordLevels = true;
+        const RefineResult res = refine(m, o);
+        EXPECT_EQ(count_torn_positions(res.mMesh), 0u)
+            << "levels=" << levels << ": the mesh is torn";
+        EXPECT_LE(max_level_gap(res.mMesh), 1) << "levels=" << levels;
+    }
+}
+
+TEST(RefineSelective, MultiPassBalancedReportsEveryConstrainedNode) {
+    // The array must name exactly the constrained nodes -- neither a superset nor
+    // a subset, which is what doc/refine.md promises. Stating the rule over the
+    // *input* cells' entities under-reports here: a cell the balance rule draws
+    // in has children whose sub-edges the input cell never had.
+    for (int levels : {1, 2, 3}) {
+        Mesh m = hex_grid(4);
+        RefineOptions o = cells_opt({0}, RefineClosure::Balanced);
+        o.mLevels = levels;
+        o.mRecordLevels = true;
+        const RefineResult res = refine(m, o);
+        EXPECT_EQ(count_unreported_hanging(res.mMesh), 0u) << "levels=" << levels;
+    }
+}
+
+TEST(RefineSelective, EntityKeysDescribeTheNodesTheyName) {
+    Mesh m = hex_grid(3);
+    RefineOptions o = cells_opt({13}, RefineClosure::Balanced);
+    const RefineResult res = refine(m, o);
+    ASSERT_TRUE(res.mMesh.HasPointData("refine:entity"));
+    const NDArray& keys = res.mMesh.PointData("refine:entity");
+    const std::size_t dim = res.mMesh.PointDim();
+    const double* p = res.mMesh.Points().As<double>();
+    std::size_t keyed = 0;
+    for (std::size_t i = 0; i < res.mMesh.NumPoints(); ++i) {
+        std::array<std::int64_t, 4> key{};
+        for (std::size_t k = 0; k < 4; ++k)
+            key[k] = meshioplusplus::detail::read_int(keys, i * 4 + k);
+        if (key[3] < 0)
+            continue;  // sentinel: an original point or a body centre
+        ++keyed;
+        const std::size_t first = key[0] < 0 ? 2 : 0;
+        for (std::size_t k = 0; k < dim; ++k) {
+            double sum = 0.0;
+            for (std::size_t c = first; c < 4; ++c)
+                sum += p[static_cast<std::size_t>(key[c]) * dim + k];
+            EXPECT_DOUBLE_EQ(p[i * dim + k], sum / static_cast<double>(4 - first));
+        }
+    }
+    EXPECT_GT(keyed, 0u) << "no point carries a real entity key";
+}
+
+TEST(RefineSelective, TheConformingClosuresAttachNoEntityArray) {
+    // The array is what keeps the conforming closures' output byte-identical to
+    // what it was before this bookkeeping existed: they cannot tear, so they must
+    // not pay for it.
+    Mesh m = hex_grid(3);
+    for (RefineClosure closure : {RefineClosure::RedGreen, RefineClosure::Propagate}) {
+        RefineOptions o = cells_opt({13}, closure);
+        o.mLevels = 2;
+        EXPECT_FALSE(refine(m, o).mMesh.HasPointData("refine:entity"));
+    }
+    RefineOptions uniform;  // no selector at all
+    uniform.mLevels = 2;
+    EXPECT_FALSE(refine(m, uniform).mMesh.HasPointData("refine:entity"));
+}
+
+TEST(RefineSelective, AStaleEntityArrayIsIgnoredRatherThanTrusted) {
+    // The keys name point indices, which refine never renumbers but other
+    // operations do. Trusting a stale one would graft an entity's node onto
+    // another's, so a key that no longer reproduces its own point's coordinates
+    // invalidates the whole array -- refine falls back to allocating fresh nodes,
+    // which is merely the old behaviour rather than a wrong answer.
+    Mesh stale = hex_grid(3);
+    NDArray bad =
+        NDArray::Uninit(meshioplusplus::DType::Int64, {stale.NumPoints(), std::size_t{4}});
+    std::int64_t* dst = bad.As<std::int64_t>();
+    std::fill(dst, dst + stale.NumPoints() * 4, static_cast<std::int64_t>(-1));
+    // Point 0 is an original corner; claiming it is the midpoint of edge (1, 2)
+    // is exactly the shape a renumbering leaves behind.
+    dst[2] = 1;
+    dst[3] = 2;
+    stale.AddPointData("refine:entity", std::move(bad));
+
+    RefineOptions o = cells_opt({13}, RefineClosure::Balanced);
+    const RefineResult res = refine(stale, o);
+    const RefineResult reference = refine(hex_grid(3), o);
+
+    // Dropped, not obeyed: the output is exactly what a mesh carrying no array at
+    // all produces.
+    ASSERT_EQ(res.mMesh.NumPoints(), reference.mMesh.NumPoints());
+    ASSERT_EQ(res.mMesh.Cells(0).NumCells(), reference.mMesh.Cells(0).NumCells());
+    const std::int64_t* got = res.mMesh.Cells(0).Conn().As<std::int64_t>();
+    const std::int64_t* want = reference.mMesh.Cells(0).Conn().As<std::int64_t>();
+    for (std::size_t i = 0; i < reference.mMesh.Cells(0).NumCells() * 8; ++i)
+        ASSERT_EQ(got[i], want[i]) << "at " << i;
+    EXPECT_EQ(count_unreported_hanging(res.mMesh), 0u);
+}
+
 TEST(RefineSelective, BalancedDoesNotPropagateOnAMeshOfUniformLevel) {
     // The whole point: with every cell at the same level, refining one puts
     // nothing else out of balance, so nothing else is touched.
