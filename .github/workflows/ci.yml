@@ -714,14 +714,17 @@ jobs:
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov \
             libgl1 libglx-mesa0
 
-      # pyvista/trimesh/pyarrow/pandas/polars are here (not just the dedicated
-      # `interop` job) so tests/python/test_interop.py's gated half --
-      # to_pyvista/from_pyvista/to_trimesh/from_trimesh/to_arrow/from_arrow/
-      # write_parquet/read_parquet/to_pandas/to_polars -- is exercised under
-      # coverage instrumentation. The `interop` job runs the same tests but
-      # uploads no coverage; without these installed here, that code is real
-      # and tested but shows up as 0% in the Codecov patch check, since
-      # instrumented + uploaded is the only thing that counts.
+      # pyvista/trimesh/pyarrow/pandas/polars/zarr are here (not just the
+      # dedicated `interop` job) so tests/python/test_interop.py's and
+      # test_ml.py's gated halves -- to_pyvista/from_pyvista/to_trimesh/
+      # from_trimesh/to_arrow/from_arrow/write_parquet/read_parquet/to_pandas/
+      # to_polars/write_dataset -- are exercised under coverage
+      # instrumentation. The `interop` job runs the same tests but uploads no
+      # coverage; without these installed here, that code is real and tested
+      # but shows up as 0% in the Codecov patch check, since instrumented +
+      # uploaded is the only thing that counts. torch/jax are deliberately
+      # absent (heavyweight wheels; to_torch/to_jax tests importorskip -- the
+      # CuPy pattern, doc/ml.md).
       # libgl1/libglx-mesa0 above are for pyvista's VTK import, not rendering.
       - name: Install build and test deps
         run: |
@@ -731,7 +734,7 @@ jobs:
           # NOT apply here and an unbounded `mcp` resolves 2.0.0, which removed
           # mcp.server.fastmcp. Keep the two in step.
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
-            pyvista trimesh pyarrow pandas polars "mcp<2"
+            pyvista trimesh pyarrow pandas polars zarr "mcp<2"
 
       # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
       # so re-runs reuse objects. compiler-check=content keeps hits valid across
@@ -897,7 +900,7 @@ jobs:
   # (they skip; the device path is not covered by public CI -- doc/gpu.md).
   # --------------------------------------------------------------------------
   interop:
-    name: Interop (PyVista, trimesh, Arrow, pandas, polars)
+    name: Interop (PyVista, trimesh, Arrow, pandas, polars, ML)
     needs: [lint]
     runs-on: ubuntu-latest
     steps:
@@ -916,13 +919,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgl1 libglx-mesa0
 
-      - name: Install meshio++ with the interop extra
+      - name: Install meshio++ with the interop and zarr extras
         run: |
           python -m pip install --upgrade pip
-          pip install ".[interop]" pytest
+          pip install ".[interop,zarr]" pytest
 
-      - name: Interop tests
-        run: python -m pytest tests/python/test_interop.py tests/python/test_gpu.py -v
+      - name: Interop and ML tests
+        run: python -m pytest tests/python/test_interop.py tests/python/test_gpu.py tests/python/test_ml.py -v
 
   # --------------------------------------------------------------------------
   # The MCP server with its extra installed. The default `test` matrix keeps
