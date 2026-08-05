@@ -584,11 +584,14 @@ tm = meshioplusplus.to_trimesh(mesh)        # a trimesh.Trimesh (triangles only)
 
 Both directions exist (`from_pyvista`, `from_trimesh`). Mixed-type meshes are the normal case, and named regions ride along as `region:<name>` mask arrays plus a metadata sidecar, so even a gmsh physical group's integer tag survives a PyVista round-trip. `zero_copy_only=True` turns any step that would copy into a named error instead of a silent one.
 
-Data arrays also export to Apache Arrow and Parquet for the analytics stack:
+Data arrays also export to Apache Arrow and Parquet for the analytics stack, or straight to a pandas / polars frame with no Parquet detour:
 
 <!--pytest-codeblocks:skip-->
 
 ```python
+df = meshioplusplus.to_pandas(mesh, location="cell")    # a pandas.DataFrame
+pf = meshioplusplus.to_polars(mesh, location="point")   # a polars.DataFrame
+
 meshioplusplus.write_parquet(mesh, "cells.parquet", location="cell")
 
 import pandas
@@ -601,9 +604,9 @@ pandas.read_parquet("cells.parquet").head()
 meshioplusplus data export bracket.msh cells.parquet --location cell
 ```
 
-Multi-component arrays keep their shape (as Arrow `fixed_size_list` columns), and the mesh's counts, cell types and region names travel in the schema metadata. This is a **data** export, not a mesh format — it does not round-trip geometry and is deliberately not in the format registry.
+Multi-component arrays keep their shape wherever the target can hold it — Arrow `fixed_size_list` columns, polars `pl.Array` columns — while `to_pandas` (whose columns are one-dimensional) flattens them into suffixed columns `v_0`/`v_1`/`v_2` with the grouping recorded in `df.attrs`. The mesh's counts, cell types and region names travel in the Arrow schema metadata / `df.attrs`. This is a **data** export, not a mesh format — it does not round-trip geometry and is deliberately not in the format registry.
 
-PyVista, trimesh and pyarrow are Python-only optional extras (`pip install meshioplusplus[interop]`, or one at a time with `[pyvista]` / `[trimesh]` / `[arrow]`). They are kept out of `[all]`, which means "the optional dependencies the *formats* need". None of them reaches the C++/WebAssembly/C/Fortran core, which stays dependency-free.
+PyVista, trimesh, pyarrow, pandas and polars are Python-only optional extras (`pip install meshioplusplus[interop]`, or one at a time with `[pyvista]` / `[trimesh]` / `[arrow]` / `[pandas]` / `[polars]`). They are kept out of `[all]`, which means "the optional dependencies the *formats* need". None of them reaches the C++/WebAssembly/C/Fortran core, which stays dependency-free.
 
 Meshes also hand off to the GPU through the standard exchange protocols — DLPack as the primary export (which covers host arrays too), `__cuda_array_interface__` consumed on the way back:
 
@@ -717,7 +720,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.25.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.26.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
@@ -866,6 +869,8 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [PyVista](https://pyvista.org/) | `[pyvista]` / `[interop]` | `to_pyvista()` / `from_pyvista()` | BSD-3-Clause |
 | [trimesh](https://trimesh.org/) | `[trimesh]` / `[interop]` | `to_trimesh()` / `from_trimesh()` | MIT |
 | [pyarrow](https://arrow.apache.org/) | `[arrow]` / `[interop]` | the Arrow/Parquet data export | Apache-2.0 |
+| [pandas](https://pandas.pydata.org/) | `[pandas]` / `[interop]` | `to_pandas()` | BSD-3-Clause |
+| [polars](https://pola.rs/) | `[polars]` / `[interop]` | `to_polars()` | MIT |
 | [CuPy](https://cupy.dev/) | — (wheels are CUDA-version-specific, e.g. `cupy-cuda13x` — see the GPU docs) | `to_cupy()` / `from_cupy()` | MIT |
 | [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) | `[mcp]` | the `meshioplusplus-mcp` server exposing every operation to AI agents | MIT |
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |
