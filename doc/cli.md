@@ -775,10 +775,15 @@ meshioplusplus data <subcommand> [options]
 | `normalize` | Rescale values to a target range |
 | `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
+| `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
 
 Every verb takes `--input-format` (`-i`), and every verb but `info` takes an
-`OUTFILE` and `--output-format` (`-o`). `export` is the exception on the output
-side: it writes a Parquet file, so it takes no `--output-format`.
+`OUTFILE` and `--output-format` (`-o`). `export` and `export-dataset` are the
+exceptions on the output side: they write Parquet / zarr / hdf5, so they take
+no `--output-format` (`export-dataset` has `--format parquet|zarr|hdf5`
+instead, plus `--mesh-id stem|index`, and its input is several paths, one
+quoted glob, or one multi-step file — the sequence source language). Both are
+**Python CLI only**; both need the matching optional extra.
 
 ::: tip `data gradient` is a mesh operation
 Every other verb in this group belongs to the `data_*` family, which by

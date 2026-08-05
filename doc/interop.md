@@ -16,7 +16,9 @@ Five targets ship today: **PyVista**, **trimesh**, **Apache Arrow / Parquet**,
 **pandas** and **polars**. Open3D and DOLFINx are
 [Phase 2](#phase-2-open3d-and-dolfinx).
 The same story continues on the [GPU handoff page](./gpu) — DLPack export and
-CuPy transfer, built on this module's payload conventions.
+CuPy transfer — and the [ML data handling page](./ml) — graphs, feature
+matrices, dataset export and PyTorch/JAX tensors — both built on this module's
+payload conventions.
 
 Nothing here is part of the C++ core, which stays dependency-free. This is pure
 Python over the numpy the readers already return: no format is added, no binding

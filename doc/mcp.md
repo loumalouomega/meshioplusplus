@@ -138,6 +138,7 @@ response.
 | Tool | Extra | Notes |
 |---|---|---|
 | `data_export` | `[arrow]` | data arrays → Parquet table |
+| `export_dataset` | `[arrow]` (`[zarr]`/h5py for those layouts) | a *set* of meshes → one `mesh_id`-keyed dataset (hive Parquet / zarr / hdf5; see [ML data handling](/ml)) |
 | `screenshot` | `[viewer]` | off-screen PNG render, returned as MCP image content |
 
 ## Reports are strict JSON
