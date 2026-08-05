@@ -1006,3 +1006,176 @@ end
 Whether the loaded library carries the JSON pipeline parser.
 """
 pipeline_has_json() = ccall(_sym(:mio_pipeline_has_json), Cint, ()) != 0
+
+# --- regular grids and signed distance ---------------------------------------
+
+const _SDF_SIGNS = Dict("unsigned" => Int32(0), "pseudonormal" => Int32(1),
+                        "winding-number" => Int32(2), "winding_number" => Int32(2))
+const _SDF_WEIGHTS = Dict("angle" => Int32(0), "area" => Int32(1))
+const _SDF_LOCATIONS = Dict("corner" => Int32(0), "point" => Int32(0),
+                            "center" => Int32(1), "centre" => Int32(1), "cell" => Int32(1))
+const _SDF_CHECKS = Dict("off" => Int32(0), "warn" => Int32(1), "error" => Int32(2))
+const _VOXEL_FILLS = Dict("all" => Int32(0), "surface" => Int32(1), "inside" => Int32(2))
+
+function _code(table, value, what)
+    key = replace(String(value), '_' => '-')
+    haskey(table, key) && return table[key]
+    haskey(table, String(value)) && return table[String(value)]
+    throw(ArgumentError("meshio++: unknown $what '$(value)'"))
+end
+
+"""
+    grid(dims; origin=(0,0,0), spacing=(1,1,1), max_cells=20_000_000) -> Mesh
+
+Build a regular hexahedron lattice from nothing -- the only constructor here
+that takes no input mesh. Points run x fastest, then y, then z.
+
+A zero cell count on any axis gives an empty mesh, which is a legal request
+rather than an error.
+"""
+function grid(dims; origin=(0.0, 0.0, 0.0), spacing=(1.0, 1.0, 1.0),
+              max_cells::Integer=20_000_000)
+    d = Int64[Int64(v) for v in dims]
+    length(d) == 3 || throw(ArgumentError("dims must have three entries"))
+    o = Cdouble[Cdouble(v) for v in origin]
+    sp = Cdouble[Cdouble(v) for v in spacing]
+    ptr = GC.@preserve d o sp ccall(_sym(:mio_grid), Ptr{Cvoid},
+                                    (Ptr{Int64}, Ptr{Cdouble}, Ptr{Cdouble}, Int64),
+                                    pointer(d), pointer(o), pointer(sp), Int64(max_cells))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    voxelize(m; resolution=nothing, cell_size=nothing, bounds=nothing, padding=0.0,
+             padding_relative=0.0, fill=:all, sign=:pseudonormal,
+             watertight_check=:warn, attach_occupancy=false,
+             max_cells=20_000_000) -> NamedTuple
+
+Build a regular grid around `m`. Exactly one of `resolution` and `cell_size`
+must be given. `fill` is `:all`, `:surface` or `:inside`.
+
+Returns `(; mesh, dims, origin, spacing, num_occupied)`.
+"""
+function voxelize(m::Mesh; resolution=nothing, cell_size=nothing, bounds=nothing,
+                  padding::Real=0.0, padding_relative::Real=0.0, fill=:all,
+                  sign=:pseudonormal, watertight_check=:warn,
+                  attach_occupancy::Bool=false, max_cells::Integer=20_000_000)
+    res = resolution === nothing ? Int64[] : Int64[Int64(v) for v in resolution]
+    (resolution === nothing || length(res) == 3) ||
+        throw(ArgumentError("resolution must have three entries"))
+    bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
+    (bounds === nothing || length(bnd) == 6) ||
+        throw(ArgumentError("bounds must have six entries"))
+
+    dims = Vector{Int64}(undef, 3)
+    origin = Vector{Cdouble}(undef, 3)
+    spacing = Vector{Cdouble}(undef, 3)
+    occupied = Ref{Int64}(0)
+    ptr = GC.@preserve res bnd dims origin spacing begin
+        opts = _CVoxelOpts(isempty(res) ? Ptr{Int64}(C_NULL) : pointer(res),
+                           isempty(bnd) ? Ptr{Cdouble}(C_NULL) : pointer(bnd),
+                           Cdouble(cell_size === nothing ? 0.0 : cell_size),
+                           Cdouble(padding), Cdouble(padding_relative),
+                           Int64(max_cells), _code(_VOXEL_FILLS, fill, "fill"),
+                           attach_occupancy ? Int32(1) : Int32(0),
+                           _code(_SDF_SIGNS, sign, "sign"),
+                           _code(_SDF_CHECKS, watertight_check, "watertight check"),
+                           (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_voxelize), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CVoxelOpts}, Ptr{Int64}, Ptr{Cdouble}, Ptr{Cdouble},
+               Ptr{Int64}),
+              _handle(m), Ref(opts), pointer(dims), pointer(origin), pointer(spacing),
+              occupied)
+    end
+    (mesh=Mesh(_check_ptr(ptr)), dims=Tuple(Int.(dims)), origin=Tuple(Float64.(origin)),
+     spacing=Tuple(Float64.(spacing)), num_occupied=Int(occupied[]))
+end
+
+"""
+    surface_watertight_check(m) -> NamedTuple
+
+What is wrong with a surface, in numbers: boundary edges, non-manifold edges,
+inconsistently wound pairs and degenerate triangles. A signed distance is only
+meaningful where these are zero.
+"""
+function surface_watertight_check(m::Mesh)
+    out = Ref{_CSurfaceQuality}()
+    _check(ccall(_sym(:mio_surface_watertight_check), Cint,
+                 (Ptr{Cvoid}, Ptr{_CSurfaceQuality}), _handle(m), out))
+    q = out[]
+    (boundary_edges=Int(q.boundary_edges), non_manifold_edges=Int(q.non_manifold_edges),
+     inconsistent_pairs=Int(q.inconsistent_pairs),
+     degenerate_triangles=Int(q.degenerate_triangles), watertight=q.watertight != 0)
+end
+
+function _sdf_opts(; sign, weight, location, band, record_closest_cell, record_inside,
+                   watertight_check, surface_region, grid_cell_size, max_winding_work,
+                   region_buf)
+    _CSdfOpts(Cstring(pointer(region_buf)), Cdouble(band), Cdouble(grid_cell_size),
+              Cdouble(max_winding_work), _code(_SDF_SIGNS, sign, "sign"),
+              _code(_SDF_WEIGHTS, weight, "weight"),
+              _code(_SDF_LOCATIONS, location, "location"),
+              _code(_SDF_CHECKS, watertight_check, "watertight check"),
+              record_closest_cell ? Int32(1) : Int32(0),
+              record_inside ? Int32(1) : Int32(0),
+              (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+end
+
+"""
+    sample_distance(surface, points; sign=:pseudonormal, band=0.0, ...) -> Vector{Float64}
+
+Signed distances from `points` -- a `3 x n` matrix, the column-major memory the
+C ABI reads as `n` rows of three -- to `surface`. Negative is inside.
+"""
+function sample_distance(surface::Mesh, points::AbstractMatrix{<:Real};
+                         sign=:pseudonormal, weight=:angle, band::Real=0.0,
+                         watertight_check=:warn, surface_region::AbstractString="",
+                         grid_cell_size::Real=0.0, max_winding_work::Real=2.0e9)
+    size(points, 1) == 3 || throw(ArgumentError("points must be a 3 x n matrix"))
+    n = size(points, 2)
+    pts = Matrix{Cdouble}(points)
+    out = Vector{Cdouble}(undef, max(n, 1))
+    region_buf = Vector{UInt8}(codeunits(String(surface_region)))
+    push!(region_buf, 0x00)
+    GC.@preserve pts out region_buf begin
+        opts = _sdf_opts(; sign, weight, location=:corner, band,
+                         record_closest_cell=false, record_inside=false, watertight_check,
+                         surface_region, grid_cell_size, max_winding_work, region_buf)
+        _check(ccall(_sym(:mio_sample_distance), Cint,
+                     (Ptr{Cvoid}, Ptr{Cdouble}, Int64, Ref{_CSdfOpts}, Ptr{Cdouble}),
+                     _handle(surface), pointer(pts), Int64(n), Ref(opts), pointer(out)))
+    end
+    Float64[out[i] for i in 1:n]
+end
+
+"""
+    distance_to_surface(query, surface; sign=:pseudonormal, location=:corner, ...) -> NamedTuple
+
+Attach the signed distance from `query`'s points (or cell centres) to `surface`
+as the `sdf:distance` array. Returns `(; mesh, num_banded, quality)`.
+"""
+function distance_to_surface(query::Mesh, surface::Mesh; sign=:pseudonormal, weight=:angle,
+                             location=:corner, band::Real=0.0,
+                             record_closest_cell::Bool=false, record_inside::Bool=false,
+                             watertight_check=:warn, surface_region::AbstractString="",
+                             grid_cell_size::Real=0.0, max_winding_work::Real=2.0e9)
+    banded = Ref{Int64}(0)
+    quality = Ref{_CSurfaceQuality}()
+    region_buf = Vector{UInt8}(codeunits(String(surface_region)))
+    push!(region_buf, 0x00)
+    ptr = GC.@preserve region_buf begin
+        opts = _sdf_opts(; sign, weight, location, band, record_closest_cell, record_inside,
+                         watertight_check, surface_region, grid_cell_size, max_winding_work,
+                         region_buf)
+        ccall(_sym(:mio_distance_to_surface), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CSdfOpts}, Ptr{Int64}, Ptr{_CSurfaceQuality}),
+              _handle(query), _handle(surface), Ref(opts), banded, quality)
+    end
+    q = quality[]
+    (mesh=Mesh(_check_ptr(ptr)), num_banded=Int(banded[]),
+     quality=(boundary_edges=Int(q.boundary_edges),
+              non_manifold_edges=Int(q.non_manifold_edges),
+              inconsistent_pairs=Int(q.inconsistent_pairs),
+              degenerate_triangles=Int(q.degenerate_triangles),
+              watertight=q.watertight != 0))
+end

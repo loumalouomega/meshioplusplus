@@ -732,4 +732,61 @@ end
     @test !isopen(m)
 end
 
+@testset "grids and signed distance" begin
+    # A lattice from nothing: the one constructor that takes no input mesh.
+    g = grid([2, 2, 2])
+    @test num_points(g) == 27
+    @test num_cell_blocks(g) == 1
+    close(g)
+
+    # An empty lattice is a legal request, not an error.
+    e = grid([0, 0, 0])
+    @test num_points(e) == 0
+    close(e)
+
+    # The unit cube as a closed, outward-wound triangle surface.
+    cube = Mesh()
+    set_points!(cube, Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1])
+    add_cell_block!(cube, "triangle",
+                   Int64[1 1 5 5 1 1 2 2 3 3 4 4;
+                         3 4 6 7 2 6 3 7 4 8 1 5;
+                         2 3 7 8 6 5 7 6 8 7 5 8])
+
+    q = surface_watertight_check(cube)
+    @test q.watertight
+    @test q.boundary_edges == 0
+
+    v = voxelize(cube; resolution=[4, 4, 4])
+    @test v.num_occupied == 64
+    @test v.dims == (4, 4, 4)
+    @test v.spacing[1] ≈ 0.25
+    close(v.mesh)
+
+    inside = voxelize(cube; resolution=[5, 5, 5],
+                      bounds=[-0.5, -0.5, -0.5, 1.5, 1.5, 1.5],
+                      fill=:inside, watertight_check=:off)
+    @test inside.num_occupied == 27
+    close(inside.mesh)
+
+    # An unknown fill fails by name rather than silently defaulting.
+    @test_throws ArgumentError voxelize(cube; resolution=[2, 2, 2], fill=:solid)
+
+    # The cube's exact SDF is known: the centre is 0.5 in, the others 1.0 out.
+    d = sample_distance(cube, [0.5 2.0 -1.0; 0.5 0.5 0.5; 0.5 0.5 0.5];
+                        watertight_check=:off)
+    @test length(d) == 3
+    @test d[1] ≈ -0.5 atol = 1e-12
+    @test d[2] ≈ 1.0 atol = 1e-12
+    @test d[3] ≈ 1.0 atol = 1e-12
+
+    qgrid = grid([2, 2, 2]; origin=(-0.5, -0.5, -0.5), spacing=(1.0, 1.0, 1.0))
+    f = distance_to_surface(qgrid, cube; watertight_check=:off, record_inside=true)
+    @test f.quality.watertight
+    @test f.num_banded == 0
+    @test num_point_data(f.mesh) == 2   # sdf:distance and sdf:inside
+    close(f.mesh)
+    close(qgrid)
+    close(cube)
+end
+
 end # testset

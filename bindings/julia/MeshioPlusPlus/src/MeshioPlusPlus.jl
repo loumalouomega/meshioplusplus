@@ -94,6 +94,8 @@ export regions, add_region!
 export extract_surface, extract_skin, attach_quality, quality_counts
 export transform, clean, smooth, crop_bbox, crop_plane, slice, isosurface
 export gradient
+export grid, voxelize
+export sample_distance, distance_to_surface, surface_watertight_check
 export interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, refine, decimate, partition, partition_labels
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point

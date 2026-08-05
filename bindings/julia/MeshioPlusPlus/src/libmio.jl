@@ -212,6 +212,57 @@ struct _CPolyConnShape
     reserved::NTuple{4,Int64}
 end
 
+"""
+Mirror of C `mio_surface_quality`. Field order, types and the trailing
+`reserved` padding are ABI: they must match `meshioplusplus.h` exactly.
+"""
+struct _CSurfaceQuality
+    boundary_edges::Int64
+    non_manifold_edges::Int64
+    inconsistent_pairs::Int64
+    degenerate_triangles::Int64
+    watertight::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_sdf_opts`. Same ABI rules as [`_CRefineOpts`](@ref)."""
+struct _CSdfOpts
+    surface_region::Cstring
+    band::Cdouble
+    grid_cell_size::Cdouble
+    max_winding_work::Cdouble
+    sign::Int32
+    weight::Int32
+    location::Int32
+    watertight_check::Int32
+    record_closest_cell::Int32
+    record_inside::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""
+Mirror of C `mio_voxel_opts`.
+
+Note it carries `sign`/`watertight_check` as its own fields rather than
+embedding a `_CSdfOpts`: the C++ `VoxelOptions` does embed
+`SurfaceDistanceOptions` by value, and growing the inner one is a Tier A break
+of the outer. Not repeating that nesting across the ABI keeps them independent.
+"""
+struct _CVoxelOpts
+    resolution::Ptr{Int64}
+    bounds::Ptr{Cdouble}
+    cell_size::Cdouble
+    padding::Cdouble
+    padding_relative::Cdouble
+    max_cells::Int64
+    fill::Int32
+    attach_occupancy::Int32
+    sign::Int32
+    watertight_check::Int32
+    reserved::NTuple{6,Int64}
+end
+
 # Layout guards: a mismatch here would corrupt every call taking these structs,
 # silently. Checked once at load rather than trusted.
 function _check_abi_layout()
@@ -227,6 +278,12 @@ function _check_abi_layout()
         error("meshio++: mio_cell_block_info layout mismatch ($(sizeof(_CCellBlockInfo)) bytes)")
     sizeof(_CPolyConnShape) == 64 ||
         error("meshio++: mio_poly_conn_shape layout mismatch ($(sizeof(_CPolyConnShape)) bytes)")
+    sizeof(_CSurfaceQuality) == 72 ||
+        error("meshio++: mio_surface_quality layout mismatch ($(sizeof(_CSurfaceQuality)) bytes)")
+    sizeof(_CSdfOpts) == 104 ||
+        error("meshio++: mio_sdf_opts layout mismatch ($(sizeof(_CSdfOpts)) bytes)")
+    sizeof(_CVoxelOpts) == 112 ||
+        error("meshio++: mio_voxel_opts layout mismatch ($(sizeof(_CVoxelOpts)) bytes)")
     nothing
 end
 
