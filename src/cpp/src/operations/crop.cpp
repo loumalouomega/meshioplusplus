@@ -14,21 +14,25 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// Spatial subsetting by bounding box or half-space. A per-point inside mask is
-// built in parallel, cells are kept by an all/any policy, then the shared
-// detail::build_cell_subset prunes points and remaps connectivity + data. Built
-// entirely through the uniform mesh API so it compiles under every mesh backend.
-// See operations/crop.hpp for the contract.
+// Subsetting by bounding box, half-space, or a comparison on a cell_data array.
+// The two spatial modes build a per-point inside mask in parallel and keep cells
+// by an all/any policy; the predicate mode is already per-cell and skips both.
+// All three then hand their kept set to the shared detail::build_cell_subset,
+// which prunes points and remaps connectivity + data. Built entirely through the
+// uniform mesh API so it compiles under every mesh backend. See
+// operations/crop.hpp for the contract.
 
 // System includes
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/operations/crop.hpp"
+#include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -134,6 +138,58 @@ CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double*
         return detail::vec3_dot(detail::vec3_sub(p, p0), nrm) >= 0.0;
     });
     return crop_finish(rMesh, crop_kept_cells(rMesh, mask, mode), record_ids);
+}
+
+CropResult crop_predicate(const Mesh& rMesh, const std::string& rArray, RefineCompare Op,
+                          double Value, bool record_ids) {
+    if (!rMesh.HasCellData(rArray)) {
+        // point_data is refused by name rather than averaged: `data to-cell` is
+        // the explicit way to move it, and doing it here would make the kept set
+        // depend on an averaging rule nobody asked for.
+        if (rMesh.HasPointData(rArray))
+            throw std::invalid_argument(
+                "crop: '" + rArray +
+                "' is point_data; a crop predicate is per cell, so convert it first "
+                "(cell_data_to_point_data's inverse: `data to-cell`)");
+        throw std::invalid_argument("crop: " +
+                                    data_unknown_key_message(rMesh, DataLocation::Cell, rArray));
+    }
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(rArray) != nblocks)
+        throw std::invalid_argument("crop: cell_data '" + rArray +
+                                    "' does not cover every cell block");
+
+    // Already one value per cell, so there is nothing for CropMode to reduce --
+    // see the header on why it is absent rather than accepted and ignored.
+    std::vector<std::vector<std::int64_t>> kept;
+    kept.reserve(nblocks);
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& a = rMesh.CellData(rArray, b);
+        ++b;
+        const std::size_t nc = cb.NumCells();
+        if (detail::rows(a) != nc)
+            throw std::invalid_argument("crop: cell_data '" + rArray + "' has " +
+                                        std::to_string(detail::rows(a)) + " rows on a block of " +
+                                        std::to_string(nc) + " cells");
+        if (nc != 0 && data_num_components(a) != 1)
+            throw std::invalid_argument("crop: cell_data '" + rArray +
+                                        "' must be scalar (one value per cell) to be used as a "
+                                        "crop predicate");
+        // Phase 1 parallel into disjoint slots, phase 2 serial ascending
+        // compaction -- the same two-phase shape the spatial modes use, so the
+        // kept order is a traversal-independent contract rather than an accident.
+        std::vector<char> keep(nc, 0);
+        parallel_for(nc, [&](std::size_t c) {
+            keep[c] = refine_compare_value(detail::read_double(a, c), Op, Value) ? 1 : 0;
+        });
+        std::vector<std::int64_t> block;
+        for (std::size_t c = 0; c < nc; ++c)
+            if (keep[c])
+                block.push_back(static_cast<std::int64_t>(c));
+        kept.push_back(std::move(block));
+    }
+    return crop_finish(rMesh, kept, record_ids);
 }
 
 }  // namespace meshioplusplus

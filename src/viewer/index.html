@@ -289,6 +289,37 @@
             </p>
             <button type="button" id="op-vox-apply">Apply</button>
           </details>
+
+          <details class="op">
+            <summary>Signed distance</summary>
+            <label
+              ><span>structure</span>
+              <select id="op-sdf-structure">
+                <option value="voxel">voxel (dense)</option>
+                <option value="octree">octree (adaptive)</option>
+              </select></label
+            >
+            <label
+              ><span>resolution</span>
+              <input id="op-sdf-resolution" type="number" min="1" max="256" value="32"
+            /></label>
+            <label
+              ><span>root</span>
+              <input id="op-sdf-root" type="number" min="1" max="64" value="8"
+            /></label>
+            <label
+              ><span>depth</span>
+              <input id="op-sdf-depth" type="number" min="0" max="6" value="3"
+            /></label>
+            <p class="hint" id="op-sdf-note">
+              How far every point is from the mesh's surface, on a grid it
+              generates. Like <code>voxelize</code> this <em>replaces</em> the
+              geometry; colour by <code>sdf:distance</code> to see it, or
+              contour it with Isosurface at 0. The octree refines only near the
+              surface, so it has hanging nodes.
+            </p>
+            <button type="button" id="op-sdf-apply">Apply</button>
+          </details>
         </section>
 
         <section id="convert-section" hidden>

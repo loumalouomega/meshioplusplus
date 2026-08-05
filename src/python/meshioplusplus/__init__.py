@@ -39,6 +39,7 @@ from . import (
     triangle,
     ugrid,
     unv,
+    vti,
     vtk,
     vtp,
     vtu,
@@ -94,7 +95,12 @@ from ._quality import attach_quality, compute_quality
 from ._refine import refine
 from ._regions import Region
 from ._reorder import compute_bandwidth, reorder
-from ._sdf import distance_to_surface, sample_distance, surface_watertight_check
+from ._sdf import (
+    compute_sdf,
+    distance_to_surface,
+    sample_distance,
+    surface_watertight_check,
+)
 from ._sequence import (
     TimeSeries,
     read_sequence,
@@ -153,6 +159,7 @@ __all__ = [
     "triangle",
     "ugrid",
     "unv",
+    "vti",
     "vtk",
     "vtp",
     "vtu",
@@ -192,6 +199,7 @@ __all__ = [
     "sample_distance",
     "distance_to_surface",
     "surface_watertight_check",
+    "compute_sdf",
     "smooth",
     "partition",
     "partition_labels",

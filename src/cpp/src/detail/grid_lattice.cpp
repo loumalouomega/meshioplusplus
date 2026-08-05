@@ -23,10 +23,13 @@
 // be bit-identical without replicating a traversal order.
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 // Project includes
@@ -115,8 +118,8 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
     const std::int64_t py = ny + 1;
     const std::int64_t npoints = lattice_num_points(rSpec);
 
-    NDArray points = NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(npoints),
-                                                      std::size_t{3}});
+    NDArray points =
+        NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(npoints), std::size_t{3}});
     {
         double* dst = points.As<double>();
         const double ox = rSpec.mOrigin[0], oy = rSpec.mOrigin[1], oz = rSpec.mOrigin[2];
@@ -135,8 +138,8 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
     }
     out.AssignPoints(std::move(points));
 
-    NDArray conn = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ncells),
-                                                  std::size_t{8}});
+    NDArray conn =
+        NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ncells), std::size_t{8}});
     {
         std::int64_t* dst = conn.As<std::int64_t>();
         parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
@@ -160,6 +163,175 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
     }
     out.AddCellBlock("hexahedron", std::move(conn));
     return out;
+}
+
+LatticeSpec lattice_resolve(const Mesh& rMesh, const LatticeRequest& rRequest,
+                            const char* pPrefix) {
+    const std::string prefix(pPrefix);
+    if (rRequest.mResolution.has_value() == rRequest.mCellSize.has_value())
+        throw std::invalid_argument(prefix + "give exactly one of resolution and cell_size");
+
+    // The box: the caller's, or the mesh's own, in both cases grown by the
+    // padding.
+    std::array<double, 3> lo{{0.0, 0.0, 0.0}};
+    std::array<double, 3> hi{{0.0, 0.0, 0.0}};
+    if (rRequest.mBounds.has_value()) {
+        const std::array<double, 6>& b = *rRequest.mBounds;
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = b[k];
+            hi[k] = b[k + 3];
+            if (!(hi[k] >= lo[k]))
+                throw std::invalid_argument(prefix + "bounds are inverted on axis " +
+                                            std::to_string(k) + " (lo " + std::to_string(lo[k]) +
+                                            " > hi " + std::to_string(hi[k]) + ")");
+        }
+    } else if (!point_bbox(rMesh, lo, hi)) {
+        throw std::invalid_argument(prefix +
+                                    "the mesh has no points, so it has no bounding box to "
+                                    "cover (pass explicit bounds)");
+    }
+
+    double diag = 0.0;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const double e = hi[k] - lo[k];
+        diag += e * e;
+    }
+    diag = std::sqrt(diag);
+    const double pad = rRequest.mPadding + rRequest.mPaddingRelative * diag;
+    if (pad < 0.0)
+        throw std::invalid_argument(prefix + "padding is negative");
+    for (std::size_t k = 0; k < 3; ++k) {
+        lo[k] -= pad;
+        hi[k] += pad;
+    }
+
+    LatticeSpec spec;
+    if (rRequest.mResolution.has_value()) {
+        const std::array<std::int64_t, 3>& r = *rRequest.mResolution;
+        for (std::size_t k = 0; k < 3; ++k)
+            if (r[k] <= 0)
+                throw std::invalid_argument(prefix +
+                                            "resolution must be positive on every axis, got " +
+                                            std::to_string(r[k]) + " on axis " + std::to_string(k));
+        spec = lattice_from_bounds(lo, hi, r);
+    } else {
+        const double cell = *rRequest.mCellSize;
+        if (!(cell > 0.0))
+            throw std::invalid_argument(prefix + "cell_size must be positive");
+        spec = lattice_from_cell_size(lo, hi, {{cell, cell, cell}});
+        for (std::size_t k = 0; k < 3; ++k)
+            if (spec.mDims[k] <= 0)
+                throw std::invalid_argument(
+                    prefix + "the bounding box is degenerate on axis " + std::to_string(k) +
+                    ", so a cell size cannot fill it (pass an explicit resolution or bounds)");
+    }
+
+    const std::int64_t cells = lattice_num_cells(spec);
+    if (rRequest.mMaxCells > 0 && cells > rRequest.mMaxCells)
+        throw std::invalid_argument(prefix + "the requested grid has " + std::to_string(cells) +
+                                    " cells, above the limit of " +
+                                    std::to_string(rRequest.mMaxCells) +
+                                    " (raise max_cells, coarsen the resolution, or use a band)");
+    return spec;
+}
+
+bool lattice_from_mesh(const Mesh& rMesh, LatticeSpec& rSpec) {
+    // Exactly one hexahedron block, and nothing else.
+    if (rMesh.NumCellBlocks() != 1)
+        return false;
+    const auto cb = rMesh.Cells(0);
+    if (cb.Type() != std::string("hexahedron") || cb.IsRagged())
+        return false;
+
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    if (npoints == 0 || dim < 3)
+        return false;
+    const NDArray& points = rMesh.Points();
+
+    // The distinct plane positions per axis. An exact sort-and-unique is correct
+    // here rather than merely convenient: lattice_build_mesh evaluates
+    // `origin + index * spacing` independently per point, so every point on a
+    // given plane carries the identical double.
+    std::array<std::vector<double>, 3> planes;
+    for (std::size_t d = 0; d < 3; ++d) {
+        planes[d].resize(npoints);
+        for (std::size_t p = 0; p < npoints; ++p)
+            planes[d][p] = read_double(points, p * dim + d);
+        std::sort(planes[d].begin(), planes[d].end());
+        planes[d].erase(std::unique(planes[d].begin(), planes[d].end()), planes[d].end());
+        if (planes[d].size() < 2)
+            return false;  // a single plane is a sheet, not a lattice
+    }
+
+    // A dense lattice has exactly the product of its plane counts as points, and
+    // the product of its cell counts as cells. Either mismatch means a subset (a
+    // `surface`/`inside` fill, an octree) or something else entirely.
+    if (planes[0].size() * planes[1].size() * planes[2].size() != npoints)
+        return false;
+    const std::int64_t nx = static_cast<std::int64_t>(planes[0].size()) - 1;
+    const std::int64_t ny = static_cast<std::int64_t>(planes[1].size()) - 1;
+    const std::int64_t nz = static_cast<std::int64_t>(planes[2].size()) - 1;
+    if (static_cast<std::size_t>(nx * ny * nz) != cb.NumCells())
+        return false;
+
+    LatticeSpec spec;
+    spec.mDims = {{nx, ny, nz}};
+    for (std::size_t d = 0; d < 3; ++d) {
+        const std::vector<double>& v = planes[d];
+        const std::int64_t n = static_cast<std::int64_t>(v.size()) - 1;
+        spec.mOrigin[d] = v.front();
+        // (last - first) / n, not the first gap: it is the least-error estimate
+        // and it is what the writer's own `origin + index * spacing` inverts.
+        spec.mSpacing[d] = (v.back() - v.front()) / static_cast<double>(n);
+        if (!(spec.mSpacing[d] > 0.0))
+            return false;
+        // Uniformity to a relative 1e-9. `origin + i*h` gaps differ in the last
+        // bits, so this cannot be exact, but a genuinely graded mesh is rejected
+        // by orders of magnitude rather than by ulps.
+        for (std::int64_t i = 0; i < n; ++i) {
+            const double gap = v[static_cast<std::size_t>(i) + 1] - v[static_cast<std::size_t>(i)];
+            if (std::fabs(gap - spec.mSpacing[d]) > 1.0e-9 * spec.mSpacing[d])
+                return false;
+        }
+    }
+
+    const std::int64_t px = nx + 1;
+    const std::int64_t py = ny + 1;
+
+    // The points must be in the lattice's own x-fastest order, not merely occupy
+    // its plane positions -- a permuted grid has identical plane sets and is a
+    // different mesh. The comparison is EXACT because `planes[d]` holds the very
+    // doubles the points carry, so this is an equality test rather than a fit.
+    for (std::size_t p = 0; p < npoints; ++p) {
+        const std::int64_t g = static_cast<std::int64_t>(p);
+        const std::int64_t idx[3] = {g % px, (g / px) % py, g / (px * py)};
+        for (std::size_t d = 0; d < 3; ++d)
+            if (read_double(points, p * dim + d) != planes[d][static_cast<std::size_t>(idx[d])])
+                return false;
+    }
+
+    // The connectivity must be the lattice's own, or two different meshes would
+    // both claim to be this box. Checking the index formula per cell is O(n) and
+    // is the difference between "has lattice-shaped points" and "is a lattice".
+    const NDArray& conn = cb.Conn();
+    if (cb.NodesPerCell() != 8)
+        return false;
+    for (std::int64_t c = 0; c < nx * ny * nz; ++c) {
+        const std::int64_t i = c % nx;
+        const std::int64_t j = (c / nx) % ny;
+        const std::int64_t k = c / (nx * ny);
+        const std::int64_t base = (k * py + j) * px + i;
+        const std::int64_t top = base + px * py;
+        const std::int64_t expect[8] = {base, base + 1, base + px + 1, base + px,
+                                        top,  top + 1,  top + px + 1,  top + px};
+        for (std::size_t m = 0; m < 8; ++m)
+            if (read_int(conn, static_cast<std::size_t>(c) * 8 + m) != expect[m])
+                return false;
+    }
+
+    rSpec = spec;
+    return true;
 }
 
 bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo, std::array<double, 3>& rHi) {

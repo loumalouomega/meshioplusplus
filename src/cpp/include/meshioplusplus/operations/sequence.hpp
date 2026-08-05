@@ -22,7 +22,7 @@
  * inside one multi-step file) as one ordered logical sequence.
  *
  * This is how transient solver output actually arrives -- `out_0000.vtu …
- * out_0500.vtu` -- and how most of the 41 formats have to express time, since
+ * out_0500.vtu` -- and how most of the 42 formats have to express time, since
  * only a minority carry several steps natively.
  *
  * **It is a driver, not a new mesh operation.** Everything here reads and

@@ -1046,29 +1046,6 @@ bool refine_has_selector(const RefineOptions& rOptions) {
            !rOptions.mPredicateArray.empty();
 }
 
-bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
-    // A non-finite value never matches. compute_quality deliberately reports NaN
-    // where a metric does not apply, so a predicate over `quality:*` on a mixed
-    // mesh is the headline use case -- rejecting the array would break it.
-    if (!std::isfinite(Value))
-        return false;
-    switch (Op) {
-        case RefineCompare::Less:
-            return Value < Rhs;
-        case RefineCompare::LessEqual:
-            return Value <= Rhs;
-        case RefineCompare::Greater:
-            return Value > Rhs;
-        case RefineCompare::GreaterEqual:
-            return Value >= Rhs;
-        case RefineCompare::Equal:
-            return Value == Rhs;
-        case RefineCompare::NotEqual:
-            return Value != Rhs;
-    }
-    return false;
-}
-
 std::string refine_region_names(const Mesh& rMesh) {
     std::string names;
     for (const std::string& n : rMesh.RegionNames()) {
@@ -1202,6 +1179,32 @@ RefineClosure refine_closure_from_name(const std::string& rName) {
         return RefineClosure::Balanced;
     throw std::invalid_argument("refine: unknown closure '" + rName +
                                 "' (expected 'redgreen'/'green', 'propagate' or 'balanced')");
+}
+
+bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
+    // A non-finite value never matches. compute_quality deliberately reports NaN
+    // where a metric does not apply, so a predicate over `quality:*` on a mixed
+    // mesh is the headline use case -- rejecting the array would break it.
+    //
+    // Public (declared in refine.hpp) rather than file-private because
+    // `crop_predicate` selects cells by this identical rule; see the header.
+    if (!std::isfinite(Value))
+        return false;
+    switch (Op) {
+        case RefineCompare::Less:
+            return Value < Rhs;
+        case RefineCompare::LessEqual:
+            return Value <= Rhs;
+        case RefineCompare::Greater:
+            return Value > Rhs;
+        case RefineCompare::GreaterEqual:
+            return Value >= Rhs;
+        case RefineCompare::Equal:
+            return Value == Rhs;
+        case RefineCompare::NotEqual:
+            return Value != Rhs;
+    }
+    return false;
 }
 
 RefineCompare refine_compare_from_name(const std::string& rName) {

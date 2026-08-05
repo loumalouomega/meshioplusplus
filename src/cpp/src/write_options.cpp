@@ -33,6 +33,7 @@
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/vti.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -47,8 +48,8 @@ bool wopt_is_text_only(const std::string& rFormat);
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
     return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" || rFormat == "ply" ||
-           rFormat == "stl" || rFormat == "vtk" || rFormat == "vtu" || rFormat == "vtp" ||
-           rFormat == "xdmf" || wopt_is_text_only(rFormat);
+           rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" ||
+           rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -63,7 +64,7 @@ bool wopt_is_text_only(const std::string& rFormat) {
 
 /// Formats with a VTK-XML block codec.
 bool wopt_has_codec(const std::string& rFormat) {
-    return rFormat == "vtu" || rFormat == "vtp";
+    return rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp";
 }
 
 /// Formats whose ASCII writer takes a float format string.
@@ -80,7 +81,7 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
         return false;
     }
     if (rOptions.mCodecSet && !wopt_has_codec(rFormat)) {
-        rWhy = "format '" + rFormat + "' has no block compression codec (only vtu/vtp do)";
+        rWhy = "format '" + rFormat + "' has no block compression codec (only vti/vtu/vtp do)";
         return false;
     }
     if (!rOptions.mFloatFormat.empty() && !wopt_has_float_format(rFormat)) {
@@ -131,6 +132,11 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_stl(rPath, rMesh, binary, /*skin=*/true);
     } else if (fmt == "vtk") {
         write_vtk(rPath, rMesh, binary, /*v51=*/true);
+    } else if (fmt == "vti") {
+        const detail::VtkCodec codec =
+            rOptions.mCodecSet ? rOptions.mCodec
+                               : (binary ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+        write_vti_codec(rPath, rMesh, binary, codec);
     } else if (fmt == "vtu") {
         // Compression only exists in the binary encoding; an explicit codec on
         // an ASCII request would otherwise be silently dropped.

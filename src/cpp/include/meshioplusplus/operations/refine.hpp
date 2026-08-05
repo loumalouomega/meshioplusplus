@@ -279,6 +279,25 @@ MESHIOPLUSPLUS_API RefineClosure refine_closure_from_name(const std::string& rNa
  */
 MESHIOPLUSPLUS_API RefineCompare refine_compare_from_name(const std::string& rName);
 
+/**
+ * @brief Evaluate one `RefineCompare` against a value.
+ *
+ * Exposed because `crop_predicate` selects cells by exactly this rule, and a
+ * second transcription of a discrete branch is precisely the kind of thing that
+ * drifts silently -- the two operations would then disagree only on the boundary
+ * cases (`==` on a tie, and a NaN), which is where disagreement is hardest to
+ * notice.
+ *
+ * @param Value the cell's value.
+ * @param Op the comparison.
+ * @param Rhs the threshold.
+ * @return whether the comparison holds. **A non-finite @p Value never matches**,
+ *   whatever @p Op is: `compute_quality` deliberately reports NaN where a metric
+ *   does not apply, and a predicate over `quality:*` on a mixed mesh is the
+ *   headline use case, so rejecting such an array outright would break it.
+ */
+MESHIOPLUSPLUS_API bool refine_compare_value(double Value, RefineCompare Op, double Rhs);
+
 /// Options for `refine`.
 struct RefineOptions {
     /// How many times to apply the subdivision templates. `0` (or less) returns

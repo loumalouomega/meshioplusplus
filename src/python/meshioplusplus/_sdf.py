@@ -36,6 +36,7 @@ Public API:
 * :func:`sample_distance` -- distances at arbitrary query points.
 * :func:`distance_to_surface` -- the same, attached to a mesh as data.
 * :func:`surface_watertight_check` -- what is wrong with a skin, in numbers.
+* :func:`compute_sdf` -- generate a grid over a surface and fill it.
 """
 
 from __future__ import annotations
@@ -47,7 +48,12 @@ import numpy as np
 from ._mesh import Mesh
 from ._regions import block_bases
 
-__all__ = ["sample_distance", "distance_to_surface", "surface_watertight_check"]
+__all__ = [
+    "sample_distance",
+    "distance_to_surface",
+    "surface_watertight_check",
+    "compute_sdf",
+]
 
 _PREFIX = "meshio++: sdf: "
 _SD_PREFIX = "meshio++: surface distance: "
@@ -501,3 +507,289 @@ def distance_to_surface(
         report = {"num_banded": int(np.sum(~inband)), "quality": quality}
 
     return (out, report) if return_report else out
+
+
+# --------------------------------------------------------------------------- #
+# the umbrella: generate a grid, then fill it                                  #
+# --------------------------------------------------------------------------- #
+_STRUCTURES = ("voxel", "octree")
+
+
+def _cell_diagonals_py(mesh):
+    """Every cell's own corner-bbox diagonal.
+
+    The numpy twin of ``sdfop_cell_diagonals``. Derived from the geometry rather
+    than from ``refine:level``, so it is right for a mesh this module did not
+    build, and exact for the axis-aligned boxes an octree contains.
+    """
+    points = np.asarray(mesh.points, dtype=np.float64)
+    if points.shape[1] == 2:
+        points = np.column_stack([points, np.zeros(len(points))])
+    out = []
+    for cb in mesh.cells:
+        data = cb.data
+        if isinstance(data, list):
+            out.extend([0.0] * len(data))
+            continue
+        rows = np.asarray(data, dtype=np.int64)
+        corners = points[rows]
+        e = corners.max(axis=1) - corners.min(axis=1)
+        # Written out rather than np.sum: three terms, left to right, matching
+        # the C++ accumulation exactly.
+        out.extend(np.sqrt(e[:, 0] * e[:, 0] + e[:, 1] * e[:, 1] + e[:, 2] * e[:, 2]))
+    return np.asarray(out, dtype=np.float64)
+
+
+def _compute_sdf_py(surface, structure, kwargs, distance_kwargs):
+    from ._grid import _grid_py
+    from ._voxelize import _resolve_lattice
+
+    if structure == "octree":
+        root = int(kwargs["root_resolution"])
+        resolution, cell_size = (root, root, root), None
+    else:
+        resolution, cell_size = kwargs["resolution"], kwargs["cell_size"]
+
+    lo, spacing, dims = _resolve_lattice(
+        surface,
+        resolution,
+        cell_size,
+        kwargs["bounds"],
+        kwargs["padding"],
+        kwargs["padding_relative"],
+        int(kwargs["max_cells"]),
+        _PREFIX,
+    )
+    mesh = _grid_py(dims, lo, spacing)
+    depth = 0
+    final_spacing = np.asarray(spacing, dtype=np.float64).copy()
+
+    if structure == "octree":
+        from ._refine import refine
+
+        band_cells = float(kwargs["band_cells"])
+        for _ in range(int(kwargs["max_depth"])):
+            # Recomputed from the CURRENT mesh every pass: these are global
+            # block-major indices, so a selection carried over would name cells
+            # of a mesh that no longer exists.
+            centres = _query_points_py(mesh, "center")
+            diag = _cell_diagonals_py(mesh)
+            # Unsigned: only the magnitude matters for selection, and an
+            # unsigned query neither needs a closed surface nor pays for a sign
+            # it would discard.
+            dist = _sample_py(
+                surface, centres, "unsigned", distance_kwargs["weight"], 0.0
+            )[0]
+            selected = np.nonzero(np.abs(dist) <= band_cells * diag)[0]
+            if selected.size == 0:
+                break
+            mesh = refine(
+                mesh,
+                cells=[int(c) for c in selected],
+                closure="balanced",
+                record_levels=bool(kwargs["record_levels"]),
+            )
+            depth += 1
+            final_spacing = final_spacing * 0.5
+            total = sum(len(cb.data) for cb in mesh.cells)
+            max_cells = int(kwargs["max_cells"])
+            if max_cells > 0 and total > max_cells:
+                raise ValueError(
+                    f"{_PREFIX}the octree reached {total} cells after {depth} pass(es), "
+                    f"above the limit of {max_cells} "
+                    "(raise max_cells, lower max_depth or band_cells)"
+                )
+
+    # The field is computed ONCE, on the final mesh: `refine` interpolates
+    # point_data, so a field attached mid-way would come out a smooth,
+    # plausible interpolation of the coarse values rather than the distance.
+    filled, report = distance_to_surface(
+        mesh, surface, return_report=True, **distance_kwargs
+    )
+    hi = np.asarray(lo, dtype=np.float64) + np.asarray(
+        dims, dtype=np.float64
+    ) * np.asarray(spacing, dtype=np.float64)
+    filled.field_data["sdf:origin"] = np.asarray(lo, dtype=np.float64).copy()
+    filled.field_data["sdf:spacing"] = final_spacing
+    filled.field_data["sdf:dims"] = np.asarray(dims, dtype=np.int64).copy()
+    filled.field_data["sdf:bounds"] = np.concatenate(
+        [np.asarray(lo, dtype=np.float64), hi]
+    )
+    filled.field_data["sdf:max_depth"] = np.array([depth], dtype=np.int64)
+    filled.field_data["sdf:structure"] = np.array(
+        [1 if structure == "octree" else 0], dtype=np.int64
+    )
+    out = {
+        "mesh": filled,
+        "dims": [int(v) for v in dims],
+        "origin": [float(v) for v in lo],
+        "spacing": [float(v) for v in final_spacing],
+        "max_depth": depth,
+        "num_banded": report["num_banded"],
+        "quality": report["quality"],
+    }
+    return out
+
+
+def compute_sdf(
+    surface,
+    structure="voxel",
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.1,
+    root_resolution=8,
+    max_depth=4,
+    band_cells=1.0,
+    record_levels=True,
+    max_cells=20000000,
+    sign="pseudonormal",
+    weight="angle",
+    location="corner",
+    band=0.0,
+    record_closest_cell=False,
+    record_inside=False,
+    watertight_check="warn",
+    surface_region="",
+    grid_cell_size=0.0,
+    max_winding_work=2.0e9,
+    return_report=False,
+):
+    """Generate a grid over ``surface`` and fill it with signed distances.
+
+    The one call that turns a surface into a field.
+
+    Parameters
+    ----------
+    surface :
+        The surface to measure against.
+    structure :
+        ``"voxel"`` for a dense lattice, ``"octree"`` for one refined near the
+        surface. The octree's output is **1-irregular** -- it has hanging nodes;
+        see :func:`meshioplusplus.refine`'s ``closure="balanced"``.
+    resolution, cell_size :
+        Exactly one, and ``"voxel"`` only. An octree's finest cell is
+        ``root cell / 2**depth`` and is therefore already determined, so passing
+        either with ``structure="octree"`` is an error rather than a silent
+        preference.
+    bounds, padding, padding_relative :
+        The box to cover. The relative padding defaults to 0.1 because a field
+        that stops at the surface is not much use.
+    root_resolution, max_depth, band_cells, record_levels :
+        Octree only. A cell is refined while
+        ``abs(distance) <= band_cells * its own diagonal``, so the band narrows
+        as the tree deepens.
+    max_cells :
+        Refuse by name above this many cells, re-checked after every octree pass.
+    sign, weight, location, band, record_closest_cell, record_inside,
+    watertight_check, surface_region, grid_cell_size, max_winding_work :
+        Passed through to :func:`distance_to_surface`.
+    return_report :
+        Also return the grid geometry, the surface verdict and the banded count.
+
+    Returns
+    -------
+    Mesh, or (Mesh, dict)
+        The grid carrying ``sdf:distance``, plus the ``sdf:*`` ``field_data``
+        header describing itself. **No format persists arbitrary ``field_data``**,
+        so that header survives in memory only -- ``.vti`` round-trips the
+        geometry instead. See ``doc/sdf.md``.
+    """
+    _validate(sign, weight, location, watertight_check)
+    if structure not in _STRUCTURES:
+        raise ValueError(
+            f"{_PREFIX}unknown structure '{structure}' "
+            f"(expected one of: {', '.join(_STRUCTURES)})"
+        )
+    if structure == "octree":
+        if root_resolution <= 0:
+            raise ValueError(
+                f"{_PREFIX}root_resolution must be positive, got {int(root_resolution)}"
+            )
+        if max_depth < 0:
+            raise ValueError(
+                f"{_PREFIX}max_depth must not be negative, got {int(max_depth)}"
+            )
+        if not band_cells > 0.0:
+            raise ValueError(
+                f"{_PREFIX}band_cells must be positive, got {float(band_cells)}"
+            )
+        if resolution is not None or cell_size is not None:
+            raise ValueError(
+                f"{_PREFIX}structure 'octree' sizes itself from root_resolution and "
+                "max_depth; resolution and cell_size apply to structure 'voxel' only"
+            )
+
+    res = None
+    try:
+        from . import _core
+
+        res = _core.compute_sdf(
+            surface,
+            structure,
+            None if resolution is None else [int(v) for v in resolution],
+            None if cell_size is None else float(cell_size),
+            (
+                None
+                if bounds is None
+                else [float(v) for v in np.asarray(bounds).reshape(-1)]
+            ),
+            float(padding),
+            float(padding_relative),
+            int(root_resolution),
+            int(max_depth),
+            float(band_cells),
+            bool(record_levels),
+            int(max_cells),
+            sign,
+            weight,
+            location,
+            float(band),
+            bool(record_closest_cell),
+            bool(record_inside),
+            watertight_check,
+            surface_region,
+            float(grid_cell_size),
+            float(max_winding_work),
+        )
+    except (ValueError, TypeError):
+        raise
+    except Exception:
+        res = None
+
+    if res is None:
+        res = _compute_sdf_py(
+            surface,
+            structure,
+            {
+                "resolution": resolution,
+                "cell_size": cell_size,
+                "bounds": bounds,
+                "padding": padding,
+                "padding_relative": padding_relative,
+                "root_resolution": root_resolution,
+                "max_depth": max_depth,
+                "band_cells": band_cells,
+                "record_levels": record_levels,
+                "max_cells": max_cells,
+            },
+            {
+                "sign": sign,
+                "weight": weight,
+                "location": location,
+                "band": band,
+                "record_closest_cell": record_closest_cell,
+                "record_inside": record_inside,
+                "watertight_check": watertight_check,
+                "surface_region": surface_region,
+                "grid_cell_size": grid_cell_size,
+                "max_winding_work": max_winding_work,
+            },
+        )
+
+    mesh = res["mesh"]
+    if not return_report:
+        return mesh
+    report = {k: v for k, v in res.items() if k != "mesh"}
+    return mesh, report

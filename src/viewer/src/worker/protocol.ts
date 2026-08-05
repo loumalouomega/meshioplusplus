@@ -123,6 +123,21 @@ export type OpSpec =
            */
           resolution: number[];
           fill: 'all' | 'surface' | 'inside';
+      }
+    | {
+          /**
+           * A signed distance field: a grid over the mesh's surface, filled.
+           * Like `voxelize` it REPLACES the geometry -- what you see afterwards
+           * is the grid, coloured by `sdf:distance`. `octree` refines only near
+           * the surface, so its output is 1-irregular (it has hanging nodes).
+           */
+          op: 'computeSdf';
+          structure: 'voxel' | 'octree';
+          /** Voxel only; the panel sends one number three times (the wire shape). */
+          resolution: number[];
+          /** Octree only: the root lattice, then how many halving passes. */
+          rootResolution: number;
+          maxDepth: number;
       };
 
 export type OpName = OpSpec['op'];
@@ -243,6 +258,13 @@ export const OP_DEFAULTS: { [K in OpName]: Extract<OpSpec, { op: K }> } = {
         output: '',
     },
     voxelize: { op: 'voxelize', resolution: [32, 32, 32], fill: 'surface' },
+    computeSdf: {
+        op: 'computeSdf',
+        structure: 'voxel',
+        resolution: [32, 32, 32],
+        rootResolution: 8,
+        maxDepth: 3,
+    },
 };
 
 /** Human label for a pipeline chip. */
@@ -272,5 +294,9 @@ export function describeOp(spec: OpSpec): string {
             return `${spec.operator} · ${spec.array}`;
         case 'voxelize':
             return `voxelize · ${spec.fill} ${spec.resolution[0]}³`;
+        case 'computeSdf':
+            return spec.structure === 'octree'
+                ? `sdf · octree ${spec.rootResolution}³ ×${spec.maxDepth}`
+                : `sdf · ${spec.resolution[0]}³`;
     }
 }

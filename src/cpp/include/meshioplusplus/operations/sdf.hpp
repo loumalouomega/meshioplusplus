@@ -32,10 +32,10 @@
  * - `sample_distance` -- distances at arbitrary query points, the batch form.
  * - `distance_to_surface` -- the same, attached to a query mesh as `point_data`.
  * - `surface_watertight_check` -- what is wrong with this skin, in numbers.
+ * - `compute_sdf` -- the umbrella that generates its own grid, dense or adaptive.
  *
- * `compute_sdf` (the umbrella that generates its own grid) is declared here too
- * but is not implemented yet; calling it throws by name. The types it needs are
- * nevertheless **complete in this header from the first release**, deliberately:
+ * `compute_sdf`'s types were **complete in this header from v9.24.0**, one
+ * release before its body, deliberately:
  * `SdfOptions` embeds `SurfaceDistanceOptions` by value, so adding a member to
  * the inner struct later would shift the outer struct's tail under a consumer
  * compiled against the older header -- a silent Tier A ABI break, and exactly the
@@ -129,8 +129,11 @@ enum class SdfLocation {
 
 /// What `compute_sdf` generates to carry the field.
 enum class SdfStructure {
-    Voxel = 0,   ///< A dense uniform lattice over the (padded) bounding box.
-    Octree = 1,  ///< Adaptive, refined near the surface. Reserved until v9.26.0.
+    Voxel = 0,  ///< A dense uniform lattice over the (padded) bounding box.
+    /// Adaptive: a coarse root lattice, refined only near the surface. The
+    /// output is **1-irregular** (it has hanging nodes) -- see `refine.hpp`'s
+    /// `RefineClosure::Balanced`, which is the mechanism.
+    Octree = 1,
 };
 
 /// What to do when the surface turns out not to be watertight.
@@ -273,14 +276,17 @@ struct SdfOptions {
     /// An SDF that stops at the surface is not much use, hence the non-zero
     /// default.
     double mPaddingRelative = 0.1;
-    /// Octree: cell count per axis of the root lattice. Reserved until v9.26.0.
+    /// Octree: cell count per axis of the root lattice. `mResolution` and
+    /// `mCellSize` size a `Voxel` grid and are an **error** with `Octree`, whose
+    /// finest cell is `root cell / 2^depth` and is therefore already determined.
     std::int64_t mRootResolution = 8;
-    /// Octree: how many refinement passes. Reserved until v9.26.0.
+    /// Octree: how many refinement passes. Each halves the cell size in the band.
     std::int64_t mMaxDepth = 4;
     /// Octree: refine a cell while `|distance| <= mBandCells * cell diagonal`.
-    /// Reserved until v9.26.0.
+    /// The diagonal is the cell's own, so the band narrows as the tree deepens --
+    /// which is what makes the cost bounded rather than cubic.
     double mBandCells = 1.0;
-    /// Octree: attach `refine:level`. Reserved until v9.26.0.
+    /// Octree: attach `refine:level`.
     bool mRecordLevels = true;
     /// Refuse to generate more cells than this, naming the option.
     std::int64_t mMaxCells = 20000000;
@@ -294,20 +300,38 @@ struct SdfOptions {
 
 /// The result of `compute_sdf`: the generated grid and what was found.
 struct SdfResult {
-    Mesh mMesh;                                        ///< The grid, carrying `sdf:distance`.
-    SurfaceQuality mQuality;                           ///< The surface verdict.
-    std::array<std::int64_t, 3> mDims{{0, 0, 0}};      ///< Root cell counts.
-    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};    ///< Lattice lo corner.
-    std::array<double, 3> mSpacing{{0.0, 0.0, 0.0}};   ///< Finest cell size.
-    std::int64_t mMaxDepth = 0;                        ///< 0 for a dense grid.
-    std::int64_t mNumBanded = 0;                       ///< Queries clamped to the band.
+    Mesh mMesh;                                       ///< The grid, carrying `sdf:distance`.
+    SurfaceQuality mQuality;                          ///< The surface verdict.
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};     ///< Root cell counts.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};   ///< Lattice lo corner.
+    std::array<double, 3> mSpacing{{0.0, 0.0, 0.0}};  ///< Finest cell size.
+    std::int64_t mMaxDepth = 0;                       ///< 0 for a dense grid.
+    std::int64_t mNumBanded = 0;                      ///< Queries clamped to the band.
 };
 
 /**
  * @brief Generate a grid over @p rSurface and fill it with signed distances.
- * @note Not implemented yet -- throws naming the release that adds it. The
- *       declaration and the option/result layouts are final from v9.24.0 so that
- *       adding the implementation is a pure `.cpp` change.
+ *
+ * The one call that turns a surface into a field. `Voxel` builds the dense
+ * lattice the options describe; `Octree` builds a coarse root lattice and
+ * refines the cells within `mBandCells` diagonals of the surface, `mMaxDepth`
+ * times, through `refine`'s `Balanced` closure.
+ *
+ * **The field is computed once, on the final mesh.** An octree pass cannot
+ * carry it: `refine` interpolates `point_data`, so a field attached mid-way
+ * would come out a smooth, plausible interpolation of the coarse values rather
+ * than the distance. The generated grid also carries the `sdf:*` `field_data`
+ * header describing itself.
+ *
+ * @param rSurface the surface to measure against.
+ * @param rOptions the grid to generate and how to fill it.
+ * @return the grid carrying `sdf:distance`, plus the surface verdict and the
+ *         lattice geometry.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set for `Voxel`, when either is set for `Octree`, on a
+ *         non-positive `mRootResolution`/`mBandCells`, a negative `mMaxDepth`,
+ *         and when the grid exceeds `mMaxCells` (checked again after every
+ *         octree pass, so a runaway band fails by name rather than by OOM).
  */
 MESHIOPLUSPLUS_API SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions = {});
 

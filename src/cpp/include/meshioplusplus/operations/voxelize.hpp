@@ -36,7 +36,7 @@
  * `quality`, `surface`, `gradient` and `refine` and unwritable by most formats --
  * forfeiting exactly the property that motivates the choice. A new `voxel` cell
  * type was rejected too: VTK's type 11 is deliberately unmapped in this codebase,
- * and adding it would mean a row in all 41 format tables to buy an implicit node
+ * and adding it would mean a row in all 42 format tables to buy an implicit node
  * ordering nothing needs.
  *
  * ### `grid` is a primitive constructor, not a byproduct

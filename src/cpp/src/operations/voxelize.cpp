@@ -50,11 +50,12 @@ namespace {
 
 constexpr const char* kVoxPrefix = "meshio++: voxelize: ";
 
-// The cell budget check, shared by grid() and voxelize(). It is a *named*
-// refusal rather than an allocation failure because the failure mode it guards
-// is mundane and predictable: 512^3 is 134 million cells and ~11.8 GB of points
-// and connectivity, which a user asks for by typo far more often than on
-// purpose.
+// The cell budget check for grid(), which has no LatticeRequest to resolve. It
+// is a *named* refusal rather than an allocation failure because the failure
+// mode it guards is mundane and predictable: 512^3 is 134 million cells and
+// ~11.8 GB of points and connectivity, which a user asks for by typo far more
+// often than on purpose. `lattice_resolve` applies the identical rule (and the
+// identical message) to the request-shaped callers.
 void vox_check_budget(std::int64_t Cells, std::int64_t MaxCells, const char* pPrefix) {
     if (MaxCells <= 0 || Cells <= MaxCells)
         return;
@@ -64,80 +65,20 @@ void vox_check_budget(std::int64_t Cells, std::int64_t MaxCells, const char* pPr
                                 " (raise max_cells, coarsen the resolution, or use a band)");
 }
 
-// The bounding box a voxelization covers: the caller's, or the mesh's own, in
-// both cases grown by the padding.
-std::array<double, 6> vox_resolve_bounds(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    std::array<double, 3> lo{{0.0, 0.0, 0.0}};
-    std::array<double, 3> hi{{0.0, 0.0, 0.0}};
-    if (rOptions.mBounds.has_value()) {
-        const std::array<double, 6>& b = *rOptions.mBounds;
-        for (std::size_t k = 0; k < 3; ++k) {
-            lo[k] = b[k];
-            hi[k] = b[k + 3];
-            if (!(hi[k] >= lo[k]))
-                throw std::invalid_argument(
-                    std::string(kVoxPrefix) + "bounds are inverted on axis " + std::to_string(k) +
-                    " (lo " + std::to_string(lo[k]) + " > hi " + std::to_string(hi[k]) + ")");
-        }
-    } else if (!detail::point_bbox(rMesh, lo, hi)) {
-        throw std::invalid_argument(std::string(kVoxPrefix) +
-                                    "the mesh has no points, so it has no bounding box to "
-                                    "voxelize (pass explicit bounds)");
-    }
-
-    double diag = 0.0;
-    for (std::size_t k = 0; k < 3; ++k) {
-        const double e = hi[k] - lo[k];
-        diag += e * e;
-    }
-    diag = std::sqrt(diag);
-    const double pad = rOptions.mPadding + rOptions.mPaddingRelative * diag;
-    if (pad < 0.0)
-        throw std::invalid_argument(std::string(kVoxPrefix) + "padding is negative");
-    for (std::size_t k = 0; k < 3; ++k) {
-        lo[k] -= pad;
-        hi[k] += pad;
-    }
-    return {lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]};
-}
-
 // The lattice a voxelization runs on. Exactly one of resolution and cell size
 // must be given: defaulting one of them would silently pick a grid the caller
 // did not choose, and for an object whose cost is cubic in that choice that is
-// not a kindness.
+// not a kindness. The rule itself lives in detail/grid_lattice.hpp, since
+// `compute_sdf` resolves the identical six fields the identical way.
 detail::LatticeSpec vox_resolve_lattice(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    if (rOptions.mResolution.has_value() == rOptions.mCellSize.has_value())
-        throw std::invalid_argument(std::string(kVoxPrefix) +
-                                    "give exactly one of resolution and cell_size");
-
-    const std::array<double, 6> b = vox_resolve_bounds(rMesh, rOptions);
-    const std::array<double, 3> lo{{b[0], b[1], b[2]}};
-    const std::array<double, 3> hi{{b[3], b[4], b[5]}};
-
-    detail::LatticeSpec spec;
-    if (rOptions.mResolution.has_value()) {
-        const std::array<std::int64_t, 3>& r = *rOptions.mResolution;
-        for (std::size_t k = 0; k < 3; ++k)
-            if (r[k] <= 0)
-                throw std::invalid_argument(std::string(kVoxPrefix) +
-                                            "resolution must be positive on every axis, got " +
-                                            std::to_string(r[k]) + " on axis " +
-                                            std::to_string(k));
-        spec = detail::lattice_from_bounds(lo, hi, r);
-    } else {
-        const double cell = *rOptions.mCellSize;
-        if (!(cell > 0.0))
-            throw std::invalid_argument(std::string(kVoxPrefix) + "cell_size must be positive");
-        spec = detail::lattice_from_cell_size(lo, hi, {{cell, cell, cell}});
-        for (std::size_t k = 0; k < 3; ++k)
-            if (spec.mDims[k] <= 0)
-                throw std::invalid_argument(
-                    std::string(kVoxPrefix) +
-                    "the bounding box is degenerate on axis " + std::to_string(k) +
-                    ", so a cell size cannot fill it (pass an explicit resolution or bounds)");
-    }
-    vox_check_budget(detail::lattice_num_cells(spec), rOptions.mMaxCells, kVoxPrefix);
-    return spec;
+    detail::LatticeRequest req;
+    req.mResolution = rOptions.mResolution;
+    req.mCellSize = rOptions.mCellSize;
+    req.mBounds = rOptions.mBounds;
+    req.mPadding = rOptions.mPadding;
+    req.mPaddingRelative = rOptions.mPaddingRelative;
+    req.mMaxCells = rOptions.mMaxCells;
+    return detail::lattice_resolve(rMesh, req, kVoxPrefix);
 }
 
 // Which cells the fill rule keeps, as a per-cell flag. An empty result means
@@ -157,8 +98,8 @@ std::vector<char> vox_occupancy(const Mesh& rMesh, const detail::LatticeSpec& rS
         // triangle overlaps far more boxes than it enters.
         const detail::TriangleSoup soup =
             detail::build_triangle_soup(rMesh, rOptions.mDistance.mSurfaceRegion);
-        const detail::Vec3 half{{rSpec.mSpacing[0] * 0.5, rSpec.mSpacing[1] * 0.5,
-                                 rSpec.mSpacing[2] * 0.5}};
+        const detail::Vec3 half{
+            {rSpec.mSpacing[0] * 0.5, rSpec.mSpacing[1] * 0.5, rSpec.mSpacing[2] * 0.5}};
         // Serial over triangles, each touching only the voxels of its own
         // bounding box: a parallel pass would race on the shared flag array for
         // no real gain, since the inner box is small.
@@ -218,10 +159,10 @@ std::vector<char> vox_occupancy(const Mesh& rMesh, const detail::LatticeSpec& rS
         const std::int64_t i = g % nx;
         const std::int64_t j = (g / nx) % ny;
         const std::int64_t k = g / (nx * ny);
-        centres[c] = detail::Vec3{
-            {rSpec.mOrigin[0] + (static_cast<double>(i) + 0.5) * rSpec.mSpacing[0],
-             rSpec.mOrigin[1] + (static_cast<double>(j) + 0.5) * rSpec.mSpacing[1],
-             rSpec.mOrigin[2] + (static_cast<double>(k) + 0.5) * rSpec.mSpacing[2]}};
+        centres[c] =
+            detail::Vec3{{rSpec.mOrigin[0] + (static_cast<double>(i) + 0.5) * rSpec.mSpacing[0],
+                          rSpec.mOrigin[1] + (static_cast<double>(j) + 0.5) * rSpec.mSpacing[1],
+                          rSpec.mOrigin[2] + (static_cast<double>(k) + 0.5) * rSpec.mSpacing[2]}};
     });
 
     SurfaceDistanceOptions dopts = rOptions.mDistance;
@@ -230,11 +171,9 @@ std::vector<char> vox_occupancy(const Mesh& rMesh, const detail::LatticeSpec& rS
                                     "fill 'inside' needs a sign, but sign='unsigned' was given");
     dopts.mBand = 0.0;  // a band would clamp the very sign this fill depends on
     const detail::DistanceQuery query = detail::build_distance_query(soup, dopts);
-    const std::vector<detail::DistanceHit> hits =
-        detail::query_distances(query, centres, dopts);
-    parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
-        occupied[c] = hits[c].mSignedDistance < 0.0 ? 1 : 0;
-    });
+    const std::vector<detail::DistanceHit> hits = detail::query_distances(query, centres, dopts);
+    parallel_for_bw(static_cast<std::size_t>(ncells),
+                    [&](std::size_t c) { occupied[c] = hits[c].mSignedDistance < 0.0 ? 1 : 0; });
     return occupied;
 }
 
@@ -294,8 +233,8 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
             conn.push_back(remap[static_cast<std::size_t>(nd)]);
     }
 
-    NDArray points = NDArray::Uninit(DType::Float64,
-                                     {static_cast<std::size_t>(next), std::size_t{3}});
+    NDArray points =
+        NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(next), std::size_t{3}});
     double* pdst = points.As<double>();
     parallel_for_bw(static_cast<std::size_t>(npoints), [&](std::size_t p) {
         const std::int64_t slot = remap[p];
@@ -312,8 +251,8 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
     out.AssignPoints(std::move(points));
 
     if (Kept > 0) {
-        NDArray block = NDArray::Uninit(DType::Int64,
-                                        {static_cast<std::size_t>(Kept), std::size_t{8}});
+        NDArray block =
+            NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(Kept), std::size_t{8}});
         std::memcpy(block.Data(), conn.data(), conn.size() * sizeof(std::int64_t));
         out.AddCellBlock("hexahedron", std::move(block));
     }
@@ -340,13 +279,11 @@ Mesh grid(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>&
         if (rDims[k] < 0)
             throw std::invalid_argument(std::string(prefix) +
                                         "cell counts must not be negative, got " +
-                                        std::to_string(rDims[k]) + " on axis " +
-                                        std::to_string(k));
+                                        std::to_string(rDims[k]) + " on axis " + std::to_string(k));
         if (rDims[k] > 0 && !(rSpacing[k] > 0.0))
-            throw std::invalid_argument(std::string(prefix) +
-                                        "spacing must be positive on every axis with cells, got " +
-                                        std::to_string(rSpacing[k]) + " on axis " +
-                                        std::to_string(k));
+            throw std::invalid_argument(
+                std::string(prefix) + "spacing must be positive on every axis with cells, got " +
+                std::to_string(rSpacing[k]) + " on axis " + std::to_string(k));
     }
     detail::LatticeSpec spec;
     spec.mOrigin = rOrigin;

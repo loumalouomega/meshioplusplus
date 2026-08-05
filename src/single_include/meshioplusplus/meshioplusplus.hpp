@@ -7430,9 +7430,11 @@ private:
  * Three consumers need exactly this object and must not disagree about its
  * numbering:
  *  - `grid()`, the public primitive constructor;
- *  - `voxelize()`, whose dense output *is* a lattice;
- *  - a future `read_vti`, since VTK ImageData is an implicit lattice that has to
- *    be expanded into explicit cells before it can be a `Mesh`.
+ *  - `voxelize()` and `compute_sdf()`, whose dense output *is* a lattice;
+ *  - `read_vti`, since VTK ImageData is an implicit lattice that has to be
+ *    expanded into explicit cells before it can be a `Mesh` -- and `write_vti`,
+ *    which runs `lattice_from_mesh` in the other direction to recover the
+ *    `Origin`/`Spacing`/`WholeExtent` it has to emit.
  *
  * ### The numbering is inherited, not invented
  *
@@ -7456,9 +7458,9 @@ private:
  * linearization; they are deliberately left alone, since changing them would
  * rewrite committed expected values for no gain.
  *
- * x-fastest is also VTK ImageData's own ordering, which is what will make the
- * `.vti` writer a straight copy and what makes `cell_data` reshape to
- * `arr[z, y, x]` — the C-order tensor layout voxel tooling expects.
+ * x-fastest is also VTK ImageData's own ordering, which is what makes the `.vti`
+ * writer a straight copy and what makes `cell_data` reshape to `arr[z, y, x]` —
+ * the C-order tensor layout voxel tooling expects.
  *
  * ### Two properties worth stating as contracts
  *
@@ -7485,6 +7487,7 @@ private:
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 // Project includes
 
@@ -7545,6 +7548,65 @@ MESHIOPLUSPLUS_API LatticeSpec lattice_from_cell_size(const std::array<double, 3
  *         here" without a caller having to look at the row count.
  */
 MESHIOPLUSPLUS_API Mesh lattice_build_mesh(const LatticeSpec& rSpec);
+
+/**
+ * @brief A "cover this mesh with a lattice" request, in the shape every caller
+ * spells it: a resolution *or* a cell size, optional explicit bounds, padding.
+ *
+ * `VoxelOptions` and `SdfOptions` both carry exactly these six fields and both
+ * resolve them the same way, so the resolution lives here once rather than in
+ * each operation. `pPrefix` is passed in rather than baked in so each operation's
+ * errors still name themselves (`meshio++: voxelize: ...`).
+ */
+struct LatticeRequest {
+    std::optional<std::array<std::int64_t, 3>> mResolution;  ///< Cell counts per axis.
+    std::optional<double> mCellSize;                         ///< Cubic cell size.
+    std::optional<std::array<double, 6>> mBounds;            ///< Explicit `{lo[3], hi[3]}`.
+    double mPadding = 0.0;                                   ///< Padding in world units.
+    double mPaddingRelative = 0.0;      ///< Padding as a fraction of the diagonal.
+    std::int64_t mMaxCells = 20000000;  ///< Refuse to generate more than this.
+};
+
+/**
+ * @brief Resolve a `LatticeRequest` against a mesh into a concrete lattice.
+ * @param rMesh the mesh whose bounding box is used when `mBounds` is unset.
+ * @param rRequest the request.
+ * @param pPrefix the caller's error prefix, e.g. `"meshio++: voxelize: "`.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set, on a non-positive resolution or cell size, on
+ *         inverted bounds, on negative padding, on a mesh with no points and no
+ *         explicit bounds, and when the lattice would exceed `mMaxCells`.
+ */
+MESHIOPLUSPLUS_API LatticeSpec lattice_resolve(const Mesh& rMesh, const LatticeRequest& rRequest,
+                                               const char* pPrefix);
+
+/**
+ * @brief Recover the lattice a mesh *is*, from its geometry alone.
+ *
+ * This exists because **no file format persists arbitrary `field_data`**, so a
+ * grid written and read back has lost whatever `sdf:origin`/`sdf:spacing`/
+ * `sdf:dims` it carried in memory. The geometry, however, is still exactly a
+ * lattice, and for a lattice the recovery is exact rather than a fit: the
+ * distinct x, y and z coordinate values are the plane positions, and
+ * `lattice_build_mesh` writes them as `origin + index * spacing` evaluated
+ * independently per point, so two points on the same plane carry **bit-identical**
+ * coordinates and an exact sort-and-unique recovers the planes with no tolerance
+ * at all.
+ *
+ * Only the spacing needs one: `origin + i*h` differences are not exactly equal
+ * across `i` in IEEE arithmetic, so uniformity is checked to a relative `1e-9`
+ * and the reported spacing is `(last - first) / n` rather than the first gap.
+ *
+ * @param rMesh the mesh to inspect.
+ * @param rSpec receives the recovered lattice; untouched when the answer is false.
+ * @return false when @p rMesh is not a dense lattice -- wrong cell type, a point
+ *         count that is not `(nx+1)(ny+1)(nz+1)`, a non-uniform axis, or a cell
+ *         count that disagrees. A partial lattice (`voxelize`'s `surface`/`inside`
+ *         fills, or an octree) is **not** recoverable and reports false: its
+ *         points do not tile the box, and inventing the missing ones would be a
+ *         different mesh.
+ */
+MESHIOPLUSPLUS_API bool lattice_from_mesh(const Mesh& rMesh, LatticeSpec& rSpec);
 
 /**
  * @brief The axis-aligned bounding box of a mesh's points.
@@ -9145,10 +9207,10 @@ MESHIOPLUSPLUS_API SubsetResult build_cell_subset(const Mesh& rMesh,
  * - `sample_distance` -- distances at arbitrary query points, the batch form.
  * - `distance_to_surface` -- the same, attached to a query mesh as `point_data`.
  * - `surface_watertight_check` -- what is wrong with this skin, in numbers.
+ * - `compute_sdf` -- the umbrella that generates its own grid, dense or adaptive.
  *
- * `compute_sdf` (the umbrella that generates its own grid) is declared here too
- * but is not implemented yet; calling it throws by name. The types it needs are
- * nevertheless **complete in this header from the first release**, deliberately:
+ * `compute_sdf`'s types were **complete in this header from v9.24.0**, one
+ * release before its body, deliberately:
  * `SdfOptions` embeds `SurfaceDistanceOptions` by value, so adding a member to
  * the inner struct later would shift the outer struct's tail under a consumer
  * compiled against the older header -- a silent Tier A ABI break, and exactly the
@@ -9239,8 +9301,11 @@ enum class SdfLocation {
 
 /// What `compute_sdf` generates to carry the field.
 enum class SdfStructure {
-    Voxel = 0,   ///< A dense uniform lattice over the (padded) bounding box.
-    Octree = 1,  ///< Adaptive, refined near the surface. Reserved until v9.26.0.
+    Voxel = 0,  ///< A dense uniform lattice over the (padded) bounding box.
+    /// Adaptive: a coarse root lattice, refined only near the surface. The
+    /// output is **1-irregular** (it has hanging nodes) -- see `refine.hpp`'s
+    /// `RefineClosure::Balanced`, which is the mechanism.
+    Octree = 1,
 };
 
 /// What to do when the surface turns out not to be watertight.
@@ -9383,14 +9448,17 @@ struct SdfOptions {
     /// An SDF that stops at the surface is not much use, hence the non-zero
     /// default.
     double mPaddingRelative = 0.1;
-    /// Octree: cell count per axis of the root lattice. Reserved until v9.26.0.
+    /// Octree: cell count per axis of the root lattice. `mResolution` and
+    /// `mCellSize` size a `Voxel` grid and are an **error** with `Octree`, whose
+    /// finest cell is `root cell / 2^depth` and is therefore already determined.
     std::int64_t mRootResolution = 8;
-    /// Octree: how many refinement passes. Reserved until v9.26.0.
+    /// Octree: how many refinement passes. Each halves the cell size in the band.
     std::int64_t mMaxDepth = 4;
     /// Octree: refine a cell while `|distance| <= mBandCells * cell diagonal`.
-    /// Reserved until v9.26.0.
+    /// The diagonal is the cell's own, so the band narrows as the tree deepens --
+    /// which is what makes the cost bounded rather than cubic.
     double mBandCells = 1.0;
-    /// Octree: attach `refine:level`. Reserved until v9.26.0.
+    /// Octree: attach `refine:level`.
     bool mRecordLevels = true;
     /// Refuse to generate more cells than this, naming the option.
     std::int64_t mMaxCells = 20000000;
@@ -9404,20 +9472,38 @@ struct SdfOptions {
 
 /// The result of `compute_sdf`: the generated grid and what was found.
 struct SdfResult {
-    Mesh mMesh;                                        ///< The grid, carrying `sdf:distance`.
-    SurfaceQuality mQuality;                           ///< The surface verdict.
-    std::array<std::int64_t, 3> mDims{{0, 0, 0}};      ///< Root cell counts.
-    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};    ///< Lattice lo corner.
-    std::array<double, 3> mSpacing{{0.0, 0.0, 0.0}};   ///< Finest cell size.
-    std::int64_t mMaxDepth = 0;                        ///< 0 for a dense grid.
-    std::int64_t mNumBanded = 0;                       ///< Queries clamped to the band.
+    Mesh mMesh;                                       ///< The grid, carrying `sdf:distance`.
+    SurfaceQuality mQuality;                          ///< The surface verdict.
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};     ///< Root cell counts.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};   ///< Lattice lo corner.
+    std::array<double, 3> mSpacing{{0.0, 0.0, 0.0}};  ///< Finest cell size.
+    std::int64_t mMaxDepth = 0;                       ///< 0 for a dense grid.
+    std::int64_t mNumBanded = 0;                      ///< Queries clamped to the band.
 };
 
 /**
  * @brief Generate a grid over @p rSurface and fill it with signed distances.
- * @note Not implemented yet -- throws naming the release that adds it. The
- *       declaration and the option/result layouts are final from v9.24.0 so that
- *       adding the implementation is a pure `.cpp` change.
+ *
+ * The one call that turns a surface into a field. `Voxel` builds the dense
+ * lattice the options describe; `Octree` builds a coarse root lattice and
+ * refines the cells within `mBandCells` diagonals of the surface, `mMaxDepth`
+ * times, through `refine`'s `Balanced` closure.
+ *
+ * **The field is computed once, on the final mesh.** An octree pass cannot
+ * carry it: `refine` interpolates `point_data`, so a field attached mid-way
+ * would come out a smooth, plausible interpolation of the coarse values rather
+ * than the distance. The generated grid also carries the `sdf:*` `field_data`
+ * header describing itself.
+ *
+ * @param rSurface the surface to measure against.
+ * @param rOptions the grid to generate and how to fill it.
+ * @return the grid carrying `sdf:distance`, plus the surface verdict and the
+ *         lattice geometry.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set for `Voxel`, when either is set for `Octree`, on a
+ *         non-positive `mRootResolution`/`mBandCells`, a negative `mMaxDepth`,
+ *         and when the grid exceeds `mMaxCells` (checked again after every
+ *         octree pass, so a runaway band fails by name rather than by OOM).
  */
 MESHIOPLUSPLUS_API SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions = {});
 
@@ -14140,6 +14226,102 @@ MESHIOPLUSPLUS_API Mesh read_unv(const std::string& rPath, UnvInfo& rInfo);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/unv.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vti.hpp =====
+/**
+ * @file formats/vti.hpp
+ * @brief VTK XML ImageData (`.vti`): a regular lattice whose geometry is three
+ * attributes rather than a point array.
+ *
+ * ### Why this format and not a raw dump
+ *
+ * `compute_sdf` and `voxelize` produce a lattice, and a lattice written as an
+ * explicit `.vtu` spends the overwhelming majority of its bytes re-stating an
+ * index formula. ImageData states it instead: `Origin`, `Spacing` and
+ * `WholeExtent` **are** the grid header, which makes `.vti` the one format in
+ * meshio++ that round-trips a generated grid's geometry exactly. (No format
+ * persists arbitrary `field_data`, so the `sdf:*` keys do not survive any write
+ * -- here they do not need to, because the geometry itself carries the same
+ * information and `detail::lattice_from_mesh` recovers it.)
+ *
+ * The container is the same VTK XML this repo already reads and writes, so the
+ * `<DataArray>` codec (`detail/vtk_xml.hpp`) and the base64 + block-compression
+ * framing (`detail/vtu_binary.hpp`) are reused **verbatim** rather than
+ * reimplemented -- that is an argument about test surface, not about typing.
+ *
+ * ### The mesh side of the deal
+ *
+ * A `Mesh` has no implicit geometry, so:
+ *
+ * - **`read_vti` expands** the extent into explicit points and one `hexahedron`
+ *   cell block, through `detail/grid_lattice.hpp` -- the same numbering `grid()`
+ *   and `voxelize()` produce, which is what makes `read_vti(write_vti(m)) == m`
+ *   an identity rather than a coincidence.
+ * - **`write_vti` requires a lattice.** A mesh that is not one has no `Origin`/
+ *   `Spacing`/`WholeExtent` to write and raises `WriteError` by name. That
+ *   includes a *partial* lattice (`voxelize`'s `surface`/`inside` fills, or an
+ *   octree): ImageData cannot express a hole, and silently filling one in would
+ *   write a different mesh than the caller handed over.
+ *
+ * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ *
+ * - `<AppendedData>` -- the VTU C++ reader declines it too, for the same reason.
+ * - More than one `<Piece>`, or a piece whose `Extent` is not the `WholeExtent`.
+ * - `header_type="UInt64"` is supported on read (the header size is honoured);
+ *   the writer always emits the default `UInt32`, as the VTU writer does.
+ * - lzma, and any codec this build was compiled without -- by name.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as VTK XML ImageData.
+ * @param rPath the output path.
+ * @param rMesh the mesh; must be a dense lattice (see the file docs).
+ * @param binary base64-encode the arrays instead of writing them as text.
+ * @param zlib compress the binary blocks. Ignored when @p binary is false.
+ * @throws WriteError when @p rMesh is not a dense lattice, or when zlib was
+ *         requested and this build has none.
+ */
+MESHIOPLUSPLUS_API void write_vti(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                  bool zlib = true);
+
+/**
+ * @brief Write a mesh as VTK XML ImageData with an explicit block codec.
+ * @param rPath the output path.
+ * @param rMesh the mesh; must be a dense lattice.
+ * @param binary base64-encode the arrays instead of writing them as text.
+ * @param codec the block compressor; `None` writes uncompressed base64.
+ * @throws WriteError as `write_vti`, and when @p codec is not in this build.
+ */
+MESHIOPLUSPLUS_API void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                        detail::VtkCodec codec);
+
+/**
+ * @brief Read a VTK XML ImageData file, expanding it into explicit cells.
+ * @param rPath the input path.
+ * @param rOpts selective-read options; `mPointsOnly` and `mDataArrays` apply.
+ * @return a mesh with one `hexahedron` block in `detail/grid_lattice.hpp`'s
+ *         numbering, or a point-only mesh when the extent has no cells.
+ * @throws ReadError on a construct the C++ reader declines (see the file docs).
+ */
+MESHIOPLUSPLUS_API Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a VTK XML ImageData file without decoding its arrays.
+ *
+ * Unusually cheap even by metadata-reader standards: `WholeExtent` gives both the
+ * point and the cell count outright, so nothing at all is decoded.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_vti_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/vti.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/vtk.hpp =====
 /**
  * @file vtk.hpp
@@ -15245,11 +15427,373 @@ MESHIOPLUSPLUS_API CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpt
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/clean.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/refine.hpp =====
+/**
+ * @file refine.hpp
+ * @brief Mesh refinement: subdivide cells into congruent children of the
+ * **same** cell type, interpolating `point_data` onto the new nodes. Either
+ * every cell (uniform) or a selected subset with a conforming closure
+ * (selective / adaptive).
+ *
+ * This is the resolution-increasing counterpart to the resolution-preserving
+ * `convert_cells` and the resolution-reducing `crop`/`clean`. One level applies
+ * a fixed template per cell type:
+ *
+ *  - `line` -> 2 `line` (1 new mid-edge node)
+ *  - `triangle` -> 4 `triangle` (3 mid-edge nodes; the standard 1-to-4 split)
+ *  - `quad` -> 4 `quad` (4 mid-edge + 1 face-centre node)
+ *  - `tetra` -> 8 `tetra` (6 mid-edge nodes)
+ *  - `wedge` -> 8 `wedge` (9 mid-edge + 3 quad-face-centre nodes)
+ *  - `hexahedron` -> 8 `hexahedron` (12 mid-edge + 6 face-centre + 1 body node)
+ *
+ * New nodes are placed at the midpoint of the entity that defines them and
+ * carry the mean of that entity's corner values for every `point_data` array.
+ * Original points keep their indices; new nodes are appended. Each parent's
+ * `cell_data` row is replicated to its children.
+ *
+ * **Conformity.** Mid-edge nodes and quad-face-centre nodes are *shared*
+ * between every cell that touches the entity, so the refined mesh has no
+ * hanging nodes. Only the hexahedron body node is per-cell. (Sharing the face
+ * centres is not optional: with a per-cell copy, two hexahedra meeting at a
+ * face would reference distinct coincident nodes and the mesh would be
+ * topologically split along every interior face.)
+ *
+ * Note that the tetrahedron's interior diagonal -- fixed at the opposite-edge
+ * pair `(0,1)`-`(2,3)`, i.e. `tetra10` nodes 4-9 -- is chosen for determinism
+ * only, **not** for conformity: it is strictly interior, so a face's
+ * subdivision is fixed by that face's own mid-edge nodes whatever the
+ * neighbour does. This is the opposite of `convert_cells`' hex-simplexify
+ * diagonal 0-6, whose endpoints lie on the boundary and which therefore *is*
+ * conformity-critical.
+ *
+ * **Volume and orientation.** Children inherit the parent's orientation, so a
+ * well-oriented input refines to a well-oriented output (zero newly-inverted
+ * cells). Volume is conserved exactly for `line`/`triangle`/`quad`/`tetra`
+ * always, and for `wedge`/`hexahedron` when the parent is affine (a right
+ * prism / parallelepiped). For a general trilinear hexahedron the eight
+ * children's volumes do not sum to the parent's, because the parent's bilinear
+ * faces are replaced by four different bilinear patches -- that is a property
+ * of the geometry, not of this implementation.
+ *
+ * **Block structure is preserved 1:1**: the output has exactly
+ * `NumCellBlocks()` blocks, in input order, and each keeps its input cell
+ * type, which is what keeps the one-array-per-block `cell_data` invariant
+ * trivially correct. That holds in selective mode too -- see below.
+ *
+ * ### Selective (adaptive) refinement
+ *
+ * With a selector set (`mCells`, `mRegion` or the `mPredicateArray` predicate)
+ * only the selected cells get the full template above -- they are *red* -- and
+ * the hanging nodes that leaves on the interface are resolved by a **closure**,
+ * so the output is still a valid conforming mesh. Setting no selector is the
+ * uniform behaviour, byte-identical to a build without this feature.
+ *
+ * The whole thing is one table-driven rule rather than three loosely coupled
+ * features. Each cell type has a set of **admissible** split-edge masks -- the
+ * subsets of its edges for which a same-type subdivision template exists (see
+ * `detail/refine_templates.hpp`). A cell's mask is whatever its neighbours have
+ * bisected; if that mask is not admissible it is *promoted* to the smallest
+ * admissible superset, which bisects more edges, which may promote further. The
+ * admissible sets are closed under intersection, so "smallest admissible
+ * superset" is well defined and the promotion is a monotone idempotent closure
+ * operator -- and the global fixed point is therefore **unique and independent
+ * of iteration order**, which is why determinism across backends and thread
+ * counts is a property of the formulation rather than a convention.
+ *
+ * Every new node's existence is likewise *derived* from the split-edge set,
+ * never tabulated: an edge carries a node iff it is split, a quad face carries
+ * a centre iff **all four** of its edges are split, and a hexahedron carries a
+ * body node iff **all twelve** are. Two cells sharing an entity see the same
+ * edges and so reach the same answer, which is what makes conformity structural
+ * rather than something the tests merely sample. When every edge is split these
+ * rules reduce exactly to the uniform templates above.
+ *
+ * `RefineClosure::RedGreen` (the default) promotes to the smallest admissible
+ * superset, which keeps the extra refinement local. Per type:
+ *
+ *  - `line`, `triangle`: every mask is admissible -- a triangle with 1 bisected
+ *    edge splits into 2, with 2 into 3, with 3 into 4. Nothing propagates.
+ *  - `quad`: the admissible masks are the two *opposite* edge pairs and the
+ *    full split, so a single bisected edge promotes to its opposite pair and
+ *    splits into 2 quads. A pentagon or heptagon cannot be partitioned into
+ *    quadrilaterals at all (`4Q = B + 2I` forbids an odd boundary count), so
+ *    this is the finest possible type-preserving answer; the bisection then
+ *    travels along one row of a structured grid and stops at the boundary.
+ *  - `hexahedron`: the admissible masks are unions of its three parallel edge
+ *    classes -- 1, 2, 2, 2, 4, 4, 4 or 8 children -- so refinement propagates
+ *    through one dual sheet rather than the whole block.
+ *  - `wedge`: its six triangle edges form one class and its three verticals
+ *    another -- 1, 2, 4 or 8 children.
+ *  - `tetra`: every mask up to two edges is admissible, as are the four
+ *    face-triples; anything else promotes to the full 8-way split. (Three
+ *    edges meeting at a common vertex are deliberately *not* admissible: each
+ *    of the three incident faces would then hit the ambiguous two-edge case.)
+ *
+ * `RefineClosure::Propagate` instead promotes any non-empty mask straight to a
+ * full split. It is always conforming and defined for every cell type, but it
+ * is **not local** -- every edge-neighbour of a red cell becomes red in turn,
+ * so it converges to uniform refinement of the whole edge-connected component.
+ * It is the always-works baseline and the test oracle, not the adaptivity mode.
+ *
+ * `RefineClosure::Balanced` does not close at all: it **keeps the hanging
+ * nodes** and only enforces 2:1 balance, which is what an adaptive-mesh-
+ * refinement code normally means by "propagate". A cell is split fully or not
+ * at all -- there are no transitional templates -- and a cell is drawn in only
+ * when a neighbour would otherwise end up more than one level finer than it:
+ *
+ *     refine C  =>  C's level rises by one
+ *     D must refine  <=>  some entity D shares has an incident cell whose
+ *                         post-refinement level exceeds D's by more than one
+ *
+ * On a mesh of uniform level that condition is satisfied nowhere, so refining
+ * one cell propagates to **nothing** -- 64 hexahedra become 71, against 125
+ * under `RedGreen` and 512 under `Propagate`. Balancing only bites once levels
+ * differ, i.e. from the second adaptive pass onwards, and even then it reaches
+ * one level-ring rather than the whole mesh. The `refine:level` array is what
+ * makes that well defined across passes, and reading it back is why the array
+ * is *maintained* rather than replicated.
+ *
+ * The price is stated rather than hidden: the result is **1-irregular and not
+ * conforming**. Every constrained node is reported in the `refine:hanging`
+ * `point_data` array (see `kRefineHangingName`) so a solver can eliminate it;
+ * the conformity guarantees below apply to the other two closures only, and
+ * `extract_surface`, `decimate` and anything else assuming a conforming mesh
+ * will treat a hanging node as a genuine boundary.
+ *
+ * A cell with two *adjacent* bisected edges on one face has a remnant
+ * quadrilateral there that needs a diagonal, and the neighbour across that face
+ * must choose the same one. The choice is therefore made from the **global node
+ * ids** -- the diagonal starting at whichever of the two surviving corners has
+ * the smaller id -- never from the template's local numbering, which two
+ * differently-oriented neighbours would disagree about.
+ *
+ * Green cells are **not undone** before a later red refinement, so repeated
+ * selective passes over the same region degrade element quality without bound.
+ * `refine:level` plus `mCellMaps` is the hierarchy a future green-undo needs.
+ *
+ * Constructs that would break the same-type contract raise rather than guess:
+ * higher-order cells (`tetra10`, ...; linearize first), `pyramid` (whose
+ * uniform refinement is 6 pyramids + 4 tetrahedra; simplexify first), and
+ * ragged polygon/polyhedron blocks.
+ *
+ * Determinism: the templates are fixed and the new-node numbering comes from a
+ * **serial** dedup pass over a `parallel_for`-filled disjoint-slot buffer
+ * (`src/cpp/src/operations/surface.cpp`'s phase-split idiom), never from a
+ * concurrent hash insert. Output is byte-identical across mesh backends and
+ * thread counts.
+ *
+ * Standard C++ and the uniform mesh API only, so it compiles under every mesh
+ * backend. This is an operation, not a file format -- it is not in the format
+ * registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The `cell_data` array `RefineOptions::mRecordParentIds` attaches.
+inline constexpr const char* kRefineParentCellName = "refine:parent_cell";
+
+/// The Int64 `cell_data` array recording each cell's refinement depth: `0` for
+/// a cell no red split ever touched, incremented once per red split. A green
+/// (transitional) child inherits its parent's level unchanged, because a green
+/// split is a closure, not a refinement. The name is **reserved**: if the input
+/// already carries it, `refine` updates it rather than replicating it, so
+/// successive passes accumulate.
+inline constexpr const char* kRefineLevelName = "refine:level";
+
+/// The Int64 `point_data` array `RefineClosure::Balanced` attaches: `1` for a
+/// **hanging** (constrained) node, `0` otherwise. A hanging node is one that
+/// exists on an entity of a cell that does not reference it -- the mid-edge node
+/// a refined cell created on an edge its unrefined neighbour still spans whole.
+/// Only `Balanced` produces any; the other closures leave none by construction
+/// and do not attach the array. The name is **reserved**: the array is recomputed
+/// from the output's own topology every pass rather than carried through the
+/// generic `point_data` path, which would interpolate a flag.
+inline constexpr const char* kRefineHangingName = "refine:hanging";
+
+/// The Int64 `(num_points, 4)` `point_data` array recording, per point, the
+/// **entity it was created on** -- `{-1, -1, a, b}` for the midpoint of edge
+/// `(a, b)`, the sorted `{p, q, r, s}` for a quad-face centre, and
+/// `{-1, -1, -1, -1}` for a point `refine` did not create (an original point, or
+/// a hexahedron body centre, which is interior to one cell and can never be
+/// shared).
+///
+/// It exists so that a *later* pass can recognise that an entity it is about to
+/// split already carries a node, and reuse it instead of allocating a coincident
+/// second one. Without it, `RefineClosure::Balanced` tore the mesh: when the 2:1
+/// balance rule drew in a coarse cell whose edge `(a, b)` already held a hanging
+/// node, that cell's refinement keyed the edge as `(a, b)`, allocated a *new*
+/// midpoint and left the two sides of the interface referencing distinct,
+/// exactly-coincident nodes.
+///
+/// The name is **reserved** and the array is *maintained* rather than replicated:
+/// it is attached whenever a pass leaves hanging nodes, and kept thereafter. The
+/// other closures leave none and do not attach it, so their output is unchanged.
+///
+/// Entries name **input point indices**, which `refine` never renumbers. An
+/// operation that *does* renumber points (`reorder`, `clean`, `crop`, `merge`) or
+/// that moves them (`transform`, `smooth`) invalidates them; `refine` detects
+/// that -- each entry must still reproduce its own point's coordinates -- and
+/// warns and ignores the array rather than trusting it.
+inline constexpr const char* kRefineEntityName = "refine:entity";
+
+/// How `refine` resolves the hanging nodes a partial refinement leaves behind.
+enum class RefineClosure {
+    /// Promote a cell's split-edge mask to the smallest *admissible* superset,
+    /// so an affected neighbour is split transitionally rather than fully. Keeps
+    /// the extra refinement local, and the output is conforming. The default.
+    RedGreen = 0,
+    /// Promote any non-empty mask straight to a full split. Conforming and
+    /// defined for every cell type, but **not local**: it converges to uniform
+    /// refinement of the whole edge-connected component.
+    Propagate = 1,
+    /// Do not close at all: **keep the hanging nodes** and merely enforce 2:1
+    /// balance, refining a cell only when a neighbour would otherwise end up
+    /// more than one level finer. The output is 1-irregular and **NOT
+    /// conforming** -- the constrained nodes are reported in `refine:hanging`
+    /// for a solver to eliminate. This is the classic adaptive-mesh-refinement
+    /// meaning of "propagate", and the only mode whose cost is bounded by the
+    /// selection rather than by the mesh.
+    Balanced = 2,
+};
+
+/// The comparison in `RefineOptions`' `cell_data` predicate selector.
+enum class RefineCompare {
+    Less = 0,
+    LessEqual = 1,
+    Greater = 2,
+    GreaterEqual = 3,
+    Equal = 4,
+    NotEqual = 5,
+};
+
+/**
+ * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`,
+ * `"propagate"` / `"red"`, or `"balanced"` / `"2:1"`.
+ * @param rName The name; empty means the default (`RedGreen`).
+ * @throws std::invalid_argument naming every accepted value.
+ */
+MESHIOPLUSPLUS_API RefineClosure refine_closure_from_name(const std::string& rName);
+
+/**
+ * @brief Parse a comparison operator (`"<"`, `"<="`, `">"`, `">="`, `"=="`,
+ * `"!="`; `"="` is accepted as `"=="`).
+ * @throws std::invalid_argument naming every accepted value.
+ */
+MESHIOPLUSPLUS_API RefineCompare refine_compare_from_name(const std::string& rName);
+
+/**
+ * @brief Evaluate one `RefineCompare` against a value.
+ *
+ * Exposed because `crop_predicate` selects cells by exactly this rule, and a
+ * second transcription of a discrete branch is precisely the kind of thing that
+ * drifts silently -- the two operations would then disagree only on the boundary
+ * cases (`==` on a tie, and a NaN), which is where disagreement is hardest to
+ * notice.
+ *
+ * @param Value the cell's value.
+ * @param Op the comparison.
+ * @param Rhs the threshold.
+ * @return whether the comparison holds. **A non-finite @p Value never matches**,
+ *   whatever @p Op is: `compute_quality` deliberately reports NaN where a metric
+ *   does not apply, and a predicate over `quality:*` on a mixed mesh is the
+ *   headline use case, so rejecting such an array outright would break it.
+ */
+MESHIOPLUSPLUS_API bool refine_compare_value(double Value, RefineCompare Op, double Rhs);
+
+/// Options for `refine`.
+struct RefineOptions {
+    /// How many times to apply the subdivision templates. `0` (or less) returns
+    /// an unchanged clone; `n` multiplies the cell count of a supported block
+    /// by `children_per_cell^n` when no selector is set. With a selector, level
+    /// `k > 1` refines the children of level `k - 1`'s red cells; green and
+    /// untouched cells are not re-refined.
+    int mLevels = 1;
+    /// Attach an Int64 `refine:parent_cell` `cell_data` array recording, per
+    /// output cell, the index of the **original** input cell it descends from
+    /// *within its own block* (blocks correspond 1:1). Across several levels
+    /// this is the original ancestor, not the immediate parent.
+    bool mRecordParentIds = false;
+
+    // --- selective refinement ------------------------------------------------
+    // At most ONE of the three selectors below may be set. Two is an error
+    // rather than a precedence rule: silently ignoring a selector the caller
+    // asked for is the failure mode worth refusing. All empty = uniform.
+
+    /// Explicit **global block-major** cell indices to refine (the numbering
+    /// `detail/cell_index.hpp` owns and named `Cell` regions use). Canonicalized
+    /// (sorted, de-duplicated) before use; an out-of-range index is an error.
+    std::vector<std::int64_t> mCells;
+    /// Name of a region to refine. A `Cell` region selects its own cells; a
+    /// `Point` region selects every cell with **any** node in it. A `Side`
+    /// region is not a selector and is an error -- it names facets, and turning
+    /// facets into cells is a policy decision this operation does not make
+    /// silently.
+    std::string mRegion;
+    /// Name of a scalar numeric `cell_data` array to threshold (`""` = unused).
+    /// Composes directly with `attach_quality`, e.g.
+    /// `quality:scaled_jacobian < 0.3`. Deliberately a single comparison and
+    /// not a second `data_calc` expression grammar.
+    std::string mPredicateArray;
+    /// The predicate's comparison.
+    RefineCompare mPredicateOp = RefineCompare::Less;
+    /// The predicate's right-hand side. A non-finite cell value never matches.
+    double mPredicateValue = 0.0;
+    /// How to resolve hanging nodes. Ignored when no selector is set (every
+    /// cell is then red and no closure is needed).
+    RefineClosure mClosure = RefineClosure::RedGreen;
+    /// Attach the Int64 `refine:level` `cell_data` array (see
+    /// `kRefineLevelName`). An input that already carries it is updated
+    /// whatever this flag says; the flag only controls *creating* it.
+    bool mRecordLevels = false;
+};
+
+/// The result of `refine`: the refined mesh plus the index maps.
+struct RefineResult {
+    /// The refined mesh.
+    Mesh mMesh;
+    /// Int64 shape `(num_points_in,)`, input point index -> output point index.
+    /// Refinement never prunes, so this is the identity; it is returned in full
+    /// so callers need not depend on that.
+    NDArray mPointMap;
+    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> the
+    /// index of its **first** child in the corresponding output block. A cell's
+    /// children are contiguous, so cell `c` owns
+    /// `[map[c], c + 1 < n ? map[c + 1] : num_cells_out)`. In selective mode a
+    /// cell may have a single child (itself, unrefined), so the run length
+    /// varies -- the map is still monotone and every entry non-negative.
+    std::vector<NDArray> mCellMaps;
+};
+
+/**
+ * @brief Refine a mesh, subdividing cells into same-type children.
+ * @param rMesh The mesh to refine (unchanged).
+ * @param rOptions Level count, cell selection, closure and bookkeeping. With no
+ *   selector set this is the uniform refinement of every cell.
+ * @return The refined mesh and its point/cell index maps.
+ * @throws std::invalid_argument on a higher-order, `pyramid`, or ragged cell
+ *   block, none of which can be subdivided into same-type children; on more
+ *   than one selector being set; on an out-of-range cell index; on an unknown
+ *   region, or a `Side` region used as a selector; and on a predicate array
+ *   that is missing, does not cover every block, is not scalar, or holds a
+ *   non-finite value.
+ */
+MESHIOPLUSPLUS_API RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/refine.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/crop.hpp =====
 /**
  * @file operations/crop.hpp
- * @brief Dependency-free spatial subsetting: extract the part of a mesh inside
- * an axis-aligned bounding box or a half-space.
+ * @brief Dependency-free subsetting: extract the part of a mesh inside an
+ * axis-aligned bounding box, inside a half-space, or satisfying a comparison on
+ * one of its own `cell_data` arrays.
  *
  * A point is "inside" the bbox when `lo <= p <= hi` component-wise, or inside
  * the half-space when `(p - point) . normal >= 0`. A cell is kept when ALL of
@@ -15258,6 +15802,27 @@ MESHIOPLUSPLUS_API CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpt
  * and connectivity + all data remapped. Optionally the original point/cell ids
  * are recorded as data arrays.
  *
+ * ### The predicate crop, and why `CropMode` does not apply to it
+ *
+ * `crop_predicate` keeps cells whose value in a scalar `cell_data` array
+ * satisfies a comparison. That is deliberately **general rather than
+ * inside/outside-a-surface specific**: the inside/outside case composes as
+ *
+ * ```
+ * crop_predicate(distance_to_surface(mesh, skin, {.mLocation = Center}).mMesh,
+ *                kSdfDistanceName, RefineCompare::Less, 0.0)
+ * ```
+ *
+ * and the same one mode also crops by `quality:*`, by a material id, by
+ * `partition:part`, or by anything `data_calc` can produce. A dedicated
+ * crop-by-surface would have served one of those.
+ *
+ * `CropMode::All|Any` is **not** a parameter here, and its absence is the honest
+ * answer rather than an omission: bbox and half-space test *points* and then
+ * need a rule for reducing a cell's several nodes to one verdict, whereas a
+ * `cell_data` predicate is already one value per cell and has nothing to reduce.
+ * A mode that meant nothing would be worse than no mode.
+ *
  * Everything is standard C++ and the uniform mesh API only, so it compiles under
  * every mesh backend. This is an operation, not a file format — it is not in the
  * format registry.
@@ -15265,6 +15830,7 @@ MESHIOPLUSPLUS_API CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpt
 
 // System includes
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
@@ -15299,7 +15865,7 @@ struct CropResult {
  * @return the pruned submesh and index maps.
  */
 MESHIOPLUSPLUS_API CropResult crop_bbox(const Mesh& rMesh, const double* pLo, const double* pHi,
-                     CropMode mode = CropMode::All, bool record_ids = false);
+                                        CropMode mode = CropMode::All, bool record_ids = false);
 
 /**
  * @brief Crop a mesh to the half-space `(p - point) . normal >= 0`.
@@ -15311,8 +15877,30 @@ MESHIOPLUSPLUS_API CropResult crop_bbox(const Mesh& rMesh, const double* pLo, co
  * @param record_ids attach Int64 `crop:original_point_id` / `crop:original_cell_id`.
  * @return the pruned submesh and index maps.
  */
-MESHIOPLUSPLUS_API CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double* pNormal,
-                          CropMode mode = CropMode::All, bool record_ids = false);
+MESHIOPLUSPLUS_API CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint,
+                                             const double* pNormal, CropMode mode = CropMode::All,
+                                             bool record_ids = false);
+
+/**
+ * @brief Crop a mesh to the cells whose value in @p rArray satisfies a comparison.
+ * @param rMesh the input mesh.
+ * @param rArray the name of a **scalar** `cell_data` array covering every block.
+ * @param Op the comparison; the shared `RefineCompare` vocabulary, evaluated by
+ *        the shared `refine_compare_value` so the two operations cannot drift.
+ * @param Value the right-hand side. **A non-finite cell value never matches**,
+ *        whatever the comparison -- see `refine_compare_value`.
+ * @param record_ids attach Int64 `crop:original_point_id` / `crop:original_cell_id`.
+ * @return the pruned submesh and index maps, exactly as the other two crops.
+ * @throws std::invalid_argument when @p rArray is not a `cell_data` array (the
+ *         message lists what is), does not cover every block, has the wrong row
+ *         count, or is not scalar. `point_data` is refused by name rather than
+ *         averaged onto cells: `data to-cell` is the explicit way to do that, and
+ *         doing it implicitly would make the kept set depend on an averaging rule
+ *         the caller never asked for.
+ */
+MESHIOPLUSPLUS_API CropResult crop_predicate(const Mesh& rMesh, const std::string& rArray,
+                                             RefineCompare Op, double Value,
+                                             bool record_ids = false);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/crop.hpp =====
@@ -17355,348 +17943,6 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/operations/refine.hpp =====
-/**
- * @file refine.hpp
- * @brief Mesh refinement: subdivide cells into congruent children of the
- * **same** cell type, interpolating `point_data` onto the new nodes. Either
- * every cell (uniform) or a selected subset with a conforming closure
- * (selective / adaptive).
- *
- * This is the resolution-increasing counterpart to the resolution-preserving
- * `convert_cells` and the resolution-reducing `crop`/`clean`. One level applies
- * a fixed template per cell type:
- *
- *  - `line` -> 2 `line` (1 new mid-edge node)
- *  - `triangle` -> 4 `triangle` (3 mid-edge nodes; the standard 1-to-4 split)
- *  - `quad` -> 4 `quad` (4 mid-edge + 1 face-centre node)
- *  - `tetra` -> 8 `tetra` (6 mid-edge nodes)
- *  - `wedge` -> 8 `wedge` (9 mid-edge + 3 quad-face-centre nodes)
- *  - `hexahedron` -> 8 `hexahedron` (12 mid-edge + 6 face-centre + 1 body node)
- *
- * New nodes are placed at the midpoint of the entity that defines them and
- * carry the mean of that entity's corner values for every `point_data` array.
- * Original points keep their indices; new nodes are appended. Each parent's
- * `cell_data` row is replicated to its children.
- *
- * **Conformity.** Mid-edge nodes and quad-face-centre nodes are *shared*
- * between every cell that touches the entity, so the refined mesh has no
- * hanging nodes. Only the hexahedron body node is per-cell. (Sharing the face
- * centres is not optional: with a per-cell copy, two hexahedra meeting at a
- * face would reference distinct coincident nodes and the mesh would be
- * topologically split along every interior face.)
- *
- * Note that the tetrahedron's interior diagonal -- fixed at the opposite-edge
- * pair `(0,1)`-`(2,3)`, i.e. `tetra10` nodes 4-9 -- is chosen for determinism
- * only, **not** for conformity: it is strictly interior, so a face's
- * subdivision is fixed by that face's own mid-edge nodes whatever the
- * neighbour does. This is the opposite of `convert_cells`' hex-simplexify
- * diagonal 0-6, whose endpoints lie on the boundary and which therefore *is*
- * conformity-critical.
- *
- * **Volume and orientation.** Children inherit the parent's orientation, so a
- * well-oriented input refines to a well-oriented output (zero newly-inverted
- * cells). Volume is conserved exactly for `line`/`triangle`/`quad`/`tetra`
- * always, and for `wedge`/`hexahedron` when the parent is affine (a right
- * prism / parallelepiped). For a general trilinear hexahedron the eight
- * children's volumes do not sum to the parent's, because the parent's bilinear
- * faces are replaced by four different bilinear patches -- that is a property
- * of the geometry, not of this implementation.
- *
- * **Block structure is preserved 1:1**: the output has exactly
- * `NumCellBlocks()` blocks, in input order, and each keeps its input cell
- * type, which is what keeps the one-array-per-block `cell_data` invariant
- * trivially correct. That holds in selective mode too -- see below.
- *
- * ### Selective (adaptive) refinement
- *
- * With a selector set (`mCells`, `mRegion` or the `mPredicateArray` predicate)
- * only the selected cells get the full template above -- they are *red* -- and
- * the hanging nodes that leaves on the interface are resolved by a **closure**,
- * so the output is still a valid conforming mesh. Setting no selector is the
- * uniform behaviour, byte-identical to a build without this feature.
- *
- * The whole thing is one table-driven rule rather than three loosely coupled
- * features. Each cell type has a set of **admissible** split-edge masks -- the
- * subsets of its edges for which a same-type subdivision template exists (see
- * `detail/refine_templates.hpp`). A cell's mask is whatever its neighbours have
- * bisected; if that mask is not admissible it is *promoted* to the smallest
- * admissible superset, which bisects more edges, which may promote further. The
- * admissible sets are closed under intersection, so "smallest admissible
- * superset" is well defined and the promotion is a monotone idempotent closure
- * operator -- and the global fixed point is therefore **unique and independent
- * of iteration order**, which is why determinism across backends and thread
- * counts is a property of the formulation rather than a convention.
- *
- * Every new node's existence is likewise *derived* from the split-edge set,
- * never tabulated: an edge carries a node iff it is split, a quad face carries
- * a centre iff **all four** of its edges are split, and a hexahedron carries a
- * body node iff **all twelve** are. Two cells sharing an entity see the same
- * edges and so reach the same answer, which is what makes conformity structural
- * rather than something the tests merely sample. When every edge is split these
- * rules reduce exactly to the uniform templates above.
- *
- * `RefineClosure::RedGreen` (the default) promotes to the smallest admissible
- * superset, which keeps the extra refinement local. Per type:
- *
- *  - `line`, `triangle`: every mask is admissible -- a triangle with 1 bisected
- *    edge splits into 2, with 2 into 3, with 3 into 4. Nothing propagates.
- *  - `quad`: the admissible masks are the two *opposite* edge pairs and the
- *    full split, so a single bisected edge promotes to its opposite pair and
- *    splits into 2 quads. A pentagon or heptagon cannot be partitioned into
- *    quadrilaterals at all (`4Q = B + 2I` forbids an odd boundary count), so
- *    this is the finest possible type-preserving answer; the bisection then
- *    travels along one row of a structured grid and stops at the boundary.
- *  - `hexahedron`: the admissible masks are unions of its three parallel edge
- *    classes -- 1, 2, 2, 2, 4, 4, 4 or 8 children -- so refinement propagates
- *    through one dual sheet rather than the whole block.
- *  - `wedge`: its six triangle edges form one class and its three verticals
- *    another -- 1, 2, 4 or 8 children.
- *  - `tetra`: every mask up to two edges is admissible, as are the four
- *    face-triples; anything else promotes to the full 8-way split. (Three
- *    edges meeting at a common vertex are deliberately *not* admissible: each
- *    of the three incident faces would then hit the ambiguous two-edge case.)
- *
- * `RefineClosure::Propagate` instead promotes any non-empty mask straight to a
- * full split. It is always conforming and defined for every cell type, but it
- * is **not local** -- every edge-neighbour of a red cell becomes red in turn,
- * so it converges to uniform refinement of the whole edge-connected component.
- * It is the always-works baseline and the test oracle, not the adaptivity mode.
- *
- * `RefineClosure::Balanced` does not close at all: it **keeps the hanging
- * nodes** and only enforces 2:1 balance, which is what an adaptive-mesh-
- * refinement code normally means by "propagate". A cell is split fully or not
- * at all -- there are no transitional templates -- and a cell is drawn in only
- * when a neighbour would otherwise end up more than one level finer than it:
- *
- *     refine C  =>  C's level rises by one
- *     D must refine  <=>  some entity D shares has an incident cell whose
- *                         post-refinement level exceeds D's by more than one
- *
- * On a mesh of uniform level that condition is satisfied nowhere, so refining
- * one cell propagates to **nothing** -- 64 hexahedra become 71, against 125
- * under `RedGreen` and 512 under `Propagate`. Balancing only bites once levels
- * differ, i.e. from the second adaptive pass onwards, and even then it reaches
- * one level-ring rather than the whole mesh. The `refine:level` array is what
- * makes that well defined across passes, and reading it back is why the array
- * is *maintained* rather than replicated.
- *
- * The price is stated rather than hidden: the result is **1-irregular and not
- * conforming**. Every constrained node is reported in the `refine:hanging`
- * `point_data` array (see `kRefineHangingName`) so a solver can eliminate it;
- * the conformity guarantees below apply to the other two closures only, and
- * `extract_surface`, `decimate` and anything else assuming a conforming mesh
- * will treat a hanging node as a genuine boundary.
- *
- * A cell with two *adjacent* bisected edges on one face has a remnant
- * quadrilateral there that needs a diagonal, and the neighbour across that face
- * must choose the same one. The choice is therefore made from the **global node
- * ids** -- the diagonal starting at whichever of the two surviving corners has
- * the smaller id -- never from the template's local numbering, which two
- * differently-oriented neighbours would disagree about.
- *
- * Green cells are **not undone** before a later red refinement, so repeated
- * selective passes over the same region degrade element quality without bound.
- * `refine:level` plus `mCellMaps` is the hierarchy a future green-undo needs.
- *
- * Constructs that would break the same-type contract raise rather than guess:
- * higher-order cells (`tetra10`, ...; linearize first), `pyramid` (whose
- * uniform refinement is 6 pyramids + 4 tetrahedra; simplexify first), and
- * ragged polygon/polyhedron blocks.
- *
- * Determinism: the templates are fixed and the new-node numbering comes from a
- * **serial** dedup pass over a `parallel_for`-filled disjoint-slot buffer
- * (`src/cpp/src/operations/surface.cpp`'s phase-split idiom), never from a
- * concurrent hash insert. Output is byte-identical across mesh backends and
- * thread counts.
- *
- * Standard C++ and the uniform mesh API only, so it compiles under every mesh
- * backend. This is an operation, not a file format -- it is not in the format
- * registry.
- */
-
-// System includes
-#include <cstdint>
-#include <string>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-
-/// The `cell_data` array `RefineOptions::mRecordParentIds` attaches.
-inline constexpr const char* kRefineParentCellName = "refine:parent_cell";
-
-/// The Int64 `cell_data` array recording each cell's refinement depth: `0` for
-/// a cell no red split ever touched, incremented once per red split. A green
-/// (transitional) child inherits its parent's level unchanged, because a green
-/// split is a closure, not a refinement. The name is **reserved**: if the input
-/// already carries it, `refine` updates it rather than replicating it, so
-/// successive passes accumulate.
-inline constexpr const char* kRefineLevelName = "refine:level";
-
-/// The Int64 `point_data` array `RefineClosure::Balanced` attaches: `1` for a
-/// **hanging** (constrained) node, `0` otherwise. A hanging node is one that
-/// exists on an entity of a cell that does not reference it -- the mid-edge node
-/// a refined cell created on an edge its unrefined neighbour still spans whole.
-/// Only `Balanced` produces any; the other closures leave none by construction
-/// and do not attach the array. The name is **reserved**: the array is recomputed
-/// from the output's own topology every pass rather than carried through the
-/// generic `point_data` path, which would interpolate a flag.
-inline constexpr const char* kRefineHangingName = "refine:hanging";
-
-/// The Int64 `(num_points, 4)` `point_data` array recording, per point, the
-/// **entity it was created on** -- `{-1, -1, a, b}` for the midpoint of edge
-/// `(a, b)`, the sorted `{p, q, r, s}` for a quad-face centre, and
-/// `{-1, -1, -1, -1}` for a point `refine` did not create (an original point, or
-/// a hexahedron body centre, which is interior to one cell and can never be
-/// shared).
-///
-/// It exists so that a *later* pass can recognise that an entity it is about to
-/// split already carries a node, and reuse it instead of allocating a coincident
-/// second one. Without it, `RefineClosure::Balanced` tore the mesh: when the 2:1
-/// balance rule drew in a coarse cell whose edge `(a, b)` already held a hanging
-/// node, that cell's refinement keyed the edge as `(a, b)`, allocated a *new*
-/// midpoint and left the two sides of the interface referencing distinct,
-/// exactly-coincident nodes.
-///
-/// The name is **reserved** and the array is *maintained* rather than replicated:
-/// it is attached whenever a pass leaves hanging nodes, and kept thereafter. The
-/// other closures leave none and do not attach it, so their output is unchanged.
-///
-/// Entries name **input point indices**, which `refine` never renumbers. An
-/// operation that *does* renumber points (`reorder`, `clean`, `crop`, `merge`) or
-/// that moves them (`transform`, `smooth`) invalidates them; `refine` detects
-/// that -- each entry must still reproduce its own point's coordinates -- and
-/// warns and ignores the array rather than trusting it.
-inline constexpr const char* kRefineEntityName = "refine:entity";
-
-/// How `refine` resolves the hanging nodes a partial refinement leaves behind.
-enum class RefineClosure {
-    /// Promote a cell's split-edge mask to the smallest *admissible* superset,
-    /// so an affected neighbour is split transitionally rather than fully. Keeps
-    /// the extra refinement local, and the output is conforming. The default.
-    RedGreen = 0,
-    /// Promote any non-empty mask straight to a full split. Conforming and
-    /// defined for every cell type, but **not local**: it converges to uniform
-    /// refinement of the whole edge-connected component.
-    Propagate = 1,
-    /// Do not close at all: **keep the hanging nodes** and merely enforce 2:1
-    /// balance, refining a cell only when a neighbour would otherwise end up
-    /// more than one level finer. The output is 1-irregular and **NOT
-    /// conforming** -- the constrained nodes are reported in `refine:hanging`
-    /// for a solver to eliminate. This is the classic adaptive-mesh-refinement
-    /// meaning of "propagate", and the only mode whose cost is bounded by the
-    /// selection rather than by the mesh.
-    Balanced = 2,
-};
-
-/// The comparison in `RefineOptions`' `cell_data` predicate selector.
-enum class RefineCompare {
-    Less = 0,
-    LessEqual = 1,
-    Greater = 2,
-    GreaterEqual = 3,
-    Equal = 4,
-    NotEqual = 5,
-};
-
-/**
- * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`,
- * `"propagate"` / `"red"`, or `"balanced"` / `"2:1"`.
- * @param rName The name; empty means the default (`RedGreen`).
- * @throws std::invalid_argument naming every accepted value.
- */
-MESHIOPLUSPLUS_API RefineClosure refine_closure_from_name(const std::string& rName);
-
-/**
- * @brief Parse a comparison operator (`"<"`, `"<="`, `">"`, `">="`, `"=="`,
- * `"!="`; `"="` is accepted as `"=="`).
- * @throws std::invalid_argument naming every accepted value.
- */
-MESHIOPLUSPLUS_API RefineCompare refine_compare_from_name(const std::string& rName);
-
-/// Options for `refine`.
-struct RefineOptions {
-    /// How many times to apply the subdivision templates. `0` (or less) returns
-    /// an unchanged clone; `n` multiplies the cell count of a supported block
-    /// by `children_per_cell^n` when no selector is set. With a selector, level
-    /// `k > 1` refines the children of level `k - 1`'s red cells; green and
-    /// untouched cells are not re-refined.
-    int mLevels = 1;
-    /// Attach an Int64 `refine:parent_cell` `cell_data` array recording, per
-    /// output cell, the index of the **original** input cell it descends from
-    /// *within its own block* (blocks correspond 1:1). Across several levels
-    /// this is the original ancestor, not the immediate parent.
-    bool mRecordParentIds = false;
-
-    // --- selective refinement ------------------------------------------------
-    // At most ONE of the three selectors below may be set. Two is an error
-    // rather than a precedence rule: silently ignoring a selector the caller
-    // asked for is the failure mode worth refusing. All empty = uniform.
-
-    /// Explicit **global block-major** cell indices to refine (the numbering
-    /// `detail/cell_index.hpp` owns and named `Cell` regions use). Canonicalized
-    /// (sorted, de-duplicated) before use; an out-of-range index is an error.
-    std::vector<std::int64_t> mCells;
-    /// Name of a region to refine. A `Cell` region selects its own cells; a
-    /// `Point` region selects every cell with **any** node in it. A `Side`
-    /// region is not a selector and is an error -- it names facets, and turning
-    /// facets into cells is a policy decision this operation does not make
-    /// silently.
-    std::string mRegion;
-    /// Name of a scalar numeric `cell_data` array to threshold (`""` = unused).
-    /// Composes directly with `attach_quality`, e.g.
-    /// `quality:scaled_jacobian < 0.3`. Deliberately a single comparison and
-    /// not a second `data_calc` expression grammar.
-    std::string mPredicateArray;
-    /// The predicate's comparison.
-    RefineCompare mPredicateOp = RefineCompare::Less;
-    /// The predicate's right-hand side. A non-finite cell value never matches.
-    double mPredicateValue = 0.0;
-    /// How to resolve hanging nodes. Ignored when no selector is set (every
-    /// cell is then red and no closure is needed).
-    RefineClosure mClosure = RefineClosure::RedGreen;
-    /// Attach the Int64 `refine:level` `cell_data` array (see
-    /// `kRefineLevelName`). An input that already carries it is updated
-    /// whatever this flag says; the flag only controls *creating* it.
-    bool mRecordLevels = false;
-};
-
-/// The result of `refine`: the refined mesh plus the index maps.
-struct RefineResult {
-    /// The refined mesh.
-    Mesh mMesh;
-    /// Int64 shape `(num_points_in,)`, input point index -> output point index.
-    /// Refinement never prunes, so this is the identity; it is returned in full
-    /// so callers need not depend on that.
-    NDArray mPointMap;
-    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> the
-    /// index of its **first** child in the corresponding output block. A cell's
-    /// children are contiguous, so cell `c` owns
-    /// `[map[c], c + 1 < n ? map[c + 1] : num_cells_out)`. In selective mode a
-    /// cell may have a single child (itself, unrefined), so the run length
-    /// varies -- the map is still monotone and every entry non-negative.
-    std::vector<NDArray> mCellMaps;
-};
-
-/**
- * @brief Refine a mesh, subdividing cells into same-type children.
- * @param rMesh The mesh to refine (unchanged).
- * @param rOptions Level count, cell selection, closure and bookkeeping. With no
- *   selector set this is the uniform refinement of every cell.
- * @return The refined mesh and its point/cell index maps.
- * @throws std::invalid_argument on a higher-order, `pyramid`, or ragged cell
- *   block, none of which can be subdivided into same-type children; on more
- *   than one selector being set; on an out-of-range cell index; on an unknown
- *   region, or a `Side` region used as a selector; and on a predicate array
- *   that is missing, does not cover every block, is not scalar, or holds a
- *   non-finite value.
- */
-MESHIOPLUSPLUS_API RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/operations/refine.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/reorder.hpp =====
 /**
  * @file operations/reorder.hpp
@@ -17791,7 +18037,7 @@ MESHIOPLUSPLUS_API ReorderResult reorder(const Mesh& rMesh, ReorderMethod method
  * inside one multi-step file) as one ordered logical sequence.
  *
  * This is how transient solver output actually arrives -- `out_0000.vtu …
- * out_0500.vtu` -- and how most of the 41 formats have to express time, since
+ * out_0500.vtu` -- and how most of the 42 formats have to express time, since
  * only a minority carry several steps natively.
  *
  * **It is a driver, not a new mesh operation.** Everything here reads and
@@ -18933,7 +19179,7 @@ MESHIOPLUSPLUS_API Mesh transform(const Mesh& rMesh, const AffineTransform& rXfo
  * `quality`, `surface`, `gradient` and `refine` and unwritable by most formats --
  * forfeiting exactly the property that motivates the choice. A new `voxel` cell
  * type was rejected too: VTK's type 11 is deliberately unmapped in this codebase,
- * and adding it would mean a row in all 41 format tables to buy an implicit node
+ * and adding it would mean a row in all 42 format tables to buy an implicit node
  * ordering nothing needs.
  *
  * ### `grid` is a primitive constructor, not a byproduct
@@ -19702,7 +19948,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 24
+#define MESHIOPLUSPLUS_VERSION_MINOR 25
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -19712,7 +19958,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.24.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.25.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -36176,10 +36422,13 @@ int cell_corner_count(CellType type) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/geometry.cpp =====
 // ===== begin src/cpp/src/detail/grid_lattice.cpp =====
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 // Project includes
@@ -36265,8 +36514,8 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
     const std::int64_t py = ny + 1;
     const std::int64_t npoints = lattice_num_points(rSpec);
 
-    NDArray points = NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(npoints),
-                                                      std::size_t{3}});
+    NDArray points =
+        NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(npoints), std::size_t{3}});
     {
         double* dst = points.As<double>();
         const double ox = rSpec.mOrigin[0], oy = rSpec.mOrigin[1], oz = rSpec.mOrigin[2];
@@ -36285,8 +36534,8 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
     }
     out.AssignPoints(std::move(points));
 
-    NDArray conn = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ncells),
-                                                  std::size_t{8}});
+    NDArray conn =
+        NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ncells), std::size_t{8}});
     {
         std::int64_t* dst = conn.As<std::int64_t>();
         parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
@@ -36310,6 +36559,175 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
     }
     out.AddCellBlock("hexahedron", std::move(conn));
     return out;
+}
+
+LatticeSpec lattice_resolve(const Mesh& rMesh, const LatticeRequest& rRequest,
+                            const char* pPrefix) {
+    const std::string prefix(pPrefix);
+    if (rRequest.mResolution.has_value() == rRequest.mCellSize.has_value())
+        throw std::invalid_argument(prefix + "give exactly one of resolution and cell_size");
+
+    // The box: the caller's, or the mesh's own, in both cases grown by the
+    // padding.
+    std::array<double, 3> lo{{0.0, 0.0, 0.0}};
+    std::array<double, 3> hi{{0.0, 0.0, 0.0}};
+    if (rRequest.mBounds.has_value()) {
+        const std::array<double, 6>& b = *rRequest.mBounds;
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = b[k];
+            hi[k] = b[k + 3];
+            if (!(hi[k] >= lo[k]))
+                throw std::invalid_argument(prefix + "bounds are inverted on axis " +
+                                            std::to_string(k) + " (lo " + std::to_string(lo[k]) +
+                                            " > hi " + std::to_string(hi[k]) + ")");
+        }
+    } else if (!point_bbox(rMesh, lo, hi)) {
+        throw std::invalid_argument(prefix +
+                                    "the mesh has no points, so it has no bounding box to "
+                                    "cover (pass explicit bounds)");
+    }
+
+    double diag = 0.0;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const double e = hi[k] - lo[k];
+        diag += e * e;
+    }
+    diag = std::sqrt(diag);
+    const double pad = rRequest.mPadding + rRequest.mPaddingRelative * diag;
+    if (pad < 0.0)
+        throw std::invalid_argument(prefix + "padding is negative");
+    for (std::size_t k = 0; k < 3; ++k) {
+        lo[k] -= pad;
+        hi[k] += pad;
+    }
+
+    LatticeSpec spec;
+    if (rRequest.mResolution.has_value()) {
+        const std::array<std::int64_t, 3>& r = *rRequest.mResolution;
+        for (std::size_t k = 0; k < 3; ++k)
+            if (r[k] <= 0)
+                throw std::invalid_argument(prefix +
+                                            "resolution must be positive on every axis, got " +
+                                            std::to_string(r[k]) + " on axis " + std::to_string(k));
+        spec = lattice_from_bounds(lo, hi, r);
+    } else {
+        const double cell = *rRequest.mCellSize;
+        if (!(cell > 0.0))
+            throw std::invalid_argument(prefix + "cell_size must be positive");
+        spec = lattice_from_cell_size(lo, hi, {{cell, cell, cell}});
+        for (std::size_t k = 0; k < 3; ++k)
+            if (spec.mDims[k] <= 0)
+                throw std::invalid_argument(
+                    prefix + "the bounding box is degenerate on axis " + std::to_string(k) +
+                    ", so a cell size cannot fill it (pass an explicit resolution or bounds)");
+    }
+
+    const std::int64_t cells = lattice_num_cells(spec);
+    if (rRequest.mMaxCells > 0 && cells > rRequest.mMaxCells)
+        throw std::invalid_argument(prefix + "the requested grid has " + std::to_string(cells) +
+                                    " cells, above the limit of " +
+                                    std::to_string(rRequest.mMaxCells) +
+                                    " (raise max_cells, coarsen the resolution, or use a band)");
+    return spec;
+}
+
+bool lattice_from_mesh(const Mesh& rMesh, LatticeSpec& rSpec) {
+    // Exactly one hexahedron block, and nothing else.
+    if (rMesh.NumCellBlocks() != 1)
+        return false;
+    const auto cb = rMesh.Cells(0);
+    if (cb.Type() != std::string("hexahedron") || cb.IsRagged())
+        return false;
+
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    if (npoints == 0 || dim < 3)
+        return false;
+    const NDArray& points = rMesh.Points();
+
+    // The distinct plane positions per axis. An exact sort-and-unique is correct
+    // here rather than merely convenient: lattice_build_mesh evaluates
+    // `origin + index * spacing` independently per point, so every point on a
+    // given plane carries the identical double.
+    std::array<std::vector<double>, 3> planes;
+    for (std::size_t d = 0; d < 3; ++d) {
+        planes[d].resize(npoints);
+        for (std::size_t p = 0; p < npoints; ++p)
+            planes[d][p] = read_double(points, p * dim + d);
+        std::sort(planes[d].begin(), planes[d].end());
+        planes[d].erase(std::unique(planes[d].begin(), planes[d].end()), planes[d].end());
+        if (planes[d].size() < 2)
+            return false;  // a single plane is a sheet, not a lattice
+    }
+
+    // A dense lattice has exactly the product of its plane counts as points, and
+    // the product of its cell counts as cells. Either mismatch means a subset (a
+    // `surface`/`inside` fill, an octree) or something else entirely.
+    if (planes[0].size() * planes[1].size() * planes[2].size() != npoints)
+        return false;
+    const std::int64_t nx = static_cast<std::int64_t>(planes[0].size()) - 1;
+    const std::int64_t ny = static_cast<std::int64_t>(planes[1].size()) - 1;
+    const std::int64_t nz = static_cast<std::int64_t>(planes[2].size()) - 1;
+    if (static_cast<std::size_t>(nx * ny * nz) != cb.NumCells())
+        return false;
+
+    LatticeSpec spec;
+    spec.mDims = {{nx, ny, nz}};
+    for (std::size_t d = 0; d < 3; ++d) {
+        const std::vector<double>& v = planes[d];
+        const std::int64_t n = static_cast<std::int64_t>(v.size()) - 1;
+        spec.mOrigin[d] = v.front();
+        // (last - first) / n, not the first gap: it is the least-error estimate
+        // and it is what the writer's own `origin + index * spacing` inverts.
+        spec.mSpacing[d] = (v.back() - v.front()) / static_cast<double>(n);
+        if (!(spec.mSpacing[d] > 0.0))
+            return false;
+        // Uniformity to a relative 1e-9. `origin + i*h` gaps differ in the last
+        // bits, so this cannot be exact, but a genuinely graded mesh is rejected
+        // by orders of magnitude rather than by ulps.
+        for (std::int64_t i = 0; i < n; ++i) {
+            const double gap = v[static_cast<std::size_t>(i) + 1] - v[static_cast<std::size_t>(i)];
+            if (std::fabs(gap - spec.mSpacing[d]) > 1.0e-9 * spec.mSpacing[d])
+                return false;
+        }
+    }
+
+    const std::int64_t px = nx + 1;
+    const std::int64_t py = ny + 1;
+
+    // The points must be in the lattice's own x-fastest order, not merely occupy
+    // its plane positions -- a permuted grid has identical plane sets and is a
+    // different mesh. The comparison is EXACT because `planes[d]` holds the very
+    // doubles the points carry, so this is an equality test rather than a fit.
+    for (std::size_t p = 0; p < npoints; ++p) {
+        const std::int64_t g = static_cast<std::int64_t>(p);
+        const std::int64_t idx[3] = {g % px, (g / px) % py, g / (px * py)};
+        for (std::size_t d = 0; d < 3; ++d)
+            if (read_double(points, p * dim + d) != planes[d][static_cast<std::size_t>(idx[d])])
+                return false;
+    }
+
+    // The connectivity must be the lattice's own, or two different meshes would
+    // both claim to be this box. Checking the index formula per cell is O(n) and
+    // is the difference between "has lattice-shaped points" and "is a lattice".
+    const NDArray& conn = cb.Conn();
+    if (cb.NodesPerCell() != 8)
+        return false;
+    for (std::int64_t c = 0; c < nx * ny * nz; ++c) {
+        const std::int64_t i = c % nx;
+        const std::int64_t j = (c / nx) % ny;
+        const std::int64_t k = c / (nx * ny);
+        const std::int64_t base = (k * py + j) * px + i;
+        const std::int64_t top = base + px * py;
+        const std::int64_t expect[8] = {base, base + 1, base + px + 1, base + px,
+                                        top,  top + 1,  top + px + 1,  top + px};
+        for (std::size_t m = 0; m < 8; ++m)
+            if (read_int(conn, static_cast<std::size_t>(c) * 8 + m) != expect[m])
+                return false;
+    }
+
+    rSpec = spec;
+    return true;
 }
 
 bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo, std::array<double, 3>& rHi) {
@@ -61559,6 +61977,369 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/unv.cpp =====
+// ===== begin src/cpp/src/formats/vti.cpp =====
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <algorithm>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::cols;
+using detail::vtu_ascii_ndarray;
+using detail::vtu_type_str;
+
+// Parse a whitespace-separated run of N numbers from an XML attribute. VTK's own
+// files use plain spaces; being liberal here costs nothing and a mis-parse would
+// silently relocate the whole grid.
+template <class T>
+bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
+    if (pText == nullptr)
+        return false;
+    std::istringstream is(pText);
+    for (std::size_t i = 0; i < Count; ++i)
+        if (!(is >> pOut[i]))
+            return false;
+    return true;
+}
+
+// The framing every ImageData path needs, resolved once so the mesh reader and
+// the metadata reader cannot disagree about which files they accept.
+struct vti_header {
+    pugi::xml_node mPiece;
+    detail::VtkCodec mCodec = detail::VtkCodec::None;
+    std::size_t mHeaderSize = 4;
+    detail::LatticeSpec mSpec;
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+};
+
+vti_header vti_parse_header(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile'");
+    if (std::string(root.attribute("type").as_string()) != "ImageData")
+        throw ReadError("Expected type ImageData");
+
+    vti_header h;
+    const std::string compressor = root.attribute("compressor").as_string("");
+    if (compressor.empty())
+        h.mCodec = detail::VtkCodec::None;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
+        h.mCodec = detail::VtkCodec::Zlib;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
+        h.mCodec = detail::VtkCodec::LZ4;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
+        h.mCodec = detail::VtkCodec::ZSTD;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
+        throw ReadError("lzma-compressed VTI not supported by the C++ reader");
+    else
+        throw ReadError("Unknown VTI compressor '" + compressor + "'");
+    // Fail early and actionably when the file needs a codec this build lacks.
+    detail::vtk_codec_require_read(h.mCodec);
+
+    const std::string header_type = root.attribute("header_type").as_string("UInt32");
+    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
+
+    if (root.child("AppendedData"))
+        throw ReadError("appended VTI data not supported by the C++ reader");
+
+    pugi::xml_node grid = root.child("ImageData");
+    if (!grid)
+        throw ReadError("No ImageData found");
+
+    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
+    if (!vti_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
+        throw ReadError("ImageData has no readable WholeExtent");
+    double origin[3] = {0.0, 0.0, 0.0};
+    double spacing[3] = {1.0, 1.0, 1.0};
+    if (grid.attribute("Origin"))
+        vti_parse_n(grid.attribute("Origin").as_string(), origin, 3);
+    if (grid.attribute("Spacing"))
+        vti_parse_n(grid.attribute("Spacing").as_string(), spacing, 3);
+    if (grid.attribute("Direction")) {
+        // A non-identity direction matrix rotates the lattice, which an
+        // axis-aligned hexahedron grid cannot express without baking the
+        // rotation into the coordinates -- a different mesh from the one the
+        // file describes. Refuse rather than silently drop the rotation.
+        double dir[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        if (vti_parse_n(grid.attribute("Direction").as_string(), dir, 9)) {
+            const double id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            for (std::size_t i = 0; i < 9; ++i)
+                if (dir[i] != id[i])
+                    throw ReadError(
+                        "VTI with a non-identity Direction is not supported by the "
+                        "C++ reader");
+        }
+    }
+
+    h.mPiece = grid.child("Piece");
+    if (!h.mPiece)
+        throw ReadError("No Piece found");
+    if (h.mPiece.next_sibling("Piece"))
+        throw ReadError("multi-piece VTI not supported by the C++ reader");
+    // The piece's own extent may legally be a sub-box of the whole extent; the
+    // arrays are then sized to the PIECE, and reading them against the whole
+    // extent would be silently misaligned. One piece covering everything is what
+    // every writer emits, so decline the rest by name.
+    if (h.mPiece.attribute("Extent")) {
+        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
+        if (vti_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
+            for (std::size_t i = 0; i < 6; ++i)
+                if (piece[i] != whole[i])
+                    throw ReadError(
+                        "VTI Piece Extent differs from WholeExtent; a partial piece "
+                        "is not supported by the C++ reader");
+    }
+
+    for (std::size_t k = 0; k < 3; ++k) {
+        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
+        if (n < 0)
+            throw ReadError("VTI WholeExtent is inverted on axis " + std::to_string(k));
+        h.mSpec.mDims[k] = n;
+        // The extent may start away from zero; the point at extent index i sits
+        // at Origin + i * Spacing, so the mesh's own lo corner is offset by the
+        // extent's start. Dropping that offset would translate the whole grid.
+        h.mSpec.mOrigin[k] = origin[k] + static_cast<double>(whole[2 * k]) * spacing[k];
+        h.mSpec.mSpacing[k] = spacing[k];
+    }
+    h.mNumPoints = static_cast<std::size_t>((h.mSpec.mDims[0] + 1) * (h.mSpec.mDims[1] + 1) *
+                                            (h.mSpec.mDims[2] + 1));
+    h.mNumCells = static_cast<std::size_t>(detail::lattice_num_cells(h.mSpec));
+    return h;
+}
+
+NDArray vti_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
+                            int& rNumComponents) {
+    const std::string fmt = rDa.attribute("format").as_string("ascii");
+    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
+    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
+    if (fmt == "ascii")
+        return detail::vtu_parse_ascii(rDa.text().get(), dt);
+    if (fmt == "binary")
+        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+    throw ReadError("VTI '" + fmt + "' data is not supported by the C++ reader");
+}
+
+// One geometry attribute value. `%.17g` rather than the stream's default six
+// significant digits, which would lose ~10 digits of a real origin -- a grid
+// placed 1e-7 off its own points, which nothing downstream would flag. 17 is the
+// round-trip width for a double, and the identical spelling is what the numpy
+// twin uses, so the two writers' attributes agree character for character.
+std::string vti_num(double Value) {
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%.17g", Value);
+    return buf;
+}
+
+std::vector<std::string> vti_array_names(const pugi::xml_node& rPiece, const char* pSection) {
+    std::vector<std::string> names;
+    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
+        names.emplace_back(da.attribute("Name").as_string());
+    // The uniform mesh API hands back sorted names; match it so a summary and a
+    // real read report data arrays in the same order.
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+}  // namespace
+
+void write_vti(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_vti_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
+    detail::LatticeSpec spec;
+    if (!detail::lattice_from_mesh(rMesh, spec))
+        throw WriteError(
+            "ImageData is a regular lattice, and this mesh is not one: it needs exactly one "
+            "hexahedron block whose points tile an axis-aligned box with uniform spacing. A "
+            "partial grid (voxelize's 'surface'/'inside' fill, or an octree) cannot be written "
+            "as .vti either -- write it as .vtu, which stores the cells explicitly.");
+    if (binary && codec != detail::VtkCodec::None)
+        detail::vtk_codec_require_write(codec);
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    const char* fmt = binary ? "binary" : "ascii";
+    auto da_header = [&](const char* type, const std::string& name, int ncomp) {
+        os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
+        if (ncomp > 0)
+            os << " NumberOfComponents=\"" << ncomp << "\"";
+        os << " format=\"" << fmt << "\">\n";
+    };
+    auto emit_bin = [&](const unsigned char* d, std::size_t n) {
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+    };
+
+    std::ostringstream ext;
+    ext << "0 " << spec.mDims[0] << " 0 " << spec.mDims[1] << " 0 " << spec.mDims[2];
+
+    os << "<?xml version=\"1.0\"?>\n";
+    os << "<VTKFile type=\"ImageData\" version=\"0.1\" byte_order=\"LittleEndian\"";
+    if (binary && codec != detail::VtkCodec::None)
+        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    os << ">\n";
+    os << "<!--This file was created by meshio++ (C++ core)-->\n";
+    // Origin/Spacing/WholeExtent ARE the geometry: no Points section exists, and
+    // that is the whole reason this format is worth having for a grid.
+    os << "<ImageData WholeExtent=\"" << ext.str() << "\" Origin=\"" << vti_num(spec.mOrigin[0])
+       << " " << vti_num(spec.mOrigin[1]) << " " << vti_num(spec.mOrigin[2]) << "\" Spacing=\""
+       << vti_num(spec.mSpacing[0]) << " " << vti_num(spec.mSpacing[1]) << " "
+       << vti_num(spec.mSpacing[2]) << "\">\n";
+    os << "<Piece Extent=\"" << ext.str() << "\">\n";
+
+    if (rMesh.NumPointData() != 0) {
+        os << "<PointData>\n";
+        for (const auto& name : rMesh.PointDataNames()) {
+            const NDArray& d = rMesh.PointData(name);
+            const int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
+            da_header(vtu_type_str(d.Dtype()), name, ncomp);
+            if (binary)
+                emit_bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
+            else
+                vtu_ascii_ndarray(os, d);
+            os << "</DataArray>\n";
+        }
+        os << "</PointData>\n";
+    }
+
+    if (rMesh.NumCellData() != 0) {
+        os << "<CellData>\n";
+        for (const auto& name : rMesh.CellDataNames()) {
+            const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
+            if (nblocks == 0)
+                continue;
+            // A lattice has exactly one block, so there is nothing to
+            // concatenate -- but iterate anyway rather than assume, since an
+            // array that does not cover the block is a caller error worth not
+            // writing silently truncated.
+            const NDArray& first = rMesh.CellData(name, 0);
+            const int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
+            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            if (binary) {
+                std::vector<unsigned char> buf;
+                for (std::size_t bi = 0; bi < nblocks; ++bi) {
+                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const auto* p = reinterpret_cast<const unsigned char*>(blk.Data());
+                    buf.insert(buf.end(), p, p + blk.Nbytes());
+                }
+                emit_bin(buf.data(), buf.size());
+            } else {
+                for (std::size_t bi = 0; bi < nblocks; ++bi)
+                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+            }
+            os << "</DataArray>\n";
+        }
+        os << "</CellData>\n";
+    }
+
+    os << "</Piece>\n</ImageData>\n</VTKFile>\n";
+}
+
+Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
+    if (!res)
+        throw ReadError(std::string("VTI XML parse failed: ") + res.description());
+
+    const vti_header h = vti_parse_header(doc);
+
+    // The extent is expanded into explicit points and hexahedra through the same
+    // helper `grid()` and `voxelize()` use, so a .vti read and a grid() call of
+    // the same shape produce byte-identical meshes.
+    Mesh mesh = detail::lattice_build_mesh(h.mSpec);
+    if (!rOpts.WantsAnyData())
+        return mesh;
+
+    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        int nc = 0;
+        NDArray arr = vti_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
+        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
+            throw ReadError("VTI point array '" + name + "' has " +
+                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
+                            std::to_string(h.mNumPoints) + " points");
+        mesh.AddPointData(name, std::move(arr));
+    }
+    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        int nc = 0;
+        NDArray arr = vti_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
+        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
+            throw ReadError("VTI cell array '" + name + "' has " +
+                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
+                            std::to_string(h.mNumCells) + " cells");
+        if (h.mNumCells == 0)
+            continue;  // no cell block to attach it to
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(arr));
+        mesh.AddCellData(name, std::move(blocks));
+    }
+    return mesh;
+}
+
+MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
+    pugi::xml_document doc;
+    // parse_minimal skips escape expansion over the base64 bodies. Unlike VTU's
+    // metadata path this decodes NOTHING at all: the extent attribute alone
+    // gives both counts.
+    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
+    if (!res)
+        throw ReadError(std::string("VTI XML parse failed: ") + res.description());
+
+    const vti_header h = vti_parse_header(doc);
+
+    MeshMetadata meta;
+    meta.mNumPoints = h.mNumPoints;
+    meta.mPointDim = 3;
+    if (h.mNumCells != 0) {
+        CellBlockInfo info;
+        info.mType = "hexahedron";
+        info.mNumCells = h.mNumCells;
+        info.mNodesPerCell = 8;
+        info.mRagged = false;
+        meta.mCellBlocks.push_back(std::move(info));
+    }
+    meta.mPointDataNames = vti_array_names(h.mPiece, "PointData");
+    meta.mCellDataNames = vti_array_names(h.mPiece, "CellData");
+
+    // The bounding box IS the extent here, so unlike every other native metadata
+    // path this one can report it for free rather than declining.
+    meta.mHasBBox = true;
+    for (std::size_t k = 0; k < 3; ++k) {
+        meta.mBBoxMin[k] = h.mSpec.mOrigin[k];
+        meta.mBBoxMax[k] =
+            h.mSpec.mOrigin[k] + static_cast<double>(h.mSpec.mDims[k]) * h.mSpec.mSpacing[k];
+    }
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/vti.cpp =====
 // ===== begin src/cpp/src/formats/vtk.cpp =====
 #include <cstdint>
 #include <cstdio>
@@ -65827,6 +66608,7 @@ ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& r
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -65932,6 +66714,58 @@ CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double*
         return detail::vec3_dot(detail::vec3_sub(p, p0), nrm) >= 0.0;
     });
     return crop_finish(rMesh, crop_kept_cells(rMesh, mask, mode), record_ids);
+}
+
+CropResult crop_predicate(const Mesh& rMesh, const std::string& rArray, RefineCompare Op,
+                          double Value, bool record_ids) {
+    if (!rMesh.HasCellData(rArray)) {
+        // point_data is refused by name rather than averaged: `data to-cell` is
+        // the explicit way to move it, and doing it here would make the kept set
+        // depend on an averaging rule nobody asked for.
+        if (rMesh.HasPointData(rArray))
+            throw std::invalid_argument(
+                "crop: '" + rArray +
+                "' is point_data; a crop predicate is per cell, so convert it first "
+                "(cell_data_to_point_data's inverse: `data to-cell`)");
+        throw std::invalid_argument("crop: " +
+                                    data_unknown_key_message(rMesh, DataLocation::Cell, rArray));
+    }
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(rArray) != nblocks)
+        throw std::invalid_argument("crop: cell_data '" + rArray +
+                                    "' does not cover every cell block");
+
+    // Already one value per cell, so there is nothing for CropMode to reduce --
+    // see the header on why it is absent rather than accepted and ignored.
+    std::vector<std::vector<std::int64_t>> kept;
+    kept.reserve(nblocks);
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& a = rMesh.CellData(rArray, b);
+        ++b;
+        const std::size_t nc = cb.NumCells();
+        if (detail::rows(a) != nc)
+            throw std::invalid_argument("crop: cell_data '" + rArray + "' has " +
+                                        std::to_string(detail::rows(a)) + " rows on a block of " +
+                                        std::to_string(nc) + " cells");
+        if (nc != 0 && data_num_components(a) != 1)
+            throw std::invalid_argument("crop: cell_data '" + rArray +
+                                        "' must be scalar (one value per cell) to be used as a "
+                                        "crop predicate");
+        // Phase 1 parallel into disjoint slots, phase 2 serial ascending
+        // compaction -- the same two-phase shape the spatial modes use, so the
+        // kept order is a traversal-independent contract rather than an accident.
+        std::vector<char> keep(nc, 0);
+        parallel_for(nc, [&](std::size_t c) {
+            keep[c] = refine_compare_value(detail::read_double(a, c), Op, Value) ? 1 : 0;
+        });
+        std::vector<std::int64_t> block;
+        for (std::size_t c = 0; c < nc; ++c)
+            if (keep[c])
+                block.push_back(static_cast<std::int64_t>(c));
+        kept.push_back(std::move(block));
+    }
+    return crop_finish(rMesh, kept, record_ids);
 }
 
 }  // namespace meshioplusplus
@@ -72698,11 +73532,15 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
           "AttachOccupancy", "MaxCells", "Sign"}},
+        {"ComputeSdf",
+         {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
+          "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
+          "Band"}},
         {"Transform",
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
-        {"Crop", {"Bbox", "Point", "Normal", "Mode", "RecordIds"}},
+        {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
         {"Reorder", {"Method"}},
@@ -73030,14 +73868,14 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         VoxelOptions opts;
         const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
         if (resolution.size() == 3)
-            opts.mResolution = std::array<std::int64_t, 3>{{resolution[0], resolution[1],
-                                                            resolution[2]}};
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
         if (pipe_find(rStep, "CellSize") != nullptr)
             opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
         const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
         if (bounds.size() == 6)
-            opts.mBounds = std::array<double, 6>{{bounds[0], bounds[1], bounds[2], bounds[3],
-                                                   bounds[4], bounds[5]}};
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
         opts.mPadding = pipe_number(rStep, "Padding", 0.0);
         opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.0);
         opts.mFill = voxel_fill_from_name(pipe_text(rStep, "Fill", "all"));
@@ -73045,8 +73883,40 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
         VoxelResult r = voxelize(mesh, opts);
+        pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "ComputeSdf") {
+        // Voxelize's sibling: it likewise REPLACES the input's geometry, taking
+        // a surface in and handing a filled grid back, which is exactly the
+        // shape a single-mesh chain wants.
+        SdfOptions opts;
+        opts.mStructure = sdf_structure_from_name(pipe_text(rStep, "Structure", "voxel"));
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mRootResolution = static_cast<std::int64_t>(pipe_number(rStep, "RootResolution", 8.0));
+        opts.mMaxDepth = static_cast<std::int64_t>(pipe_number(rStep, "MaxDepth", 4.0));
+        opts.mBandCells = pipe_number(rStep, "BandCells", 1.0);
+        opts.mRecordLevels = pipe_flag(rStep, "RecordLevels", true);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mDistance.mLocation = sdf_location_from_name(pipe_text(rStep, "Location", "corner"));
+        opts.mDistance.mBand = pipe_number(rStep, "Band", 0.0);
+        SdfResult r = compute_sdf(mesh, opts);
         pipe_push_step(rReport, rStep,
-                       {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
+                       {{"MaxDepth", static_cast<double>(r.mMaxDepth)},
+                        {"NumBanded", static_cast<double>(r.mNumBanded)}});
         return std::move(r.mMesh);
     }
 
@@ -73086,9 +73956,23 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         const bool record = pipe_flag(rStep, "RecordIds", false);
         const bool has_bbox = pipe_find(rStep, "Bbox") != nullptr;
         const bool has_plane = pipe_find(rStep, "Point") || pipe_find(rStep, "Normal");
-        if (has_bbox == has_plane)
-            throw std::invalid_argument(pipe_err(rStep, "give either 'Bbox' or 'Point'+'Normal'"));
+        const bool has_where = pipe_find(rStep, "Where") != nullptr;
+        if (static_cast<int>(has_bbox) + static_cast<int>(has_plane) +
+                static_cast<int>(has_where) !=
+            1)
+            throw std::invalid_argument(
+                pipe_err(rStep, "give one of 'Bbox', 'Point'+'Normal' or 'Where'"));
+        if (has_where && pipe_find(rStep, "Mode") != nullptr)
+            throw std::invalid_argument(
+                pipe_err(rStep,
+                         "'Mode' applies to 'Bbox' and 'Point'+'Normal', which test "
+                         "points; a 'Where' predicate is already one value per cell "
+                         "and has nothing to reduce"));
         CropResult result = [&] {
+            if (has_where)
+                return crop_predicate(mesh, pipe_text(rStep, "Where", ""),
+                                      refine_compare_from_name(pipe_text(rStep, "Compare", "<")),
+                                      pipe_number(rStep, "Value", 0.0), record);
             if (has_bbox) {
                 std::vector<double> b = pipe_dvec(rStep, "Bbox");
                 if (b.size() != 6)
@@ -75423,29 +76307,6 @@ bool refine_has_selector(const RefineOptions& rOptions) {
            !rOptions.mPredicateArray.empty();
 }
 
-bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
-    // A non-finite value never matches. compute_quality deliberately reports NaN
-    // where a metric does not apply, so a predicate over `quality:*` on a mixed
-    // mesh is the headline use case -- rejecting the array would break it.
-    if (!std::isfinite(Value))
-        return false;
-    switch (Op) {
-        case RefineCompare::Less:
-            return Value < Rhs;
-        case RefineCompare::LessEqual:
-            return Value <= Rhs;
-        case RefineCompare::Greater:
-            return Value > Rhs;
-        case RefineCompare::GreaterEqual:
-            return Value >= Rhs;
-        case RefineCompare::Equal:
-            return Value == Rhs;
-        case RefineCompare::NotEqual:
-            return Value != Rhs;
-    }
-    return false;
-}
-
 std::string refine_region_names(const Mesh& rMesh) {
     std::string names;
     for (const std::string& n : rMesh.RegionNames()) {
@@ -75579,6 +76440,32 @@ RefineClosure refine_closure_from_name(const std::string& rName) {
         return RefineClosure::Balanced;
     throw std::invalid_argument("refine: unknown closure '" + rName +
                                 "' (expected 'redgreen'/'green', 'propagate' or 'balanced')");
+}
+
+bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
+    // A non-finite value never matches. compute_quality deliberately reports NaN
+    // where a metric does not apply, so a predicate over `quality:*` on a mixed
+    // mesh is the headline use case -- rejecting the array would break it.
+    //
+    // Public (declared in refine.hpp) rather than file-private because
+    // `crop_predicate` selects cells by this identical rule; see the header.
+    if (!std::isfinite(Value))
+        return false;
+    switch (Op) {
+        case RefineCompare::Less:
+            return Value < Rhs;
+        case RefineCompare::LessEqual:
+            return Value <= Rhs;
+        case RefineCompare::Greater:
+            return Value > Rhs;
+        case RefineCompare::GreaterEqual:
+            return Value >= Rhs;
+        case RefineCompare::Equal:
+            return Value == Rhs;
+        case RefineCompare::NotEqual:
+            return Value != Rhs;
+    }
+    return false;
 }
 
 RefineCompare refine_compare_from_name(const std::string& rName) {
@@ -76132,8 +77019,11 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/reorder.cpp =====
 // ===== begin src/cpp/src/operations/sdf.cpp =====
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -76177,8 +77067,8 @@ std::vector<detail::Vec3> sdfop_query_points(const Mesh& rMesh, SdfLocation Loca
                     for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                         const auto face = cb.Face(c, f);
                         for (std::size_t i = 0; i < face.second; ++i) {
-                            sum = detail::vec3_add(
-                                sum, detail::read_point(points, dim, face.first[i]));
+                            sum = detail::vec3_add(sum,
+                                                   detail::read_point(points, dim, face.first[i]));
                             ++count;
                         }
                     }
@@ -76223,6 +77113,65 @@ void sdfop_report_quality(const SurfaceQuality& rQuality, SdfWatertightCheck Che
         throw std::invalid_argument(std::string(kSdfPrefix) + what);
     log::warn("{}{} -- the sign may be wrong near the defects; consider sign='winding-number'.",
               kSdfPrefix, what);
+}
+
+// The per-cell diagonal of every cell of a hexahedral grid, from the cell's own
+// corner bounding box rather than from its level. Deriving it from `refine:level`
+// would work for an octree built here and be wrong for anything else, and the
+// bbox is exact for an axis-aligned box, which is all this grid ever contains.
+std::vector<double> sdfop_cell_diagonals(const Mesh& rMesh) {
+    std::vector<double> out;
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        const std::size_t base = out.size();
+        out.resize(base + ncells);
+        if (cb.IsRagged()) {
+            // An octree pass never produces one (refine refuses ragged blocks),
+            // so a zero diagonal here simply means "never in the band".
+            for (std::size_t c = 0; c < ncells; ++c)
+                out[base + c] = 0.0;
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t npc = cb.NodesPerCell();
+        parallel_for_bw(ncells, [&](std::size_t c) {
+            detail::Vec3 lo{{0.0, 0.0, 0.0}};
+            detail::Vec3 hi{{0.0, 0.0, 0.0}};
+            for (std::size_t i = 0; i < npc; ++i) {
+                const detail::Vec3 p =
+                    detail::read_point(points, dim, detail::read_int(conn, c * npc + i));
+                for (std::size_t d = 0; d < 3; ++d) {
+                    if (i == 0 || p[d] < lo[d])
+                        lo[d] = p[d];
+                    if (i == 0 || p[d] > hi[d])
+                        hi[d] = p[d];
+                }
+            }
+            double s = 0.0;
+            for (std::size_t d = 0; d < 3; ++d) {
+                const double e = hi[d] - lo[d];
+                s += e * e;
+            }
+            out[base + c] = std::sqrt(s);
+        });
+    }
+    return out;
+}
+
+// A Float64 field_data entry from a small fixed run of doubles.
+NDArray sdfop_field_f64(const double* pValues, std::size_t Count) {
+    NDArray a = NDArray::Uninit(DType::Float64, {Count});
+    std::memcpy(a.Data(), pValues, Count * sizeof(double));
+    return a;
+}
+
+// An Int64 field_data entry from a small fixed run.
+NDArray sdfop_field_i64(const std::int64_t* pValues, std::size_t Count) {
+    NDArray a = NDArray::Uninit(DType::Int64, {Count});
+    std::memcpy(a.Data(), pValues, Count * sizeof(std::int64_t));
+    return a;
 }
 
 }  // namespace
@@ -76320,8 +77269,7 @@ SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurfa
 
     const std::vector<detail::Vec3> queries = sdfop_query_points(rQuery, rOptions.mLocation);
     detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
-    const std::vector<detail::DistanceHit> hits =
-        detail::query_distances(query, queries, rOptions);
+    const std::vector<detail::DistanceHit> hits = detail::query_distances(query, queries, rOptions);
     const std::size_t n = hits.size();
 
     NDArray dist = NDArray::Uninit(DType::Float64, {n});
@@ -76341,9 +77289,7 @@ SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurfa
     if (rOptions.mRecordInside) {
         inside = NDArray::Uninit(DType::Int64, {n});
         std::int64_t* pi = inside.As<std::int64_t>();
-        parallel_for_bw(n, [&](std::size_t p) {
-            pi[p] = hits[p].mSignedDistance < 0.0 ? 1 : 0;
-        });
+        parallel_for_bw(n, [&](std::size_t p) { pi[p] = hits[p].mSignedDistance < 0.0 ? 1 : 0; });
     }
     NDArray closest;
     if (rOptions.mRecordClosestCell) {
@@ -76389,15 +77335,138 @@ SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurfa
 }
 
 SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions) {
-    (void)rSurface;
-    (void)rOptions;
-    // The types are final from v9.24.0 precisely so that adding this body later
-    // is a pure .cpp change; see operations/sdf.hpp on why the layout ships
-    // ahead of the implementation.
-    throw std::invalid_argument(
-        std::string(kSdfPrefix) +
-        "compute_sdf is not implemented yet (it lands in v9.25.0); compose voxelize() with "
-        "distance_to_surface() in the meantime");
+    // The grid the field will live on. Voxel resolves the caller's resolution or
+    // cell size directly; octree resolves a *root* lattice of mRootResolution
+    // cells per axis over the same padded box and then refines it.
+    detail::LatticeRequest req;
+    req.mBounds = rOptions.mBounds;
+    req.mPadding = rOptions.mPadding;
+    req.mPaddingRelative = rOptions.mPaddingRelative;
+    req.mMaxCells = rOptions.mMaxCells;
+    if (rOptions.mStructure == SdfStructure::Octree) {
+        if (rOptions.mRootResolution <= 0)
+            throw std::invalid_argument(std::string(kSdfPrefix) +
+                                        "root_resolution must be positive, got " +
+                                        std::to_string(rOptions.mRootResolution));
+        if (rOptions.mMaxDepth < 0)
+            throw std::invalid_argument(std::string(kSdfPrefix) +
+                                        "max_depth must not be negative, got " +
+                                        std::to_string(rOptions.mMaxDepth));
+        if (!(rOptions.mBandCells > 0.0))
+            throw std::invalid_argument(std::string(kSdfPrefix) +
+                                        "band_cells must be positive, got " +
+                                        std::to_string(rOptions.mBandCells));
+        if (rOptions.mResolution.has_value() || rOptions.mCellSize.has_value())
+            throw std::invalid_argument(
+                std::string(kSdfPrefix) +
+                "structure 'octree' sizes itself from root_resolution and max_depth; "
+                "resolution and cell_size apply to structure 'voxel' only");
+        req.mResolution = std::array<std::int64_t, 3>{
+            {rOptions.mRootResolution, rOptions.mRootResolution, rOptions.mRootResolution}};
+    } else {
+        req.mResolution = rOptions.mResolution;
+        req.mCellSize = rOptions.mCellSize;
+    }
+    const detail::LatticeSpec root = detail::lattice_resolve(rSurface, req, kSdfPrefix);
+
+    SdfResult result;
+    result.mDims = root.mDims;
+    result.mOrigin = root.mOrigin;
+    result.mSpacing = root.mSpacing;
+
+    // Every point and cell of the output is new, so nothing can be remapped --
+    // the same situation voxelize/slice/isosurface/extract_surface are in.
+    detail::warn_regions_dropped(rSurface, "compute_sdf");
+
+    Mesh mesh = detail::lattice_build_mesh(root);
+
+    if (rOptions.mStructure == SdfStructure::Octree) {
+        // The soup and its accelerator depend only on the surface, so they are
+        // built once and reused by every selection pass.
+        const detail::TriangleSoup soup =
+            detail::build_triangle_soup(rSurface, rOptions.mDistance.mSurfaceRegion);
+        // Selection needs |d| only, so it runs UNSIGNED: the magnitude is the
+        // same either way, and an unsigned query neither depends on the surface
+        // being closed nor pays for a winding-number sign it would throw away.
+        SurfaceDistanceOptions sel_opts = rOptions.mDistance;
+        sel_opts.mSign = SdfSign::Unsigned;
+        sel_opts.mBand = 0.0;
+        sel_opts.mWatertightCheck = SdfWatertightCheck::Off;  // reported once, below
+        const detail::DistanceQuery query = detail::build_distance_query(soup, sel_opts);
+
+        for (std::int64_t pass = 0; pass < rOptions.mMaxDepth; ++pass) {
+            // Distances at the CURRENT mesh's cell centres. Recomputing per pass
+            // is the point: a selection carried over from the previous pass would
+            // name cells of a mesh that no longer exists, since these are global
+            // block-major indices into whatever `refine` last returned.
+            const std::vector<detail::Vec3> centres = sdfop_query_points(mesh, SdfLocation::Center);
+            const std::vector<double> diag = sdfop_cell_diagonals(mesh);
+            const std::vector<detail::DistanceHit> hits =
+                detail::query_distances(query, centres, sel_opts);
+
+            std::vector<std::int64_t> selected;
+            for (std::size_t c = 0; c < hits.size(); ++c)
+                if (std::fabs(hits[c].mSignedDistance) <= rOptions.mBandCells * diag[c])
+                    selected.push_back(static_cast<std::int64_t>(c));
+            if (selected.empty())
+                break;  // nothing near the surface: the tree has converged
+
+            RefineOptions ro;
+            ro.mLevels = 1;
+            ro.mCells = std::move(selected);
+            // Balanced is the only closure whose cost is bounded by the
+            // selection; red-green and propagate both spread the refinement well
+            // beyond the band. The output is 1-irregular -- see refine.hpp.
+            ro.mClosure = RefineClosure::Balanced;
+            ro.mRecordLevels = rOptions.mRecordLevels;
+            mesh = refine(mesh, ro).mMesh;
+            ++result.mMaxDepth;
+            for (std::size_t d = 0; d < 3; ++d)
+                result.mSpacing[d] *= 0.5;
+
+            std::size_t total = 0;
+            for (const auto cb : mesh.CellRange())
+                total += cb.NumCells();
+            if (rOptions.mMaxCells > 0 && static_cast<std::int64_t>(total) > rOptions.mMaxCells)
+                throw std::invalid_argument(
+                    std::string(kSdfPrefix) + "the octree reached " + std::to_string(total) +
+                    " cells after " + std::to_string(result.mMaxDepth) +
+                    " pass(es), above the limit of " + std::to_string(rOptions.mMaxCells) +
+                    " (raise max_cells, lower max_depth or band_cells)");
+        }
+    }
+
+    // The field is computed ONCE, on the final mesh. Attaching it earlier and
+    // letting `refine` carry it would replace every value on a refined cell with
+    // an interpolation of its parent's -- smooth, plausible, and wrong.
+    SurfaceDistanceResult filled = distance_to_surface(mesh, rSurface, rOptions.mDistance);
+    result.mMesh = std::move(filled.mMesh);
+    result.mQuality = filled.mQuality;
+    result.mNumBanded = filled.mNumBanded;
+
+    // The header, so a caller holding only the mesh still knows what grid it is.
+    // No format persists arbitrary field_data, so this survives in memory only --
+    // `.vti` round-trips the geometry instead, and `detail::lattice_from_mesh`
+    // recovers a dense lattice from its points. See doc/sdf.md.
+    const double origin[3] = {result.mOrigin[0], result.mOrigin[1], result.mOrigin[2]};
+    const double spacing[3] = {result.mSpacing[0], result.mSpacing[1], result.mSpacing[2]};
+    const std::int64_t dims[3] = {result.mDims[0], result.mDims[1], result.mDims[2]};
+    const double bounds[6] = {
+        root.mOrigin[0],
+        root.mOrigin[1],
+        root.mOrigin[2],
+        root.mOrigin[0] + static_cast<double>(root.mDims[0]) * root.mSpacing[0],
+        root.mOrigin[1] + static_cast<double>(root.mDims[1]) * root.mSpacing[1],
+        root.mOrigin[2] + static_cast<double>(root.mDims[2]) * root.mSpacing[2]};
+    const std::int64_t depth = result.mMaxDepth;
+    const std::int64_t structure = rOptions.mStructure == SdfStructure::Octree ? 1 : 0;
+    result.mMesh.AddFieldData(kSdfOriginName, sdfop_field_f64(origin, 3));
+    result.mMesh.AddFieldData(kSdfSpacingName, sdfop_field_f64(spacing, 3));
+    result.mMesh.AddFieldData(kSdfDimsName, sdfop_field_i64(dims, 3));
+    result.mMesh.AddFieldData(kSdfBoundsName, sdfop_field_f64(bounds, 6));
+    result.mMesh.AddFieldData(kSdfMaxDepthName, sdfop_field_i64(&depth, 1));
+    result.mMesh.AddFieldData(kSdfStructureName, sdfop_field_i64(&structure, 1));
+    return result;
 }
 
 }  // namespace meshioplusplus
@@ -78214,6 +79283,12 @@ std::string sniff_format(const std::string& rPath) {
             return "vtu";
         if (sniff_contains(head, "PolyData"))
             return "vtp";
+        // Checked last of the three: the grid-type strings are disjoint, but a
+        // future dataset type could contain another as a substring, and the
+        // cheapest defence is to keep the most recently added one from
+        // shadowing anything.
+        if (sniff_contains(head, "ImageData"))
+            return "vti";
     }
     if (sniff_starts_with(stripped, "<Xdmf") || sniff_contains(head, "<Xdmf"))
         return "xdmf";
@@ -79607,11 +80682,12 @@ namespace {
 
 constexpr const char* kVoxPrefix = "meshio++: voxelize: ";
 
-// The cell budget check, shared by grid() and voxelize(). It is a *named*
-// refusal rather than an allocation failure because the failure mode it guards
-// is mundane and predictable: 512^3 is 134 million cells and ~11.8 GB of points
-// and connectivity, which a user asks for by typo far more often than on
-// purpose.
+// The cell budget check for grid(), which has no LatticeRequest to resolve. It
+// is a *named* refusal rather than an allocation failure because the failure
+// mode it guards is mundane and predictable: 512^3 is 134 million cells and
+// ~11.8 GB of points and connectivity, which a user asks for by typo far more
+// often than on purpose. `lattice_resolve` applies the identical rule (and the
+// identical message) to the request-shaped callers.
 void vox_check_budget(std::int64_t Cells, std::int64_t MaxCells, const char* pPrefix) {
     if (MaxCells <= 0 || Cells <= MaxCells)
         return;
@@ -79621,80 +80697,20 @@ void vox_check_budget(std::int64_t Cells, std::int64_t MaxCells, const char* pPr
                                 " (raise max_cells, coarsen the resolution, or use a band)");
 }
 
-// The bounding box a voxelization covers: the caller's, or the mesh's own, in
-// both cases grown by the padding.
-std::array<double, 6> vox_resolve_bounds(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    std::array<double, 3> lo{{0.0, 0.0, 0.0}};
-    std::array<double, 3> hi{{0.0, 0.0, 0.0}};
-    if (rOptions.mBounds.has_value()) {
-        const std::array<double, 6>& b = *rOptions.mBounds;
-        for (std::size_t k = 0; k < 3; ++k) {
-            lo[k] = b[k];
-            hi[k] = b[k + 3];
-            if (!(hi[k] >= lo[k]))
-                throw std::invalid_argument(
-                    std::string(kVoxPrefix) + "bounds are inverted on axis " + std::to_string(k) +
-                    " (lo " + std::to_string(lo[k]) + " > hi " + std::to_string(hi[k]) + ")");
-        }
-    } else if (!detail::point_bbox(rMesh, lo, hi)) {
-        throw std::invalid_argument(std::string(kVoxPrefix) +
-                                    "the mesh has no points, so it has no bounding box to "
-                                    "voxelize (pass explicit bounds)");
-    }
-
-    double diag = 0.0;
-    for (std::size_t k = 0; k < 3; ++k) {
-        const double e = hi[k] - lo[k];
-        diag += e * e;
-    }
-    diag = std::sqrt(diag);
-    const double pad = rOptions.mPadding + rOptions.mPaddingRelative * diag;
-    if (pad < 0.0)
-        throw std::invalid_argument(std::string(kVoxPrefix) + "padding is negative");
-    for (std::size_t k = 0; k < 3; ++k) {
-        lo[k] -= pad;
-        hi[k] += pad;
-    }
-    return {lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]};
-}
-
 // The lattice a voxelization runs on. Exactly one of resolution and cell size
 // must be given: defaulting one of them would silently pick a grid the caller
 // did not choose, and for an object whose cost is cubic in that choice that is
-// not a kindness.
+// not a kindness. The rule itself lives in detail/grid_lattice.hpp, since
+// `compute_sdf` resolves the identical six fields the identical way.
 detail::LatticeSpec vox_resolve_lattice(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    if (rOptions.mResolution.has_value() == rOptions.mCellSize.has_value())
-        throw std::invalid_argument(std::string(kVoxPrefix) +
-                                    "give exactly one of resolution and cell_size");
-
-    const std::array<double, 6> b = vox_resolve_bounds(rMesh, rOptions);
-    const std::array<double, 3> lo{{b[0], b[1], b[2]}};
-    const std::array<double, 3> hi{{b[3], b[4], b[5]}};
-
-    detail::LatticeSpec spec;
-    if (rOptions.mResolution.has_value()) {
-        const std::array<std::int64_t, 3>& r = *rOptions.mResolution;
-        for (std::size_t k = 0; k < 3; ++k)
-            if (r[k] <= 0)
-                throw std::invalid_argument(std::string(kVoxPrefix) +
-                                            "resolution must be positive on every axis, got " +
-                                            std::to_string(r[k]) + " on axis " +
-                                            std::to_string(k));
-        spec = detail::lattice_from_bounds(lo, hi, r);
-    } else {
-        const double cell = *rOptions.mCellSize;
-        if (!(cell > 0.0))
-            throw std::invalid_argument(std::string(kVoxPrefix) + "cell_size must be positive");
-        spec = detail::lattice_from_cell_size(lo, hi, {{cell, cell, cell}});
-        for (std::size_t k = 0; k < 3; ++k)
-            if (spec.mDims[k] <= 0)
-                throw std::invalid_argument(
-                    std::string(kVoxPrefix) +
-                    "the bounding box is degenerate on axis " + std::to_string(k) +
-                    ", so a cell size cannot fill it (pass an explicit resolution or bounds)");
-    }
-    vox_check_budget(detail::lattice_num_cells(spec), rOptions.mMaxCells, kVoxPrefix);
-    return spec;
+    detail::LatticeRequest req;
+    req.mResolution = rOptions.mResolution;
+    req.mCellSize = rOptions.mCellSize;
+    req.mBounds = rOptions.mBounds;
+    req.mPadding = rOptions.mPadding;
+    req.mPaddingRelative = rOptions.mPaddingRelative;
+    req.mMaxCells = rOptions.mMaxCells;
+    return detail::lattice_resolve(rMesh, req, kVoxPrefix);
 }
 
 // Which cells the fill rule keeps, as a per-cell flag. An empty result means
@@ -79714,8 +80730,8 @@ std::vector<char> vox_occupancy(const Mesh& rMesh, const detail::LatticeSpec& rS
         // triangle overlaps far more boxes than it enters.
         const detail::TriangleSoup soup =
             detail::build_triangle_soup(rMesh, rOptions.mDistance.mSurfaceRegion);
-        const detail::Vec3 half{{rSpec.mSpacing[0] * 0.5, rSpec.mSpacing[1] * 0.5,
-                                 rSpec.mSpacing[2] * 0.5}};
+        const detail::Vec3 half{
+            {rSpec.mSpacing[0] * 0.5, rSpec.mSpacing[1] * 0.5, rSpec.mSpacing[2] * 0.5}};
         // Serial over triangles, each touching only the voxels of its own
         // bounding box: a parallel pass would race on the shared flag array for
         // no real gain, since the inner box is small.
@@ -79775,10 +80791,10 @@ std::vector<char> vox_occupancy(const Mesh& rMesh, const detail::LatticeSpec& rS
         const std::int64_t i = g % nx;
         const std::int64_t j = (g / nx) % ny;
         const std::int64_t k = g / (nx * ny);
-        centres[c] = detail::Vec3{
-            {rSpec.mOrigin[0] + (static_cast<double>(i) + 0.5) * rSpec.mSpacing[0],
-             rSpec.mOrigin[1] + (static_cast<double>(j) + 0.5) * rSpec.mSpacing[1],
-             rSpec.mOrigin[2] + (static_cast<double>(k) + 0.5) * rSpec.mSpacing[2]}};
+        centres[c] =
+            detail::Vec3{{rSpec.mOrigin[0] + (static_cast<double>(i) + 0.5) * rSpec.mSpacing[0],
+                          rSpec.mOrigin[1] + (static_cast<double>(j) + 0.5) * rSpec.mSpacing[1],
+                          rSpec.mOrigin[2] + (static_cast<double>(k) + 0.5) * rSpec.mSpacing[2]}};
     });
 
     SurfaceDistanceOptions dopts = rOptions.mDistance;
@@ -79787,11 +80803,9 @@ std::vector<char> vox_occupancy(const Mesh& rMesh, const detail::LatticeSpec& rS
                                     "fill 'inside' needs a sign, but sign='unsigned' was given");
     dopts.mBand = 0.0;  // a band would clamp the very sign this fill depends on
     const detail::DistanceQuery query = detail::build_distance_query(soup, dopts);
-    const std::vector<detail::DistanceHit> hits =
-        detail::query_distances(query, centres, dopts);
-    parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
-        occupied[c] = hits[c].mSignedDistance < 0.0 ? 1 : 0;
-    });
+    const std::vector<detail::DistanceHit> hits = detail::query_distances(query, centres, dopts);
+    parallel_for_bw(static_cast<std::size_t>(ncells),
+                    [&](std::size_t c) { occupied[c] = hits[c].mSignedDistance < 0.0 ? 1 : 0; });
     return occupied;
 }
 
@@ -79851,8 +80865,8 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
             conn.push_back(remap[static_cast<std::size_t>(nd)]);
     }
 
-    NDArray points = NDArray::Uninit(DType::Float64,
-                                     {static_cast<std::size_t>(next), std::size_t{3}});
+    NDArray points =
+        NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(next), std::size_t{3}});
     double* pdst = points.As<double>();
     parallel_for_bw(static_cast<std::size_t>(npoints), [&](std::size_t p) {
         const std::int64_t slot = remap[p];
@@ -79869,8 +80883,8 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
     out.AssignPoints(std::move(points));
 
     if (Kept > 0) {
-        NDArray block = NDArray::Uninit(DType::Int64,
-                                        {static_cast<std::size_t>(Kept), std::size_t{8}});
+        NDArray block =
+            NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(Kept), std::size_t{8}});
         std::memcpy(block.Data(), conn.data(), conn.size() * sizeof(std::int64_t));
         out.AddCellBlock("hexahedron", std::move(block));
     }
@@ -79897,13 +80911,11 @@ Mesh grid(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>&
         if (rDims[k] < 0)
             throw std::invalid_argument(std::string(prefix) +
                                         "cell counts must not be negative, got " +
-                                        std::to_string(rDims[k]) + " on axis " +
-                                        std::to_string(k));
+                                        std::to_string(rDims[k]) + " on axis " + std::to_string(k));
         if (rDims[k] > 0 && !(rSpacing[k] > 0.0))
-            throw std::invalid_argument(std::string(prefix) +
-                                        "spacing must be positive on every axis with cells, got " +
-                                        std::to_string(rSpacing[k]) + " on axis " +
-                                        std::to_string(k));
+            throw std::invalid_argument(
+                std::string(prefix) + "spacing must be positive on every axis with cells, got " +
+                std::to_string(rSpacing[k]) + " on axis " + std::to_string(k));
     }
     detail::LatticeSpec spec;
     spec.mOrigin = rOrigin;
@@ -80210,8 +81222,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"triangle", meshioplusplus::read_triangle},
         {"ugrid", meshioplusplus::read_ugrid},
         {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
+        {"vti", [](const std::string& path) { return meshioplusplus::read_vti(path); }},
         {"vtk", meshioplusplus::read_vtk},
-        // vtp/vtu take a trailing defaulted ReadOptions, so the function
+        // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
         // pointers no longer convert to ReadFn -- wrapped like unv/med below.
         {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
         {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
@@ -80316,6 +81329,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"triangle", meshioplusplus::write_triangle},
         {"ugrid", meshioplusplus::write_ugrid},
         {"unv", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); }},
+        {"vti",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
         {"vtk",
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
@@ -80445,6 +81466,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".poly", "triangle"},
         {".ugrid", "ugrid"},
         {".unv", "unv"},
+        {".vti", "vti"},
         {".vtk", "vtk"},
         {".vtp", "vtp"},
         {".vtu", "vtu"},
@@ -80520,6 +81542,7 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
              return meshioplusplus::read_med(path, info, opts);
          }},
 #endif
+        {"vti", meshioplusplus::read_vti},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -80533,6 +81556,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"exodus", meshioplusplus::read_exodus_metadata},
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
+        {"vti", meshioplusplus::read_vti_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
         {"xdmf", meshioplusplus::read_xdmf_metadata},
@@ -80634,8 +81658,8 @@ bool wopt_is_text_only(const std::string& rFormat);
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
     return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" || rFormat == "ply" ||
-           rFormat == "stl" || rFormat == "vtk" || rFormat == "vtu" || rFormat == "vtp" ||
-           rFormat == "xdmf" || wopt_is_text_only(rFormat);
+           rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" ||
+           rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -80650,7 +81674,7 @@ bool wopt_is_text_only(const std::string& rFormat) {
 
 /// Formats with a VTK-XML block codec.
 bool wopt_has_codec(const std::string& rFormat) {
-    return rFormat == "vtu" || rFormat == "vtp";
+    return rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp";
 }
 
 /// Formats whose ASCII writer takes a float format string.
@@ -80667,7 +81691,7 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
         return false;
     }
     if (rOptions.mCodecSet && !wopt_has_codec(rFormat)) {
-        rWhy = "format '" + rFormat + "' has no block compression codec (only vtu/vtp do)";
+        rWhy = "format '" + rFormat + "' has no block compression codec (only vti/vtu/vtp do)";
         return false;
     }
     if (!rOptions.mFloatFormat.empty() && !wopt_has_float_format(rFormat)) {
@@ -80718,6 +81742,11 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_stl(rPath, rMesh, binary, /*skin=*/true);
     } else if (fmt == "vtk") {
         write_vtk(rPath, rMesh, binary, /*v51=*/true);
+    } else if (fmt == "vti") {
+        const detail::VtkCodec codec =
+            rOptions.mCodecSet ? rOptions.mCodec
+                               : (binary ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+        write_vti_codec(rPath, rMesh, binary, codec);
     } else if (fmt == "vtu") {
         // Compression only exists in the binary encoding; an explicit codec on
         // an ASCII request would otherwise be silently dropped.

@@ -126,6 +126,96 @@ def _grid_py(dims, origin, spacing):
     return Mesh(points, cells)
 
 
+def lattice_from_mesh(mesh):
+    """Recover the lattice a mesh *is*, from its geometry alone.
+
+    The numpy twin of ``detail::lattice_from_mesh``, and the reason
+    :mod:`meshioplusplus.vti` can write a grid at all: ImageData stores its
+    geometry as ``Origin``/``Spacing``/``WholeExtent`` rather than as points, so
+    a writer has to derive those three from the mesh.
+
+    The recovery is exact rather than a fit. :func:`grid` writes every coordinate
+    as ``origin + index * spacing`` evaluated independently, so all points on one
+    plane carry bit-identical values and an exact ``np.unique`` recovers the
+    planes with no tolerance. Only the *spacing* needs one -- consecutive gaps of
+    ``origin + i*h`` differ in the last bits -- so uniformity is checked to a
+    relative ``1e-9`` and the reported spacing is ``(last - first) / n``.
+
+    Returns
+    -------
+    tuple or None
+        ``(dims, origin, spacing)`` as three length-3 numpy arrays, or ``None``
+        when the mesh is not a dense lattice. A *partial* lattice (``voxelize``'s
+        ``surface``/``inside`` fills, or an octree) is deliberately not
+        recoverable: its points do not tile the box, and inventing the missing
+        ones would be a different mesh.
+    """
+    if len(mesh.cells) != 1:
+        return None
+    block = mesh.cells[0]
+    if block.type != "hexahedron" or not isinstance(block.data, np.ndarray):
+        return None
+    conn = np.asarray(block.data)
+    if conn.ndim != 2 or conn.shape[1] != 8:
+        return None
+    pts = np.asarray(mesh.points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] < 3 or pts.shape[0] == 0:
+        return None
+
+    planes = [np.unique(pts[:, d]) for d in range(3)]
+    if any(p.size < 2 for p in planes):
+        return None
+    if planes[0].size * planes[1].size * planes[2].size != pts.shape[0]:
+        return None
+    dims = np.array([p.size - 1 for p in planes], dtype=np.int64)
+    if int(dims[0]) * int(dims[1]) * int(dims[2]) != conn.shape[0]:
+        return None
+
+    origin = np.array([p[0] for p in planes], dtype=np.float64)
+    spacing = np.empty(3, dtype=np.float64)
+    for d in range(3):
+        n = int(dims[d])
+        spacing[d] = (planes[d][-1] - planes[d][0]) / float(n)
+        if not spacing[d] > 0.0:
+            return None
+        gaps = planes[d][1:] - planes[d][:-1]
+        if np.any(np.abs(gaps - spacing[d]) > 1.0e-9 * spacing[d]):
+            return None
+
+    px, py = int(dims[0]) + 1, int(dims[1]) + 1
+    # The points must be in the lattice's own x-fastest order, not merely occupy
+    # its plane positions -- a permuted grid has identical plane sets and is a
+    # different mesh. Exact comparison: `planes[d]` holds the very values the
+    # points carry.
+    g = np.arange(pts.shape[0], dtype=np.int64)
+    idx = (g % px, (g // px) % py, g // (px * py))
+    for d in range(3):
+        if not np.array_equal(pts[:, d], planes[d][idx[d]]):
+            return None
+
+    nx, ny, nz = (int(v) for v in dims)
+    c = np.arange(nx * ny * nz, dtype=np.int64)
+    ci, cj, ck = c % nx, (c // nx) % ny, c // (nx * ny)
+    base = (ck * py + cj) * px + ci
+    top = base + px * py
+    expect = np.stack(
+        [
+            base,
+            base + 1,
+            base + px + 1,
+            base + px,
+            top,
+            top + 1,
+            top + px + 1,
+            top + px,
+        ],
+        axis=1,
+    )
+    if not np.array_equal(conn.astype(np.int64), expect):
+        return None
+    return dims, origin, spacing
+
+
 def grid(
     dims, origin=(0.0, 0.0, 0.0), spacing=(1.0, 1.0, 1.0), max_cells=DEFAULT_MAX_CELLS
 ):

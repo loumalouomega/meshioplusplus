@@ -41,6 +41,7 @@ from .. import (
     clean,
     compute_bandwidth,
     compute_quality,
+    compute_sdf,
     compute_stats,
     convert_cells,
     crop,
@@ -425,10 +426,10 @@ def _variant_kwargs(out_fmt, mode, compression):
     if compression is None:
         return kwargs
     if compression in _BLOCK_CODECS:
-        if out_fmt not in ("vtu", "vtp"):
+        if out_fmt not in ("vti", "vtu", "vtp"):
             raise ValueError(
                 f"meshio++: mcp: compression '{compression}' selects the VTK XML "
-                "block codec and only vtu/vtp have one"
+                "block codec and only vti/vtu/vtp have one"
             )
         kwargs.update({"binary": True, "compression": compression})
     elif compression == "gzip":
@@ -705,10 +706,13 @@ def tool_crop(
     bbox=None,
     plane_origin=None,
     plane_normal=None,
+    where_array=None,
+    where_compare="<",
+    where_value=0.0,
     mode="all",
     record_ids=False,
 ):
-    """Crop to a bounding box (6 numbers) or a half-space (origin + normal)."""
+    """Crop to a bounding box, a half-space, or a cell_data comparison."""
     mesh = _load(input_path, input_format)
     plane = None
     if plane_origin is not None or plane_normal is not None:
@@ -717,7 +721,17 @@ def tool_crop(
                 "meshio++: mcp: crop needs both plane_origin and plane_normal"
             )
         plane = (plane_origin, plane_normal)
-    out = crop(mesh, bbox=bbox, plane=plane, mode=mode, record_ids=record_ids)
+    where = None
+    if where_array is not None:
+        where = (where_array, where_compare, where_value)
+    out = crop(
+        mesh,
+        bbox=bbox,
+        plane=plane,
+        where=where,
+        mode=mode,
+        record_ids=record_ids,
+    )
     return _result(_store(out, output_path, output_format), out)
 
 
@@ -845,6 +859,49 @@ def tool_distance_to_surface(
         num_banded=report["num_banded"],
         **report["quality"],
     )
+
+
+def tool_compute_sdf(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    structure="voxel",
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.1,
+    root_resolution=8,
+    max_depth=4,
+    band_cells=1.0,
+    max_cells=20000000,
+    sign="pseudonormal",
+    location="corner",
+    band=0.0,
+):
+    """Generate a grid over a surface and fill it with signed distances."""
+    surface = _load(input_path, input_format)
+    out, report = compute_sdf(
+        surface,
+        structure=structure,
+        resolution=resolution,
+        cell_size=cell_size,
+        bounds=bounds,
+        padding=padding,
+        padding_relative=padding_relative,
+        root_resolution=root_resolution,
+        max_depth=max_depth,
+        band_cells=band_cells,
+        max_cells=max_cells,
+        sign=sign,
+        location=location,
+        band=band,
+        watertight_check="off",
+        return_report=True,
+    )
+    quality = report.pop("quality")
+    return _result(_store(out, output_path, output_format), out, **report, **quality)
 
 
 def tool_surface_watertight_check(input_path, input_format=None):
@@ -1390,6 +1447,10 @@ TOOL_REGISTRY = OrderedDict(
         ("gradient", {"fn": tool_gradient, "wraps": ("gradient",), "gated": None}),
         ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
         ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
+        (
+            "compute_sdf",
+            {"fn": tool_compute_sdf, "wraps": ("compute_sdf",), "gated": None},
+        ),
         (
             "distance_to_surface",
             {

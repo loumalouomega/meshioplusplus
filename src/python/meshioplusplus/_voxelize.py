@@ -41,6 +41,8 @@ from ._sdf import _sample_py, _soup
 __all__ = ["voxelize"]
 
 _PREFIX = "meshio++: voxelize: "
+#: The same string, under a name the shared resolver can shadow safely.
+_VOX_PREFIX = _PREFIX
 _FILLS = ("all", "surface", "inside")
 
 
@@ -81,7 +83,8 @@ def _tri_box_overlap(centre, half, a, b, c):
     return np.sum(normal * vmax) >= 0.0
 
 
-def _resolve_bounds(mesh, bounds, padding, padding_relative):
+def _resolve_bounds(mesh, bounds, padding, padding_relative, _PREFIX=None):
+    _PREFIX = _VOX_PREFIX if _PREFIX is None else _PREFIX
     if bounds is not None:
         b = np.asarray(bounds, dtype=np.float64).reshape(-1)
         if b.size != 6:
@@ -97,7 +100,7 @@ def _resolve_bounds(mesh, bounds, padding, padding_relative):
         pts = np.asarray(mesh.points, dtype=np.float64)
         if len(pts) == 0:
             raise ValueError(
-                f"{_PREFIX}the mesh has no points, so it has no bounding box to voxelize "
+                f"{_PREFIX}the mesh has no points, so it has no bounding box to cover "
                 "(pass explicit bounds)"
             )
         if pts.shape[1] == 2:
@@ -112,11 +115,25 @@ def _resolve_bounds(mesh, bounds, padding, padding_relative):
 
 
 def _resolve_lattice(
-    mesh, resolution, cell_size, bounds, padding, padding_relative, max_cells
+    mesh,
+    resolution,
+    cell_size,
+    bounds,
+    padding,
+    padding_relative,
+    max_cells,
+    _PREFIX=None,
 ):
+    """The numpy twin of ``detail::lattice_resolve``.
+
+    The prefix is a parameter for the same reason it is in C++: ``compute_sdf``
+    resolves the identical six fields the identical way, and its errors must name
+    ``sdf`` rather than ``voxelize``.
+    """
+    _PREFIX = _VOX_PREFIX if _PREFIX is None else _PREFIX
     if (resolution is None) == (cell_size is None):
         raise ValueError(f"{_PREFIX}give exactly one of resolution and cell_size")
-    lo, hi = _resolve_bounds(mesh, bounds, padding, padding_relative)
+    lo, hi = _resolve_bounds(mesh, bounds, padding, padding_relative, _PREFIX)
 
     if resolution is not None:
         dims = np.asarray(resolution, dtype=np.int64).reshape(-1)

@@ -24,9 +24,11 @@
  * Three consumers need exactly this object and must not disagree about its
  * numbering:
  *  - `grid()`, the public primitive constructor;
- *  - `voxelize()`, whose dense output *is* a lattice;
- *  - a future `read_vti`, since VTK ImageData is an implicit lattice that has to
- *    be expanded into explicit cells before it can be a `Mesh`.
+ *  - `voxelize()` and `compute_sdf()`, whose dense output *is* a lattice;
+ *  - `read_vti`, since VTK ImageData is an implicit lattice that has to be
+ *    expanded into explicit cells before it can be a `Mesh` -- and `write_vti`,
+ *    which runs `lattice_from_mesh` in the other direction to recover the
+ *    `Origin`/`Spacing`/`WholeExtent` it has to emit.
  *
  * ### The numbering is inherited, not invented
  *
@@ -50,9 +52,9 @@
  * linearization; they are deliberately left alone, since changing them would
  * rewrite committed expected values for no gain.
  *
- * x-fastest is also VTK ImageData's own ordering, which is what will make the
- * `.vti` writer a straight copy and what makes `cell_data` reshape to
- * `arr[z, y, x]` — the C-order tensor layout voxel tooling expects.
+ * x-fastest is also VTK ImageData's own ordering, which is what makes the `.vti`
+ * writer a straight copy and what makes `cell_data` reshape to `arr[z, y, x]` —
+ * the C-order tensor layout voxel tooling expects.
  *
  * ### Two properties worth stating as contracts
  *
@@ -79,6 +81,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
@@ -141,6 +144,65 @@ MESHIOPLUSPLUS_API LatticeSpec lattice_from_cell_size(const std::array<double, 3
  *         here" without a caller having to look at the row count.
  */
 MESHIOPLUSPLUS_API Mesh lattice_build_mesh(const LatticeSpec& rSpec);
+
+/**
+ * @brief A "cover this mesh with a lattice" request, in the shape every caller
+ * spells it: a resolution *or* a cell size, optional explicit bounds, padding.
+ *
+ * `VoxelOptions` and `SdfOptions` both carry exactly these six fields and both
+ * resolve them the same way, so the resolution lives here once rather than in
+ * each operation. `pPrefix` is passed in rather than baked in so each operation's
+ * errors still name themselves (`meshio++: voxelize: ...`).
+ */
+struct LatticeRequest {
+    std::optional<std::array<std::int64_t, 3>> mResolution;  ///< Cell counts per axis.
+    std::optional<double> mCellSize;                         ///< Cubic cell size.
+    std::optional<std::array<double, 6>> mBounds;            ///< Explicit `{lo[3], hi[3]}`.
+    double mPadding = 0.0;                                   ///< Padding in world units.
+    double mPaddingRelative = 0.0;      ///< Padding as a fraction of the diagonal.
+    std::int64_t mMaxCells = 20000000;  ///< Refuse to generate more than this.
+};
+
+/**
+ * @brief Resolve a `LatticeRequest` against a mesh into a concrete lattice.
+ * @param rMesh the mesh whose bounding box is used when `mBounds` is unset.
+ * @param rRequest the request.
+ * @param pPrefix the caller's error prefix, e.g. `"meshio++: voxelize: "`.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set, on a non-positive resolution or cell size, on
+ *         inverted bounds, on negative padding, on a mesh with no points and no
+ *         explicit bounds, and when the lattice would exceed `mMaxCells`.
+ */
+MESHIOPLUSPLUS_API LatticeSpec lattice_resolve(const Mesh& rMesh, const LatticeRequest& rRequest,
+                                               const char* pPrefix);
+
+/**
+ * @brief Recover the lattice a mesh *is*, from its geometry alone.
+ *
+ * This exists because **no file format persists arbitrary `field_data`**, so a
+ * grid written and read back has lost whatever `sdf:origin`/`sdf:spacing`/
+ * `sdf:dims` it carried in memory. The geometry, however, is still exactly a
+ * lattice, and for a lattice the recovery is exact rather than a fit: the
+ * distinct x, y and z coordinate values are the plane positions, and
+ * `lattice_build_mesh` writes them as `origin + index * spacing` evaluated
+ * independently per point, so two points on the same plane carry **bit-identical**
+ * coordinates and an exact sort-and-unique recovers the planes with no tolerance
+ * at all.
+ *
+ * Only the spacing needs one: `origin + i*h` differences are not exactly equal
+ * across `i` in IEEE arithmetic, so uniformity is checked to a relative `1e-9`
+ * and the reported spacing is `(last - first) / n` rather than the first gap.
+ *
+ * @param rMesh the mesh to inspect.
+ * @param rSpec receives the recovered lattice; untouched when the answer is false.
+ * @return false when @p rMesh is not a dense lattice -- wrong cell type, a point
+ *         count that is not `(nx+1)(ny+1)(nz+1)`, a non-uniform axis, or a cell
+ *         count that disagrees. A partial lattice (`voxelize`'s `surface`/`inside`
+ *         fills, or an octree) is **not** recoverable and reports false: its
+ *         points do not tile the box, and inventing the missing ones would be a
+ *         different mesh.
+ */
+MESHIOPLUSPLUS_API bool lattice_from_mesh(const Mesh& rMesh, LatticeSpec& rSpec);
 
 /**
  * @brief The axis-aligned bounding box of a mesh's points.
