@@ -1079,3 +1079,23 @@ include the viewer** — they are deliberately dependency-free single files, and
 Polyscope needs OpenGL, GLFW and X11. Use the Python CLI (`pip install
 meshioplusplus[viewer]`) or the [browser viewer](/viewer) if you would rather
 not build from source.
+
+## `voxelize`
+
+```bash
+meshioplusplus voxelize bunny.stl shell.vtu --resolution 64,64,64 --fill surface
+meshioplusplus voxelize bunny.stl solid.vtu --cell-size 0.5 --fill inside
+```
+
+| flag | meaning |
+|---|---|
+| `--resolution nx,ny,nz` | cell counts; give exactly one of this and `--cell-size` |
+| `--cell-size S` | cubic cell size |
+| `--bounds=xlo,...,zhi` | explicit bounds; the mesh's own by default (negatives need the `=` form) |
+| `--padding` / `--padding-relative` | grow the box on every side |
+| `--fill all\|surface\|inside` | which cells to keep |
+| `--sign pseudonormal\|winding-number` | how `--fill=inside` decides what is inside |
+| `--attach-occupancy` | attach the `voxel:occupancy` array |
+| `--max-cells N` | refuse above this many cells (default ~256³) |
+
+See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).

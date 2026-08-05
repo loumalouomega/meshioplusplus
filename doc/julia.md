@@ -299,3 +299,9 @@ binding already applies to `read`/`write`/`split`.
 
 See [sequences](sequences.md) for the ordering rule, the time-value precedence
 and the streaming guarantee.
+
+- `grid(dims; origin, spacing)`, `voxelize(m; resolution, fill, ...)`,
+  `sample_distance(surface, points)`, `distance_to_surface(query, surface)` and
+  `surface_watertight_check(m)` (v9.24.0) — regular grids and signed distance.
+  `grid` shadows nothing in `Base`, so it is exported plainly. See
+  [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).

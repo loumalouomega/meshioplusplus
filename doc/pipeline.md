@@ -195,3 +195,16 @@ status + `mio_last_error()`; the structured report is a recorded follow-up.
 - A **C ABI report accessor** (caller-buffer JSON string of the run report).
 - conan/vcpkg packages shipping the parser via a registry
   `nlohmann_json/3.12.0` dependency instead of the submodule.
+
+## `Voxelize`
+
+```json
+{ "Op": "Voxelize", "Resolution": [64, 64, 64], "Fill": "surface" }
+```
+
+Keys: `Resolution`, `CellSize`, `Bounds`, `Padding`, `PaddingRelative`, `Fill`,
+`AttachOccupancy`, `MaxCells`, `Sign`. Reports `NumOccupied`.
+
+It is the only step that **replaces** its input's geometry rather than
+transforming it — read a skin, voxelize it, write a grid. See
+[`doc/voxelize.md`](voxelize.md).

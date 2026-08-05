@@ -276,3 +276,9 @@ passed for one another; a released handle is an R error, never a dereference.
 
 See [sequences](sequences.md) for the ordering rule, the time-value precedence
 and the streaming guarantee.
+
+- `mio_grid()`, `mio_voxelize()`, `mio_sample_distance()`,
+  `mio_distance_to_surface()` and `mio_surface_watertight_check()` (v9.24.0) —
+  regular grids and signed distance. The `mio_` prefix keeps `mio_grid()` clear of
+  base R's own `grid` package. Counters come back as `double`, as everywhere else
+  here. See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).

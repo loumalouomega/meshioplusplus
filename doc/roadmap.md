@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.22.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
+Status at time of writing: **v9.24.0** — 41 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -31,18 +31,41 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ## 1. Signed distance fields for skin meshes (octree)
 
-**The gap.** meshio++ has surface extraction (`extract_surface`/`extract_skin`), slicing and isosurfacing, but no way to answer "how far is this point from the surface" — the primitive collision detection, offsetting, and voxelization-style ML preprocessing all need. A closed skin mesh (STL and friends: watertight triangle soup, no volume topology) is exactly the input shape this needs. Two spatial structures matter here and both should come out the other end as an ordinary, **exportable** `Mesh`, not a bespoke in-memory-only object: a sparse **octree** (adaptive, coarse away from the surface, refined near it — cheap on RAM, the acceleration structure for the nearest-triangle queries themselves) and a dense **regular voxel grid** (uniform cell size, the shape most voxel/ML tooling and simple boolean pipelines actually expect). They should be two generation modes of the same feature, not two separate ones.
+**Mostly shipped in v9.24.0.** `grid`, `voxelize` (fills `all`/`surface`/`inside`),
+`sample_distance`, `distance_to_surface` and `surface_watertight_check` are live on
+every surface — see [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
+The data-model question the spike existed to answer is settled: both structures are
+an ordinary `hexahedron` `CellBlock`, so export, rendering and every existing
+operation come for free. The roadmap's `sample(x, y, z)` point-query API is
+satisfied by `sample_distance`, which takes an array of points rather than one at
+a time — a batch call, deliberately, so no opaque sampler handle is needed on five
+flat bindings.
 
-- **Spike: where does the grid live in the data model?** The natural encoding is a `hexahedron` (or `custom` for an octree with T-junction/hanging-node leaves) `CellBlock` per cell — a voxel grid is trivially one uniform block, an octree needs the ragged/`custom` path or a balancing pass (`refine`'s `Balanced` closure is the existing precedent for 2:1-balanced hanging nodes). Getting this right is what makes "exportable" free: once it *is* a `Mesh`, every existing writer (VTU, VTK, gmsh, …) already handles it, `view`/`screenshot` already render it, and no new file format needs writing. Decide the exact cell layout and any non-mesh metadata's (bounds, depth, cell size) home (a `SdfInfo` side-channel, the `MedInfo`/`GmshInfo` precedent) before committing, following the NURBS-spike precedent (§9). **S**
-- **Voxel grid generation**: `voxelize(mesh, VoxelOptions{resolution|cell_size, bounds, band})` — a dense uniform `hexahedron` block over the mesh's (optionally padded) bounding box. The simpler of the two structures; a good first deliverable and the base case the octree generalizes. **M**
-- **Octree construction over a closed triangle skin**: adaptive subdivision to a max depth / target cell size, refined near the surface (leaf-triangle bucketing reusing `detail/spatial_hash.hpp`'s bucket-grid idiom), coarse away from it, and balanced/exported the same way the voxel grid is. **M**
-- **Signed distance evaluation**, shared by both structures, per cell (corner or center): nearest-triangle distance (the same bucket search) plus a sign — fast winding number, or angle-weighted pseudo-normals for a possibly-imperfect/non-watertight STL. Stored as ordinary `point_data`/`cell_data` (e.g. `sdf:distance`), so it is exported and colored exactly like any other field, with no new data convention needed. **M**
-- **`compute_sdf(mesh, SdfOptions{structure: octree|voxel, resolution|max_depth, band, watertight_check})`** as a new operation, exposed like the others (pybind / C-ABI / Fortran / WASM / a `sdf` CLI verb) returning the grid as a `Mesh` plus a point-query API (`sample(x, y, z)`) for callers who just want values, not the mesh. **L**
-- **Downstream writers/consumers**: since the result is a real `Mesh`, `write(grid, "out.vtu")` and friends already work; add only what a plain mesh writer cannot express — a dense binary voxel dump (NRRD/raw-array style) for ML tooling that wants a tensor, not a mesh. Once the primitive exists, offsetting and inside/outside queries for `crop`/`merge` follow cheaply. **S–M**
+What remains:
 
-*Recommended entry point: the data-model spike (get the cell-layout choice right so both structures are exportable for free), then voxel generation (the simpler case), then the octree and shared SDF evaluation on a single closed STL skin.*
+- **`compute_sdf(mesh, SdfOptions{...})`** — generate the grid *and* fill it in one
+  call. Declared with its option and result layouts final (so adding it is a pure
+  `.cpp` change) but currently throws by name; compose `voxelize` with
+  `distance_to_surface` in the meantime. **S**
+- **Octree construction** — adaptive subdivision refined near the surface, coarse
+  away from it. The mechanism is settled and unblocked: iterated selective
+  `refine(closure="balanced")` over a root lattice, which already gives 2:1
+  balance, `refine:level` and `refine:hanging` (and whose cross-pass tearing bug was
+  fixed in v9.23.0 precisely for this). Two traps are recorded in the plan: compute
+  the field only after the last pass (`refine` interpolates `point_data`), and
+  rebuild the cell selection from each pass's own output. **M**
+- **A dense binary voxel dump** for ML tooling that wants a tensor rather than a
+  mesh. `.vti` (VTK XML ImageData) is the recommendation over NRRD/raw: it reuses
+  `detail/vtk_xml.hpp`'s DataArray codec and the existing block codecs verbatim, and
+  its `Origin`/`Spacing`/`WholeExtent` attributes *are* the grid header — which
+  matters because **no format persists arbitrary `field_data`**, so a
+  written-and-reread grid otherwise loses its lattice metadata and has to recover it
+  from the geometry. This is a *format*, with the whole format checklist. **S–M**
+- **Offsetting and inside/outside predicates for `crop`/`merge`**, which the
+  primitive now makes cheap. **S–M**
 
----
+*Recommended entry point: `compute_sdf` (small, and it makes the octree a flag
+rather than a new entry point), then the octree.*
 
 ## 2. Machine-learning data handling
 
@@ -135,7 +158,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
-- **Primitive constructors** — `box`, `grid(nx,ny,nz)`, `sphere`, `cylinder`, `disk`. Trivial, dependency-free, and it removes the fixture-file dependency from tests, docs, notebooks, the browser demo and the MCP server. Highest leverage per line of code in this document. **S**
+- **Primitive constructors** — `box`, `sphere`, `cylinder`, `disk`. (`grid(nx,ny,nz)` shipped in v9.24.0 as part of §1's lattice work, over the same `detail/grid_lattice.hpp`; the rest follow the same shape.) Trivial, dependency-free, and it removes the fixture-file dependency from tests, docs, notebooks, the browser demo and the MCP server. Highest leverage per line of code in this document. **S**
 - **`extrude`** — 2D → 3D sweep (triangle→wedge, quad→hexahedron), `nlayers`, per-layer offsets. The most-requested generation primitive; repeatedly deferred. **M**
 - **`revolve`** — extrude's rotational sibling, sweeping around an axis. **M**
 - **Delaunay / constrained 2D meshing** — genuinely useful, but robust geometric predicates are where dependency-free stops paying. Better as an optional Triangle or Gmsh backend, following the KaHIP pattern. **L**

@@ -543,3 +543,16 @@ output. None of them silently keeps step 0.
 Python-driver feature (a process pool), and this build has no processes to
 pool. The steps run in order, which is what the streaming guarantee needs
 anyway.
+
+## Regular grids and signed distance (v9.24.0)
+
+`grid(dims, origin, spacing)`, `voxelize(mesh, resolution, ...)`,
+`surfaceWatertightCheck(mesh)`, `sampleDistance(surface, points)` and
+`distanceToSurface(query, surface)`. `grid` is the only binding in the package
+that takes no input mesh — it creates one. `sampleDistance` takes a **flat**
+`[x0,y0,z0, x1,y1,z1, …]` array and returns a `Float64Array`.
+
+`{ Op: 'Voxelize' }` also works as a pipeline / `convertSurfaceOps` step, and is
+the only step that *replaces* its input's geometry rather than transforming it.
+
+See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).

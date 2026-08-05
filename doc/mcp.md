@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-35 tools; the two marked *gated* need a further extra and return a named
+41 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
