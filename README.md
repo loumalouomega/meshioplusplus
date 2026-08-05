@@ -620,6 +620,19 @@ meshioplusplus.write("out.vtu", meshioplusplus.from_cupy(gpu))
 
 The host→device move is always a bus transfer — what this removes is the file round-trip and every *extra* copy around it. `to_dlpack(mesh)` exports host arrays any DLPack consumer (PyTorch, JAX, Numba, …) adopts in place. There is deliberately no `[gpu]` extra: CuPy wheels are CUDA-version-specific, so install the one matching your toolkit (e.g. `pip install cupy-cuda13x` for CUDA 13.x, `cupy-cuda12x` for 12.x).
 
+And for machine-learning pipelines, meshes become graphs, feature matrices, datasets and framework tensors directly:
+
+<!--pytest-codeblocks:skip-->
+
+```python
+ei = meshioplusplus.edge_index(mesh)                  # (2, E) int64 — PyG/DGL layout
+fm = meshioplusplus.feature_matrix(mesh, "point")     # (N, F) float64 + recorded columns
+meshioplusplus.write_dataset("out_*.vtu", "dataset/") # mesh_id-keyed partitioned Parquet
+t = meshioplusplus.to_torch(mesh)                     # torch tensors, adopted zero-copy
+```
+
+`feature_matrix`'s column order is a stated, versioned contract recorded in the returned schema, so training and inference cannot silently disagree; `write_dataset` streams a glob / directory / transient series into hive-partitioned Parquet (or chunked zarr/hdf5 groups, `[zarr]`/h5py) with a strict shared schema and a JSON manifest; `to_torch`/`to_jax` adopt the DLPack payload per framework (no `[torch]`/`[jax]` extra, deliberately — the CuPy precedent). See [the ML docs](https://loumalouomega.github.io/meshioplusplus/ml.html).
+
 See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch, and [the GPU docs](https://loumalouomega.github.io/meshioplusplus/gpu.html) for the device handoff.
 
 ### MCP server
@@ -720,7 +733,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.26.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.27.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
@@ -871,6 +884,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [pyarrow](https://arrow.apache.org/) | `[arrow]` / `[interop]` | the Arrow/Parquet data export | Apache-2.0 |
 | [pandas](https://pandas.pydata.org/) | `[pandas]` / `[interop]` | `to_pandas()` | BSD-3-Clause |
 | [polars](https://pola.rs/) | `[polars]` / `[interop]` | `to_polars()` | MIT |
+| [zarr](https://zarr.dev/) | `[zarr]` | the `write_dataset(format="zarr")` chunked-dataset backend | MIT |
 | [CuPy](https://cupy.dev/) | — (wheels are CUDA-version-specific, e.g. `cupy-cuda13x` — see the GPU docs) | `to_cupy()` / `from_cupy()` | MIT |
 | [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) | `[mcp]` | the `meshioplusplus-mcp` server exposing every operation to AI agents | MIT |
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |

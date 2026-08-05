@@ -8,6 +8,43 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.27.0 (2026-08-05)
+
+**The ML gap, closed.** The roadmap's machine-learning section ships in full —
+graphs, feature matrices, dataset export and framework tensors, all pure
+Python over existing machinery (the table payload, the smoothing layer's edge
+topology, the sequence engine). The section is removed from the roadmap; the
+C++/WASM/C/Fortran core is untouched and the ABI version does not move.
+
+- **`edge_index(mesh, kind="node"|"cell", undirected=True)`** — the mesh as a
+  graph in the `(2, E)` int64 layout PyTorch Geometric and DGL expect. The
+  node graph reuses the smooth/`node_adjacency` edge topology (polygon blocks
+  contribute closed rings, routed by type name — a uniform n-gon stores
+  rectangularly); `kind="cell"` is the facet-sharing dual in global
+  block-major numbering. Both directions by default (the PyG convention),
+  lexsorted and deterministic.
+- **`feature_matrix(mesh, location, fields=, coords=, regions=)`** — a
+  `(N, F)` float64 matrix with a **stable, versioned column-order contract**
+  (`FEATURE_SCHEMA_VERSION` 1): coordinates, then data arrays (multi-component
+  expanded via the pandas suffix rule — one rule repo-wide), then
+  `region:<name>` one-hots in `Region.key` order. The returned
+  `FeatureMatrix.columns`/`schema` record the order so training and inference
+  cannot silently disagree.
+- **`write_dataset(source, path, format="parquet"|"zarr"|"hdf5")`** — a *set*
+  of meshes (glob / list / multi-step file, via the sequence machinery,
+  streaming one mesh at a time) as one `mesh_id`-keyed dataset:
+  hive-partitioned Parquet with a JSON manifest, or chunked Zarr/HDF5 groups
+  for out-of-memory datasets. The schema is strict — the first mesh defines
+  it, a mismatch is a named error — and a failed run leaves no manifest. New
+  `[zarr]` extra (zarr-python 2.x and 3.x); CLI verb `data export-dataset`;
+  MCP tool `export_dataset`.
+- **`to_torch(mesh, device=)` / `to_jax(mesh)`** — the DLPack payload adopted
+  per framework: torch host adoption is genuinely zero-copy (measured),
+  `device=` is one recorded bus transfer per array; JAX placement follows
+  JAX's default device with a documented x64 fallback. Deliberately **no
+  `[torch]`/`[jax]` extra** (the CuPy precedent); `has_torch()`/`has_jax()`/
+  `has_zarr()` answer availability without raising.
+
 ## v9.26.0 (2026-08-05)
 
 **DataFrames directly.** The Arrow table payload now feeds pandas and polars
