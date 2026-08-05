@@ -216,7 +216,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 9
-#define MIO_VERSION_MINOR 24
+#define MIO_VERSION_MINOR 25
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -454,7 +454,7 @@ typedef enum mio_write_encoding {
     MIO_ENCODING_BINARY = 2
 } mio_write_encoding;
 
-/** Block compression codec for mio_write_opts.codec (vtu/vtp only). */
+/** Block compression codec for mio_write_opts.codec (vti/vtu/vtp only). */
 typedef enum mio_write_codec {
     MIO_CODEC_DEFAULT = 0, /**< leave the format's default in place */
     MIO_CODEC_NONE = 1,
@@ -476,7 +476,7 @@ typedef enum mio_write_codec {
  */
 typedef struct mio_write_opts {
     int encoding;      /**< a mio_write_encoding value */
-    int codec;         /**< a mio_write_codec value; vtu/vtp only */
+    int codec;         /**< a mio_write_codec value; vti/vtu/vtp only */
     /** printf-style float format for the ASCII writers that take one (e.g.
      *  ".16e"). NULL or empty keeps the writer's own default. Copied during
      *  the call. Currently honoured by flac3d. */
@@ -842,6 +842,35 @@ MIO_API mio_mesh* mio_crop_bbox(const mio_mesh* mesh, const double* lo, const do
  */
 MIO_API mio_mesh* mio_crop_plane(const mio_mesh* mesh, const double* point, const double* normal,
                                  int mode, int record_ids);
+
+/**
+ * Crop a mesh to the cells whose value in a scalar cell_data array satisfies a
+ * comparison.
+ *
+ * There is deliberately NO `mode` parameter. The bbox and half-space crops test
+ * *points* and then need a rule for reducing a cell's several nodes to one
+ * verdict; a cell_data predicate is already one value per cell and has nothing
+ * to reduce, so a mode here would mean nothing.
+ *
+ * Inside/outside a surface composes rather than being its own entry point:
+ * attach distances with mio_distance_to_surface at MIO_SDF_CENTER, then crop on
+ * "sdf:distance" < 0. The same one mode also crops by quality:*, by a material
+ * id, or by anything mio_data_calc can produce.
+ *
+ * @param mesh       the mesh to crop.
+ * @param array      the name of a scalar cell_data array covering every block.
+ * @param compare    a mio_refine_compare -- the SAME vocabulary refine uses,
+ *                   evaluated by the same C++ function, so the two operations
+ *                   cannot drift on the boundary cases.
+ * @param value      the right-hand side. A NON-FINITE cell value never matches,
+ *                   whatever the comparison -- compute_quality reports NaN where
+ *                   a metric does not apply, and predicating over quality:* on a
+ *                   mixed mesh is the headline use case.
+ * @param record_ids nonzero to attach crop:original_point_id / _cell_id.
+ * @return the cropped mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_crop_predicate(const mio_mesh* mesh, const char* array, int compare,
+                                     double value, int record_ids);
 
 /**
  * Split a mesh into pieces by cell type, connected component, or integer
@@ -1531,6 +1560,80 @@ MIO_API mio_status mio_sample_distance(const mio_mesh* surface, const double* po
 MIO_API mio_mesh* mio_distance_to_surface(const mio_mesh* query, const mio_mesh* surface,
                                           const mio_sdf_opts* opts, int64_t* num_banded,
                                           mio_surface_quality* quality);
+
+/** Which structure mio_compute_sdf generates. */
+typedef enum mio_sdf_structure {
+    MIO_SDF_VOXEL = 0,  /**< a dense uniform lattice over the padded box */
+    MIO_SDF_OCTREE = 1  /**< adaptive, refined near the surface (1-irregular) */
+} mio_sdf_structure;
+
+/**
+ * Options for mio_compute_sdf.
+ *
+ * ABI NOTE: the same append-only discipline as mio_sdf_opts. Always
+ * zero-initialize through mio_compute_sdf_opts_init().
+ *
+ * For MIO_SDF_VOXEL exactly ONE of `resolution` and `cell_size` must be given.
+ * For MIO_SDF_OCTREE **neither** may be: its finest cell is
+ * `root cell / 2^depth` and is therefore already determined by
+ * `root_resolution` and `max_depth`, so accepting either would silently ignore
+ * one of the two.
+ */
+typedef struct mio_compute_sdf_opts {
+    /** Cell counts (three entries), or NULL when sizing by cell_size. Voxel only. */
+    const int64_t* resolution;
+    /** Explicit bounds {xlo, ylo, zlo, xhi, yhi, zhi}, or NULL for the surface's own. */
+    const double* bounds;
+    /** Cubic cell size, or <= 0 when sizing by resolution. Voxel only. */
+    double cell_size;
+    /** Grow the box by this on every side, in world units. */
+    double padding;
+    /** Grow the box by this fraction of its diagonal; the default is 0.1. */
+    double padding_relative;
+    /** Octree: refine while |distance| <= this * the cell's own diagonal. */
+    double band_cells;
+    /** Refuse above this many cells; re-checked after every octree pass. */
+    int64_t max_cells;
+    /** Octree: cell count per axis of the root lattice. */
+    int64_t root_resolution;
+    /** Octree: how many refinement passes. */
+    int64_t max_depth;
+    int32_t structure;      /**< a mio_sdf_structure */
+    int32_t record_levels;  /**< octree: nonzero to attach refine:level */
+    int64_t reserved[6];    /**< must be zero; room for additive growth */
+    /** How the distances themselves are computed. Embedded by value, as in C++. */
+    mio_sdf_opts distance;
+} mio_compute_sdf_opts;
+
+/** Zero-initialize compute_sdf options (every field its default). */
+MIO_API void mio_compute_sdf_opts_init(mio_compute_sdf_opts* opts);
+
+/**
+ * Generate a grid over a surface and fill it with signed distances.
+ *
+ * The field is computed ONCE, on the final mesh: an octree pass interpolates
+ * point_data, so a field attached mid-way would come out a smooth, plausible
+ * interpolation of the coarse values rather than the distance.
+ *
+ * The generated mesh also carries the numeric `sdf:*` field_data header
+ * describing itself. No file format persists arbitrary field_data, so that
+ * header survives in memory only -- write the grid as `.vti`, whose
+ * Origin/Spacing/WholeExtent attributes ARE the same information.
+ *
+ * @param surface      the surface to measure against.
+ * @param opts         options; NULL is an error, since a sizing must be given.
+ * @param dims_out     receives the ROOT cell counts (three entries), or NULL.
+ * @param origin_out   receives the lattice lo corner (three entries), or NULL.
+ * @param spacing_out  receives the FINEST cell size (three entries), or NULL.
+ * @param max_depth_out receives how many octree passes ran (0 for voxel), or NULL.
+ * @param num_banded   receives how many queries were clamped to the band, or NULL.
+ * @param quality      receives the surface verdict, or NULL.
+ * @return the grid (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_compute_sdf(const mio_mesh* surface, const mio_compute_sdf_opts* opts,
+                                  int64_t dims_out[3], double origin_out[3],
+                                  double spacing_out[3], int64_t* max_depth_out,
+                                  int64_t* num_banded, mio_surface_quality* quality);
 
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */

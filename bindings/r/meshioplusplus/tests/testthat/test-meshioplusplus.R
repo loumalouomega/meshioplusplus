@@ -738,3 +738,50 @@ test_that("signed distance matches the cube's closed form", {
 
   expect_error(mio_sample_distance(cube, pts, sign = "magic"))
 })
+
+test_that("compute_sdf generates the grid and the field in one call", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  sdf <- mio_compute_sdf(cube, resolution = c(4, 4, 4), watertight_check = "off")
+  expect_equal(sdf$dims, c(4, 4, 4))
+  expect_equal(sdf$max_depth, 0)
+  expect_true("sdf:distance" %in% mio_point_data_names(sdf$mesh))
+  expect_equal(mio_cell_block_info(sdf$mesh, 1)$num_cells, 64)
+  mio_release(sdf$mesh)
+
+  # The octree refines only near the surface: more than the root, far less than
+  # the uniform grid of the same finest resolution.
+  tree <- mio_compute_sdf(cube,
+    structure = "octree", root_resolution = 4, max_depth = 2,
+    watertight_check = "off"
+  )
+  expect_equal(tree$max_depth, 2)
+  n <- mio_cell_block_info(tree$mesh, 1)$num_cells
+  expect_true(n > 64 && n < 4096)
+  mio_release(tree$mesh)
+
+  # resolution/cell_size size a voxel grid; an octree's finest cell is already
+  # determined by root_resolution and max_depth.
+  expect_error(mio_compute_sdf(cube, structure = "octree", resolution = c(4, 4, 4)))
+  expect_error(mio_compute_sdf(cube, structure = "quadtree"))
+})
+
+test_that("crop_predicate keeps the cells a data comparison selects", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  dom <- mio_grid(c(4, 4, 4), origin = c(-0.5, -0.5, -0.5), spacing = c(0.5, 0.5, 0.5))
+  on.exit(mio_release(dom), add = TRUE)
+  f <- mio_distance_to_surface(dom, cube, location = "center", watertight_check = "off")
+  on.exit(mio_release(f$mesh), add = TRUE)
+
+  kept <- mio_crop_predicate(f$mesh, "sdf:distance", compare = "<", value = 0)
+  expect_equal(mio_cell_block_info(kept, 1)$num_cells, 8)
+  mio_release(kept)
+
+  # There is deliberately no `mode`: a cell_data predicate is already one value
+  # per cell and has nothing for an all/any rule to reduce.
+  expect_error(mio_crop_predicate(f$mesh, "sdf:distance", compare = "~"))
+  expect_error(mio_crop_predicate(f$mesh, "nope"))
+})

@@ -1317,6 +1317,52 @@ mio_voxelize <- function(mesh, resolution = NULL, cell_size = 0, bounds = NULL,
 
 #' @rdname mio_extract_surface
 #' @export
+mio_crop_predicate <- function(mesh, array, compare = "<", value = 0,
+                               record_ids = FALSE) {
+  comparisons <- c(
+    `<` = 0L, `<=` = 1L, `>` = 2L, `>=` = 3L, `==` = 4L, `!=` = 5L
+  )
+  if (!compare %in% names(comparisons)) stop("unknown comparison '", compare, "'")
+  .Call(
+    R_mio_crop_predicate, mesh, as.character(array), comparisons[[compare]],
+    as.numeric(value), isTRUE(record_ids)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_compute_sdf <- function(mesh, structure = "voxel", resolution = NULL,
+                            cell_size = 0, bounds = NULL, padding = 0,
+                            padding_relative = 0.1, root_resolution = 8,
+                            max_depth = 4, band_cells = 1, record_levels = TRUE,
+                            max_cells = 20000000, sign = "pseudonormal",
+                            location = "corner", band = 0,
+                            watertight_check = "warn") {
+  structures <- c(voxel = 0L, octree = 1L)
+  signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
+  # The SDF locations, NOT `.mio_location`'s point/cell/field data locations.
+  locations <- c(corner = 0L, point = 0L, center = 1L, centre = 1L, cell = 1L)
+  checks <- c(off = 0L, warn = 1L, error = 2L)
+  if (!structure %in% names(structures)) stop("unknown structure '", structure, "'")
+  if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
+  if (!location %in% names(locations)) stop("unknown location '", location, "'")
+  if (!watertight_check %in% names(checks)) {
+    stop("unknown watertight check '", watertight_check, "'")
+  }
+  .Call(
+    R_mio_compute_sdf, mesh, structures[[structure]],
+    if (is.null(resolution)) numeric(0) else as.numeric(resolution),
+    as.numeric(cell_size),
+    if (is.null(bounds)) numeric(0) else as.numeric(bounds),
+    as.numeric(padding), as.numeric(padding_relative),
+    as.numeric(root_resolution), as.numeric(max_depth), as.numeric(band_cells),
+    isTRUE(record_levels), as.numeric(max_cells), signs[[sign]],
+    locations[[location]], as.numeric(band), checks[[watertight_check]]
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
 mio_surface_watertight_check <- function(mesh) {
   .Call(R_mio_surface_watertight_check, mesh)
 }

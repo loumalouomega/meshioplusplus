@@ -786,6 +786,37 @@ end
     @test num_point_data(f.mesh) == 2   # sdf:distance and sdf:inside
     close(f.mesh)
     close(qgrid)
+
+    # compute_sdf: the grid and the field in one call.
+    sdf = compute_sdf(cube; resolution=[4, 4, 4], watertight_check=:off)
+    @test sdf.dims == (4, 4, 4)
+    @test sdf.max_depth == 0
+    @test num_point_data(sdf.mesh) == 1
+    close(sdf.mesh)
+
+    # The octree refines only near the surface.
+    tree = compute_sdf(cube; structure=:octree, root_resolution=4, max_depth=2,
+                       watertight_check=:off)
+    @test tree.max_depth == 2
+    @test cell_block_info(tree.mesh, 1).num_cells > 64
+    @test cell_block_info(tree.mesh, 1).num_cells < 4096
+    close(tree.mesh)
+
+    # resolution/cell_size size a voxel grid; an octree's finest cell is already
+    # determined by root_resolution and max_depth.
+    @test_throws MeshioError compute_sdf(cube; structure=:octree, resolution=[4, 4, 4])
+    @test_throws ArgumentError compute_sdf(cube; structure=:quadtree)
+
+    # The predicate crop, composed with a cell-centred distance field.
+    dom = grid([4, 4, 4]; origin=(-0.5, -0.5, -0.5), spacing=(0.5, 0.5, 0.5))
+    field = distance_to_surface(dom, cube; location=:center, watertight_check=:off)
+    kept = crop_predicate(field.mesh, "sdf:distance"; compare="<", value=0.0)
+    @test cell_block_info(kept, 1).num_cells == 8
+    close(kept)
+    @test_throws ArgumentError crop_predicate(field.mesh, "sdf:distance"; compare="~")
+    @test_throws MeshioError crop_predicate(field.mesh, "nope")
+    close(field.mesh)
+    close(dom)
     close(cube)
 end
 

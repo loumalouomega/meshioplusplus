@@ -217,6 +217,37 @@ function crop_plane(m::Mesh, point::AbstractVector{<:Real},
 end
 
 """
+    crop_predicate(mesh, array; compare="<", value=0.0, record_ids=false) -> Mesh
+
+Crop to the cells whose value in the scalar `cell_data` array `array` satisfies
+a comparison -- one of `"<"`, `"<="`, `">"`, `">="`, `"=="`, `"!="`, the same
+vocabulary [`refine`](@ref)'s `where_op` uses, evaluated by the same C++
+function. **A non-finite cell value never matches**, whatever the comparison.
+
+There is deliberately no `mode`: `crop_bbox`/`crop_plane` test points and then
+need an all/any rule, whereas a `cell_data` predicate is already one value per
+cell and has nothing to reduce.
+
+Inside/outside a surface composes rather than being its own function:
+
+```julia
+f = distance_to_surface(m, skin; location=:center).mesh
+inside = crop_predicate(f, "sdf:distance"; compare="<", value=0.0)
+```
+"""
+function crop_predicate(m::Mesh, array::AbstractString; compare="<", value::Real=0.0,
+                        record_ids::Bool=false)
+    code = get(_REFINE_COMPARES, String(compare)) do
+        throw(ArgumentError("meshio++: unknown comparison '$(compare)'"))
+    end
+    ptr = ccall(_sym(:mio_crop_predicate), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cint, Cdouble, Cint),
+                _handle(m), String(array), code, Cdouble(value),
+                record_ids ? Cint(1) : Cint(0))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
     slice(mesh, origin, normal; record_parent_ids=false) -> Mesh
 
 Planar cross-section: the actual **intersection** with the plane, one
@@ -1173,6 +1204,83 @@ function distance_to_surface(query::Mesh, surface::Mesh; sign=:pseudonormal, wei
     end
     q = quality[]
     (mesh=Mesh(_check_ptr(ptr)), num_banded=Int(banded[]),
+     quality=(boundary_edges=Int(q.boundary_edges),
+              non_manifold_edges=Int(q.non_manifold_edges),
+              inconsistent_pairs=Int(q.inconsistent_pairs),
+              degenerate_triangles=Int(q.degenerate_triangles),
+              watertight=q.watertight != 0))
+end
+
+const _SDF_STRUCTURES = Dict("voxel" => Int32(0), "octree" => Int32(1))
+
+"""
+    compute_sdf(surface; structure=:voxel, resolution=nothing, cell_size=nothing,
+                bounds=nothing, padding=0.0, padding_relative=0.1,
+                root_resolution=8, max_depth=4, band_cells=1.0, record_levels=true,
+                max_cells=20_000_000, sign=:pseudonormal, ...) -> NamedTuple
+
+Generate a grid over `surface` and fill it with signed distances -- the one call
+that turns a surface into a field.
+
+`structure` is `:voxel` (a dense lattice) or `:octree` (refined near the
+surface, and therefore **1-irregular**: it has hanging nodes; see
+[`refine`](@ref)'s `closure=:balanced`). `resolution`/`cell_size` size a voxel
+grid and are an **error** with `:octree`, whose finest cell is
+`root_resolution / 2^max_depth` and is therefore already determined.
+
+Returns `(; mesh, dims, origin, spacing, max_depth, num_banded, quality)`, where
+`dims` are the ROOT cell counts and `spacing` the FINEST cell size. The mesh
+also carries the numeric `sdf:*` `field_data` header; no file format persists
+arbitrary `field_data`, so write it as `.vti`, whose Origin/Spacing/WholeExtent
+attributes are the same information.
+"""
+function compute_sdf(surface::Mesh; structure=:voxel, resolution=nothing,
+                     cell_size=nothing, bounds=nothing, padding::Real=0.0,
+                     padding_relative::Real=0.1, root_resolution::Integer=8,
+                     max_depth::Integer=4, band_cells::Real=1.0,
+                     record_levels::Bool=true, max_cells::Integer=20_000_000,
+                     sign=:pseudonormal, weight=:angle, location=:corner, band::Real=0.0,
+                     record_closest_cell::Bool=false, record_inside::Bool=false,
+                     watertight_check=:warn, surface_region::AbstractString="",
+                     grid_cell_size::Real=0.0, max_winding_work::Real=2.0e9)
+    res = resolution === nothing ? Int64[] : Int64[Int64(v) for v in resolution]
+    (resolution === nothing || length(res) == 3) ||
+        throw(ArgumentError("resolution must have three entries"))
+    bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
+    (bounds === nothing || length(bnd) == 6) ||
+        throw(ArgumentError("bounds must have six entries"))
+
+    dims = Vector{Int64}(undef, 3)
+    origin = Vector{Cdouble}(undef, 3)
+    spacing = Vector{Cdouble}(undef, 3)
+    depth = Ref{Int64}(0)
+    banded = Ref{Int64}(0)
+    quality = Ref{_CSurfaceQuality}()
+    region_buf = Vector{UInt8}(codeunits(String(surface_region)))
+    push!(region_buf, 0x00)
+    ptr = GC.@preserve res bnd dims origin spacing region_buf begin
+        inner = _sdf_opts(; sign, weight, location, band, record_closest_cell,
+                          record_inside, watertight_check, surface_region, grid_cell_size,
+                          max_winding_work, region_buf)
+        opts = _CComputeSdfOpts(isempty(res) ? Ptr{Int64}(C_NULL) : pointer(res),
+                                isempty(bnd) ? Ptr{Cdouble}(C_NULL) : pointer(bnd),
+                                Cdouble(cell_size === nothing ? 0.0 : cell_size),
+                                Cdouble(padding), Cdouble(padding_relative),
+                                Cdouble(band_cells), Int64(max_cells),
+                                Int64(root_resolution), Int64(max_depth),
+                                _code(_SDF_STRUCTURES, structure, "structure"),
+                                record_levels ? Int32(1) : Int32(0),
+                                (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)),
+                                inner)
+        ccall(_sym(:mio_compute_sdf), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CComputeSdfOpts}, Ptr{Int64}, Ptr{Cdouble}, Ptr{Cdouble},
+               Ptr{Int64}, Ptr{Int64}, Ptr{_CSurfaceQuality}),
+              _handle(surface), Ref(opts), pointer(dims), pointer(origin),
+              pointer(spacing), depth, banded, quality)
+    end
+    q = quality[]
+    (mesh=Mesh(_check_ptr(ptr)), dims=Tuple(Int.(dims)), origin=Tuple(Float64.(origin)),
+     spacing=Tuple(Float64.(spacing)), max_depth=Int(depth[]), num_banded=Int(banded[]),
      quality=(boundary_edges=Int(q.boundary_edges),
               non_manifold_edges=Int(q.non_manifold_edges),
               inconsistent_pairs=Int(q.inconsistent_pairs),

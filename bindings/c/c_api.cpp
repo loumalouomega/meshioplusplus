@@ -1127,6 +1127,22 @@ mio_mesh* mio_crop_plane(const mio_mesh* mesh, const double* point, const double
     });
 }
 
+mio_mesh* mio_crop_predicate(const mio_mesh* mesh, const char* array, int compare, double value,
+                             int record_ids) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !array)
+            throw meshioplusplus::ReadError("meshio++: mesh/array is NULL");
+        if (compare < 0 || compare > MIO_REFINE_NE)
+            throw meshioplusplus::ReadError("meshio++: crop: unknown comparison " +
+                                            std::to_string(compare));
+        return new mio_mesh{
+            meshioplusplus::crop_predicate(mesh->mMesh, array,
+                                           static_cast<meshioplusplus::RefineCompare>(compare),
+                                           value, record_ids != 0)
+                .mMesh};
+    });
+}
+
 mio_split_result* mio_split(const mio_mesh* mesh, const char* by, const char* tag_name) {
     return guarded_ptr(static_cast<mio_split_result*>(nullptr), [&]() -> mio_split_result* {
         if (!mesh || !by)
@@ -3186,6 +3202,8 @@ static_assert(static_cast<int>(meshioplusplus::SdfWatertightCheck::Off) == MIO_S
 // that nesting across the ABI keeps the two independently extensible.
 static_assert(sizeof(mio_sdf_opts) == 104, "mio_sdf_opts grew outside its reserved tail");
 static_assert(sizeof(mio_voxel_opts) == 112, "mio_voxel_opts grew outside its reserved tail");
+static_assert(sizeof(mio_compute_sdf_opts) == 232,
+              "mio_compute_sdf_opts grew outside its reserved tail");
 static_assert(sizeof(mio_surface_quality) == 72,
               "mio_surface_quality grew outside its reserved tail");
 
@@ -3251,6 +3269,33 @@ meshioplusplus::VoxelOptions capi_voxel_options(const mio_voxel_opts& rOpts) {
     return options;
 }
 
+/// Translate the flat option struct into the core's SdfOptions.
+meshioplusplus::SdfOptions capi_compute_sdf_options(const mio_compute_sdf_opts& rOpts) {
+    meshioplusplus::SdfOptions options;
+    if (rOpts.structure < 0 || rOpts.structure > MIO_SDF_OCTREE)
+        throw meshioplusplus::ReadError("meshio++: sdf: unknown structure " +
+                                        std::to_string(rOpts.structure));
+    options.mStructure = static_cast<meshioplusplus::SdfStructure>(rOpts.structure);
+    if (rOpts.resolution != nullptr)
+        options.mResolution = std::array<std::int64_t, 3>{
+            {rOpts.resolution[0], rOpts.resolution[1], rOpts.resolution[2]}};
+    if (rOpts.cell_size > 0.0)
+        options.mCellSize = rOpts.cell_size;
+    if (rOpts.bounds != nullptr)
+        options.mBounds =
+            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
+                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
+    options.mPadding = rOpts.padding;
+    options.mPaddingRelative = rOpts.padding_relative;
+    options.mRootResolution = rOpts.root_resolution;
+    options.mMaxDepth = rOpts.max_depth;
+    options.mBandCells = rOpts.band_cells;
+    options.mRecordLevels = rOpts.record_levels != 0;
+    options.mMaxCells = rOpts.max_cells;
+    options.mDistance = capi_sdf_options(rOpts.distance);
+    return options;
+}
+
 void capi_fill_quality(const meshioplusplus::SurfaceQuality& rQuality, mio_surface_quality* pOut) {
     if (!pOut)
         return;
@@ -3280,6 +3325,49 @@ void mio_voxel_opts_init(mio_voxel_opts* opts) {
     opts->max_cells = 20000000;
     opts->sign = MIO_SDF_PSEUDONORMAL;
     opts->watertight_check = MIO_SDF_WATERTIGHT_WARN;
+}
+
+void mio_compute_sdf_opts_init(mio_compute_sdf_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_compute_sdf_opts{};
+    opts->padding_relative = 0.1;
+    opts->band_cells = 1.0;
+    opts->max_cells = 20000000;
+    opts->root_resolution = 8;
+    opts->max_depth = 4;
+    opts->structure = MIO_SDF_VOXEL;
+    opts->record_levels = 1;
+    mio_sdf_opts_init(&opts->distance);
+}
+
+mio_mesh* mio_compute_sdf(const mio_mesh* surface, const mio_compute_sdf_opts* opts,
+                          int64_t dims_out[3], double origin_out[3], double spacing_out[3],
+                          int64_t* max_depth_out, int64_t* num_banded,
+                          mio_surface_quality* quality) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!surface)
+            throw meshioplusplus::ReadError("meshio++: surface is NULL");
+        if (!opts)
+            throw meshioplusplus::ReadError(
+                "meshio++: sdf: options are NULL, but a grid sizing must be given");
+        meshioplusplus::SdfResult r =
+            meshioplusplus::compute_sdf(surface->mMesh, capi_compute_sdf_options(*opts));
+        for (int k = 0; k < 3; ++k) {
+            if (dims_out)
+                dims_out[k] = r.mDims[static_cast<std::size_t>(k)];
+            if (origin_out)
+                origin_out[k] = r.mOrigin[static_cast<std::size_t>(k)];
+            if (spacing_out)
+                spacing_out[k] = r.mSpacing[static_cast<std::size_t>(k)];
+        }
+        if (max_depth_out)
+            *max_depth_out = r.mMaxDepth;
+        if (num_banded)
+            *num_banded = r.mNumBanded;
+        capi_fill_quality(r.mQuality, quality);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
 }
 
 mio_mesh* mio_grid(const int64_t dims[3], const double origin[3], const double spacing[3],

@@ -126,6 +126,26 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(6) = 0
     end type
 
+    !> Interop mirror of C `mio_compute_sdf_opts`. Same ABI rules as above. For
+    !> `structure = 0` (voxel) exactly one of `resolution` and `cell_size` may be
+    !> given; for `structure = 1` (octree) NEITHER may be -- its finest cell is
+    !> root/2**depth and is therefore already determined.
+    type, bind(c) :: mio_compute_sdf_opts_t
+        type(c_ptr) :: resolution = c_null_ptr
+        type(c_ptr) :: bounds = c_null_ptr
+        real(c_double) :: cell_size = 0.0_c_double
+        real(c_double) :: padding = 0.0_c_double
+        real(c_double) :: padding_relative = 0.1_c_double
+        real(c_double) :: band_cells = 1.0_c_double
+        integer(c_int64_t) :: max_cells = 20000000
+        integer(c_int64_t) :: root_resolution = 8
+        integer(c_int64_t) :: max_depth = 4
+        integer(c_int32_t) :: structure = 0
+        integer(c_int32_t) :: record_levels = 1
+        integer(c_int64_t) :: reserved(6) = 0
+        type(mio_sdf_opts_t) :: distance
+    end type
+
     ! Geometric statistics (bind(c); layout must match mio_stats_report in
     ! meshioplusplus.h). Per-cell-type counts are not carried across the C ABI.
     type, bind(c) :: mio_stats_report
@@ -331,6 +351,7 @@ module meshioplusplus
         procedure :: smooth => mesh_smooth
         procedure :: crop_bbox => mesh_crop_bbox
         procedure :: crop_plane => mesh_crop_plane
+        procedure :: crop_predicate => mesh_crop_predicate
         procedure :: slice => mesh_slice
         procedure :: isosurface => mesh_isosurface
         procedure :: gradient => mesh_gradient
@@ -342,6 +363,7 @@ module meshioplusplus
         procedure :: partition_labels => mesh_partition_labels
         procedure :: stats => mesh_stats
         procedure :: voxelize => mesh_voxelize
+        procedure :: compute_sdf => mesh_compute_sdf
         procedure :: watertight_check => mesh_watertight_check
         procedure :: sample_distance => mesh_sample_distance
         procedure :: distance_to_surface => mesh_distance_to_surface
@@ -1054,6 +1076,34 @@ module meshioplusplus
             integer(c_int64_t), intent(out) :: dims(*)
             real(c_double), intent(out) :: origin(*), spacing(*)
             integer(c_int64_t), intent(out) :: occupied
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_compute_sdf_opts_init(opts) &
+                bind(c, name="mio_compute_sdf_opts_init")
+            import :: mio_compute_sdf_opts_t
+            type(mio_compute_sdf_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_compute_sdf(h, opts, dims, origin, spacing, max_depth, banded, q) &
+                bind(c, name="mio_compute_sdf") result(r)
+            import :: c_ptr, c_int64_t, c_double, mio_compute_sdf_opts_t, mio_surface_quality
+            type(c_ptr), value :: h
+            type(mio_compute_sdf_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: dims(*)
+            real(c_double), intent(out) :: origin(*), spacing(*)
+            integer(c_int64_t), intent(out) :: max_depth, banded
+            type(mio_surface_quality), intent(out) :: q
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_crop_predicate(h, array, compare, value, record_ids) &
+                bind(c, name="mio_crop_predicate") result(r)
+            import :: c_ptr, c_char, c_int, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), intent(in) :: array(*)
+            integer(c_int), value :: compare, record_ids
+            real(c_double), value :: value
             type(c_ptr) :: r
         end function
 
@@ -2952,6 +3002,180 @@ contains
         if (present(origin)) origin = real(corigin, real64)
         if (present(spacing)) spacing = real(cspacing, real64)
         if (present(num_occupied)) num_occupied = int(coccupied, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Crop to the cells whose value in a scalar cell_data array satisfies a
+    !> comparison. `compare` is one of '<', '<=', '>', '>=', '==', '!=' -- the
+    !> SAME vocabulary `refine`'s `where_op` uses, evaluated by the same C++
+    !> function, so the two cannot drift on the boundary cases. A NON-FINITE
+    !> cell value never matches, whatever the comparison.
+    !>
+    !> There is deliberately no `mode`: `crop_bbox`/`crop_plane` test points and
+    !> then need an all/any rule, whereas a cell_data predicate is already one
+    !> value per cell and has nothing to reduce.
+    !>
+    !> Inside/outside a surface composes rather than being its own procedure:
+    !> `distance_to_surface(..., location='center')` then this on 'sdf:distance'.
+    function mesh_crop_predicate(self, array, compare, value, record_ids, stat, errmsg) &
+            result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        character(*), intent(in), optional :: compare
+        real(real64), intent(in), optional :: value
+        logical, intent(in), optional :: record_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: ccmp, crec
+        real(c_double) :: cval
+        ccmp = 0
+        if (present(compare)) then
+            ccmp = refine_compare_code(compare)
+            if (ccmp < 0) then
+                call handle_failure('crop_predicate', 'unknown comparison '//trim(compare), &
+                                    stat, errmsg)
+                return
+            end if
+        end if
+        cval = 0.0_c_double
+        if (present(value)) cval = real(value, c_double)
+        crec = 0
+        if (present(record_ids)) then
+            if (record_ids) crec = 1
+        end if
+        out%handle = c_mio_crop_predicate(self%handle, c_str(array), ccmp, cval, crec)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('crop_predicate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Generate a grid over this surface and fill it with signed distances.
+    !>
+    !> `structure` is 'voxel' (a dense lattice, the default) or 'octree' (refined
+    !> near the surface, and therefore 1-irregular -- it has hanging nodes; see
+    !> `refine`'s 'balanced' closure). `resolution`/`cell_size` size a voxel grid
+    !> and are an ERROR with 'octree', whose finest cell is
+    !> root_resolution/2**max_depth and is therefore already determined.
+    !>
+    !> `spacing` reports the FINEST cell size, `dims` the ROOT cell counts. The
+    !> generated mesh also carries the numeric `sdf:*` field_data header; no file
+    !> format persists arbitrary field_data, so write it as `.vti`, whose
+    !> Origin/Spacing/WholeExtent attributes are the same information.
+    function mesh_compute_sdf(self, structure, resolution, cell_size, bounds, padding, &
+                              padding_relative, root_resolution, max_depth, band_cells, &
+                              record_levels, max_cells, sign, weight, location, band, &
+                              watertight_check, dims, origin, spacing, depth, num_banded, &
+                              quality, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: structure, sign, weight, location
+        character(*), intent(in), optional :: watertight_check
+        integer, intent(in), optional :: resolution(3)
+        real(real64), intent(in), optional :: cell_size, bounds(6)
+        real(real64), intent(in), optional :: padding, padding_relative, band_cells, band
+        integer(int64), intent(in), optional :: root_resolution, max_depth, max_cells
+        logical, intent(in), optional :: record_levels
+        integer(int64), intent(out), optional :: dims(3), depth, num_banded
+        real(real64), intent(out), optional :: origin(3), spacing(3)
+        type(mio_surface_quality), intent(out), optional :: quality
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_compute_sdf_opts_t) :: opts
+        ! The buffers the option pointers reference must outlive the call, so
+        ! they are locals here rather than temporaries.
+        integer(c_int64_t), target :: res_buf(3)
+        real(c_double), target :: bounds_buf(6)
+        integer(c_int64_t) :: cdims(3), cdepth, cbanded
+        real(c_double) :: corigin(3), cspacing(3)
+        type(mio_surface_quality) :: q
+        integer(c_int32_t) :: code
+
+        call c_mio_compute_sdf_opts_init(opts)
+        if (present(structure)) then
+            select case (trim(structure))
+            case ('', 'voxel'); opts%structure = 0
+            case ('octree'); opts%structure = 1
+            case default
+                call handle_failure('compute_sdf', 'unknown structure '//trim(structure), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(resolution)) then
+            res_buf = int(resolution, c_int64_t)
+            opts%resolution = c_loc(res_buf(1))
+        end if
+        if (present(cell_size)) opts%cell_size = real(cell_size, c_double)
+        if (present(bounds)) then
+            bounds_buf = real(bounds, c_double)
+            opts%bounds = c_loc(bounds_buf(1))
+        end if
+        if (present(padding)) opts%padding = real(padding, c_double)
+        if (present(padding_relative)) opts%padding_relative = real(padding_relative, c_double)
+        if (present(root_resolution)) opts%root_resolution = int(root_resolution, c_int64_t)
+        if (present(max_depth)) opts%max_depth = int(max_depth, c_int64_t)
+        if (present(band_cells)) opts%band_cells = real(band_cells, c_double)
+        if (present(record_levels)) then
+            opts%record_levels = 0
+            if (record_levels) opts%record_levels = 1
+        end if
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(band)) opts%distance%band = real(band, c_double)
+        if (present(sign)) then
+            code = sdf_sign_code(sign)
+            if (code < 0) then
+                call handle_failure('compute_sdf', 'unknown sign '//trim(sign), stat, errmsg)
+                return
+            end if
+            opts%distance%sign = code
+        end if
+        if (present(weight)) then
+            select case (trim(weight))
+            case ('', 'angle'); opts%distance%weight = 0
+            case ('area'); opts%distance%weight = 1
+            case default
+                call handle_failure('compute_sdf', 'unknown weight '//trim(weight), stat, errmsg)
+                return
+            end select
+        end if
+        if (present(location)) then
+            select case (trim(location))
+            case ('', 'corner', 'point'); opts%distance%location = 0
+            case ('center', 'centre', 'cell'); opts%distance%location = 1
+            case default
+                call handle_failure('compute_sdf', 'unknown location '//trim(location), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(watertight_check)) then
+            select case (trim(watertight_check))
+            case ('off'); opts%distance%watertight_check = 0
+            case ('', 'warn'); opts%distance%watertight_check = 1
+            case ('error'); opts%distance%watertight_check = 2
+            case default
+                call handle_failure('compute_sdf', &
+                                    'unknown watertight check '//trim(watertight_check), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+
+        out%handle = c_mio_compute_sdf(self%handle, opts, cdims, corigin, cspacing, &
+                                       cdepth, cbanded, q)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('compute_sdf', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(dims)) dims = int(cdims, int64)
+        if (present(origin)) origin = real(corigin, real64)
+        if (present(spacing)) spacing = real(cspacing, real64)
+        if (present(depth)) depth = int(cdepth, int64)
+        if (present(num_banded)) num_banded = int(cbanded, int64)
+        if (present(quality)) quality = q
         call clear_status(stat, errmsg)
     end function
 

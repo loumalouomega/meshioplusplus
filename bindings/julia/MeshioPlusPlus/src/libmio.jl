@@ -263,6 +263,29 @@ struct _CVoxelOpts
     reserved::NTuple{6,Int64}
 end
 
+"""
+Mirror of C `mio_compute_sdf_opts`.
+
+Unlike `_CVoxelOpts` this one DOES embed a `_CSdfOpts` by value, because the C
+struct does -- growing the inner one is a Tier A break of the outer, and the
+mirror has to reproduce that rather than paper over it.
+"""
+struct _CComputeSdfOpts
+    resolution::Ptr{Int64}
+    bounds::Ptr{Cdouble}
+    cell_size::Cdouble
+    padding::Cdouble
+    padding_relative::Cdouble
+    band_cells::Cdouble
+    max_cells::Int64
+    root_resolution::Int64
+    max_depth::Int64
+    structure::Int32
+    record_levels::Int32
+    reserved::NTuple{6,Int64}
+    distance::_CSdfOpts
+end
+
 # Layout guards: a mismatch here would corrupt every call taking these structs,
 # silently. Checked once at load rather than trusted.
 function _check_abi_layout()
@@ -284,6 +307,9 @@ function _check_abi_layout()
         error("meshio++: mio_sdf_opts layout mismatch ($(sizeof(_CSdfOpts)) bytes)")
     sizeof(_CVoxelOpts) == 112 ||
         error("meshio++: mio_voxel_opts layout mismatch ($(sizeof(_CVoxelOpts)) bytes)")
+    sizeof(_CComputeSdfOpts) == 232 ||
+        error("meshio++: mio_compute_sdf_opts layout mismatch " *
+              "($(sizeof(_CComputeSdfOpts)) bytes)")
     nothing
 end
 
