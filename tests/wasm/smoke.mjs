@@ -1016,6 +1016,42 @@ step('distanceToSurface attaches sdf:distance as ordinary point data', () => {
     assert.ok('sdf:inside' in out.mesh.point_data);
 });
 
+step('computeSdf generates the grid and the field in one call', () => {
+    const g = m.computeSdf(cubeSurface, 'voxel', [4, 4, 4], 0, null, 0, 0.1, 8, 4, 1,
+        true, 20000000, 'pseudonormal', 'corner', 0, 'off');
+    assert.deepEqual(Array.from(g.dims), [4, 4, 4]);
+    assert.equal(g.maxDepth, 0);
+    assert.ok('sdf:distance' in g.mesh.point_data);
+    assert.equal(g.mesh.cells[0].data.length, 64 * 8);
+    // The header rides across as ordinary numeric field_data, so every binding
+    // carries it -- but no FORMAT does, which is why .vti exists.
+    assert.ok('sdf:origin' in g.mesh.field_data);
+    assert.ok('sdf:spacing' in g.mesh.field_data);
+
+    // The octree refines only near the surface.
+    const tree = m.computeSdf(cubeSurface, 'octree', null, 0, null, 0, 0.1, 4, 2, 1,
+        true, 20000000, 'pseudonormal', 'corner', 0, 'off');
+    assert.equal(tree.maxDepth, 2);
+    const n = tree.mesh.cells[0].data.length / 8;
+    assert.ok(n > 64 && n < 4096, `octree produced ${n} cells`);
+
+    // resolution/cellSize size a voxel grid; an octree's finest cell is already
+    // determined, so passing one is an error rather than a preference.
+    assert.throws(() => m.computeSdf(cubeSurface, 'octree', [4, 4, 4]));
+    assert.throws(() => m.computeSdf(cubeSurface, 'quadtree', [4, 4, 4]));
+});
+
+step('cropPredicate keeps the cells a data comparison selects', () => {
+    const dom = m.grid([4, 4, 4], [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
+    const field = m.distanceToSurface(dom, cubeSurface, 'pseudonormal', 'center', 0, false,
+        'off');
+    const kept = m.cropPredicate(field.mesh, 'sdf:distance', '<', 0);
+    assert.equal(kept.cells[0].data.length, 8 * 8);
+    // There is no `mode`: a cell_data value is already one per cell.
+    assert.throws(() => m.cropPredicate(field.mesh, 'sdf:distance', '~', 0));
+    assert.throws(() => m.cropPredicate(field.mesh, 'nope', '<', 0));
+});
+
 step('Voxelize is a chainable pipeline step', () => {
     // It is the one step that REPLACES geometry rather than transforming it:
     // a triangle skin goes in and a hexahedron lattice comes out.
@@ -1075,6 +1111,7 @@ step('every binding is reachable through the wrapper', () => {
         'gradient',
         'cropBbox',
         'cropPlane',
+        'cropPredicate',
         'split',
         'convertCells',
         'refine',
@@ -1088,6 +1125,7 @@ step('every binding is reachable through the wrapper', () => {
         'surfaceWatertightCheck',
         'sampleDistance',
         'distanceToSurface',
+        'computeSdf',
         'stats',
         'meshBackend',
         'hasCgnslib',
@@ -1147,6 +1185,25 @@ step('availableFormats reports what this build can read and write', () => {
     // before this entry, WASM could select only the lossy 4.1 writer and had
     // no way to reach the one that round-trips region MEMBERSHIP.
     assert.ok(writers.includes('gmsh22') && !readers.includes('gmsh22'));
+    // .vti (VTK XML ImageData), v9.25.0: the one format whose Origin/Spacing/
+    // WholeExtent attributes ARE a generated grid's header, so it is the only
+    // one that round-trips it. Both directions.
+    assert.ok(readers.includes('vti') && writers.includes('vti'));
+});
+
+step('.vti round-trips a lattice through MEMFS', () => {
+    // The point of the format, over the wrapper rather than through C++: a grid
+    // written and read back is the same grid, geometry included.
+    const g = m.grid([3, 3, 3], [-0.5, -0.5, -0.5], [0.25, 0.25, 0.25]);
+    m.writeMesh('/lattice.vti', g);
+    const back = m.readMesh('/lattice.vti');
+    assert.equal(back.cells[0].type, 'hexahedron');
+    assert.equal(back.cells[0].data.length, 27 * 8);
+    assert.equal(back.points.length, g.points.length);
+    for (let i = 0; i < g.points.length; ++i)
+        assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
+    // A mesh that is not a lattice has no extent to write, and says so.
+    assert.throws(() => m.writeMesh('/no.vti', cubeSurface));
 });
 
 step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {
