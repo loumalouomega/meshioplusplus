@@ -1067,6 +1067,32 @@ def _register_gated(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def export_dataset(
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        location: str = "point",
+        dataset_format: str = "parquet",
+        mesh_id: str = "stem",
+    ) -> dict:
+        """Export a SET of meshes as one dataset keyed by mesh_id — a
+        hive-partitioned Parquet directory (dataset_format: parquet, needs the
+        [arrow] extra) or chunked zarr/hdf5 groups ([zarr] / h5py). Give
+        exactly one of input_pattern (a glob) or input_paths; mesh_id: stem |
+        index. Returns the dataset manifest."""
+        return _guard(
+            _tools.tool_export_dataset,
+            input_pattern=input_pattern,
+            input_paths=input_paths,
+            output_path=output_path,
+            input_format=input_format,
+            location=location,
+            dataset_format=dataset_format,
+            mesh_id=mesh_id,
+        )
+
+    @server.tool()
     def screenshot(
         input_path: str,
         output_path: str,

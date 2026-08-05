@@ -58,7 +58,17 @@ from ._data_manage import data_drop, data_keep, data_manage, data_rename
 from ._decimate import decimate
 from ._diff import diff, meshes_equal
 from ._exceptions import ReadError, WriteError
-from ._gpu import from_cupy, has_cuda_device, has_cupy, to_cupy, to_dlpack
+from ._gpu import (
+    from_cupy,
+    has_cuda_device,
+    has_cupy,
+    has_jax,
+    has_torch,
+    to_cupy,
+    to_dlpack,
+    to_jax,
+    to_torch,
+)
 from ._gradient import gradient
 from ._grid import grid
 from ._helpers import (
@@ -93,6 +103,7 @@ from ._interpolate import interpolate
 from ._isosurface import isosurface
 from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
+from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
 from ._partition import partition, partition_labels
 from ._pipeline import run_pipeline
 from ._quality import attach_quality, compute_quality
@@ -243,11 +254,20 @@ __all__ = [
     "has_polars",
     "has_open3d",
     "has_dolfinx",
+    "edge_index",
+    "feature_matrix",
+    "FeatureMatrix",
+    "write_dataset",
+    "has_zarr",
     "to_dlpack",
     "to_cupy",
     "from_cupy",
     "has_cupy",
     "has_cuda_device",
+    "to_torch",
+    "to_jax",
+    "has_torch",
+    "has_jax",
     "Mesh",
     "CellBlock",
     "Region",

@@ -488,6 +488,82 @@ def export_cmd(args):
     return 0
 
 
+# --- data export-dataset ----------------------------------------------------
+
+
+def add_export_dataset_args(parser):
+    parser.add_argument(
+        "infiles",
+        type=str,
+        nargs="+",
+        help="mesh files: several paths, or ONE quoted glob pattern "
+        "(natural-numeric ordering), or one multi-step file",
+    )
+    parser.add_argument(
+        "outpath",
+        type=str,
+        help="dataset to write (a directory for parquet, a store path for "
+        "zarr, a file for hdf5)",
+    )
+    parser.add_argument(
+        "--input-format",
+        "-i",
+        type=str,
+        choices=sorted(list(reader_map.keys())),
+        help="input file format",
+        default=None,
+    )
+    parser.add_argument(
+        "--location",
+        type=str,
+        choices=("point", "cell"),
+        default="point",
+        help="which data location to export (default: point)",
+    )
+    parser.add_argument(
+        "--format",
+        type=str,
+        choices=("parquet", "zarr", "hdf5"),
+        default="parquet",
+        help="on-disk dataset layout (default: parquet, hive-partitioned)",
+    )
+    parser.add_argument(
+        "--mesh-id",
+        type=str,
+        choices=("stem", "index"),
+        default="stem",
+        help="how each mesh's id is derived (default: the file stem)",
+    )
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="suppress the summary"
+    )
+
+
+def export_dataset_cmd(args):
+    # Imported here, not at module scope: the dataset backends are optional
+    # extras and the other verbs must keep working without them.
+    from .._ml import write_dataset
+
+    source = args.infiles if len(args.infiles) > 1 else args.infiles[0]
+    manifest = write_dataset(
+        source,
+        args.outpath,
+        location=args.location,
+        format=args.format,
+        mesh_id=args.mesh_id,
+        file_format=args.input_format,
+    )
+    if not args.quiet:
+        entries = manifest["entries"]
+        rows = sum(e["num_rows"] for e in entries)
+        print(
+            f"wrote {len(entries)} mesh(es), {rows} row(s), "
+            f"{len(manifest['columns'])} column(s) to {args.outpath} "
+            f"({args.format})"
+        )
+    return 0
+
+
 # --- data gradient ---------------------------------------------------------
 
 
@@ -606,6 +682,14 @@ _VERBS = (
         "geometry is not round-tripped; needs `pip install meshioplusplus[arrow]`)",
         add_export_args,
         export_cmd,
+    ),
+    (
+        "export-dataset",
+        "Export a SET of meshes as one dataset keyed by mesh_id "
+        "(hive-partitioned Parquet, or chunked zarr/hdf5 groups; "
+        "needs `[arrow]`, `[zarr]` or h5py respectively)",
+        add_export_dataset_args,
+        export_dataset_cmd,
     ),
 )
 

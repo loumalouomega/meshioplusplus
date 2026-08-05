@@ -1359,6 +1359,46 @@ def tool_data_export(input_path, output_path, input_format=None, location="point
     )
 
 
+def tool_export_dataset(
+    input_pattern=None,
+    input_paths=None,
+    output_path=None,
+    input_format=None,
+    location="point",
+    dataset_format="parquet",
+    mesh_id="stem",
+):
+    """Export a set of meshes as one dataset keyed by mesh_id.
+
+    Hive-partitioned Parquet (needs the [arrow] extra), or chunked zarr/hdf5
+    groups (the [zarr] extra / h5py). Same input shape as the `sequence`
+    tool: exactly one of input_pattern (a sandboxed glob) or input_paths.
+    """
+    from .._ml import write_dataset
+
+    if (input_pattern is None) == (input_paths is None):
+        raise ValueError(
+            "meshio++: mcp: give exactly one of input_pattern or input_paths"
+        )
+    if not output_path:
+        raise ValueError("meshio++: mcp: output_path is required")
+    if input_pattern is not None:
+        resolved_in = _resolve_pattern(input_pattern)
+    else:
+        resolved_in = [_resolve(p, must_exist=True) for p in input_paths]
+    resolved_out = _resolve(output_path, for_write=True)
+
+    manifest = write_dataset(
+        resolved_in,
+        resolved_out,
+        location=location,
+        format=dataset_format,
+        mesh_id=mesh_id,
+        file_format=input_format,
+    )
+    return _json_safe({"output_path": resolved_out, **manifest})
+
+
 def tool_screenshot(
     input_path,
     output_path,
@@ -1510,6 +1550,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "data_export",
             {"fn": tool_data_export, "wraps": ("write_parquet",), "gated": "arrow"},
+        ),
+        (
+            "export_dataset",
+            {"fn": tool_export_dataset, "wraps": ("write_dataset",), "gated": "arrow"},
         ),
         (
             "screenshot",

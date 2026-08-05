@@ -597,3 +597,168 @@ def _to_device(host, cp, *, pinned, stream):
         derived=derived,
         refs=tuple(staging_refs),
     )
+
+
+# --------------------------------------------------------------------------- #
+# PyTorch / JAX tensor handoff                                                #
+# --------------------------------------------------------------------------- #
+def has_torch() -> bool:
+    """Whether PyTorch is importable. There is deliberately no pip extra."""
+    return _importable("torch")
+
+
+def has_jax() -> bool:
+    """Whether JAX is importable. There is deliberately no pip extra."""
+    return _importable("jax")
+
+
+def _require_framework(op, module, hint):
+    """Import a heavyweight ML framework or raise naming the install command.
+
+    The CuPy precedent, not ``_interop._require``: there is deliberately no
+    ``meshioplusplus[torch]``/``[jax]`` extra — torch's default Linux wheel
+    bundles CUDA at ~900 MB and JAX's accelerator story lives in its own
+    extras (``jax[cuda12]``, …), so an extra pinning either would surprise far
+    more people than it would help (the Open3D ~400 MB-wheel reasoning).
+    """
+    if _importable(module):
+        return __import__(module)
+    raise ImportError(
+        f"meshio++: {op}: {module} is not installed. There is deliberately no "
+        f"pip extra for it; install it directly with `{hint}` (pick the wheel "
+        "matching your accelerator). See doc/ml.md."
+    )
+
+
+def _adopted_payload(host, adopt, extra_derived):
+    """A ``DevicePayload`` with every array passed through ``adopt``."""
+    points = adopt(host.points)
+    cells = tuple(GpuCellBlock(b.type, adopt(b.data)) for b in host.cells)
+    payload = DevicePayload(
+        points=points,
+        cells=cells,
+        block_bases=adopt(host.block_bases),
+        point_data={name: adopt(a) for name, a in host.point_data.items()},
+        cell_data={
+            name: tuple(adopt(a) for a in blocks)
+            for name, blocks in host.cell_data.items()
+        },
+        field_data=host.field_data,
+        regions=tuple(
+            GpuRegion(r.name, r.kind, r.dim, r.tag, adopt(r.entries))
+            for r in host.regions
+        ),
+        device=_dlpack_device(points) or host.device,
+        dropped=host.dropped,
+        shared=host.shared,
+        notes=host.notes,
+        derived=host.derived + extra_derived,
+        refs=(),
+    )
+    return payload
+
+
+def to_torch(mesh, *, device=None, float32=False, int32=False):
+    """The mesh's arrays as PyTorch tensors, adopted over DLPack.
+
+    Returns a :class:`DevicePayload` whose arrays are ``torch.Tensor``s. With
+    ``device=None`` (default) every tensor **adopts the host numpy buffer
+    zero-copy** via ``torch.from_dlpack`` — nothing is transferred, and the
+    tensors share memory with the mesh. Passing ``device=`` (``"cuda"``, a
+    ``torch.device``, …) then moves each tensor with ``.to(device)`` — per the
+    GPU honesty rule that is **one bus transfer per array**, recorded in the
+    payload's ``derived`` list exactly like :func:`to_cupy`'s transfer.
+
+    ``float32=True`` / ``int32=True`` are the same explicit opt-in downcasts
+    :func:`to_dlpack` takes (applied on the host side, before adoption).
+
+    Raises
+    ------
+    ImportError
+        when torch is not installed (naming ``pip install torch`` — there is
+        deliberately no pip extra, see doc/ml.md).
+    """
+    torch = _require_framework("to_torch", "torch", "pip install torch")
+
+    host = _to_device_payload(
+        mesh, float32=float32, int32=int32, zero_copy_only=False, op="to_torch"
+    )
+
+    if device is None:
+        extra = ("tensors adopt the host buffers via DLPack — zero-copy",)
+
+        def adopt(a):
+            return torch.from_dlpack(a)
+
+    else:
+        extra = (
+            f"tensors were moved to {device!r} with .to() (the one bus "
+            "transfer this call exists to perform)",
+        )
+
+        def adopt(a):
+            return torch.from_dlpack(a).to(device)
+
+    payload = _adopted_payload(host, adopt, extra)
+    _emit("to_torch", payload.notes)
+    return payload
+
+
+def to_jax(mesh, *, float32=False, int32=False):
+    """The mesh's arrays as JAX arrays, adopted over DLPack.
+
+    Returns a :class:`DevicePayload` whose arrays are ``jax.Array``s, placed
+    on JAX's **default device** — on a GPU machine that placement is itself a
+    transfer, which is JAX's committed behaviour rather than this function's
+    choice. There is no ``device=`` parameter: device placement belongs to
+    JAX (``jax.default_device``, ``jax.device_put``).
+
+    One JAX-specific honesty note: under JAX's default configuration
+    (``jax_enable_x64=False``) 64-bit arrays cannot exist, so meshio++'s
+    canonical float64/int64 arrays are adopted via a fallback that lets JAX
+    apply its own 32-bit demotion — a copy, counted and warned once. Pass
+    ``float32=True``/``int32=True`` to make the narrowing explicit on the
+    meshio++ side, or enable x64 in JAX for lossless adoption.
+
+    Raises
+    ------
+    ImportError
+        when jax is not installed (naming ``pip install jax`` — there is
+        deliberately no pip extra, see doc/ml.md).
+    """
+    _require_framework("to_jax", "jax", "pip install jax")
+    from jax import dlpack as jax_dlpack
+    from jax import numpy as jnp
+
+    host = _to_device_payload(
+        mesh, float32=float32, int32=int32, zero_copy_only=False, op="to_jax"
+    )
+
+    fallbacks = []
+
+    def adopt(a):
+        try:
+            return jax_dlpack.from_dlpack(a)
+        except Exception:
+            fallbacks.append(1)
+            return jnp.asarray(a)
+
+    payload = _adopted_payload(
+        host,
+        adopt,
+        ("arrays were placed on JAX's default device (JAX's own placement)",),
+    )
+    if fallbacks:
+        payload = DevicePayload(
+            **{
+                **{f: getattr(payload, f) for f in DevicePayload.__dataclass_fields__},
+                "notes": payload.notes
+                + (
+                    f"{len(fallbacks)} array(s) could not be adopted over "
+                    "DLPack and were converted by jnp.asarray (a copy; under "
+                    "jax_enable_x64=False JAX demotes 64-bit dtypes)",
+                ),
+            }
+        )
+    _emit("to_jax", payload.notes)
+    return payload
