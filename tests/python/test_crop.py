@@ -1,4 +1,4 @@
-"""Tests for the crop operation (bounding box / half-space)."""
+"""Tests for the crop operation (bounding box / half-space / data predicate)."""
 
 import numpy as np
 import pytest
@@ -92,3 +92,113 @@ def test_requires_exactly_one_region():
         crop(mesh)
     with pytest.raises(ValueError):
         crop(mesh, bbox=[0, 0, 0, 1, 1, 1], plane=([0, 0, 0], [1, 0, 0]))
+
+
+# --------------------------------------------------------------------------- #
+# the predicate crop                                                           #
+# --------------------------------------------------------------------------- #
+def _tagged_quad_grid(with_nan=False):
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [2, 0, 0],
+            [3, 0, 0],
+            [0, 1, 0],
+            [1, 1, 0],
+            [2, 1, 0],
+            [3, 1, 0],
+        ],
+        float,
+    )
+    m = meshioplusplus.Mesh(
+        pts, [("quad", np.array([[0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6]]))]
+    )
+    m.cell_data["t"] = [np.array([0.0, np.nan if with_nan else 1.0, 2.0])]
+    return m
+
+
+def test_predicate_keeps_the_matching_cells():
+    out = crop(_tagged_quad_grid(), where=("t", "<", 1.5))
+    assert len(out.cells[0].data) == 2
+    assert len(out.points) == 6  # the dropped cell's own points are pruned
+    assert np.array_equal(out.cell_data["t"][0], [0.0, 1.0])
+
+
+@pytest.mark.parametrize(
+    "compare, n", [("<", 1), ("<=", 2), (">", 1), (">=", 2), ("==", 1), ("!=", 2)]
+)
+def test_predicate_honours_every_comparison(compare, n):
+    assert len(crop(_tagged_quad_grid(), where=("t", compare, 1.0)).cells[0].data) == n
+
+
+@pytest.mark.parametrize("compare", ["<", "<=", ">", ">=", "==", "!="])
+def test_a_non_finite_cell_value_never_matches(compare):
+    """The rule ``refine`` states and this inherits by sharing the evaluator.
+
+    It has to hold for ``!=`` too, which is the case a naive implementation gets
+    wrong: ``NaN != 1.0`` is true in IEEE.
+    """
+    out = crop(_tagged_quad_grid(with_nan=True), where=("t", compare, 1.0))
+    assert np.all(np.isfinite(out.cell_data["t"][0]))
+
+
+def test_predicate_rejects_what_is_not_a_scalar_cell_array():
+    m = _tagged_quad_grid()
+    with pytest.raises(ValueError, match="no cell_data array"):
+        crop(m, where=("nope", "<", 1.0))
+    # point_data is refused BY NAME rather than averaged onto the cells.
+    m.point_data["p"] = np.zeros(len(m.points))
+    with pytest.raises(ValueError, match="point_data"):
+        crop(m, where=("p", "<", 1.0))
+    m.cell_data["v"] = [np.zeros((3, 3))]
+    with pytest.raises(ValueError, match="scalar"):
+        crop(m, where=("v", "<", 1.0))
+
+
+def test_predicate_mode_is_refused_rather_than_ignored():
+    with pytest.raises(ValueError, match="mode="):
+        crop(_tagged_quad_grid(), where=("t", "<", 1.0), mode="any")
+    with pytest.raises(ValueError, match="unknown comparison"):
+        crop(_tagged_quad_grid(), where=("t", "~", 1.0))
+    with pytest.raises(ValueError, match="exactly one"):
+        crop(_tagged_quad_grid(), bbox=[0, 0, 0, 1, 1, 1], where=("t", "<", 1.0))
+
+
+def test_predicate_cpp_matches_python():
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus._crop import _crop_predicate_py
+
+    m = _tagged_quad_grid(with_nan=True)
+    for compare in ("<", "<=", ">", ">=", "==", "!="):
+        got = core.crop_predicate(m, "t", compare, 1.0, True)
+        want, _, _ = _crop_predicate_py(m, "t", compare, 1.0, True)
+        a, b = np.asarray(got["mesh"].points), np.asarray(want.points)
+        assert a.dtype == b.dtype and a.tobytes() == b.tobytes()
+        ca = np.asarray(got["mesh"].cells[0].data)
+        cb = np.asarray(want.cells[0].data)
+        assert ca.dtype == cb.dtype and ca.tobytes() == cb.tobytes()
+        assert np.array_equal(
+            got["mesh"].cell_data["crop:original_cell_id"][0],
+            want.cell_data["crop:original_cell_id"][0],
+        )
+
+
+def test_inside_outside_composes_from_a_distance_field():
+    """The composition the general predicate exists to serve.
+
+    A dedicated crop-by-surface would have served this one case; this serves it
+    and every other field a mesh carries.
+    """
+    box = meshioplusplus.extract_surface(
+        meshioplusplus.grid([2, 2, 2], (0.25, 0.25, 0.25), (0.25, 0.25, 0.25))
+    )
+    domain = meshioplusplus.grid([6, 6, 6], (0, 0, 0), (0.2, 0.2, 0.2))
+    field = meshioplusplus.distance_to_surface(domain, box, location="center")
+    inside = crop(field, where=("sdf:distance", "<", 0.0))
+    outside = crop(field, where=("sdf:distance", ">=", 0.0))
+    n_in = len(inside.cells[0].data)
+    n_out = len(outside.cells[0].data)
+    assert n_in > 0 and n_out > 0
+    # The two halves partition the domain: every cell is on exactly one side.
+    assert n_in + n_out == len(domain.cells[0].data)

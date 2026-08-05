@@ -828,6 +828,9 @@ program test_fortran_api
     ! ---- ragged (polygon / polyhedron) connectivity ---------------------
     call check_ragged()
 
+    ! ---- regular grids and signed distance -------------------------------
+    call check_grids_and_distance()
+
     if (fails /= 0) then
         write (error_unit, '(a,i0,a)') 'test_fortran_api: ', fails, ' check(s) FAILED'
         error stop 1
@@ -908,6 +911,134 @@ contains
         call check(ierr2 /= 0, 'get_polygon_block rejects a 2-level block')
 
         call pm%free()
+    end subroutine
+
+    !> grid / voxelize / watertight / sample_distance / distance_to_surface.
+    !> The cube's exact SDF is known in closed form, so the distances are
+    !> asserted against it rather than against another run of the same code.
+    subroutine check_grids_and_distance()
+        type(mio_mesh) :: g, cube, vox, field, sdf, kept
+        type(mio_surface_quality) :: q
+        real(real64) :: pts(3, 8), query(3, 3), d(3)
+        real(real64) :: origin(3), spacing(3)
+        integer(int64) :: tri(3, 12), dims(3), occupied, depth
+        integer :: ierr
+
+        ! A lattice from nothing: 2 x 2 x 2 cells means 27 points.
+        g = mio_grid([2, 2, 2], stat=ierr)
+        call check(ierr == 0, 'grid built')
+        call check(g%num_points() == 27_int64, 'grid has 27 points')
+        call check(g%num_cell_blocks() == 1_int64, 'grid has one block')
+        call g%free()
+
+        ! An empty lattice is a legal request, not an error.
+        g = mio_grid([0, 0, 0], stat=ierr)
+        call check(ierr == 0, 'an empty grid is not an error')
+        call check(g%num_points() == 0_int64, 'an empty grid has no points')
+        call g%free()
+
+        ! The unit cube as a closed, outward-wound triangle surface.
+        pts = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 1d0, 0d0, &
+                       0d0, 0d0, 1d0, 1d0, 0d0, 1d0, 1d0, 1d0, 1d0, 0d0, 1d0, 1d0], [3, 8])
+        tri = reshape([1_int64, 3_int64, 2_int64, 1_int64, 4_int64, 3_int64, &
+                       5_int64, 6_int64, 7_int64, 5_int64, 7_int64, 8_int64, &
+                       1_int64, 2_int64, 6_int64, 1_int64, 6_int64, 5_int64, &
+                       2_int64, 3_int64, 7_int64, 2_int64, 7_int64, 6_int64, &
+                       3_int64, 4_int64, 8_int64, 3_int64, 8_int64, 7_int64, &
+                       4_int64, 1_int64, 5_int64, 4_int64, 5_int64, 8_int64], [3, 12])
+        call cube%create()
+        call cube%set_points(pts, stat=ierr)
+        call check(ierr == 0, 'cube points set')
+        call cube%add_cell_block('triangle', tri, stat=ierr)
+        call check(ierr == 0, 'cube triangles set')
+
+        q = cube%watertight_check(stat=ierr)
+        call check(ierr == 0, 'watertight check ran')
+        call check(q%watertight /= 0, 'the cube is watertight')
+        call check(q%boundary_edges == 0_int64, 'the cube has no boundary edges')
+
+        vox = cube%voxelize(resolution=[4, 4, 4], dims=dims, origin=origin, &
+                            spacing=spacing, num_occupied=occupied, stat=ierr)
+        call check(ierr == 0, 'voxelize ran')
+        call check(occupied == 64_int64, 'voxelize all kept 64 cells')
+        call check(dims(1) == 4_int64, 'voxelize reported the cell counts')
+        call check(abs(spacing(1) - 0.25d0) < 1d-12, 'voxelize reported the cell size')
+        call check(abs(origin(1)) < 1d-12, 'voxelize reported the origin')
+        call vox%free()
+
+        vox = cube%voxelize(resolution=[5, 5, 5], &
+                            bounds=[-0.5d0, -0.5d0, -0.5d0, 1.5d0, 1.5d0, 1.5d0], &
+                            fill='inside', watertight_check='off', &
+                            num_occupied=occupied, stat=ierr)
+        call check(ierr == 0, 'voxelize inside ran')
+        call check(occupied == 27_int64, 'voxelize inside kept the 27 interior cells')
+        call vox%free()
+
+        ! An unknown fill fails by name rather than silently defaulting.
+        vox = cube%voxelize(resolution=[2, 2, 2], fill='solid', stat=ierr)
+        call check(ierr /= 0, 'an unknown fill is refused')
+
+        ! The centre is 0.5 inside; the other two are 1.0 outside.
+        query = reshape([0.5d0, 0.5d0, 0.5d0, 2d0, 0.5d0, 0.5d0, -1d0, 0.5d0, 0.5d0], [3, 3])
+        d = cube%sample_distance(query, watertight_check='off', stat=ierr)
+        call check(ierr == 0, 'sample_distance ran')
+        call check(abs(d(1) + 0.5d0) < 1d-12, 'the cube centre is 0.5 inside')
+        call check(abs(d(2) - 1d0) < 1d-12, 'a point 1 unit out reads +1')
+        call check(abs(d(3) - 1d0) < 1d-12, 'the other side reads +1 too')
+
+        g = mio_grid([2, 2, 2], origin=[-0.5d0, -0.5d0, -0.5d0], &
+                     spacing=[1d0, 1d0, 1d0], stat=ierr)
+        call check(ierr == 0, 'query grid built')
+        field = g%distance_to_surface(cube, watertight_check='off', stat=ierr)
+        call check(ierr == 0, 'distance_to_surface ran')
+        call check(field%num_point_data() == 1_int64, 'sdf:distance was attached')
+        call field%free()
+        call g%free()
+
+        ! compute_sdf: the grid and the field in one call.
+        sdf = cube%compute_sdf(resolution=[4, 4, 4], watertight_check='off', &
+                               dims=dims, origin=origin, spacing=spacing, depth=depth, &
+                               stat=ierr)
+        call check(ierr == 0, 'compute_sdf voxel ran')
+        call check(dims(1) == 4_int64, 'compute_sdf reported the root cell counts')
+        call check(depth == 0_int64, 'a voxel grid has no octree depth')
+        call check(sdf%num_point_data() == 1_int64, 'sdf:distance was attached')
+        call check(sdf%cell_block_num_cells(1) == 64_int64, 'compute_sdf built 4^3 cells')
+        call sdf%free()
+
+        ! The octree refines only near the surface: more than the root, far less
+        ! than the uniform grid of the same finest resolution.
+        sdf = cube%compute_sdf(structure='octree', root_resolution=4_int64, &
+                               max_depth=2_int64, watertight_check='off', &
+                               depth=depth, stat=ierr)
+        call check(ierr == 0, 'compute_sdf octree ran')
+        call check(depth == 2_int64, 'the octree ran two passes')
+        call check(sdf%cell_block_num_cells(1) > 64_int64, 'the octree refined')
+        call check(sdf%cell_block_num_cells(1) < 4096_int64, 'the octree is not uniform')
+        call sdf%free()
+
+        ! resolution/cell_size size a voxel grid; an octree's finest cell is
+        ! already determined, so passing one is an error, not a preference.
+        sdf = cube%compute_sdf(structure='octree', resolution=[4, 4, 4], stat=ierr)
+        call check(ierr /= 0, 'octree refuses a voxel sizing')
+
+        ! The predicate crop, composed with the distance field: the inside.
+        g = mio_grid([4, 4, 4], origin=[-0.5d0, -0.5d0, -0.5d0], &
+                     spacing=[0.5d0, 0.5d0, 0.5d0], stat=ierr)
+        field = g%distance_to_surface(cube, location='center', watertight_check='off', &
+                                      stat=ierr)
+        call check(ierr == 0, 'cell-centred distance ran')
+        kept = field%crop_predicate('sdf:distance', compare='<', value=0.0d0, stat=ierr)
+        call check(ierr == 0, 'crop_predicate ran')
+        call check(kept%cell_block_num_cells(1) == 8_int64, &
+                   'the eight cells inside the unit cube were kept')
+        call kept%free()
+        ! An unknown array fails by name rather than keeping everything.
+        kept = field%crop_predicate('nope', stat=ierr)
+        call check(ierr /= 0, 'crop_predicate refuses an unknown array')
+        call field%free()
+        call g%free()
+        call cube%free()
     end subroutine
 
     subroutine check(ok, what)

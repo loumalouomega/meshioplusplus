@@ -41,6 +41,7 @@ from .. import (
     clean,
     compute_bandwidth,
     compute_quality,
+    compute_sdf,
     compute_stats,
     convert_cells,
     crop,
@@ -50,9 +51,11 @@ from .. import (
     data_manage,
     decimate,
     diff,
+    distance_to_surface,
     extract_skin,
     extract_surface,
     gradient,
+    grid,
     interpolate,
     isosurface,
     merge,
@@ -63,10 +66,19 @@ from .. import (
     refine,
     reorder,
     run_pipeline,
+    sample_distance,
 )
 from .. import screenshot as _screenshot_fn
 from .. import slice as _slice_op
-from .. import smooth, sniff_format, split, transform, write
+from .. import (
+    smooth,
+    sniff_format,
+    split,
+    surface_watertight_check,
+    transform,
+    voxelize,
+    write,
+)
 from .. import write_parquet as _write_parquet_fn
 from .._helpers import (
     _filetypes_from_path,
@@ -414,10 +426,10 @@ def _variant_kwargs(out_fmt, mode, compression):
     if compression is None:
         return kwargs
     if compression in _BLOCK_CODECS:
-        if out_fmt not in ("vtu", "vtp"):
+        if out_fmt not in ("vti", "vtu", "vtp"):
             raise ValueError(
                 f"meshio++: mcp: compression '{compression}' selects the VTK XML "
-                "block codec and only vtu/vtp have one"
+                "block codec and only vti/vtu/vtp have one"
             )
         kwargs.update({"binary": True, "compression": compression})
     elif compression == "gzip":
@@ -694,10 +706,13 @@ def tool_crop(
     bbox=None,
     plane_origin=None,
     plane_normal=None,
+    where_array=None,
+    where_compare="<",
+    where_value=0.0,
     mode="all",
     record_ids=False,
 ):
-    """Crop to a bounding box (6 numbers) or a half-space (origin + normal)."""
+    """Crop to a bounding box, a half-space, or a cell_data comparison."""
     mesh = _load(input_path, input_format)
     plane = None
     if plane_origin is not None or plane_normal is not None:
@@ -706,7 +721,17 @@ def tool_crop(
                 "meshio++: mcp: crop needs both plane_origin and plane_normal"
             )
         plane = (plane_origin, plane_normal)
-    out = crop(mesh, bbox=bbox, plane=plane, mode=mode, record_ids=record_ids)
+    where = None
+    if where_array is not None:
+        where = (where_array, where_compare, where_value)
+    out = crop(
+        mesh,
+        bbox=bbox,
+        plane=plane,
+        where=where,
+        mode=mode,
+        record_ids=record_ids,
+    )
     return _result(_store(out, output_path, output_format), out)
 
 
@@ -747,6 +772,156 @@ def tool_isosurface(
         record_parent_ids=record_parent_ids,
     )
     return _result(_store(out, output_path, output_format), out)
+
+
+def tool_grid(
+    output_path,
+    dims,
+    output_format=None,
+    origin=None,
+    spacing=None,
+    max_cells=20000000,
+):
+    """Generate a regular hexahedron lattice; the only tool that reads no input."""
+    out = grid(
+        dims,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
+        spacing=(1.0, 1.0, 1.0) if spacing is None else spacing,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_voxelize(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.0,
+    fill="all",
+    attach_occupancy=False,
+    max_cells=20000000,
+    sign="pseudonormal",
+):
+    """Build a regular grid around a mesh; optionally keep only its surface or interior."""
+    mesh = _load(input_path, input_format)
+    out, report = voxelize(
+        mesh,
+        resolution=resolution,
+        cell_size=cell_size,
+        bounds=bounds,
+        padding=padding,
+        padding_relative=padding_relative,
+        fill=fill,
+        attach_occupancy=attach_occupancy,
+        max_cells=max_cells,
+        sign=sign,
+        watertight_check="off",
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_distance_to_surface(
+    input_path,
+    surface_path,
+    output_path,
+    input_format=None,
+    surface_format=None,
+    output_format=None,
+    sign="pseudonormal",
+    location="corner",
+    band=0.0,
+    record_inside=False,
+    record_closest_cell=False,
+):
+    """Attach the signed distance from a mesh's points (or cell centres) to a surface."""
+    mesh = _load(input_path, input_format)
+    surface = _load(surface_path, surface_format)
+    out, report = distance_to_surface(
+        mesh,
+        surface,
+        sign=sign,
+        location=location,
+        band=band,
+        record_inside=record_inside,
+        record_closest_cell=record_closest_cell,
+        watertight_check="off",
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_banded=report["num_banded"],
+        **report["quality"],
+    )
+
+
+def tool_compute_sdf(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    structure="voxel",
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.1,
+    root_resolution=8,
+    max_depth=4,
+    band_cells=1.0,
+    max_cells=20000000,
+    sign="pseudonormal",
+    location="corner",
+    band=0.0,
+):
+    """Generate a grid over a surface and fill it with signed distances."""
+    surface = _load(input_path, input_format)
+    out, report = compute_sdf(
+        surface,
+        structure=structure,
+        resolution=resolution,
+        cell_size=cell_size,
+        bounds=bounds,
+        padding=padding,
+        padding_relative=padding_relative,
+        root_resolution=root_resolution,
+        max_depth=max_depth,
+        band_cells=band_cells,
+        max_cells=max_cells,
+        sign=sign,
+        location=location,
+        band=band,
+        watertight_check="off",
+        return_report=True,
+    )
+    quality = report.pop("quality")
+    return _result(_store(out, output_path, output_format), out, **report, **quality)
+
+
+def tool_surface_watertight_check(input_path, input_format=None):
+    """Report a surface's boundary, non-manifold, inconsistent and degenerate counts."""
+    return _json_safe(dict(surface_watertight_check(_load(input_path, input_format))))
+
+
+def tool_sample_distance(
+    input_path,
+    points,
+    input_format=None,
+    sign="pseudonormal",
+    band=0.0,
+):
+    """Signed distances from a list of [x, y, z] points to a surface."""
+    surface = _load(input_path, input_format)
+    values = sample_distance(
+        surface, points, sign=sign, band=band, watertight_check="off"
+    )
+    return _json_safe({"distances": values})
 
 
 def tool_gradient(
@@ -1270,6 +1445,32 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},
         ),
         ("gradient", {"fn": tool_gradient, "wraps": ("gradient",), "gated": None}),
+        ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
+        ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
+        (
+            "compute_sdf",
+            {"fn": tool_compute_sdf, "wraps": ("compute_sdf",), "gated": None},
+        ),
+        (
+            "distance_to_surface",
+            {
+                "fn": tool_distance_to_surface,
+                "wraps": ("distance_to_surface",),
+                "gated": None,
+            },
+        ),
+        (
+            "sample_distance",
+            {"fn": tool_sample_distance, "wraps": ("sample_distance",), "gated": None},
+        ),
+        (
+            "surface_watertight_check",
+            {
+                "fn": tool_surface_watertight_check,
+                "wraps": ("surface_watertight_check",),
+                "gated": None,
+            },
+        ),
         ("transform", {"fn": tool_transform, "wraps": ("transform",), "gated": None}),
         (
             "convert_cells",

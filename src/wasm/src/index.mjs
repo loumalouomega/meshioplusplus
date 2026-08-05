@@ -150,8 +150,15 @@ function resolveVariant(variant) {
  *   smooth: (mesh: Mesh, method?: string, iterations?: number, lambda?: number, mu?: number, fixBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, guardInversion?: boolean) => {mesh: Mesh, numNodesMoved: number, maxDisplacement: number, numSkippedInversion: number},
  *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
+ *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean) => Mesh,
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
+ *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
+ *   voxelize: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, fill?: string, sign?: string, attachOccupancy?: boolean, maxCells?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], numOccupied: number},
+ *   surfaceWatertightCheck: (mesh: Mesh) => {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean},
+ *   sampleDistance: (surface: Mesh, points: number[], sign?: string, band?: number, watertightCheck?: string) => Float64Array,
+ *   distanceToSurface: (query: Mesh, surface: Mesh, sign?: string, location?: string, band?: number, recordInside?: boolean, watertightCheck?: string) => {mesh: Mesh, numBanded: number, quality: object},
+ *   computeSdf: (surface: Mesh, structure?: string, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, rootResolution?: number, maxDepth?: number, bandCells?: number, recordLevels?: boolean, maxCells?: number, sign?: string, location?: string, band?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], maxDepth: number, numBanded: number, quality: object},
  *   gradient: (mesh: Mesh, array: string, operator?: string, method?: string, location?: string, output?: string, component?: number, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
@@ -349,8 +356,62 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             Module.cropBbox(mesh, lo, hi, mode, recordIds),
         cropPlane: (mesh, point, normal, mode = 'all', recordIds = false) =>
             Module.cropPlane(mesh, point, normal, mode, recordIds),
+        cropPredicate: (mesh, array, compare = '<', value = 0, recordIds = false) =>
+            Module.cropPredicate(mesh, array, compare, value, recordIds),
         slice: (mesh, origin, normal, recordParentIds = false) =>
             Module.slice(mesh, origin, normal, recordParentIds),
+        grid: (dims, origin = null, spacing = null, maxCells = 20000000) =>
+            Module.grid(dims, origin, spacing, maxCells),
+        voxelize: (
+            mesh,
+            resolution = null,
+            cellSize = 0,
+            bounds = null,
+            padding = 0,
+            paddingRelative = 0,
+            fill = 'all',
+            sign = 'pseudonormal',
+            attachOccupancy = false,
+            maxCells = 20000000,
+            watertightCheck = 'warn',
+        ) =>
+            Module.voxelize(mesh, resolution, cellSize, bounds, padding, paddingRelative,
+                fill, sign, attachOccupancy, maxCells, watertightCheck),
+        surfaceWatertightCheck: (mesh) => Module.surfaceWatertightCheck(mesh),
+        sampleDistance: (surface, points, sign = 'pseudonormal', band = 0, watertightCheck = 'warn') =>
+            Module.sampleDistance(surface, points, sign, band, watertightCheck),
+        distanceToSurface: (
+            query,
+            surface,
+            sign = 'pseudonormal',
+            location = 'corner',
+            band = 0,
+            recordInside = false,
+            watertightCheck = 'warn',
+        ) =>
+            Module.distanceToSurface(query, surface, sign, location, band, recordInside,
+                watertightCheck),
+        computeSdf: (
+            surface,
+            structure = 'voxel',
+            resolution = null,
+            cellSize = 0,
+            bounds = null,
+            padding = 0,
+            paddingRelative = 0.1,
+            rootResolution = 8,
+            maxDepth = 4,
+            bandCells = 1,
+            recordLevels = true,
+            maxCells = 20000000,
+            sign = 'pseudonormal',
+            location = 'corner',
+            band = 0,
+            watertightCheck = 'warn',
+        ) =>
+            Module.computeSdf(surface, structure, resolution, cellSize, bounds, padding,
+                paddingRelative, rootResolution, maxDepth, bandCells, recordLevels, maxCells,
+                sign, location, band, watertightCheck),
         isosurface: (mesh, array, isovalues, component = -1, recordParentIds = false) =>
             Module.isosurface(
                 mesh,

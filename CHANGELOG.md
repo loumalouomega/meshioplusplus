@@ -8,6 +8,175 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.25.0 (2026-08-05)
+
+**Signed distance fields, completed.** v9.24.0 shipped the primitive; this
+release adds the umbrella that generates its own grid, the adaptive octree, the
+format that keeps a generated grid's geometry, and the crop mode that turns a
+field back into a subset. The roadmap's signed-distance section is closed and
+removed.
+
+- **`compute_sdf(surface, ...)`** — the grid *and* the field in one call. It was
+  declared with its option and result layouts final in v9.24.0 precisely so that
+  adding the body would be a pure `.cpp` change, and it was.
+- **`structure="octree"`** — adaptive: a coarse root lattice, refined only within
+  `band_cells` of each cell's **own** diagonal, `max_depth` times, through
+  [`refine`](doc/refine.md)'s `Balanced` closure. Against a uniform grid of the
+  same *finest* resolution the zero level set is **the same contour** — identical
+  facet count and point set — from far fewer cells. The output is 1-irregular
+  (it has hanging nodes), exactly as that closure's is.
+- **`.vti` (VTK XML ImageData)**, format 42 — a regular lattice whose geometry is
+  the `Origin`/`Spacing`/`WholeExtent` attributes rather than a point array.
+  **No format persists arbitrary `field_data`**, so a generated grid's `sdf:*`
+  header does not survive a write anywhere else; `.vti` does not need it to,
+  because those three attributes are the same information. Reading expands the
+  extent into explicit `hexahedron` cells, so writing requires a lattice — a
+  *partial* grid (`voxelize`'s `surface`/`inside` fills, or an octree, whose
+  holes ImageData cannot express) is refused by name rather than silently filled
+  in. It reuses VTU's `<DataArray>` codec and block framing verbatim, so
+  `--codec zlib|lz4|zstd` works there too.
+- **`crop(mesh, where=("array", "<", value))`** — keep the cells whose scalar
+  `cell_data` value satisfies a comparison. Deliberately **general rather than
+  crop-by-surface**: inside/outside then composes
+  (`distance_to_surface(..., location="center")` then `where=("sdf:distance",
+  "<", 0)`), and the same one mode also crops by `quality:*`, by a material id,
+  or by anything `data calc` produces. It shares `refine`'s comparison
+  vocabulary *and its evaluator*, so the two cannot drift on the boundary cases —
+  in particular a **non-finite cell value never matches**, including under `!=`,
+  where IEEE says `NaN != 1.0` is true.
+  `mode="all"/"any"` is **absent, not ignored**, and passing it is an error on
+  every surface: bbox and half-space test *points* and then need a rule for
+  reducing a cell's several nodes to one verdict, whereas a `cell_data` predicate
+  is already one value per cell.
+- **Offsetting needed no code.** An offset surface is `compute_sdf` plus
+  `isosurface` at a non-zero level; passing `[-r, 0, r]` gives the inner offset,
+  the original and the outer offset in one mesh, already tagged with
+  `iso:index`. The roadmap item closed by composition rather than by an
+  operation.
+- Every surface: pybind, the Python shim with a full numpy twin (parity pinned
+  byte-for-byte), the C API (`mio_compute_sdf`, `mio_crop_predicate`,
+  `mio_compute_sdf_opts`), Fortran, Julia, R, WASM (`computeSdf`,
+  `cropPredicate`; the exhaustive name guard grows to 59), both CLIs (a new `sdf`
+  verb, `crop --where`), MCP (42 tools), the settings pipeline (`ComputeSdf`, and
+  `Crop`'s `Where`/`Compare`/`Value`) and the browser viewer.
+
+Two notes on the tests, both of which took a second attempt. The octree's two
+failure modes — a field interpolated from a coarser pass, and a cell selection
+carried across a pass — each produce a *valid, plausible* mesh, so each has an
+oracle verified to fire by sabotage. Neither fires against a **cube**: a cube's
+SDF is piecewise linear near its faces, so interpolating it from a coarser grid
+reproduces it exactly (18636 facets either way), and the cube's symmetry leaves
+stale low cell indices near the surface anyway. The fixtures are a sphere, and
+the band bound was *measured* (0.59 of the coarsest diagonal) before being set at
+0.75 — a `2.0` bound had passed under the sabotage.
+
+## v9.24.0 (2026-08-05)
+
+**Regular grids and signed distance to a surface** — the one spatial-query
+primitive meshio++ did not have. `extract_surface` gives you a skin, `slice` cuts
+it and `isosurface` contours a field on it, but nothing answered *"how far is
+this point from the surface, and which side is it on?"* — the thing collision
+detection, offsetting, inside/outside queries and voxel-style ML preprocessing
+all reduce to.
+
+- **`grid(dims, origin, spacing)`** — a regular hexahedron lattice from nothing.
+  The library's first mesh *generator*: every other operation transforms a mesh
+  you already have.
+- **`voxelize(mesh, ...)`** — a grid around a mesh, keeping the whole bounding
+  box (`fill="all"`), only the cells a surface triangle passes through
+  (`"surface"`, by exact separating-axis overlap, not a bounding-box test), or
+  only the cells inside it (`"inside"`).
+- **`sample_distance` / `distance_to_surface` / `surface_watertight_check`** —
+  signed distance at arbitrary points or attached to a mesh as `sdf:distance`,
+  plus what is wrong with a skin reported in numbers rather than a bare flag.
+- **The output is an ordinary `Mesh`** — one `hexahedron` block over a shared
+  corner lattice — and that is the whole design. Every writer, `view`/`screenshot`,
+  `crop`, `split`, `--color-by` and `isosurface` already work on it, with no new
+  code and no new file format. `custom` cells were rejected because
+  `cell_type_num_nodes(Custom) == -1` makes a block invisible to `stats`,
+  `quality`, `gradient` and `refine`, forfeiting exactly that property.
+- Exposed on **every surface**: Python, C, Fortran, Julia, R, WASM, both CLIs
+  (`voxelize`), five MCP tools, a `Voxelize` pipeline op and a browser-viewer
+  chip. Documented in [`doc/voxelize.md`](doc/voxelize.md) and
+  [`doc/sdf.md`](doc/sdf.md).
+
+Three findings from building it, each worth not rediscovering:
+
+- **A reentrant corner does NOT expose the classic sign bug.** The standard
+  mistake is taking the sign from the nearest *triangle's* normal instead of the
+  nearest *feature's* pseudonormal, and the obvious fixture for it is a concave
+  edge — where, it turns out, both incident faces give the correct sign and the
+  naive method passes. The failure needs two nearly *opposite* normals, i.e. a
+  sharp spike. `tests/cpp/test_surface_distance.cpp` uses a sliver prism whose
+  tip subtends ~1.7° and demonstrates the naive method getting it wrong, rather
+  than asserting the right answer and hoping.
+- **The accelerator is provably unobservable, and that paid for itself.** Every
+  candidate comparison is totally ordered on `(squared distance, triangle id)`,
+  so the bucket grid cannot change the answer. Sizing buckets by the mean
+  triangle alone made a 64³ inside-fill of the 112k-triangle Stanford bunny take
+  19.1 s; adding the domain extent to the rule cut it to 2.9 s with
+  **byte-identical** output. It also means the numpy reference needs no
+  accelerator at all — a brute-force scan is the same computation, which is why
+  the two are bit-identical.
+- **The numpy twin caught a real C++ bug.** Point compaction after a selective
+  fill numbered survivors on first encounter rather than in ascending order,
+  making the point ids depend on the hexahedron's node order — a traversal detail
+  no caller should be able to observe. Fixed in C++, not papered over in numpy.
+
+No ABI change (`MESHIOPLUSPLUS_ABI_VERSION` stays 6): the six new installed
+headers are entirely additive. `operations/sdf.hpp` nevertheless ships its
+octree fields populated-but-reserved, because `SdfOptions` and `VoxelOptions`
+embed `SurfaceDistanceOptions` by value and growing it later would be a silent
+Tier A break — the v9.12.0 pipeline lesson, applied in advance.
+
+`compute_sdf` (generate a grid *and* fill it, including an adaptive octree) is
+declared but throws by name; compose `voxelize` with `distance_to_surface` in the
+meantime.
+
+## v9.23.0 (2026-08-04)
+
+**`refine(closure="balanced")` no longer tears the mesh across passes, and
+`refine:hanging` now reports every constrained node.** Two defects, both reachable
+from the public API today via `refine(mesh, cells=[...], levels=2,
+closure="balanced")` — or any two chained balanced calls — and both confined to
+that closure. The conforming closures (`redgreen`, `propagate`) and uniform
+refinement are byte-identical to v9.22.0.
+
+- **Fixed: a second balanced pass produced a torn mesh.** When the 2:1 balance
+  rule draws in a coarse cell whose edge already carries a hanging node from an
+  earlier pass, that cell's own refinement keyed the edge by its two endpoints,
+  allocated a fresh midpoint, and left the two sides of the interface referencing
+  distinct — but exactly coincident — nodes. On a 4x4x4 hexahedron block,
+  `levels=2` produced 12 such positions and `levels=3` produced 96. The mesh was
+  1-irregular *and* torn; only the former was ever documented.
+- **Added: `refine:entity`**, the Int64 `(num_points, 4)` `point_data` array
+  recording the entity each point was created on — `(-1, -1, a, b)` for the
+  midpoint of edge `(a, b)`, the sorted `(p, q, r, s)` for a quad-face centre, and
+  `(-1, -1, -1, -1)` for a point `refine` did not create. It is what lets a later
+  pass reuse a node an earlier one already placed instead of allocating a
+  coincident duplicate. Like `refine:level` the name is **reserved** and the array
+  is *maintained* rather than replicated: attached whenever a pass leaves hanging
+  nodes and kept thereafter, so the conforming closures never pay for it. A stale
+  array — every entry must still reproduce its own point's coordinates, which
+  `reorder`/`clean`/`crop`/`merge`/`transform`/`smooth` all invalidate — is warned
+  about and ignored rather than trusted.
+- **Fixed: `refine:hanging` under-reported.** [`doc/refine.md`](doc/refine.md)
+  promises it marks *exactly* the constrained nodes, "neither a superset nor a
+  subset"; a two-level balanced refinement of a 4x4x4 block reported 42 of 84, and
+  a three-level one 90 of 402. The rule was evaluated over the **input** cells'
+  entities, but a cell the balance rule draws in is split into children whose own
+  sub-edges the input cell never had, so a node the neighbouring refinement places
+  on one of them was constrained without any input entity naming it. It is now
+  evaluated over the **emitted** cells. The array was also flowing through the
+  generic `point_data` path, which interpolated an Int64 flag to `0.5` and
+  truncated it; both reserved names are now excluded from that path and rebuilt.
+- Both defects are pinned by counting oracles computed from the output's geometry
+  and connectivity alone, and each was verified to fire by sabotage — disabling
+  node reuse fails the tear test, and reverting the hanging rule to the input
+  cells fails the report test and only that one.
+- No ABI change (`MESHIOPLUSPLUS_ABI_VERSION` stays 6): `operations/refine.hpp`
+  gains one `inline constexpr const char*` and nothing else.
+
 ## v9.22.0 (2026-08-04)
 
 **cgnslib cross-compiled for WebAssembly**, so the browser build reaches parity

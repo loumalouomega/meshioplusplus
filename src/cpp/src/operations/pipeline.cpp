@@ -48,6 +48,8 @@
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/sdf.hpp"
+#include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -233,11 +235,18 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
+        {"Voxelize",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
+          "AttachOccupancy", "MaxCells", "Sign"}},
+        {"ComputeSdf",
+         {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
+          "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
+          "Band"}},
         {"Transform",
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
-        {"Crop", {"Bbox", "Point", "Normal", "Mode", "RecordIds"}},
+        {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
         {"Reorder", {"Method"}},
@@ -557,6 +566,66 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
     }
+    if (op == "Voxelize") {
+        // A regular grid around the mesh. Unlike every other step this one does
+        // not transform its input's geometry -- it replaces it -- which is
+        // exactly why it is useful as a pipeline step: read a skin, voxelize it,
+        // write a grid.
+        VoxelOptions opts;
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.0);
+        opts.mFill = voxel_fill_from_name(pipe_text(rStep, "Fill", "all"));
+        opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        VoxelResult r = voxelize(mesh, opts);
+        pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "ComputeSdf") {
+        // Voxelize's sibling: it likewise REPLACES the input's geometry, taking
+        // a surface in and handing a filled grid back, which is exactly the
+        // shape a single-mesh chain wants.
+        SdfOptions opts;
+        opts.mStructure = sdf_structure_from_name(pipe_text(rStep, "Structure", "voxel"));
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mRootResolution = static_cast<std::int64_t>(pipe_number(rStep, "RootResolution", 8.0));
+        opts.mMaxDepth = static_cast<std::int64_t>(pipe_number(rStep, "MaxDepth", 4.0));
+        opts.mBandCells = pipe_number(rStep, "BandCells", 1.0);
+        opts.mRecordLevels = pipe_flag(rStep, "RecordLevels", true);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mDistance.mLocation = sdf_location_from_name(pipe_text(rStep, "Location", "corner"));
+        opts.mDistance.mBand = pipe_number(rStep, "Band", 0.0);
+        SdfResult r = compute_sdf(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"MaxDepth", static_cast<double>(r.mMaxDepth)},
+                        {"NumBanded", static_cast<double>(r.mNumBanded)}});
+        return std::move(r.mMesh);
+    }
+
     if (op == "Isosurface") {
         // The level set of a scalar point_data field -- slice's data-driven
         // sibling, a surface one topological dimension lower.
@@ -593,9 +662,23 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         const bool record = pipe_flag(rStep, "RecordIds", false);
         const bool has_bbox = pipe_find(rStep, "Bbox") != nullptr;
         const bool has_plane = pipe_find(rStep, "Point") || pipe_find(rStep, "Normal");
-        if (has_bbox == has_plane)
-            throw std::invalid_argument(pipe_err(rStep, "give either 'Bbox' or 'Point'+'Normal'"));
+        const bool has_where = pipe_find(rStep, "Where") != nullptr;
+        if (static_cast<int>(has_bbox) + static_cast<int>(has_plane) +
+                static_cast<int>(has_where) !=
+            1)
+            throw std::invalid_argument(
+                pipe_err(rStep, "give one of 'Bbox', 'Point'+'Normal' or 'Where'"));
+        if (has_where && pipe_find(rStep, "Mode") != nullptr)
+            throw std::invalid_argument(
+                pipe_err(rStep,
+                         "'Mode' applies to 'Bbox' and 'Point'+'Normal', which test "
+                         "points; a 'Where' predicate is already one value per cell "
+                         "and has nothing to reduce"));
         CropResult result = [&] {
+            if (has_where)
+                return crop_predicate(mesh, pipe_text(rStep, "Where", ""),
+                                      refine_compare_from_name(pipe_text(rStep, "Compare", "<")),
+                                      pipe_number(rStep, "Value", 0.0), record);
             if (has_bbox) {
                 std::vector<double> b = pipe_dvec(rStep, "Bbox");
                 if (b.size() != 6)

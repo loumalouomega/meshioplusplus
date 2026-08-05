@@ -25,12 +25,14 @@ from . import (
     _refine,
     _regions,
     _reorder,
+    _sdf,
     _slice,
     _smooth,
     _split,
     _stats,
     _transform,
     _view,
+    _voxelize,
 )
 
 
@@ -126,7 +128,7 @@ def main(argv=None):
 
     parser = subparsers.add_parser(
         "crop",
-        help="Subset a mesh by a bounding box or half-space",
+        help="Subset a mesh by a bounding box, half-space or cell_data predicate",
     )
     _crop.add_args(parser)
     parser.set_defaults(func=_crop.crop_cmd)
@@ -144,6 +146,20 @@ def main(argv=None):
     )
     _isosurface.add_args(parser)
     parser.set_defaults(func=_isosurface.isosurface_cmd)
+
+    parser = subparsers.add_parser(
+        "voxelize",
+        help="Regular hexahedron grid around a mesh (whole box / surface / interior)",
+    )
+    _voxelize.add_args(parser)
+    parser.set_defaults(func=_voxelize.voxelize_cmd)
+
+    parser = subparsers.add_parser(
+        "sdf",
+        help="Signed distance field: generate a grid over a surface and fill it",
+    )
+    _sdf.add_args(parser)
+    parser.set_defaults(func=_sdf.sdf_cmd)
 
     parser = subparsers.add_parser(
         "split",

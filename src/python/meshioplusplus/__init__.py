@@ -39,6 +39,7 @@ from . import (
     triangle,
     ugrid,
     unv,
+    vti,
     vtk,
     vtp,
     vtu,
@@ -59,6 +60,7 @@ from ._diff import diff, meshes_equal
 from ._exceptions import ReadError, WriteError
 from ._gpu import from_cupy, has_cuda_device, has_cupy, to_cupy, to_dlpack
 from ._gradient import gradient
+from ._grid import grid
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -93,6 +95,12 @@ from ._quality import attach_quality, compute_quality
 from ._refine import refine
 from ._regions import Region
 from ._reorder import compute_bandwidth, reorder
+from ._sdf import (
+    compute_sdf,
+    distance_to_surface,
+    sample_distance,
+    surface_watertight_check,
+)
 from ._sequence import (
     TimeSeries,
     read_sequence,
@@ -109,6 +117,7 @@ from ._stats import compute_stats
 from ._surface import extract_surface
 from ._transform import transform
 from ._viewer import has_viewer, screenshot, view
+from ._voxelize import voxelize
 
 __all__ = [
     "abaqus",
@@ -150,6 +159,7 @@ __all__ = [
     "triangle",
     "ugrid",
     "unv",
+    "vti",
     "vtk",
     "vtp",
     "vtu",
@@ -184,6 +194,12 @@ __all__ = [
     "convert_cells",
     "refine",
     "decimate",
+    "grid",
+    "voxelize",
+    "sample_distance",
+    "distance_to_surface",
+    "surface_watertight_check",
+    "compute_sdf",
     "smooth",
     "partition",
     "partition_labels",

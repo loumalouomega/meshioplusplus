@@ -299,3 +299,20 @@ binding already applies to `read`/`write`/`split`.
 
 See [sequences](sequences.md) for the ordering rule, the time-value precedence
 and the streaming guarantee.
+
+- `grid(dims; origin, spacing)`, `voxelize(m; resolution, fill, ...)`,
+  `sample_distance(surface, points)`, `distance_to_surface(query, surface)` and
+  `surface_watertight_check(m)` (v9.24.0) — regular grids and signed distance.
+  `grid` shadows nothing in `Base`, so it is exported plainly. See
+  [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
+- `compute_sdf(surface; structure, resolution, root_resolution, max_depth, ...)`
+  (v9.25.0) — the grid and the field in one call, returning
+  `(; mesh, dims, origin, spacing, max_depth, num_banded, quality)`.
+  `structure=:octree` refines only near the surface and sizes itself from
+  `root_resolution`/`max_depth`, so passing `resolution` or `cell_size` with it
+  is an error; its output is 1-irregular.
+- `crop_predicate(m, array; compare, value, record_ids)` (v9.25.0) — keep the
+  cells whose scalar `cell_data` value satisfies a comparison, the same
+  vocabulary `refine`'s `where_op` uses. There is deliberately no `mode`: a
+  per-cell value has nothing for an all/any rule to reduce. See
+  [`doc/crop.md`](crop.md).

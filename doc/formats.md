@@ -45,6 +45,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — |
 | [`unv`](./formats/unv.md) | `.unv` | ✓ | ✓ | — |
+| [`vti`](./formats/vti.md) | `.vti` | ✓ | ✓ | — |
 | [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
 | [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — |
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
@@ -60,6 +61,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on `triangle` vs `tetgen` (`.node`/`.ele`):** both formats use `.node`/`.ele`; `tetgen` is registered first, so plain extension dispatch resolves to it. When *reading*, a 2D pair makes tetgen raise and the dispatcher falls through to `triangle` automatically; when *writing*, pass `file_format="triangle"` (or use a `.poly` path, which defaults to `triangle`). Like tetgen, the format spans multiple files and cannot use buffers.
 
 **Note on `ensight`:** EnSight Gold, geometry only (`.case` + `.geo` sibling pair, ASCII and C-binary with byte-order auto-detection; variables/time steps out of scope). Multi-part files concatenate into one point array with the owning part recorded as `cell_data["ensight:part"]`. Cannot use buffers. The `.geo` extension is also used by Gmsh *script* files, which meshio++ never claimed.
+
+**Note on `vti`:** VTK XML ImageData is a **regular lattice**: its geometry is the `Origin`/`Spacing`/`WholeExtent` attributes rather than a point array. Reading expands the extent into explicit `hexahedron` cells; writing therefore *requires* a lattice, and a mesh that is not one — including a **partial** grid (`voxelize`'s `surface`/`inside` fills, or `compute_sdf`'s octree, whose holes ImageData cannot express) — raises `WriteError` by name. It is the only format that round-trips a generated grid's geometry, which is why [`compute_sdf`](./sdf.md) points at it.
 
 **Note on `vtp`:** VTK XML PolyData holds surface cells only (`vertex`/`line`/`triangle`/`quad`/`polygon`); volume or quadratic cells raise `WriteError`. PolyData has no cell-type array, so 3-/4-noded `polygon` cells read back as `triangle`/`quad`. Triangle strips are not supported.
 
@@ -117,6 +120,16 @@ Use `file_format="gmsh22"` to write version 2.2 via the generic `meshioplusplus.
 meshioplusplus.vtu.write(filename, mesh,
     binary=True,
     compression="zlib",   # "zlib", "lzma", or None
+    header_type=None,     # "UInt32" or "UInt64"
+)
+```
+
+### VTI (`.vti`)
+
+```python
+meshioplusplus.vti.write(filename, mesh,   # mesh must be a dense lattice
+    binary=True,
+    compression="zlib",   # "zlib", "lz4", "zstd", or None
     header_type=None,     # "UInt32" or "UInt64"
 )
 ```

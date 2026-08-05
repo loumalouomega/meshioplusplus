@@ -107,6 +107,8 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/sdf.hpp"
+#include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -1676,6 +1678,23 @@ val crop_bbox_js(const val& rMeshObj, const val& rLo, const val& rHi, const std:
  * @brief Crop a mesh to the half-space (p - point) . normal >= 0 (`point`/
  * `normal` are 3-element JS arrays). Returns the pruned mesh object.
  */
+/**
+ * @brief Crop to the cells whose scalar `cell_data` value satisfies a comparison.
+ *
+ * There is deliberately no `mode`: `cropBbox`/`cropPlane` test points and then
+ * need an all/any rule, whereas a `cell_data` predicate is already one value per
+ * cell and has nothing to reduce.
+ */
+val crop_predicate_js(const val& rMeshObj, const std::string& rArray, const std::string& rCompare,
+                      double value, bool recordIds) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::crop_predicate(
+                               val_to_mesh(rMeshObj), rArray,
+                               meshioplusplus::refine_compare_from_name(rCompare), value, recordIds)
+                               .mMesh);
+    });
+}
+
 val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
                   const std::string& rMode, bool recordIds) {
     return with_js_errors([&]() -> val {
@@ -1715,6 +1734,238 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
  * the row magnitude. Returns one mesh holding every contour, tagged per cell
  * with `iso:value` (Float64) and `iso:index` (Int64).
  */
+/**
+ * @brief A regular hexahedron lattice from nothing -- the only binding here
+ * that takes no input mesh. Points run x fastest, then y, then z.
+ */
+val grid_js(const val& rDims, const val& rOrigin, const val& rSpacing, double maxCells) {
+    return with_js_errors([&]() -> val {
+        std::array<std::int64_t, 3> dims{{0, 0, 0}};
+        std::array<double, 3> origin{{0.0, 0.0, 0.0}};
+        std::array<double, 3> spacing{{1.0, 1.0, 1.0}};
+        for (unsigned i = 0; i < 3; ++i) {
+            dims[i] = static_cast<std::int64_t>(rDims[i].as<double>());
+            if (!rOrigin.isUndefined() && !rOrigin.isNull())
+                origin[i] = rOrigin[i].as<double>();
+            if (!rSpacing.isUndefined() && !rSpacing.isNull())
+                spacing[i] = rSpacing[i].as<double>();
+        }
+        return mesh_to_val(
+            meshioplusplus::grid(dims, origin, spacing, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+/**
+ * @brief Build a regular grid around a mesh. Returns
+ * `{mesh, dims, origin, spacing, numOccupied}`. Exactly one of `resolution` and
+ * `cellSize` must be given -- pass an empty array / 0 for the other.
+ */
+val voxelize_js(const val& rMeshObj, const val& rResolution, double cellSize, const val& rBounds,
+                double padding, double paddingRelative, const std::string& rFill,
+                const std::string& rSign, bool attachOccupancy, double maxCells,
+                const std::string& rWatertightCheck) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::VoxelOptions options;
+        if (!rResolution.isUndefined() && !rResolution.isNull() &&
+            rResolution["length"].as<unsigned>() == 3)
+            options.mResolution = std::array<std::int64_t, 3>{
+                {static_cast<std::int64_t>(rResolution[0].as<double>()),
+                 static_cast<std::int64_t>(rResolution[1].as<double>()),
+                 static_cast<std::int64_t>(rResolution[2].as<double>())}};
+        if (cellSize > 0.0)
+            options.mCellSize = cellSize;
+        if (!rBounds.isUndefined() && !rBounds.isNull() && rBounds["length"].as<unsigned>() == 6) {
+            std::array<double, 6> b{};
+            for (unsigned i = 0; i < 6; ++i)
+                b[i] = rBounds[i].as<double>();
+            options.mBounds = b;
+        }
+        options.mPadding = padding;
+        options.mPaddingRelative = paddingRelative;
+        options.mFill = meshioplusplus::voxel_fill_from_name(rFill);
+        options.mAttachOccupancy = attachOccupancy;
+        options.mMaxCells = static_cast<std::int64_t>(maxCells);
+        options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(rSign);
+        options.mDistance.mWatertightCheck =
+            meshioplusplus::sdf_watertight_check_from_name(rWatertightCheck);
+
+        meshioplusplus::VoxelResult r = meshioplusplus::voxelize(val_to_mesh(rMeshObj), options);
+        const auto vec3i = [](const std::array<std::int64_t, 3>& a) {
+            val out = val::array();
+            for (int i = 0; i < 3; ++i)
+                out.call<void>("push", static_cast<double>(a[static_cast<std::size_t>(i)]));
+            return out;
+        };
+        const auto vec3d = [](const std::array<double, 3>& a) {
+            val out = val::array();
+            for (int i = 0; i < 3; ++i)
+                out.call<void>("push", a[static_cast<std::size_t>(i)]);
+            return out;
+        };
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("dims", vec3i(r.mDims));
+        out.set("origin", vec3d(r.mOrigin));
+        out.set("spacing", vec3d(r.mSpacing));
+        out.set("numOccupied", static_cast<double>(r.mNumOccupied));
+        return out;
+    });
+}
+
+/// @brief What is wrong with a surface, in numbers.
+val surface_watertight_check_js(const val& rMeshObj) {
+    return with_js_errors([&]() -> val {
+        const meshioplusplus::SurfaceQuality q =
+            meshioplusplus::surface_watertight_check(val_to_mesh(rMeshObj));
+        val out = val::object();
+        out.set("boundaryEdges", static_cast<double>(q.mBoundaryEdges));
+        out.set("nonManifoldEdges", static_cast<double>(q.mNonManifoldEdges));
+        out.set("inconsistentPairs", static_cast<double>(q.mInconsistentPairs));
+        out.set("degenerateTriangles", static_cast<double>(q.mDegenerateTriangles));
+        out.set("watertight", q.mWatertight);
+        return out;
+    });
+}
+
+namespace {
+
+meshioplusplus::SurfaceDistanceOptions sdf_options_js(const std::string& rSign,
+                                                      const std::string& rLocation, double band,
+                                                      bool recordInside,
+                                                      const std::string& rWatertightCheck) {
+    meshioplusplus::SurfaceDistanceOptions options;
+    options.mSign = meshioplusplus::sdf_sign_from_name(rSign);
+    options.mLocation = meshioplusplus::sdf_location_from_name(rLocation);
+    options.mBand = band;
+    options.mRecordInside = recordInside;
+    options.mWatertightCheck = meshioplusplus::sdf_watertight_check_from_name(rWatertightCheck);
+    return options;
+}
+
+}  // namespace
+
+/**
+ * @brief Signed distances from a flat `[x0,y0,z0, x1,y1,z1, ...]` array to a
+ * surface. Returns a `Float64Array`; negative is inside.
+ */
+val sample_distance_js(const val& rSurfaceObj, const val& rPoints, const std::string& rSign,
+                       double band, const std::string& rWatertightCheck) {
+    return with_js_errors([&]() -> val {
+        const unsigned n = rPoints["length"].as<unsigned>();
+        if (n % 3 != 0)
+            throw meshioplusplus::ReadError(
+                "sample_distance: points must be a flat array of x, y, z triples");
+        std::vector<double> flat(n);
+        for (unsigned i = 0; i < n; ++i)
+            flat[i] = rPoints[i].as<double>();
+        const NDArray query = NDArray::MakeView(meshioplusplus::DType::Float64,
+                                                {static_cast<std::size_t>(n / 3), std::size_t{3}},
+                                                reinterpret_cast<std::byte*>(flat.data()));
+        return ndarray_to_float64_array(meshioplusplus::sample_distance(
+            val_to_mesh(rSurfaceObj), query,
+            sdf_options_js(rSign, "corner", band, false, rWatertightCheck)));
+    });
+}
+
+/**
+ * @brief Attach the signed distance from a query mesh to a surface. Returns
+ * `{mesh, numBanded, quality}`.
+ */
+val distance_to_surface_js(const val& rQueryObj, const val& rSurfaceObj, const std::string& rSign,
+                           const std::string& rLocation, double band, bool recordInside,
+                           const std::string& rWatertightCheck) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SurfaceDistanceResult r = meshioplusplus::distance_to_surface(
+            val_to_mesh(rQueryObj), val_to_mesh(rSurfaceObj),
+            sdf_options_js(rSign, rLocation, band, recordInside, rWatertightCheck));
+        val quality = val::object();
+        quality.set("boundaryEdges", static_cast<double>(r.mQuality.mBoundaryEdges));
+        quality.set("nonManifoldEdges", static_cast<double>(r.mQuality.mNonManifoldEdges));
+        quality.set("inconsistentPairs", static_cast<double>(r.mQuality.mInconsistentPairs));
+        quality.set("degenerateTriangles", static_cast<double>(r.mQuality.mDegenerateTriangles));
+        quality.set("watertight", r.mQuality.mWatertight);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numBanded", static_cast<double>(r.mNumBanded));
+        out.set("quality", quality);
+        return out;
+    });
+}
+
+/**
+ * @brief Generate a grid over a surface and fill it with signed distances.
+ *
+ * Returns `{mesh, dims, origin, spacing, maxDepth, numBanded, quality}`, where
+ * `dims` are the ROOT cell counts and `spacing` the FINEST cell size.
+ *
+ * `structure` is `"voxel"` or `"octree"`; `resolution`/`cellSize` size a voxel
+ * grid and are an error with `"octree"`, whose finest cell is
+ * `rootResolution / 2^maxDepth` and is therefore already determined.
+ */
+val compute_sdf_js(const val& rSurfaceObj, const std::string& rStructure, const val& rResolution,
+                   double cellSize, const val& rBounds, double padding, double paddingRelative,
+                   double rootResolution, double maxDepth, double bandCells, bool recordLevels,
+                   double maxCells, const std::string& rSign, const std::string& rLocation,
+                   double band, const std::string& rWatertightCheck) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SdfOptions options;
+        options.mStructure = meshioplusplus::sdf_structure_from_name(rStructure);
+        if (!rResolution.isUndefined() && !rResolution.isNull() &&
+            rResolution["length"].as<unsigned>() == 3)
+            options.mResolution = std::array<std::int64_t, 3>{
+                {static_cast<std::int64_t>(rResolution[0].as<double>()),
+                 static_cast<std::int64_t>(rResolution[1].as<double>()),
+                 static_cast<std::int64_t>(rResolution[2].as<double>())}};
+        if (cellSize > 0.0)
+            options.mCellSize = cellSize;
+        if (!rBounds.isUndefined() && !rBounds.isNull() && rBounds["length"].as<unsigned>() == 6) {
+            std::array<double, 6> b{};
+            for (unsigned i = 0; i < 6; ++i)
+                b[i] = rBounds[i].as<double>();
+            options.mBounds = b;
+        }
+        options.mPadding = padding;
+        options.mPaddingRelative = paddingRelative;
+        options.mRootResolution = static_cast<std::int64_t>(rootResolution);
+        options.mMaxDepth = static_cast<std::int64_t>(maxDepth);
+        options.mBandCells = bandCells;
+        options.mRecordLevels = recordLevels;
+        options.mMaxCells = static_cast<std::int64_t>(maxCells);
+        options.mDistance =
+            sdf_options_js(rSign, rLocation, band, /*recordInside=*/false, rWatertightCheck);
+
+        meshioplusplus::SdfResult r =
+            meshioplusplus::compute_sdf(val_to_mesh(rSurfaceObj), options);
+        const auto vec3i = [](const std::array<std::int64_t, 3>& a) {
+            val out = val::array();
+            for (int i = 0; i < 3; ++i)
+                out.call<void>("push", static_cast<double>(a[static_cast<std::size_t>(i)]));
+            return out;
+        };
+        const auto vec3d = [](const std::array<double, 3>& a) {
+            val out = val::array();
+            for (int i = 0; i < 3; ++i)
+                out.call<void>("push", a[static_cast<std::size_t>(i)]);
+            return out;
+        };
+        val quality = val::object();
+        quality.set("boundaryEdges", static_cast<double>(r.mQuality.mBoundaryEdges));
+        quality.set("nonManifoldEdges", static_cast<double>(r.mQuality.mNonManifoldEdges));
+        quality.set("inconsistentPairs", static_cast<double>(r.mQuality.mInconsistentPairs));
+        quality.set("degenerateTriangles", static_cast<double>(r.mQuality.mDegenerateTriangles));
+        quality.set("watertight", r.mQuality.mWatertight);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("dims", vec3i(r.mDims));
+        out.set("origin", vec3d(r.mOrigin));
+        out.set("spacing", vec3d(r.mSpacing));
+        out.set("maxDepth", static_cast<double>(r.mMaxDepth));
+        out.set("numBanded", static_cast<double>(r.mNumBanded));
+        out.set("quality", quality);
+        return out;
+    });
+}
+
 val isosurface_js(const val& rMeshObj, const std::string& rArray, const val& rIsovalues,
                   int component, bool recordParentIds) {
     return with_js_errors([&]() -> val {
@@ -2452,9 +2703,16 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("interpolate", &interpolate_js);
     emscripten::function("slice", &slice_js);
     emscripten::function("isosurface", &isosurface_js);
+    emscripten::function("grid", &grid_js);
+    emscripten::function("voxelize", &voxelize_js);
+    emscripten::function("surfaceWatertightCheck", &surface_watertight_check_js);
+    emscripten::function("sampleDistance", &sample_distance_js);
+    emscripten::function("distanceToSurface", &distance_to_surface_js);
+    emscripten::function("computeSdf", &compute_sdf_js);
     emscripten::function("gradient", &gradient_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
+    emscripten::function("cropPredicate", &crop_predicate_js);
     emscripten::function("split", &split_js);
     emscripten::function("convertCells", &convert_cells_js);
     emscripten::function("refine", &refine_js);

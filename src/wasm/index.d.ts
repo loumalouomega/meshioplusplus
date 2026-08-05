@@ -294,6 +294,49 @@ export type OpSpec =
       location?: 'point' | 'cell';
       output?: string;
       component?: number;
+    }
+  | {
+      /**
+       * A regular grid around the mesh. One of the two steps that replace their
+       * input's geometry rather than transforming it: what comes out is a
+       * lattice, not the mesh that went in. Give exactly one of `resolution` and
+       * `cellSize`.
+       */
+      op: 'voxelize';
+      resolution?: number[];
+      cellSize?: number;
+      bounds?: number[];
+      padding?: number;
+      paddingRelative?: number;
+      fill?: VoxelFill;
+      attachOccupancy?: boolean;
+      maxCells?: number;
+      sign?: SdfSign;
+    }
+  | {
+      /**
+       * A signed distance field: a grid over the mesh's surface, filled. Like
+       * `voxelize` it replaces the geometry — what comes out is the grid,
+       * carrying `sdf:distance`. `structure: 'octree'` refines only near the
+       * surface and sizes itself from `rootResolution`/`maxDepth`, so passing
+       * `resolution` or `cellSize` with it is an error; its output is
+       * 1-irregular (it has hanging nodes).
+       */
+      op: 'computeSdf';
+      structure?: SdfStructure;
+      resolution?: number[];
+      cellSize?: number;
+      bounds?: number[];
+      padding?: number;
+      paddingRelative?: number;
+      rootResolution?: number;
+      maxDepth?: number;
+      bandCells?: number;
+      recordLevels?: boolean;
+      maxCells?: number;
+      sign?: SdfSign;
+      location?: SdfLocation;
+      band?: number;
     };
 
 /** Per-operation counters and caveats from a pipeline run. */
@@ -304,6 +347,18 @@ export interface OpReport {
 
 /** `gradient`'s differential operator. See doc/gradient.md. */
 export type GradientOperator = 'gradient' | 'divergence' | 'curl';
+
+/** Which cells `voxelize` keeps. See doc/voxelize.md. */
+export type VoxelFill = 'all' | 'surface' | 'inside';
+
+/** How a signed distance decides which side of the surface a point is on. */
+export type SdfSign = 'unsigned' | 'pseudonormal' | 'winding-number';
+
+/** Where a distance is evaluated on a mesh. */
+export type SdfLocation = 'corner' | 'center';
+
+/** What to do about a surface that is not watertight. */
+export type SdfWatertightCheck = 'off' | 'warn' | 'error';
 
 /** `gradient`'s reconstruction method. See doc/gradient.md. */
 export type GradientMethod = 'green-gauss' | 'least-squares';
@@ -326,6 +381,12 @@ export type NanPolicy = 'ignore' | 'replace' | 'fail';
 
 /** Cell-keeping rule for the crop operations: every node inside, or any. */
 export type CropMode = 'all' | 'any';
+
+/** Comparison for `cropPredicate` — the same vocabulary `refine`'s selector uses. */
+export type CropCompare = '<' | '<=' | '>' | '>=' | '==' | '!=';
+
+/** What `computeSdf` generates to carry the field. */
+export type SdfStructure = 'voxel' | 'octree';
 
 /** Partitioning criterion for `split`. */
 export type SplitBy = 'type' | 'component' | 'region' | 'tag';
@@ -925,6 +986,34 @@ export interface MeshioPlusPlusModule {
   ): Mesh;
 
   /**
+   * Subset a mesh to the cells whose value in a scalar `cell_data` array
+   * satisfies a comparison.
+   *
+   * Deliberately general rather than inside/outside-a-surface specific:
+   * inside/outside composes as `distanceToSurface(m, skin, 'pseudonormal',
+   * 'center')` then `cropPredicate(field.mesh, 'sdf:distance', '<', 0)`, and the
+   * same one mode also crops by `quality:*`, by a material id, or by anything
+   * `dataCalc` can produce.
+   *
+   * There is **no `mode`**: `cropBbox`/`cropPlane` test *points* and then need
+   * an all/any rule, whereas a `cell_data` predicate is already one value per
+   * cell and has nothing to reduce.
+   *
+   * **A non-finite cell value never matches**, whatever the comparison —
+   * `attachQuality` reports NaN where a metric does not apply.
+   * @throws {Error} when `array` is not a scalar `cell_data` array covering
+   *   every block, or the comparison is not one of `<`, `<=`, `>`, `>=`, `==`,
+   *   `!=`.
+   */
+  cropPredicate(
+    mesh: Mesh,
+    array: string,
+    compare?: CropCompare,
+    value?: number,
+    recordIds?: boolean,
+  ): Mesh;
+
+  /**
    * Planar cross-section of a mesh (marching tetrahedra on a simplexified
    * input): a volume mesh yields a triangle/quad surface, a 2D surface mesh a
    * line mesh. Crossing points on shared edges are deduped so the section is
@@ -952,6 +1041,120 @@ export interface MeshioPlusPlusModule {
     component?: number,
     recordParentIds?: boolean,
   ): Mesh;
+
+  /**
+   * A regular hexahedron lattice from nothing — the only entry point here that
+   * creates a mesh rather than transforming one. Points run x fastest, then y,
+   * then z; every cell is a right parallelepiped.
+   * @throws {Error} on a negative cell count, a non-positive spacing, or a grid
+   *   above `maxCells`.
+   */
+  grid(dims: number[], origin?: number[] | null, spacing?: number[] | null,
+       maxCells?: number): Mesh;
+
+  /**
+   * Build a regular grid around a mesh. Give exactly one of `resolution` and
+   * `cellSize`; `fill` selects the whole bounding box, only the cells a triangle
+   * passes through, or only the cells inside the surface.
+   * @throws {Error} when neither or both size options are given, on an unknown
+   *   `fill`/`sign`, or when the grid exceeds `maxCells`.
+   */
+  voxelize(
+    mesh: Mesh,
+    resolution?: number[] | null,
+    cellSize?: number,
+    bounds?: number[] | null,
+    padding?: number,
+    paddingRelative?: number,
+    fill?: VoxelFill,
+    sign?: SdfSign,
+    attachOccupancy?: boolean,
+    maxCells?: number,
+    watertightCheck?: SdfWatertightCheck,
+  ): {
+    mesh: Mesh;
+    dims: number[];
+    origin: number[];
+    spacing: number[];
+    numOccupied: number;
+  };
+
+  /** What is wrong with a surface, in numbers rather than a bare flag. */
+  surfaceWatertightCheck(mesh: Mesh): {
+    boundaryEdges: number;
+    nonManifoldEdges: number;
+    inconsistentPairs: number;
+    degenerateTriangles: number;
+    watertight: boolean;
+  };
+
+  /**
+   * Signed distances from a flat `[x0,y0,z0, x1,y1,z1, …]` array of query points
+   * to a surface. Negative is inside.
+   * @throws {Error} when the array length is not a multiple of three, or the
+   *   surface has no triangles.
+   */
+  sampleDistance(surface: Mesh, points: number[], sign?: SdfSign, band?: number,
+                 watertightCheck?: SdfWatertightCheck): Float64Array;
+
+  /**
+   * Attach the signed distance from a query mesh's points (or cell centres) to a
+   * surface, as `sdf:distance`.
+   */
+  distanceToSurface(
+    query: Mesh,
+    surface: Mesh,
+    sign?: SdfSign,
+    location?: SdfLocation,
+    band?: number,
+    recordInside?: boolean,
+    watertightCheck?: SdfWatertightCheck,
+  ): { mesh: Mesh; numBanded: number; quality: object };
+
+  /**
+   * Generate a grid over a surface and fill it with signed distances — the one
+   * call that turns a surface into a field.
+   *
+   * `structure` is `'voxel'` (a dense lattice) or `'octree'` (refined near the
+   * surface, and therefore **1-irregular**: it has hanging nodes, like
+   * `refine`'s `'balanced'` closure). `resolution`/`cellSize` size a voxel grid
+   * and are an **error** with `'octree'`, whose finest cell is
+   * `rootResolution / 2 ** maxDepth` and is therefore already determined.
+   *
+   * `dims` reports the ROOT cell counts and `spacing` the FINEST cell size. The
+   * mesh also carries the numeric `sdf:*` `field_data` header describing itself;
+   * no file format persists arbitrary `field_data`, so write it as `.vti`, whose
+   * `Origin`/`Spacing`/`WholeExtent` attributes are the same information.
+   * @throws {Error} when neither or both size options are given for a voxel
+   *   grid, when either is given for an octree, on a non-positive
+   *   `rootResolution`/`bandCells`, or when the grid exceeds `maxCells`.
+   */
+  computeSdf(
+    surface: Mesh,
+    structure?: SdfStructure,
+    resolution?: number[] | null,
+    cellSize?: number,
+    bounds?: number[] | null,
+    padding?: number,
+    paddingRelative?: number,
+    rootResolution?: number,
+    maxDepth?: number,
+    bandCells?: number,
+    recordLevels?: boolean,
+    maxCells?: number,
+    sign?: SdfSign,
+    location?: SdfLocation,
+    band?: number,
+    watertightCheck?: SdfWatertightCheck,
+  ): {
+    mesh: Mesh;
+    dims: number[];
+    origin: number[];
+    spacing: number[];
+    maxDepth: number;
+    numBanded: number;
+    quality: object;
+  };
 
   /**
    * Field differential operators: the gradient, divergence or curl of a

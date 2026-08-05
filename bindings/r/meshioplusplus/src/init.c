@@ -63,9 +63,17 @@ extern SEXP R_mio_clean(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_smooth(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_bbox(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_plane(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_crop_predicate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_slice(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_grid(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_voxelize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_compute_sdf(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                              SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_surface_watertight_check(SEXP);
+extern SEXP R_mio_sample_distance(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_distance_to_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_merge(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -169,9 +177,16 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_smooth, 9),
     CALLDEF(R_mio_crop_bbox, 5),
     CALLDEF(R_mio_crop_plane, 5),
+    CALLDEF(R_mio_crop_predicate, 5),
     CALLDEF(R_mio_slice, 4),
     CALLDEF(R_mio_isosurface, 5),
     CALLDEF(R_mio_gradient, 8),
+    CALLDEF(R_mio_grid, 4),
+    CALLDEF(R_mio_voxelize, 11),
+    CALLDEF(R_mio_compute_sdf, 16),
+    CALLDEF(R_mio_surface_watertight_check, 1),
+    CALLDEF(R_mio_sample_distance, 5),
+    CALLDEF(R_mio_distance_to_surface, 7),
     CALLDEF(R_mio_merge, 6),
     CALLDEF(R_mio_interpolate, 7),
     CALLDEF(R_mio_meshes_equal, 5),

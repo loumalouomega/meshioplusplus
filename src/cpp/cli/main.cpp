@@ -32,9 +32,11 @@
  */
 
 // System includes
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <utility>
 #include <exception>
 #include <filesystem>
@@ -72,6 +74,7 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -409,7 +412,7 @@ void print_usage(std::ostream& os) {
           "  ascii (a)               Rewrite a file in its ASCII variant (in place)\n"
           "  binary (b)              Rewrite a file in its binary variant (in place)\n"
           "  compress                Compress a mesh file (in place)\n"
-          "                            --codec zlib|lz4|zstd for vtu/vtp\n"
+          "                            --codec zlib|lz4|zstd for vti/vtu/vtp\n"
           "  decompress              Decompress a mesh file (in place)\n"
           "  quality (q)             Print mesh quality metrics\n"
           "  extract-surface (surface)  Extract the boundary surface/edges\n"
@@ -418,10 +421,16 @@ void print_usage(std::ostream& os) {
           "  merge                   Merge two or more meshes into one\n"
           "  transform               Affine transform (translate/scale/rotate/matrix/units)\n"
           "  clean                   Weld / prune / de-dup a mesh\n"
-          "  crop                    Subset by bounding box or half-space\n"
+          "  crop                    Subset by bounding box, half-space or a data\n"
+          "                            predicate: --bbox / --plane / --where 'N < V'\n"
           "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
+          "  voxelize                Regular hexahedron grid around a mesh\n"
+          "                            exactly one of --resolution/--cell-size;\n"
+          "                            --fill all|surface|inside\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
+          "  sdf                     Signed distance field: a grid over a surface,\n"
+          "                            filled -- --structure voxel|octree\n"
           "  split                   Partition into multiple files "
           "(type/region/regions/component)\n"
           "                            --by regions is one piece per named Cell region\n"
@@ -906,10 +915,10 @@ int cmd_compress(const std::vector<std::string>& rArgs) {
     // Accepting and ignoring it elsewhere would be the worst outcome: the user
     // would believe they got zstd and silently get gzip (or plain binary).
     const bool has_codec = has_opt(p, "codec");
-    if (has_codec && fmt != "vtu" && fmt != "vtp")
+    if (has_codec && fmt != "vti" && fmt != "vtu" && fmt != "vtp")
         throw std::runtime_error("--codec is not applicable to '" + fmt +
                                  "'; it selects the VTK XML block codec and only "
-                                 "vtu/vtp have one");
+                                 "vti/vtu/vtp have one");
 
     if (fmt == "ansys" || fmt == "gmsh" || fmt == "ply" || fmt == "stl" || fmt == "vtk") {
         write_binary_variant(infile, mesh, fmt, /*binary=*/true, "");
@@ -1164,12 +1173,54 @@ int cmd_clean(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// `NAME OP VALUE`, the spelling `crop --where` takes.
+//
+// Scanned longest-operator-first so "<=" is not read as "<" plus a stray "=",
+// and from the start of the string, because array names routinely contain a
+// colon (`sdf:distance`, `quality:scaled_jacobian`) but never an operator. The
+// Python CLI's `_parse_where` implements the identical rule.
+struct cli_where {
+    std::string mName;
+    meshioplusplus::RefineCompare mOp = meshioplusplus::RefineCompare::Less;
+    double mValue = 0.0;
+};
+
+cli_where cli_parse_where(const std::string& rText, const char* pVerb) {
+    static const char* ops[] = {"<=", ">=", "==", "!=", "<", ">"};
+    for (const char* op : ops) {
+        const std::size_t idx = rText.find(op);
+        if (idx == std::string::npos || idx == 0)
+            continue;
+        std::string name = rText.substr(0, idx);
+        std::string value = rText.substr(idx + std::strlen(op));
+        const auto trim = [](std::string& s) {
+            while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())))
+                s.erase(s.begin());
+            while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())))
+                s.pop_back();
+        };
+        trim(name);
+        trim(value);
+        if (name.empty() || value.empty())
+            continue;
+        cli_where out;
+        out.mName = name;
+        out.mOp = meshioplusplus::refine_compare_from_name(op);
+        out.mValue = std::stod(value);
+        return out;
+    }
+    throw std::runtime_error(std::string(pVerb) +
+                             ": --where expects 'NAME OP VALUE', with OP one of "
+                             "<=, >=, ==, !=, <, >");
+}
+
 int cmd_crop(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
                                   {"output-format", {"-o"}, true},
                                   {"bbox", {}, true},
                                   {"plane", {}, true},
+                                  {"where", {}, true},
                                   {"mode", {}, true},
                                   {"record-ids", {}, false},
                               });
@@ -1179,8 +1230,13 @@ int cmd_crop(const std::vector<std::string>& rArgs) {
 
     const bool has_bbox = p.values.count("bbox") != 0;
     const bool has_plane = p.values.count("plane") != 0;
-    if (has_bbox == has_plane)
-        throw std::runtime_error("crop: give exactly one of --bbox or --plane");
+    const bool has_where = p.values.count("where") != 0;
+    if (static_cast<int>(has_bbox) + static_cast<int>(has_plane) + static_cast<int>(has_where) != 1)
+        throw std::runtime_error("crop: give exactly one of --bbox, --plane or --where");
+    if (has_where && p.values.count("mode"))
+        throw std::runtime_error(
+            "crop: --mode applies to --bbox and --plane, which test points; a --where "
+            "predicate is already one value per cell and has nothing to reduce");
     std::string mode_s = opt_value(p, "mode", "all");
     if (mode_s != "all" && mode_s != "any")
         throw std::runtime_error("crop: --mode must be 'all' or 'any'");
@@ -1195,12 +1251,15 @@ int cmd_crop(const std::vector<std::string>& rArgs) {
             throw std::runtime_error("crop: --bbox expects 'xmin,ymin,zmin,xmax,ymax,zmax'");
         double lo[3] = {v[0], v[1], v[2]}, hi[3] = {v[3], v[4], v[5]};
         r = meshioplusplus::crop_bbox(mesh, lo, hi, mode, record_ids);
-    } else {
+    } else if (has_plane) {
         auto v = parse_doubles(opt_value(p, "plane"));
         if (v.size() != 6)
             throw std::runtime_error("crop: --plane expects 'px,py,pz,nx,ny,nz'");
         double point[3] = {v[0], v[1], v[2]}, normal[3] = {v[3], v[4], v[5]};
         r = meshioplusplus::crop_halfspace(mesh, point, normal, mode, record_ids);
+    } else {
+        const auto pred = cli_parse_where(opt_value(p, "where"), "crop");
+        r = meshioplusplus::crop_predicate(mesh, pred.mName, pred.mOp, pred.mValue, record_ids);
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -1234,6 +1293,173 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     Mesh out = meshioplusplus::slice(mesh, options);
 
     write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_voxelize(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"resolution", {}, true},
+                                  {"cell-size", {}, true},
+                                  {"bounds", {}, true},
+                                  {"padding", {}, true},
+                                  {"padding-relative", {}, true},
+                                  {"fill", {}, true},
+                                  {"sign", {}, true},
+                                  {"attach-occupancy", {}, false},
+                                  {"max-cells", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("voxelize requires exactly INFILE and OUTFILE");
+
+    const bool has_res = p.values.count("resolution") != 0;
+    const bool has_cell = p.values.count("cell-size") != 0;
+    if (has_res == has_cell)
+        throw std::runtime_error("voxelize: give exactly one of --resolution and --cell-size");
+
+    meshioplusplus::VoxelOptions options;
+    if (has_res) {
+        // parse_doubles rather than the int64 parser, which is defined further
+        // down this file; the values are small counts either way.
+        auto v = parse_doubles(opt_value(p, "resolution"));
+        if (v.size() != 3)
+            throw std::runtime_error("voxelize: --resolution expects 'nx,ny,nz'");
+        options.mResolution = std::array<std::int64_t, 3>{{static_cast<std::int64_t>(v[0]),
+                                                           static_cast<std::int64_t>(v[1]),
+                                                           static_cast<std::int64_t>(v[2])}};
+    } else {
+        options.mCellSize = std::stod(opt_value(p, "cell-size"));
+    }
+    // Negatives need the --bounds= form (the parser rule shared with --bbox).
+    if (p.values.count("bounds")) {
+        auto v = parse_doubles(opt_value(p, "bounds"));
+        if (v.size() != 6)
+            throw std::runtime_error("voxelize: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
+        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
+    }
+    if (p.values.count("padding"))
+        options.mPadding = std::stod(opt_value(p, "padding"));
+    if (p.values.count("padding-relative"))
+        options.mPaddingRelative = std::stod(opt_value(p, "padding-relative"));
+    options.mFill = meshioplusplus::voxel_fill_from_name(opt_value(p, "fill", "all"));
+    options.mDistance.mSign =
+        meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
+    options.mAttachOccupancy = has_flag(p, "attach-occupancy");
+    if (p.values.count("max-cells"))
+        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    // Only the inside fill depends on the surface being closed, so only it warns.
+    options.mDistance.mWatertightCheck = options.mFill == meshioplusplus::VoxelFill::Inside
+                                             ? meshioplusplus::SdfWatertightCheck::Warn
+                                             : meshioplusplus::SdfWatertightCheck::Off;
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::VoxelResult r = meshioplusplus::voxelize(mesh, options);
+
+    if (!has_flag(p, "quiet")) {
+        std::cout << "voxelized (" << opt_value(p, "fill", "all") << ")\n";
+        std::cout << "  grid:           " << r.mDims[0] << " x " << r.mDims[1] << " x "
+                  << r.mDims[2] << "\n";
+        std::cout << "  cell size:      " << r.mSpacing[0] << ", " << r.mSpacing[1] << ", "
+                  << r.mSpacing[2] << "\n";
+        std::cout << "  cells kept:     " << r.mNumOccupied << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_sdf(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"structure", {}, true},
+                                  {"resolution", {}, true},
+                                  {"cell-size", {}, true},
+                                  {"bounds", {}, true},
+                                  {"padding", {}, true},
+                                  {"padding-relative", {}, true},
+                                  {"root-resolution", {}, true},
+                                  {"max-depth", {}, true},
+                                  {"band-cells", {}, true},
+                                  {"sign", {}, true},
+                                  {"location", {}, true},
+                                  {"band", {}, true},
+                                  {"watertight-check", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("sdf requires exactly INFILE and OUTFILE");
+
+    meshioplusplus::SdfOptions options;
+    const std::string structure = opt_value(p, "structure", "voxel");
+    options.mStructure = meshioplusplus::sdf_structure_from_name(structure);
+    // resolution/cell_size size a voxel grid; the octree's finest cell is
+    // root/2^depth and is therefore already determined. The core refuses the
+    // combination by name, so this verb just forwards whatever was given.
+    if (p.values.count("resolution")) {
+        auto v = parse_doubles(opt_value(p, "resolution"));
+        if (v.size() != 3)
+            throw std::runtime_error("sdf: --resolution expects 'nx,ny,nz'");
+        options.mResolution = std::array<std::int64_t, 3>{{static_cast<std::int64_t>(v[0]),
+                                                           static_cast<std::int64_t>(v[1]),
+                                                           static_cast<std::int64_t>(v[2])}};
+    }
+    if (p.values.count("cell-size"))
+        options.mCellSize = std::stod(opt_value(p, "cell-size"));
+    // Negatives need the --bounds= form (the parser rule shared with --bbox).
+    if (p.values.count("bounds")) {
+        auto v = parse_doubles(opt_value(p, "bounds"));
+        if (v.size() != 6)
+            throw std::runtime_error("sdf: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
+        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
+    }
+    if (p.values.count("padding"))
+        options.mPadding = std::stod(opt_value(p, "padding"));
+    if (p.values.count("padding-relative"))
+        options.mPaddingRelative = std::stod(opt_value(p, "padding-relative"));
+    if (p.values.count("root-resolution"))
+        options.mRootResolution = std::stoll(opt_value(p, "root-resolution"));
+    if (p.values.count("max-depth"))
+        options.mMaxDepth = std::stoll(opt_value(p, "max-depth"));
+    if (p.values.count("band-cells"))
+        options.mBandCells = std::stod(opt_value(p, "band-cells"));
+    if (p.values.count("max-cells"))
+        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    options.mDistance.mSign =
+        meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
+    options.mDistance.mLocation =
+        meshioplusplus::sdf_location_from_name(opt_value(p, "location", "corner"));
+    if (p.values.count("band"))
+        options.mDistance.mBand = std::stod(opt_value(p, "band"));
+    options.mDistance.mWatertightCheck =
+        meshioplusplus::sdf_watertight_check_from_name(opt_value(p, "watertight-check", "warn"));
+
+    Mesh surface = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::SdfResult r = meshioplusplus::compute_sdf(surface, options);
+
+    if (!has_flag(p, "quiet")) {
+        std::size_t cells = 0;
+        for (const auto cb : r.mMesh.CellRange())
+            cells += cb.NumCells();
+        std::cout << "signed distance field (" << structure << ")\n";
+        std::cout << "  root grid:      " << r.mDims[0] << " x " << r.mDims[1] << " x "
+                  << r.mDims[2] << "\n";
+        std::cout << "  finest cell:    " << r.mSpacing[0] << ", " << r.mSpacing[1] << ", "
+                  << r.mSpacing[2] << "\n";
+        if (r.mMaxDepth != 0)
+            std::cout << "  octree depth:   " << r.mMaxDepth << "\n";
+        std::cout << "  cells:          " << cells << "\n";
+        if (options.mDistance.mBand > 0.0)
+            std::cout << "  banded:         " << r.mNumBanded << "\n";
+        if (!r.mQuality.mWatertight)
+            std::cout << "  surface:        NOT watertight (" << r.mQuality.mBoundaryEdges
+                      << " boundary, " << r.mQuality.mNonManifoldEdges << " non-manifold, "
+                      << r.mQuality.mInconsistentPairs << " inconsistent, "
+                      << r.mQuality.mDegenerateTriangles << " degenerate)\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -2527,6 +2753,10 @@ int main(int argc, char** argv) {
             return cmd_slice(rest);
         if (cmd == "isosurface")
             return cmd_isosurface(rest);
+        if (cmd == "voxelize")
+            return cmd_voxelize(rest);
+        if (cmd == "sdf")
+            return cmd_sdf(rest);
         if (cmd == "split")
             return cmd_split(rest);
         if (cmd == "regions")

@@ -1,50 +1,14 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.22.0** — 41 formats, twenty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
+Status at time of writing: **v9.25.0** — 42 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
 Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **XL** = a project in its own right.
 
-Multi-file / transient workflows (glob input, fan-in/fan-out, per-step pipeline
-execution, and Python's `TimeSeries` for random-access "hold a series as one
-value") shipped in full in v9.12.0 across every language surface including
-WASM — see [`doc/sequences.md`](sequences.md) — and so no longer appears here.
-
-Polyhedral meshes are first-class end to end as of v9.22.0: ragged blocks cross
-the flat C ABI in both directions, a geometric kernel measures them, they
-decompose into tetrahedra, and MED, EnSight, VTU, OpenFOAM and CGNS all read
-*and* write them — see [`doc/polyhedra.md`](polyhedra.md) — and so no longer
-appears here. Two leftovers live where they belong rather than here: OpenFOAM's
-writer is ASCII-only (a per-format encoding gap, recorded under
-[Quirks & limitations](formats/openfoam.md#quirks-limitations)), and `refine`
-and `decimate` still raise on a polyhedron, which is a refinement gap and is
-listed as one below.
-
-MDPA's arbitrary/gapped node ids (v9.13.0, read side) and original-id
-preservation on write, including a fixed `SubModelPart` stale-reference bug
-found along the way (v9.14.0, write side) shipped in full — see
-[`doc/formats/mdpa.md`](formats/mdpa.md#original-ids-preserved-on-write-v9-14-0)
-— and so no longer appears here.
-
 ---
 
-## 1. Signed distance fields for skin meshes (octree)
-
-**The gap.** meshio++ has surface extraction (`extract_surface`/`extract_skin`), slicing and isosurfacing, but no way to answer "how far is this point from the surface" — the primitive collision detection, offsetting, and voxelization-style ML preprocessing all need. A closed skin mesh (STL and friends: watertight triangle soup, no volume topology) is exactly the input shape this needs. Two spatial structures matter here and both should come out the other end as an ordinary, **exportable** `Mesh`, not a bespoke in-memory-only object: a sparse **octree** (adaptive, coarse away from the surface, refined near it — cheap on RAM, the acceleration structure for the nearest-triangle queries themselves) and a dense **regular voxel grid** (uniform cell size, the shape most voxel/ML tooling and simple boolean pipelines actually expect). They should be two generation modes of the same feature, not two separate ones.
-
-- **Spike: where does the grid live in the data model?** The natural encoding is a `hexahedron` (or `custom` for an octree with T-junction/hanging-node leaves) `CellBlock` per cell — a voxel grid is trivially one uniform block, an octree needs the ragged/`custom` path or a balancing pass (`refine`'s `Balanced` closure is the existing precedent for 2:1-balanced hanging nodes). Getting this right is what makes "exportable" free: once it *is* a `Mesh`, every existing writer (VTU, VTK, gmsh, …) already handles it, `view`/`screenshot` already render it, and no new file format needs writing. Decide the exact cell layout and any non-mesh metadata's (bounds, depth, cell size) home (a `SdfInfo` side-channel, the `MedInfo`/`GmshInfo` precedent) before committing, following the NURBS-spike precedent (§9). **S**
-- **Voxel grid generation**: `voxelize(mesh, VoxelOptions{resolution|cell_size, bounds, band})` — a dense uniform `hexahedron` block over the mesh's (optionally padded) bounding box. The simpler of the two structures; a good first deliverable and the base case the octree generalizes. **M**
-- **Octree construction over a closed triangle skin**: adaptive subdivision to a max depth / target cell size, refined near the surface (leaf-triangle bucketing reusing `detail/spatial_hash.hpp`'s bucket-grid idiom), coarse away from it, and balanced/exported the same way the voxel grid is. **M**
-- **Signed distance evaluation**, shared by both structures, per cell (corner or center): nearest-triangle distance (the same bucket search) plus a sign — fast winding number, or angle-weighted pseudo-normals for a possibly-imperfect/non-watertight STL. Stored as ordinary `point_data`/`cell_data` (e.g. `sdf:distance`), so it is exported and colored exactly like any other field, with no new data convention needed. **M**
-- **`compute_sdf(mesh, SdfOptions{structure: octree|voxel, resolution|max_depth, band, watertight_check})`** as a new operation, exposed like the others (pybind / C-ABI / Fortran / WASM / a `sdf` CLI verb) returning the grid as a `Mesh` plus a point-query API (`sample(x, y, z)`) for callers who just want values, not the mesh. **L**
-- **Downstream writers/consumers**: since the result is a real `Mesh`, `write(grid, "out.vtu")` and friends already work; add only what a plain mesh writer cannot express — a dense binary voxel dump (NRRD/raw-array style) for ML tooling that wants a tensor, not a mesh. Once the primitive exists, offsetting and inside/outside queries for `crop`/`merge` follow cheaply. **S–M**
-
-*Recommended entry point: the data-model spike (get the cell-layout choice right so both structures are exportable for free), then voxel generation (the simpler case), then the octree and shared SDF evaluation on a single closed STL skin.*
-
----
-
-## 2. Machine-learning data handling
+## 1. Machine-learning data handling
 
 **The gap.** v8.2.0 gave Arrow/Parquet export of `point_data`/`cell_data`, which is the right primitive but only the first step. ML pipelines want *datasets* (many meshes), tabular frames, batched tensors and stable feature layouts — none of which exist.
 
@@ -59,12 +23,12 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 3. NVIDIA PhysicsNeMo integration
+## 2. NVIDIA PhysicsNeMo integration
 
 **The gap.** PhysicsNeMo (github.com/NVIDIA/physicsnemo) is the mainstream open Physics-ML framework, and its data ingestion is where most users write bespoke glue. meshio++ already has 41 readers, GPU/DLPack handoff, and the operations (`interpolate`, `partition`, `gradient`, `decimate`) that a training pipeline needs for preprocessing. A thin, well-documented bridge would let people train on simulation output without integrating their solver at all — which is exactly the friction PhysicsNeMo users hit.
 
 - **Reconnaissance first, and treat it as a real deliverable.** PhysicsNeMo's dataset/datapipe contracts, its mesh and point-cloud conventions, and its dependency weight (CUDA-specific, container-oriented) all need checking against the repo's "optional, gated, never in `[all]`" rule. Write the findings down before writing code — the CuPy packaging finding is the precedent for how this repo handles such constraints. **S**
-- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the §2 feature-matrix contract and the existing DLPack handoff. Pure Python, lazily imported, named install error. **M**
+- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the §1 feature-matrix contract and the existing DLPack handoff. Pure Python, lazily imported, named install error. **M**
 - **Preprocessing recipes as pipeline documents** — sampling, normalisation, surface extraction, decimation, partitioning into training patches — expressed as v9.11.0 `settings.json` files so they are reproducible and reviewable rather than notebook cells. A strong fit for the pipeline engine, and cheap once the adapter exists. **S–M**
 - **A worked end-to-end example**: simulation output → meshio++ preprocessing → PhysicsNeMo training → inference results read back as a mesh and rendered. The example *is* the feature; without it the adapter will not be adopted. **M**
 - **CI reality check**: PhysicsNeMo needs a GPU, which public runners do not have. Follow the precedent set for the GPU work — test the pure adapter logic without the framework, gate the rest, and state plainly that the integration path is not covered by public CI. **S**
@@ -73,7 +37,7 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 4. Remaining refinement and coarsening gaps
+## 3. Remaining refinement and coarsening gaps
 
 `refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
 
@@ -84,7 +48,7 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 5. Field capability beyond derivatives
+## 4. Field capability beyond derivatives
 
 - **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
 - **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
@@ -92,7 +56,7 @@ found along the way (v9.14.0, write side) shipped in full — see
 
 ---
 
-## 6. Scale
+## 5. Scale
 
 The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
 
@@ -102,7 +66,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 7. Ecosystem reach
+## 6. Ecosystem reach
 
 - **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
@@ -110,15 +74,15 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 8. Quality of implementation
+## 7. Quality of implementation
 
-- **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 41 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
+- **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 42 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
 - **Property-based testing** (Hypothesis) over the invariants already articulated in the docs: partition-of-unity, volume conservation, conformity, byte-identical determinism. **M**
 
 ---
 
-## 9. NURBS and higher-order geometry (long run)
+## 8. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -131,11 +95,11 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 10. Mesh generation
+## 9. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
-- **Primitive constructors** — `box`, `grid(nx,ny,nz)`, `sphere`, `cylinder`, `disk`. Trivial, dependency-free, and it removes the fixture-file dependency from tests, docs, notebooks, the browser demo and the MCP server. Highest leverage per line of code in this document. **S**
+- **Primitive constructors** — `box`, `sphere`, `cylinder`, `disk`. (`grid(nx,ny,nz)` shipped in v9.24.0 as part of the signed-distance work, over the same `detail/grid_lattice.hpp`; the rest follow the same shape.) Trivial, dependency-free, and it removes the fixture-file dependency from tests, docs, notebooks, the browser demo and the MCP server. Highest leverage per line of code in this document. **S**
 - **`extrude`** — 2D → 3D sweep (triangle→wedge, quad→hexahedron), `nlayers`, per-layer offsets. The most-requested generation primitive; repeatedly deferred. **M**
 - **`revolve`** — extrude's rotational sibling, sweeping around an axis. **M**
 - **Delaunay / constrained 2D meshing** — genuinely useful, but robust geometric predicates are where dependency-free stops paying. Better as an optional Triangle or Gmsh backend, following the KaHIP pattern. **L**
@@ -144,9 +108,8 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## Suggested sequencing
 
-1. **Primitive constructors (§10, first item)** — a few days, and it improves testing, docs and every demo surface at once.
-2. **ML data handling (§2)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §3.
-3. **PhysicsNeMo reconnaissance (§3, first item)** — a written findings note before any code.
-4. **SDF/octree spike (§1, first item)** — a documented data-model decision before the octree/SDF work is scheduled.
-5. **Fuzzing (§8)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-6. **NURBS spike (§9)** — a documented investigation, scheduled independently of the rest.
+1. **Primitive constructors (§9, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
+2. **ML data handling (§1)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §2.
+3. **PhysicsNeMo reconnaissance (§2, first item)** — a written findings note before any code.
+4. **Fuzzing (§7)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+5. **NURBS spike (§8)** — a documented investigation, scheduled independently of the rest.

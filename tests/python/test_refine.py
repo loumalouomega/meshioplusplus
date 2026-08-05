@@ -647,6 +647,16 @@ def test_cpp_matches_python_selective(factory, n, selected, closure, levels):
     assert np.array_equal(np.asarray(got.points), np.asarray(want.points))
     for a, b in zip(got.cell_data["refine:level"], want.cell_data["refine:level"]):
         assert np.array_equal(np.asarray(a).reshape(-1), np.asarray(b).reshape(-1))
+    # The two reserved point arrays too: they decide whether a later pass reuses
+    # a node or tears the mesh, so the two engines disagreeing about them would
+    # make every *subsequent* pass diverge rather than this one.
+    assert set(got.point_data) == set(want.point_data)
+    for name in ("refine:hanging", "refine:entity"):
+        if name in got.point_data:
+            a = np.asarray(got.point_data[name])
+            b = np.asarray(want.point_data[name])
+            assert a.dtype == b.dtype and a.shape == b.shape, name
+            assert a.tobytes() == b.tobytes(), name
 
 
 # --------------------------------------------------------------------------- #
@@ -684,6 +694,10 @@ def _hanging_node_ids(mesh):
     The face centres matter as much as the edge midpoints: a split face leaves
     one on a neighbour that still spans the face whole, and a solver has to
     constrain it too.
+
+    A node the cell itself references is not constrained *by that cell*, which
+    only starts to matter once a pass refines more than one level: a child's
+    corner can then coincide with a coarser neighbour's edge midpoint.
     """
     from meshioplusplus._refine_templates import EDGES, QUAD_FACES
 
@@ -692,18 +706,37 @@ def _hanging_node_ids(mesh):
     out = set()
     for cb in mesh.cells:
         data = np.asarray(cb.data)
-        for a, b in EDGES[cb.type]:
-            for m in (points[data[:, a]] + points[data[:, b]]) * 0.5:
-                hit = at.get(tuple(m))
-                if hit is not None:
-                    out.add(hit)
-        for face in QUAD_FACES[cb.type]:
-            centres = sum(points[data[:, i]] for i in face) / 4.0
-            for m in centres:
-                hit = at.get(tuple(m))
-                if hit is not None:
+        for c, row in enumerate(data):
+            own = set(int(x) for x in row)
+            spots = [
+                tuple((points[row[a]] + points[row[b]]) * 0.5)
+                for a, b in EDGES[cb.type]
+            ]
+            spots += [
+                tuple(sum(points[row[i]] for i in face) / 4.0)
+                for face in QUAD_FACES[cb.type]
+            ]
+            for m in spots:
+                hit = at.get(m)
+                if hit is not None and hit not in own:
                     out.add(hit)
     return out
+
+
+def _torn_positions(mesh):
+    """Positions carrying two distinct node ids that cells both reference.
+
+    Distinct from a hanging node: the mesh is torn, and no `refine:hanging` flag
+    can describe it because both nodes are genuinely used.
+    """
+    used = set()
+    for cb in mesh.cells:
+        used.update(int(x) for x in np.asarray(cb.data).reshape(-1))
+    seen = {}
+    for i, p in enumerate(np.asarray(mesh.points)):
+        if i in used:
+            seen.setdefault(tuple(p), []).append(i)
+    return [ids for ids in seen.values() if len(ids) > 1]
 
 
 def test_balanced_keeps_hanging_nodes_instead_of_closing():
@@ -728,6 +761,98 @@ def test_the_conforming_closures_leave_no_hanging_array():
         out = refine(mesh, cells=[13], closure=closure, record_levels=True)
         _assert_conforming(out)
         assert "refine:hanging" not in out.point_data
+
+
+# --------------------------------------------------------------------------- #
+# multi-pass balanced: tearing, and reporting every constrained node           #
+# --------------------------------------------------------------------------- #
+def test_the_tear_oracle_actually_fires():
+    """A mesh with two referenced nodes at one position must be caught."""
+    torn = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [1, 0, 0]], dtype=float),
+        [("triangle", np.array([[0, 1, 2], [0, 2, 3], [4, 2, 3]], dtype=np.int64))],
+    )
+    assert len(_torn_positions(torn)) == 1
+    assert _torn_positions(_hex_grid(2)) == []
+
+
+@pytest.mark.parametrize("levels", [2, 3])
+def test_multi_pass_balanced_does_not_tear_the_mesh(levels):
+    """Refining one cell twice draws its coarse neighbours in by the balance rule.
+
+    Those already carry hanging nodes from the first pass, and their own
+    refinement must reuse them rather than allocate a coincident second node --
+    which would leave the two sides of the interface referencing different nodes
+    at the same point. That is what ``refine:entity`` is for.
+    """
+    out = refine(
+        _hex_grid(4), cells=[0], levels=levels, closure="balanced", record_levels=True
+    )
+    assert _torn_positions(out) == []
+    assert _max_level_gap(out) <= 1
+
+
+@pytest.mark.parametrize("levels", [1, 2, 3])
+def test_multi_pass_balanced_reports_every_constrained_node(levels):
+    """Neither a superset nor a subset, which is what doc/refine.md promises.
+
+    Stating the rule over the *input* cells' entities under-reports here: a cell
+    the balance rule draws in has children whose sub-edges the input cell never
+    had, so a node the neighbouring refinement places on one of them is
+    constrained without any input entity ever naming it.
+    """
+    out = refine(
+        _hex_grid(4), cells=[0], levels=levels, closure="balanced", record_levels=True
+    )
+    flags = np.asarray(out.point_data["refine:hanging"]).reshape(-1)
+    assert set(np.flatnonzero(flags).tolist()) == _hanging_node_ids(out)
+
+
+def test_entity_keys_describe_the_nodes_they_name():
+    out = refine(_hex_grid(3), cells=[13], closure="balanced")
+    keys = np.asarray(out.point_data["refine:entity"])
+    points = np.asarray(out.points)
+    assert keys.shape == (len(points), 4)
+    keyed = 0
+    for i, key in enumerate(keys):
+        if key[3] < 0:
+            continue  # sentinel: an original point or a body centre
+        keyed += 1
+        corners = key[2:] if key[0] < 0 else key
+        assert np.allclose(
+            points[i], points[list(corners)].mean(axis=0), rtol=0, atol=0
+        )
+    assert keyed > 0
+
+
+def test_the_conforming_closures_attach_no_entity_array():
+    """They cannot tear, so they must not pay for the bookkeeping that prevents it."""
+    mesh = _hex_grid(3)
+    for closure in ("redgreen", "propagate"):
+        out = refine(mesh, cells=[13], levels=2, closure=closure)
+        assert "refine:entity" not in out.point_data
+    assert "refine:entity" not in refine(mesh, levels=2).point_data
+
+
+def test_a_stale_entity_array_is_ignored_rather_than_trusted():
+    """The keys name point indices, which refine never renumbers but other
+    operations do. A key that no longer reproduces its own point's coordinates
+    invalidates the whole array: refine falls back to allocating fresh nodes,
+    which is the old behaviour rather than a wrong answer."""
+    stale = _hex_grid(3)
+    keys = np.full((len(stale.points), 4), -1, dtype=np.int64)
+    keys[0] = (-1, -1, 1, 2)  # point 0 is a corner, not that edge's midpoint
+    stale.point_data["refine:entity"] = keys
+
+    with pytest.warns(UserWarning, match="refine:entity"):
+        from meshioplusplus._refine import _read_entity_keys
+
+        assert _read_entity_keys(stale) is None
+
+    got = refine(stale, cells=[13], closure="balanced")
+    want = refine(_hex_grid(3), cells=[13], closure="balanced")
+    assert np.array_equal(np.asarray(got.points), np.asarray(want.points))
+    assert np.array_equal(np.asarray(got.cells[0].data), np.asarray(want.cells[0].data))
 
 
 def test_balanced_does_not_propagate_on_a_mesh_of_uniform_level():

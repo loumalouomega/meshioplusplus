@@ -38,6 +38,8 @@ Public API:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from ._mesh import Mesh
@@ -68,6 +70,14 @@ LEVEL_NAME = "refine:level"
 #: The Int64 ``point_data`` array the balanced closure attaches: ``1`` for a
 #: hanging (constrained) node, ``0`` otherwise.
 HANGING_NAME = "refine:hanging"
+
+#: The Int64 ``(num_points, 4)`` ``point_data`` array recording the entity each
+#: point was created on -- ``(-1, -1, a, b)`` for the midpoint of edge ``(a, b)``,
+#: the sorted ``(p, q, r, s)`` for a quad-face centre, and ``(-1, -1, -1, -1)``
+#: for a point ``refine`` did not create. It lets a later pass reuse a node an
+#: earlier one already placed on an entity instead of allocating a coincident
+#: duplicate. See ``operations/refine.hpp``'s ``kRefineEntityName``.
+ENTITY_NAME = "refine:entity"
 
 
 # --------------------------------------------------------------------------- #
@@ -219,6 +229,53 @@ def _read_levels(mesh, blocks):
     return np.concatenate(out) if out else np.empty(0, dtype=np.int64)
 
 
+def _read_entity_keys(mesh):
+    """The per-point entity keys already on a mesh, or ``None``.
+
+    Mirrors ``refine_read_entity_keys`` in the C++ core, guard included: the
+    entries name point indices, which ``refine`` never renumbers but
+    ``reorder``/``clean``/``crop``/``merge`` do and ``transform``/``smooth``
+    move, so every key must still reproduce its own point's coordinates by the
+    same arithmetic that wrote them. A stale array is warned about and dropped
+    rather than trusted, since trusting one grafts an entity's node onto another.
+    """
+    value = mesh.point_data.get(ENTITY_NAME)
+    if value is None:
+        return None
+    n = len(mesh.points)
+    value = np.asarray(value)
+    if value.shape[:1] != (n,) or (n and value.reshape(n, -1).shape[1] != 4):
+        warnings.warn(
+            f"refine: ignoring {ENTITY_NAME!r}: it is not four values per point.",
+            stacklevel=2,
+        )
+        return None
+    keys = value.reshape(n, 4).astype(np.int64, copy=False)
+
+    points = np.asarray(mesh.points)
+    for p in range(n):
+        key = keys[p]
+        if key[3] < 0:
+            continue  # the (-1, -1, -1, -1) sentinel
+        corners = key[2:] if key[0] < 0 else key
+        if np.any(corners < 0) or np.any(corners >= n):
+            ok = False
+        else:
+            # _extend's arithmetic, verbatim: the same mean, cast back through
+            # the points' own dtype.
+            want = points[list(corners)].mean(axis=0).astype(points.dtype)
+            ok = bool(np.array_equal(want, points[p]))
+        if not ok:
+            warnings.warn(
+                f"refine: ignoring {ENTITY_NAME!r}: point {p} no longer sits on the "
+                "entity it records, so the mesh was renumbered or moved since it "
+                "was written.",
+                stacklevel=2,
+            )
+            return None
+    return keys
+
+
 def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False):
     n = len(mesh.points)
     blocks = [(cb.type, np.asarray(cb.data)) for cb in mesh.cells]
@@ -263,6 +320,7 @@ def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False
     masks = np.zeros(total_cells, dtype=np.int64)
     split = np.zeros(len(entities), dtype=bool)
     base_levels = _read_levels(mesh, blocks)
+    base_entities = _read_entity_keys(mesh)
     if red_seed is not None and closure == "balanced":
         # 2:1 balance. A cell is split fully or not at all -- no transitional
         # templates -- and is drawn in only when a neighbour would otherwise end
@@ -373,34 +431,29 @@ def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False
                 if mask & need == need:
                     needs[entity_of_slot[s0 + nedges + f]] = True
 
+    # An entity whose key the input already recorded keeps the node it already
+    # has, whether or not this pass splits it: reusing a split entity's node is
+    # what stops the balance rule from tearing the mesh, and resolving an unsplit
+    # one keeps the hanging rule a single statement. The (-1, -1, -1, -1)
+    # sentinel is skipped -- it is what every original point and body centre
+    # carries, so admitting it would collide them all on one key.
+    persisted_node = {}
+    if base_entities is not None:
+        for p in range(n):
+            key = tuple(int(x) for x in base_entities[p])
+            if key[3] < 0:
+                continue
+            persisted_node.setdefault(key, p)
+
     node_of_entity = np.full(len(entities), -1, dtype=np.int64)
-    kept = [e for e in range(len(entities)) if needs[e]]
+    if persisted_node:
+        for e, key in enumerate(entities):
+            found = persisted_node.get(key)
+            if found is not None:
+                node_of_entity[e] = found
+    kept = [e for e in range(len(entities)) if needs[e] and node_of_entity[e] < 0]
     for i, e in enumerate(kept):
         node_of_entity[e] = n + i
-
-    # A new node is hanging exactly when some emitted cell is incident to its
-    # entity but does not reference it. Stated over entities rather than per
-    # closure, so it stays correct if another mode ever leaves some.
-    hanging = np.zeros(n + len(kept), dtype=bool)
-    for b, (cell_type, data) in enumerate(blocks):
-        edges = EDGES[cell_type]
-        faces = QUAD_FACES[cell_type]
-        nslots = len(edges) + len(faces)
-        face_masks = [face_edge_mask(cell_type, f) for f in faces]
-        for c in range(len(data)):
-            mask = int(masks[first_cell[b] + c])
-            s0 = first_slot[b] + c * nslots
-            for sl in range(nslots):
-                if sl < len(edges):
-                    referenced = bool(mask >> sl & 1)
-                else:
-                    need = face_masks[sl - len(edges)]
-                    referenced = mask & need == need
-                if referenced:
-                    continue
-                node = node_of_entity[entity_of_slot[s0 + sl]]
-                if node >= 0:
-                    hanging[node] = True
 
     body_base = n + len(kept)
     body_of_cell = np.full(total_cells, -1, dtype=np.int64)
@@ -493,8 +546,59 @@ def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False
         parent_of_child.append(parents)
         red_child.append(reds)
 
+    # --- phase 8: the output's own entity keys, and the hanging set
+    # Body centres and original points keep the sentinel: interior to one cell or
+    # created by nothing, so nothing can ever look one up.
+    out_entities = np.full((n_out, 4), -1, dtype=np.int64)
+    if base_entities is not None:
+        out_entities[:n] = base_entities
+    for i, e in enumerate(kept):
+        out_entities[n + i] = entities[e]
+
+    # The rule is "a node sits on an entity of a cell that does not reference
+    # it", evaluated over the EMITTED cells rather than over the input cells'
+    # entities. Those differ once a pass splits more than one level: a cell the
+    # balance rule draws in has children whose sub-edges the input cell never
+    # had, and a node the neighbouring refinement places on one of them is
+    # constrained without any input entity naming it.
+    hanging = np.zeros(n_out, dtype=bool)
+    any_partial = any(
+        int(masks[first_cell[b] + c]) != FULL_MASK[cell_type]
+        for b, (cell_type, data) in enumerate(blocks)
+        for c in range(len(data))
+    )
+    if any_partial or base_entities is not None:
+        node_at_entity = {}
+        for p in range(n_out):
+            key = tuple(int(x) for x in out_entities[p])
+            if key[3] < 0:
+                continue
+            node_at_entity.setdefault(key, p)
+        if node_at_entity:
+            for b, (cell_type, conn) in enumerate(new_cells):
+                edges = EDGES[cell_type]
+                faces = QUAD_FACES[cell_type]
+                for row in conn:
+                    own = set(int(x) for x in row)
+                    keys_here = []
+                    for a, bb in edges:
+                        x, y = int(row[a]), int(row[bb])
+                        keys_here.append((-1, -1, x, y) if x < y else (-1, -1, y, x))
+                    for f in faces:
+                        keys_here.append(tuple(sorted(int(row[i]) for i in f)))
+                    for key in keys_here:
+                        node = node_at_entity.get(key)
+                        if node is not None and node not in own:
+                            hanging[node] = True
+
     point_data = {}
     for key, value in mesh.point_data.items():
+        # Both reserved point arrays are this operation's own bookkeeping and are
+        # rebuilt below. Carrying them through here would interpolate them: a
+        # hanging flag averaged to 0.5 and truncated, an entity key to the mean
+        # of two unrelated node ids.
+        if key in (HANGING_NAME, ENTITY_NAME):
+            continue
         value = np.asarray(value)
         if value.shape[:1] != (n,):
             point_data[key] = value.copy()
@@ -534,9 +638,14 @@ def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False
         cell_data[LEVEL_NAME] = levels_out
 
     if hanging.any():
-        point_data[HANGING_NAME] = np.concatenate(
-            [hanging.astype(np.int64), np.zeros(n_out - len(hanging), dtype=np.int64)]
-        ).reshape(-1, 1)
+        point_data[HANGING_NAME] = hanging.astype(np.int64).reshape(-1, 1)
+
+    # Attached whenever this pass leaves hanging nodes, and maintained thereafter
+    # once present, exactly as refine:level is. A pass that leaves none and
+    # inherits none writes nothing, which keeps every conforming closure's output
+    # byte-identical to what it was before the array existed.
+    if hanging.any() or base_entities is not None:
+        point_data[ENTITY_NAME] = out_entities
 
     out = Mesh(
         out_points,

@@ -40,3 +40,19 @@ fixture <- function() {
   mio_append_cell_data(m, "material", c(7, 9))
   m
 }
+
+# The unit cube as a closed, outward-wound triangle surface. The distance tests
+# need a watertight surface, and the tetra fixture above is a volume.
+cube_surface <- function() {
+  m <- mio_mesh()
+  mio_set_points(m, matrix(c(
+    0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+    0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1
+  ), nrow = 3))
+  mio_add_cell_block(m, "triangle", matrix(c(
+    1, 3, 2, 1, 4, 3, 5, 6, 7, 5, 7, 8,
+    1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6,
+    3, 4, 8, 3, 8, 7, 4, 1, 5, 4, 5, 8
+  ), nrow = 3))
+  m
+}

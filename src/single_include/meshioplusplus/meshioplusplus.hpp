@@ -7421,6 +7421,214 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/file_source.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/grid_lattice.hpp =====
+/**
+ * @file detail/grid_lattice.hpp
+ * @brief The single owner of the **regular hexahedron lattice**: an axis-aligned
+ * box of `nx * ny * nz` cells over a corner point grid, as an ordinary `Mesh`.
+ *
+ * Three consumers need exactly this object and must not disagree about its
+ * numbering:
+ *  - `grid()`, the public primitive constructor;
+ *  - `voxelize()` and `compute_sdf()`, whose dense output *is* a lattice;
+ *  - `read_vti`, since VTK ImageData is an implicit lattice that has to be
+ *    expanded into explicit cells before it can be a `Mesh` -- and `write_vti`,
+ *    which runs `lattice_from_mesh` in the other direction to recover the
+ *    `Origin`/`Spacing`/`WholeExtent` it has to emit.
+ *
+ * ### The numbering is inherited, not invented
+ *
+ * Points run **x fastest, then y, then z**, and cells run in that same order:
+ *
+ * ```
+ * vid(i, j, k) = (k * (ny + 1) + j) * (nx + 1) + i
+ * cid(i, j, k) = (k *  ny      + j) *  nx      + i
+ * ```
+ *
+ * with each cell's eight nodes in the meshio/VTK `hexahedron` winding (bottom
+ * ring counter-clockwise, then the top ring), so `detail/cell_faces.hpp`'s
+ * "base (0,1,2,3) normal points toward the top (4,5,6,7)" holds and every cell of
+ * a positively-spaced lattice is a right parallelepiped with unit scaled
+ * Jacobian. That is a free structural oracle: a transposed axis shows up as an
+ * inverted cell, not as a subtly wrong picture.
+ *
+ * This is the ordering the repo's existing C++/Python byte-identity fixtures
+ * already agree on (`tests/cpp/test_refine.cpp`'s `hex_grid`, and its twin in
+ * `tests/python/test_refine.py`). A handful of older fixtures use a transposed
+ * linearization; they are deliberately left alone, since changing them would
+ * rewrite committed expected values for no gain.
+ *
+ * x-fastest is also VTK ImageData's own ordering, which is what makes the `.vti`
+ * writer a straight copy and what makes `cell_data` reshape to `arr[z, y, x]` —
+ * the C-order tensor layout voxel tooling expects.
+ *
+ * ### Two properties worth stating as contracts
+ *
+ * **Shared corners are deduplicated arithmetically.** Neighbouring cells reference
+ * the same node because the index formula says so — there is no hash, no
+ * tolerance and no welding pass, so conformity and determinism here are
+ * structural rather than defended.
+ *
+ * **Coordinates are `origin + index * spacing`, never accumulated.** An
+ * accumulating `x += h` makes the last plane's coordinates depend on `nx` in the
+ * low bits, which would make the numpy twin's loop-versus-`arange` choice
+ * observable.
+ *
+ * Free functions in `meshioplusplus::detail`, called once per operation rather
+ * than per element, so their bodies live in
+ * `src/cpp/src/detail/grid_lattice.cpp` — the convention
+ * `detail/cell_adjacency.hpp` and `detail/subset.hpp` follow. Anonymous-namespace
+ * helpers there are prefixed `lat_`; note `grid_` is already owned by
+ * `detail/spatial_hash.hpp`'s `grid_quantize`, which is a different thing
+ * entirely (a bucket hash, not a mesh).
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The geometry of a regular lattice: where it starts, how big a cell is,
+ * and how many there are along each axis.
+ *
+ * A cell count of zero on any axis describes an empty lattice, which is a legal
+ * (if useless) request rather than an error -- `grid(0, 0, 0)` is an empty mesh,
+ * not a throw.
+ */
+struct LatticeSpec {
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};   ///< The lo corner.
+    std::array<double, 3> mSpacing{{1.0, 1.0, 1.0}};  ///< Cell size per axis.
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};     ///< Cell counts per axis.
+};
+
+/// Number of points a lattice has: `(nx + 1)(ny + 1)(nz + 1)`.
+MESHIOPLUSPLUS_API std::int64_t lattice_num_points(const LatticeSpec& rSpec);
+
+/// Number of cells a lattice has: `nx * ny * nz`.
+MESHIOPLUSPLUS_API std::int64_t lattice_num_cells(const LatticeSpec& rSpec);
+
+/**
+ * @brief Build the lattice from `rSpec` bounds.
+ * @param rLo the lo corner of the box to cover.
+ * @param rHi the hi corner; each component must be >= the matching `rLo`.
+ * @param rDims cell counts per axis.
+ * @return the spec whose origin is `rLo` and whose spacing divides the box
+ *         exactly into `rDims` cells. An axis with zero cells gets zero spacing.
+ */
+MESHIOPLUSPLUS_API LatticeSpec lattice_from_bounds(const std::array<double, 3>& rLo,
+                                                   const std::array<double, 3>& rHi,
+                                                   const std::array<std::int64_t, 3>& rDims);
+
+/**
+ * @brief Build the lattice covering `rLo`..`rHi` with cells of at most
+ *        `rCellSize`, growing the box up rather than shrinking a cell.
+ *
+ * Each axis gets `ceil(extent / cell)` cells (at least one when the extent is
+ * positive), so the lattice covers the box completely and its hi corner may sit
+ * slightly beyond `rHi`. Covering is the property callers depend on; an exactly
+ * fitting box would need a per-axis cell size that is not the one asked for.
+ */
+MESHIOPLUSPLUS_API LatticeSpec lattice_from_cell_size(const std::array<double, 3>& rLo,
+                                                      const std::array<double, 3>& rHi,
+                                                      const std::array<double, 3>& rCellSize);
+
+/**
+ * @brief Materialize a lattice as a `Mesh` with one `hexahedron` cell block.
+ * @param rSpec the lattice geometry.
+ * @return the mesh; points are Float64 `(n, 3)`, connectivity Int64 `(m, 8)`.
+ *         An empty lattice yields a mesh with no points and no cell block at all
+ *         rather than a zero-row one, so `NumCellBlocks() == 0` says "nothing
+ *         here" without a caller having to look at the row count.
+ */
+MESHIOPLUSPLUS_API Mesh lattice_build_mesh(const LatticeSpec& rSpec);
+
+/**
+ * @brief A "cover this mesh with a lattice" request, in the shape every caller
+ * spells it: a resolution *or* a cell size, optional explicit bounds, padding.
+ *
+ * `VoxelOptions` and `SdfOptions` both carry exactly these six fields and both
+ * resolve them the same way, so the resolution lives here once rather than in
+ * each operation. `pPrefix` is passed in rather than baked in so each operation's
+ * errors still name themselves (`meshio++: voxelize: ...`).
+ */
+struct LatticeRequest {
+    std::optional<std::array<std::int64_t, 3>> mResolution;  ///< Cell counts per axis.
+    std::optional<double> mCellSize;                         ///< Cubic cell size.
+    std::optional<std::array<double, 6>> mBounds;            ///< Explicit `{lo[3], hi[3]}`.
+    double mPadding = 0.0;                                   ///< Padding in world units.
+    double mPaddingRelative = 0.0;      ///< Padding as a fraction of the diagonal.
+    std::int64_t mMaxCells = 20000000;  ///< Refuse to generate more than this.
+};
+
+/**
+ * @brief Resolve a `LatticeRequest` against a mesh into a concrete lattice.
+ * @param rMesh the mesh whose bounding box is used when `mBounds` is unset.
+ * @param rRequest the request.
+ * @param pPrefix the caller's error prefix, e.g. `"meshio++: voxelize: "`.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set, on a non-positive resolution or cell size, on
+ *         inverted bounds, on negative padding, on a mesh with no points and no
+ *         explicit bounds, and when the lattice would exceed `mMaxCells`.
+ */
+MESHIOPLUSPLUS_API LatticeSpec lattice_resolve(const Mesh& rMesh, const LatticeRequest& rRequest,
+                                               const char* pPrefix);
+
+/**
+ * @brief Recover the lattice a mesh *is*, from its geometry alone.
+ *
+ * This exists because **no file format persists arbitrary `field_data`**, so a
+ * grid written and read back has lost whatever `sdf:origin`/`sdf:spacing`/
+ * `sdf:dims` it carried in memory. The geometry, however, is still exactly a
+ * lattice, and for a lattice the recovery is exact rather than a fit: the
+ * distinct x, y and z coordinate values are the plane positions, and
+ * `lattice_build_mesh` writes them as `origin + index * spacing` evaluated
+ * independently per point, so two points on the same plane carry **bit-identical**
+ * coordinates and an exact sort-and-unique recovers the planes with no tolerance
+ * at all.
+ *
+ * Only the spacing needs one: `origin + i*h` differences are not exactly equal
+ * across `i` in IEEE arithmetic, so uniformity is checked to a relative `1e-9`
+ * and the reported spacing is `(last - first) / n` rather than the first gap.
+ *
+ * @param rMesh the mesh to inspect.
+ * @param rSpec receives the recovered lattice; untouched when the answer is false.
+ * @return false when @p rMesh is not a dense lattice -- wrong cell type, a point
+ *         count that is not `(nx+1)(ny+1)(nz+1)`, a non-uniform axis, or a cell
+ *         count that disagrees. A partial lattice (`voxelize`'s `surface`/`inside`
+ *         fills, or an octree) is **not** recoverable and reports false: its
+ *         points do not tile the box, and inventing the missing ones would be a
+ *         different mesh.
+ */
+MESHIOPLUSPLUS_API bool lattice_from_mesh(const Mesh& rMesh, LatticeSpec& rSpec);
+
+/**
+ * @brief The axis-aligned bounding box of a mesh's points.
+ *
+ * Hoisted verbatim out of `compute_stats`, which computes the same reduction as
+ * part of a much larger report. `min`/`max` are associative and exact, so the
+ * chunked parallel form and a serial one agree bit-for-bit -- unlike the
+ * centroid sum in the same loop, which is order-dependent and deliberately stays
+ * in `stats.cpp`.
+ *
+ * @param rMesh the mesh to measure.
+ * @param rLo receives the lo corner; unchanged axes beyond `PointDim()` read 0.
+ * @param rHi receives the hi corner.
+ * @return false when the mesh has no points, in which case `rLo`/`rHi` are zeroed
+ *         -- an empty bbox has no defensible value and callers must decide.
+ */
+MESHIOPLUSPLUS_API bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo,
+                                   std::array<double, 3>& rHi);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/grid_lattice.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/hdf5_util.hpp =====
 /**
  * @file hdf5_util.hpp
@@ -8143,6 +8351,188 @@ MESHIOPLUSPLUS_API NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::si
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
+/**
+ * @file detail/point_triangle.hpp
+ * @brief The closest point on a triangle to a query point, and **which feature
+ * of the triangle it lies on**.
+ *
+ * The feature is not diagnostic decoration: it is what selects the normal used
+ * to sign a distance. A closest point in the triangle's interior takes the
+ * triangle's own normal; one on an edge or at a vertex must take a blend of the
+ * incident faces' normals, or the sign comes out wrong on the concave side of
+ * every crease. See `operations/sdf.hpp`.
+ *
+ * ### The method, and the one that looks like it but is wrong
+ *
+ * This is Ericson's barycentric region classification (*Real-Time Collision
+ * Detection*, §5.1.5). The tempting alternative -- project onto the triangle's
+ * plane and clamp the barycentric coordinates into range -- is **wrong for
+ * obtuse triangles**, where the clamped point can land on the far edge rather
+ * than the near one, and is the commonest way this gets shipped broken.
+ *
+ * The seven regions are mutually exclusive and exhaustive with the comparisons
+ * written exactly as they are. Every branch tests a quantity built by the same
+ * sequence of multiplications and subtractions on both sides of its boundary, so
+ * there is no configuration in which two regions both claim a point or neither
+ * does.
+ *
+ * ### Why it is arranged for a bit-exact numpy twin
+ *
+ * There is not one transcendental function here: the whole computation is
+ * `+ - * /` and comparisons, and `sqrt` is left to the caller so that a
+ * min-reduction over many triangles can compare squared distances. IEEE requires
+ * both `/` and `sqrt` to be correctly rounded, so a numpy transcription that
+ * follows this expression order produces bit-identical results -- which is what
+ * `tests/python/test_surface_distance.py::test_cpp_matches_python` asserts.
+ *
+ * A degenerate (zero-area) triangle is handled explicitly rather than left to
+ * chance: it makes the denominator zero, and dividing by it would poison a
+ * min-reduction with a NaN that then wins every comparison.
+ *
+ * Header-only and inline: this runs once per (query, candidate triangle) pair,
+ * which is the hottest loop in the whole feature. `detail::` helpers are exempt
+ * from the unique-prefix rule that `src/cpp/src/**.cpp` follows.
+ */
+
+// System includes
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Which feature of a triangle a closest point lies on.
+enum class TriangleFeature {
+    VertexA = 0,
+    VertexB = 1,
+    VertexC = 2,
+    EdgeAB = 3,
+    EdgeBC = 4,
+    EdgeCA = 5,
+    Face = 6,
+};
+
+/// The closest point on a triangle, and where on it.
+struct PointTriangleHit {
+    Vec3 mPoint{0.0, 0.0, 0.0};   ///< The closest point itself.
+    double mDistanceSq = 0.0;     ///< Its squared distance from the query.
+    TriangleFeature mFeature = TriangleFeature::Face;  ///< Which feature it is on.
+};
+
+/**
+ * @brief The closest point on triangle (A, B, C) to P.
+ *
+ * The expression order is load-bearing -- see the file comment. Do not
+ * "simplify" it, and in particular do not reorder the region tests: they are
+ * arranged so that each one can assume the preceding ones failed.
+ */
+inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA, const Vec3& rB,
+                                                  const Vec3& rC) {
+    PointTriangleHit hit;
+    const Vec3 ab = vec3_sub(rB, rA);
+    const Vec3 ac = vec3_sub(rC, rA);
+    const Vec3 ap = vec3_sub(rP, rA);
+    const double d1 = vec3_dot(ab, ap);
+    const double d2 = vec3_dot(ac, ap);
+    if (d1 <= 0.0 && d2 <= 0.0) {
+        hit.mPoint = rA;
+        hit.mFeature = TriangleFeature::VertexA;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const Vec3 bp = vec3_sub(rP, rB);
+    const double d3 = vec3_dot(ab, bp);
+    const double d4 = vec3_dot(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) {
+        hit.mPoint = rB;
+        hit.mFeature = TriangleFeature::VertexB;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+        const double v = d1 / (d1 - d3);
+        hit.mPoint = vec3_add(rA, vec3_scale(ab, v));
+        hit.mFeature = TriangleFeature::EdgeAB;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const Vec3 cp = vec3_sub(rP, rC);
+    const double d5 = vec3_dot(ab, cp);
+    const double d6 = vec3_dot(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) {
+        hit.mPoint = rC;
+        hit.mFeature = TriangleFeature::VertexC;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+        const double w = d2 / (d2 - d6);
+        hit.mPoint = vec3_add(rA, vec3_scale(ac, w));
+        hit.mFeature = TriangleFeature::EdgeCA;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+        const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        hit.mPoint = vec3_add(rB, vec3_scale(vec3_sub(rC, rB), w));
+        hit.mFeature = TriangleFeature::EdgeBC;
+        hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+        return hit;
+    }
+
+    const double den = va + vb + vc;
+    if (!(den > 0.0)) {
+        // Degenerate triangle: no interior to project into, and the face branch
+        // below would divide by zero and hand a NaN to a min-reduction, where it
+        // would then win every comparison. Fall back to the three edges, taking
+        // the nearest and breaking ties by edge ordinal so the answer does not
+        // depend on how the compiler ordered the comparisons.
+        const Vec3 ends[3][2] = {{rA, rB}, {rB, rC}, {rC, rA}};
+        const TriangleFeature feats[3] = {TriangleFeature::EdgeAB, TriangleFeature::EdgeBC,
+                                          TriangleFeature::EdgeCA};
+        bool first = true;
+        for (std::size_t e = 0; e < 3; ++e) {
+            const Vec3 d = vec3_sub(ends[e][1], ends[e][0]);
+            const double len2 = vec3_norm_sq(d);
+            double t = 0.0;
+            if (len2 > 0.0) {
+                t = vec3_dot(vec3_sub(rP, ends[e][0]), d) / len2;
+                t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+            }
+            const Vec3 q = vec3_add(ends[e][0], vec3_scale(d, t));
+            const double d2q = vec3_norm_sq(vec3_sub(rP, q));
+            if (first || d2q < hit.mDistanceSq) {
+                first = false;
+                hit.mPoint = q;
+                hit.mDistanceSq = d2q;
+                hit.mFeature = feats[e];
+            }
+        }
+        return hit;
+    }
+
+    const double inv = 1.0 / den;
+    const double v = vb * inv;
+    const double w = vc * inv;
+    hit.mPoint = vec3_add(rA, vec3_add(vec3_scale(ab, v), vec3_scale(ac, w)));
+    hit.mFeature = TriangleFeature::Face;
+    hit.mDistanceSq = vec3_norm_sq(vec3_sub(rP, hit.mPoint));
+    return hit;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/refine_templates.hpp =====
 /**
  * @file refine_templates.hpp
@@ -8800,6 +9190,621 @@ MESHIOPLUSPLUS_API SubsetResult build_cell_subset(const Mesh& rMesh,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/subset.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/sdf.hpp =====
+/**
+ * @file operations/sdf.hpp
+ * @brief Distance to a surface: how far a point is from a triangle skin, and
+ * which side of it the point is on.
+ *
+ * This is the primitive collision detection, offsetting, inside/outside queries
+ * and voxel-style preprocessing all reduce to, and the one spatial query
+ * meshio++ did not have. `extract_surface` gives you the skin, `slice` cuts it
+ * and `isosurface` contours a field on it -- but nothing answered "how far is
+ * this point from the surface".
+ *
+ * ### What lives here
+ *
+ * - `sample_distance` -- distances at arbitrary query points, the batch form.
+ * - `distance_to_surface` -- the same, attached to a query mesh as `point_data`.
+ * - `surface_watertight_check` -- what is wrong with this skin, in numbers.
+ * - `compute_sdf` -- the umbrella that generates its own grid, dense or adaptive.
+ *
+ * `compute_sdf`'s types were **complete in this header from v9.24.0**, one
+ * release before its body, deliberately:
+ * `SdfOptions` embeds `SurfaceDistanceOptions` by value, so adding a member to
+ * the inner struct later would shift the outer struct's tail under a consumer
+ * compiled against the older header -- a silent Tier A ABI break, and exactly the
+ * `Pipeline`-embeds-`PipelineInput` trap `doc/abi_reviews.md` records for
+ * v9.12.0. Shipping the full layout up front means every later release changes
+ * function declarations only, which is unambiguously additive.
+ *
+ * ### The sign is the hard part
+ *
+ * An unsigned distance is a minimisation and has no interesting failure mode. A
+ * *signed* distance needs to know which side of the surface the query is on, and
+ * the standard mistake -- taking the sign from the nearest **triangle's** normal
+ * -- is exactly right on convex geometry and exactly wrong on the concave side
+ * of every crease. The fix is the angle-weighted **pseudonormal** (Baerentzen &
+ * Aanaes): the sign comes from the normal of the nearest *feature*, which is the
+ * triangle only when the closest point lies in its interior, and is a blend of
+ * the incident faces' normals when it lies on an edge or at a vertex.
+ *
+ * For a skin that is not watertight -- which real STLs frequently are not -- the
+ * pseudonormal is not merely inaccurate, it is undefined, so `SdfSign` also
+ * offers the generalized winding number, which is robust to holes,
+ * self-intersection and inconsistent winding at the cost of being O(number of
+ * triangles) per query with no acceleration structure that helps.
+ *
+ * @see doc/sdf.md
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The Float64 signed distance array. Negative inside, by the usual convention.
+inline constexpr const char* kSdfDistanceName = "sdf:distance";
+
+/// The Int64 0/1 array marking values that were actually computed rather than
+/// clamped to the band limit. Attached whenever a band is in force, and
+/// **not optional**: a clamped value is byte-indistinguishable from a computed
+/// one, so without this array a caller cannot tell the difference.
+inline constexpr const char* kSdfBandName = "sdf:band";
+
+/// The Int64 0/1 array marking points inside the surface (opt-in).
+inline constexpr const char* kSdfInsideName = "sdf:inside";
+
+/// The Int64 array naming the nearest **input** cell per query (opt-in).
+inline constexpr const char* kSdfClosestCellName = "sdf:closest_cell";
+
+/// How to decide which side of the surface a query point is on.
+enum class SdfSign {
+    /// No sign at all: the distance is the unsigned nearest-point distance.
+    /// The only mode that is meaningful on an open sheet.
+    Unsigned = 0,
+    /// The angle-weighted pseudonormal of the nearest *feature* (face, edge or
+    /// vertex). Exact for a watertight, consistently wound surface, and costs
+    /// nothing beyond the nearest-triangle query that already ran.
+    Pseudonormal = 1,
+    /// The generalized winding number. Robust to holes, self-intersections and
+    /// per-component orientation flips, but **O(number of triangles) per query**
+    /// -- there is no acceleration structure short of a fast-multipole
+    /// expansion, which is a project in its own right. Pair it with a band.
+    WindingNumber = 2,
+};
+
+/// How the incident faces are weighted when building a vertex pseudonormal.
+enum class SdfPseudonormalWeight {
+    /// Weight each incident face by the angle it subtends at the vertex. The
+    /// geometrically correct choice (Baerentzen & Aanaes) and the default.
+    Angle = 0,
+    /// Weight by face area. Not exact at a *vertex*, but exact at edges and
+    /// faces, which is where nearly every nearest point on a fine mesh lands.
+    /// It exists because it is free of `acos`, and therefore has a bit-exact
+    /// numpy twin -- see `doc/sdf.md` on why that is worth a second mode.
+    Area = 1,
+};
+
+/// Where a distance is evaluated on a mesh.
+enum class SdfLocation {
+    Corner = 0,  ///< At the points, as `point_data`.
+    Center = 1,  ///< At the cell centroids, as `cell_data`.
+};
+
+/// What `compute_sdf` generates to carry the field.
+enum class SdfStructure {
+    Voxel = 0,  ///< A dense uniform lattice over the (padded) bounding box.
+    /// Adaptive: a coarse root lattice, refined only near the surface. The
+    /// output is **1-irregular** (it has hanging nodes) -- see `refine.hpp`'s
+    /// `RefineClosure::Balanced`, which is the mechanism.
+    Octree = 1,
+};
+
+/// What to do when the surface turns out not to be watertight.
+enum class SdfWatertightCheck {
+    Off = 0,    ///< Do not look.
+    Warn = 1,   ///< Log the counts by name and carry on. The default.
+    Error = 2,  ///< Throw, naming the counts.
+};
+
+/// Parse an `SdfSign` name (`unsigned`, `pseudonormal`, `winding-number`).
+MESHIOPLUSPLUS_API SdfSign sdf_sign_from_name(const std::string& rName);
+/// Parse an `SdfPseudonormalWeight` name (`angle`, `area`).
+MESHIOPLUSPLUS_API SdfPseudonormalWeight sdf_weight_from_name(const std::string& rName);
+/// Parse an `SdfLocation` name (`corner`/`point`, `center`/`cell`).
+MESHIOPLUSPLUS_API SdfLocation sdf_location_from_name(const std::string& rName);
+/// Parse an `SdfStructure` name (`voxel`, `octree`).
+MESHIOPLUSPLUS_API SdfStructure sdf_structure_from_name(const std::string& rName);
+/// Parse an `SdfWatertightCheck` name (`off`, `warn`, `error`).
+MESHIOPLUSPLUS_API SdfWatertightCheck sdf_watertight_check_from_name(const std::string& rName);
+
+/**
+ * @brief What is wrong with a surface, in numbers rather than a bare bool.
+ *
+ * "Your STL has 12 boundary edges" is actionable; "not watertight" is not. All
+ * four edge counts are reported separately because they need different fixes.
+ */
+struct SurfaceQuality {
+    /// Edges used by exactly one triangle: the surface has a hole or is a sheet.
+    std::int64_t mBoundaryEdges = 0;
+    /// Edges used by three or more triangles: the surface is non-manifold.
+    std::int64_t mNonManifoldEdges = 0;
+    /// Edges whose two triangles wind the same way, i.e. disagree about which
+    /// side is out. A sign computed from these is meaningless locally.
+    std::int64_t mInconsistentPairs = 0;
+    /// Triangles with zero area. They carry no normal and are skipped.
+    std::int64_t mDegenerateTriangles = 0;
+    /// True when all four counts are zero.
+    bool mWatertight = false;
+};
+
+/// Options shared by every distance query.
+struct SurfaceDistanceOptions {
+    /// How to sign the distance.
+    SdfSign mSign = SdfSign::Pseudonormal;
+    /// How to weight incident faces at a vertex (`Pseudonormal` only).
+    SdfPseudonormalWeight mWeight = SdfPseudonormalWeight::Angle;
+    /// Where to evaluate, for the mesh-taking entry points.
+    SdfLocation mLocation = SdfLocation::Corner;
+    /// Distances beyond this are clamped to it and marked in `sdf:band`.
+    /// Non-positive means the full field, computed everywhere.
+    double mBand = 0.0;
+    /// Attach `sdf:closest_cell`.
+    bool mRecordClosestCell = false;
+    /// Attach `sdf:inside`.
+    bool mRecordInside = false;
+    /// What to do about a surface that is not watertight.
+    SdfWatertightCheck mWatertightCheck = SdfWatertightCheck::Warn;
+    /// Restrict the surface to a named `Cell` region; empty means all of it.
+    std::string mSurfaceRegion;
+    /// Bucket size of the search grid; 0 derives one from the triangle sizes.
+    ///
+    /// This is a tuning knob, but it is public mainly so that the accelerator
+    /// can be *proved* not to affect the answer: the same query at several cell
+    /// sizes must give byte-identical distances and nearest-cell ids. See
+    /// `doc/sdf.md`.
+    double mGridCellSize = 0.0;
+    /// Refuse a `WindingNumber` query whose `n_query * n_tri` exceeds this,
+    /// naming the option, rather than silently running for an hour.
+    double mMaxWindingWork = 2.0e9;
+};
+
+/// The result of `distance_to_surface`: the query mesh plus what was found.
+struct SurfaceDistanceResult {
+    /// The query mesh with the distance arrays attached.
+    Mesh mMesh;
+    /// What was wrong with the surface (all zeros when `mWatertightCheck` is Off).
+    SurfaceQuality mQuality;
+    /// How many queries were clamped to the band rather than computed.
+    std::int64_t mNumBanded = 0;
+};
+
+/**
+ * @brief What is wrong with @p rSurface, without computing any distances.
+ * @param rSurface a triangle (or triangulatable) surface mesh.
+ * @return the four edge counts and the resulting verdict.
+ * @throws std::invalid_argument on a volume or polyhedron block.
+ */
+MESHIOPLUSPLUS_API SurfaceQuality surface_watertight_check(const Mesh& rSurface);
+
+/**
+ * @brief Distances from arbitrary points to a surface.
+ * @param rSurface the surface to measure against.
+ * @param rPoints Float64 `(n, 2)` or `(n, 3)` query coordinates; a 2-D array is
+ *        z-padded, matching `detail::read_point`.
+ * @param rOptions sign, band and accelerator settings.
+ * @return a Float64 `(n,)` array of signed distances.
+ * @throws std::invalid_argument on a mis-shaped query array, a surface with no
+ *         triangles, or a `WindingNumber` request exceeding `mMaxWindingWork`.
+ */
+MESHIOPLUSPLUS_API NDArray sample_distance(const Mesh& rSurface, const NDArray& rPoints,
+                                           const SurfaceDistanceOptions& rOptions = {});
+
+/**
+ * @brief Attach distances from a query mesh's points (or cell centres) to a
+ *        surface.
+ * @param rQuery the mesh to annotate; its geometry is copied unchanged.
+ * @param rSurface the surface to measure against.
+ * @param rOptions sign, location, band and accelerator settings.
+ * @return the annotated mesh plus the surface verdict and the banded count.
+ */
+MESHIOPLUSPLUS_API SurfaceDistanceResult distance_to_surface(
+    const Mesh& rQuery, const Mesh& rSurface, const SurfaceDistanceOptions& rOptions = {});
+
+// --- the umbrella operation (types complete; implementation lands later) -----
+
+/// `field_data` keys describing the generated grid. They are numeric, so they
+/// cross every binding -- but note **no file format persists arbitrary
+/// `field_data`**, so a written-and-reread grid loses them and they are
+/// recovered from the geometry instead. See `doc/sdf.md`.
+inline constexpr const char* kSdfOriginName = "sdf:origin";
+inline constexpr const char* kSdfSpacingName = "sdf:spacing";
+inline constexpr const char* kSdfDimsName = "sdf:dims";
+inline constexpr const char* kSdfBoundsName = "sdf:bounds";
+inline constexpr const char* kSdfMaxDepthName = "sdf:max_depth";
+inline constexpr const char* kSdfStructureName = "sdf:structure";
+
+/// Options for `compute_sdf`: generate a grid, then fill it with distances.
+struct SdfOptions {
+    /// Which structure to generate.
+    SdfStructure mStructure = SdfStructure::Voxel;
+    /// Cell counts per axis; unset derives them from `mCellSize`.
+    std::optional<std::array<std::int64_t, 3>> mResolution;
+    /// Cell size; unset derives it from `mResolution`.
+    std::optional<double> mCellSize;
+    /// Explicit bounds `{lo[3], hi[3]}`; unset uses the surface's bounding box.
+    std::optional<std::array<double, 6>> mBounds;
+    /// Padding added to every side, in world units.
+    double mPadding = 0.0;
+    /// Padding added to every side, as a fraction of the bounding-box diagonal.
+    /// An SDF that stops at the surface is not much use, hence the non-zero
+    /// default.
+    double mPaddingRelative = 0.1;
+    /// Octree: cell count per axis of the root lattice. `mResolution` and
+    /// `mCellSize` size a `Voxel` grid and are an **error** with `Octree`, whose
+    /// finest cell is `root cell / 2^depth` and is therefore already determined.
+    std::int64_t mRootResolution = 8;
+    /// Octree: how many refinement passes. Each halves the cell size in the band.
+    std::int64_t mMaxDepth = 4;
+    /// Octree: refine a cell while `|distance| <= mBandCells * cell diagonal`.
+    /// The diagonal is the cell's own, so the band narrows as the tree deepens --
+    /// which is what makes the cost bounded rather than cubic.
+    double mBandCells = 1.0;
+    /// Octree: attach `refine:level`.
+    bool mRecordLevels = true;
+    /// Refuse to generate more cells than this, naming the option.
+    std::int64_t mMaxCells = 20000000;
+    /// How the distances themselves are computed.
+    ///
+    /// **Embedded by value on purpose, and the reason this whole header ships
+    /// complete**: growing `SurfaceDistanceOptions` later would move everything
+    /// after it here.
+    SurfaceDistanceOptions mDistance;
+};
+
+/// The result of `compute_sdf`: the generated grid and what was found.
+struct SdfResult {
+    Mesh mMesh;                                       ///< The grid, carrying `sdf:distance`.
+    SurfaceQuality mQuality;                          ///< The surface verdict.
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};     ///< Root cell counts.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};   ///< Lattice lo corner.
+    std::array<double, 3> mSpacing{{0.0, 0.0, 0.0}};  ///< Finest cell size.
+    std::int64_t mMaxDepth = 0;                       ///< 0 for a dense grid.
+    std::int64_t mNumBanded = 0;                      ///< Queries clamped to the band.
+};
+
+/**
+ * @brief Generate a grid over @p rSurface and fill it with signed distances.
+ *
+ * The one call that turns a surface into a field. `Voxel` builds the dense
+ * lattice the options describe; `Octree` builds a coarse root lattice and
+ * refines the cells within `mBandCells` diagonals of the surface, `mMaxDepth`
+ * times, through `refine`'s `Balanced` closure.
+ *
+ * **The field is computed once, on the final mesh.** An octree pass cannot
+ * carry it: `refine` interpolates `point_data`, so a field attached mid-way
+ * would come out a smooth, plausible interpolation of the coarse values rather
+ * than the distance. The generated grid also carries the `sdf:*` `field_data`
+ * header describing itself.
+ *
+ * @param rSurface the surface to measure against.
+ * @param rOptions the grid to generate and how to fill it.
+ * @return the grid carrying `sdf:distance`, plus the surface verdict and the
+ *         lattice geometry.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set for `Voxel`, when either is set for `Octree`, on a
+ *         non-positive `mRootResolution`/`mBandCells`, a negative `mMaxDepth`,
+ *         and when the grid exceeds `mMaxCells` (checked again after every
+ *         octree pass, so a runaway band fails by name rather than by OOM).
+ */
+MESHIOPLUSPLUS_API SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/sdf.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/surface_distance.hpp =====
+/**
+ * @file detail/surface_distance.hpp
+ * @brief The signed-distance kernel: a triangle soup, its pseudonormal tables,
+ * a bucket-grid accelerator, and the nearest-point query over them.
+ *
+ * `operations/sdf.cpp` is the driver; everything geometric lives here so that it
+ * can be tested against closed-form distance fields with no grid, no mesh
+ * generation and no binding in the way.
+ *
+ * ### The accelerator is deliberately not a BVH
+ *
+ * `detail/spatial_hash.hpp` already provides `InsertBox` (which exists precisely
+ * to register a simplex's quantized bounding box) and `ForEachInShell` with a
+ * documented stopping rule, and `interpolate.cpp` already runs an expanding-shell
+ * nearest search over it. The workload here -- many queries against a
+ * roughly uniform triangle soup -- is the uniform grid's best case and the BVH's
+ * worst.
+ *
+ * The decisive reason, though, is not speed: **a BVH would make the accelerator
+ * observable in the output.** Its build order and split heuristic determine the
+ * order candidates are visited in, which determines which of two equidistant
+ * triangles wins. The grid can be made provably unobservable instead, by giving
+ * every comparison a total order -- `(distance squared, triangle id)` -- so that
+ * the answer cannot depend on visit order at all. `SurfaceDistanceOptions`
+ * exposes `mGridCellSize` mainly so a test can *prove* that: the same query at
+ * several bucket sizes must return byte-identical distances and nearest cells.
+ *
+ * ### The sign
+ *
+ * `closest_point_on_triangle` reports which feature of the triangle the nearest
+ * point lies on, and that selects the normal:
+ *
+ *  - face   -> the triangle's own normal;
+ *  - edge   -> the sum of the two incident triangles' unit normals;
+ *  - vertex -> the angle-weighted sum of the incident triangles' unit normals.
+ *
+ * Using the nearest *triangle's* normal in all three cases is the classic bug:
+ * exactly right on convex geometry, exactly wrong on the concave side of every
+ * crease, and it renders beautifully either way.
+ *
+ * Building those tables is the one place with a floating-point ordering hazard,
+ * because summing unit normals in a non-deterministic order changes the last
+ * bits and a last-bit change can flip a sign at a near-tangent query point. The
+ * tables are therefore accumulated by a **serial** pass in ascending
+ * (triangle, corner) order -- the phase-split idiom `surface.cpp` uses.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief A surface reduced to triangles, with each triangle remembering which
+ * input cell it came from.
+ *
+ * The provenance matters because `sdf:closest_cell` must name a cell of the
+ * mesh the caller passed in, not of a triangulation they never saw.
+ */
+struct TriangleSoup {
+    /// Corner coordinates, three per triangle, in `(a, b, c)` order.
+    std::vector<Vec3> mCorners;
+    /// Per triangle, the global (block-major) index of the input cell it came from.
+    std::vector<std::int64_t> mSourceCell;
+    /// Per triangle, the three vertex ids in the *welded* numbering below.
+    std::vector<std::array<std::int64_t, 3>> mVertices;
+    /// Distinct vertex positions, indexed by the ids in `mVertices`.
+    std::vector<Vec3> mPoints;
+
+    std::size_t NumTriangles() const { return mSourceCell.size(); }
+};
+
+/**
+ * @brief Reduce a surface mesh to a triangle soup.
+ * @param rSurface the mesh; `triangle` blocks are taken as they are, `quad` and
+ *        rectangular `polygon` blocks are fanned exactly as
+ *        `convert_cells(Simplexify)` fans them so the two cannot disagree.
+ * @param rRegion restrict to this named `Cell` region; empty takes everything.
+ * @throws std::invalid_argument on a 3-D or polyhedron block (pointing at
+ *         `extract_surface`), on a higher-order block (pointing at `linearize`),
+ *         and on an unknown region name.
+ */
+MESHIOPLUSPLUS_API TriangleSoup build_triangle_soup(const Mesh& rSurface,
+                                                    const std::string& rRegion);
+
+/// The four edge defect counts of a soup, and the resulting verdict.
+MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup);
+
+/// An undirected edge, as the sorted pair of its endpoints' vertex ids.
+using SurfaceEdgeKey = std::array<std::int64_t, 2>;
+
+/// Hash for `SurfaceEdgeKey`, the `GridKeyHash` mixing constant and shape.
+struct SurfaceEdgeKeyHash {
+    std::size_t operator()(const SurfaceEdgeKey& rKey) const {
+        std::size_t h = 0;
+        for (std::int64_t v : rKey)
+            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+/**
+ * @brief A soup prepared for querying: the accelerator plus the normal tables.
+ *
+ * Held by value and moved; building one is O(triangles) and is paid once per
+ * call rather than once per query, which is why the public API is a batch one.
+ */
+struct DistanceQuery {
+    const TriangleSoup* mpSoup = nullptr;
+    /// The bucket grid, holding triangle ids by quantized bounding box.
+    SpatialGrid mGrid{1.0};
+    /// Per triangle, its unnormalized normal (`cross(ab, ac)`).
+    std::vector<Vec3> mFaceNormal;
+    /// Per welded vertex, the weighted sum of incident unit face normals.
+    std::vector<Vec3> mVertexNormal;
+    /// Per edge (sorted endpoint ids), the sum of incident unit face normals.
+    std::unordered_map<SurfaceEdgeKey, Vec3, SurfaceEdgeKeyHash> mEdgeNormal;
+    /// The bucket size actually used, after the auto rule or the caller's override.
+    double mCellSize = 1.0;
+};
+
+/// Build the accelerator and normal tables for @p rSoup.
+MESHIOPLUSPLUS_API DistanceQuery build_distance_query(const TriangleSoup& rSoup,
+                                                      const SurfaceDistanceOptions& rOptions);
+
+/// What a single query point resolved to.
+struct DistanceHit {
+    double mSignedDistance = 0.0;   ///< Negative inside, per the usual convention.
+    std::int64_t mSourceCell = -1;  ///< Nearest input cell, or -1 outside the band.
+    bool mInBand = true;            ///< False when the value was clamped to the band.
+};
+
+/**
+ * @brief Distances from @p rPoints to the soup @p rQuery was built from.
+ *
+ * Parallel over query points, which are independent; each point's own search is
+ * serial and totally ordered, so the result does not depend on thread count.
+ */
+MESHIOPLUSPLUS_API std::vector<DistanceHit> query_distances(
+    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints,
+    const SurfaceDistanceOptions& rOptions);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/surface_distance.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/tri_box.hpp =====
+/**
+ * @file detail/tri_box.hpp
+ * @brief Exact triangle / axis-aligned-box overlap, by the separating axis
+ * theorem.
+ *
+ * `voxelize(VoxelFill::Surface)` needs to know which voxels a triangle passes
+ * through, and "does the triangle's bounding box overlap the voxel" is not that
+ * question -- a long thin diagonal triangle overlaps a great many boxes it never
+ * actually enters. This is the exact test.
+ *
+ * ### The thirteen axes
+ *
+ * Two convex bodies are disjoint exactly when some axis separates their
+ * projections, and for a triangle against an axis-aligned box it suffices to try
+ * thirteen: the box's three face normals, the triangle's own normal, and the
+ * nine cross products of the triangle's three edges with the box's three axes
+ * (Akenine-Moller, *Fast 3D Triangle-Box Overlap Testing*). Dropping any of the
+ * nine cross-product axes gives a test that is right for most configurations and
+ * wrong for the edge-on ones, which is a bad failure to ship because it looks
+ * like an off-by-one in the grid rather than a wrong predicate.
+ *
+ * ### Touching counts as overlapping
+ *
+ * The separation test is `min > rad || max < -rad`, so a triangle lying exactly
+ * on a voxel's face is *not* separated and marks both neighbouring voxels. That
+ * is deliberate: the alternative -- picking one side -- needs a tie-break rule
+ * that has no geometric justification, and marking both keeps the occupied set a
+ * closed cover of the surface, which is what a voxelization is for.
+ *
+ * Nothing here is transcendental: it is all `+ - *` and comparisons, so a numpy
+ * transcription is bit-identical. Header-only and inline, because this runs once
+ * per (triangle, candidate voxel) pair.
+ */
+
+// System includes
+#include <cmath>
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace tri_box_impl {
+
+/// One separating-axis test: the three projections against the box's radius.
+inline bool separated(double p0, double p1, double p2, double rad) {
+    const double lo = p0 < p1 ? (p0 < p2 ? p0 : p2) : (p1 < p2 ? p1 : p2);
+    const double hi = p0 > p1 ? (p0 > p2 ? p0 : p2) : (p1 > p2 ? p1 : p2);
+    return lo > rad || hi < -rad;
+}
+
+/// Does the plane through @p rV with normal @p rNormal reach the box?
+inline bool plane_box_overlap(const Vec3& rNormal, const Vec3& rV, const Vec3& rHalf) {
+    Vec3 vmin{0.0, 0.0, 0.0};
+    Vec3 vmax{0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < 3; ++k) {
+        if (rNormal[k] > 0.0) {
+            vmin[k] = -rHalf[k] - rV[k];
+            vmax[k] = rHalf[k] - rV[k];
+        } else {
+            vmin[k] = rHalf[k] - rV[k];
+            vmax[k] = -rHalf[k] - rV[k];
+        }
+    }
+    if (vec3_dot(rNormal, vmin) > 0.0)
+        return false;
+    return vec3_dot(rNormal, vmax) >= 0.0;
+}
+
+}  // namespace tri_box_impl
+
+/**
+ * @brief Does triangle (@p rA, @p rB, @p rC) overlap the axis-aligned box
+ *        centred at @p rCentre with half-extents @p rHalf?
+ *
+ * Touching counts as overlapping -- see the file comment.
+ */
+inline bool tri_box_overlap(const Vec3& rCentre, const Vec3& rHalf, const Vec3& rA, const Vec3& rB,
+                            const Vec3& rC) {
+    using tri_box_impl::plane_box_overlap;
+    using tri_box_impl::separated;
+
+    // Work in the box's frame: the box becomes [-half, half] about the origin.
+    const Vec3 v0 = vec3_sub(rA, rCentre);
+    const Vec3 v1 = vec3_sub(rB, rCentre);
+    const Vec3 v2 = vec3_sub(rC, rCentre);
+
+    const Vec3 e0 = vec3_sub(v1, v0);
+    const Vec3 e1 = vec3_sub(v2, v1);
+    const Vec3 e2 = vec3_sub(v0, v2);
+
+    // The nine edge x axis tests. Each cross product with a unit axis has a
+    // closed form, written out rather than built through vec3_cross so the two
+    // zero components are never computed or compared.
+    const Vec3 edges[3] = {e0, e1, e2};
+    const Vec3 verts[3] = {v0, v1, v2};
+    for (std::size_t e = 0; e < 3; ++e) {
+        const double ex = std::fabs(edges[e][0]);
+        const double ey = std::fabs(edges[e][1]);
+        const double ez = std::fabs(edges[e][2]);
+
+        // axis = cross(x_hat, edge) = (0, -ez, ey)
+        {
+            double p[3];
+            for (std::size_t i = 0; i < 3; ++i)
+                p[i] = -edges[e][2] * verts[i][1] + edges[e][1] * verts[i][2];
+            if (separated(p[0], p[1], p[2], ez * rHalf[1] + ey * rHalf[2]))
+                return false;
+        }
+        // axis = cross(y_hat, edge) = (ez, 0, -ex)
+        {
+            double p[3];
+            for (std::size_t i = 0; i < 3; ++i)
+                p[i] = edges[e][2] * verts[i][0] - edges[e][0] * verts[i][2];
+            if (separated(p[0], p[1], p[2], ez * rHalf[0] + ex * rHalf[2]))
+                return false;
+        }
+        // axis = cross(z_hat, edge) = (-ey, ex, 0)
+        {
+            double p[3];
+            for (std::size_t i = 0; i < 3; ++i)
+                p[i] = -edges[e][1] * verts[i][0] + edges[e][0] * verts[i][1];
+            if (separated(p[0], p[1], p[2], ey * rHalf[0] + ex * rHalf[1]))
+                return false;
+        }
+    }
+
+    // The three box face normals: the triangle's own bounding box against the box.
+    for (std::size_t k = 0; k < 3; ++k)
+        if (separated(v0[k], v1[k], v2[k], rHalf[k]))
+            return false;
+
+    // The triangle's plane.
+    return plane_box_overlap(vec3_cross(e0, e1), v0, rHalf);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/tri_box.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/vtk_cells.hpp =====
 /**
  * @file vtk_cells.hpp
@@ -13221,6 +14226,102 @@ MESHIOPLUSPLUS_API Mesh read_unv(const std::string& rPath, UnvInfo& rInfo);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/unv.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vti.hpp =====
+/**
+ * @file formats/vti.hpp
+ * @brief VTK XML ImageData (`.vti`): a regular lattice whose geometry is three
+ * attributes rather than a point array.
+ *
+ * ### Why this format and not a raw dump
+ *
+ * `compute_sdf` and `voxelize` produce a lattice, and a lattice written as an
+ * explicit `.vtu` spends the overwhelming majority of its bytes re-stating an
+ * index formula. ImageData states it instead: `Origin`, `Spacing` and
+ * `WholeExtent` **are** the grid header, which makes `.vti` the one format in
+ * meshio++ that round-trips a generated grid's geometry exactly. (No format
+ * persists arbitrary `field_data`, so the `sdf:*` keys do not survive any write
+ * -- here they do not need to, because the geometry itself carries the same
+ * information and `detail::lattice_from_mesh` recovers it.)
+ *
+ * The container is the same VTK XML this repo already reads and writes, so the
+ * `<DataArray>` codec (`detail/vtk_xml.hpp`) and the base64 + block-compression
+ * framing (`detail/vtu_binary.hpp`) are reused **verbatim** rather than
+ * reimplemented -- that is an argument about test surface, not about typing.
+ *
+ * ### The mesh side of the deal
+ *
+ * A `Mesh` has no implicit geometry, so:
+ *
+ * - **`read_vti` expands** the extent into explicit points and one `hexahedron`
+ *   cell block, through `detail/grid_lattice.hpp` -- the same numbering `grid()`
+ *   and `voxelize()` produce, which is what makes `read_vti(write_vti(m)) == m`
+ *   an identity rather than a coincidence.
+ * - **`write_vti` requires a lattice.** A mesh that is not one has no `Origin`/
+ *   `Spacing`/`WholeExtent` to write and raises `WriteError` by name. That
+ *   includes a *partial* lattice (`voxelize`'s `surface`/`inside` fills, or an
+ *   octree): ImageData cannot express a hole, and silently filling one in would
+ *   write a different mesh than the caller handed over.
+ *
+ * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ *
+ * - `<AppendedData>` -- the VTU C++ reader declines it too, for the same reason.
+ * - More than one `<Piece>`, or a piece whose `Extent` is not the `WholeExtent`.
+ * - `header_type="UInt64"` is supported on read (the header size is honoured);
+ *   the writer always emits the default `UInt32`, as the VTU writer does.
+ * - lzma, and any codec this build was compiled without -- by name.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as VTK XML ImageData.
+ * @param rPath the output path.
+ * @param rMesh the mesh; must be a dense lattice (see the file docs).
+ * @param binary base64-encode the arrays instead of writing them as text.
+ * @param zlib compress the binary blocks. Ignored when @p binary is false.
+ * @throws WriteError when @p rMesh is not a dense lattice, or when zlib was
+ *         requested and this build has none.
+ */
+MESHIOPLUSPLUS_API void write_vti(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                  bool zlib = true);
+
+/**
+ * @brief Write a mesh as VTK XML ImageData with an explicit block codec.
+ * @param rPath the output path.
+ * @param rMesh the mesh; must be a dense lattice.
+ * @param binary base64-encode the arrays instead of writing them as text.
+ * @param codec the block compressor; `None` writes uncompressed base64.
+ * @throws WriteError as `write_vti`, and when @p codec is not in this build.
+ */
+MESHIOPLUSPLUS_API void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                        detail::VtkCodec codec);
+
+/**
+ * @brief Read a VTK XML ImageData file, expanding it into explicit cells.
+ * @param rPath the input path.
+ * @param rOpts selective-read options; `mPointsOnly` and `mDataArrays` apply.
+ * @return a mesh with one `hexahedron` block in `detail/grid_lattice.hpp`'s
+ *         numbering, or a point-only mesh when the extent has no cells.
+ * @throws ReadError on a construct the C++ reader declines (see the file docs).
+ */
+MESHIOPLUSPLUS_API Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a VTK XML ImageData file without decoding its arrays.
+ *
+ * Unusually cheap even by metadata-reader standards: `WholeExtent` gives both the
+ * point and the cell count outright, so nothing at all is decoded.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_vti_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/vti.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/vtk.hpp =====
 /**
  * @file vtk.hpp
@@ -14326,11 +15427,373 @@ MESHIOPLUSPLUS_API CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpt
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/clean.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/refine.hpp =====
+/**
+ * @file refine.hpp
+ * @brief Mesh refinement: subdivide cells into congruent children of the
+ * **same** cell type, interpolating `point_data` onto the new nodes. Either
+ * every cell (uniform) or a selected subset with a conforming closure
+ * (selective / adaptive).
+ *
+ * This is the resolution-increasing counterpart to the resolution-preserving
+ * `convert_cells` and the resolution-reducing `crop`/`clean`. One level applies
+ * a fixed template per cell type:
+ *
+ *  - `line` -> 2 `line` (1 new mid-edge node)
+ *  - `triangle` -> 4 `triangle` (3 mid-edge nodes; the standard 1-to-4 split)
+ *  - `quad` -> 4 `quad` (4 mid-edge + 1 face-centre node)
+ *  - `tetra` -> 8 `tetra` (6 mid-edge nodes)
+ *  - `wedge` -> 8 `wedge` (9 mid-edge + 3 quad-face-centre nodes)
+ *  - `hexahedron` -> 8 `hexahedron` (12 mid-edge + 6 face-centre + 1 body node)
+ *
+ * New nodes are placed at the midpoint of the entity that defines them and
+ * carry the mean of that entity's corner values for every `point_data` array.
+ * Original points keep their indices; new nodes are appended. Each parent's
+ * `cell_data` row is replicated to its children.
+ *
+ * **Conformity.** Mid-edge nodes and quad-face-centre nodes are *shared*
+ * between every cell that touches the entity, so the refined mesh has no
+ * hanging nodes. Only the hexahedron body node is per-cell. (Sharing the face
+ * centres is not optional: with a per-cell copy, two hexahedra meeting at a
+ * face would reference distinct coincident nodes and the mesh would be
+ * topologically split along every interior face.)
+ *
+ * Note that the tetrahedron's interior diagonal -- fixed at the opposite-edge
+ * pair `(0,1)`-`(2,3)`, i.e. `tetra10` nodes 4-9 -- is chosen for determinism
+ * only, **not** for conformity: it is strictly interior, so a face's
+ * subdivision is fixed by that face's own mid-edge nodes whatever the
+ * neighbour does. This is the opposite of `convert_cells`' hex-simplexify
+ * diagonal 0-6, whose endpoints lie on the boundary and which therefore *is*
+ * conformity-critical.
+ *
+ * **Volume and orientation.** Children inherit the parent's orientation, so a
+ * well-oriented input refines to a well-oriented output (zero newly-inverted
+ * cells). Volume is conserved exactly for `line`/`triangle`/`quad`/`tetra`
+ * always, and for `wedge`/`hexahedron` when the parent is affine (a right
+ * prism / parallelepiped). For a general trilinear hexahedron the eight
+ * children's volumes do not sum to the parent's, because the parent's bilinear
+ * faces are replaced by four different bilinear patches -- that is a property
+ * of the geometry, not of this implementation.
+ *
+ * **Block structure is preserved 1:1**: the output has exactly
+ * `NumCellBlocks()` blocks, in input order, and each keeps its input cell
+ * type, which is what keeps the one-array-per-block `cell_data` invariant
+ * trivially correct. That holds in selective mode too -- see below.
+ *
+ * ### Selective (adaptive) refinement
+ *
+ * With a selector set (`mCells`, `mRegion` or the `mPredicateArray` predicate)
+ * only the selected cells get the full template above -- they are *red* -- and
+ * the hanging nodes that leaves on the interface are resolved by a **closure**,
+ * so the output is still a valid conforming mesh. Setting no selector is the
+ * uniform behaviour, byte-identical to a build without this feature.
+ *
+ * The whole thing is one table-driven rule rather than three loosely coupled
+ * features. Each cell type has a set of **admissible** split-edge masks -- the
+ * subsets of its edges for which a same-type subdivision template exists (see
+ * `detail/refine_templates.hpp`). A cell's mask is whatever its neighbours have
+ * bisected; if that mask is not admissible it is *promoted* to the smallest
+ * admissible superset, which bisects more edges, which may promote further. The
+ * admissible sets are closed under intersection, so "smallest admissible
+ * superset" is well defined and the promotion is a monotone idempotent closure
+ * operator -- and the global fixed point is therefore **unique and independent
+ * of iteration order**, which is why determinism across backends and thread
+ * counts is a property of the formulation rather than a convention.
+ *
+ * Every new node's existence is likewise *derived* from the split-edge set,
+ * never tabulated: an edge carries a node iff it is split, a quad face carries
+ * a centre iff **all four** of its edges are split, and a hexahedron carries a
+ * body node iff **all twelve** are. Two cells sharing an entity see the same
+ * edges and so reach the same answer, which is what makes conformity structural
+ * rather than something the tests merely sample. When every edge is split these
+ * rules reduce exactly to the uniform templates above.
+ *
+ * `RefineClosure::RedGreen` (the default) promotes to the smallest admissible
+ * superset, which keeps the extra refinement local. Per type:
+ *
+ *  - `line`, `triangle`: every mask is admissible -- a triangle with 1 bisected
+ *    edge splits into 2, with 2 into 3, with 3 into 4. Nothing propagates.
+ *  - `quad`: the admissible masks are the two *opposite* edge pairs and the
+ *    full split, so a single bisected edge promotes to its opposite pair and
+ *    splits into 2 quads. A pentagon or heptagon cannot be partitioned into
+ *    quadrilaterals at all (`4Q = B + 2I` forbids an odd boundary count), so
+ *    this is the finest possible type-preserving answer; the bisection then
+ *    travels along one row of a structured grid and stops at the boundary.
+ *  - `hexahedron`: the admissible masks are unions of its three parallel edge
+ *    classes -- 1, 2, 2, 2, 4, 4, 4 or 8 children -- so refinement propagates
+ *    through one dual sheet rather than the whole block.
+ *  - `wedge`: its six triangle edges form one class and its three verticals
+ *    another -- 1, 2, 4 or 8 children.
+ *  - `tetra`: every mask up to two edges is admissible, as are the four
+ *    face-triples; anything else promotes to the full 8-way split. (Three
+ *    edges meeting at a common vertex are deliberately *not* admissible: each
+ *    of the three incident faces would then hit the ambiguous two-edge case.)
+ *
+ * `RefineClosure::Propagate` instead promotes any non-empty mask straight to a
+ * full split. It is always conforming and defined for every cell type, but it
+ * is **not local** -- every edge-neighbour of a red cell becomes red in turn,
+ * so it converges to uniform refinement of the whole edge-connected component.
+ * It is the always-works baseline and the test oracle, not the adaptivity mode.
+ *
+ * `RefineClosure::Balanced` does not close at all: it **keeps the hanging
+ * nodes** and only enforces 2:1 balance, which is what an adaptive-mesh-
+ * refinement code normally means by "propagate". A cell is split fully or not
+ * at all -- there are no transitional templates -- and a cell is drawn in only
+ * when a neighbour would otherwise end up more than one level finer than it:
+ *
+ *     refine C  =>  C's level rises by one
+ *     D must refine  <=>  some entity D shares has an incident cell whose
+ *                         post-refinement level exceeds D's by more than one
+ *
+ * On a mesh of uniform level that condition is satisfied nowhere, so refining
+ * one cell propagates to **nothing** -- 64 hexahedra become 71, against 125
+ * under `RedGreen` and 512 under `Propagate`. Balancing only bites once levels
+ * differ, i.e. from the second adaptive pass onwards, and even then it reaches
+ * one level-ring rather than the whole mesh. The `refine:level` array is what
+ * makes that well defined across passes, and reading it back is why the array
+ * is *maintained* rather than replicated.
+ *
+ * The price is stated rather than hidden: the result is **1-irregular and not
+ * conforming**. Every constrained node is reported in the `refine:hanging`
+ * `point_data` array (see `kRefineHangingName`) so a solver can eliminate it;
+ * the conformity guarantees below apply to the other two closures only, and
+ * `extract_surface`, `decimate` and anything else assuming a conforming mesh
+ * will treat a hanging node as a genuine boundary.
+ *
+ * A cell with two *adjacent* bisected edges on one face has a remnant
+ * quadrilateral there that needs a diagonal, and the neighbour across that face
+ * must choose the same one. The choice is therefore made from the **global node
+ * ids** -- the diagonal starting at whichever of the two surviving corners has
+ * the smaller id -- never from the template's local numbering, which two
+ * differently-oriented neighbours would disagree about.
+ *
+ * Green cells are **not undone** before a later red refinement, so repeated
+ * selective passes over the same region degrade element quality without bound.
+ * `refine:level` plus `mCellMaps` is the hierarchy a future green-undo needs.
+ *
+ * Constructs that would break the same-type contract raise rather than guess:
+ * higher-order cells (`tetra10`, ...; linearize first), `pyramid` (whose
+ * uniform refinement is 6 pyramids + 4 tetrahedra; simplexify first), and
+ * ragged polygon/polyhedron blocks.
+ *
+ * Determinism: the templates are fixed and the new-node numbering comes from a
+ * **serial** dedup pass over a `parallel_for`-filled disjoint-slot buffer
+ * (`src/cpp/src/operations/surface.cpp`'s phase-split idiom), never from a
+ * concurrent hash insert. Output is byte-identical across mesh backends and
+ * thread counts.
+ *
+ * Standard C++ and the uniform mesh API only, so it compiles under every mesh
+ * backend. This is an operation, not a file format -- it is not in the format
+ * registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The `cell_data` array `RefineOptions::mRecordParentIds` attaches.
+inline constexpr const char* kRefineParentCellName = "refine:parent_cell";
+
+/// The Int64 `cell_data` array recording each cell's refinement depth: `0` for
+/// a cell no red split ever touched, incremented once per red split. A green
+/// (transitional) child inherits its parent's level unchanged, because a green
+/// split is a closure, not a refinement. The name is **reserved**: if the input
+/// already carries it, `refine` updates it rather than replicating it, so
+/// successive passes accumulate.
+inline constexpr const char* kRefineLevelName = "refine:level";
+
+/// The Int64 `point_data` array `RefineClosure::Balanced` attaches: `1` for a
+/// **hanging** (constrained) node, `0` otherwise. A hanging node is one that
+/// exists on an entity of a cell that does not reference it -- the mid-edge node
+/// a refined cell created on an edge its unrefined neighbour still spans whole.
+/// Only `Balanced` produces any; the other closures leave none by construction
+/// and do not attach the array. The name is **reserved**: the array is recomputed
+/// from the output's own topology every pass rather than carried through the
+/// generic `point_data` path, which would interpolate a flag.
+inline constexpr const char* kRefineHangingName = "refine:hanging";
+
+/// The Int64 `(num_points, 4)` `point_data` array recording, per point, the
+/// **entity it was created on** -- `{-1, -1, a, b}` for the midpoint of edge
+/// `(a, b)`, the sorted `{p, q, r, s}` for a quad-face centre, and
+/// `{-1, -1, -1, -1}` for a point `refine` did not create (an original point, or
+/// a hexahedron body centre, which is interior to one cell and can never be
+/// shared).
+///
+/// It exists so that a *later* pass can recognise that an entity it is about to
+/// split already carries a node, and reuse it instead of allocating a coincident
+/// second one. Without it, `RefineClosure::Balanced` tore the mesh: when the 2:1
+/// balance rule drew in a coarse cell whose edge `(a, b)` already held a hanging
+/// node, that cell's refinement keyed the edge as `(a, b)`, allocated a *new*
+/// midpoint and left the two sides of the interface referencing distinct,
+/// exactly-coincident nodes.
+///
+/// The name is **reserved** and the array is *maintained* rather than replicated:
+/// it is attached whenever a pass leaves hanging nodes, and kept thereafter. The
+/// other closures leave none and do not attach it, so their output is unchanged.
+///
+/// Entries name **input point indices**, which `refine` never renumbers. An
+/// operation that *does* renumber points (`reorder`, `clean`, `crop`, `merge`) or
+/// that moves them (`transform`, `smooth`) invalidates them; `refine` detects
+/// that -- each entry must still reproduce its own point's coordinates -- and
+/// warns and ignores the array rather than trusting it.
+inline constexpr const char* kRefineEntityName = "refine:entity";
+
+/// How `refine` resolves the hanging nodes a partial refinement leaves behind.
+enum class RefineClosure {
+    /// Promote a cell's split-edge mask to the smallest *admissible* superset,
+    /// so an affected neighbour is split transitionally rather than fully. Keeps
+    /// the extra refinement local, and the output is conforming. The default.
+    RedGreen = 0,
+    /// Promote any non-empty mask straight to a full split. Conforming and
+    /// defined for every cell type, but **not local**: it converges to uniform
+    /// refinement of the whole edge-connected component.
+    Propagate = 1,
+    /// Do not close at all: **keep the hanging nodes** and merely enforce 2:1
+    /// balance, refining a cell only when a neighbour would otherwise end up
+    /// more than one level finer. The output is 1-irregular and **NOT
+    /// conforming** -- the constrained nodes are reported in `refine:hanging`
+    /// for a solver to eliminate. This is the classic adaptive-mesh-refinement
+    /// meaning of "propagate", and the only mode whose cost is bounded by the
+    /// selection rather than by the mesh.
+    Balanced = 2,
+};
+
+/// The comparison in `RefineOptions`' `cell_data` predicate selector.
+enum class RefineCompare {
+    Less = 0,
+    LessEqual = 1,
+    Greater = 2,
+    GreaterEqual = 3,
+    Equal = 4,
+    NotEqual = 5,
+};
+
+/**
+ * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`,
+ * `"propagate"` / `"red"`, or `"balanced"` / `"2:1"`.
+ * @param rName The name; empty means the default (`RedGreen`).
+ * @throws std::invalid_argument naming every accepted value.
+ */
+MESHIOPLUSPLUS_API RefineClosure refine_closure_from_name(const std::string& rName);
+
+/**
+ * @brief Parse a comparison operator (`"<"`, `"<="`, `">"`, `">="`, `"=="`,
+ * `"!="`; `"="` is accepted as `"=="`).
+ * @throws std::invalid_argument naming every accepted value.
+ */
+MESHIOPLUSPLUS_API RefineCompare refine_compare_from_name(const std::string& rName);
+
+/**
+ * @brief Evaluate one `RefineCompare` against a value.
+ *
+ * Exposed because `crop_predicate` selects cells by exactly this rule, and a
+ * second transcription of a discrete branch is precisely the kind of thing that
+ * drifts silently -- the two operations would then disagree only on the boundary
+ * cases (`==` on a tie, and a NaN), which is where disagreement is hardest to
+ * notice.
+ *
+ * @param Value the cell's value.
+ * @param Op the comparison.
+ * @param Rhs the threshold.
+ * @return whether the comparison holds. **A non-finite @p Value never matches**,
+ *   whatever @p Op is: `compute_quality` deliberately reports NaN where a metric
+ *   does not apply, and a predicate over `quality:*` on a mixed mesh is the
+ *   headline use case, so rejecting such an array outright would break it.
+ */
+MESHIOPLUSPLUS_API bool refine_compare_value(double Value, RefineCompare Op, double Rhs);
+
+/// Options for `refine`.
+struct RefineOptions {
+    /// How many times to apply the subdivision templates. `0` (or less) returns
+    /// an unchanged clone; `n` multiplies the cell count of a supported block
+    /// by `children_per_cell^n` when no selector is set. With a selector, level
+    /// `k > 1` refines the children of level `k - 1`'s red cells; green and
+    /// untouched cells are not re-refined.
+    int mLevels = 1;
+    /// Attach an Int64 `refine:parent_cell` `cell_data` array recording, per
+    /// output cell, the index of the **original** input cell it descends from
+    /// *within its own block* (blocks correspond 1:1). Across several levels
+    /// this is the original ancestor, not the immediate parent.
+    bool mRecordParentIds = false;
+
+    // --- selective refinement ------------------------------------------------
+    // At most ONE of the three selectors below may be set. Two is an error
+    // rather than a precedence rule: silently ignoring a selector the caller
+    // asked for is the failure mode worth refusing. All empty = uniform.
+
+    /// Explicit **global block-major** cell indices to refine (the numbering
+    /// `detail/cell_index.hpp` owns and named `Cell` regions use). Canonicalized
+    /// (sorted, de-duplicated) before use; an out-of-range index is an error.
+    std::vector<std::int64_t> mCells;
+    /// Name of a region to refine. A `Cell` region selects its own cells; a
+    /// `Point` region selects every cell with **any** node in it. A `Side`
+    /// region is not a selector and is an error -- it names facets, and turning
+    /// facets into cells is a policy decision this operation does not make
+    /// silently.
+    std::string mRegion;
+    /// Name of a scalar numeric `cell_data` array to threshold (`""` = unused).
+    /// Composes directly with `attach_quality`, e.g.
+    /// `quality:scaled_jacobian < 0.3`. Deliberately a single comparison and
+    /// not a second `data_calc` expression grammar.
+    std::string mPredicateArray;
+    /// The predicate's comparison.
+    RefineCompare mPredicateOp = RefineCompare::Less;
+    /// The predicate's right-hand side. A non-finite cell value never matches.
+    double mPredicateValue = 0.0;
+    /// How to resolve hanging nodes. Ignored when no selector is set (every
+    /// cell is then red and no closure is needed).
+    RefineClosure mClosure = RefineClosure::RedGreen;
+    /// Attach the Int64 `refine:level` `cell_data` array (see
+    /// `kRefineLevelName`). An input that already carries it is updated
+    /// whatever this flag says; the flag only controls *creating* it.
+    bool mRecordLevels = false;
+};
+
+/// The result of `refine`: the refined mesh plus the index maps.
+struct RefineResult {
+    /// The refined mesh.
+    Mesh mMesh;
+    /// Int64 shape `(num_points_in,)`, input point index -> output point index.
+    /// Refinement never prunes, so this is the identity; it is returned in full
+    /// so callers need not depend on that.
+    NDArray mPointMap;
+    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> the
+    /// index of its **first** child in the corresponding output block. A cell's
+    /// children are contiguous, so cell `c` owns
+    /// `[map[c], c + 1 < n ? map[c + 1] : num_cells_out)`. In selective mode a
+    /// cell may have a single child (itself, unrefined), so the run length
+    /// varies -- the map is still monotone and every entry non-negative.
+    std::vector<NDArray> mCellMaps;
+};
+
+/**
+ * @brief Refine a mesh, subdividing cells into same-type children.
+ * @param rMesh The mesh to refine (unchanged).
+ * @param rOptions Level count, cell selection, closure and bookkeeping. With no
+ *   selector set this is the uniform refinement of every cell.
+ * @return The refined mesh and its point/cell index maps.
+ * @throws std::invalid_argument on a higher-order, `pyramid`, or ragged cell
+ *   block, none of which can be subdivided into same-type children; on more
+ *   than one selector being set; on an out-of-range cell index; on an unknown
+ *   region, or a `Side` region used as a selector; and on a predicate array
+ *   that is missing, does not cover every block, is not scalar, or holds a
+ *   non-finite value.
+ */
+MESHIOPLUSPLUS_API RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/refine.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/crop.hpp =====
 /**
  * @file operations/crop.hpp
- * @brief Dependency-free spatial subsetting: extract the part of a mesh inside
- * an axis-aligned bounding box or a half-space.
+ * @brief Dependency-free subsetting: extract the part of a mesh inside an
+ * axis-aligned bounding box, inside a half-space, or satisfying a comparison on
+ * one of its own `cell_data` arrays.
  *
  * A point is "inside" the bbox when `lo <= p <= hi` component-wise, or inside
  * the half-space when `(p - point) . normal >= 0`. A cell is kept when ALL of
@@ -14339,6 +15802,27 @@ MESHIOPLUSPLUS_API CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpt
  * and connectivity + all data remapped. Optionally the original point/cell ids
  * are recorded as data arrays.
  *
+ * ### The predicate crop, and why `CropMode` does not apply to it
+ *
+ * `crop_predicate` keeps cells whose value in a scalar `cell_data` array
+ * satisfies a comparison. That is deliberately **general rather than
+ * inside/outside-a-surface specific**: the inside/outside case composes as
+ *
+ * ```
+ * crop_predicate(distance_to_surface(mesh, skin, {.mLocation = Center}).mMesh,
+ *                kSdfDistanceName, RefineCompare::Less, 0.0)
+ * ```
+ *
+ * and the same one mode also crops by `quality:*`, by a material id, by
+ * `partition:part`, or by anything `data_calc` can produce. A dedicated
+ * crop-by-surface would have served one of those.
+ *
+ * `CropMode::All|Any` is **not** a parameter here, and its absence is the honest
+ * answer rather than an omission: bbox and half-space test *points* and then
+ * need a rule for reducing a cell's several nodes to one verdict, whereas a
+ * `cell_data` predicate is already one value per cell and has nothing to reduce.
+ * A mode that meant nothing would be worse than no mode.
+ *
  * Everything is standard C++ and the uniform mesh API only, so it compiles under
  * every mesh backend. This is an operation, not a file format — it is not in the
  * format registry.
@@ -14346,6 +15830,7 @@ MESHIOPLUSPLUS_API CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpt
 
 // System includes
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
@@ -14380,7 +15865,7 @@ struct CropResult {
  * @return the pruned submesh and index maps.
  */
 MESHIOPLUSPLUS_API CropResult crop_bbox(const Mesh& rMesh, const double* pLo, const double* pHi,
-                     CropMode mode = CropMode::All, bool record_ids = false);
+                                        CropMode mode = CropMode::All, bool record_ids = false);
 
 /**
  * @brief Crop a mesh to the half-space `(p - point) . normal >= 0`.
@@ -14392,8 +15877,30 @@ MESHIOPLUSPLUS_API CropResult crop_bbox(const Mesh& rMesh, const double* pLo, co
  * @param record_ids attach Int64 `crop:original_point_id` / `crop:original_cell_id`.
  * @return the pruned submesh and index maps.
  */
-MESHIOPLUSPLUS_API CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double* pNormal,
-                          CropMode mode = CropMode::All, bool record_ids = false);
+MESHIOPLUSPLUS_API CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint,
+                                             const double* pNormal, CropMode mode = CropMode::All,
+                                             bool record_ids = false);
+
+/**
+ * @brief Crop a mesh to the cells whose value in @p rArray satisfies a comparison.
+ * @param rMesh the input mesh.
+ * @param rArray the name of a **scalar** `cell_data` array covering every block.
+ * @param Op the comparison; the shared `RefineCompare` vocabulary, evaluated by
+ *        the shared `refine_compare_value` so the two operations cannot drift.
+ * @param Value the right-hand side. **A non-finite cell value never matches**,
+ *        whatever the comparison -- see `refine_compare_value`.
+ * @param record_ids attach Int64 `crop:original_point_id` / `crop:original_cell_id`.
+ * @return the pruned submesh and index maps, exactly as the other two crops.
+ * @throws std::invalid_argument when @p rArray is not a `cell_data` array (the
+ *         message lists what is), does not cover every block, has the wrong row
+ *         count, or is not scalar. `point_data` is refused by name rather than
+ *         averaged onto cells: `data to-cell` is the explicit way to do that, and
+ *         doing it implicitly would make the kept set depend on an averaging rule
+ *         the caller never asked for.
+ */
+MESHIOPLUSPLUS_API CropResult crop_predicate(const Mesh& rMesh, const std::string& rArray,
+                                             RefineCompare Op, double Value,
+                                             bool record_ids = false);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/crop.hpp =====
@@ -16436,320 +17943,6 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/operations/refine.hpp =====
-/**
- * @file refine.hpp
- * @brief Mesh refinement: subdivide cells into congruent children of the
- * **same** cell type, interpolating `point_data` onto the new nodes. Either
- * every cell (uniform) or a selected subset with a conforming closure
- * (selective / adaptive).
- *
- * This is the resolution-increasing counterpart to the resolution-preserving
- * `convert_cells` and the resolution-reducing `crop`/`clean`. One level applies
- * a fixed template per cell type:
- *
- *  - `line` -> 2 `line` (1 new mid-edge node)
- *  - `triangle` -> 4 `triangle` (3 mid-edge nodes; the standard 1-to-4 split)
- *  - `quad` -> 4 `quad` (4 mid-edge + 1 face-centre node)
- *  - `tetra` -> 8 `tetra` (6 mid-edge nodes)
- *  - `wedge` -> 8 `wedge` (9 mid-edge + 3 quad-face-centre nodes)
- *  - `hexahedron` -> 8 `hexahedron` (12 mid-edge + 6 face-centre + 1 body node)
- *
- * New nodes are placed at the midpoint of the entity that defines them and
- * carry the mean of that entity's corner values for every `point_data` array.
- * Original points keep their indices; new nodes are appended. Each parent's
- * `cell_data` row is replicated to its children.
- *
- * **Conformity.** Mid-edge nodes and quad-face-centre nodes are *shared*
- * between every cell that touches the entity, so the refined mesh has no
- * hanging nodes. Only the hexahedron body node is per-cell. (Sharing the face
- * centres is not optional: with a per-cell copy, two hexahedra meeting at a
- * face would reference distinct coincident nodes and the mesh would be
- * topologically split along every interior face.)
- *
- * Note that the tetrahedron's interior diagonal -- fixed at the opposite-edge
- * pair `(0,1)`-`(2,3)`, i.e. `tetra10` nodes 4-9 -- is chosen for determinism
- * only, **not** for conformity: it is strictly interior, so a face's
- * subdivision is fixed by that face's own mid-edge nodes whatever the
- * neighbour does. This is the opposite of `convert_cells`' hex-simplexify
- * diagonal 0-6, whose endpoints lie on the boundary and which therefore *is*
- * conformity-critical.
- *
- * **Volume and orientation.** Children inherit the parent's orientation, so a
- * well-oriented input refines to a well-oriented output (zero newly-inverted
- * cells). Volume is conserved exactly for `line`/`triangle`/`quad`/`tetra`
- * always, and for `wedge`/`hexahedron` when the parent is affine (a right
- * prism / parallelepiped). For a general trilinear hexahedron the eight
- * children's volumes do not sum to the parent's, because the parent's bilinear
- * faces are replaced by four different bilinear patches -- that is a property
- * of the geometry, not of this implementation.
- *
- * **Block structure is preserved 1:1**: the output has exactly
- * `NumCellBlocks()` blocks, in input order, and each keeps its input cell
- * type, which is what keeps the one-array-per-block `cell_data` invariant
- * trivially correct. That holds in selective mode too -- see below.
- *
- * ### Selective (adaptive) refinement
- *
- * With a selector set (`mCells`, `mRegion` or the `mPredicateArray` predicate)
- * only the selected cells get the full template above -- they are *red* -- and
- * the hanging nodes that leaves on the interface are resolved by a **closure**,
- * so the output is still a valid conforming mesh. Setting no selector is the
- * uniform behaviour, byte-identical to a build without this feature.
- *
- * The whole thing is one table-driven rule rather than three loosely coupled
- * features. Each cell type has a set of **admissible** split-edge masks -- the
- * subsets of its edges for which a same-type subdivision template exists (see
- * `detail/refine_templates.hpp`). A cell's mask is whatever its neighbours have
- * bisected; if that mask is not admissible it is *promoted* to the smallest
- * admissible superset, which bisects more edges, which may promote further. The
- * admissible sets are closed under intersection, so "smallest admissible
- * superset" is well defined and the promotion is a monotone idempotent closure
- * operator -- and the global fixed point is therefore **unique and independent
- * of iteration order**, which is why determinism across backends and thread
- * counts is a property of the formulation rather than a convention.
- *
- * Every new node's existence is likewise *derived* from the split-edge set,
- * never tabulated: an edge carries a node iff it is split, a quad face carries
- * a centre iff **all four** of its edges are split, and a hexahedron carries a
- * body node iff **all twelve** are. Two cells sharing an entity see the same
- * edges and so reach the same answer, which is what makes conformity structural
- * rather than something the tests merely sample. When every edge is split these
- * rules reduce exactly to the uniform templates above.
- *
- * `RefineClosure::RedGreen` (the default) promotes to the smallest admissible
- * superset, which keeps the extra refinement local. Per type:
- *
- *  - `line`, `triangle`: every mask is admissible -- a triangle with 1 bisected
- *    edge splits into 2, with 2 into 3, with 3 into 4. Nothing propagates.
- *  - `quad`: the admissible masks are the two *opposite* edge pairs and the
- *    full split, so a single bisected edge promotes to its opposite pair and
- *    splits into 2 quads. A pentagon or heptagon cannot be partitioned into
- *    quadrilaterals at all (`4Q = B + 2I` forbids an odd boundary count), so
- *    this is the finest possible type-preserving answer; the bisection then
- *    travels along one row of a structured grid and stops at the boundary.
- *  - `hexahedron`: the admissible masks are unions of its three parallel edge
- *    classes -- 1, 2, 2, 2, 4, 4, 4 or 8 children -- so refinement propagates
- *    through one dual sheet rather than the whole block.
- *  - `wedge`: its six triangle edges form one class and its three verticals
- *    another -- 1, 2, 4 or 8 children.
- *  - `tetra`: every mask up to two edges is admissible, as are the four
- *    face-triples; anything else promotes to the full 8-way split. (Three
- *    edges meeting at a common vertex are deliberately *not* admissible: each
- *    of the three incident faces would then hit the ambiguous two-edge case.)
- *
- * `RefineClosure::Propagate` instead promotes any non-empty mask straight to a
- * full split. It is always conforming and defined for every cell type, but it
- * is **not local** -- every edge-neighbour of a red cell becomes red in turn,
- * so it converges to uniform refinement of the whole edge-connected component.
- * It is the always-works baseline and the test oracle, not the adaptivity mode.
- *
- * `RefineClosure::Balanced` does not close at all: it **keeps the hanging
- * nodes** and only enforces 2:1 balance, which is what an adaptive-mesh-
- * refinement code normally means by "propagate". A cell is split fully or not
- * at all -- there are no transitional templates -- and a cell is drawn in only
- * when a neighbour would otherwise end up more than one level finer than it:
- *
- *     refine C  =>  C's level rises by one
- *     D must refine  <=>  some entity D shares has an incident cell whose
- *                         post-refinement level exceeds D's by more than one
- *
- * On a mesh of uniform level that condition is satisfied nowhere, so refining
- * one cell propagates to **nothing** -- 64 hexahedra become 71, against 125
- * under `RedGreen` and 512 under `Propagate`. Balancing only bites once levels
- * differ, i.e. from the second adaptive pass onwards, and even then it reaches
- * one level-ring rather than the whole mesh. The `refine:level` array is what
- * makes that well defined across passes, and reading it back is why the array
- * is *maintained* rather than replicated.
- *
- * The price is stated rather than hidden: the result is **1-irregular and not
- * conforming**. Every constrained node is reported in the `refine:hanging`
- * `point_data` array (see `kRefineHangingName`) so a solver can eliminate it;
- * the conformity guarantees below apply to the other two closures only, and
- * `extract_surface`, `decimate` and anything else assuming a conforming mesh
- * will treat a hanging node as a genuine boundary.
- *
- * A cell with two *adjacent* bisected edges on one face has a remnant
- * quadrilateral there that needs a diagonal, and the neighbour across that face
- * must choose the same one. The choice is therefore made from the **global node
- * ids** -- the diagonal starting at whichever of the two surviving corners has
- * the smaller id -- never from the template's local numbering, which two
- * differently-oriented neighbours would disagree about.
- *
- * Green cells are **not undone** before a later red refinement, so repeated
- * selective passes over the same region degrade element quality without bound.
- * `refine:level` plus `mCellMaps` is the hierarchy a future green-undo needs.
- *
- * Constructs that would break the same-type contract raise rather than guess:
- * higher-order cells (`tetra10`, ...; linearize first), `pyramid` (whose
- * uniform refinement is 6 pyramids + 4 tetrahedra; simplexify first), and
- * ragged polygon/polyhedron blocks.
- *
- * Determinism: the templates are fixed and the new-node numbering comes from a
- * **serial** dedup pass over a `parallel_for`-filled disjoint-slot buffer
- * (`src/cpp/src/operations/surface.cpp`'s phase-split idiom), never from a
- * concurrent hash insert. Output is byte-identical across mesh backends and
- * thread counts.
- *
- * Standard C++ and the uniform mesh API only, so it compiles under every mesh
- * backend. This is an operation, not a file format -- it is not in the format
- * registry.
- */
-
-// System includes
-#include <cstdint>
-#include <string>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-
-/// The `cell_data` array `RefineOptions::mRecordParentIds` attaches.
-inline constexpr const char* kRefineParentCellName = "refine:parent_cell";
-
-/// The Int64 `cell_data` array recording each cell's refinement depth: `0` for
-/// a cell no red split ever touched, incremented once per red split. A green
-/// (transitional) child inherits its parent's level unchanged, because a green
-/// split is a closure, not a refinement. The name is **reserved**: if the input
-/// already carries it, `refine` updates it rather than replicating it, so
-/// successive passes accumulate.
-inline constexpr const char* kRefineLevelName = "refine:level";
-
-/// The Int64 `point_data` array `RefineClosure::Balanced` attaches: `1` for a
-/// **hanging** (constrained) node, `0` otherwise. A hanging node is one that
-/// exists on an entity of a cell that does not reference it -- the mid-edge node
-/// a refined cell created on an edge its unrefined neighbour still spans whole.
-/// Only `Balanced` produces any; the other closures leave none by construction
-/// and do not attach the array.
-inline constexpr const char* kRefineHangingName = "refine:hanging";
-
-/// How `refine` resolves the hanging nodes a partial refinement leaves behind.
-enum class RefineClosure {
-    /// Promote a cell's split-edge mask to the smallest *admissible* superset,
-    /// so an affected neighbour is split transitionally rather than fully. Keeps
-    /// the extra refinement local, and the output is conforming. The default.
-    RedGreen = 0,
-    /// Promote any non-empty mask straight to a full split. Conforming and
-    /// defined for every cell type, but **not local**: it converges to uniform
-    /// refinement of the whole edge-connected component.
-    Propagate = 1,
-    /// Do not close at all: **keep the hanging nodes** and merely enforce 2:1
-    /// balance, refining a cell only when a neighbour would otherwise end up
-    /// more than one level finer. The output is 1-irregular and **NOT
-    /// conforming** -- the constrained nodes are reported in `refine:hanging`
-    /// for a solver to eliminate. This is the classic adaptive-mesh-refinement
-    /// meaning of "propagate", and the only mode whose cost is bounded by the
-    /// selection rather than by the mesh.
-    Balanced = 2,
-};
-
-/// The comparison in `RefineOptions`' `cell_data` predicate selector.
-enum class RefineCompare {
-    Less = 0,
-    LessEqual = 1,
-    Greater = 2,
-    GreaterEqual = 3,
-    Equal = 4,
-    NotEqual = 5,
-};
-
-/**
- * @brief Parse a closure name: `"redgreen"` / `"red-green"` / `"green"`,
- * `"propagate"` / `"red"`, or `"balanced"` / `"2:1"`.
- * @param rName The name; empty means the default (`RedGreen`).
- * @throws std::invalid_argument naming every accepted value.
- */
-MESHIOPLUSPLUS_API RefineClosure refine_closure_from_name(const std::string& rName);
-
-/**
- * @brief Parse a comparison operator (`"<"`, `"<="`, `">"`, `">="`, `"=="`,
- * `"!="`; `"="` is accepted as `"=="`).
- * @throws std::invalid_argument naming every accepted value.
- */
-MESHIOPLUSPLUS_API RefineCompare refine_compare_from_name(const std::string& rName);
-
-/// Options for `refine`.
-struct RefineOptions {
-    /// How many times to apply the subdivision templates. `0` (or less) returns
-    /// an unchanged clone; `n` multiplies the cell count of a supported block
-    /// by `children_per_cell^n` when no selector is set. With a selector, level
-    /// `k > 1` refines the children of level `k - 1`'s red cells; green and
-    /// untouched cells are not re-refined.
-    int mLevels = 1;
-    /// Attach an Int64 `refine:parent_cell` `cell_data` array recording, per
-    /// output cell, the index of the **original** input cell it descends from
-    /// *within its own block* (blocks correspond 1:1). Across several levels
-    /// this is the original ancestor, not the immediate parent.
-    bool mRecordParentIds = false;
-
-    // --- selective refinement ------------------------------------------------
-    // At most ONE of the three selectors below may be set. Two is an error
-    // rather than a precedence rule: silently ignoring a selector the caller
-    // asked for is the failure mode worth refusing. All empty = uniform.
-
-    /// Explicit **global block-major** cell indices to refine (the numbering
-    /// `detail/cell_index.hpp` owns and named `Cell` regions use). Canonicalized
-    /// (sorted, de-duplicated) before use; an out-of-range index is an error.
-    std::vector<std::int64_t> mCells;
-    /// Name of a region to refine. A `Cell` region selects its own cells; a
-    /// `Point` region selects every cell with **any** node in it. A `Side`
-    /// region is not a selector and is an error -- it names facets, and turning
-    /// facets into cells is a policy decision this operation does not make
-    /// silently.
-    std::string mRegion;
-    /// Name of a scalar numeric `cell_data` array to threshold (`""` = unused).
-    /// Composes directly with `attach_quality`, e.g.
-    /// `quality:scaled_jacobian < 0.3`. Deliberately a single comparison and
-    /// not a second `data_calc` expression grammar.
-    std::string mPredicateArray;
-    /// The predicate's comparison.
-    RefineCompare mPredicateOp = RefineCompare::Less;
-    /// The predicate's right-hand side. A non-finite cell value never matches.
-    double mPredicateValue = 0.0;
-    /// How to resolve hanging nodes. Ignored when no selector is set (every
-    /// cell is then red and no closure is needed).
-    RefineClosure mClosure = RefineClosure::RedGreen;
-    /// Attach the Int64 `refine:level` `cell_data` array (see
-    /// `kRefineLevelName`). An input that already carries it is updated
-    /// whatever this flag says; the flag only controls *creating* it.
-    bool mRecordLevels = false;
-};
-
-/// The result of `refine`: the refined mesh plus the index maps.
-struct RefineResult {
-    /// The refined mesh.
-    Mesh mMesh;
-    /// Int64 shape `(num_points_in,)`, input point index -> output point index.
-    /// Refinement never prunes, so this is the identity; it is returned in full
-    /// so callers need not depend on that.
-    NDArray mPointMap;
-    /// Per input block, Int64 shape `(num_cells_in_block,)`, input cell -> the
-    /// index of its **first** child in the corresponding output block. A cell's
-    /// children are contiguous, so cell `c` owns
-    /// `[map[c], c + 1 < n ? map[c + 1] : num_cells_out)`. In selective mode a
-    /// cell may have a single child (itself, unrefined), so the run length
-    /// varies -- the map is still monotone and every entry non-negative.
-    std::vector<NDArray> mCellMaps;
-};
-
-/**
- * @brief Refine a mesh, subdividing cells into same-type children.
- * @param rMesh The mesh to refine (unchanged).
- * @param rOptions Level count, cell selection, closure and bookkeeping. With no
- *   selector set this is the uniform refinement of every cell.
- * @return The refined mesh and its point/cell index maps.
- * @throws std::invalid_argument on a higher-order, `pyramid`, or ragged cell
- *   block, none of which can be subdivided into same-type children; on more
- *   than one selector being set; on an out-of-range cell index; on an unknown
- *   region, or a `Side` region used as a selector; and on a predicate array
- *   that is missing, does not cover every block, is not scalar, or holds a
- *   non-finite value.
- */
-MESHIOPLUSPLUS_API RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions = {});
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/operations/refine.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/reorder.hpp =====
 /**
  * @file operations/reorder.hpp
@@ -16844,7 +18037,7 @@ MESHIOPLUSPLUS_API ReorderResult reorder(const Mesh& rMesh, ReorderMethod method
  * inside one multi-step file) as one ordered logical sequence.
  *
  * This is how transient solver output actually arrives -- `out_0000.vtu …
- * out_0500.vtu` -- and how most of the 41 formats have to express time, since
+ * out_0500.vtu` -- and how most of the 42 formats have to express time, since
  * only a minority carry several steps natively.
  *
  * **It is a driver, not a new mesh operation.** Everything here reads and
@@ -17965,6 +19158,134 @@ MESHIOPLUSPLUS_API Mesh transform(const Mesh& rMesh, const AffineTransform& rXfo
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/transform.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/voxelize.hpp =====
+/**
+ * @file operations/voxelize.hpp
+ * @brief Regular hexahedron grids: `grid` builds one from nothing, `voxelize`
+ * builds one around a mesh and optionally marks which cells the mesh occupies.
+ *
+ * ### The output is an ordinary `Mesh`, and that is the whole design
+ *
+ * A voxel grid is one `hexahedron` cell block over a shared corner lattice --
+ * not a bespoke in-memory object with its own accessors. Once it *is* a `Mesh`,
+ * every writer already handles it, `view`/`screenshot` already render it,
+ * `crop`/`split`/`data calc` already operate on it, `--color-by` already colours
+ * it, and `isosurface` already contours whatever field it carries. None of that
+ * needed a line of new code, and none of it would have been available from a
+ * dedicated grid type.
+ *
+ * `custom` was considered for the adaptive case and rejected: `CellType::Custom`
+ * reports -1 nodes and -1 dimension, which makes the block invisible to `stats`,
+ * `quality`, `surface`, `gradient` and `refine` and unwritable by most formats --
+ * forfeiting exactly the property that motivates the choice. A new `voxel` cell
+ * type was rejected too: VTK's type 11 is deliberately unmapped in this codebase,
+ * and adding it would mean a row in all 42 format tables to buy an implicit node
+ * ordering nothing needs.
+ *
+ * ### `grid` is a primitive constructor, not a byproduct
+ *
+ * The lattice `voxelize` needs is also the mesh-generation primitive the library
+ * has never had -- everything else transforms a mesh you already have. It is
+ * exposed as `grid` for that reason, over the same
+ * `detail/grid_lattice.hpp` that owns the numbering.
+ *
+ * @see doc/voxelize.md, detail/grid_lattice.hpp
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The Int64 0/1 `cell_data` array marking cells the input mesh occupies.
+inline constexpr const char* kVoxelOccupancyName = "voxel:occupancy";
+
+/// Which cells of the lattice to keep.
+enum class VoxelFill {
+    /// Every cell of the bounding box. The input mesh contributes only its
+    /// bounding box, so this is a background grid rather than a shape.
+    All = 0,
+    /// Only cells a surface triangle passes through, by exact triangle/box
+    /// overlap. Needs no distance and no closed surface -- it works on an open
+    /// sheet, which `Inside` cannot.
+    Surface = 1,
+    /// Only cells whose centre is inside the surface. Needs a sign, and
+    /// therefore a surface that is closed enough for the chosen `SdfSign`.
+    Inside = 2,
+};
+
+/// Parse a `VoxelFill` name (`all`, `surface`, `inside`).
+MESHIOPLUSPLUS_API VoxelFill voxel_fill_from_name(const std::string& rName);
+
+/// Options for `voxelize`.
+struct VoxelOptions {
+    /// Cell counts per axis. Exactly one of this and `mCellSize` must be set.
+    std::optional<std::array<std::int64_t, 3>> mResolution;
+    /// Cell size (cubic). Exactly one of this and `mResolution` must be set.
+    std::optional<double> mCellSize;
+    /// Explicit bounds `{lo[3], hi[3]}`; unset uses the input's bounding box.
+    std::optional<std::array<double, 6>> mBounds;
+    /// Padding added to every side, in world units.
+    double mPadding = 0.0;
+    /// Padding added to every side, as a fraction of the bounding-box diagonal.
+    double mPaddingRelative = 0.0;
+    /// Which cells to keep.
+    VoxelFill mFill = VoxelFill::All;
+    /// Attach `voxel:occupancy` instead of dropping the cells it would mark.
+    /// With `VoxelFill::All` this is the only way occupancy is reported at all.
+    bool mAttachOccupancy = false;
+    /// Refuse to generate more cells than this, naming the option. The default
+    /// is a little above 256^3, which is ~1.5 GB of points and connectivity;
+    /// 512^3 would be ~11.8 GB, which is why there is a limit at all.
+    std::int64_t mMaxCells = 20000000;
+    /// How `VoxelFill::Inside` decides what is inside.
+    SurfaceDistanceOptions mDistance;
+};
+
+/// The result of `voxelize`: the grid and the lattice it came from.
+struct VoxelResult {
+    Mesh mMesh;                                       ///< The grid.
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};     ///< Cell counts per axis.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};   ///< Lattice lo corner.
+    std::array<double, 3> mSpacing{{0.0, 0.0, 0.0}};  ///< Cell size per axis.
+    /// How many cells the fill rule kept (equal to the total for `All`).
+    std::int64_t mNumOccupied = 0;
+};
+
+/**
+ * @brief Build a regular hexahedron lattice from nothing.
+ * @param rDims cell counts per axis; a zero on any axis yields an empty mesh.
+ * @param rOrigin the lo corner.
+ * @param rSpacing cell size per axis.
+ * @return a mesh with one `hexahedron` block, points x-fastest.
+ * @throws std::invalid_argument on a negative count or a non-positive spacing,
+ *         and when the cell count exceeds @p MaxCells.
+ */
+MESHIOPLUSPLUS_API Mesh grid(const std::array<std::int64_t, 3>& rDims,
+                             const std::array<double, 3>& rOrigin = {{0.0, 0.0, 0.0}},
+                             const std::array<double, 3>& rSpacing = {{1.0, 1.0, 1.0}},
+                             std::int64_t MaxCells = 20000000);
+
+/**
+ * @brief Build a regular grid over @p rMesh and mark or keep the cells it fills.
+ * @param rMesh the mesh to voxelize; used for its bounding box, and for its
+ *        surface when `mFill` is not `All`.
+ * @param rOptions resolution/cell size, bounds, padding and the fill rule.
+ * @return the grid plus the lattice geometry and the occupied-cell count.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set, on a non-positive resolution or cell size, on
+ *         inverted bounds, and when the lattice would exceed `mMaxCells`.
+ */
+MESHIOPLUSPLUS_API VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/voxelize.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/parallel.hpp =====
 /**
  * @file parallel.hpp
@@ -18627,7 +19948,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 9
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 22
+#define MESHIOPLUSPLUS_VERSION_MINOR 25
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -18637,7 +19958,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "9.22.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "9.25.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -35100,6 +36421,377 @@ int cell_corner_count(CellType type) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/geometry.cpp =====
+// ===== begin src/cpp/src/detail/grid_lattice.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// The number of cells an axis needs to cover `extent` with cells of at most
+// `cell`. A non-positive extent needs none; a non-positive cell size is the
+// caller's error and is reported by lattice_from_cell_size, not here.
+std::int64_t lat_axis_count(double extent, double cell) {
+    if (!(extent > 0.0) || !(cell > 0.0))
+        return 0;
+    const double n = std::ceil(extent / cell);
+    // A hostile ratio (a denormal cell size against a huge extent) would
+    // overflow the cast; clamping here keeps the error a named one from the
+    // caller's own budget check rather than undefined behaviour.
+    if (!(n < 9.0e18))
+        return std::numeric_limits<std::int64_t>::max();
+    return static_cast<std::int64_t>(n);
+}
+
+}  // namespace
+
+std::int64_t lattice_num_points(const LatticeSpec& rSpec) {
+    if (rSpec.mDims[0] < 0 || rSpec.mDims[1] < 0 || rSpec.mDims[2] < 0)
+        return 0;
+    return (rSpec.mDims[0] + 1) * (rSpec.mDims[1] + 1) * (rSpec.mDims[2] + 1);
+}
+
+std::int64_t lattice_num_cells(const LatticeSpec& rSpec) {
+    if (rSpec.mDims[0] <= 0 || rSpec.mDims[1] <= 0 || rSpec.mDims[2] <= 0)
+        return 0;
+    return rSpec.mDims[0] * rSpec.mDims[1] * rSpec.mDims[2];
+}
+
+LatticeSpec lattice_from_bounds(const std::array<double, 3>& rLo, const std::array<double, 3>& rHi,
+                                const std::array<std::int64_t, 3>& rDims) {
+    LatticeSpec spec;
+    spec.mOrigin = rLo;
+    spec.mDims = rDims;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const std::int64_t n = rDims[k] < 0 ? 0 : rDims[k];
+        spec.mDims[k] = n;
+        spec.mSpacing[k] = n > 0 ? (rHi[k] - rLo[k]) / static_cast<double>(n) : 0.0;
+    }
+    return spec;
+}
+
+LatticeSpec lattice_from_cell_size(const std::array<double, 3>& rLo,
+                                   const std::array<double, 3>& rHi,
+                                   const std::array<double, 3>& rCellSize) {
+    LatticeSpec spec;
+    spec.mOrigin = rLo;
+    for (std::size_t k = 0; k < 3; ++k) {
+        spec.mDims[k] = lat_axis_count(rHi[k] - rLo[k], rCellSize[k]);
+        // The requested size is honoured exactly and the box grows to fit, so
+        // the lattice covers the input rather than clipping it. Recomputing the
+        // spacing from the (possibly larger) extent instead would silently hand
+        // back cells of a different size than were asked for.
+        spec.mSpacing[k] = spec.mDims[k] > 0 ? rCellSize[k] : 0.0;
+    }
+    return spec;
+}
+
+Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
+    Mesh out;
+    const std::int64_t ncells = lattice_num_cells(rSpec);
+    if (ncells <= 0) {
+        // No cells means no lattice. Emitting an empty points array and no block
+        // at all is what lets a caller test NumCellBlocks() rather than a row
+        // count.
+        out.AssignPoints(NDArray(DType::Float64, {std::size_t{0}, std::size_t{3}}));
+        return out;
+    }
+
+    const std::int64_t nx = rSpec.mDims[0];
+    const std::int64_t ny = rSpec.mDims[1];
+    const std::int64_t nz = rSpec.mDims[2];
+    const std::int64_t px = nx + 1;
+    const std::int64_t py = ny + 1;
+    const std::int64_t npoints = lattice_num_points(rSpec);
+
+    NDArray points =
+        NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(npoints), std::size_t{3}});
+    {
+        double* dst = points.As<double>();
+        const double ox = rSpec.mOrigin[0], oy = rSpec.mOrigin[1], oz = rSpec.mOrigin[2];
+        const double hx = rSpec.mSpacing[0], hy = rSpec.mSpacing[1], hz = rSpec.mSpacing[2];
+        parallel_for_bw(static_cast<std::size_t>(npoints), [&](std::size_t p) {
+            const std::int64_t g = static_cast<std::int64_t>(p);
+            const std::int64_t i = g % px;
+            const std::int64_t j = (g / px) % py;
+            const std::int64_t k = g / (px * py);
+            // origin + index * spacing, never an accumulation: the coordinate of
+            // a point must not depend on how many points precede it.
+            dst[p * 3 + 0] = ox + static_cast<double>(i) * hx;
+            dst[p * 3 + 1] = oy + static_cast<double>(j) * hy;
+            dst[p * 3 + 2] = oz + static_cast<double>(k) * hz;
+        });
+    }
+    out.AssignPoints(std::move(points));
+
+    NDArray conn =
+        NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ncells), std::size_t{8}});
+    {
+        std::int64_t* dst = conn.As<std::int64_t>();
+        parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
+            const std::int64_t g = static_cast<std::int64_t>(c);
+            const std::int64_t i = g % nx;
+            const std::int64_t j = (g / nx) % ny;
+            const std::int64_t k = g / (nx * ny);
+            const std::int64_t base = (k * py + j) * px + i;
+            const std::int64_t top = base + px * py;
+            // The meshio/VTK hexahedron winding: bottom ring counter-clockwise,
+            // then the top ring, so the base normal points at the top face.
+            dst[c * 8 + 0] = base;
+            dst[c * 8 + 1] = base + 1;
+            dst[c * 8 + 2] = base + px + 1;
+            dst[c * 8 + 3] = base + px;
+            dst[c * 8 + 4] = top;
+            dst[c * 8 + 5] = top + 1;
+            dst[c * 8 + 6] = top + px + 1;
+            dst[c * 8 + 7] = top + px;
+        });
+    }
+    out.AddCellBlock("hexahedron", std::move(conn));
+    return out;
+}
+
+LatticeSpec lattice_resolve(const Mesh& rMesh, const LatticeRequest& rRequest,
+                            const char* pPrefix) {
+    const std::string prefix(pPrefix);
+    if (rRequest.mResolution.has_value() == rRequest.mCellSize.has_value())
+        throw std::invalid_argument(prefix + "give exactly one of resolution and cell_size");
+
+    // The box: the caller's, or the mesh's own, in both cases grown by the
+    // padding.
+    std::array<double, 3> lo{{0.0, 0.0, 0.0}};
+    std::array<double, 3> hi{{0.0, 0.0, 0.0}};
+    if (rRequest.mBounds.has_value()) {
+        const std::array<double, 6>& b = *rRequest.mBounds;
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = b[k];
+            hi[k] = b[k + 3];
+            if (!(hi[k] >= lo[k]))
+                throw std::invalid_argument(prefix + "bounds are inverted on axis " +
+                                            std::to_string(k) + " (lo " + std::to_string(lo[k]) +
+                                            " > hi " + std::to_string(hi[k]) + ")");
+        }
+    } else if (!point_bbox(rMesh, lo, hi)) {
+        throw std::invalid_argument(prefix +
+                                    "the mesh has no points, so it has no bounding box to "
+                                    "cover (pass explicit bounds)");
+    }
+
+    double diag = 0.0;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const double e = hi[k] - lo[k];
+        diag += e * e;
+    }
+    diag = std::sqrt(diag);
+    const double pad = rRequest.mPadding + rRequest.mPaddingRelative * diag;
+    if (pad < 0.0)
+        throw std::invalid_argument(prefix + "padding is negative");
+    for (std::size_t k = 0; k < 3; ++k) {
+        lo[k] -= pad;
+        hi[k] += pad;
+    }
+
+    LatticeSpec spec;
+    if (rRequest.mResolution.has_value()) {
+        const std::array<std::int64_t, 3>& r = *rRequest.mResolution;
+        for (std::size_t k = 0; k < 3; ++k)
+            if (r[k] <= 0)
+                throw std::invalid_argument(prefix +
+                                            "resolution must be positive on every axis, got " +
+                                            std::to_string(r[k]) + " on axis " + std::to_string(k));
+        spec = lattice_from_bounds(lo, hi, r);
+    } else {
+        const double cell = *rRequest.mCellSize;
+        if (!(cell > 0.0))
+            throw std::invalid_argument(prefix + "cell_size must be positive");
+        spec = lattice_from_cell_size(lo, hi, {{cell, cell, cell}});
+        for (std::size_t k = 0; k < 3; ++k)
+            if (spec.mDims[k] <= 0)
+                throw std::invalid_argument(
+                    prefix + "the bounding box is degenerate on axis " + std::to_string(k) +
+                    ", so a cell size cannot fill it (pass an explicit resolution or bounds)");
+    }
+
+    const std::int64_t cells = lattice_num_cells(spec);
+    if (rRequest.mMaxCells > 0 && cells > rRequest.mMaxCells)
+        throw std::invalid_argument(prefix + "the requested grid has " + std::to_string(cells) +
+                                    " cells, above the limit of " +
+                                    std::to_string(rRequest.mMaxCells) +
+                                    " (raise max_cells, coarsen the resolution, or use a band)");
+    return spec;
+}
+
+bool lattice_from_mesh(const Mesh& rMesh, LatticeSpec& rSpec) {
+    // Exactly one hexahedron block, and nothing else.
+    if (rMesh.NumCellBlocks() != 1)
+        return false;
+    const auto cb = rMesh.Cells(0);
+    if (cb.Type() != std::string("hexahedron") || cb.IsRagged())
+        return false;
+
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    if (npoints == 0 || dim < 3)
+        return false;
+    const NDArray& points = rMesh.Points();
+
+    // The distinct plane positions per axis. An exact sort-and-unique is correct
+    // here rather than merely convenient: lattice_build_mesh evaluates
+    // `origin + index * spacing` independently per point, so every point on a
+    // given plane carries the identical double.
+    std::array<std::vector<double>, 3> planes;
+    for (std::size_t d = 0; d < 3; ++d) {
+        planes[d].resize(npoints);
+        for (std::size_t p = 0; p < npoints; ++p)
+            planes[d][p] = read_double(points, p * dim + d);
+        std::sort(planes[d].begin(), planes[d].end());
+        planes[d].erase(std::unique(planes[d].begin(), planes[d].end()), planes[d].end());
+        if (planes[d].size() < 2)
+            return false;  // a single plane is a sheet, not a lattice
+    }
+
+    // A dense lattice has exactly the product of its plane counts as points, and
+    // the product of its cell counts as cells. Either mismatch means a subset (a
+    // `surface`/`inside` fill, an octree) or something else entirely.
+    if (planes[0].size() * planes[1].size() * planes[2].size() != npoints)
+        return false;
+    const std::int64_t nx = static_cast<std::int64_t>(planes[0].size()) - 1;
+    const std::int64_t ny = static_cast<std::int64_t>(planes[1].size()) - 1;
+    const std::int64_t nz = static_cast<std::int64_t>(planes[2].size()) - 1;
+    if (static_cast<std::size_t>(nx * ny * nz) != cb.NumCells())
+        return false;
+
+    LatticeSpec spec;
+    spec.mDims = {{nx, ny, nz}};
+    for (std::size_t d = 0; d < 3; ++d) {
+        const std::vector<double>& v = planes[d];
+        const std::int64_t n = static_cast<std::int64_t>(v.size()) - 1;
+        spec.mOrigin[d] = v.front();
+        // (last - first) / n, not the first gap: it is the least-error estimate
+        // and it is what the writer's own `origin + index * spacing` inverts.
+        spec.mSpacing[d] = (v.back() - v.front()) / static_cast<double>(n);
+        if (!(spec.mSpacing[d] > 0.0))
+            return false;
+        // Uniformity to a relative 1e-9. `origin + i*h` gaps differ in the last
+        // bits, so this cannot be exact, but a genuinely graded mesh is rejected
+        // by orders of magnitude rather than by ulps.
+        for (std::int64_t i = 0; i < n; ++i) {
+            const double gap = v[static_cast<std::size_t>(i) + 1] - v[static_cast<std::size_t>(i)];
+            if (std::fabs(gap - spec.mSpacing[d]) > 1.0e-9 * spec.mSpacing[d])
+                return false;
+        }
+    }
+
+    const std::int64_t px = nx + 1;
+    const std::int64_t py = ny + 1;
+
+    // The points must be in the lattice's own x-fastest order, not merely occupy
+    // its plane positions -- a permuted grid has identical plane sets and is a
+    // different mesh. The comparison is EXACT because `planes[d]` holds the very
+    // doubles the points carry, so this is an equality test rather than a fit.
+    for (std::size_t p = 0; p < npoints; ++p) {
+        const std::int64_t g = static_cast<std::int64_t>(p);
+        const std::int64_t idx[3] = {g % px, (g / px) % py, g / (px * py)};
+        for (std::size_t d = 0; d < 3; ++d)
+            if (read_double(points, p * dim + d) != planes[d][static_cast<std::size_t>(idx[d])])
+                return false;
+    }
+
+    // The connectivity must be the lattice's own, or two different meshes would
+    // both claim to be this box. Checking the index formula per cell is O(n) and
+    // is the difference between "has lattice-shaped points" and "is a lattice".
+    const NDArray& conn = cb.Conn();
+    if (cb.NodesPerCell() != 8)
+        return false;
+    for (std::int64_t c = 0; c < nx * ny * nz; ++c) {
+        const std::int64_t i = c % nx;
+        const std::int64_t j = (c / nx) % ny;
+        const std::int64_t k = c / (nx * ny);
+        const std::int64_t base = (k * py + j) * px + i;
+        const std::int64_t top = base + px * py;
+        const std::int64_t expect[8] = {base, base + 1, base + px + 1, base + px,
+                                        top,  top + 1,  top + px + 1,  top + px};
+        for (std::size_t m = 0; m < 8; ++m)
+            if (read_int(conn, static_cast<std::size_t>(c) * 8 + m) != expect[m])
+                return false;
+    }
+
+    rSpec = spec;
+    return true;
+}
+
+bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo, std::array<double, 3>& rHi) {
+    rLo = {0.0, 0.0, 0.0};
+    rHi = {0.0, 0.0, 0.0};
+    const std::size_t n = rMesh.NumPoints();
+    if (n == 0)
+        return false;
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t ddim = dim < 3 ? dim : 3;
+    if (ddim == 0)
+        return false;
+
+    // Chunked parallel reduction, then a serial combine. min/max are associative
+    // and exact, so the chunking is not observable -- which is exactly why only
+    // the bbox was hoisted here and stats.cpp's centroid sum was not.
+    const std::size_t grain = 4096;
+    const std::size_t nchunks = (n + grain - 1) / grain;
+    std::vector<std::array<double, 3>> pmin(nchunks), pmax(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            std::array<double, 3> lmin = {std::numeric_limits<double>::infinity(),
+                                          std::numeric_limits<double>::infinity(),
+                                          std::numeric_limits<double>::infinity()};
+            std::array<double, 3> lmax = {-std::numeric_limits<double>::infinity(),
+                                          -std::numeric_limits<double>::infinity(),
+                                          -std::numeric_limits<double>::infinity()};
+            const std::size_t start = ci * grain;
+            const std::size_t stop = n < start + grain ? n : start + grain;
+            for (std::size_t g = start; g < stop; ++g)
+                for (std::size_t d = 0; d < ddim; ++d) {
+                    const double v = read_double(points, g * dim + d);
+                    lmin[d] = lmin[d] < v ? lmin[d] : v;
+                    lmax[d] = lmax[d] > v ? lmax[d] : v;
+                }
+            pmin[ci] = lmin;
+            pmax[ci] = lmax;
+        },
+        1);
+
+    std::array<double, 3> gmin = {std::numeric_limits<double>::infinity(),
+                                  std::numeric_limits<double>::infinity(),
+                                  std::numeric_limits<double>::infinity()};
+    std::array<double, 3> gmax = {-std::numeric_limits<double>::infinity(),
+                                  -std::numeric_limits<double>::infinity(),
+                                  -std::numeric_limits<double>::infinity()};
+    for (std::size_t ci = 0; ci < nchunks; ++ci)
+        for (std::size_t d = 0; d < 3; ++d) {
+            gmin[d] = gmin[d] < pmin[ci][d] ? gmin[d] : pmin[ci][d];
+            gmax[d] = gmax[d] > pmax[ci][d] ? gmax[d] : pmax[ci][d];
+        }
+    for (std::size_t d = 0; d < ddim; ++d) {
+        rLo[d] = gmin[d];
+        rHi[d] = gmax[d];
+    }
+    return true;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/grid_lattice.cpp =====
 // ===== begin src/cpp/src/detail/hdf5_util.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
@@ -37367,6 +39059,459 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/subset.cpp =====
+// ===== begin src/cpp/src/detail/surface_distance.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr const char* kSdPrefix = "meshio++: surface distance: ";
+
+// The cells a named Cell region selects, as a per-global-cell flag. An empty
+// name means "everything", which is reported as an empty vector rather than an
+// all-true one so the caller can skip the test entirely.
+std::vector<char> sd_region_mask(const Mesh& rMesh, const std::string& rRegion) {
+    if (rRegion.empty())
+        return {};
+    const std::size_t idx = rMesh.FindRegion(rRegion, RegionKind::Cell);
+    if (idx == Mesh::npos) {
+        std::string names;
+        for (const std::string& n : rMesh.RegionNames())
+            names += (names.empty() ? "" : ", ") + n;
+        throw std::invalid_argument(std::string(kSdPrefix) + "no cell region named '" + rRegion +
+                                    "' (available: " + (names.empty() ? "none" : names) + ")");
+    }
+    const std::vector<std::int64_t> bases = block_bases(rMesh);
+    std::vector<char> mask(static_cast<std::size_t>(total_cells(bases)), 0);
+    const NDArray& entries = rMesh.Region(idx).mEntries;
+    for (std::size_t e = 0; e < entries.Size(); ++e) {
+        const std::int64_t g = read_int(entries, e);
+        if (g >= 0 && static_cast<std::size_t>(g) < mask.size())
+            mask[static_cast<std::size_t>(g)] = 1;
+    }
+    return mask;
+}
+
+// The angle triangle (a, b, c) subtends at corner a. Used only as a positive
+// weight on a unit normal, so its last-ulp behaviour cannot change a sign
+// except where the distance is already zero to within rounding -- see
+// doc/sdf.md on the one place the numpy twin excludes.
+double sd_corner_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+    const Vec3 u = vec3_sub(rB, rA);
+    const Vec3 v = vec3_sub(rC, rA);
+    const double nu = vec3_norm(u);
+    const double nv = vec3_norm(v);
+    if (!(nu > 0.0) || !(nv > 0.0))
+        return 0.0;
+    double c = vec3_dot(u, v) / (nu * nv);
+    c = c < -1.0 ? -1.0 : (c > 1.0 ? 1.0 : c);
+    return std::acos(c);
+}
+
+}  // namespace
+
+TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegion) {
+    TriangleSoup soup;
+    const std::size_t dim = rSurface.PointDim();
+    const NDArray& points = rSurface.Points();
+    soup.mPoints.resize(rSurface.NumPoints());
+    for (std::size_t p = 0; p < rSurface.NumPoints(); ++p)
+        soup.mPoints[p] = read_point(points, dim, static_cast<std::int64_t>(p));
+
+    const std::vector<char> mask = sd_region_mask(rSurface, rRegion);
+    const std::vector<std::int64_t> bases = block_bases(rSurface);
+
+    std::size_t bi = 0;
+    for (const auto cb : rSurface.CellRange()) {
+        const std::int64_t base = bases[bi++];
+        const std::string type(cb.Type());
+        const CellType ct = cell_type_from_name(type);
+
+        if (cb.IsPolyhedron() || cell_type_dimension(ct) == 3)
+            throw std::invalid_argument(
+                std::string(kSdPrefix) + "cell block '" + type +
+                "' is a volume; distance is measured to a surface (run extract_surface first)");
+
+        // A block whose cells happen to share a node count stores rectangularly
+        // and so is not IsRagged(), which is why the type name is what decides
+        // whether it is a polygon -- the trap cgns.cpp records.
+        const bool polygon = type.rfind("polygon", 0) == 0;
+        if (!polygon && ct != CellType::Triangle && ct != CellType::Quad) {
+            if (cell_type_dimension(ct) < 2)
+                continue;  // lines and vertices carry no area; silently skipped
+            throw std::invalid_argument(std::string(kSdPrefix) + "cell block '" + type +
+                                        "' is not a linear surface cell (linearize the mesh "
+                                        "first, then run extract_surface if needed)");
+        }
+
+        const std::size_t ncells = cb.NumCells();
+        for (std::size_t c = 0; c < ncells; ++c) {
+            const std::int64_t global = base + static_cast<std::int64_t>(c);
+            if (!mask.empty() && !mask[static_cast<std::size_t>(global)])
+                continue;
+
+            // Gather this cell's corners, ragged or not.
+            std::vector<std::int64_t> ids;
+            if (cb.IsRagged()) {
+                const std::size_t n = cb.RowSize(c);
+                const std::int64_t* row = cb.Row(c);
+                ids.assign(row, row + n);
+            } else {
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                ids.resize(npc);
+                for (std::size_t i = 0; i < npc; ++i)
+                    ids[i] = read_int(conn, c * npc + i);
+            }
+            if (ids.size() < 3)
+                continue;
+
+            // The same fan convert_cells(Simplexify) uses: corner 0 to every
+            // non-adjacent edge. Transcribing a different fan here would make
+            // the two disagree about which diagonal a quad is split on.
+            for (std::size_t k = 1; k + 1 < ids.size(); ++k) {
+                const std::array<std::int64_t, 3> tri{ids[0], ids[k], ids[k + 1]};
+                soup.mVertices.push_back(tri);
+                soup.mSourceCell.push_back(global);
+                for (std::size_t i = 0; i < 3; ++i)
+                    soup.mCorners.push_back(soup.mPoints[static_cast<std::size_t>(tri[i])]);
+            }
+        }
+    }
+    return soup;
+}
+
+SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
+    SurfaceQuality q;
+    const std::size_t ntri = rSoup.NumTriangles();
+
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const Vec3& a = rSoup.mCorners[t * 3 + 0];
+        const Vec3& b = rSoup.mCorners[t * 3 + 1];
+        const Vec3& c = rSoup.mCorners[t * 3 + 2];
+        if (!(vec3_norm_sq(vec3_cross(vec3_sub(b, a), vec3_sub(c, a))) > 0.0))
+            ++q.mDegenerateTriangles;
+    }
+
+    // Per undirected edge: how many triangles use it, and how many use it in the
+    // low->high direction. A consistently wound closed surface has every edge
+    // used exactly twice, once in each direction.
+    std::unordered_map<SurfaceEdgeKey, std::array<std::int64_t, 2>, SurfaceEdgeKeyHash> edges;
+    edges.reserve(ntri * 3 * 2);
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
+        for (std::size_t e = 0; e < 3; ++e) {
+            const std::int64_t u = v[e];
+            const std::int64_t w = v[(e + 1) % 3];
+            const SurfaceEdgeKey key{u < w ? u : w, u < w ? w : u};
+            std::array<std::int64_t, 2>& rec = edges[key];
+            ++rec[0];
+            if (u < w)
+                ++rec[1];
+        }
+    }
+    for (const auto& kv : edges) {
+        const std::int64_t used = kv.second[0];
+        const std::int64_t forward = kv.second[1];
+        if (used == 1)
+            ++q.mBoundaryEdges;
+        else if (used > 2)
+            ++q.mNonManifoldEdges;
+        else if (used == 2 && forward != 1)
+            ++q.mInconsistentPairs;  // both the same way round: they disagree on "out"
+    }
+    q.mWatertight = q.mBoundaryEdges == 0 && q.mNonManifoldEdges == 0 &&
+                    q.mInconsistentPairs == 0 && q.mDegenerateTriangles == 0;
+    return q;
+}
+
+DistanceQuery build_distance_query(const TriangleSoup& rSoup,
+                                   const SurfaceDistanceOptions& rOptions) {
+    const std::size_t ntri = rSoup.NumTriangles();
+    if (ntri == 0)
+        throw std::invalid_argument(std::string(kSdPrefix) +
+                                    "the surface has no triangles to measure against");
+
+    DistanceQuery q;
+    q.mpSoup = &rSoup;
+    q.mFaceNormal.resize(ntri);
+
+    // Bucket size. It affects only how many candidates each query examines --
+    // never the answer, because every comparison below is totally ordered -- so
+    // the rule here is a pure performance heuristic. That is not a throwaway
+    // remark: it is what let this rule be retuned after measurement without
+    // re-validating a single distance, and `TheBucketSizeDoesNotChangeTheAnswer`
+    // is the proof.
+    //
+    // Sizing buckets by the mean triangle alone is the obvious rule and the wrong
+    // one. On a finely tessellated model the triangles are tiny, so the buckets
+    // are tiny, and a query far from the surface has to expand through hundreds
+    // of empty shells before it finds anything -- a 64^3 inside-fill of the
+    // 112k-triangle Stanford bunny took 19 seconds that way. The domain's own
+    // size has to enter the rule, so the base is the extent divided by the cube
+    // root of the triangle count (roughly "one bucket per triangle's worth of
+    // volume"), floored at the mean triangle so buckets never split a single
+    // triangle needlessly and capped a few multiples above it.
+    double cell = rOptions.mGridCellSize;
+    if (!(cell > 0.0)) {
+        Vec3 lo = rSoup.mCorners[0];
+        Vec3 hi = lo;
+        double sum = 0.0;
+        for (std::size_t t = 0; t < ntri; ++t) {
+            Vec3 tlo = rSoup.mCorners[t * 3];
+            Vec3 thi = tlo;
+            for (std::size_t i = 1; i < 3; ++i)
+                for (std::size_t k = 0; k < 3; ++k) {
+                    const double v = rSoup.mCorners[t * 3 + i][k];
+                    tlo[k] = tlo[k] < v ? tlo[k] : v;
+                    thi[k] = thi[k] > v ? thi[k] : v;
+                }
+            for (std::size_t k = 0; k < 3; ++k) {
+                lo[k] = lo[k] < tlo[k] ? lo[k] : tlo[k];
+                hi[k] = hi[k] > thi[k] ? hi[k] : thi[k];
+            }
+            sum += vec3_norm(vec3_sub(thi, tlo));
+        }
+        const double mean_tri = sum / static_cast<double>(ntri);
+        double extent = 0.0;
+        for (std::size_t k = 0; k < 3; ++k)
+            extent = extent > (hi[k] - lo[k]) ? extent : (hi[k] - lo[k]);
+        const double base = extent / std::cbrt(static_cast<double>(ntri));
+        cell = base < mean_tri ? mean_tri : (base > 8.0 * mean_tri ? 8.0 * mean_tri : base);
+    }
+    if (!(cell > 0.0))
+        cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
+    q.mCellSize = cell;
+    q.mGrid = SpatialGrid(cell);
+
+    // Serial ascending insert. The bucket contents order is not observable given
+    // the tie-break, but keeping the insert serial costs nothing here and keeps
+    // the structure's documented determinism contract intact.
+    for (std::size_t t = 0; t < ntri; ++t) {
+        Vec3 lo = rSoup.mCorners[t * 3];
+        Vec3 hi = lo;
+        for (std::size_t i = 1; i < 3; ++i)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double v = rSoup.mCorners[t * 3 + i][k];
+                lo[k] = lo[k] < v ? lo[k] : v;
+                hi[k] = hi[k] > v ? hi[k] : v;
+            }
+        q.mGrid.InsertBox(q.mGrid.KeyOf(lo.data()), q.mGrid.KeyOf(hi.data()),
+                          static_cast<std::int64_t>(t));
+    }
+
+    // Face normals, then the vertex and edge tables. The table pass is SERIAL
+    // and in ascending (triangle, corner) order: summing unit normals in a
+    // different order changes the last bits, and a last-bit change can flip the
+    // sign of a query point sitting almost exactly on the surface.
+    q.mVertexNormal.assign(rSoup.mPoints.size(), Vec3{0.0, 0.0, 0.0});
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const Vec3& a = rSoup.mCorners[t * 3 + 0];
+        const Vec3& b = rSoup.mCorners[t * 3 + 1];
+        const Vec3& c = rSoup.mCorners[t * 3 + 2];
+        q.mFaceNormal[t] = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
+    }
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const Vec3 n = q.mFaceNormal[t];
+        const double len = vec3_norm(n);
+        if (!(len > 0.0))
+            continue;  // degenerate: no direction to contribute
+        const Vec3 unit = vec3_scale(n, 1.0 / len);
+        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
+        const Vec3* corner = &rSoup.mCorners[t * 3];
+        for (std::size_t i = 0; i < 3; ++i) {
+            const double w =
+                rOptions.mWeight == SdfPseudonormalWeight::Angle
+                    ? sd_corner_angle(corner[i], corner[(i + 1) % 3], corner[(i + 2) % 3])
+                    : len;  // area weighting: |cross| is twice the area, a positive scale
+            Vec3& acc = q.mVertexNormal[static_cast<std::size_t>(v[i])];
+            acc = vec3_add(acc, vec3_scale(unit, w));
+
+            const std::int64_t p = v[i];
+            const std::int64_t r = v[(i + 1) % 3];
+            const SurfaceEdgeKey key{p < r ? p : r, p < r ? r : p};
+            Vec3& e = q.mEdgeNormal[key];
+            e = vec3_add(e, unit);
+        }
+    }
+    return q;
+}
+
+std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
+                                         const std::vector<Vec3>& rPoints,
+                                         const SurfaceDistanceOptions& rOptions) {
+    const TriangleSoup& soup = *rQuery.mpSoup;
+    const std::size_t ntri = soup.NumTriangles();
+    const std::size_t n = rPoints.size();
+    std::vector<DistanceHit> out(n);
+
+    if (rOptions.mSign == SdfSign::WindingNumber && rOptions.mMaxWindingWork > 0.0) {
+        const double work = static_cast<double>(n) * static_cast<double>(ntri);
+        if (work > rOptions.mMaxWindingWork)
+            throw std::invalid_argument(
+                std::string(kSdPrefix) + "sign='winding-number' is O(triangles) per query and " +
+                std::to_string(n) + " queries x " + std::to_string(ntri) + " triangles exceeds " +
+                "max_winding_work (raise it, use a band, or use sign='pseudonormal')");
+    }
+
+    const double band = rOptions.mBand;
+    const bool banded = band > 0.0;
+    const double band2 = band * band;
+    // With a band there is no point expanding past it: a hit found beyond this
+    // radius would be clamped anyway.
+    const std::int64_t max_shell =
+        banded ? static_cast<std::int64_t>(std::ceil(band / rQuery.mCellSize)) + 1
+               : std::numeric_limits<std::int64_t>::max();
+
+    parallel_for(n, [&](std::size_t p) {
+        const Vec3& query = rPoints[p];
+        const GridKey centre = rQuery.mGrid.KeyOf(query.data());
+
+        double best_d2 = std::numeric_limits<double>::infinity();
+        std::int64_t best_tri = -1;
+        PointTriangleHit best_hit;
+
+        // The largest shell radius that can still reach an occupied bucket. Note
+        // ForEachInShell clamps to the occupied box, so an empty shell does NOT
+        // mean "no more candidates" for a query far outside it -- without this
+        // bound the loop would stop early on exactly those points.
+        std::int64_t reach = 0;
+        if (!rQuery.mGrid.Empty()) {
+            const GridKey lo = rQuery.mGrid.OccupiedLo();
+            const GridKey hi = rQuery.mGrid.OccupiedHi();
+            const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
+            const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
+            const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
+            reach = std::max(dx, std::max(dy, dz));
+        }
+        if (reach > max_shell)
+            reach = max_shell;
+
+        for (std::int64_t r = 0; r <= reach; ++r) {
+            // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
+            // away, so once that bound exceeds the best found there is nothing
+            // left to find.
+            if (r >= 1 && best_tri >= 0) {
+                const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
+                if (bound > 0.0 && bound * bound > best_d2)
+                    break;
+            }
+            rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
+                for (std::int64_t t : rIds) {
+                    const std::size_t ti = static_cast<std::size_t>(t);
+                    const PointTriangleHit hit = closest_point_on_triangle(
+                        query, soup.mCorners[ti * 3 + 0], soup.mCorners[ti * 3 + 1],
+                        soup.mCorners[ti * 3 + 2]);
+                    // The total order that makes the accelerator unobservable:
+                    // distance first, then the triangle id, so two equidistant
+                    // triangles always resolve the same way regardless of which
+                    // bucket happened to be visited first.
+                    if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
+                        best_d2 = hit.mDistanceSq;
+                        best_tri = t;
+                        best_hit = hit;
+                    }
+                }
+            });
+        }
+
+        DistanceHit& res = out[p];
+        if (best_tri < 0) {
+            // Nothing within reach: only possible under a band.
+            res.mSignedDistance = band;
+            res.mSourceCell = -1;
+            res.mInBand = false;
+            return;
+        }
+        const double dist = std::sqrt(best_d2);
+        if (banded && best_d2 > band2) {
+            res.mSignedDistance = band;
+            res.mSourceCell = -1;
+            res.mInBand = false;
+            return;
+        }
+        res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(best_tri)];
+        res.mInBand = true;
+
+        if (rOptions.mSign == SdfSign::Unsigned) {
+            res.mSignedDistance = dist;
+            return;
+        }
+        if (rOptions.mSign == SdfSign::WindingNumber) {
+            // Van Oosterom-Strackee solid angle, summed in ascending triangle
+            // order. O(triangles) per query, which is why it is guarded above.
+            double w = 0.0;
+            for (std::size_t t = 0; t < ntri; ++t) {
+                const Vec3 a = vec3_sub(soup.mCorners[t * 3 + 0], query);
+                const Vec3 b = vec3_sub(soup.mCorners[t * 3 + 1], query);
+                const Vec3 c = vec3_sub(soup.mCorners[t * 3 + 2], query);
+                const double la = vec3_norm(a);
+                const double lb = vec3_norm(b);
+                const double lc = vec3_norm(c);
+                const double num = triple_product(a, b, c);
+                const double den = la * lb * lc + vec3_dot(a, b) * lc + vec3_dot(b, c) * la +
+                                   vec3_dot(c, a) * lb;
+                w += 2.0 * std::atan2(num, den);
+            }
+            const bool inside = w / (4.0 * 3.14159265358979323846) > 0.5;
+            res.mSignedDistance = inside ? -dist : dist;
+            return;
+        }
+
+        // Pseudonormal: the normal of the nearest FEATURE, not of the nearest
+        // triangle. Using the triangle's own normal here is right on convex
+        // geometry and wrong on the concave side of every crease.
+        const std::size_t ti = static_cast<std::size_t>(best_tri);
+        const std::array<std::int64_t, 3>& v = soup.mVertices[ti];
+        Vec3 normal = rQuery.mFaceNormal[ti];
+        switch (best_hit.mFeature) {
+            case TriangleFeature::VertexA:
+                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[0])];
+                break;
+            case TriangleFeature::VertexB:
+                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[1])];
+                break;
+            case TriangleFeature::VertexC:
+                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[2])];
+                break;
+            case TriangleFeature::EdgeAB:
+            case TriangleFeature::EdgeBC:
+            case TriangleFeature::EdgeCA: {
+                const std::size_t e = best_hit.mFeature == TriangleFeature::EdgeAB
+                                          ? 0
+                                          : (best_hit.mFeature == TriangleFeature::EdgeBC ? 1 : 2);
+                const std::int64_t a = v[e];
+                const std::int64_t b = v[(e + 1) % 3];
+                const SurfaceEdgeKey key{a < b ? a : b, a < b ? b : a};
+                auto it = rQuery.mEdgeNormal.find(key);
+                if (it != rQuery.mEdgeNormal.end())
+                    normal = it->second;
+                break;
+            }
+            case TriangleFeature::Face:
+            default:
+                break;
+        }
+        const double side = vec3_dot(vec3_sub(query, best_hit.mPoint), normal);
+        res.mSignedDistance = side < 0.0 ? -dist : dist;
+    });
+
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_distance.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <map>
@@ -59832,6 +61977,369 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/unv.cpp =====
+// ===== begin src/cpp/src/formats/vti.cpp =====
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <algorithm>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::cols;
+using detail::vtu_ascii_ndarray;
+using detail::vtu_type_str;
+
+// Parse a whitespace-separated run of N numbers from an XML attribute. VTK's own
+// files use plain spaces; being liberal here costs nothing and a mis-parse would
+// silently relocate the whole grid.
+template <class T>
+bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
+    if (pText == nullptr)
+        return false;
+    std::istringstream is(pText);
+    for (std::size_t i = 0; i < Count; ++i)
+        if (!(is >> pOut[i]))
+            return false;
+    return true;
+}
+
+// The framing every ImageData path needs, resolved once so the mesh reader and
+// the metadata reader cannot disagree about which files they accept.
+struct vti_header {
+    pugi::xml_node mPiece;
+    detail::VtkCodec mCodec = detail::VtkCodec::None;
+    std::size_t mHeaderSize = 4;
+    detail::LatticeSpec mSpec;
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+};
+
+vti_header vti_parse_header(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile'");
+    if (std::string(root.attribute("type").as_string()) != "ImageData")
+        throw ReadError("Expected type ImageData");
+
+    vti_header h;
+    const std::string compressor = root.attribute("compressor").as_string("");
+    if (compressor.empty())
+        h.mCodec = detail::VtkCodec::None;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
+        h.mCodec = detail::VtkCodec::Zlib;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
+        h.mCodec = detail::VtkCodec::LZ4;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
+        h.mCodec = detail::VtkCodec::ZSTD;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
+        throw ReadError("lzma-compressed VTI not supported by the C++ reader");
+    else
+        throw ReadError("Unknown VTI compressor '" + compressor + "'");
+    // Fail early and actionably when the file needs a codec this build lacks.
+    detail::vtk_codec_require_read(h.mCodec);
+
+    const std::string header_type = root.attribute("header_type").as_string("UInt32");
+    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
+
+    if (root.child("AppendedData"))
+        throw ReadError("appended VTI data not supported by the C++ reader");
+
+    pugi::xml_node grid = root.child("ImageData");
+    if (!grid)
+        throw ReadError("No ImageData found");
+
+    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
+    if (!vti_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
+        throw ReadError("ImageData has no readable WholeExtent");
+    double origin[3] = {0.0, 0.0, 0.0};
+    double spacing[3] = {1.0, 1.0, 1.0};
+    if (grid.attribute("Origin"))
+        vti_parse_n(grid.attribute("Origin").as_string(), origin, 3);
+    if (grid.attribute("Spacing"))
+        vti_parse_n(grid.attribute("Spacing").as_string(), spacing, 3);
+    if (grid.attribute("Direction")) {
+        // A non-identity direction matrix rotates the lattice, which an
+        // axis-aligned hexahedron grid cannot express without baking the
+        // rotation into the coordinates -- a different mesh from the one the
+        // file describes. Refuse rather than silently drop the rotation.
+        double dir[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        if (vti_parse_n(grid.attribute("Direction").as_string(), dir, 9)) {
+            const double id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            for (std::size_t i = 0; i < 9; ++i)
+                if (dir[i] != id[i])
+                    throw ReadError(
+                        "VTI with a non-identity Direction is not supported by the "
+                        "C++ reader");
+        }
+    }
+
+    h.mPiece = grid.child("Piece");
+    if (!h.mPiece)
+        throw ReadError("No Piece found");
+    if (h.mPiece.next_sibling("Piece"))
+        throw ReadError("multi-piece VTI not supported by the C++ reader");
+    // The piece's own extent may legally be a sub-box of the whole extent; the
+    // arrays are then sized to the PIECE, and reading them against the whole
+    // extent would be silently misaligned. One piece covering everything is what
+    // every writer emits, so decline the rest by name.
+    if (h.mPiece.attribute("Extent")) {
+        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
+        if (vti_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
+            for (std::size_t i = 0; i < 6; ++i)
+                if (piece[i] != whole[i])
+                    throw ReadError(
+                        "VTI Piece Extent differs from WholeExtent; a partial piece "
+                        "is not supported by the C++ reader");
+    }
+
+    for (std::size_t k = 0; k < 3; ++k) {
+        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
+        if (n < 0)
+            throw ReadError("VTI WholeExtent is inverted on axis " + std::to_string(k));
+        h.mSpec.mDims[k] = n;
+        // The extent may start away from zero; the point at extent index i sits
+        // at Origin + i * Spacing, so the mesh's own lo corner is offset by the
+        // extent's start. Dropping that offset would translate the whole grid.
+        h.mSpec.mOrigin[k] = origin[k] + static_cast<double>(whole[2 * k]) * spacing[k];
+        h.mSpec.mSpacing[k] = spacing[k];
+    }
+    h.mNumPoints = static_cast<std::size_t>((h.mSpec.mDims[0] + 1) * (h.mSpec.mDims[1] + 1) *
+                                            (h.mSpec.mDims[2] + 1));
+    h.mNumCells = static_cast<std::size_t>(detail::lattice_num_cells(h.mSpec));
+    return h;
+}
+
+NDArray vti_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
+                            int& rNumComponents) {
+    const std::string fmt = rDa.attribute("format").as_string("ascii");
+    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
+    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
+    if (fmt == "ascii")
+        return detail::vtu_parse_ascii(rDa.text().get(), dt);
+    if (fmt == "binary")
+        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+    throw ReadError("VTI '" + fmt + "' data is not supported by the C++ reader");
+}
+
+// One geometry attribute value. `%.17g` rather than the stream's default six
+// significant digits, which would lose ~10 digits of a real origin -- a grid
+// placed 1e-7 off its own points, which nothing downstream would flag. 17 is the
+// round-trip width for a double, and the identical spelling is what the numpy
+// twin uses, so the two writers' attributes agree character for character.
+std::string vti_num(double Value) {
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%.17g", Value);
+    return buf;
+}
+
+std::vector<std::string> vti_array_names(const pugi::xml_node& rPiece, const char* pSection) {
+    std::vector<std::string> names;
+    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
+        names.emplace_back(da.attribute("Name").as_string());
+    // The uniform mesh API hands back sorted names; match it so a summary and a
+    // real read report data arrays in the same order.
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+}  // namespace
+
+void write_vti(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_vti_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
+    detail::LatticeSpec spec;
+    if (!detail::lattice_from_mesh(rMesh, spec))
+        throw WriteError(
+            "ImageData is a regular lattice, and this mesh is not one: it needs exactly one "
+            "hexahedron block whose points tile an axis-aligned box with uniform spacing. A "
+            "partial grid (voxelize's 'surface'/'inside' fill, or an octree) cannot be written "
+            "as .vti either -- write it as .vtu, which stores the cells explicitly.");
+    if (binary && codec != detail::VtkCodec::None)
+        detail::vtk_codec_require_write(codec);
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    const char* fmt = binary ? "binary" : "ascii";
+    auto da_header = [&](const char* type, const std::string& name, int ncomp) {
+        os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
+        if (ncomp > 0)
+            os << " NumberOfComponents=\"" << ncomp << "\"";
+        os << " format=\"" << fmt << "\">\n";
+    };
+    auto emit_bin = [&](const unsigned char* d, std::size_t n) {
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+    };
+
+    std::ostringstream ext;
+    ext << "0 " << spec.mDims[0] << " 0 " << spec.mDims[1] << " 0 " << spec.mDims[2];
+
+    os << "<?xml version=\"1.0\"?>\n";
+    os << "<VTKFile type=\"ImageData\" version=\"0.1\" byte_order=\"LittleEndian\"";
+    if (binary && codec != detail::VtkCodec::None)
+        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    os << ">\n";
+    os << "<!--This file was created by meshio++ (C++ core)-->\n";
+    // Origin/Spacing/WholeExtent ARE the geometry: no Points section exists, and
+    // that is the whole reason this format is worth having for a grid.
+    os << "<ImageData WholeExtent=\"" << ext.str() << "\" Origin=\"" << vti_num(spec.mOrigin[0])
+       << " " << vti_num(spec.mOrigin[1]) << " " << vti_num(spec.mOrigin[2]) << "\" Spacing=\""
+       << vti_num(spec.mSpacing[0]) << " " << vti_num(spec.mSpacing[1]) << " "
+       << vti_num(spec.mSpacing[2]) << "\">\n";
+    os << "<Piece Extent=\"" << ext.str() << "\">\n";
+
+    if (rMesh.NumPointData() != 0) {
+        os << "<PointData>\n";
+        for (const auto& name : rMesh.PointDataNames()) {
+            const NDArray& d = rMesh.PointData(name);
+            const int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
+            da_header(vtu_type_str(d.Dtype()), name, ncomp);
+            if (binary)
+                emit_bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
+            else
+                vtu_ascii_ndarray(os, d);
+            os << "</DataArray>\n";
+        }
+        os << "</PointData>\n";
+    }
+
+    if (rMesh.NumCellData() != 0) {
+        os << "<CellData>\n";
+        for (const auto& name : rMesh.CellDataNames()) {
+            const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
+            if (nblocks == 0)
+                continue;
+            // A lattice has exactly one block, so there is nothing to
+            // concatenate -- but iterate anyway rather than assume, since an
+            // array that does not cover the block is a caller error worth not
+            // writing silently truncated.
+            const NDArray& first = rMesh.CellData(name, 0);
+            const int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
+            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            if (binary) {
+                std::vector<unsigned char> buf;
+                for (std::size_t bi = 0; bi < nblocks; ++bi) {
+                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const auto* p = reinterpret_cast<const unsigned char*>(blk.Data());
+                    buf.insert(buf.end(), p, p + blk.Nbytes());
+                }
+                emit_bin(buf.data(), buf.size());
+            } else {
+                for (std::size_t bi = 0; bi < nblocks; ++bi)
+                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+            }
+            os << "</DataArray>\n";
+        }
+        os << "</CellData>\n";
+    }
+
+    os << "</Piece>\n</ImageData>\n</VTKFile>\n";
+}
+
+Mesh read_vti(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
+    if (!res)
+        throw ReadError(std::string("VTI XML parse failed: ") + res.description());
+
+    const vti_header h = vti_parse_header(doc);
+
+    // The extent is expanded into explicit points and hexahedra through the same
+    // helper `grid()` and `voxelize()` use, so a .vti read and a grid() call of
+    // the same shape produce byte-identical meshes.
+    Mesh mesh = detail::lattice_build_mesh(h.mSpec);
+    if (!rOpts.WantsAnyData())
+        return mesh;
+
+    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        int nc = 0;
+        NDArray arr = vti_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
+        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
+            throw ReadError("VTI point array '" + name + "' has " +
+                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
+                            std::to_string(h.mNumPoints) + " points");
+        mesh.AddPointData(name, std::move(arr));
+    }
+    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        int nc = 0;
+        NDArray arr = vti_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
+        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
+            throw ReadError("VTI cell array '" + name + "' has " +
+                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
+                            std::to_string(h.mNumCells) + " cells");
+        if (h.mNumCells == 0)
+            continue;  // no cell block to attach it to
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(arr));
+        mesh.AddCellData(name, std::move(blocks));
+    }
+    return mesh;
+}
+
+MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
+    pugi::xml_document doc;
+    // parse_minimal skips escape expansion over the base64 bodies. Unlike VTU's
+    // metadata path this decodes NOTHING at all: the extent attribute alone
+    // gives both counts.
+    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
+    if (!res)
+        throw ReadError(std::string("VTI XML parse failed: ") + res.description());
+
+    const vti_header h = vti_parse_header(doc);
+
+    MeshMetadata meta;
+    meta.mNumPoints = h.mNumPoints;
+    meta.mPointDim = 3;
+    if (h.mNumCells != 0) {
+        CellBlockInfo info;
+        info.mType = "hexahedron";
+        info.mNumCells = h.mNumCells;
+        info.mNodesPerCell = 8;
+        info.mRagged = false;
+        meta.mCellBlocks.push_back(std::move(info));
+    }
+    meta.mPointDataNames = vti_array_names(h.mPiece, "PointData");
+    meta.mCellDataNames = vti_array_names(h.mPiece, "CellData");
+
+    // The bounding box IS the extent here, so unlike every other native metadata
+    // path this one can report it for free rather than declining.
+    meta.mHasBBox = true;
+    for (std::size_t k = 0; k < 3; ++k) {
+        meta.mBBoxMin[k] = h.mSpec.mOrigin[k];
+        meta.mBBoxMax[k] =
+            h.mSpec.mOrigin[k] + static_cast<double>(h.mSpec.mDims[k]) * h.mSpec.mSpacing[k];
+    }
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/vti.cpp =====
 // ===== begin src/cpp/src/formats/vtk.cpp =====
 #include <cstdint>
 #include <cstdio>
@@ -64100,6 +66608,7 @@ ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& r
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -64205,6 +66714,58 @@ CropResult crop_halfspace(const Mesh& rMesh, const double* pPoint, const double*
         return detail::vec3_dot(detail::vec3_sub(p, p0), nrm) >= 0.0;
     });
     return crop_finish(rMesh, crop_kept_cells(rMesh, mask, mode), record_ids);
+}
+
+CropResult crop_predicate(const Mesh& rMesh, const std::string& rArray, RefineCompare Op,
+                          double Value, bool record_ids) {
+    if (!rMesh.HasCellData(rArray)) {
+        // point_data is refused by name rather than averaged: `data to-cell` is
+        // the explicit way to move it, and doing it here would make the kept set
+        // depend on an averaging rule nobody asked for.
+        if (rMesh.HasPointData(rArray))
+            throw std::invalid_argument(
+                "crop: '" + rArray +
+                "' is point_data; a crop predicate is per cell, so convert it first "
+                "(cell_data_to_point_data's inverse: `data to-cell`)");
+        throw std::invalid_argument("crop: " +
+                                    data_unknown_key_message(rMesh, DataLocation::Cell, rArray));
+    }
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(rArray) != nblocks)
+        throw std::invalid_argument("crop: cell_data '" + rArray +
+                                    "' does not cover every cell block");
+
+    // Already one value per cell, so there is nothing for CropMode to reduce --
+    // see the header on why it is absent rather than accepted and ignored.
+    std::vector<std::vector<std::int64_t>> kept;
+    kept.reserve(nblocks);
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const NDArray& a = rMesh.CellData(rArray, b);
+        ++b;
+        const std::size_t nc = cb.NumCells();
+        if (detail::rows(a) != nc)
+            throw std::invalid_argument("crop: cell_data '" + rArray + "' has " +
+                                        std::to_string(detail::rows(a)) + " rows on a block of " +
+                                        std::to_string(nc) + " cells");
+        if (nc != 0 && data_num_components(a) != 1)
+            throw std::invalid_argument("crop: cell_data '" + rArray +
+                                        "' must be scalar (one value per cell) to be used as a "
+                                        "crop predicate");
+        // Phase 1 parallel into disjoint slots, phase 2 serial ascending
+        // compaction -- the same two-phase shape the spatial modes use, so the
+        // kept order is a traversal-independent contract rather than an accident.
+        std::vector<char> keep(nc, 0);
+        parallel_for(nc, [&](std::size_t c) {
+            keep[c] = refine_compare_value(detail::read_double(a, c), Op, Value) ? 1 : 0;
+        });
+        std::vector<std::int64_t> block;
+        for (std::size_t c = 0; c < nc; ++c)
+            if (keep[c])
+                block.push_back(static_cast<std::int64_t>(c));
+        kept.push_back(std::move(block));
+    }
+    return crop_finish(rMesh, kept, record_ids);
 }
 
 }  // namespace meshioplusplus
@@ -70968,11 +73529,18 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
+        {"Voxelize",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
+          "AttachOccupancy", "MaxCells", "Sign"}},
+        {"ComputeSdf",
+         {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
+          "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
+          "Band"}},
         {"Transform",
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
-        {"Crop", {"Bbox", "Point", "Normal", "Mode", "RecordIds"}},
+        {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
         {"Reorder", {"Method"}},
@@ -71292,6 +73860,66 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
     }
+    if (op == "Voxelize") {
+        // A regular grid around the mesh. Unlike every other step this one does
+        // not transform its input's geometry -- it replaces it -- which is
+        // exactly why it is useful as a pipeline step: read a skin, voxelize it,
+        // write a grid.
+        VoxelOptions opts;
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.0);
+        opts.mFill = voxel_fill_from_name(pipe_text(rStep, "Fill", "all"));
+        opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        VoxelResult r = voxelize(mesh, opts);
+        pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "ComputeSdf") {
+        // Voxelize's sibling: it likewise REPLACES the input's geometry, taking
+        // a surface in and handing a filled grid back, which is exactly the
+        // shape a single-mesh chain wants.
+        SdfOptions opts;
+        opts.mStructure = sdf_structure_from_name(pipe_text(rStep, "Structure", "voxel"));
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mRootResolution = static_cast<std::int64_t>(pipe_number(rStep, "RootResolution", 8.0));
+        opts.mMaxDepth = static_cast<std::int64_t>(pipe_number(rStep, "MaxDepth", 4.0));
+        opts.mBandCells = pipe_number(rStep, "BandCells", 1.0);
+        opts.mRecordLevels = pipe_flag(rStep, "RecordLevels", true);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mDistance.mLocation = sdf_location_from_name(pipe_text(rStep, "Location", "corner"));
+        opts.mDistance.mBand = pipe_number(rStep, "Band", 0.0);
+        SdfResult r = compute_sdf(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"MaxDepth", static_cast<double>(r.mMaxDepth)},
+                        {"NumBanded", static_cast<double>(r.mNumBanded)}});
+        return std::move(r.mMesh);
+    }
+
     if (op == "Isosurface") {
         // The level set of a scalar point_data field -- slice's data-driven
         // sibling, a surface one topological dimension lower.
@@ -71328,9 +73956,23 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         const bool record = pipe_flag(rStep, "RecordIds", false);
         const bool has_bbox = pipe_find(rStep, "Bbox") != nullptr;
         const bool has_plane = pipe_find(rStep, "Point") || pipe_find(rStep, "Normal");
-        if (has_bbox == has_plane)
-            throw std::invalid_argument(pipe_err(rStep, "give either 'Bbox' or 'Point'+'Normal'"));
+        const bool has_where = pipe_find(rStep, "Where") != nullptr;
+        if (static_cast<int>(has_bbox) + static_cast<int>(has_plane) +
+                static_cast<int>(has_where) !=
+            1)
+            throw std::invalid_argument(
+                pipe_err(rStep, "give one of 'Bbox', 'Point'+'Normal' or 'Where'"));
+        if (has_where && pipe_find(rStep, "Mode") != nullptr)
+            throw std::invalid_argument(
+                pipe_err(rStep,
+                         "'Mode' applies to 'Bbox' and 'Point'+'Normal', which test "
+                         "points; a 'Where' predicate is already one value per cell "
+                         "and has nothing to reduce"));
         CropResult result = [&] {
+            if (has_where)
+                return crop_predicate(mesh, pipe_text(rStep, "Where", ""),
+                                      refine_compare_from_name(pipe_text(rStep, "Compare", "<")),
+                                      pipe_number(rStep, "Value", 0.0), record);
             if (has_bbox) {
                 std::vector<double> b = pipe_dvec(rStep, "Bbox");
                 if (b.size() != 6)
@@ -72827,6 +75469,66 @@ std::vector<std::int64_t> refine_read_levels(const Mesh& rMesh,
     return levels;
 }
 
+// --- refine:entity -----------------------------------------------------------
+
+// The per-point entity keys already recorded on a mesh, or an empty vector when
+// it carries none (or carries a malformed or stale one).
+//
+// Staleness is the real hazard, not malformation: the entries name input point
+// indices, which `refine` never renumbers but `reorder`/`clean`/`crop`/`merge`
+// do, and which `transform`/`smooth` move. A stale key would silently graft one
+// entity's node onto another's, so it is not enough to range-check it -- every
+// key must still reproduce its own point's coordinates, by the same arithmetic
+// phase 5 used to write them. The check runs through a scratch of the points'
+// own dtype so a Float32 mesh compares what was actually stored rather than a
+// widened double.
+std::vector<RefineNodeKey> refine_read_entity_keys(const Mesh& rMesh) {
+    if (!rMesh.HasPointData(kRefineEntityName))
+        return {};
+    const std::size_t num_points = rMesh.NumPoints();
+    const NDArray& a = rMesh.PointData(kRefineEntityName);
+    if (detail::rows(a) != num_points || (num_points != 0 && a.Size() / num_points != 4)) {
+        log::warn("refine: ignoring '{}': it is not four values per point.", kRefineEntityName);
+        return {};
+    }
+
+    std::vector<RefineNodeKey> keys(num_points);
+    for (std::size_t p = 0; p < num_points; ++p)
+        for (std::size_t k = 0; k < 4; ++k)
+            keys[p][k] = detail::read_int(a, p * 4 + k);
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = detail::cols(points);
+    NDArray scratch = NDArray::Uninit(points.Dtype(), {std::size_t{1}});
+    for (std::size_t p = 0; p < num_points; ++p) {
+        const RefineNodeKey& key = keys[p];
+        if (key[3] < 0)
+            continue;  // the {-1,-1,-1,-1} sentinel: a point refine did not create
+        const std::size_t first = key[0] < 0 ? 2 : 0;
+        bool ok = true;
+        for (std::size_t c = first; c < 4 && ok; ++c)
+            ok = key[c] >= 0 && static_cast<std::size_t>(key[c]) < num_points;
+        // The phase 5 arithmetic, verbatim -- same order, same divisor, same
+        // store-then-read round trip.
+        const double inv = 1.0 / static_cast<double>(4 - first);
+        for (std::size_t k = 0; k < dim && ok; ++k) {
+            double sum = 0.0;
+            for (std::size_t c = first; c < 4; ++c)
+                sum += detail::read_double(points, static_cast<std::size_t>(key[c]) * dim + k);
+            detail::write_double(scratch, 0, sum * inv);
+            ok = detail::read_double(scratch, 0) == detail::read_double(points, p * dim + k);
+        }
+        if (!ok) {
+            log::warn(
+                "refine: ignoring '{}': point {} no longer sits on the entity it records, so the "
+                "mesh was renumbered or moved since it was written.",
+                kRefineEntityName, p);
+            return {};
+        }
+    }
+    return keys;
+}
+
 // --- one refinement level ----------------------------------------------------
 
 // Refine `rMesh` once. `pRedSeed` is a per-global-cell flag choosing the cells
@@ -73086,13 +75788,35 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         masks = std::move(promoted);
     }
 
+    // The nodes a previous pass already placed on entities of this mesh, keyed by
+    // the entity. The {-1,-1,-1,-1} sentinel is skipped: it is what an original
+    // point and a body centre both carry, and admitting it would make every such
+    // point collide on one key. First-seen wins, which only arises on an input
+    // that was already torn.
+    const std::vector<RefineNodeKey> base_entity_keys = refine_read_entity_keys(rMesh);
+    std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> persisted_node;
+    for (std::size_t p = 0; p < base_entity_keys.size(); ++p) {
+        if (base_entity_keys[p][3] < 0)
+            continue;
+        persisted_node.emplace(base_entity_keys[p], static_cast<std::int64_t>(p));
+    }
+
     // --- phase 4: which entities earn a node, and their point ids ------------
     // An edge entity earns one iff it is split; a quad-face entity iff all four
     // of the bounding edges are. Both cells sharing an entity evaluate the same
     // predicate over the same edges, so they cannot disagree -- that is the
     // conformity argument, and it is why nothing here is tabulated per template.
+    //
+    // An entity whose key the input already recorded (see kRefineEntityName)
+    // keeps the node it already has, **whether or not this pass splits it**.
+    // Both halves of that matter. Reusing a split entity's node is what stops the
+    // 2:1 balance rule from tearing the mesh, and resolving an *unsplit* one is
+    // what lets the hanging rule below stay a single statement over entities: a
+    // node still sitting on an edge its cell spans whole is reported by exactly
+    // the same test that reports a freshly created one, so nothing has to be
+    // carried forward or unmarked by hand.
     std::vector<std::int64_t> node_of_entity(entities.size(), -1);
-    std::vector<std::int64_t> kept_entities;  // entity index, in id order
+    std::vector<std::int64_t> new_entities;  // entities needing a NEW point, in id order
     {
         std::vector<char> needs(entities.size(), 0);
         for (std::size_t e = 0; e < entities.size(); ++e)
@@ -73113,52 +75837,26 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 }
             }
         }
-        kept_entities.reserve(entities.size());
-        for (std::size_t e = 0; e < entities.size(); ++e) {
-            if (!needs[e])
-                continue;
-            node_of_entity[e] = static_cast<std::int64_t>(num_points + kept_entities.size());
-            kept_entities.push_back(static_cast<std::int64_t>(e));
-        }
-    }
-
-    // Hanging nodes: a new node is constrained exactly when some emitted cell is
-    // incident to its entity but does not reference it -- the mid-edge node a
-    // split cell created on an edge its unsplit neighbour still spans whole. The
-    // rule is stated over entities rather than per closure, so it stays correct
-    // if another mode ever leaves some; RedGreen and Propagate leave none, which
-    // a test asserts rather than assumes.
-    std::vector<char> hanging(num_points + kept_entities.size(), 0);
-    std::size_t num_hanging = 0;
-    for (std::size_t b = 0; b < nblocks; ++b) {
-        const RefineBlockDesc& d = descs[b];
-        for (std::size_t c = 0; c < d.mNumCells; ++c) {
-            const std::uint16_t mask = masks[d.mFirstCell + c];
-            const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
-            for (std::size_t s = 0; s < d.mSlotsPerCell; ++s) {
-                // A slot this cell's own template resolves is referenced, not
-                // hanging: edge slot k iff bit k is set, face slot f iff all of
-                // that face's edges are.
-                const bool referenced = s < d.mpEdges->size()
-                                            ? ((mask >> s) & 1u) != 0
-                                            : (mask & d.mFaceEdgeMasks[s - d.mpEdges->size()]) ==
-                                                  d.mFaceEdgeMasks[s - d.mpEdges->size()];
-                if (referenced)
-                    continue;
-                const std::int64_t node =
-                    node_of_entity[static_cast<std::size_t>(entity_of_slot[slot0 + s])];
-                if (node >= 0 && !hanging[static_cast<std::size_t>(node)]) {
-                    hanging[static_cast<std::size_t>(node)] = 1;
-                    ++num_hanging;
-                }
+        if (!persisted_node.empty()) {
+            for (std::size_t e = 0; e < entities.size(); ++e) {
+                auto it = persisted_node.find(entities[e]);
+                if (it != persisted_node.end())
+                    node_of_entity[e] = it->second;
             }
+        }
+        new_entities.reserve(entities.size());
+        for (std::size_t e = 0; e < entities.size(); ++e) {
+            if (!needs[e] || node_of_entity[e] >= 0)
+                continue;
+            node_of_entity[e] = static_cast<std::int64_t>(num_points + new_entities.size());
+            new_entities.push_back(static_cast<std::int64_t>(e));
         }
     }
 
     // Body centres are unique per cell and so need no dedup, but their ids only
     // become known once the deduped range is closed. Only a fully split
     // hexahedron has one.
-    const std::size_t body_base = num_points + kept_entities.size();
+    const std::size_t body_base = num_points + new_entities.size();
     std::vector<std::int64_t> body_of_cell(total_cells, -1);
     std::size_t total_bodies = 0;
     for (std::size_t b = 0; b < nblocks; ++b) {
@@ -73185,8 +75883,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         const std::size_t dim = detail::cols(points);
         NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points_out, dim});
         std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
-        parallel_for_bw(kept_entities.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = entities[static_cast<std::size_t>(kept_entities[i])];
+        parallel_for_bw(new_entities.size(), [&](std::size_t i) {
+            const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
             const double inv = 1.0 / static_cast<double>(4 - first);
             for (std::size_t k = 0; k < dim; ++k) {
@@ -73299,6 +75997,12 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
 
     // --- phase 7: point_data -------------------------------------------------
     for (const std::string& name : rMesh.PointDataNames()) {
+        // The two reserved point arrays are this operation's own bookkeeping and
+        // are rebuilt below from the output's topology. Letting them through here
+        // would interpolate them: a hanging flag would be averaged to 0.5 and
+        // truncated, and an entity key to the mean of two unrelated node ids.
+        if (name == kRefineHangingName || name == kRefineEntityName)
+            continue;
         const NDArray& a = rMesh.PointData(name);
         if (detail::rows(a) != num_points) {
             out.AddPointData(name, detail::data_owned_copy(a));
@@ -73309,8 +76013,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         shape[0] = num_points_out;
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
-        parallel_for_bw(kept_entities.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = entities[static_cast<std::size_t>(kept_entities[i])];
+        parallel_for_bw(new_entities.size(), [&](std::size_t i) {
+            const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
             const double inv = 1.0 / static_cast<double>(4 - first);
             for (std::size_t k = 0; k < ncomp; ++k) {
@@ -73401,17 +76105,116 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         out.AddCellData(kRefineLevelName, std::move(blocks));
     }
 
+    // --- phase 8: the output's own entity keys, and the hanging set ----------
+    // Every point's entity, in OUTPUT point ids -- which equal input ids for the
+    // points that were already there, since refine never renumbers. Body centres
+    // and original points keep the {-1,-1,-1,-1} sentinel: interior to one cell
+    // or created by nothing, so no other cell can ever need to look one up.
+    std::vector<RefineNodeKey> out_entity_keys(num_points_out, RefineNodeKey{-1, -1, -1, -1});
+    for (std::size_t p = 0; p < base_entity_keys.size(); ++p)
+        out_entity_keys[p] = base_entity_keys[p];
+    for (std::size_t i = 0; i < new_entities.size(); ++i)
+        out_entity_keys[num_points + i] = entities[static_cast<std::size_t>(new_entities[i])];
+
+    // Hanging nodes. The rule is "a node sits on an entity of a cell that does
+    // not reference it", and it must be evaluated over the EMITTED cells, not
+    // over the input cells' entities. Those are not the same question once a
+    // pass splits more than one level of the mesh: when the balance rule draws a
+    // coarse cell in, its children's own sub-edges are entities that the input
+    // cell never had, and a node the neighbouring refinement places on one of
+    // them is constrained without any input entity ever naming it. Stating the
+    // rule over the input is what left 42 of 84 constrained nodes unreported on
+    // a two-level balanced refinement of a 4x4x4 hex block.
+    //
+    // Serial, and over a map keyed by the entity rather than by coordinates, so
+    // there is no tolerance anywhere and the traversal order is a pure function
+    // of (block, cell, slot) as everywhere else in this file.
+    std::vector<char> hanging(num_points_out, 0);
+    std::size_t num_hanging = 0;
+    // If every cell was split fully and the input carried no nodes of its own,
+    // every entity of every emitted cell is resolved by that cell's own template
+    // and nothing can be constrained. That is the uniform path, so it skips the
+    // scan below entirely rather than paying a second phase-1-sized pass for an
+    // answer that is zero by construction.
+    bool any_partial = false;
+    for (std::size_t b = 0; b < nblocks && !any_partial; ++b)
+        for (std::size_t c = 0; c < descs[b].mNumCells; ++c)
+            if (masks[descs[b].mFirstCell + c] != descs[b].mFullMask) {
+                any_partial = true;
+                break;
+            }
+    if (any_partial || !base_entity_keys.empty()) {
+        std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> node_at_entity;
+        node_at_entity.reserve(num_points_out * 2);
+        for (std::size_t p = 0; p < num_points_out; ++p) {
+            if (out_entity_keys[p][3] < 0)
+                continue;
+            node_at_entity.emplace(out_entity_keys[p], static_cast<std::int64_t>(p));
+        }
+        if (!node_at_entity.empty()) {
+            std::size_t bi = 0;
+            for (const auto cb : out.CellRange()) {
+                const RefineBlockDesc& d = descs[bi++];
+                const std::vector<detail::CellEdgePair>& edges = *d.mpEdges;
+                const std::vector<detail::CellQuadFace>& faces = *d.mpFaces;
+                const std::size_t ncells = cb.NumCells();
+                if (ncells == 0)
+                    continue;
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t c = 0; c < ncells; ++c) {
+                    const std::size_t row = c * npc;
+                    const auto mark = [&](const RefineNodeKey& rKey) {
+                        auto it = node_at_entity.find(rKey);
+                        if (it == node_at_entity.end())
+                            return;
+                        const std::size_t node = static_cast<std::size_t>(it->second);
+                        for (std::size_t n = 0; n < npc; ++n)
+                            if (detail::read_int(conn, row + n) == it->second)
+                                return;  // this cell references it: not hanging here
+                        if (!hanging[node]) {
+                            hanging[node] = 1;
+                            ++num_hanging;
+                        }
+                    };
+                    for (const detail::CellEdgePair& e : edges)
+                        mark(refine_edge_key(detail::read_int(conn, row + e[0]),
+                                             detail::read_int(conn, row + e[1])));
+                    for (const detail::CellQuadFace& f : faces)
+                        mark(refine_face_key(detail::read_int(conn, row + f[0]),
+                                             detail::read_int(conn, row + f[1]),
+                                             detail::read_int(conn, row + f[2]),
+                                             detail::read_int(conn, row + f[3])));
+                }
+            }
+        }
+    }
+
     // refine:hanging -- the constrained nodes a Balanced pass leaves behind. Only
     // attached when there are any, so the conforming closures are unaffected.
     if (num_hanging > 0) {
         NDArray flags = NDArray::Uninit(DType::Int64, {num_points_out, 1});
         std::int64_t* dst = flags.As<std::int64_t>();
-        std::fill(dst, dst + num_points_out, static_cast<std::int64_t>(0));
-        for (std::size_t i = 0; i < hanging.size(); ++i)
+        for (std::size_t i = 0; i < num_points_out; ++i)
             dst[i] = hanging[i] ? 1 : 0;
         out.AddPointData(kRefineHangingName, std::move(flags));
         log::info("refine: the balanced closure left {} hanging node(s); see '{}'.", num_hanging,
                   kRefineHangingName);
+    }
+
+    // refine:entity -- so a later pass can reuse this pass's nodes instead of
+    // allocating coincident duplicates. Attached whenever this pass leaves
+    // hanging nodes, and *maintained* thereafter once present, exactly as
+    // refine:level is. A pass that leaves none and inherits none writes nothing,
+    // which is what keeps every conforming closure's output byte-identical to
+    // what it was before the array existed.
+    if (num_hanging > 0 || !base_entity_keys.empty()) {
+        NDArray keys_out = NDArray::Uninit(DType::Int64, {num_points_out, std::size_t{4}});
+        std::int64_t* dst = keys_out.As<std::int64_t>();
+        for (std::size_t p = 0; p < num_points_out; ++p)
+            for (std::size_t k = 0; k < 4; ++k)
+                dst[p * 4 + k] = out_entity_keys[p][k];
+        out.AddPointData(kRefineEntityName, std::move(keys_out));
     }
 
     for (const std::string& name : rMesh.FieldDataNames())
@@ -73502,29 +76305,6 @@ std::size_t refine_projected_cells(const Mesh& rMesh) {
 bool refine_has_selector(const RefineOptions& rOptions) {
     return !rOptions.mCells.empty() || !rOptions.mRegion.empty() ||
            !rOptions.mPredicateArray.empty();
-}
-
-bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
-    // A non-finite value never matches. compute_quality deliberately reports NaN
-    // where a metric does not apply, so a predicate over `quality:*` on a mixed
-    // mesh is the headline use case -- rejecting the array would break it.
-    if (!std::isfinite(Value))
-        return false;
-    switch (Op) {
-        case RefineCompare::Less:
-            return Value < Rhs;
-        case RefineCompare::LessEqual:
-            return Value <= Rhs;
-        case RefineCompare::Greater:
-            return Value > Rhs;
-        case RefineCompare::GreaterEqual:
-            return Value >= Rhs;
-        case RefineCompare::Equal:
-            return Value == Rhs;
-        case RefineCompare::NotEqual:
-            return Value != Rhs;
-    }
-    return false;
 }
 
 std::string refine_region_names(const Mesh& rMesh) {
@@ -73660,6 +76440,32 @@ RefineClosure refine_closure_from_name(const std::string& rName) {
         return RefineClosure::Balanced;
     throw std::invalid_argument("refine: unknown closure '" + rName +
                                 "' (expected 'redgreen'/'green', 'propagate' or 'balanced')");
+}
+
+bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
+    // A non-finite value never matches. compute_quality deliberately reports NaN
+    // where a metric does not apply, so a predicate over `quality:*` on a mixed
+    // mesh is the headline use case -- rejecting the array would break it.
+    //
+    // Public (declared in refine.hpp) rather than file-private because
+    // `crop_predicate` selects cells by this identical rule; see the header.
+    if (!std::isfinite(Value))
+        return false;
+    switch (Op) {
+        case RefineCompare::Less:
+            return Value < Rhs;
+        case RefineCompare::LessEqual:
+            return Value <= Rhs;
+        case RefineCompare::Greater:
+            return Value > Rhs;
+        case RefineCompare::GreaterEqual:
+            return Value >= Rhs;
+        case RefineCompare::Equal:
+            return Value == Rhs;
+        case RefineCompare::NotEqual:
+            return Value != Rhs;
+    }
+    return false;
 }
 
 RefineCompare refine_compare_from_name(const std::string& rName) {
@@ -74212,6 +77018,459 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/reorder.cpp =====
+// ===== begin src/cpp/src/operations/sdf.cpp =====
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kSdfPrefix = "meshio++: sdf: ";
+
+// The query points a mesh contributes, as a flat Float64 (n, 3) array: its own
+// points, or its cell centroids.
+std::vector<detail::Vec3> sdfop_query_points(const Mesh& rMesh, SdfLocation Location) {
+    std::vector<detail::Vec3> out;
+    const std::size_t dim = rMesh.PointDim();
+    if (Location == SdfLocation::Corner) {
+        const std::size_t n = rMesh.NumPoints();
+        out.resize(n);
+        const NDArray& points = rMesh.Points();
+        parallel_for_bw(n, [&](std::size_t p) {
+            out[p] = detail::read_point(points, dim, static_cast<std::int64_t>(p));
+        });
+        return out;
+    }
+
+    // Cell centres: the corner average, accumulated in connectivity order so the
+    // numpy twin can reproduce it without a summation-order argument.
+    const NDArray& points = rMesh.Points();
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        const std::size_t base = out.size();
+        out.resize(base + ncells);
+        if (cb.IsRagged()) {
+            for (std::size_t c = 0; c < ncells; ++c) {
+                detail::Vec3 sum{0.0, 0.0, 0.0};
+                std::size_t count = 0;
+                if (cb.IsPolyhedron()) {
+                    for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                        const auto face = cb.Face(c, f);
+                        for (std::size_t i = 0; i < face.second; ++i) {
+                            sum = detail::vec3_add(sum,
+                                                   detail::read_point(points, dim, face.first[i]));
+                            ++count;
+                        }
+                    }
+                } else {
+                    const std::size_t n = cb.RowSize(c);
+                    const std::int64_t* row = cb.Row(c);
+                    for (std::size_t i = 0; i < n; ++i) {
+                        sum = detail::vec3_add(sum, detail::read_point(points, dim, row[i]));
+                        ++count;
+                    }
+                }
+                out[base + c] =
+                    count == 0 ? sum : detail::vec3_scale(sum, 1.0 / static_cast<double>(count));
+            }
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t npc = cb.NodesPerCell();
+        const double inv = npc == 0 ? 0.0 : 1.0 / static_cast<double>(npc);
+        parallel_for_bw(ncells, [&](std::size_t c) {
+            detail::Vec3 sum{0.0, 0.0, 0.0};
+            for (std::size_t i = 0; i < npc; ++i)
+                sum = detail::vec3_add(
+                    sum, detail::read_point(points, dim, detail::read_int(conn, c * npc + i)));
+            out[base + c] = detail::vec3_scale(sum, inv);
+        });
+    }
+    return out;
+}
+
+// Report a surface's defects at the requested severity.
+void sdfop_report_quality(const SurfaceQuality& rQuality, SdfWatertightCheck Check) {
+    if (Check == SdfWatertightCheck::Off || rQuality.mWatertight)
+        return;
+    const std::string what =
+        "the surface is not watertight: " + std::to_string(rQuality.mBoundaryEdges) +
+        " boundary edge(s), " + std::to_string(rQuality.mNonManifoldEdges) +
+        " non-manifold edge(s), " + std::to_string(rQuality.mInconsistentPairs) +
+        " inconsistently wound pair(s), " + std::to_string(rQuality.mDegenerateTriangles) +
+        " degenerate triangle(s)";
+    if (Check == SdfWatertightCheck::Error)
+        throw std::invalid_argument(std::string(kSdfPrefix) + what);
+    log::warn("{}{} -- the sign may be wrong near the defects; consider sign='winding-number'.",
+              kSdfPrefix, what);
+}
+
+// The per-cell diagonal of every cell of a hexahedral grid, from the cell's own
+// corner bounding box rather than from its level. Deriving it from `refine:level`
+// would work for an octree built here and be wrong for anything else, and the
+// bbox is exact for an axis-aligned box, which is all this grid ever contains.
+std::vector<double> sdfop_cell_diagonals(const Mesh& rMesh) {
+    std::vector<double> out;
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        const std::size_t base = out.size();
+        out.resize(base + ncells);
+        if (cb.IsRagged()) {
+            // An octree pass never produces one (refine refuses ragged blocks),
+            // so a zero diagonal here simply means "never in the band".
+            for (std::size_t c = 0; c < ncells; ++c)
+                out[base + c] = 0.0;
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t npc = cb.NodesPerCell();
+        parallel_for_bw(ncells, [&](std::size_t c) {
+            detail::Vec3 lo{{0.0, 0.0, 0.0}};
+            detail::Vec3 hi{{0.0, 0.0, 0.0}};
+            for (std::size_t i = 0; i < npc; ++i) {
+                const detail::Vec3 p =
+                    detail::read_point(points, dim, detail::read_int(conn, c * npc + i));
+                for (std::size_t d = 0; d < 3; ++d) {
+                    if (i == 0 || p[d] < lo[d])
+                        lo[d] = p[d];
+                    if (i == 0 || p[d] > hi[d])
+                        hi[d] = p[d];
+                }
+            }
+            double s = 0.0;
+            for (std::size_t d = 0; d < 3; ++d) {
+                const double e = hi[d] - lo[d];
+                s += e * e;
+            }
+            out[base + c] = std::sqrt(s);
+        });
+    }
+    return out;
+}
+
+// A Float64 field_data entry from a small fixed run of doubles.
+NDArray sdfop_field_f64(const double* pValues, std::size_t Count) {
+    NDArray a = NDArray::Uninit(DType::Float64, {Count});
+    std::memcpy(a.Data(), pValues, Count * sizeof(double));
+    return a;
+}
+
+// An Int64 field_data entry from a small fixed run.
+NDArray sdfop_field_i64(const std::int64_t* pValues, std::size_t Count) {
+    NDArray a = NDArray::Uninit(DType::Int64, {Count});
+    std::memcpy(a.Data(), pValues, Count * sizeof(std::int64_t));
+    return a;
+}
+
+}  // namespace
+
+SdfSign sdf_sign_from_name(const std::string& rName) {
+    if (rName == "unsigned")
+        return SdfSign::Unsigned;
+    if (rName == "pseudonormal")
+        return SdfSign::Pseudonormal;
+    if (rName == "winding-number" || rName == "winding_number")
+        return SdfSign::WindingNumber;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown sign '" + rName +
+                                "' (expected one of: unsigned, pseudonormal, winding-number)");
+}
+
+SdfPseudonormalWeight sdf_weight_from_name(const std::string& rName) {
+    if (rName == "angle")
+        return SdfPseudonormalWeight::Angle;
+    if (rName == "area")
+        return SdfPseudonormalWeight::Area;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown weight '" + rName +
+                                "' (expected one of: angle, area)");
+}
+
+SdfLocation sdf_location_from_name(const std::string& rName) {
+    if (rName == "corner" || rName == "point")
+        return SdfLocation::Corner;
+    if (rName == "center" || rName == "centre" || rName == "cell")
+        return SdfLocation::Center;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown location '" + rName +
+                                "' (expected one of: corner, center)");
+}
+
+SdfStructure sdf_structure_from_name(const std::string& rName) {
+    if (rName == "voxel")
+        return SdfStructure::Voxel;
+    if (rName == "octree")
+        return SdfStructure::Octree;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown structure '" + rName +
+                                "' (expected one of: voxel, octree)");
+}
+
+SdfWatertightCheck sdf_watertight_check_from_name(const std::string& rName) {
+    if (rName == "off")
+        return SdfWatertightCheck::Off;
+    if (rName == "warn")
+        return SdfWatertightCheck::Warn;
+    if (rName == "error")
+        return SdfWatertightCheck::Error;
+    throw std::invalid_argument(std::string(kSdfPrefix) + "unknown watertight check '" + rName +
+                                "' (expected one of: off, warn, error)");
+}
+
+SurfaceQuality surface_watertight_check(const Mesh& rSurface) {
+    const detail::TriangleSoup soup = detail::build_triangle_soup(rSurface, "");
+    return detail::soup_quality(soup);
+}
+
+NDArray sample_distance(const Mesh& rSurface, const NDArray& rPoints,
+                        const SurfaceDistanceOptions& rOptions) {
+    const std::size_t dim = detail::cols(rPoints);
+    if (rPoints.Ndim() != 2 || (dim != 2 && dim != 3))
+        throw std::invalid_argument(std::string(kSdfPrefix) +
+                                    "query points must be a 2-D (n, 2) or (n, 3) array");
+    const std::size_t n = detail::rows(rPoints);
+    std::vector<detail::Vec3> queries(n);
+    parallel_for_bw(n, [&](std::size_t p) {
+        queries[p] = detail::read_point(rPoints, dim, static_cast<std::int64_t>(p));
+    });
+
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(rSurface, rOptions.mSurfaceRegion);
+    sdfop_report_quality(detail::soup_quality(soup), rOptions.mWatertightCheck);
+
+    detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
+    std::vector<detail::DistanceHit> hits = detail::query_distances(query, queries, rOptions);
+
+    NDArray out = NDArray::Uninit(DType::Float64, {n});
+    double* dst = out.As<double>();
+    parallel_for_bw(n, [&](std::size_t p) { dst[p] = hits[p].mSignedDistance; });
+    return out;
+}
+
+SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurface,
+                                          const SurfaceDistanceOptions& rOptions) {
+    SurfaceDistanceResult result;
+    result.mMesh = detail::clone_mesh(rQuery, [](DataLocation, const std::string&, std::string&) {
+        return true;  // geometry and every existing array pass through unchanged
+    });
+
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(rSurface, rOptions.mSurfaceRegion);
+    result.mQuality = detail::soup_quality(soup);
+    sdfop_report_quality(result.mQuality, rOptions.mWatertightCheck);
+
+    const std::vector<detail::Vec3> queries = sdfop_query_points(rQuery, rOptions.mLocation);
+    detail::DistanceQuery query = detail::build_distance_query(soup, rOptions);
+    const std::vector<detail::DistanceHit> hits = detail::query_distances(query, queries, rOptions);
+    const std::size_t n = hits.size();
+
+    NDArray dist = NDArray::Uninit(DType::Float64, {n});
+    double* pd = dist.As<double>();
+    parallel_for_bw(n, [&](std::size_t p) { pd[p] = hits[p].mSignedDistance; });
+
+    const bool banded = rOptions.mBand > 0.0;
+    NDArray band;
+    if (banded) {
+        band = NDArray::Uninit(DType::Int64, {n});
+        std::int64_t* pb = band.As<std::int64_t>();
+        parallel_for_bw(n, [&](std::size_t p) { pb[p] = hits[p].mInBand ? 1 : 0; });
+        for (std::size_t p = 0; p < n; ++p)
+            result.mNumBanded += hits[p].mInBand ? 0 : 1;
+    }
+    NDArray inside;
+    if (rOptions.mRecordInside) {
+        inside = NDArray::Uninit(DType::Int64, {n});
+        std::int64_t* pi = inside.As<std::int64_t>();
+        parallel_for_bw(n, [&](std::size_t p) { pi[p] = hits[p].mSignedDistance < 0.0 ? 1 : 0; });
+    }
+    NDArray closest;
+    if (rOptions.mRecordClosestCell) {
+        closest = NDArray::Uninit(DType::Int64, {n});
+        std::int64_t* pc = closest.As<std::int64_t>();
+        parallel_for_bw(n, [&](std::size_t p) { pc[p] = hits[p].mSourceCell; });
+    }
+
+    if (rOptions.mLocation == SdfLocation::Corner) {
+        result.mMesh.AddPointData(kSdfDistanceName, std::move(dist));
+        if (banded)
+            result.mMesh.AddPointData(kSdfBandName, std::move(band));
+        if (rOptions.mRecordInside)
+            result.mMesh.AddPointData(kSdfInsideName, std::move(inside));
+        if (rOptions.mRecordClosestCell)
+            result.mMesh.AddPointData(kSdfClosestCellName, std::move(closest));
+        return result;
+    }
+
+    // Cell data is per block, so split the flat run back up along the block
+    // boundaries it was built from.
+    const auto split = [&](NDArray& rFlat) {
+        std::vector<NDArray> blocks;
+        std::size_t base = 0;
+        for (const auto cb : result.mMesh.CellRange()) {
+            const std::size_t ncells = cb.NumCells();
+            NDArray b = NDArray::Uninit(rFlat.Dtype(), {ncells});
+            const std::size_t width = rFlat.Nbytes() / (rFlat.Size() == 0 ? 1 : rFlat.Size());
+            std::memcpy(b.Data(), rFlat.Data() + base * width, ncells * width);
+            blocks.push_back(std::move(b));
+            base += ncells;
+        }
+        return blocks;
+    };
+    result.mMesh.AddCellData(kSdfDistanceName, split(dist));
+    if (banded)
+        result.mMesh.AddCellData(kSdfBandName, split(band));
+    if (rOptions.mRecordInside)
+        result.mMesh.AddCellData(kSdfInsideName, split(inside));
+    if (rOptions.mRecordClosestCell)
+        result.mMesh.AddCellData(kSdfClosestCellName, split(closest));
+    return result;
+}
+
+SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions) {
+    // The grid the field will live on. Voxel resolves the caller's resolution or
+    // cell size directly; octree resolves a *root* lattice of mRootResolution
+    // cells per axis over the same padded box and then refines it.
+    detail::LatticeRequest req;
+    req.mBounds = rOptions.mBounds;
+    req.mPadding = rOptions.mPadding;
+    req.mPaddingRelative = rOptions.mPaddingRelative;
+    req.mMaxCells = rOptions.mMaxCells;
+    if (rOptions.mStructure == SdfStructure::Octree) {
+        if (rOptions.mRootResolution <= 0)
+            throw std::invalid_argument(std::string(kSdfPrefix) +
+                                        "root_resolution must be positive, got " +
+                                        std::to_string(rOptions.mRootResolution));
+        if (rOptions.mMaxDepth < 0)
+            throw std::invalid_argument(std::string(kSdfPrefix) +
+                                        "max_depth must not be negative, got " +
+                                        std::to_string(rOptions.mMaxDepth));
+        if (!(rOptions.mBandCells > 0.0))
+            throw std::invalid_argument(std::string(kSdfPrefix) +
+                                        "band_cells must be positive, got " +
+                                        std::to_string(rOptions.mBandCells));
+        if (rOptions.mResolution.has_value() || rOptions.mCellSize.has_value())
+            throw std::invalid_argument(
+                std::string(kSdfPrefix) +
+                "structure 'octree' sizes itself from root_resolution and max_depth; "
+                "resolution and cell_size apply to structure 'voxel' only");
+        req.mResolution = std::array<std::int64_t, 3>{
+            {rOptions.mRootResolution, rOptions.mRootResolution, rOptions.mRootResolution}};
+    } else {
+        req.mResolution = rOptions.mResolution;
+        req.mCellSize = rOptions.mCellSize;
+    }
+    const detail::LatticeSpec root = detail::lattice_resolve(rSurface, req, kSdfPrefix);
+
+    SdfResult result;
+    result.mDims = root.mDims;
+    result.mOrigin = root.mOrigin;
+    result.mSpacing = root.mSpacing;
+
+    // Every point and cell of the output is new, so nothing can be remapped --
+    // the same situation voxelize/slice/isosurface/extract_surface are in.
+    detail::warn_regions_dropped(rSurface, "compute_sdf");
+
+    Mesh mesh = detail::lattice_build_mesh(root);
+
+    if (rOptions.mStructure == SdfStructure::Octree) {
+        // The soup and its accelerator depend only on the surface, so they are
+        // built once and reused by every selection pass.
+        const detail::TriangleSoup soup =
+            detail::build_triangle_soup(rSurface, rOptions.mDistance.mSurfaceRegion);
+        // Selection needs |d| only, so it runs UNSIGNED: the magnitude is the
+        // same either way, and an unsigned query neither depends on the surface
+        // being closed nor pays for a winding-number sign it would throw away.
+        SurfaceDistanceOptions sel_opts = rOptions.mDistance;
+        sel_opts.mSign = SdfSign::Unsigned;
+        sel_opts.mBand = 0.0;
+        sel_opts.mWatertightCheck = SdfWatertightCheck::Off;  // reported once, below
+        const detail::DistanceQuery query = detail::build_distance_query(soup, sel_opts);
+
+        for (std::int64_t pass = 0; pass < rOptions.mMaxDepth; ++pass) {
+            // Distances at the CURRENT mesh's cell centres. Recomputing per pass
+            // is the point: a selection carried over from the previous pass would
+            // name cells of a mesh that no longer exists, since these are global
+            // block-major indices into whatever `refine` last returned.
+            const std::vector<detail::Vec3> centres = sdfop_query_points(mesh, SdfLocation::Center);
+            const std::vector<double> diag = sdfop_cell_diagonals(mesh);
+            const std::vector<detail::DistanceHit> hits =
+                detail::query_distances(query, centres, sel_opts);
+
+            std::vector<std::int64_t> selected;
+            for (std::size_t c = 0; c < hits.size(); ++c)
+                if (std::fabs(hits[c].mSignedDistance) <= rOptions.mBandCells * diag[c])
+                    selected.push_back(static_cast<std::int64_t>(c));
+            if (selected.empty())
+                break;  // nothing near the surface: the tree has converged
+
+            RefineOptions ro;
+            ro.mLevels = 1;
+            ro.mCells = std::move(selected);
+            // Balanced is the only closure whose cost is bounded by the
+            // selection; red-green and propagate both spread the refinement well
+            // beyond the band. The output is 1-irregular -- see refine.hpp.
+            ro.mClosure = RefineClosure::Balanced;
+            ro.mRecordLevels = rOptions.mRecordLevels;
+            mesh = refine(mesh, ro).mMesh;
+            ++result.mMaxDepth;
+            for (std::size_t d = 0; d < 3; ++d)
+                result.mSpacing[d] *= 0.5;
+
+            std::size_t total = 0;
+            for (const auto cb : mesh.CellRange())
+                total += cb.NumCells();
+            if (rOptions.mMaxCells > 0 && static_cast<std::int64_t>(total) > rOptions.mMaxCells)
+                throw std::invalid_argument(
+                    std::string(kSdfPrefix) + "the octree reached " + std::to_string(total) +
+                    " cells after " + std::to_string(result.mMaxDepth) +
+                    " pass(es), above the limit of " + std::to_string(rOptions.mMaxCells) +
+                    " (raise max_cells, lower max_depth or band_cells)");
+        }
+    }
+
+    // The field is computed ONCE, on the final mesh. Attaching it earlier and
+    // letting `refine` carry it would replace every value on a refined cell with
+    // an interpolation of its parent's -- smooth, plausible, and wrong.
+    SurfaceDistanceResult filled = distance_to_surface(mesh, rSurface, rOptions.mDistance);
+    result.mMesh = std::move(filled.mMesh);
+    result.mQuality = filled.mQuality;
+    result.mNumBanded = filled.mNumBanded;
+
+    // The header, so a caller holding only the mesh still knows what grid it is.
+    // No format persists arbitrary field_data, so this survives in memory only --
+    // `.vti` round-trips the geometry instead, and `detail::lattice_from_mesh`
+    // recovers a dense lattice from its points. See doc/sdf.md.
+    const double origin[3] = {result.mOrigin[0], result.mOrigin[1], result.mOrigin[2]};
+    const double spacing[3] = {result.mSpacing[0], result.mSpacing[1], result.mSpacing[2]};
+    const std::int64_t dims[3] = {result.mDims[0], result.mDims[1], result.mDims[2]};
+    const double bounds[6] = {
+        root.mOrigin[0],
+        root.mOrigin[1],
+        root.mOrigin[2],
+        root.mOrigin[0] + static_cast<double>(root.mDims[0]) * root.mSpacing[0],
+        root.mOrigin[1] + static_cast<double>(root.mDims[1]) * root.mSpacing[1],
+        root.mOrigin[2] + static_cast<double>(root.mDims[2]) * root.mSpacing[2]};
+    const std::int64_t depth = result.mMaxDepth;
+    const std::int64_t structure = rOptions.mStructure == SdfStructure::Octree ? 1 : 0;
+    result.mMesh.AddFieldData(kSdfOriginName, sdfop_field_f64(origin, 3));
+    result.mMesh.AddFieldData(kSdfSpacingName, sdfop_field_f64(spacing, 3));
+    result.mMesh.AddFieldData(kSdfDimsName, sdfop_field_i64(dims, 3));
+    result.mMesh.AddFieldData(kSdfBoundsName, sdfop_field_f64(bounds, 6));
+    result.mMesh.AddFieldData(kSdfMaxDepthName, sdfop_field_i64(&depth, 1));
+    result.mMesh.AddFieldData(kSdfStructureName, sdfop_field_i64(&structure, 1));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/sdf.cpp =====
 // ===== begin src/cpp/src/operations/sequence.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -76024,6 +79283,12 @@ std::string sniff_format(const std::string& rPath) {
             return "vtu";
         if (sniff_contains(head, "PolyData"))
             return "vtp";
+        // Checked last of the three: the grid-type strings are disjoint, but a
+        // future dataset type could contain another as a substring, and the
+        // cheapest defence is to keep the most recently added one from
+        // shadowing anything.
+        if (sniff_contains(head, "ImageData"))
+            return "vti";
     }
     if (sniff_starts_with(stripped, "<Xdmf") || sniff_contains(head, "<Xdmf"))
         return "xdmf";
@@ -77397,6 +80662,324 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/transform.cpp =====
+// ===== begin src/cpp/src/operations/voxelize.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kVoxPrefix = "meshio++: voxelize: ";
+
+// The cell budget check for grid(), which has no LatticeRequest to resolve. It
+// is a *named* refusal rather than an allocation failure because the failure
+// mode it guards is mundane and predictable: 512^3 is 134 million cells and
+// ~11.8 GB of points and connectivity, which a user asks for by typo far more
+// often than on purpose. `lattice_resolve` applies the identical rule (and the
+// identical message) to the request-shaped callers.
+void vox_check_budget(std::int64_t Cells, std::int64_t MaxCells, const char* pPrefix) {
+    if (MaxCells <= 0 || Cells <= MaxCells)
+        return;
+    throw std::invalid_argument(std::string(pPrefix) + "the requested grid has " +
+                                std::to_string(Cells) + " cells, above the limit of " +
+                                std::to_string(MaxCells) +
+                                " (raise max_cells, coarsen the resolution, or use a band)");
+}
+
+// The lattice a voxelization runs on. Exactly one of resolution and cell size
+// must be given: defaulting one of them would silently pick a grid the caller
+// did not choose, and for an object whose cost is cubic in that choice that is
+// not a kindness. The rule itself lives in detail/grid_lattice.hpp, since
+// `compute_sdf` resolves the identical six fields the identical way.
+detail::LatticeSpec vox_resolve_lattice(const Mesh& rMesh, const VoxelOptions& rOptions) {
+    detail::LatticeRequest req;
+    req.mResolution = rOptions.mResolution;
+    req.mCellSize = rOptions.mCellSize;
+    req.mBounds = rOptions.mBounds;
+    req.mPadding = rOptions.mPadding;
+    req.mPaddingRelative = rOptions.mPaddingRelative;
+    req.mMaxCells = rOptions.mMaxCells;
+    return detail::lattice_resolve(rMesh, req, kVoxPrefix);
+}
+
+// Which cells the fill rule keeps, as a per-cell flag. An empty result means
+// "all of them", which lets the caller skip the subsetting pass entirely.
+std::vector<char> vox_occupancy(const Mesh& rMesh, const detail::LatticeSpec& rSpec,
+                                const VoxelOptions& rOptions) {
+    if (rOptions.mFill == VoxelFill::All)
+        return {};
+
+    const std::int64_t ncells = detail::lattice_num_cells(rSpec);
+    std::vector<char> occupied(static_cast<std::size_t>(ncells), 0);
+    const std::int64_t nx = rSpec.mDims[0];
+    const std::int64_t ny = rSpec.mDims[1];
+
+    if (rOptions.mFill == VoxelFill::Surface) {
+        // Exact triangle/box overlap, not a bounding-box test: a long diagonal
+        // triangle overlaps far more boxes than it enters.
+        const detail::TriangleSoup soup =
+            detail::build_triangle_soup(rMesh, rOptions.mDistance.mSurfaceRegion);
+        const detail::Vec3 half{
+            {rSpec.mSpacing[0] * 0.5, rSpec.mSpacing[1] * 0.5, rSpec.mSpacing[2] * 0.5}};
+        // Serial over triangles, each touching only the voxels of its own
+        // bounding box: a parallel pass would race on the shared flag array for
+        // no real gain, since the inner box is small.
+        for (std::size_t t = 0; t < soup.NumTriangles(); ++t) {
+            const detail::Vec3& a = soup.mCorners[t * 3 + 0];
+            const detail::Vec3& b = soup.mCorners[t * 3 + 1];
+            const detail::Vec3& c = soup.mCorners[t * 3 + 2];
+            std::array<std::int64_t, 3> lo{}, hi{};
+            bool skip = false;
+            for (std::size_t k = 0; k < 3; ++k) {
+                if (!(rSpec.mSpacing[k] > 0.0)) {
+                    skip = true;
+                    break;
+                }
+                const double tlo = std::min(a[k], std::min(b[k], c[k]));
+                const double thi = std::max(a[k], std::max(b[k], c[k]));
+                double flo = std::floor((tlo - rSpec.mOrigin[k]) / rSpec.mSpacing[k]);
+                double fhi = std::floor((thi - rSpec.mOrigin[k]) / rSpec.mSpacing[k]);
+                flo = flo < 0.0 ? 0.0 : flo;
+                const double last = static_cast<double>(rSpec.mDims[k] - 1);
+                fhi = fhi > last ? last : fhi;
+                if (fhi < flo) {
+                    skip = true;
+                    break;
+                }
+                lo[k] = static_cast<std::int64_t>(flo);
+                hi[k] = static_cast<std::int64_t>(fhi);
+            }
+            if (skip)
+                continue;
+            for (std::int64_t k = lo[2]; k <= hi[2]; ++k)
+                for (std::int64_t j = lo[1]; j <= hi[1]; ++j)
+                    for (std::int64_t i = lo[0]; i <= hi[0]; ++i) {
+                        const std::int64_t cid = (k * ny + j) * nx + i;
+                        if (occupied[static_cast<std::size_t>(cid)])
+                            continue;
+                        const detail::Vec3 centre{
+                            {rSpec.mOrigin[0] + (static_cast<double>(i) + 0.5) * rSpec.mSpacing[0],
+                             rSpec.mOrigin[1] + (static_cast<double>(j) + 0.5) * rSpec.mSpacing[1],
+                             rSpec.mOrigin[2] +
+                                 (static_cast<double>(k) + 0.5) * rSpec.mSpacing[2]}};
+                        if (detail::tri_box_overlap(centre, half, a, b, c))
+                            occupied[static_cast<std::size_t>(cid)] = 1;
+                    }
+        }
+        return occupied;
+    }
+
+    // Inside: sign the distance at each cell centre. This is the only fill that
+    // needs a closed surface, and it says so through the watertight check rather
+    // than by quietly producing a hollow result.
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(rMesh, rOptions.mDistance.mSurfaceRegion);
+    std::vector<detail::Vec3> centres(static_cast<std::size_t>(ncells));
+    parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
+        const std::int64_t g = static_cast<std::int64_t>(c);
+        const std::int64_t i = g % nx;
+        const std::int64_t j = (g / nx) % ny;
+        const std::int64_t k = g / (nx * ny);
+        centres[c] =
+            detail::Vec3{{rSpec.mOrigin[0] + (static_cast<double>(i) + 0.5) * rSpec.mSpacing[0],
+                          rSpec.mOrigin[1] + (static_cast<double>(j) + 0.5) * rSpec.mSpacing[1],
+                          rSpec.mOrigin[2] + (static_cast<double>(k) + 0.5) * rSpec.mSpacing[2]}};
+    });
+
+    SurfaceDistanceOptions dopts = rOptions.mDistance;
+    if (dopts.mSign == SdfSign::Unsigned)
+        throw std::invalid_argument(std::string(kVoxPrefix) +
+                                    "fill 'inside' needs a sign, but sign='unsigned' was given");
+    dopts.mBand = 0.0;  // a band would clamp the very sign this fill depends on
+    const detail::DistanceQuery query = detail::build_distance_query(soup, dopts);
+    const std::vector<detail::DistanceHit> hits = detail::query_distances(query, centres, dopts);
+    parallel_for_bw(static_cast<std::size_t>(ncells),
+                    [&](std::size_t c) { occupied[c] = hits[c].mSignedDistance < 0.0 ? 1 : 0; });
+    return occupied;
+}
+
+// Emit only the flagged cells, compacting the points they reference in ascending
+// order so the output does not depend on traversal.
+Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>& rOccupied,
+                      std::int64_t Kept) {
+    Mesh out;
+    const std::int64_t nx = rSpec.mDims[0];
+    const std::int64_t ny = rSpec.mDims[1];
+    const std::int64_t px = nx + 1;
+    const std::int64_t py = ny + 1;
+    const std::int64_t npoints = detail::lattice_num_points(rSpec);
+    const std::int64_t ncells = detail::lattice_num_cells(rSpec);
+
+    // Two passes: mark which points the kept cells reference, then number them in
+    // ASCENDING original order. That is surface.cpp's used/remap pattern, and the
+    // ascending part is load-bearing rather than incidental -- numbering on first
+    // encounter instead would make the point ids depend on the hexahedron's node
+    // order, which is a traversal detail no caller should be able to observe (and
+    // which the numpy twin would then have to replicate rather than simply sort).
+    std::vector<char> used(static_cast<std::size_t>(npoints), 0);
+    std::vector<std::int64_t> kept_cells;
+    kept_cells.reserve(static_cast<std::size_t>(Kept));
+    for (std::int64_t c = 0; c < ncells; ++c) {
+        if (!rOccupied[static_cast<std::size_t>(c)])
+            continue;
+        kept_cells.push_back(c);
+        const std::int64_t i = c % nx;
+        const std::int64_t j = (c / nx) % ny;
+        const std::int64_t k = c / (nx * ny);
+        const std::int64_t base = (k * py + j) * px + i;
+        const std::int64_t top = base + px * py;
+        const std::int64_t nodes[8] = {base, base + 1, base + px + 1, base + px,
+                                       top,  top + 1,  top + px + 1,  top + px};
+        for (std::int64_t nd : nodes)
+            used[static_cast<std::size_t>(nd)] = 1;
+    }
+
+    std::vector<std::int64_t> remap(static_cast<std::size_t>(npoints), -1);
+    std::int64_t next = 0;
+    for (std::int64_t p = 0; p < npoints; ++p)
+        if (used[static_cast<std::size_t>(p)])
+            remap[static_cast<std::size_t>(p)] = next++;
+
+    std::vector<std::int64_t> conn;
+    conn.reserve(static_cast<std::size_t>(Kept) * 8);
+    for (std::int64_t c : kept_cells) {
+        const std::int64_t i = c % nx;
+        const std::int64_t j = (c / nx) % ny;
+        const std::int64_t k = c / (nx * ny);
+        const std::int64_t base = (k * py + j) * px + i;
+        const std::int64_t top = base + px * py;
+        const std::int64_t nodes[8] = {base, base + 1, base + px + 1, base + px,
+                                       top,  top + 1,  top + px + 1,  top + px};
+        for (std::int64_t nd : nodes)
+            conn.push_back(remap[static_cast<std::size_t>(nd)]);
+    }
+
+    NDArray points =
+        NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(next), std::size_t{3}});
+    double* pdst = points.As<double>();
+    parallel_for_bw(static_cast<std::size_t>(npoints), [&](std::size_t p) {
+        const std::int64_t slot = remap[p];
+        if (slot < 0)
+            return;
+        const std::int64_t g = static_cast<std::int64_t>(p);
+        const std::int64_t i = g % px;
+        const std::int64_t j = (g / px) % py;
+        const std::int64_t k = g / (px * py);
+        pdst[slot * 3 + 0] = rSpec.mOrigin[0] + static_cast<double>(i) * rSpec.mSpacing[0];
+        pdst[slot * 3 + 1] = rSpec.mOrigin[1] + static_cast<double>(j) * rSpec.mSpacing[1];
+        pdst[slot * 3 + 2] = rSpec.mOrigin[2] + static_cast<double>(k) * rSpec.mSpacing[2];
+    });
+    out.AssignPoints(std::move(points));
+
+    if (Kept > 0) {
+        NDArray block =
+            NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(Kept), std::size_t{8}});
+        std::memcpy(block.Data(), conn.data(), conn.size() * sizeof(std::int64_t));
+        out.AddCellBlock("hexahedron", std::move(block));
+    }
+    return out;
+}
+
+}  // namespace
+
+VoxelFill voxel_fill_from_name(const std::string& rName) {
+    if (rName == "all")
+        return VoxelFill::All;
+    if (rName == "surface")
+        return VoxelFill::Surface;
+    if (rName == "inside")
+        return VoxelFill::Inside;
+    throw std::invalid_argument(std::string(kVoxPrefix) + "unknown fill '" + rName +
+                                "' (expected one of: all, surface, inside)");
+}
+
+Mesh grid(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& rOrigin,
+          const std::array<double, 3>& rSpacing, std::int64_t MaxCells) {
+    constexpr const char* prefix = "meshio++: grid: ";
+    for (std::size_t k = 0; k < 3; ++k) {
+        if (rDims[k] < 0)
+            throw std::invalid_argument(std::string(prefix) +
+                                        "cell counts must not be negative, got " +
+                                        std::to_string(rDims[k]) + " on axis " + std::to_string(k));
+        if (rDims[k] > 0 && !(rSpacing[k] > 0.0))
+            throw std::invalid_argument(
+                std::string(prefix) + "spacing must be positive on every axis with cells, got " +
+                std::to_string(rSpacing[k]) + " on axis " + std::to_string(k));
+    }
+    detail::LatticeSpec spec;
+    spec.mOrigin = rOrigin;
+    spec.mSpacing = rSpacing;
+    spec.mDims = rDims;
+    vox_check_budget(detail::lattice_num_cells(spec), MaxCells, prefix);
+    return detail::lattice_build_mesh(spec);
+}
+
+VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& rOptions) {
+    const detail::LatticeSpec spec = vox_resolve_lattice(rMesh, rOptions);
+
+    VoxelResult result;
+    result.mDims = spec.mDims;
+    result.mOrigin = spec.mOrigin;
+    result.mSpacing = spec.mSpacing;
+
+    // Every point and cell of the output is new, so nothing can be remapped --
+    // the same situation slice/isosurface/extract_surface are in.
+    detail::warn_regions_dropped(rMesh, "voxelize");
+
+    const std::int64_t ncells = detail::lattice_num_cells(spec);
+    const std::vector<char> occupied = vox_occupancy(rMesh, spec, rOptions);
+
+    if (rOptions.mFill == VoxelFill::All || occupied.empty()) {
+        result.mMesh = detail::lattice_build_mesh(spec);
+        result.mNumOccupied = ncells;
+        if (rOptions.mAttachOccupancy && ncells > 0) {
+            // Every cell is kept, so occupancy is all ones -- constant, but
+            // emitted anyway so that a caller can switch fill modes without
+            // their downstream pipeline discovering the array has vanished.
+            NDArray occ = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(ncells)});
+            std::int64_t* dst = occ.As<std::int64_t>();
+            parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) { dst[c] = 1; });
+            std::vector<NDArray> blocks;
+            blocks.push_back(std::move(occ));
+            result.mMesh.AddCellData(kVoxelOccupancyName, std::move(blocks));
+        }
+        return result;
+    }
+
+    // A selective fill keeps a subset of the cells. Building the full lattice and
+    // then subsetting it would cost the memory the budget check exists to avoid,
+    // so the kept cells are emitted directly and the points they reference are
+    // compacted in ascending order -- surface.cpp's used/remap pattern, which is
+    // what makes the output independent of which thread found which cell.
+    std::int64_t nkept = 0;
+    for (std::int64_t c = 0; c < ncells; ++c)
+        nkept += occupied[static_cast<std::size_t>(c)] ? 1 : 0;
+    result.mNumOccupied = nkept;
+    result.mMesh = vox_build_subset(spec, occupied, nkept);
+    if (rOptions.mAttachOccupancy && nkept > 0) {
+        NDArray occ = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(nkept)});
+        std::int64_t* dst = occ.As<std::int64_t>();
+        parallel_for_bw(static_cast<std::size_t>(nkept), [&](std::size_t c) { dst[c] = 1; });
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(occ));
+        result.mMesh.AddCellData(kVoxelOccupancyName, std::move(blocks));
+    }
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/voxelize.cpp =====
 // ===== begin src/cpp/src/read_options.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -77639,8 +81222,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"triangle", meshioplusplus::read_triangle},
         {"ugrid", meshioplusplus::read_ugrid},
         {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
+        {"vti", [](const std::string& path) { return meshioplusplus::read_vti(path); }},
         {"vtk", meshioplusplus::read_vtk},
-        // vtp/vtu take a trailing defaulted ReadOptions, so the function
+        // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
         // pointers no longer convert to ReadFn -- wrapped like unv/med below.
         {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
         {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
@@ -77745,6 +81329,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"triangle", meshioplusplus::write_triangle},
         {"ugrid", meshioplusplus::write_ugrid},
         {"unv", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); }},
+        {"vti",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
         {"vtk",
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
@@ -77874,6 +81466,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".poly", "triangle"},
         {".ugrid", "ugrid"},
         {".unv", "unv"},
+        {".vti", "vti"},
         {".vtk", "vtk"},
         {".vtp", "vtp"},
         {".vtu", "vtu"},
@@ -77949,6 +81542,7 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
              return meshioplusplus::read_med(path, info, opts);
          }},
 #endif
+        {"vti", meshioplusplus::read_vti},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -77962,6 +81556,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"exodus", meshioplusplus::read_exodus_metadata},
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
+        {"vti", meshioplusplus::read_vti_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
         {"xdmf", meshioplusplus::read_xdmf_metadata},
@@ -78063,8 +81658,8 @@ bool wopt_is_text_only(const std::string& rFormat);
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
     return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" || rFormat == "ply" ||
-           rFormat == "stl" || rFormat == "vtk" || rFormat == "vtu" || rFormat == "vtp" ||
-           rFormat == "xdmf" || wopt_is_text_only(rFormat);
+           rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" ||
+           rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -78079,7 +81674,7 @@ bool wopt_is_text_only(const std::string& rFormat) {
 
 /// Formats with a VTK-XML block codec.
 bool wopt_has_codec(const std::string& rFormat) {
-    return rFormat == "vtu" || rFormat == "vtp";
+    return rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp";
 }
 
 /// Formats whose ASCII writer takes a float format string.
@@ -78096,7 +81691,7 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
         return false;
     }
     if (rOptions.mCodecSet && !wopt_has_codec(rFormat)) {
-        rWhy = "format '" + rFormat + "' has no block compression codec (only vtu/vtp do)";
+        rWhy = "format '" + rFormat + "' has no block compression codec (only vti/vtu/vtp do)";
         return false;
     }
     if (!rOptions.mFloatFormat.empty() && !wopt_has_float_format(rFormat)) {
@@ -78147,6 +81742,11 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_stl(rPath, rMesh, binary, /*skin=*/true);
     } else if (fmt == "vtk") {
         write_vtk(rPath, rMesh, binary, /*v51=*/true);
+    } else if (fmt == "vti") {
+        const detail::VtkCodec codec =
+            rOptions.mCodecSet ? rOptions.mCodec
+                               : (binary ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+        write_vti_codec(rPath, rMesh, binary, codec);
     } else if (fmt == "vtu") {
         // Compression only exists in the binary encoding; an explicit codec on
         // an ASCII request would otherwise be silently dropped.

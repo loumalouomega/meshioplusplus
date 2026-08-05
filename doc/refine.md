@@ -244,8 +244,54 @@ alike, neither a superset nor a subset. The conformity guarantees below apply to
 the other two closures only, and `extract_surface`, `decimate` and anything else
 assuming a conforming mesh will treat a hanging node as a genuine boundary.
 
+1-irregular is the *only* thing given up. The mesh is never **torn**: no two
+distinct nodes ever occupy the same position with cells referencing both. That is
+what [`refine:entity`](#refine-entity) is for.
+
 `refine:level` is what makes the rule well defined across passes, which is
 another reason that array is *maintained* rather than replicated.
+
+### `refine:entity` {#refine-entity}
+
+The Int64 `(num_points, 4)` `point_data` array recording, per point, the **entity
+it was created on**:
+
+| key | meaning |
+|---|---|
+| `(-1, -1, a, b)` | the midpoint of edge `(a, b)`, `a < b` |
+| `(p, q, r, s)` sorted | the centre of the quadrilateral face with those corners |
+| `(-1, -1, -1, -1)` | a point `refine` did not create — an original point, or a hexahedron body centre, which is interior to one cell and can never be shared |
+
+It exists so that a **later** pass can recognise that an entity it is about to
+split already carries a node and reuse it, instead of allocating a coincident
+second one. Without it, a second balanced pass tore the mesh: when the 2:1 balance
+rule draws in a coarse cell whose edge `(a, b)` already holds a hanging node, that
+cell's own refinement keys the edge as `(a, b)`, allocates a fresh midpoint, and
+leaves the two sides of the interface referencing distinct — but exactly
+coincident — nodes. On a 4×4×4 hex block, `levels=2` produced 12 such positions
+and `levels=3` produced 96.
+
+Like `refine:level` the name is **reserved** and the array is *maintained* rather
+than replicated: it is attached whenever a pass leaves hanging nodes and kept
+thereafter. The conforming closures leave none and attach nothing, so their output
+is byte-identical to what it was before the array existed.
+
+Entries name **point indices**, which `refine` never renumbers. An operation that
+does renumber points (`reorder`, `clean`, `crop`, `merge`) or moves them
+(`transform`, `smooth`) invalidates them. `refine` detects that — every entry must
+still reproduce its own point's coordinates — and warns and ignores the array
+rather than trusting it, falling back to allocating fresh nodes.
+
+::: tip Why the hanging rule is evaluated over the output
+A node is constrained when it sits on an entity of a cell that does not reference
+it, and that has to be checked against the **emitted** cells rather than the input
+cells' entities. The two differ as soon as a pass refines more than one level: a
+cell the balance rule draws in is split into children whose own sub-edges the
+input cell never had, so a node the neighbouring refinement places on one of them
+is constrained without any input entity ever naming it. Checking the input left 42
+of 84 constrained nodes unreported on a two-level balanced refinement of a 4×4×4
+block.
+:::
 
 ### One choice made from global node ids
 
@@ -290,6 +336,9 @@ With `levels > 1` and a selector, level *k* refines the children of level
 - The output is **conforming** under `redgreen` and `propagate`: no hanging
   nodes, and no facet shared by more than two cells. Under `balanced` it is
   1-irregular by design, and `refine:hanging` marks every constrained node.
+- The output is **never torn**, under any closure and any number of passes: two
+  distinct nodes never occupy the same position with cells referencing both. See
+  [`refine:entity`](#refine-entity).
 - Every selected cell is fully split; every other cell is either untouched or
   minimally split by the closure.
 - New nodes are the **mean of their entity's corners**, which is

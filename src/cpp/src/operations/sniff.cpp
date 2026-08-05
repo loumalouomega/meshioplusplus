@@ -71,6 +71,12 @@ std::string sniff_format(const std::string& rPath) {
             return "vtu";
         if (sniff_contains(head, "PolyData"))
             return "vtp";
+        // Checked last of the three: the grid-type strings are disjoint, but a
+        // future dataset type could contain another as a substring, and the
+        // cheapest defence is to keep the most recently added one from
+        // shadowing anything.
+        if (sniff_contains(head, "ImageData"))
+            return "vti";
     }
     if (sniff_starts_with(stripped, "<Xdmf") || sniff_contains(head, "<Xdmf"))
         return "xdmf";

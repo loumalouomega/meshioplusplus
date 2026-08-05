@@ -315,7 +315,8 @@ meshioplusplus clean in.vtu out.vtu --weld --atol 1e-6
 
 ## meshioplusplus crop
 
-Extract the part of a mesh inside a bounding box or half-space (see [crop](/crop)).
+Extract part of a mesh — inside a bounding box, inside a half-space, or the
+cells a `cell_data` comparison selects (see [crop](/crop)).
 
 ```
 meshioplusplus crop [options] INFILE OUTFILE
@@ -325,18 +326,26 @@ meshioplusplus crop [options] INFILE OUTFILE
 |--------|-------------|
 | `--bbox xmin,ymin,zmin,xmax,ymax,zmax` | Axis-aligned bounding box |
 | `--plane px,py,pz,nx,ny,nz` | Half-space (point + normal), keep `(p−point)·normal ≥ 0` |
-| `--mode all\|any` | Keep a cell if ALL (default) or ANY node is inside |
+| `--where 'NAME OP VALUE'` | A scalar `cell_data` predicate, `OP` one of `<`, `<=`, `>`, `>=`, `==`, `!=`. A non-finite cell value never matches |
+| `--mode all\|any` | Keep a cell if ALL (default) or ANY node is inside. `--bbox`/`--plane` only |
 | `--record-ids` | Attach original point/cell ids as data arrays |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Give exactly one of `--bbox`/`--plane`. Negative values need the `=` form
-(`--bbox=-1,-1,-1,1,1,1`).
+Give exactly one of `--bbox`/`--plane`/`--where`. Negative values need the `=`
+form (`--bbox=-1,-1,-1,1,1,1`). `--mode` alongside `--where` is an **error**
+rather than being ignored: a per-cell value has nothing for an all/any rule to
+reduce.
 
 **Examples:**
 
 ```sh
 meshioplusplus crop in.vtu out.vtu --bbox 0,0,0,1,1,1
 meshioplusplus crop in.vtu out.vtu --plane 0.5,0,0,1,0,0 --mode any
+meshioplusplus crop in.vtu out.vtu --where 'quality:scaled_jacobian < 0.3'
+
+# inside a surface, composed:
+meshioplusplus sdf shell.stl field.vtu --resolution 64,64,64 --location center
+meshioplusplus crop field.vtu inside.vtu --where 'sdf:distance < 0'
 ```
 
 ---
@@ -1079,3 +1088,44 @@ include the viewer** — they are deliberately dependency-free single files, and
 Polyscope needs OpenGL, GLFW and X11. Use the Python CLI (`pip install
 meshioplusplus[viewer]`) or the [browser viewer](/viewer) if you would rather
 not build from source.
+
+## `voxelize`
+
+```bash
+meshioplusplus voxelize bunny.stl shell.vtu --resolution 64,64,64 --fill surface
+meshioplusplus voxelize bunny.stl solid.vtu --cell-size 0.5 --fill inside
+```
+
+| flag | meaning |
+|---|---|
+| `--resolution nx,ny,nz` | cell counts; give exactly one of this and `--cell-size` |
+| `--cell-size S` | cubic cell size |
+| `--bounds=xlo,...,zhi` | explicit bounds; the mesh's own by default (negatives need the `=` form) |
+| `--padding` / `--padding-relative` | grow the box on every side |
+| `--fill all\|surface\|inside` | which cells to keep |
+| `--sign pseudonormal\|winding-number` | how `--fill=inside` decides what is inside |
+| `--attach-occupancy` | attach the `voxel:occupancy` array |
+| `--max-cells N` | refuse above this many cells (default ~256³) |
+
+See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
+
+## `sdf`
+
+```bash
+meshioplusplus sdf bunny.stl field.vti --resolution 128,128,128
+meshioplusplus sdf bunny.stl tree.vtu  --structure octree --max-depth 5
+```
+
+| flag | meaning |
+|---|---|
+| `--structure voxel\|octree` | a dense lattice, or one refined near the surface |
+| `--resolution nx,ny,nz` / `--cell-size S` | size a **voxel** grid; exactly one, and an **error** with `--structure octree` |
+| `--root-resolution N` / `--max-depth N` / `--band-cells R` | octree: the root lattice, how many halving passes, and the band width in cell diagonals |
+| `--bounds=xlo,...,zhi` | explicit bounds; the surface's own by default |
+| `--padding` / `--padding-relative` | grow the box on every side (relative defaults to 0.1) |
+| `--sign` / `--location` / `--band` / `--watertight-check` | as `distance_to_surface` |
+| `--max-cells N` | refuse above this many cells, re-checked after every octree pass |
+
+Write the result as `.vti` to keep the grid header — no other format carries it.
+The octree's output is 1-irregular (it has hanging nodes). See
+[`doc/sdf.md`](sdf.md).

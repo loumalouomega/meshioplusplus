@@ -41,11 +41,13 @@ from ._partition import partition_labels
 from ._quality import attach_quality
 from ._refine import refine
 from ._reorder import reorder
+from ._sdf import compute_sdf
 from ._skin import extract_skin
 from ._slice import slice as _slice
 from ._smooth import smooth
 from ._surface import extract_surface
 from ._transform import transform
+from ._voxelize import voxelize
 
 __all__ = ["run_pipeline"]
 
@@ -89,6 +91,33 @@ _OP_TABLE = {
     "Section": ("Point", "Normal", "RecordParentIds"),  # alias of Slice
     "Gradient": ("Array", "Operator", "Method", "Location", "Output", "Component"),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
+    "Voxelize": (
+        "Resolution",
+        "CellSize",
+        "Bounds",
+        "Padding",
+        "PaddingRelative",
+        "Fill",
+        "AttachOccupancy",
+        "MaxCells",
+        "Sign",
+    ),
+    "ComputeSdf": (
+        "Structure",
+        "Resolution",
+        "CellSize",
+        "Bounds",
+        "Padding",
+        "PaddingRelative",
+        "RootResolution",
+        "MaxDepth",
+        "BandCells",
+        "RecordLevels",
+        "MaxCells",
+        "Sign",
+        "Location",
+        "Band",
+    ),
     "Transform": (
         "Translate",
         "Scale",
@@ -99,7 +128,16 @@ _OP_TABLE = {
         "RotateData",
     ),
     "ConvertCells": ("Mode", "RecordParentIds"),
-    "Crop": ("Bbox", "Point", "Normal", "Mode", "RecordIds"),
+    "Crop": (
+        "Bbox",
+        "Point",
+        "Normal",
+        "Where",
+        "Compare",
+        "Value",
+        "Mode",
+        "RecordIds",
+    ),
     "ExtractSurface": ("RecordParentIds",),
     "ExtractSkin": ("Linearize",),
     "Reorder": ("Method",),
@@ -396,6 +434,52 @@ def _apply_step(mesh, step, steps, warnings):
                 f"gradient: {report['num_skipped']} cell(s) could not be "
                 "differentiated and are NaN"
             )
+    elif op == "Voxelize":
+        resolution = _dvec(step, "Resolution")
+        bounds = _dvec(step, "Bounds")
+        mesh, rep = voxelize(
+            mesh,
+            resolution=None if not resolution else [int(v) for v in resolution],
+            cell_size=_number(step, "CellSize", 0.0) if "CellSize" in step else None,
+            bounds=None if not bounds else list(bounds),
+            padding=_number(step, "Padding", 0.0),
+            padding_relative=_number(step, "PaddingRelative", 0.0),
+            fill=_text(step, "Fill", "all"),
+            attach_occupancy=_flag(step, "AttachOccupancy", False),
+            max_cells=int(_number(step, "MaxCells", 20000000.0)),
+            sign=_text(step, "Sign", "pseudonormal"),
+            watertight_check="off",
+            return_report=True,
+        )
+        entry["NumOccupied"] = float(rep["num_occupied"])
+
+    elif op == "ComputeSdf":
+        # Voxelize's sibling: it likewise REPLACES the input's geometry, taking a
+        # surface in and handing a filled grid back.
+        resolution = _dvec(step, "Resolution")
+        bounds = _dvec(step, "Bounds")
+        mesh, rep = compute_sdf(
+            mesh,
+            structure=_text(step, "Structure", "voxel"),
+            resolution=None if not resolution else [int(v) for v in resolution],
+            cell_size=_number(step, "CellSize", 0.0) if "CellSize" in step else None,
+            bounds=None if not bounds else list(bounds),
+            padding=_number(step, "Padding", 0.0),
+            padding_relative=_number(step, "PaddingRelative", 0.1),
+            root_resolution=int(_number(step, "RootResolution", 8.0)),
+            max_depth=int(_number(step, "MaxDepth", 4.0)),
+            band_cells=_number(step, "BandCells", 1.0),
+            record_levels=_flag(step, "RecordLevels", True),
+            max_cells=int(_number(step, "MaxCells", 20000000.0)),
+            sign=_text(step, "Sign", "pseudonormal"),
+            location=_text(step, "Location", "corner"),
+            band=_number(step, "Band", 0.0),
+            watertight_check="off",
+            return_report=True,
+        )
+        entry["MaxDepth"] = float(rep["max_depth"])
+        entry["NumBanded"] = float(rep["num_banded"])
+
     elif op == "Isosurface":
         isovalues = _dvec(step, "Isovalues")
         if not isovalues:
@@ -424,19 +508,34 @@ def _apply_step(mesh, step, steps, warnings):
     elif op == "Crop":
         has_bbox = "Bbox" in step
         has_plane = "Point" in step or "Normal" in step
-        if has_bbox == has_plane:
-            raise _err(op, "give either 'Bbox' or 'Point'+'Normal'")
+        has_where = "Where" in step
+        if has_bbox + has_plane + has_where != 1:
+            raise _err(op, "give one of 'Bbox', 'Point'+'Normal' or 'Where'")
+        if has_where and "Mode" in step:
+            raise _err(
+                op,
+                "'Mode' applies to 'Bbox' and 'Point'+'Normal', which test points; "
+                "a 'Where' predicate is already one value per cell and has nothing "
+                "to reduce",
+            )
         if has_bbox:
-            bbox = _dvec(step, "Bbox")
-            if bbox is None or len(bbox) != 6:
+            kwargs = {"bbox": _dvec(step, "Bbox")}
+            if kwargs["bbox"] is None or len(kwargs["bbox"]) != 6:
                 raise _err(op, "'Bbox' must be [xmin, ymin, zmin, xmax, ymax, zmax]")
-            kwargs = {"bbox": bbox}
-        else:
+        elif has_plane:
             kwargs = {"plane": (_vec3(step, "Point"), _vec3(step, "Normal"))}
+        else:
+            kwargs = {
+                "where": (
+                    _text(step, "Where", ""),
+                    _text(step, "Compare", "<"),
+                    _number(step, "Value", 0.0),
+                )
+            }
         mesh = crop(
             mesh,
-            mode=_text(step, "Mode", "all"),
             record_ids=_flag(step, "RecordIds", False),
+            **({} if has_where else {"mode": _text(step, "Mode", "all")}),
             **kwargs,
         )
         entry["CellsKept"] = float(_total_cells(mesh))

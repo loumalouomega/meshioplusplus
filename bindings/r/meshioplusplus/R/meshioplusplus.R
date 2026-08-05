@@ -598,6 +598,24 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #' @param method For `mio_gradient`: `"green-gauss"` or `"least-squares"`.
 #' @param location For `mio_gradient`: `"cell"` or `"point"`.
 #' @param output Output array name; `""` uses `<array>:<op>`.
+#' @param dims Cell counts `c(nx, ny, nz)` for `mio_grid()`.
+#' @param origin Lattice lo corner.
+#' @param spacing Cell size per axis.
+#' @param max_cells Refuse a grid larger than this, by name.
+#' @param resolution Cell counts for `mio_voxelize()`; give exactly one of
+#'   this and `cell_size`.
+#' @param cell_size Cubic cell size; `0` means unset.
+#' @param bounds Explicit `c(xlo, ylo, zlo, xhi, yhi, zhi)`.
+#' @param padding Grow the box by this on every side.
+#' @param padding_relative Grow the box by this fraction of its diagonal.
+#' @param fill `"all"`, `"surface"` or `"inside"`.
+#' @param sign `"pseudonormal"`, `"winding-number"` or `"unsigned"`.
+#' @param attach_occupancy Attach the `voxel:occupancy` array.
+#' @param watertight_check `"off"`, `"warn"` or `"error"`.
+#' @param points A `3 x n` matrix of query coordinates.
+#' @param band Clamp distances beyond this; `0` is the full field.
+#' @param record_inside Attach the `sdf:inside` array.
+#' @param surface The surface to measure distance to.
 #' @param overwrite Replace an existing array of the output name instead of
 #'   failing.
 #' @param source_tag Add an integer `source_mesh_id` cell-data array.
@@ -1260,4 +1278,126 @@ mio_sequence_pipeline_run_file <- function(settings_path) {
 #' @export
 mio_sequence_pipeline_run_json <- function(json_text) {
   invisible(.Call(R_mio_sequence_pipeline_run_json, as.character(json_text)))
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_grid <- function(dims, origin = c(0, 0, 0), spacing = c(1, 1, 1),
+                     max_cells = 20000000) {
+  .Call(
+    R_mio_grid, as.numeric(dims), as.numeric(origin), as.numeric(spacing),
+    as.numeric(max_cells)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_voxelize <- function(mesh, resolution = NULL, cell_size = 0, bounds = NULL,
+                         padding = 0, padding_relative = 0, fill = "all",
+                         sign = "pseudonormal", attach_occupancy = FALSE,
+                         max_cells = 20000000, watertight_check = "warn") {
+  fills <- c(all = 0L, surface = 1L, inside = 2L)
+  signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
+  checks <- c(off = 0L, warn = 1L, error = 2L)
+  if (!fill %in% names(fills)) stop("unknown fill '", fill, "'")
+  if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
+  if (!watertight_check %in% names(checks)) {
+    stop("unknown watertight check '", watertight_check, "'")
+  }
+  .Call(
+    R_mio_voxelize, mesh,
+    if (is.null(resolution)) numeric(0) else as.numeric(resolution),
+    as.numeric(cell_size),
+    if (is.null(bounds)) numeric(0) else as.numeric(bounds),
+    as.numeric(padding), as.numeric(padding_relative),
+    fills[[fill]], signs[[sign]], isTRUE(attach_occupancy),
+    as.numeric(max_cells), checks[[watertight_check]]
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_crop_predicate <- function(mesh, array, compare = "<", value = 0,
+                               record_ids = FALSE) {
+  comparisons <- c(
+    `<` = 0L, `<=` = 1L, `>` = 2L, `>=` = 3L, `==` = 4L, `!=` = 5L
+  )
+  if (!compare %in% names(comparisons)) stop("unknown comparison '", compare, "'")
+  .Call(
+    R_mio_crop_predicate, mesh, as.character(array), comparisons[[compare]],
+    as.numeric(value), isTRUE(record_ids)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_compute_sdf <- function(mesh, structure = "voxel", resolution = NULL,
+                            cell_size = 0, bounds = NULL, padding = 0,
+                            padding_relative = 0.1, root_resolution = 8,
+                            max_depth = 4, band_cells = 1, record_levels = TRUE,
+                            max_cells = 20000000, sign = "pseudonormal",
+                            location = "corner", band = 0,
+                            watertight_check = "warn") {
+  structures <- c(voxel = 0L, octree = 1L)
+  signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
+  # The SDF locations, NOT `.mio_location`'s point/cell/field data locations.
+  locations <- c(corner = 0L, point = 0L, center = 1L, centre = 1L, cell = 1L)
+  checks <- c(off = 0L, warn = 1L, error = 2L)
+  if (!structure %in% names(structures)) stop("unknown structure '", structure, "'")
+  if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
+  if (!location %in% names(locations)) stop("unknown location '", location, "'")
+  if (!watertight_check %in% names(checks)) {
+    stop("unknown watertight check '", watertight_check, "'")
+  }
+  .Call(
+    R_mio_compute_sdf, mesh, structures[[structure]],
+    if (is.null(resolution)) numeric(0) else as.numeric(resolution),
+    as.numeric(cell_size),
+    if (is.null(bounds)) numeric(0) else as.numeric(bounds),
+    as.numeric(padding), as.numeric(padding_relative),
+    as.numeric(root_resolution), as.numeric(max_depth), as.numeric(band_cells),
+    isTRUE(record_levels), as.numeric(max_cells), signs[[sign]],
+    locations[[location]], as.numeric(band), checks[[watertight_check]]
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_surface_watertight_check <- function(mesh) {
+  .Call(R_mio_surface_watertight_check, mesh)
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_sample_distance <- function(mesh, points, sign = "pseudonormal", band = 0,
+                                watertight_check = "warn") {
+  signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
+  checks <- c(off = 0L, warn = 1L, error = 2L)
+  if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
+  if (!watertight_check %in% names(checks)) {
+    stop("unknown watertight check '", watertight_check, "'")
+  }
+  .Call(
+    R_mio_sample_distance, mesh, as.matrix(points), signs[[sign]],
+    as.numeric(band), checks[[watertight_check]]
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_distance_to_surface <- function(mesh, surface, sign = "pseudonormal",
+                                    location = "corner", band = 0,
+                                    record_inside = FALSE, watertight_check = "warn") {
+  signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
+  locations <- c(corner = 0L, point = 0L, center = 1L, centre = 1L, cell = 1L)
+  checks <- c(off = 0L, warn = 1L, error = 2L)
+  if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
+  if (!location %in% names(locations)) stop("unknown location '", location, "'")
+  if (!watertight_check %in% names(checks)) {
+    stop("unknown watertight check '", watertight_check, "'")
+  }
+  .Call(
+    R_mio_distance_to_surface, mesh, surface, signs[[sign]], locations[[location]],
+    as.numeric(band), isTRUE(record_inside), checks[[watertight_check]]
+  )
 }

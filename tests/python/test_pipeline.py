@@ -315,3 +315,63 @@ def test_cli_pipeline_verb(settings_env, tmp_path, capsys):
     assert main(["pipeline", str(settings_path), "--output", str(other), "--json"]) == 0
     assert other.exists()
     assert json.loads(capsys.readouterr().out)["steps"] == [{"op": "Quality"}]
+
+
+def test_compute_sdf_step_replaces_the_geometry(tmp_path):
+    """``ComputeSdf`` is ``Voxelize``'s sibling in the single-mesh chain.
+
+    Both take a mesh in and hand a *different* mesh back rather than
+    transforming the input's geometry, which is exactly the shape a chain wants.
+    """
+    surface = meshioplusplus.convert_cells(
+        meshioplusplus.extract_surface(meshioplusplus.grid([2, 2, 2])),
+        mode="simplexify",
+    )
+    src = tmp_path / "in.vtu"
+    out = tmp_path / "out.vtu"
+    meshioplusplus.write(src, surface)
+    report = meshioplusplus.run_pipeline(
+        {
+            "Version": 1,
+            "Input": {"Path": str(src)},
+            "Operations": [{"Op": "ComputeSdf", "Resolution": [4, 4, 4]}],
+            "Output": {"Path": str(out)},
+        }
+    )
+    assert report["steps"][0]["op"] == "ComputeSdf"
+    assert report["steps"][0]["MaxDepth"] == 0
+    back = meshioplusplus.read(out)
+    assert back.cells[0].type == "hexahedron"
+    assert len(back.cells[0].data) == 64
+    assert "sdf:distance" in back.point_data
+
+
+def test_crop_step_takes_a_data_predicate(tmp_path):
+    mesh = meshioplusplus.grid([4, 4, 4])
+    mesh.cell_data["t"] = [np.arange(64, dtype=np.float64)]
+    src = tmp_path / "in.vtu"
+    out = tmp_path / "out.vtu"
+    meshioplusplus.write(src, mesh)
+    report = meshioplusplus.run_pipeline(
+        {
+            "Version": 1,
+            "Input": {"Path": str(src)},
+            "Operations": [{"Op": "Crop", "Where": "t", "Compare": "<", "Value": 10.0}],
+            "Output": {"Path": str(out)},
+        }
+    )
+    assert report["steps"][0]["CellsKept"] == 10.0
+
+    # `Mode` means nothing for a per-cell predicate, so it is refused rather
+    # than ignored.
+    with pytest.raises(ValueError, match="Mode"):
+        meshioplusplus.run_pipeline(
+            {
+                "Version": 1,
+                "Input": {"Path": str(src)},
+                "Operations": [
+                    {"Op": "Crop", "Where": "t", "Value": 10.0, "Mode": "any"}
+                ],
+                "Output": {"Path": str(out)},
+            }
+        )

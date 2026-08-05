@@ -947,6 +947,126 @@ step('partition: kahip is compiled out of the WASM build and says so', () => {
     assert.throws(() => m.partition(cube, 2, 'kahip'), /MESHIOPLUSPLUS_WITH_KAHIP/);
 });
 
+// The unit cube as a closed, outward-wound triangle surface: the distance
+// bindings need a watertight surface, and the other fixtures here are volumes.
+const cubeSurface = {
+    points: new Float64Array([
+        0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+        0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1,
+    ]),
+    dim: 3,
+    cells: [{
+        type: 'triangle',
+        data: new Int32Array([
+            0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7,
+            0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5,
+            2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
+        ]),
+        nodesPerCell: 3,
+    }],
+    point_data: {},
+    cell_data: {},
+    field_data: {},
+};
+
+step('grid builds a lattice from nothing', () => {
+    const g = m.grid([2, 2, 2]);
+    assert.equal(g.points.length, 27 * 3);
+    assert.equal(g.cells.length, 1);
+    assert.equal(g.cells[0].type, 'hexahedron');
+    // An empty lattice is a legal request, not a throw.
+    assert.equal(m.grid([0, 0, 0]).points.length, 0);
+});
+
+step('voxelize keeps the whole box, the shell, or the interior', () => {
+    const q = m.surfaceWatertightCheck(cubeSurface);
+    assert.equal(q.watertight, true);
+    assert.equal(q.boundaryEdges, 0);
+
+    const all = m.voxelize(cubeSurface, [4, 4, 4]);
+    assert.equal(all.numOccupied, 64);
+    assert.deepEqual(Array.from(all.dims), [4, 4, 4]);
+    assert.ok(Math.abs(all.spacing[0] - 0.25) < 1e-12);
+
+    const inside = m.voxelize(cubeSurface, [5, 5, 5], 0,
+        [-0.5, -0.5, -0.5, 1.5, 1.5, 1.5], 0, 0, 'inside', 'pseudonormal', false,
+        20000000, 'off');
+    assert.equal(inside.numOccupied, 27);
+
+    // An unknown fill fails by name rather than silently defaulting.
+    assert.throws(() => m.voxelize(cubeSurface, [2, 2, 2], 0, null, 0, 0, 'solid'));
+});
+
+step('sampleDistance matches the cube\'s closed form', () => {
+    // The centre is 0.5 in; the other two are 1.0 out.
+    const d = m.sampleDistance(cubeSurface,
+        [0.5, 0.5, 0.5, 2.0, 0.5, 0.5, -1.0, 0.5, 0.5], 'pseudonormal', 0, 'off');
+    assert.equal(d.length, 3);
+    assert.ok(Math.abs(d[0] + 0.5) < 1e-12, `expected -0.5, got ${d[0]}`);
+    assert.ok(Math.abs(d[1] - 1.0) < 1e-12);
+    assert.ok(Math.abs(d[2] - 1.0) < 1e-12);
+});
+
+step('distanceToSurface attaches sdf:distance as ordinary point data', () => {
+    const q = m.grid([2, 2, 2], [-0.5, -0.5, -0.5], [1, 1, 1]);
+    const out = m.distanceToSurface(q, cubeSurface, 'pseudonormal', 'corner', 0, true, 'off');
+    assert.equal(out.numBanded, 0);
+    assert.equal(out.quality.watertight, true);
+    assert.ok('sdf:distance' in out.mesh.point_data);
+    assert.ok('sdf:inside' in out.mesh.point_data);
+});
+
+step('computeSdf generates the grid and the field in one call', () => {
+    const g = m.computeSdf(cubeSurface, 'voxel', [4, 4, 4], 0, null, 0, 0.1, 8, 4, 1,
+        true, 20000000, 'pseudonormal', 'corner', 0, 'off');
+    assert.deepEqual(Array.from(g.dims), [4, 4, 4]);
+    assert.equal(g.maxDepth, 0);
+    assert.ok('sdf:distance' in g.mesh.point_data);
+    assert.equal(g.mesh.cells[0].data.length, 64 * 8);
+    // The header rides across as ordinary numeric field_data, so every binding
+    // carries it -- but no FORMAT does, which is why .vti exists.
+    assert.ok('sdf:origin' in g.mesh.field_data);
+    assert.ok('sdf:spacing' in g.mesh.field_data);
+
+    // The octree refines only near the surface.
+    const tree = m.computeSdf(cubeSurface, 'octree', null, 0, null, 0, 0.1, 4, 2, 1,
+        true, 20000000, 'pseudonormal', 'corner', 0, 'off');
+    assert.equal(tree.maxDepth, 2);
+    const n = tree.mesh.cells[0].data.length / 8;
+    assert.ok(n > 64 && n < 4096, `octree produced ${n} cells`);
+
+    // resolution/cellSize size a voxel grid; an octree's finest cell is already
+    // determined, so passing one is an error rather than a preference.
+    assert.throws(() => m.computeSdf(cubeSurface, 'octree', [4, 4, 4]));
+    assert.throws(() => m.computeSdf(cubeSurface, 'quadtree', [4, 4, 4]));
+});
+
+step('cropPredicate keeps the cells a data comparison selects', () => {
+    const dom = m.grid([4, 4, 4], [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
+    const field = m.distanceToSurface(dom, cubeSurface, 'pseudonormal', 'center', 0, false,
+        'off');
+    const kept = m.cropPredicate(field.mesh, 'sdf:distance', '<', 0);
+    assert.equal(kept.cells[0].data.length, 8 * 8);
+    // There is no `mode`: a cell_data value is already one per cell.
+    assert.throws(() => m.cropPredicate(field.mesh, 'sdf:distance', '~', 0));
+    assert.throws(() => m.cropPredicate(field.mesh, 'nope', '<', 0));
+});
+
+step('Voxelize is a chainable pipeline step', () => {
+    // It is the one step that REPLACES geometry rather than transforming it:
+    // a triangle skin goes in and a hexahedron lattice comes out.
+    m.writeMesh('/vox-in.vtu', cubeSurface);
+    m.convertSurfaceOps('/vox-in.vtu', '/vox-out.vtu',
+        [{ op: 'voxelize', resolution: [3, 3, 3] }]);
+    const out = m.readMesh('/vox-out.vtu');
+    // convertSurfaceOps skins whatever the chain produces, so a 3x3x3 lattice
+    // comes back as its boundary: 6 faces x 9 quads. That the result is quads
+    // rather than triangles is itself the evidence the step ran -- the input
+    // was a triangle skin.
+    assert.equal(out.cells[0].type, 'quad');
+    assert.equal(out.cells[0].data.length, 54 * 4);
+});
+
 step('every binding is reachable through the wrapper', () => {
     // Regression guard for the v7.2.1 class of bug: every binding must be
     // forwarded by src/index.mjs, not merely bound in js_bindings.cpp.
@@ -991,12 +1111,21 @@ step('every binding is reachable through the wrapper', () => {
         'gradient',
         'cropBbox',
         'cropPlane',
+        'cropPredicate',
         'split',
         'convertCells',
         'refine',
         'decimate',
         'partition',
         'partitionLabels',
+        // Regular grids and signed distance. `grid` is the only binding here
+        // that takes no input mesh: it creates one.
+        'grid',
+        'voxelize',
+        'surfaceWatertightCheck',
+        'sampleDistance',
+        'distanceToSurface',
+        'computeSdf',
         'stats',
         'meshBackend',
         'hasCgnslib',
@@ -1056,6 +1185,25 @@ step('availableFormats reports what this build can read and write', () => {
     // before this entry, WASM could select only the lossy 4.1 writer and had
     // no way to reach the one that round-trips region MEMBERSHIP.
     assert.ok(writers.includes('gmsh22') && !readers.includes('gmsh22'));
+    // .vti (VTK XML ImageData), v9.25.0: the one format whose Origin/Spacing/
+    // WholeExtent attributes ARE a generated grid's header, so it is the only
+    // one that round-trips it. Both directions.
+    assert.ok(readers.includes('vti') && writers.includes('vti'));
+});
+
+step('.vti round-trips a lattice through MEMFS', () => {
+    // The point of the format, over the wrapper rather than through C++: a grid
+    // written and read back is the same grid, geometry included.
+    const g = m.grid([3, 3, 3], [-0.5, -0.5, -0.5], [0.25, 0.25, 0.25]);
+    m.writeMesh('/lattice.vti', g);
+    const back = m.readMesh('/lattice.vti');
+    assert.equal(back.cells[0].type, 'hexahedron');
+    assert.equal(back.cells[0].data.length, 27 * 8);
+    assert.equal(back.points.length, g.points.length);
+    for (let i = 0; i < g.points.length; ++i)
+        assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
+    // A mesh that is not a lattice has no extent to write, and says so.
+    assert.throws(() => m.writeMesh('/no.vti', cubeSurface));
 });
 
 step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {

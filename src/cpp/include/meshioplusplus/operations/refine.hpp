@@ -203,8 +203,36 @@ inline constexpr const char* kRefineLevelName = "refine:level";
 /// exists on an entity of a cell that does not reference it -- the mid-edge node
 /// a refined cell created on an edge its unrefined neighbour still spans whole.
 /// Only `Balanced` produces any; the other closures leave none by construction
-/// and do not attach the array.
+/// and do not attach the array. The name is **reserved**: the array is recomputed
+/// from the output's own topology every pass rather than carried through the
+/// generic `point_data` path, which would interpolate a flag.
 inline constexpr const char* kRefineHangingName = "refine:hanging";
+
+/// The Int64 `(num_points, 4)` `point_data` array recording, per point, the
+/// **entity it was created on** -- `{-1, -1, a, b}` for the midpoint of edge
+/// `(a, b)`, the sorted `{p, q, r, s}` for a quad-face centre, and
+/// `{-1, -1, -1, -1}` for a point `refine` did not create (an original point, or
+/// a hexahedron body centre, which is interior to one cell and can never be
+/// shared).
+///
+/// It exists so that a *later* pass can recognise that an entity it is about to
+/// split already carries a node, and reuse it instead of allocating a coincident
+/// second one. Without it, `RefineClosure::Balanced` tore the mesh: when the 2:1
+/// balance rule drew in a coarse cell whose edge `(a, b)` already held a hanging
+/// node, that cell's refinement keyed the edge as `(a, b)`, allocated a *new*
+/// midpoint and left the two sides of the interface referencing distinct,
+/// exactly-coincident nodes.
+///
+/// The name is **reserved** and the array is *maintained* rather than replicated:
+/// it is attached whenever a pass leaves hanging nodes, and kept thereafter. The
+/// other closures leave none and do not attach it, so their output is unchanged.
+///
+/// Entries name **input point indices**, which `refine` never renumbers. An
+/// operation that *does* renumber points (`reorder`, `clean`, `crop`, `merge`) or
+/// that moves them (`transform`, `smooth`) invalidates them; `refine` detects
+/// that -- each entry must still reproduce its own point's coordinates -- and
+/// warns and ignores the array rather than trusting it.
+inline constexpr const char* kRefineEntityName = "refine:entity";
 
 /// How `refine` resolves the hanging nodes a partial refinement leaves behind.
 enum class RefineClosure {
@@ -250,6 +278,25 @@ MESHIOPLUSPLUS_API RefineClosure refine_closure_from_name(const std::string& rNa
  * @throws std::invalid_argument naming every accepted value.
  */
 MESHIOPLUSPLUS_API RefineCompare refine_compare_from_name(const std::string& rName);
+
+/**
+ * @brief Evaluate one `RefineCompare` against a value.
+ *
+ * Exposed because `crop_predicate` selects cells by exactly this rule, and a
+ * second transcription of a discrete branch is precisely the kind of thing that
+ * drifts silently -- the two operations would then disagree only on the boundary
+ * cases (`==` on a tie, and a NaN), which is where disagreement is hardest to
+ * notice.
+ *
+ * @param Value the cell's value.
+ * @param Op the comparison.
+ * @param Rhs the threshold.
+ * @return whether the comparison holds. **A non-finite @p Value never matches**,
+ *   whatever @p Op is: `compute_quality` deliberately reports NaN where a metric
+ *   does not apply, and a predicate over `quality:*` on a mixed mesh is the
+ *   headline use case, so rejecting such an array outright would break it.
+ */
+MESHIOPLUSPLUS_API bool refine_compare_value(double Value, RefineCompare Op, double Rhs);
 
 /// Options for `refine`.
 struct RefineOptions {

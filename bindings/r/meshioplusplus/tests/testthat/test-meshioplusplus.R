@@ -675,3 +675,113 @@ test_that("a transient XDMF series round-trips", {
   # would try to write the .xdmf into a directory that no longer exists.
   mio_xdmf_series_release(other)
 })
+
+test_that("grid builds a lattice from nothing", {
+  g <- mio_grid(c(2, 2, 2))
+  on.exit(mio_release(g))
+  expect_equal(mio_num_points(g), 27)
+  expect_equal(mio_num_cell_blocks(g), 1)
+
+  # An empty lattice is a legal request, not an error.
+  e <- mio_grid(c(0, 0, 0))
+  expect_equal(mio_num_points(e), 0)
+  mio_release(e)
+
+  expect_error(mio_grid(c(100, 100, 100), max_cells = 1000))
+})
+
+test_that("voxelize builds a grid around a surface", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  q <- mio_surface_watertight_check(cube)
+  expect_true(q$watertight)
+  expect_equal(q$boundary_edges, 0)
+
+  v <- mio_voxelize(cube, resolution = c(4, 4, 4))
+  expect_equal(v$num_occupied, 64)
+  expect_equal(v$dims, c(4, 4, 4))
+  expect_equal(v$spacing[[1]], 0.25)
+  mio_release(v$mesh)
+
+  inside <- mio_voxelize(cube,
+    resolution = c(5, 5, 5), bounds = c(-0.5, -0.5, -0.5, 1.5, 1.5, 1.5),
+    fill = "inside", watertight_check = "off"
+  )
+  expect_equal(inside$num_occupied, 27)
+  mio_release(inside$mesh)
+
+  # An unknown fill fails by name rather than silently defaulting.
+  expect_error(mio_voxelize(cube, resolution = c(2, 2, 2), fill = "solid"))
+})
+
+test_that("signed distance matches the cube's closed form", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  # The centre is 0.5 inside; the other two are 1.0 outside.
+  pts <- matrix(c(0.5, 0.5, 0.5, 2, 0.5, 0.5, -1, 0.5, 0.5), nrow = 3)
+  d <- mio_sample_distance(cube, pts, watertight_check = "off")
+  expect_equal(length(d), 3)
+  expect_equal(d[[1]], -0.5, tolerance = 1e-12)
+  expect_equal(d[[2]], 1.0, tolerance = 1e-12)
+  expect_equal(d[[3]], 1.0, tolerance = 1e-12)
+
+  g <- mio_grid(c(2, 2, 2), origin = c(-0.5, -0.5, -0.5))
+  f <- mio_distance_to_surface(g, cube, watertight_check = "off", record_inside = TRUE)
+  expect_true(f$quality$watertight)
+  expect_equal(f$num_banded, 0)
+  expect_true("sdf:distance" %in% mio_point_data_names(f$mesh))
+  expect_true("sdf:inside" %in% mio_point_data_names(f$mesh))
+  mio_release(f$mesh)
+  mio_release(g)
+
+  expect_error(mio_sample_distance(cube, pts, sign = "magic"))
+})
+
+test_that("compute_sdf generates the grid and the field in one call", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  sdf <- mio_compute_sdf(cube, resolution = c(4, 4, 4), watertight_check = "off")
+  expect_equal(sdf$dims, c(4, 4, 4))
+  expect_equal(sdf$max_depth, 0)
+  expect_true("sdf:distance" %in% mio_point_data_names(sdf$mesh))
+  expect_equal(mio_cell_block_info(sdf$mesh, 1)$num_cells, 64)
+  mio_release(sdf$mesh)
+
+  # The octree refines only near the surface: more than the root, far less than
+  # the uniform grid of the same finest resolution.
+  tree <- mio_compute_sdf(cube,
+    structure = "octree", root_resolution = 4, max_depth = 2,
+    watertight_check = "off"
+  )
+  expect_equal(tree$max_depth, 2)
+  n <- mio_cell_block_info(tree$mesh, 1)$num_cells
+  expect_true(n > 64 && n < 4096)
+  mio_release(tree$mesh)
+
+  # resolution/cell_size size a voxel grid; an octree's finest cell is already
+  # determined by root_resolution and max_depth.
+  expect_error(mio_compute_sdf(cube, structure = "octree", resolution = c(4, 4, 4)))
+  expect_error(mio_compute_sdf(cube, structure = "quadtree"))
+})
+
+test_that("crop_predicate keeps the cells a data comparison selects", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  dom <- mio_grid(c(4, 4, 4), origin = c(-0.5, -0.5, -0.5), spacing = c(0.5, 0.5, 0.5))
+  on.exit(mio_release(dom), add = TRUE)
+  f <- mio_distance_to_surface(dom, cube, location = "center", watertight_check = "off")
+  on.exit(mio_release(f$mesh), add = TRUE)
+
+  kept <- mio_crop_predicate(f$mesh, "sdf:distance", compare = "<", value = 0)
+  expect_equal(mio_cell_block_info(kept, 1)$num_cells, 8)
+  mio_release(kept)
+
+  # There is deliberately no `mode`: a cell_data predicate is already one value
+  # per cell and has nothing for an all/any rule to reduce.
+  expect_error(mio_crop_predicate(f$mesh, "sdf:distance", compare = "~"))
+  expect_error(mio_crop_predicate(f$mesh, "nope"))
+})

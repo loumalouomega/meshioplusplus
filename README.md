@@ -55,6 +55,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [TikZ](https://tikz.dev/) (LaTeX output only; 2D direct, 3D via skin projection) (`.tikz`),
 > [SU2](https://su2code.github.io/docs_v7/Mesh-File/) (`.su2`),
 > [UGRID](https://www.simcenter.msstate.edu/software/documentation/ug_io/3d_grid_file_type_ugrid.html) (`.ugrid`),
+> [VTI](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (VTK XML ImageData; a regular lattice) (`.vti`),
 > [VTK](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf) (`.vtk`),
 > [VTP](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.vtp`),
 > [VTU](https://vtk.org/Wiki/VTK_XML_Formats) (`.vtu`),
@@ -93,6 +94,7 @@ meshioplusplus merge      a.vtu b.vtu out.vtu    # merge meshes (optional --weld
 meshioplusplus transform  in.vtu out.vtu --translate 1,2,3   # affine transform
 meshioplusplus clean      in.vtu out.vtu --weld              # weld / prune / de-dup
 meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
+meshioplusplus crop       in.vtu out.vtu --where "d<0"       # ... or by a data predicate
 meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # split by criterion
 meshioplusplus stats      mesh.vtu                           # geometric statistics
 meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
@@ -103,6 +105,7 @@ meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positi
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
 meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-section
 meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of a field
+meshioplusplus sdf        skin.stl field.vti --resolution 128,128,128  # signed distance field
 meshioplusplus data gradient in.vtu out.vtu --array T           # grad / div / curl of a field
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
@@ -625,7 +628,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 35 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 42 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 ### ParaView plugin
 
@@ -714,7 +717,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 9.22.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 9.25.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

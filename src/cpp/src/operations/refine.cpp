@@ -208,6 +208,66 @@ std::vector<std::int64_t> refine_read_levels(const Mesh& rMesh,
     return levels;
 }
 
+// --- refine:entity -----------------------------------------------------------
+
+// The per-point entity keys already recorded on a mesh, or an empty vector when
+// it carries none (or carries a malformed or stale one).
+//
+// Staleness is the real hazard, not malformation: the entries name input point
+// indices, which `refine` never renumbers but `reorder`/`clean`/`crop`/`merge`
+// do, and which `transform`/`smooth` move. A stale key would silently graft one
+// entity's node onto another's, so it is not enough to range-check it -- every
+// key must still reproduce its own point's coordinates, by the same arithmetic
+// phase 5 used to write them. The check runs through a scratch of the points'
+// own dtype so a Float32 mesh compares what was actually stored rather than a
+// widened double.
+std::vector<RefineNodeKey> refine_read_entity_keys(const Mesh& rMesh) {
+    if (!rMesh.HasPointData(kRefineEntityName))
+        return {};
+    const std::size_t num_points = rMesh.NumPoints();
+    const NDArray& a = rMesh.PointData(kRefineEntityName);
+    if (detail::rows(a) != num_points || (num_points != 0 && a.Size() / num_points != 4)) {
+        log::warn("refine: ignoring '{}': it is not four values per point.", kRefineEntityName);
+        return {};
+    }
+
+    std::vector<RefineNodeKey> keys(num_points);
+    for (std::size_t p = 0; p < num_points; ++p)
+        for (std::size_t k = 0; k < 4; ++k)
+            keys[p][k] = detail::read_int(a, p * 4 + k);
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = detail::cols(points);
+    NDArray scratch = NDArray::Uninit(points.Dtype(), {std::size_t{1}});
+    for (std::size_t p = 0; p < num_points; ++p) {
+        const RefineNodeKey& key = keys[p];
+        if (key[3] < 0)
+            continue;  // the {-1,-1,-1,-1} sentinel: a point refine did not create
+        const std::size_t first = key[0] < 0 ? 2 : 0;
+        bool ok = true;
+        for (std::size_t c = first; c < 4 && ok; ++c)
+            ok = key[c] >= 0 && static_cast<std::size_t>(key[c]) < num_points;
+        // The phase 5 arithmetic, verbatim -- same order, same divisor, same
+        // store-then-read round trip.
+        const double inv = 1.0 / static_cast<double>(4 - first);
+        for (std::size_t k = 0; k < dim && ok; ++k) {
+            double sum = 0.0;
+            for (std::size_t c = first; c < 4; ++c)
+                sum += detail::read_double(points, static_cast<std::size_t>(key[c]) * dim + k);
+            detail::write_double(scratch, 0, sum * inv);
+            ok = detail::read_double(scratch, 0) == detail::read_double(points, p * dim + k);
+        }
+        if (!ok) {
+            log::warn(
+                "refine: ignoring '{}': point {} no longer sits on the entity it records, so the "
+                "mesh was renumbered or moved since it was written.",
+                kRefineEntityName, p);
+            return {};
+        }
+    }
+    return keys;
+}
+
 // --- one refinement level ----------------------------------------------------
 
 // Refine `rMesh` once. `pRedSeed` is a per-global-cell flag choosing the cells
@@ -467,13 +527,35 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         masks = std::move(promoted);
     }
 
+    // The nodes a previous pass already placed on entities of this mesh, keyed by
+    // the entity. The {-1,-1,-1,-1} sentinel is skipped: it is what an original
+    // point and a body centre both carry, and admitting it would make every such
+    // point collide on one key. First-seen wins, which only arises on an input
+    // that was already torn.
+    const std::vector<RefineNodeKey> base_entity_keys = refine_read_entity_keys(rMesh);
+    std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> persisted_node;
+    for (std::size_t p = 0; p < base_entity_keys.size(); ++p) {
+        if (base_entity_keys[p][3] < 0)
+            continue;
+        persisted_node.emplace(base_entity_keys[p], static_cast<std::int64_t>(p));
+    }
+
     // --- phase 4: which entities earn a node, and their point ids ------------
     // An edge entity earns one iff it is split; a quad-face entity iff all four
     // of the bounding edges are. Both cells sharing an entity evaluate the same
     // predicate over the same edges, so they cannot disagree -- that is the
     // conformity argument, and it is why nothing here is tabulated per template.
+    //
+    // An entity whose key the input already recorded (see kRefineEntityName)
+    // keeps the node it already has, **whether or not this pass splits it**.
+    // Both halves of that matter. Reusing a split entity's node is what stops the
+    // 2:1 balance rule from tearing the mesh, and resolving an *unsplit* one is
+    // what lets the hanging rule below stay a single statement over entities: a
+    // node still sitting on an edge its cell spans whole is reported by exactly
+    // the same test that reports a freshly created one, so nothing has to be
+    // carried forward or unmarked by hand.
     std::vector<std::int64_t> node_of_entity(entities.size(), -1);
-    std::vector<std::int64_t> kept_entities;  // entity index, in id order
+    std::vector<std::int64_t> new_entities;  // entities needing a NEW point, in id order
     {
         std::vector<char> needs(entities.size(), 0);
         for (std::size_t e = 0; e < entities.size(); ++e)
@@ -494,52 +576,26 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 }
             }
         }
-        kept_entities.reserve(entities.size());
-        for (std::size_t e = 0; e < entities.size(); ++e) {
-            if (!needs[e])
-                continue;
-            node_of_entity[e] = static_cast<std::int64_t>(num_points + kept_entities.size());
-            kept_entities.push_back(static_cast<std::int64_t>(e));
-        }
-    }
-
-    // Hanging nodes: a new node is constrained exactly when some emitted cell is
-    // incident to its entity but does not reference it -- the mid-edge node a
-    // split cell created on an edge its unsplit neighbour still spans whole. The
-    // rule is stated over entities rather than per closure, so it stays correct
-    // if another mode ever leaves some; RedGreen and Propagate leave none, which
-    // a test asserts rather than assumes.
-    std::vector<char> hanging(num_points + kept_entities.size(), 0);
-    std::size_t num_hanging = 0;
-    for (std::size_t b = 0; b < nblocks; ++b) {
-        const RefineBlockDesc& d = descs[b];
-        for (std::size_t c = 0; c < d.mNumCells; ++c) {
-            const std::uint16_t mask = masks[d.mFirstCell + c];
-            const std::size_t slot0 = d.mFirstSlot + c * d.mSlotsPerCell;
-            for (std::size_t s = 0; s < d.mSlotsPerCell; ++s) {
-                // A slot this cell's own template resolves is referenced, not
-                // hanging: edge slot k iff bit k is set, face slot f iff all of
-                // that face's edges are.
-                const bool referenced = s < d.mpEdges->size()
-                                            ? ((mask >> s) & 1u) != 0
-                                            : (mask & d.mFaceEdgeMasks[s - d.mpEdges->size()]) ==
-                                                  d.mFaceEdgeMasks[s - d.mpEdges->size()];
-                if (referenced)
-                    continue;
-                const std::int64_t node =
-                    node_of_entity[static_cast<std::size_t>(entity_of_slot[slot0 + s])];
-                if (node >= 0 && !hanging[static_cast<std::size_t>(node)]) {
-                    hanging[static_cast<std::size_t>(node)] = 1;
-                    ++num_hanging;
-                }
+        if (!persisted_node.empty()) {
+            for (std::size_t e = 0; e < entities.size(); ++e) {
+                auto it = persisted_node.find(entities[e]);
+                if (it != persisted_node.end())
+                    node_of_entity[e] = it->second;
             }
+        }
+        new_entities.reserve(entities.size());
+        for (std::size_t e = 0; e < entities.size(); ++e) {
+            if (!needs[e] || node_of_entity[e] >= 0)
+                continue;
+            node_of_entity[e] = static_cast<std::int64_t>(num_points + new_entities.size());
+            new_entities.push_back(static_cast<std::int64_t>(e));
         }
     }
 
     // Body centres are unique per cell and so need no dedup, but their ids only
     // become known once the deduped range is closed. Only a fully split
     // hexahedron has one.
-    const std::size_t body_base = num_points + kept_entities.size();
+    const std::size_t body_base = num_points + new_entities.size();
     std::vector<std::int64_t> body_of_cell(total_cells, -1);
     std::size_t total_bodies = 0;
     for (std::size_t b = 0; b < nblocks; ++b) {
@@ -566,8 +622,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         const std::size_t dim = detail::cols(points);
         NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points_out, dim});
         std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
-        parallel_for_bw(kept_entities.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = entities[static_cast<std::size_t>(kept_entities[i])];
+        parallel_for_bw(new_entities.size(), [&](std::size_t i) {
+            const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
             const double inv = 1.0 / static_cast<double>(4 - first);
             for (std::size_t k = 0; k < dim; ++k) {
@@ -680,6 +736,12 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
 
     // --- phase 7: point_data -------------------------------------------------
     for (const std::string& name : rMesh.PointDataNames()) {
+        // The two reserved point arrays are this operation's own bookkeeping and
+        // are rebuilt below from the output's topology. Letting them through here
+        // would interpolate them: a hanging flag would be averaged to 0.5 and
+        // truncated, and an entity key to the mean of two unrelated node ids.
+        if (name == kRefineHangingName || name == kRefineEntityName)
+            continue;
         const NDArray& a = rMesh.PointData(name);
         if (detail::rows(a) != num_points) {
             out.AddPointData(name, detail::data_owned_copy(a));
@@ -690,8 +752,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         shape[0] = num_points_out;
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
-        parallel_for_bw(kept_entities.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = entities[static_cast<std::size_t>(kept_entities[i])];
+        parallel_for_bw(new_entities.size(), [&](std::size_t i) {
+            const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
             const double inv = 1.0 / static_cast<double>(4 - first);
             for (std::size_t k = 0; k < ncomp; ++k) {
@@ -782,17 +844,116 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         out.AddCellData(kRefineLevelName, std::move(blocks));
     }
 
+    // --- phase 8: the output's own entity keys, and the hanging set ----------
+    // Every point's entity, in OUTPUT point ids -- which equal input ids for the
+    // points that were already there, since refine never renumbers. Body centres
+    // and original points keep the {-1,-1,-1,-1} sentinel: interior to one cell
+    // or created by nothing, so no other cell can ever need to look one up.
+    std::vector<RefineNodeKey> out_entity_keys(num_points_out, RefineNodeKey{-1, -1, -1, -1});
+    for (std::size_t p = 0; p < base_entity_keys.size(); ++p)
+        out_entity_keys[p] = base_entity_keys[p];
+    for (std::size_t i = 0; i < new_entities.size(); ++i)
+        out_entity_keys[num_points + i] = entities[static_cast<std::size_t>(new_entities[i])];
+
+    // Hanging nodes. The rule is "a node sits on an entity of a cell that does
+    // not reference it", and it must be evaluated over the EMITTED cells, not
+    // over the input cells' entities. Those are not the same question once a
+    // pass splits more than one level of the mesh: when the balance rule draws a
+    // coarse cell in, its children's own sub-edges are entities that the input
+    // cell never had, and a node the neighbouring refinement places on one of
+    // them is constrained without any input entity ever naming it. Stating the
+    // rule over the input is what left 42 of 84 constrained nodes unreported on
+    // a two-level balanced refinement of a 4x4x4 hex block.
+    //
+    // Serial, and over a map keyed by the entity rather than by coordinates, so
+    // there is no tolerance anywhere and the traversal order is a pure function
+    // of (block, cell, slot) as everywhere else in this file.
+    std::vector<char> hanging(num_points_out, 0);
+    std::size_t num_hanging = 0;
+    // If every cell was split fully and the input carried no nodes of its own,
+    // every entity of every emitted cell is resolved by that cell's own template
+    // and nothing can be constrained. That is the uniform path, so it skips the
+    // scan below entirely rather than paying a second phase-1-sized pass for an
+    // answer that is zero by construction.
+    bool any_partial = false;
+    for (std::size_t b = 0; b < nblocks && !any_partial; ++b)
+        for (std::size_t c = 0; c < descs[b].mNumCells; ++c)
+            if (masks[descs[b].mFirstCell + c] != descs[b].mFullMask) {
+                any_partial = true;
+                break;
+            }
+    if (any_partial || !base_entity_keys.empty()) {
+        std::unordered_map<RefineNodeKey, std::int64_t, RefineNodeKeyHash> node_at_entity;
+        node_at_entity.reserve(num_points_out * 2);
+        for (std::size_t p = 0; p < num_points_out; ++p) {
+            if (out_entity_keys[p][3] < 0)
+                continue;
+            node_at_entity.emplace(out_entity_keys[p], static_cast<std::int64_t>(p));
+        }
+        if (!node_at_entity.empty()) {
+            std::size_t bi = 0;
+            for (const auto cb : out.CellRange()) {
+                const RefineBlockDesc& d = descs[bi++];
+                const std::vector<detail::CellEdgePair>& edges = *d.mpEdges;
+                const std::vector<detail::CellQuadFace>& faces = *d.mpFaces;
+                const std::size_t ncells = cb.NumCells();
+                if (ncells == 0)
+                    continue;
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t c = 0; c < ncells; ++c) {
+                    const std::size_t row = c * npc;
+                    const auto mark = [&](const RefineNodeKey& rKey) {
+                        auto it = node_at_entity.find(rKey);
+                        if (it == node_at_entity.end())
+                            return;
+                        const std::size_t node = static_cast<std::size_t>(it->second);
+                        for (std::size_t n = 0; n < npc; ++n)
+                            if (detail::read_int(conn, row + n) == it->second)
+                                return;  // this cell references it: not hanging here
+                        if (!hanging[node]) {
+                            hanging[node] = 1;
+                            ++num_hanging;
+                        }
+                    };
+                    for (const detail::CellEdgePair& e : edges)
+                        mark(refine_edge_key(detail::read_int(conn, row + e[0]),
+                                             detail::read_int(conn, row + e[1])));
+                    for (const detail::CellQuadFace& f : faces)
+                        mark(refine_face_key(detail::read_int(conn, row + f[0]),
+                                             detail::read_int(conn, row + f[1]),
+                                             detail::read_int(conn, row + f[2]),
+                                             detail::read_int(conn, row + f[3])));
+                }
+            }
+        }
+    }
+
     // refine:hanging -- the constrained nodes a Balanced pass leaves behind. Only
     // attached when there are any, so the conforming closures are unaffected.
     if (num_hanging > 0) {
         NDArray flags = NDArray::Uninit(DType::Int64, {num_points_out, 1});
         std::int64_t* dst = flags.As<std::int64_t>();
-        std::fill(dst, dst + num_points_out, static_cast<std::int64_t>(0));
-        for (std::size_t i = 0; i < hanging.size(); ++i)
+        for (std::size_t i = 0; i < num_points_out; ++i)
             dst[i] = hanging[i] ? 1 : 0;
         out.AddPointData(kRefineHangingName, std::move(flags));
         log::info("refine: the balanced closure left {} hanging node(s); see '{}'.", num_hanging,
                   kRefineHangingName);
+    }
+
+    // refine:entity -- so a later pass can reuse this pass's nodes instead of
+    // allocating coincident duplicates. Attached whenever this pass leaves
+    // hanging nodes, and *maintained* thereafter once present, exactly as
+    // refine:level is. A pass that leaves none and inherits none writes nothing,
+    // which is what keeps every conforming closure's output byte-identical to
+    // what it was before the array existed.
+    if (num_hanging > 0 || !base_entity_keys.empty()) {
+        NDArray keys_out = NDArray::Uninit(DType::Int64, {num_points_out, std::size_t{4}});
+        std::int64_t* dst = keys_out.As<std::int64_t>();
+        for (std::size_t p = 0; p < num_points_out; ++p)
+            for (std::size_t k = 0; k < 4; ++k)
+                dst[p * 4 + k] = out_entity_keys[p][k];
+        out.AddPointData(kRefineEntityName, std::move(keys_out));
     }
 
     for (const std::string& name : rMesh.FieldDataNames())
@@ -883,29 +1044,6 @@ std::size_t refine_projected_cells(const Mesh& rMesh) {
 bool refine_has_selector(const RefineOptions& rOptions) {
     return !rOptions.mCells.empty() || !rOptions.mRegion.empty() ||
            !rOptions.mPredicateArray.empty();
-}
-
-bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
-    // A non-finite value never matches. compute_quality deliberately reports NaN
-    // where a metric does not apply, so a predicate over `quality:*` on a mixed
-    // mesh is the headline use case -- rejecting the array would break it.
-    if (!std::isfinite(Value))
-        return false;
-    switch (Op) {
-        case RefineCompare::Less:
-            return Value < Rhs;
-        case RefineCompare::LessEqual:
-            return Value <= Rhs;
-        case RefineCompare::Greater:
-            return Value > Rhs;
-        case RefineCompare::GreaterEqual:
-            return Value >= Rhs;
-        case RefineCompare::Equal:
-            return Value == Rhs;
-        case RefineCompare::NotEqual:
-            return Value != Rhs;
-    }
-    return false;
 }
 
 std::string refine_region_names(const Mesh& rMesh) {
@@ -1041,6 +1179,32 @@ RefineClosure refine_closure_from_name(const std::string& rName) {
         return RefineClosure::Balanced;
     throw std::invalid_argument("refine: unknown closure '" + rName +
                                 "' (expected 'redgreen'/'green', 'propagate' or 'balanced')");
+}
+
+bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
+    // A non-finite value never matches. compute_quality deliberately reports NaN
+    // where a metric does not apply, so a predicate over `quality:*` on a mixed
+    // mesh is the headline use case -- rejecting the array would break it.
+    //
+    // Public (declared in refine.hpp) rather than file-private because
+    // `crop_predicate` selects cells by this identical rule; see the header.
+    if (!std::isfinite(Value))
+        return false;
+    switch (Op) {
+        case RefineCompare::Less:
+            return Value < Rhs;
+        case RefineCompare::LessEqual:
+            return Value <= Rhs;
+        case RefineCompare::Greater:
+            return Value > Rhs;
+        case RefineCompare::GreaterEqual:
+            return Value >= Rhs;
+        case RefineCompare::Equal:
+            return Value == Rhs;
+        case RefineCompare::NotEqual:
+            return Value != Rhs;
+    }
+    return false;
 }
 
 RefineCompare refine_compare_from_name(const std::string& rName) {

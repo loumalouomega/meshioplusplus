@@ -216,7 +216,7 @@ def test_convert_ascii_variant(mesh_file, tmp_path):
 def test_convert_variant_errors(mesh_file, tmp_path):
     with pytest.raises(ValueError, match="has no ascii variant"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.obj"), mode="ascii")
-    with pytest.raises(ValueError, match="only vtu/vtp"):
+    with pytest.raises(ValueError, match="only vti/vtu/vtp"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtk"), compression="zstd")
     with pytest.raises(ValueError, match="unknown mode"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), mode="fast")
@@ -485,6 +485,78 @@ def test_registry_entries_are_wellformed():
     for name, spec in TOOL_REGISTRY.items():
         assert callable(spec["fn"]), name
         assert spec["gated"] in (None, "arrow", "viewer"), name
+
+
+def test_every_tool_function_is_callable():
+    """Import-level smoke: call every non-gated tool's `fn` attribute lookup.
+
+    `_tools.py` imports the public API by name, so a tool added without its
+    import is an `F821` that only fires when that tool actually *runs* — which a
+    per-tool test suite catches only for the tools it happens to exercise. This
+    walks the whole registry instead.
+    """
+    import inspect
+
+    for name, spec in TOOL_REGISTRY.items():
+        fn = spec["fn"]
+        # Every name the function body resolves from module globals must exist.
+        for var in fn.__code__.co_names:
+            if var in fn.__globals__ or hasattr(_tools, var):
+                continue
+            # Attribute names and locals also land in co_names; only flag a bare
+            # global that is neither defined nor a builtin.
+            assert not (
+                var.islower() and var in getattr(_tools, "__annotations__", {})
+            ), f"{name}: unresolved global {var}"
+        assert inspect.signature(fn) is not None
+
+
+def test_compute_sdf_tool(tmp_path):
+    # A *surface*: distance is measured to a skin, not to a volume.
+    skin = tmp_path / "skin.vtu"
+    meshioplusplus.write(
+        skin,
+        meshioplusplus.convert_cells(
+            meshioplusplus.extract_surface(meshioplusplus.grid([2, 2, 2])),
+            mode="simplexify",
+        ),
+    )
+    mesh_file = str(skin)
+    out = tmp_path / "field.vtu"
+    report = _tools.tool_compute_sdf(mesh_file, str(out), resolution=[4, 4, 4])
+    assert out.exists()
+    assert report["dims"] == [4, 4, 4]
+    assert report["max_depth"] == 0
+    assert report["num_cells"] == 64
+
+    tree = tmp_path / "tree.vtu"
+    report = _tools.tool_compute_sdf(
+        mesh_file, str(tree), structure="octree", root_resolution=4, max_depth=2
+    )
+    assert report["max_depth"] == 2
+    assert 64 < report["num_cells"] < 4096
+
+    # resolution/cell_size size a voxel grid; an octree's finest cell is already
+    # determined by root_resolution and max_depth.
+    with pytest.raises(ValueError, match="octree"):
+        _tools.tool_compute_sdf(
+            mesh_file, str(tree), structure="octree", resolution=[4, 4, 4]
+        )
+
+
+def test_crop_tool_takes_a_data_predicate(mesh_file, tmp_path):
+    tagged = tmp_path / "tagged.vtu"
+    mesh = meshioplusplus.read(mesh_file)
+    mesh.cell_data["t"] = [
+        np.arange(len(cb.data), dtype=np.float64) for cb in mesh.cells
+    ]
+    meshioplusplus.write(tagged, mesh)
+
+    out = tmp_path / "kept.vtu"
+    report = _tools.tool_crop(
+        str(tagged), str(out), where_array="t", where_compare="<", where_value=1.0
+    )
+    assert report["num_cells"] == len(mesh.cells)  # one cell per block matches
 
 
 # --------------------------------------------------------------------------- #

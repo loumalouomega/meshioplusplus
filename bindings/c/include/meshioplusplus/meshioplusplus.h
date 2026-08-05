@@ -216,7 +216,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 9
-#define MIO_VERSION_MINOR 22
+#define MIO_VERSION_MINOR 25
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -454,7 +454,7 @@ typedef enum mio_write_encoding {
     MIO_ENCODING_BINARY = 2
 } mio_write_encoding;
 
-/** Block compression codec for mio_write_opts.codec (vtu/vtp only). */
+/** Block compression codec for mio_write_opts.codec (vti/vtu/vtp only). */
 typedef enum mio_write_codec {
     MIO_CODEC_DEFAULT = 0, /**< leave the format's default in place */
     MIO_CODEC_NONE = 1,
@@ -476,7 +476,7 @@ typedef enum mio_write_codec {
  */
 typedef struct mio_write_opts {
     int encoding;      /**< a mio_write_encoding value */
-    int codec;         /**< a mio_write_codec value; vtu/vtp only */
+    int codec;         /**< a mio_write_codec value; vti/vtu/vtp only */
     /** printf-style float format for the ASCII writers that take one (e.g.
      *  ".16e"). NULL or empty keeps the writer's own default. Copied during
      *  the call. Currently honoured by flac3d. */
@@ -842,6 +842,35 @@ MIO_API mio_mesh* mio_crop_bbox(const mio_mesh* mesh, const double* lo, const do
  */
 MIO_API mio_mesh* mio_crop_plane(const mio_mesh* mesh, const double* point, const double* normal,
                                  int mode, int record_ids);
+
+/**
+ * Crop a mesh to the cells whose value in a scalar cell_data array satisfies a
+ * comparison.
+ *
+ * There is deliberately NO `mode` parameter. The bbox and half-space crops test
+ * *points* and then need a rule for reducing a cell's several nodes to one
+ * verdict; a cell_data predicate is already one value per cell and has nothing
+ * to reduce, so a mode here would mean nothing.
+ *
+ * Inside/outside a surface composes rather than being its own entry point:
+ * attach distances with mio_distance_to_surface at MIO_SDF_CENTER, then crop on
+ * "sdf:distance" < 0. The same one mode also crops by quality:*, by a material
+ * id, or by anything mio_data_calc can produce.
+ *
+ * @param mesh       the mesh to crop.
+ * @param array      the name of a scalar cell_data array covering every block.
+ * @param compare    a mio_refine_compare -- the SAME vocabulary refine uses,
+ *                   evaluated by the same C++ function, so the two operations
+ *                   cannot drift on the boundary cases.
+ * @param value      the right-hand side. A NON-FINITE cell value never matches,
+ *                   whatever the comparison -- compute_quality reports NaN where
+ *                   a metric does not apply, and predicating over quality:* on a
+ *                   mixed mesh is the headline use case.
+ * @param record_ids nonzero to attach crop:original_point_id / _cell_id.
+ * @return the cropped mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_crop_predicate(const mio_mesh* mesh, const char* array, int compare,
+                                     double value, int record_ids);
 
 /**
  * Split a mesh into pieces by cell type, connected component, or integer
@@ -1326,6 +1355,285 @@ typedef struct mio_stats_report {
  * @return MIO_OK, or an error status (see mio_last_error()).
  */
 MIO_API mio_status mio_stats(const mio_mesh* mesh, mio_stats_report* out);
+
+/* ------------------------------------------------------------------------- */
+/* Regular grids and signed distance                                         */
+/*                                                                           */
+/* mio_grid builds a regular hexahedron lattice from nothing -- the only      */
+/* entry point here that takes no input mesh. mio_voxelize builds one around  */
+/* a mesh and optionally keeps only the cells its surface passes through or   */
+/* encloses. The rest measure distance to a triangle surface.                 */
+/*                                                                           */
+/* Everything comes back as an ordinary mio_mesh with one hexahedron block,   */
+/* so every writer, every operation and every getter already works on it.     */
+/* ------------------------------------------------------------------------- */
+
+/** Which cells mio_voxelize keeps. */
+typedef enum mio_voxel_fill {
+    MIO_VOXEL_ALL = 0,     /**< every cell of the bounding box */
+    MIO_VOXEL_SURFACE = 1, /**< only cells a surface triangle passes through */
+    MIO_VOXEL_INSIDE = 2   /**< only cells whose centre is inside the surface */
+} mio_voxel_fill;
+
+/** How a signed distance decides which side of the surface a point is on. */
+typedef enum mio_sdf_sign {
+    MIO_SDF_UNSIGNED = 0,       /**< no sign; the only mode valid on an open sheet */
+    MIO_SDF_PSEUDONORMAL = 1,   /**< angle-weighted pseudonormal of the nearest feature */
+    MIO_SDF_WINDING_NUMBER = 2  /**< generalized winding number; O(triangles) per query */
+} mio_sdf_sign;
+
+/** How incident faces are weighted when building a vertex pseudonormal. */
+typedef enum mio_sdf_weight {
+    MIO_SDF_WEIGHT_ANGLE = 0, /**< the geometrically correct choice */
+    MIO_SDF_WEIGHT_AREA = 1   /**< free of acos, and therefore bit-reproducible */
+} mio_sdf_weight;
+
+/** Where a distance is evaluated on a mesh. */
+typedef enum mio_sdf_location {
+    MIO_SDF_CORNER = 0, /**< at the points, as point_data */
+    MIO_SDF_CENTER = 1  /**< at the cell centroids, as cell_data */
+} mio_sdf_location;
+
+/** What to do when the surface turns out not to be watertight. */
+typedef enum mio_sdf_watertight_check {
+    MIO_SDF_WATERTIGHT_OFF = 0,   /**< do not look */
+    MIO_SDF_WATERTIGHT_WARN = 1,  /**< log the counts and carry on */
+    MIO_SDF_WATERTIGHT_ERROR = 2  /**< fail, naming the counts */
+} mio_sdf_watertight_check;
+
+/**
+ * What is wrong with a surface, in numbers rather than a bare flag.
+ *
+ * The four counts are reported separately because they need different fixes:
+ * "12 boundary edges" is actionable, "not watertight" is not.
+ *
+ * ABI NOTE: as with every struct here, new fields may only be appended,
+ * replacing `reserved` capacity.
+ */
+typedef struct mio_surface_quality {
+    int64_t boundary_edges;       /**< edges used by exactly one triangle */
+    int64_t non_manifold_edges;   /**< edges used by three or more */
+    int64_t inconsistent_pairs;   /**< two triangles winding an edge the same way */
+    int64_t degenerate_triangles; /**< zero-area triangles */
+    int32_t watertight;           /**< nonzero when all four counts are zero */
+    int32_t reserved_pad;         /**< must be zero; keeps the int64 tail aligned */
+    int64_t reserved[4];          /**< must be zero; room for additive growth */
+} mio_surface_quality;
+
+/**
+ * Options for the distance entry points.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always zero-initialize through
+ * mio_sdf_opts_init() rather than by hand, so fields added later default
+ * sensibly in code compiled against an older header.
+ */
+typedef struct mio_sdf_opts {
+    /** Restrict the surface to a named cell region; NULL/"" is all of it. */
+    const char* surface_region;
+    /** Clamp distances beyond this and mark them in sdf:band; <= 0 is the full field. */
+    double band;
+    /**
+     * Bucket size of the search grid; 0 derives one from the triangle sizes.
+     * A tuning knob only: every candidate comparison is totally ordered on
+     * (squared distance, triangle id), so the bucket size provably cannot change
+     * the answer -- which is also what makes this a usable test knob.
+     */
+    double grid_cell_size;
+    /** Refuse a winding-number query whose n_queries * n_triangles exceeds this. */
+    double max_winding_work;
+    int32_t sign;                /**< a mio_sdf_sign */
+    int32_t weight;              /**< a mio_sdf_weight */
+    int32_t location;            /**< a mio_sdf_location */
+    int32_t watertight_check;    /**< a mio_sdf_watertight_check */
+    int32_t record_closest_cell; /**< nonzero to attach sdf:closest_cell */
+    int32_t record_inside;       /**< nonzero to attach sdf:inside */
+    int64_t reserved[6];         /**< must be zero; room for additive growth */
+} mio_sdf_opts;
+
+/** Zero-initialize distance options (every field its default). */
+MIO_API void mio_sdf_opts_init(mio_sdf_opts* opts);
+
+/**
+ * Options for mio_voxelize.
+ *
+ * ABI NOTE: the same append-only discipline as mio_sdf_opts. Always
+ * zero-initialize through mio_voxel_opts_init().
+ *
+ * Exactly ONE of `resolution` and `cell_size` must be given; giving neither or
+ * both is an error rather than a precedence rule, because the cost of the
+ * choice is cubic in it.
+ */
+typedef struct mio_voxel_opts {
+    /** Cell counts (three entries), or NULL when sizing by cell_size. */
+    const int64_t* resolution;
+    /** Explicit bounds {xlo, ylo, zlo, xhi, yhi, zhi}, or NULL for the mesh's own. */
+    const double* bounds;
+    /** Cubic cell size, or <= 0 when sizing by resolution. */
+    double cell_size;
+    /** Grow the box by this on every side, in world units. */
+    double padding;
+    /** Grow the box by this fraction of its diagonal on every side. */
+    double padding_relative;
+    /** Refuse above this many cells; 0 or less lifts the limit. */
+    int64_t max_cells;
+    int32_t fill;              /**< a mio_voxel_fill */
+    int32_t attach_occupancy;  /**< nonzero to attach voxel:occupancy */
+    int32_t sign;              /**< a mio_sdf_sign, used by MIO_VOXEL_INSIDE */
+    int32_t watertight_check;  /**< a mio_sdf_watertight_check */
+    int64_t reserved[6];       /**< must be zero; room for additive growth */
+} mio_voxel_opts;
+
+/** Zero-initialize voxelization options (every field its default). */
+MIO_API void mio_voxel_opts_init(mio_voxel_opts* opts);
+
+/**
+ * Build a regular hexahedron lattice from nothing.
+ *
+ * Points run x fastest, then y, then z; each cell's eight nodes are in the
+ * meshio/VTK hexahedron winding, so every cell of a positively spaced lattice
+ * has unit scaled Jacobian.
+ *
+ * @param dims      cell counts (three entries); a zero on any axis gives an
+ *                  empty mesh, which is a legal request rather than an error.
+ * @param origin    the lo corner (three entries), or NULL for the origin.
+ * @param spacing   cell size per axis (three entries), or NULL for unit cells.
+ * @param max_cells refuse above this many cells; 0 or less lifts the limit.
+ * @return the lattice (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_grid(const int64_t dims[3], const double origin[3],
+                           const double spacing[3], int64_t max_cells);
+
+/**
+ * Build a regular grid around a mesh and keep the cells its fill rule selects.
+ *
+ * @param mesh          the mesh to voxelize; used for its bounding box, and for
+ *                      its surface when the fill is not MIO_VOXEL_ALL.
+ * @param opts          options; NULL is an error, since a resolution or cell
+ *                      size must be given.
+ * @param dims_out      receives the cell counts (three entries), or NULL.
+ * @param origin_out    receives the lattice lo corner (three entries), or NULL.
+ * @param spacing_out   receives the cell size per axis (three entries), or NULL.
+ * @param num_occupied  receives how many cells the fill kept, or NULL.
+ * @return the grid (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_voxelize(const mio_mesh* mesh, const mio_voxel_opts* opts,
+                               int64_t dims_out[3], double origin_out[3],
+                               double spacing_out[3], int64_t* num_occupied);
+
+/**
+ * Report what is wrong with a surface, without computing any distances.
+ * @param surface a triangle (or triangulatable) surface mesh.
+ * @param out     receives the counts (must be non-NULL).
+ * @return MIO_OK, or an error status (see mio_last_error()).
+ */
+MIO_API mio_status mio_surface_watertight_check(const mio_mesh* surface,
+                                                mio_surface_quality* out);
+
+/**
+ * Signed distances from arbitrary points to a surface.
+ *
+ * The output buffer is supplied by the caller -- the mio_partition_labels
+ * convention -- so nothing here needs freeing and no opaque handle is involved.
+ *
+ * @param surface  the surface to measure against.
+ * @param points   query coordinates, `n_points` rows of three doubles.
+ * @param n_points how many query points.
+ * @param opts     options, or NULL for the defaults.
+ * @param out      receives `n_points` signed distances (negative inside).
+ * @return MIO_OK, or an error status (see mio_last_error()).
+ */
+MIO_API mio_status mio_sample_distance(const mio_mesh* surface, const double* points,
+                                       int64_t n_points, const mio_sdf_opts* opts, double* out);
+
+/**
+ * Attach distances from a query mesh's points (or cell centres) to a surface.
+ *
+ * @param query       the mesh to annotate; its geometry is copied unchanged.
+ * @param surface     the surface to measure against.
+ * @param opts        options, or NULL for the defaults.
+ * @param num_banded  receives how many queries were clamped to the band, or NULL.
+ * @param quality     receives the surface verdict, or NULL.
+ * @return the annotated mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_distance_to_surface(const mio_mesh* query, const mio_mesh* surface,
+                                          const mio_sdf_opts* opts, int64_t* num_banded,
+                                          mio_surface_quality* quality);
+
+/** Which structure mio_compute_sdf generates. */
+typedef enum mio_sdf_structure {
+    MIO_SDF_VOXEL = 0,  /**< a dense uniform lattice over the padded box */
+    MIO_SDF_OCTREE = 1  /**< adaptive, refined near the surface (1-irregular) */
+} mio_sdf_structure;
+
+/**
+ * Options for mio_compute_sdf.
+ *
+ * ABI NOTE: the same append-only discipline as mio_sdf_opts. Always
+ * zero-initialize through mio_compute_sdf_opts_init().
+ *
+ * For MIO_SDF_VOXEL exactly ONE of `resolution` and `cell_size` must be given.
+ * For MIO_SDF_OCTREE **neither** may be: its finest cell is
+ * `root cell / 2^depth` and is therefore already determined by
+ * `root_resolution` and `max_depth`, so accepting either would silently ignore
+ * one of the two.
+ */
+typedef struct mio_compute_sdf_opts {
+    /** Cell counts (three entries), or NULL when sizing by cell_size. Voxel only. */
+    const int64_t* resolution;
+    /** Explicit bounds {xlo, ylo, zlo, xhi, yhi, zhi}, or NULL for the surface's own. */
+    const double* bounds;
+    /** Cubic cell size, or <= 0 when sizing by resolution. Voxel only. */
+    double cell_size;
+    /** Grow the box by this on every side, in world units. */
+    double padding;
+    /** Grow the box by this fraction of its diagonal; the default is 0.1. */
+    double padding_relative;
+    /** Octree: refine while |distance| <= this * the cell's own diagonal. */
+    double band_cells;
+    /** Refuse above this many cells; re-checked after every octree pass. */
+    int64_t max_cells;
+    /** Octree: cell count per axis of the root lattice. */
+    int64_t root_resolution;
+    /** Octree: how many refinement passes. */
+    int64_t max_depth;
+    int32_t structure;      /**< a mio_sdf_structure */
+    int32_t record_levels;  /**< octree: nonzero to attach refine:level */
+    int64_t reserved[6];    /**< must be zero; room for additive growth */
+    /** How the distances themselves are computed. Embedded by value, as in C++. */
+    mio_sdf_opts distance;
+} mio_compute_sdf_opts;
+
+/** Zero-initialize compute_sdf options (every field its default). */
+MIO_API void mio_compute_sdf_opts_init(mio_compute_sdf_opts* opts);
+
+/**
+ * Generate a grid over a surface and fill it with signed distances.
+ *
+ * The field is computed ONCE, on the final mesh: an octree pass interpolates
+ * point_data, so a field attached mid-way would come out a smooth, plausible
+ * interpolation of the coarse values rather than the distance.
+ *
+ * The generated mesh also carries the numeric `sdf:*` field_data header
+ * describing itself. No file format persists arbitrary field_data, so that
+ * header survives in memory only -- write the grid as `.vti`, whose
+ * Origin/Spacing/WholeExtent attributes ARE the same information.
+ *
+ * @param surface      the surface to measure against.
+ * @param opts         options; NULL is an error, since a sizing must be given.
+ * @param dims_out     receives the ROOT cell counts (three entries), or NULL.
+ * @param origin_out   receives the lattice lo corner (three entries), or NULL.
+ * @param spacing_out  receives the FINEST cell size (three entries), or NULL.
+ * @param max_depth_out receives how many octree passes ran (0 for voxel), or NULL.
+ * @param num_banded   receives how many queries were clamped to the band, or NULL.
+ * @param quality      receives the surface verdict, or NULL.
+ * @return the grid (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_compute_sdf(const mio_mesh* surface, const mio_compute_sdf_opts* opts,
+                                  int64_t dims_out[3], double origin_out[3],
+                                  double spacing_out[3], int64_t* max_depth_out,
+                                  int64_t* num_banded, mio_surface_quality* quality);
 
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */

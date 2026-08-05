@@ -66,6 +66,7 @@
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
+#include "meshioplusplus/formats/vti.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
@@ -107,8 +108,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"triangle", meshioplusplus::read_triangle},
         {"ugrid", meshioplusplus::read_ugrid},
         {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
+        {"vti", [](const std::string& path) { return meshioplusplus::read_vti(path); }},
         {"vtk", meshioplusplus::read_vtk},
-        // vtp/vtu take a trailing defaulted ReadOptions, so the function
+        // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
         // pointers no longer convert to ReadFn -- wrapped like unv/med below.
         {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
         {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
@@ -213,6 +215,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"triangle", meshioplusplus::write_triangle},
         {"ugrid", meshioplusplus::write_ugrid},
         {"unv", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); }},
+        {"vti",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
         {"vtk",
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
@@ -342,6 +352,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".poly", "triangle"},
         {".ugrid", "ugrid"},
         {".unv", "unv"},
+        {".vti", "vti"},
         {".vtk", "vtk"},
         {".vtp", "vtp"},
         {".vtu", "vtu"},
@@ -417,6 +428,7 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
              return meshioplusplus::read_med(path, info, opts);
          }},
 #endif
+        {"vti", meshioplusplus::read_vti},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -430,6 +442,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"exodus", meshioplusplus::read_exodus_metadata},
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
+        {"vti", meshioplusplus::read_vti_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
         {"xdmf", meshioplusplus::read_xdmf_metadata},

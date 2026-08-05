@@ -732,4 +732,92 @@ end
     @test !isopen(m)
 end
 
+@testset "grids and signed distance" begin
+    # A lattice from nothing: the one constructor that takes no input mesh.
+    g = grid([2, 2, 2])
+    @test num_points(g) == 27
+    @test num_cell_blocks(g) == 1
+    close(g)
+
+    # An empty lattice is a legal request, not an error.
+    e = grid([0, 0, 0])
+    @test num_points(e) == 0
+    close(e)
+
+    # The unit cube as a closed, outward-wound triangle surface.
+    cube = Mesh()
+    set_points!(cube, Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1])
+    add_cell_block!(cube, "triangle",
+                   Int64[1 1 5 5 1 1 2 2 3 3 4 4;
+                         3 4 6 7 2 6 3 7 4 8 1 5;
+                         2 3 7 8 6 5 7 6 8 7 5 8])
+
+    q = surface_watertight_check(cube)
+    @test q.watertight
+    @test q.boundary_edges == 0
+
+    v = voxelize(cube; resolution=[4, 4, 4])
+    @test v.num_occupied == 64
+    @test v.dims == (4, 4, 4)
+    @test v.spacing[1] ≈ 0.25
+    close(v.mesh)
+
+    inside = voxelize(cube; resolution=[5, 5, 5],
+                      bounds=[-0.5, -0.5, -0.5, 1.5, 1.5, 1.5],
+                      fill=:inside, watertight_check=:off)
+    @test inside.num_occupied == 27
+    close(inside.mesh)
+
+    # An unknown fill fails by name rather than silently defaulting.
+    @test_throws ArgumentError voxelize(cube; resolution=[2, 2, 2], fill=:solid)
+
+    # The cube's exact SDF is known: the centre is 0.5 in, the others 1.0 out.
+    d = sample_distance(cube, [0.5 2.0 -1.0; 0.5 0.5 0.5; 0.5 0.5 0.5];
+                        watertight_check=:off)
+    @test length(d) == 3
+    @test d[1] ≈ -0.5 atol = 1e-12
+    @test d[2] ≈ 1.0 atol = 1e-12
+    @test d[3] ≈ 1.0 atol = 1e-12
+
+    qgrid = grid([2, 2, 2]; origin=(-0.5, -0.5, -0.5), spacing=(1.0, 1.0, 1.0))
+    f = distance_to_surface(qgrid, cube; watertight_check=:off, record_inside=true)
+    @test f.quality.watertight
+    @test f.num_banded == 0
+    @test num_point_data(f.mesh) == 2   # sdf:distance and sdf:inside
+    close(f.mesh)
+    close(qgrid)
+
+    # compute_sdf: the grid and the field in one call.
+    sdf = compute_sdf(cube; resolution=[4, 4, 4], watertight_check=:off)
+    @test sdf.dims == (4, 4, 4)
+    @test sdf.max_depth == 0
+    @test num_point_data(sdf.mesh) == 1
+    close(sdf.mesh)
+
+    # The octree refines only near the surface.
+    tree = compute_sdf(cube; structure=:octree, root_resolution=4, max_depth=2,
+                       watertight_check=:off)
+    @test tree.max_depth == 2
+    @test cell_block_info(tree.mesh, 1).num_cells > 64
+    @test cell_block_info(tree.mesh, 1).num_cells < 4096
+    close(tree.mesh)
+
+    # resolution/cell_size size a voxel grid; an octree's finest cell is already
+    # determined by root_resolution and max_depth.
+    @test_throws MeshioError compute_sdf(cube; structure=:octree, resolution=[4, 4, 4])
+    @test_throws ArgumentError compute_sdf(cube; structure=:quadtree)
+
+    # The predicate crop, composed with a cell-centred distance field.
+    dom = grid([4, 4, 4]; origin=(-0.5, -0.5, -0.5), spacing=(0.5, 0.5, 0.5))
+    field = distance_to_surface(dom, cube; location=:center, watertight_check=:off)
+    kept = crop_predicate(field.mesh, "sdf:distance"; compare="<", value=0.0)
+    @test cell_block_info(kept, 1).num_cells == 8
+    close(kept)
+    @test_throws ArgumentError crop_predicate(field.mesh, "sdf:distance"; compare="~")
+    @test_throws MeshioError crop_predicate(field.mesh, "nope")
+    close(field.mesh)
+    close(dom)
+    close(cube)
+end
+
 end # testset

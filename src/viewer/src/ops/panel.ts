@@ -63,6 +63,8 @@ export class OpsPanel {
         this.wireSection();
         this.wireIsosurface();
         this.wireGradient();
+        this.wireVoxelize();
+        this.wireComputeSdf();
         this.renderChips();
     }
 
@@ -423,6 +425,57 @@ export class OpsPanel {
                     | 'green-gauss'
                     | 'least-squares',
                 location: $<HTMLSelectElement>('op-grad-location').value as 'point' | 'cell',
+            });
+        });
+    }
+
+    private wireVoxelize(): void {
+        $('op-vox-apply').addEventListener('click', () => {
+            const n = Math.max(1, Number($<HTMLInputElement>('op-vox-resolution').value) || 32);
+            this.push({
+                ...OP_DEFAULTS.voxelize,
+                resolution: [n, n, n],
+                fill: $<HTMLSelectElement>('op-vox-fill').value as
+                    | 'all'
+                    | 'surface'
+                    | 'inside',
+            });
+        });
+    }
+
+    private wireComputeSdf(): void {
+        const structure = maybe<HTMLSelectElement>('op-sdf-structure');
+        const sync = () => {
+            const octree = structure?.value === 'octree';
+            // resolution/cellSize size a VOXEL grid; an octree's finest cell is
+            // root/2^depth and is therefore already determined, so the two sets
+            // of inputs are mutually exclusive rather than merely unused.
+            const show = (id: string, on: boolean) => {
+                const el = maybe<HTMLElement>(id);
+                if (el?.parentElement) el.parentElement.hidden = !on;
+            };
+            show('op-sdf-resolution', !octree);
+            show('op-sdf-root', octree);
+            show('op-sdf-depth', octree);
+        };
+        structure?.addEventListener('change', sync);
+        sync();
+
+        $('op-sdf-apply').addEventListener('click', () => {
+            const octree = structure?.value === 'octree';
+            const n = Math.max(
+                1,
+                Number($<HTMLInputElement>('op-sdf-resolution').value) || 32,
+            );
+            this.push({
+                ...OP_DEFAULTS.computeSdf,
+                structure: octree ? 'octree' : 'voxel',
+                resolution: octree ? [] : [n, n, n],
+                rootResolution: Math.max(
+                    1,
+                    Number($<HTMLInputElement>('op-sdf-root').value) || 8,
+                ),
+                maxDepth: Math.max(0, Number($<HTMLInputElement>('op-sdf-depth').value) || 3),
             });
         });
     }

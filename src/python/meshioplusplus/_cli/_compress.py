@@ -48,10 +48,10 @@ def compress(args):
     # --codec is only meaningful where a block codec is actually chosen.
     # Accepting and ignoring it elsewhere would be the worst outcome: the user
     # would believe they got zstd and silently get gzip (or plain binary).
-    if args.codec is not None and fmt not in ("vtu", "vtp"):
+    if args.codec is not None and fmt not in ("vti", "vtu", "vtp"):
         error(
             f"--codec is not applicable to '{fmt}'; it selects the VTK XML "
-            "block codec and only vtu/vtp have one."
+            "block codec and only vti/vtu/vtp have one."
         )
         exit(1)
 

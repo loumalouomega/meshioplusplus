@@ -276,3 +276,18 @@ passed for one another; a released handle is an R error, never a dereference.
 
 See [sequences](sequences.md) for the ordering rule, the time-value precedence
 and the streaming guarantee.
+
+- `mio_grid()`, `mio_voxelize()`, `mio_sample_distance()`,
+  `mio_distance_to_surface()` and `mio_surface_watertight_check()` (v9.24.0) —
+  regular grids and signed distance. The `mio_` prefix keeps `mio_grid()` clear of
+  base R's own `grid` package. Counters come back as `double`, as everywhere else
+  here. See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
+- `mio_compute_sdf()` (v9.25.0) — the grid and the field in one call, returning a
+  named list `(mesh, dims, origin, spacing, max_depth, num_banded, quality)`.
+  `structure = "octree"` refines only near the surface and sizes itself from
+  `root_resolution`/`max_depth`, so passing `resolution` or `cell_size` with it
+  is an error; its output is 1-irregular.
+- `mio_crop_predicate(mesh, array, compare, value)` (v9.25.0) — keep the cells
+  whose scalar `cell_data` value satisfies a comparison. There is deliberately no
+  `mode`: a per-cell value has nothing for an all/any rule to reduce. See
+  [`doc/crop.md`](crop.md).
