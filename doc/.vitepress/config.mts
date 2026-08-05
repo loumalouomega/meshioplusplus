@@ -148,6 +148,7 @@ export default defineConfig({
           { text: "triangle", link: "/formats/triangle" },
           { text: "ugrid", link: "/formats/ugrid" },
           { text: "unv", link: "/formats/unv" },
+          { text: "vti", link: "/formats/vti" },
           { text: "vtk", link: "/formats/vtk" },
           { text: "vtp", link: "/formats/vtp" },
           { text: "vtu", link: "/formats/vtu" },

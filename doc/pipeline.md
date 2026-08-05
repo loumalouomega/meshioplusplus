@@ -83,7 +83,7 @@ An option the output format cannot honour is an error.
 | `Isosurface` | `Array` (required), `Isovalue` (0) or `Isovalues`, `Component`, `RecordParentIds` (false) | counter `ContourCells`; warns when empty |
 | `Transform` | exactly one of `Translate[3]`, `Scale` (number or `[3]`), `RotateAxis[3]`+`RotateDegrees`, `Matrix[16]` (row-major), `ScaleUnits` (a factor, e.g. `0.001` for mm→m); plus `RotateData` (false) | |
 | `ConvertCells` | `Mode` ("linearize" \| "simplexify" \| "elevate"), `RecordParentIds` (false) | |
-| `Crop` | one of `Bbox[6]` (`[xmin,ymin,zmin,xmax,ymax,zmax]`) or `Point[3]`+`Normal[3]`; `Mode` ("all" \| "any"), `RecordIds` (false) | counter `CellsKept` |
+| `Crop` | one of `Bbox[6]` (`[xmin,ymin,zmin,xmax,ymax,zmax]`), `Point[3]`+`Normal[3]`, or `Where` (a scalar `cell_data` name) + `Compare` ("<") + `Value` (0); `Mode` ("all" \| "any", **not** with `Where`), `RecordIds` (false) | counter `CellsKept` |
 | `ExtractSurface` | `RecordParentIds` (false) | |
 | `ExtractSkin` | `Linearize` (false) | |
 | `Reorder` | `Method` ("rcm" \| "morton" \| "hilbert") | |
@@ -205,6 +205,21 @@ status + `mio_last_error()`; the structured report is a recorded follow-up.
 Keys: `Resolution`, `CellSize`, `Bounds`, `Padding`, `PaddingRelative`, `Fill`,
 `AttachOccupancy`, `MaxCells`, `Sign`. Reports `NumOccupied`.
 
-It is the only step that **replaces** its input's geometry rather than
-transforming it — read a skin, voxelize it, write a grid. See
+It and `ComputeSdf` are the only steps that **replace** their input's geometry
+rather than transforming it — read a skin, voxelize it, write a grid. See
 [`doc/voxelize.md`](voxelize.md).
+
+## `ComputeSdf`
+
+```json
+{ "Op": "ComputeSdf", "Structure": "octree", "RootResolution": 8, "MaxDepth": 4 }
+```
+
+Keys: `Structure` ("voxel" | "octree"), `Resolution`, `CellSize`, `Bounds`,
+`Padding`, `PaddingRelative`, `RootResolution`, `MaxDepth`, `BandCells`,
+`RecordLevels`, `MaxCells`, `Sign`, `Location`, `Band`. Reports `MaxDepth` and
+`NumBanded`.
+
+`Resolution`/`CellSize` size a **voxel** grid and are an error with
+`"Structure": "octree"`, whose finest cell is `RootResolution / 2^MaxDepth` and
+is therefore already determined. See [`doc/sdf.md`](sdf.md).

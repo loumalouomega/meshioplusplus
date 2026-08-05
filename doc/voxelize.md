@@ -34,7 +34,7 @@ from a dedicated grid type. Two alternatives were considered and rejected:
   `extract_surface`, `gradient` and `refine` and unwritable by most formats —
   forfeiting exactly the property that motivates the choice.
 - **A new `voxel` cell type.** VTK's type 11 is deliberately unmapped in this
-  codebase; adding it would mean a row in all 41 format tables to buy an implicit
+  codebase; adding it would mean a row in all 42 format tables to buy an implicit
   node ordering nothing needs.
 
 ## Numbering

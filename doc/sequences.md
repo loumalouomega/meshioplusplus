@@ -198,7 +198,7 @@ predicate agrees with whether a real two-step fan-in to that format actually
 succeeds, so a format that grows a series writer without updating the predicate
 turns CI red naming itself.
 
-**Fan-out is the answer for everything else**, which is most of the 41 formats.
+**Fan-out is the answer for everything else**, which is most of the 42 formats.
 
 ## Never a silent truncation
 

@@ -195,7 +195,10 @@ editing/stats bundle is exposed too: `transform(mesh, matrix, rotateVectorData)`
 (a 16-element row-major matrix) → mesh; `clean(mesh, weld, atol, removeOrphans,
 dropDegenerate, dropDuplicateCells)` → `{ mesh, pointsWelded, ... }`;
 `cropBbox(mesh, lo, hi, mode, recordIds)` / `cropPlane(mesh, point, normal, mode,
-recordIds)` (`mode` `"all"`/`"any"`) → mesh; `split(mesh, by, tagName)` → an
+recordIds)` (`mode` `"all"`/`"any"`) / `cropPredicate(mesh, array, compare, value,
+recordIds)` (a scalar `cell_data` comparison, `"<"`/`"<="`/`">"`/`">="`/`"=="`/
+`"!="`; **no `mode`** — a per-cell value has nothing for an all/any rule to
+reduce) → mesh; `split(mesh, by, tagName)` → an
 array of `{ key, mesh }`; and `stats(mesh)` → an object of geometric measures
 (`bboxMin`/`bboxMax`/`extent`/`centroid`, `cellTypeCounts`, `totalArea`,
 `signedVolume`, `unsignedVolume`, `numInverted`). Element-representation
@@ -354,9 +357,9 @@ not appear in `availableFormats()`.
 
 ## Format support
 
-**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 41 readable and 44 writable format keys (`svg`, `tikz` and `gmsh22` are write-only). `openfoam` became writable in v9.20.0.
+**As of v8.0.0 the WASM build ships every format the C++ core has**, including the five that need HDF5 or netCDF — there is no longer a WASM-specific format gap. That is 42 readable and 45 writable format keys (`svg`, `tikz` and `gmsh22` are write-only). `openfoam` became writable in v9.20.0.
 
-`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `mdpa` (Kratos; mesh-level blocks only — see [MDPA](./formats/mdpa.md#c-core)), `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (read/write; writing creates a `constant/polyMesh` directory in MEMFS), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
+`abaqus`, `ansys`, `ansysInp` (read/write), `avsucd`, `cgns`, `dex`, `dolfin-xml`, `ensight` (EnSight Gold geometry, `.case`/`.geo`, ASCII + C-binary), `exodus`, `flac3d`, `flux`, `freefem`, `gmsh`, `h5m`, `hmf`, `ip`, `mdpa` (Kratos; mesh-level blocks only — see [MDPA](./formats/mdpa.md#c-core)), `med`, `medit`, `mff`, `mfm`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `openfoam` (read/write; writing creates a `constant/polyMesh` directory in MEMFS), `permas`, `ply`, `stl`, `su2`, `svg` (**write-only**, 2D visualization), `tecplot`, `tetgen`, `tikz` (**write-only**, 2D LaTeX visualization), `triangle` (`.poly` by default; see the ambiguous-extensions table for `.node`/`.ele`), `ugrid`, `unv`, `vti` (VTK XML ImageData: a regular lattice, so writing needs one — see [VTI](./formats/vti.md)), `vtk`, `vtp`, `vtu` (zlib compression works via Emscripten's built-in port), `wkt`, `xdmf` (XML, Binary **and** HDF). The three field-only formats (`dex`, `ip`, `mff`) read/write geometry-less meshes (field values in `point_data`).
 
 Ask the loaded module rather than trusting this list — it is generated from the same registry the build actually links:
 
@@ -544,7 +547,7 @@ Python-driver feature (a process pool), and this build has no processes to
 pool. The steps run in order, which is what the streaming guarantee needs
 anyway.
 
-## Regular grids and signed distance (v9.24.0)
+## Regular grids and signed distance (v9.24.0, `computeSdf` v9.25.0)
 
 `grid(dims, origin, spacing)`, `voxelize(mesh, resolution, ...)`,
 `surfaceWatertightCheck(mesh)`, `sampleDistance(surface, points)` and
@@ -552,7 +555,20 @@ anyway.
 that takes no input mesh — it creates one. `sampleDistance` takes a **flat**
 `[x0,y0,z0, x1,y1,z1, …]` array and returns a `Float64Array`.
 
-`{ Op: 'Voxelize' }` also works as a pipeline / `convertSurfaceOps` step, and is
-the only step that *replaces* its input's geometry rather than transforming it.
+`computeSdf(surface, structure, resolution, ...)` does both halves in one call,
+returning `{ mesh, dims, origin, spacing, maxDepth, numBanded, quality }`.
+`structure: 'octree'` refines only near the surface, and sizes itself from
+`rootResolution`/`maxDepth` — passing `resolution` or `cellSize` with it is an
+error, since its finest cell is already determined. Its output is 1-irregular
+(it has hanging nodes).
+
+`{ Op: 'Voxelize' }` and `{ Op: 'ComputeSdf' }` also work as pipeline /
+`convertSurfaceOps` steps, and are the only steps that *replace* their input's
+geometry rather than transforming it.
+
+The generated grid carries an `sdf:*` numeric `field_data` header describing
+itself. No file format persists arbitrary `field_data`, so write it as
+[`.vti`](formats/vti.md), whose `Origin`/`Spacing`/`WholeExtent` attributes are
+the same information.
 
 See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).

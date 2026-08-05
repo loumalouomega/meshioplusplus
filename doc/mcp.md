@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-41 tools; the two marked *gated* need a further extra and return a named
+42 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -111,7 +111,9 @@ report.
 ### Mesh operations
 
 `extract_surface`, `extract_skin`, `reorder` (reports bandwidth before/after),
-`clean`, `crop` (bbox or half-space), `slice`, `isosurface`, `transform`,
+`clean`, `crop` (bbox, half-space, or a `where_array`/`where_compare`/`where_value`
+`cell_data` predicate), `slice`, `isosurface`, `compute_sdf` (a grid over a
+surface, filled — `structure` `voxel`/`octree`), `transform`,
 `convert_cells`, `refine` (uniform, or a subset via `cells`/`region`/`where`
 with a conforming `closure`), `decimate`, `smooth`, `merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
