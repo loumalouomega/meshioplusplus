@@ -67,6 +67,8 @@
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 
 namespace {
@@ -142,6 +144,23 @@ MIO_ABI_LAYOUT(meshioplusplus::SequenceEntry, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SequenceInput, 176, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SequenceOutput, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SequencePipeline, 336, 8);
+
+// The distance/voxelization aggregates, pinned from the release that introduced
+// them (v9.24.0) rather than after the fact -- the pipeline lesson above, applied
+// in advance. Both `SdfOptions` and `VoxelOptions` embed `SurfaceDistanceOptions`
+// BY VALUE, so growing that one member struct would shift everything after it in
+// two outer structs at once. `operations/sdf.hpp` ships the octree fields
+// populated-but-reserved for exactly this reason: adding them later would have
+// been the same silent Tier A break.
+//
+// The matching *Result* structs are deliberately NOT pinned: each embeds a
+// `Mesh`, whose size is per-backend, so a single number could not describe them
+// and three would only restate the `Mesh` lines below.
+MIO_ABI_LAYOUT(meshioplusplus::SurfaceQuality, 40, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SurfaceDistanceOptions, 80, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SdfOptions, 248, 8);
+MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 216, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
 // its width is structural, not cosmetic. Appending an enumerator is fine (and
