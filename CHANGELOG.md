@@ -8,6 +8,68 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.25.0 (2026-08-05)
+
+**Signed distance fields, completed.** v9.24.0 shipped the primitive; this
+release adds the umbrella that generates its own grid, the adaptive octree, the
+format that keeps a generated grid's geometry, and the crop mode that turns a
+field back into a subset. The roadmap's signed-distance section is closed and
+removed.
+
+- **`compute_sdf(surface, ...)`** — the grid *and* the field in one call. It was
+  declared with its option and result layouts final in v9.24.0 precisely so that
+  adding the body would be a pure `.cpp` change, and it was.
+- **`structure="octree"`** — adaptive: a coarse root lattice, refined only within
+  `band_cells` of each cell's **own** diagonal, `max_depth` times, through
+  [`refine`](doc/refine.md)'s `Balanced` closure. Against a uniform grid of the
+  same *finest* resolution the zero level set is **the same contour** — identical
+  facet count and point set — from far fewer cells. The output is 1-irregular
+  (it has hanging nodes), exactly as that closure's is.
+- **`.vti` (VTK XML ImageData)**, format 42 — a regular lattice whose geometry is
+  the `Origin`/`Spacing`/`WholeExtent` attributes rather than a point array.
+  **No format persists arbitrary `field_data`**, so a generated grid's `sdf:*`
+  header does not survive a write anywhere else; `.vti` does not need it to,
+  because those three attributes are the same information. Reading expands the
+  extent into explicit `hexahedron` cells, so writing requires a lattice — a
+  *partial* grid (`voxelize`'s `surface`/`inside` fills, or an octree, whose
+  holes ImageData cannot express) is refused by name rather than silently filled
+  in. It reuses VTU's `<DataArray>` codec and block framing verbatim, so
+  `--codec zlib|lz4|zstd` works there too.
+- **`crop(mesh, where=("array", "<", value))`** — keep the cells whose scalar
+  `cell_data` value satisfies a comparison. Deliberately **general rather than
+  crop-by-surface**: inside/outside then composes
+  (`distance_to_surface(..., location="center")` then `where=("sdf:distance",
+  "<", 0)`), and the same one mode also crops by `quality:*`, by a material id,
+  or by anything `data calc` produces. It shares `refine`'s comparison
+  vocabulary *and its evaluator*, so the two cannot drift on the boundary cases —
+  in particular a **non-finite cell value never matches**, including under `!=`,
+  where IEEE says `NaN != 1.0` is true.
+  `mode="all"/"any"` is **absent, not ignored**, and passing it is an error on
+  every surface: bbox and half-space test *points* and then need a rule for
+  reducing a cell's several nodes to one verdict, whereas a `cell_data` predicate
+  is already one value per cell.
+- **Offsetting needed no code.** An offset surface is `compute_sdf` plus
+  `isosurface` at a non-zero level; passing `[-r, 0, r]` gives the inner offset,
+  the original and the outer offset in one mesh, already tagged with
+  `iso:index`. The roadmap item closed by composition rather than by an
+  operation.
+- Every surface: pybind, the Python shim with a full numpy twin (parity pinned
+  byte-for-byte), the C API (`mio_compute_sdf`, `mio_crop_predicate`,
+  `mio_compute_sdf_opts`), Fortran, Julia, R, WASM (`computeSdf`,
+  `cropPredicate`; the exhaustive name guard grows to 59), both CLIs (a new `sdf`
+  verb, `crop --where`), MCP (42 tools), the settings pipeline (`ComputeSdf`, and
+  `Crop`'s `Where`/`Compare`/`Value`) and the browser viewer.
+
+Two notes on the tests, both of which took a second attempt. The octree's two
+failure modes — a field interpolated from a coarser pass, and a cell selection
+carried across a pass — each produce a *valid, plausible* mesh, so each has an
+oracle verified to fire by sabotage. Neither fires against a **cube**: a cube's
+SDF is piecewise linear near its faces, so interpolating it from a coarser grid
+reproduces it exactly (18636 facets either way), and the cube's symmetry leaves
+stale low cell indices near the surface anyway. The fixtures are a sphere, and
+the band bound was *measured* (0.59 of the coarsest diagonal) before being set at
+0.75 — a `2.0` bound had passed under the sabotage.
+
 ## v9.24.0 (2026-08-05)
 
 **Regular grids and signed distance to a surface** — the one spatial-query
