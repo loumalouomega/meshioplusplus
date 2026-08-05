@@ -436,9 +436,13 @@ _NOT_TOOLS = {
     "to_arrow",
     "from_arrow",
     "read_parquet",  # tabular import, no Mesh output to write
+    "to_pandas",
+    "to_polars",
     "has_pyvista",
     "has_trimesh",
     "has_arrow",
+    "has_pandas",
+    "has_polars",
     "has_open3d",
     "has_dolfinx",
     "to_dlpack",
