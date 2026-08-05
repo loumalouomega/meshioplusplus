@@ -8,6 +8,50 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.23.0 (2026-08-04)
+
+**`refine(closure="balanced")` no longer tears the mesh across passes, and
+`refine:hanging` now reports every constrained node.** Two defects, both reachable
+from the public API today via `refine(mesh, cells=[...], levels=2,
+closure="balanced")` — or any two chained balanced calls — and both confined to
+that closure. The conforming closures (`redgreen`, `propagate`) and uniform
+refinement are byte-identical to v9.22.0.
+
+- **Fixed: a second balanced pass produced a torn mesh.** When the 2:1 balance
+  rule draws in a coarse cell whose edge already carries a hanging node from an
+  earlier pass, that cell's own refinement keyed the edge by its two endpoints,
+  allocated a fresh midpoint, and left the two sides of the interface referencing
+  distinct — but exactly coincident — nodes. On a 4x4x4 hexahedron block,
+  `levels=2` produced 12 such positions and `levels=3` produced 96. The mesh was
+  1-irregular *and* torn; only the former was ever documented.
+- **Added: `refine:entity`**, the Int64 `(num_points, 4)` `point_data` array
+  recording the entity each point was created on — `(-1, -1, a, b)` for the
+  midpoint of edge `(a, b)`, the sorted `(p, q, r, s)` for a quad-face centre, and
+  `(-1, -1, -1, -1)` for a point `refine` did not create. It is what lets a later
+  pass reuse a node an earlier one already placed instead of allocating a
+  coincident duplicate. Like `refine:level` the name is **reserved** and the array
+  is *maintained* rather than replicated: attached whenever a pass leaves hanging
+  nodes and kept thereafter, so the conforming closures never pay for it. A stale
+  array — every entry must still reproduce its own point's coordinates, which
+  `reorder`/`clean`/`crop`/`merge`/`transform`/`smooth` all invalidate — is warned
+  about and ignored rather than trusted.
+- **Fixed: `refine:hanging` under-reported.** [`doc/refine.md`](doc/refine.md)
+  promises it marks *exactly* the constrained nodes, "neither a superset nor a
+  subset"; a two-level balanced refinement of a 4x4x4 block reported 42 of 84, and
+  a three-level one 90 of 402. The rule was evaluated over the **input** cells'
+  entities, but a cell the balance rule draws in is split into children whose own
+  sub-edges the input cell never had, so a node the neighbouring refinement places
+  on one of them was constrained without any input entity naming it. It is now
+  evaluated over the **emitted** cells. The array was also flowing through the
+  generic `point_data` path, which interpolated an Int64 flag to `0.5` and
+  truncated it; both reserved names are now excluded from that path and rebuilt.
+- Both defects are pinned by counting oracles computed from the output's geometry
+  and connectivity alone, and each was verified to fire by sabotage — disabling
+  node reuse fails the tear test, and reverting the hanging rule to the input
+  cells fails the report test and only that one.
+- No ABI change (`MESHIOPLUSPLUS_ABI_VERSION` stays 6): `operations/refine.hpp`
+  gains one `inline constexpr const char*` and nothing else.
+
 ## v9.22.0 (2026-08-04)
 
 **cgnslib cross-compiled for WebAssembly**, so the browser build reaches parity
