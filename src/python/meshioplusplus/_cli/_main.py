@@ -31,6 +31,7 @@ from . import (
     _stats,
     _transform,
     _view,
+    _voxelize,
 )
 
 
@@ -144,6 +145,13 @@ def main(argv=None):
     )
     _isosurface.add_args(parser)
     parser.set_defaults(func=_isosurface.isosurface_cmd)
+
+    parser = subparsers.add_parser(
+        "voxelize",
+        help="Regular hexahedron grid around a mesh (whole box / surface / interior)",
+    )
+    _voxelize.add_args(parser)
+    parser.set_defaults(func=_voxelize.voxelize_cmd)
 
     parser = subparsers.add_parser(
         "split",

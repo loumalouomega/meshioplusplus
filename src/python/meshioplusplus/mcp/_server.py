@@ -425,6 +425,131 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def grid(
+        output_path: str,
+        dims: List[int],
+        output_format: Optional[str] = None,
+        origin: Optional[List[float]] = None,
+        spacing: Optional[List[float]] = None,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a regular hexahedron lattice of dims=(nx, ny, nz) cells. The
+        only tool that reads no input mesh: it creates one. Useful as a background
+        grid, a sampling domain, or a fixture that needs no file."""
+        return _guard(
+            _tools.tool_grid,
+            output_path=output_path,
+            dims=dims,
+            output_format=output_format,
+            origin=origin,
+            spacing=spacing,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def voxelize(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        resolution: Optional[List[int]] = None,
+        cell_size: Optional[float] = None,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.0,
+        fill: str = "all",
+        attach_occupancy: bool = False,
+        max_cells: int = 20000000,
+        sign: str = "pseudonormal",
+    ) -> dict:
+        """Build a regular hexahedron grid around a mesh. Give exactly one of
+        resolution (nx, ny, nz) or cell_size. fill='all' keeps the whole bounding
+        box, 'surface' keeps only cells a triangle passes through, and 'inside'
+        keeps only cells whose centre is inside the surface. Reports the lattice
+        origin/spacing/dims and how many cells were kept."""
+        return _guard(
+            _tools.tool_voxelize,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            resolution=resolution,
+            cell_size=cell_size,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            fill=fill,
+            attach_occupancy=attach_occupancy,
+            max_cells=max_cells,
+            sign=sign,
+        )
+
+    @server.tool()
+    def distance_to_surface(
+        input_path: str,
+        surface_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        surface_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        sign: str = "pseudonormal",
+        location: str = "corner",
+        band: float = 0.0,
+        record_inside: bool = False,
+        record_closest_cell: bool = False,
+    ) -> dict:
+        """Attach the signed distance from a mesh's points (location='corner') or
+        cell centres (location='center') to a surface, as sdf:distance. Negative
+        is inside. sign='winding-number' is robust to holes and inconsistent
+        winding but costs O(triangles) per query."""
+        return _guard(
+            _tools.tool_distance_to_surface,
+            input_path=input_path,
+            surface_path=surface_path,
+            output_path=output_path,
+            input_format=input_format,
+            surface_format=surface_format,
+            output_format=output_format,
+            sign=sign,
+            location=location,
+            band=band,
+            record_inside=record_inside,
+            record_closest_cell=record_closest_cell,
+        )
+
+    @server.tool()
+    def sample_distance(
+        input_path: str,
+        points: List[List[float]],
+        input_format: Optional[str] = None,
+        sign: str = "pseudonormal",
+        band: float = 0.0,
+    ) -> dict:
+        """Signed distances from a list of [x, y, z] points to a surface, without
+        writing a mesh. Negative is inside."""
+        return _guard(
+            _tools.tool_sample_distance,
+            input_path=input_path,
+            points=points,
+            input_format=input_format,
+            sign=sign,
+            band=band,
+        )
+
+    @server.tool()
+    def surface_watertight_check(
+        input_path: str, input_format: Optional[str] = None
+    ) -> dict:
+        """Report what is wrong with a surface, in numbers: boundary edges,
+        non-manifold edges, inconsistently wound pairs and degenerate triangles.
+        A signed distance is only meaningful where these are zero."""
+        return _guard(
+            _tools.tool_surface_watertight_check,
+            input_path=input_path,
+            input_format=input_format,
+        )
+
+    @server.tool()
     def gradient(
         input_path: str,
         output_path: str,

@@ -46,6 +46,7 @@ from ._slice import slice as _slice
 from ._smooth import smooth
 from ._surface import extract_surface
 from ._transform import transform
+from ._voxelize import voxelize
 
 __all__ = ["run_pipeline"]
 
@@ -89,6 +90,17 @@ _OP_TABLE = {
     "Section": ("Point", "Normal", "RecordParentIds"),  # alias of Slice
     "Gradient": ("Array", "Operator", "Method", "Location", "Output", "Component"),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
+    "Voxelize": (
+        "Resolution",
+        "CellSize",
+        "Bounds",
+        "Padding",
+        "PaddingRelative",
+        "Fill",
+        "AttachOccupancy",
+        "MaxCells",
+        "Sign",
+    ),
     "Transform": (
         "Translate",
         "Scale",
@@ -396,6 +408,25 @@ def _apply_step(mesh, step, steps, warnings):
                 f"gradient: {report['num_skipped']} cell(s) could not be "
                 "differentiated and are NaN"
             )
+    elif op == "Voxelize":
+        resolution = _dvec(step, "Resolution")
+        bounds = _dvec(step, "Bounds")
+        mesh, rep = voxelize(
+            mesh,
+            resolution=None if not resolution else [int(v) for v in resolution],
+            cell_size=_number(step, "CellSize", 0.0) if "CellSize" in step else None,
+            bounds=None if not bounds else list(bounds),
+            padding=_number(step, "Padding", 0.0),
+            padding_relative=_number(step, "PaddingRelative", 0.0),
+            fill=_text(step, "Fill", "all"),
+            attach_occupancy=_flag(step, "AttachOccupancy", False),
+            max_cells=int(_number(step, "MaxCells", 20000000.0)),
+            sign=_text(step, "Sign", "pseudonormal"),
+            watertight_check="off",
+            return_report=True,
+        )
+        entry["NumOccupied"] = float(rep["num_occupied"])
+
     elif op == "Isosurface":
         isovalues = _dvec(step, "Isovalues")
         if not isovalues:
