@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.25.0** — 42 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
+Status at time of writing: **v9.26.0** — 42 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -10,16 +10,15 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ## 1. Machine-learning data handling
 
-**The gap.** v8.2.0 gave Arrow/Parquet export of `point_data`/`cell_data`, which is the right primitive but only the first step. ML pipelines want *datasets* (many meshes), tabular frames, batched tensors and stable feature layouts — none of which exist.
+**The gap.** v8.2.0 gave Arrow/Parquet export of `point_data`/`cell_data`, and v9.26.0 added the tabular frames on top of it (`to_pandas`/`to_polars`, straight over the table payload). Those are the right primitives but only the first steps. ML pipelines want *datasets* (many meshes), batched tensors and stable feature layouts — none of which exist.
 
-- **pandas / polars frames** directly (`to_pandas(mesh, location=...)`), not only via pyarrow. Trivially thin over the existing table payload, and it is what people actually reach for. **S**
 - **Dataset-level export**: a *directory* of meshes → one partitioned Parquet dataset with a `mesh_id` column, using the sequence machinery (see `doc/sequences.md`). This is the format an ML training loop wants. **M**
 - **Feature extraction helpers** — assemble a canonical per-node or per-cell feature matrix (coordinates, selected fields, derived quantities like `quality:*` or `|∇f|`, region one-hots) with a **stable, recorded column order**, so training and inference cannot silently disagree. The column-order contract is the whole value; make it explicit and versioned. **M**
 - **Graph export for GNNs**: node/edge index arrays in the layout PyTorch Geometric and DGL expect (`edge_index` as (2, E)), from the existing `node_adjacency` / cell-dual machinery. The cheapest genuinely ML-shaped feature in this list. **S–M**
 - **PyTorch / JAX tensor handoff** via the DLPack path already built for GPU (v-GPU work), so a mesh becomes a batch of device tensors without a file round-trip. Mostly already there — needs the framework-facing convenience layer and docs. **S**
 - **HDF5/Zarr chunked dataset writer** for datasets too large to hold in memory, with a documented on-disk layout. Only worth it once the dataset-level export exists. **L**
 
-*Recommended entry point: pandas + `edge_index` + the feature-matrix contract — a week of work that makes meshio++ directly usable from a training script.*
+*Recommended entry point: `edge_index` + the feature-matrix contract — with the v9.26.0 frames these make meshio++ directly usable from a training script.*
 
 ---
 
@@ -109,7 +108,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 ## Suggested sequencing
 
 1. **Primitive constructors (§9, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
-2. **ML data handling (§1)** — pandas, `edge_index`, and the feature-matrix contract; this is also the prerequisite for §2.
+2. **ML data handling (§1)** — `edge_index` and the feature-matrix contract (the pandas/polars frames shipped in v9.26.0); this is also the prerequisite for §2.
 3. **PhysicsNeMo reconnaissance (§2, first item)** — a written findings note before any code.
 4. **Fuzzing (§7)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
 5. **NURBS spike (§8)** — a documented investigation, scheduled independently of the rest.
