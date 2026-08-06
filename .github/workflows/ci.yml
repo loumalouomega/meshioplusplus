@@ -83,6 +83,14 @@ jobs:
           python-version: "3.12"
       - name: Install native libraries
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev libtbb-dev gfortran pkg-config
       - name: Install build tools
@@ -227,6 +235,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev ninja-build
       # MESHIOPLUSPLUS_BUILD_CLI on one leg: the CLI links the in-tree core
@@ -465,6 +481,14 @@ jobs:
           python-version: "3.12"
       - name: Install native libraries
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev zlib1g-dev libtbb-dev pkg-config
       - name: Install build tools
@@ -566,6 +590,14 @@ jobs:
           python-version: "3.12"
       - name: Install native libraries
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev zlib1g-dev pkg-config
       - name: Install build tools
@@ -629,6 +661,14 @@ jobs:
           python-version: "3.12"
       - name: Install clang-tidy + native libraries
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y clang-tidy libhdf5-dev libnetcdf-dev zlib1g-dev
       - name: Install build tools
@@ -704,6 +744,14 @@ jobs:
       - name: Install native libraries (Linux)
         if: runner.os == 'Linux'
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev
 
@@ -789,6 +837,14 @@ jobs:
 
       - name: Install native libraries and lcov
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov \
             libgl1 libglx-mesa0
@@ -949,6 +1005,14 @@ jobs:
       # of the two is present here, the failure mode stays legible.
       - name: Install a GL runtime
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             xvfb xauth libgl1 libglx-mesa0 libegl1 libgl1-mesa-dri \
@@ -998,6 +1062,14 @@ jobs:
       # display -- but the VTK wheel PyVista pulls in wants libGL at import.
       - name: Install a GL runtime
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgl1 libglx-mesa0
 
@@ -1253,6 +1325,14 @@ jobs:
           python-version: "3.12"
       - name: Install the GL/X11 stack Polyscope needs
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             xorg-dev libglu1-mesa-dev libgl1-mesa-dev libegl1 libgl1-mesa-dri xvfb
@@ -1343,6 +1423,14 @@ jobs:
           version: "1"
       - name: Install native libraries
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y zlib1g-dev
       - name: Install build tools
@@ -1440,6 +1528,14 @@ jobs:
         shell: Rscript {0}
       - name: Install native libraries
         run: |
+          # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
+          # the ubuntu-latest runner image and this repo never uses it; when
+          # that repo 403s or "is no longer signed" (a recurring GitHub
+          # runner-image issue, unrelated to any change here), it aborts
+          # `apt-get update` under the default `-e` shell before the packages
+          # we actually need are ever fetched. Strip it first rather than
+          # letting an unused third-party source take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev zlib1g-dev pkg-config
       - name: Install build tools
