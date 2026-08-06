@@ -21,6 +21,15 @@
 # untracked across the tests/ reorg and only surfaced as CI-only
 # FileNotFoundErrors, since a local checkout still had them on disk).
 !tests/python/meshes/**
+# ...and the viewer's committed e2e sample fixtures under
+# src/viewer/public/samples/, which hit the same trap: `series.xdmf` (the
+# dataset-manager multi-step fixture) matched the blanket *.xdmf rule above
+# and was never actually tracked despite `git add` appearing to succeed
+# locally, so CI's clean checkout had no file for
+# tests/viewer/dataset.spec.mjs's scrubber test to find and it hung until
+# the 60s Playwright timeout (found only via a CI run, since a local
+# checkout still had the untracked file on disk).
+!src/viewer/public/samples/**
 # The compiled pybind11 extension (built in-place by `pip install -e .` /
 # scikit-build-core editable installs) - a stray committed copy of this once
 # got bundled into every manylinux wheel via wheel.packages, silently
