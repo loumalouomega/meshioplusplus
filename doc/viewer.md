@@ -226,6 +226,8 @@ must rebuild the WASM package *and* force npm to refresh its copy.
 
 ### The dataset-manager page
 
+![The dataset-manager page: a curated manifest with three entries, previewing a transient case coloured by point data, with its step scrubber and per-array summary table](/viewer/dataset-manager.png)
+
 The web build ships a second page,
 [`dataset.html`](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html)
 (v9.29.0): a curation UI for the [dataset manifests](./datasets) used to

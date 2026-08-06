@@ -112,6 +112,8 @@ for entry in m:
 
 ## Curating in the browser
 
+![The dataset-manager page: a curated manifest with three entries, previewing a transient case coloured by point data, with its step scrubber and per-array summary table](/viewer/dataset-manager.png)
+
 The [dataset manager](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html)
 is a second page of the [browser viewer](./viewer) (v9.29.0): point it at a
 local case directory, add cases (single files, explicit lists, or a suggested
