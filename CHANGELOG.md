@@ -8,6 +8,33 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.29.0 (2026-08-06)
+
+**The dataset-manager UI** — the last item of the roadmap's PhysicsNeMo
+section: a second page of the browser viewer (`dataset.html`, deployed
+beside it on Pages) that builds and curates the v9.28.0
+[dataset manifests](doc/datasets.md) visually. Pure viewer-stack work — no
+C++/binding change, no wasm rebuild (everything it needed was already
+bound), and the wheel's embedded viewer bytes are untouched.
+
+- **Workspace**: point it at a local case directory — File System Access
+  picker in Chromium-family browsers (the manifest then saves **back in
+  place**, so hand edits, CLI edits and UI edits interleave on the same
+  file), `webkitdirectory` + download fallback elsewhere, stated in the UI.
+- **Curation**: add cases (one file, an explicit list, or a suggested
+  `Pattern` verified to match the selection exactly and nothing else),
+  assign splits/tags/groups, edit notes/metadata; the page's TypeScript
+  manifest model is a strict twin of `_dataset.py` — unknown keys refuse to
+  load, and serialization is byte-parity with `DatasetManifest.save`
+  (pinned against a Python-written fixture). Fraction-based `assign_splits`
+  deliberately stays in Python/the CLI (a JS RNG could not reproduce the
+  seeded shuffle — a "same seed, different assignment" trap).
+- **Previews**: any entry renders through the viewer's own worker/MEMFS
+  pipeline; a multi-step case is fanned out once and gets a step scrubber;
+  a per-array summary table (min/max/mean, **NaN/Inf counts**) and a
+  whole-manifest **Scan** badge bad cases before they corrupt a training
+  split.
+
 ## v9.28.0 (2026-08-06)
 
 **The PhysicsNeMo integration** — roadmap §1 shipped through the worked
