@@ -7,9 +7,11 @@
  *   real directory handle — files enumerate lazily, and the manifest saves
  *   **back in place** through `createWritable()`, which is the roadmap's
  *   "mix hand edits and UI edits on the same file" story. Permission is
- *   re-requested on save when a reload dropped it; handles are deliberately
- *   not persisted across sessions (no IndexedDB anywhere in this app —
- *   a possible follow-up, not v1).
+ *   re-requested on save when a reload dropped it, and the handle is
+ *   persisted (best-effort, `persist.ts`) so the next visit offers a
+ *   "Reopen" button — restore MUST run behind that click, because a
+ *   persisted handle comes back with permission `'prompt'` and
+ *   `requestPermission` demands a user gesture.
  * - **Fallback** (`<input type="file" webkitdirectory>`): every browser can
  *   *read* a directory this way (`webkitRelativePath` gives the same
  *   relative paths), but nothing can write back — saving downloads a copy,
@@ -27,6 +29,8 @@ export interface WorkspaceFile {
 
 export interface Workspace {
     kind: 'fsa' | 'fallback';
+    /** The picked directory handle (FSA only) — what `persist.ts` stores. */
+    readonly root?: FileSystemDirectoryHandle;
     /** Every file under the picked directory, workspace-relative. */
     files: WorkspaceFile[];
     /** `*.json` candidates at the workspace root (manifest discovery). */
@@ -61,7 +65,7 @@ class FsaWorkspace implements Workspace {
     readonly files: WorkspaceFile[];
 
     constructor(
-        private readonly root: FileSystemDirectoryHandle,
+        readonly root: FileSystemDirectoryHandle,
         entries: { relPath: string; handle: FileSystemFileHandle }[],
     ) {
         this.files = entries.map(({ relPath, handle }) => ({
@@ -157,15 +161,36 @@ class FallbackWorkspace implements Workspace {
     }
 }
 
+/**
+ * Open a workspace from an existing directory handle — the picker's own
+ * path and the persisted-handle "Reopen" restore both land here. A restored
+ * handle arrives with permission `'prompt'`, so this MUST run under a user
+ * gesture; denial is a named error the caller turns into clear-and-repick.
+ */
+export async function workspaceFromHandle(
+    root: FileSystemDirectoryHandle,
+): Promise<Workspace> {
+    const query = (await root.queryPermission?.({ mode: 'readwrite' })) ?? 'granted';
+    if (query !== 'granted') {
+        const granted = await root.requestPermission?.({ mode: 'readwrite' });
+        if (granted !== 'granted') {
+            throw new Error(
+                'meshio++: access to the saved directory was denied',
+            );
+        }
+    }
+    const entries: { relPath: string; handle: FileSystemFileHandle }[] = [];
+    await collectFsa(root, '', entries);
+    return new FsaWorkspace(root, entries);
+}
+
 /** Open a workspace with the File System Access API. */
 export async function pickWorkspaceFsa(): Promise<Workspace> {
     if (!window.showDirectoryPicker) {
         throw new Error('meshio++: this browser has no File System Access API');
     }
     const root = await window.showDirectoryPicker({ mode: 'readwrite' });
-    const entries: { relPath: string; handle: FileSystemFileHandle }[] = [];
-    await collectFsa(root, '', entries);
-    return new FsaWorkspace(root, entries);
+    return workspaceFromHandle(root);
 }
 
 /** Open a workspace from a `webkitdirectory` input's FileList. */

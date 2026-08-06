@@ -11,8 +11,15 @@
 
 export interface EntryScan {
     steps: number;
+    /** NaN/Inf over the entry's DATA arrays only — `quality:*` arrays are
+     * excluded, since a quality metric's NaN means "N/A for this cell type"
+     * by design, not a bad value. */
     numNan: number;
     numInf: number;
+    /** The quality lane: cells with `quality:inverted` set, and the worst
+     * `quality:scaled_jacobian` (null when the metric was unavailable). */
+    numInverted: number;
+    minScaledJacobian: number | null;
 }
 
 export interface DatasetState {
@@ -20,6 +27,9 @@ export interface DatasetState {
     /** How the workspace was opened: File System Access, or the
      * webkitdirectory + download fallback. Null before a pick. */
     backendMode: 'fsa' | 'fallback' | null;
+    /** A persisted directory handle exists — the "Reopen" button is shown
+     * (restore itself runs behind its click; permission needs the gesture). */
+    restoreAvailable: boolean;
     manifestName: string | null;
     entryIds: string[];
     selected: string | null;
@@ -29,7 +39,11 @@ export interface DatasetState {
     /** Of the current preview render. */
     numPoints: number;
     numCells: number;
-    summary: { name: string; numNan: number; numInf: number }[] | null;
+    summary:
+        | { name: string; min: number; mean: number; numNan: number; numInf: number }[]
+        | null;
+    /** Per-entry scan results (filled by the Scan action). */
+    scans: Record<string, EntryScan>;
     dirty: boolean;
     /** The last save — `text` is the exact serialization, the byte-parity
      * test seam (asserting on it needs no filesystem access). */

@@ -9,7 +9,7 @@ objects, and PyG's ``DataLoader`` batches variable-size graphs natively.
 import torch
 from torch_geometric.data import Data
 
-from . import _flat_items, _split_kwargs, graph_sample
+from . import _flat_items, _read_sample, _split_kwargs
 
 
 class MeshManifestDataset(torch.utils.data.Dataset):
@@ -17,7 +17,8 @@ class MeshManifestDataset(torch.utils.data.Dataset):
     (``pos``/``x``/``y``/``edge_index``/``edge_attr``) over the flat
     (entry, step) index of a :class:`~meshioplusplus.DatasetManifest`.
 
-    One mesh is read per ``__getitem__``; nothing is cached across accesses
+    One mesh is read per ``__getitem__`` -- two when ``target_offset >= 1``
+    pairs step k with step k+offset -- and nothing is cached across accesses
     (the sequence streaming invariant). ``.schema`` reads sample 0 once and
     reports the recorded feature contract for the whole dataset -- it is
     deliberately not attached to each ``Data`` (a non-tensor attribute would
@@ -27,7 +28,8 @@ class MeshManifestDataset(torch.utils.data.Dataset):
     def __init__(self, manifest, *, split=None, device=None, **kwargs):
         graph_kwargs, read_kwargs = _split_kwargs(dict(kwargs))
         self._graph_kwargs = graph_kwargs
-        self._items = _flat_items(manifest, split, read_kwargs)
+        offset = int(graph_kwargs.get("target_offset", 0))
+        self._items = _flat_items(manifest, split, read_kwargs, offset)
         self._device = device
         self._schema = None
 
@@ -36,8 +38,7 @@ class MeshManifestDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         entry_id, series, step = self._items[index]
-        _, mesh = series[step]
-        sample = graph_sample(mesh, **self._graph_kwargs)
+        _, sample = _read_sample(series, step, self._graph_kwargs)
         if self._schema is None:
             self._schema = sample.schema
         tensors = {

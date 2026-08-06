@@ -15,11 +15,12 @@ const REQUIRED_WASM_API = [
     'availableFormats',
     'meshBackend',
     // The dataset-manager page (dataset.html): plan resolution, multi-step
-    // fan-out for the scrubber, and per-array summaries.
+    // fan-out for the scrubber, and per-array summaries (quality included).
     'sequenceEntries',
     'timeseriesToSequence',
     'readMeshSelective',
     'dataInfo',
+    'attachQuality',
 ];
 
 const REFRESH_INSTRUCTIONS =

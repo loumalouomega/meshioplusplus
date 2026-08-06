@@ -35,8 +35,10 @@ import {
     hasFsAccess,
     pickWorkspaceFsa,
     workspaceFromFileList,
+    workspaceFromHandle,
     type Workspace,
 } from './fs';
+import { clearHandle, loadHandle, saveHandle } from './persist';
 import type { DatasetState, EntryScan } from './types';
 
 // --- state ----------------------------------------------------------------- //
@@ -44,6 +46,7 @@ import type { DatasetState, EntryScan } from './types';
 window.__datasetState = {
     status: 'booting',
     backendMode: null,
+    restoreAvailable: false,
     manifestName: null,
     entryIds: [],
     selected: null,
@@ -52,6 +55,7 @@ window.__datasetState = {
     numPoints: 0,
     numCells: 0,
     summary: null,
+    scans: {},
     dirty: false,
     lastSave: null,
     error: null,
@@ -165,8 +169,12 @@ function renderEntryList(): void {
             if (entry.split) li.append(chip(entry.split, 'split'));
             for (const tag of entry.tags) li.append(chip(tag, 'tag'));
             const scan = scans.get(entry.id);
+            if (scan && scan.steps > 1) li.append(chip(`${scan.steps} steps`, 'tag'));
             if (scan && scan.numNan + scan.numInf > 0) {
                 li.append(chip(`NaN/Inf ${scan.numNan + scan.numInf}`, 'warn'));
+            }
+            if (scan && scan.numInverted > 0) {
+                li.append(chip(`inverted ${scan.numInverted}`, 'warn'));
             }
             li.addEventListener('click', () => selectEntry(entry.id));
             return li;
@@ -314,6 +322,23 @@ async function previewStep(step: number): Promise<void> {
     void refreshSummary(step);
 }
 
+/** Is a summary row a `quality:*` metric? Their NaN means "metric N/A for
+ * this cell type" BY DESIGN, so quality rows are excluded from every
+ * NaN-based bad-case rule — here and in `scanEntries` — or every entry
+ * would badge spuriously. */
+function isQualityRow(s: ArraySummary): boolean {
+    return s.name.startsWith('quality:');
+}
+
+/** The quality-specific bad rules: inverted/degenerate cells present, or a
+ * negative worst scaled Jacobian. */
+function qualityRowIsBad(s: ArraySummary): boolean {
+    if (s.name === 'quality:inverted' || s.name === 'quality:degenerate') {
+        return s.mean * s.numValues > 0;
+    }
+    return s.name === 'quality:scaled_jacobian' && s.min < 0;
+}
+
 async function refreshSummary(step: number): Promise<void> {
     try {
         const { arrays: summaries } = await client.summarizeStep(step);
@@ -321,6 +346,8 @@ async function refreshSummary(step: number): Promise<void> {
         setState({
             summary: summaries.map((s) => ({
                 name: s.name,
+                min: s.min,
+                mean: s.mean,
                 numNan: s.numNan,
                 numInf: s.numInf,
             })),
@@ -348,9 +375,16 @@ function renderSummary(summaries: ArraySummary[]): void {
     }
     const fmt = (v: number) =>
         Number.isFinite(v) ? Number(v.toPrecision(4)).toString() : '—';
-    const rows = summaries.map((s) => {
+    // Data rows first, quality metrics grouped at the end.
+    const ordered = [...summaries].sort(
+        (a, b) => Number(isQualityRow(a)) - Number(isQualityRow(b)),
+    );
+    const rows = ordered.map((s) => {
         const tr = document.createElement('tr');
-        if (s.numNan + s.numInf > 0) tr.classList.add('bad');
+        const quality = isQualityRow(s);
+        if (quality) tr.classList.add('quality');
+        const bad = quality ? qualityRowIsBad(s) : s.numNan + s.numInf > 0;
+        if (bad) tr.classList.add('bad');
         const cells = [
             `${s.name} (${s.location})`,
             s.dtype,
@@ -395,18 +429,37 @@ async function scanEntries(): Promise<void> {
             selected = entry.id;
             const plan = await stageSelected();
             const { arrays: summaries } = await client.summarizeStep(0);
+            // The NaN/Inf lane counts DATA arrays only — a quality metric's
+            // NaN is "N/A for this cell type" by design, not a bad value.
+            const dataRows = summaries.filter((s) => !isQualityRow(s));
+            const inverted = summaries.find((s) => s.name === 'quality:inverted');
+            const jacobian = summaries.find(
+                (s) => s.name === 'quality:scaled_jacobian',
+            );
             scans.set(entry.id, {
                 steps: plan.length,
-                numNan: summaries.reduce((n, s) => n + s.numNan, 0),
-                numInf: summaries.reduce((n, s) => n + s.numInf, 0),
+                numNan: dataRows.reduce((n, s) => n + s.numNan, 0),
+                numInf: dataRows.reduce((n, s) => n + s.numInf, 0),
+                numInverted: inverted
+                    ? Math.round(inverted.mean * inverted.numValues)
+                    : 0,
+                minScaledJacobian:
+                    jacobian && Number.isFinite(jacobian.min) ? jacobian.min : null,
             });
         } catch {
-            scans.set(entry.id, { steps: 0, numNan: 0, numInf: 0 });
+            scans.set(entry.id, {
+                steps: 0,
+                numNan: 0,
+                numInf: 0,
+                numInverted: 0,
+                minScaledJacobian: null,
+            });
         }
     }
     await client.evictEntry();
     staged = null;
     selected = previous;
+    setState({ scans: Object.fromEntries(scans) });
     setStatus('ready', 'scan complete');
     renderEntryList();
 }
@@ -508,7 +561,9 @@ function savedTextHas(id: string): boolean {
 
 // --- manifest open/save ----------------------------------------------------- //
 
-const NEW_MANIFEST = ' new';
+// Sentinel select-value for "(new) dataset.json" — cannot collide with a
+// candidate, since every candidate relPath ends in `.json`.
+const NEW_MANIFEST = '::new::';
 
 function download(text: string, filename: string): void {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
@@ -583,6 +638,11 @@ async function saveManifest(): Promise<void> {
 function adoptWorkspace(ws: Workspace): void {
     workspace = ws;
     setState({ backendMode: ws.kind });
+    if (ws.kind === 'fsa' && ws.root) {
+        // Best-effort: a failure (mock handle, no IndexedDB, private mode)
+        // degrades to picking again next visit, never to a broken adopt.
+        void saveHandle(ws.root);
+    }
     $('ws-info').textContent =
         `${ws.files.length} file(s) — ` +
         (ws.kind === 'fsa'
@@ -591,6 +651,38 @@ function adoptWorkspace(ws: Workspace): void {
     show($('ws-info'));
     populateManifestSelect();
     setStatus('idle', 'workspace ready — open or create a manifest');
+}
+
+function pickFlow(): void {
+    if (hasFsAccess()) {
+        pickWorkspaceFsa().then(adoptWorkspace).catch(fail);
+    } else {
+        $<HTMLInputElement>('ws-input').click();
+    }
+}
+
+/** Offer "Reopen" when a handle survived in IndexedDB. Restore itself runs
+ * behind the click — the persisted handle's permission is 'prompt' and
+ * requestPermission demands a user gesture, so nothing restores on boot. */
+function offerRestore(): void {
+    void loadHandle().then((handle) => {
+        if (!handle) return;
+        const button = $('ws-reopen');
+        button.textContent = `Reopen “${handle.name}”`;
+        show(button);
+        setState({ restoreAvailable: true });
+        button.addEventListener('click', () => {
+            workspaceFromHandle(handle)
+                .then(adoptWorkspace)
+                .catch(async () => {
+                    // Denied or stale: forget it and fall back to a pick.
+                    await clearHandle();
+                    button.hidden = true;
+                    setState({ restoreAvailable: false });
+                    pickFlow();
+                });
+        });
+    });
 }
 
 // --- boot ------------------------------------------------------------------- //
@@ -612,13 +704,8 @@ async function boot(): Promise<void> {
         return;
     }
 
-    $('ws-pick').addEventListener('click', () => {
-        if (hasFsAccess()) {
-            pickWorkspaceFsa().then(adoptWorkspace).catch(fail);
-        } else {
-            $<HTMLInputElement>('ws-input').click();
-        }
-    });
+    $('ws-pick').addEventListener('click', pickFlow);
+    offerRestore();
     $<HTMLInputElement>('ws-input').addEventListener('change', (e) => {
         const input = e.target as HTMLInputElement;
         if (input.files?.length) {

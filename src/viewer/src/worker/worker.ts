@@ -428,7 +428,15 @@ async function handle(request: Request): Promise<void> {
             // Mesh-taking is fine for scalar aggregates (never a rendering
             // path — the flat JS Mesh cannot carry multi-component arrays,
             // but their component stats survive via the sidecar convention).
-            const mesh = m.readMeshSelective(path, { format });
+            let mesh = m.readMeshSelective(path, { format });
+            try {
+                // quality:* rows ride the same ArraySummary shape. Their NaN
+                // means "metric N/A for this cell type" BY DESIGN — the UI's
+                // bad-case rules must exclude quality-prefixed names.
+                mesh = m.attachQuality(mesh);
+            } catch {
+                // quality is best-effort; the plain summary still answers
+            }
             const arrays = m.dataInfo(mesh).map(
                 (info) =>
                     ({

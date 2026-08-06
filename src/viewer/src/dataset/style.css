@@ -159,3 +159,12 @@ label.col textarea {
 #summary tr.bad td {
     color: #ff8a7a;
 }
+
+#summary tr.quality td {
+    opacity: 0.75;
+}
+
+#summary tr.quality.bad td {
+    opacity: 1;
+    color: #ff8a7a;
+}
