@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.28.0** — 42 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
+Status at time of writing: **v9.29.0** — 42 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -10,10 +10,10 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ## 1. NVIDIA PhysicsNeMo integration
 
-**What shipped in v9.28.0** (everything except the UI): the reconnaissance note (`doc/physicsnemo.md` — which settled *against* the pip extra this section originally proposed: `nvidia-physicsnemo` hard-depends on torch, the exact wheel the repo's no-`[torch]`-extra precedent refuses to pin), the adapter (`meshioplusplus.physicsnemo`: `graph_sample`/`field_stats`/`edge_stats`/`make_dataset`/`make_reader`), the dataset manager (`DatasetManifest` + the `dataset` CLI group + three MCP tools, `doc/datasets.md`), preprocessing recipes as settings documents, the GPU-executed worked example (`example/physicsnemo/`), and the CI honesty statement. What remains:
+**Shipped**: v9.28.0 delivered the reconnaissance note (`doc/physicsnemo.md` — which settled *against* the pip extra this section originally proposed: `nvidia-physicsnemo` hard-depends on torch, the exact wheel the repo's no-`[torch]`-extra precedent refuses to pin), the adapter (`meshioplusplus.physicsnemo`: `graph_sample`/`field_stats`/`edge_stats`/`make_dataset`/`make_reader`), the dataset manager (`DatasetManifest` + the `dataset` CLI group + three MCP tools, `doc/datasets.md`), preprocessing recipes as settings documents, the GPU-executed worked example (`example/physicsnemo/`), and the CI honesty statement; v9.29.0 delivered the **dataset-manager UI** (`dataset.html`, a second page of the browser viewer reusing its worker/MEMFS/render pipeline — directory picking with in-place manifest save under Chromium, per-entry previews with a time-series scrubber, NaN/Inf scanning; `doc/datasets.md#curating-in-the-browser`). What remains:
 
-- **Dataset-manager UI**: a browser page — a fourth `src/viewer/`-family app, or a mode of the existing one, reusing its MEMFS staging and WASM worker rather than a new render stack — to build and curate a `DatasetManifest` visually: point it at a set of local files/directories, preview each solution (and, for a time series, scrub through its steps) through the existing viewer pipeline, assign splits/tags/group, and edit each case's notes — writing straight back to the same `DatasetManifest` JSON (the format shipped in v9.28.0, `doc/datasets.md`) rather than separate UI-only state, so a session can freely mix hand edits and UI edits without either clobbering the other. This is what makes the dataset manager usable by someone who is not scripting the manifest by hand, and is the natural place to surface per-entry `data_info`/`quality` summaries so a bad case is visible before it corrupts a training split. **M**
 - **Adapter follow-ups, recorded with reasons in `doc/physicsnemo.md`**: autoregressive t→t+1 target pairing (`target_fields` is same-step in v1), and a `physicsnemo.mesh.Mesh` bridge — deferred while that type stays simplicial-only with a self-declared-unstable `.pmsh` format; if it stabilizes, an upstream `io_meshio.py` mirroring `io_pyvista`'s shape is the natural form. **S–M**
+- **Dataset-manager UI follow-ups**: persistent directory handles (IndexedDB) so a reload keeps write access without re-picking, and per-entry `quality` summaries beside the NaN/Inf scan. **S**
 
 ---
 
@@ -89,6 +89,6 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 ## Suggested sequencing
 
 1. **Primitive constructors (§8, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
-2. **PhysicsNeMo integration (§1)** — shipped in v9.28.0 through the worked example (recon note, adapter, dataset manager, recipes); only the dataset-manager UI remains, once the manifest format has seen some real use.
+2. **PhysicsNeMo integration (§1)** — shipped: v9.28.0 through the worked example (recon note, adapter, dataset manager, recipes), v9.29.0 the dataset-manager UI; only the small adapter/UI follow-ups remain.
 3. **Fuzzing (§6)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
 4. **NURBS spike (§7)** — a documented investigation, scheduled independently of the rest.

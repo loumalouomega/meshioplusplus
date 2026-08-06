@@ -26,6 +26,7 @@ export default defineConfig({
       { text: "Benchmarks", link: "/benchmarks" },
       { text: "CLI", link: "/cli" },
       { text: "Viewer", link: "/viewer/", target: "_self" },
+      { text: "Dataset manager", link: "/viewer/dataset.html", target: "_self" },
       { text: "API (Doxygen)", link: "/api/", target: "_self" },
     ],
 

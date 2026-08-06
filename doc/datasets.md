@@ -110,6 +110,36 @@ for entry in m:
   resolved `{"path", "step", "time", "time_source"}` plan without reading a
   mesh.
 
+## Curating in the browser
+
+The [dataset manager](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html)
+is a second page of the [browser viewer](./viewer) (v9.29.0): point it at a
+local case directory, add cases (single files, explicit lists, or a suggested
+`Pattern` verified to match your selection exactly), assign splits/tags/
+groups, edit notes and metadata, preview any entry through the viewer's own
+render pipeline — a multi-step case gets a step scrubber — and **Scan** the
+whole manifest to badge entries whose data arrays carry NaN/Inf before they
+corrupt a training split. Everything runs client-side against the same WASM
+build as the viewer; no file is uploaded anywhere.
+
+It writes the **same JSON** this page documents, with the same serialization
+(so hand edits, CLI edits and UI edits diff cleanly), and refuses to load a
+document with unknown keys rather than silently dropping what it doesn't
+understand — the single-source-of-truth rule, enforced in both directions.
+
+| capability | Chromium / Edge | Firefox / Safari |
+|---|---|---|
+| browse a case directory | File System Access picker | `webkitdirectory` input |
+| save the manifest | **in place**, back into the picked directory | downloads a copy (the browser cannot write back) |
+
+Two knowingly-accepted gaps, stated rather than hidden: fraction-based
+`assign_splits` stays in Python/the CLI (its seeded shuffle is
+`random.Random`, which a JS reimplementation could only mimic approximately —
+a "same seed, different assignment" trap worse than absence), and JavaScript
+has no int/float distinction, so a Python-written `0.0` in `Times`
+normalizes to `0` on the first UI save (a one-time diff line; the values are
+equal).
+
 ## Relation to `write_dataset`'s manifest
 
 [`write_dataset`](./ml#dataset-export-write_dataset) emits
