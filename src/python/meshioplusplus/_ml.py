@@ -365,8 +365,8 @@ def write_dataset(
 
     Returns the manifest dict.
     """
-    from ._sequence import _resolve_time, sequence_entries
     from ._helpers import read
+    from ._sequence import _resolve_time, sequence_entries
 
     if format not in ("parquet", "zarr", "hdf5"):
         raise ValueError(

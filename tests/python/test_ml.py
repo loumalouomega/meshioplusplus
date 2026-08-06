@@ -9,7 +9,6 @@ installed; the dataset-export tests gate per backend with
 from __future__ import annotations
 
 import json
-import os
 
 import numpy as np
 import pytest
