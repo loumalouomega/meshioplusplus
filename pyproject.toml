@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "9.25.0"
+version = "9.27.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -63,7 +63,24 @@ viewer = ["polyscope>=2.4"]
 pyvista = ["pyvista>=0.44"]
 trimesh = ["trimesh>=4.0"]
 arrow = ["pyarrow>=14"]
-interop = ["pyvista>=0.44", "trimesh>=4.0", "pyarrow>=14"]
+# pandas 2.x needs Python >= 3.9 while the package floor stays 3.8 -- the mcp
+# extra's precedent: the pure payload layer works everywhere, only the frame
+# entry points need the extra.
+pandas = ["pandas>=2.0"]
+polars = ["polars>=1.0"]
+# The `write_dataset(format="zarr")` chunked-dataset backend (parquet rides
+# [arrow]; hdf5 rides h5py from [all]). Works with zarr-python 2.x and 3.x.
+# There is deliberately NO extra for torch/jax (to_torch/to_jax): torch's
+# default Linux wheel bundles CUDA at ~900 MB and JAX's accelerator variants
+# live in its own extras -- the CuPy no-extra precedent (see doc/ml.md).
+zarr = ["zarr>=2.16"]
+interop = [
+    "pyvista>=0.44",
+    "trimesh>=4.0",
+    "pyarrow>=14",
+    "pandas>=2.0",
+    "polars>=1.0",
+]
 # The MCP server (src/python/meshioplusplus/mcp/): exposes every operation to
 # AI agents over the Model Context Protocol. Python-only, lazy import, and NOT
 # in `all` for the same reason as the interop extras. Note the `mcp` SDK

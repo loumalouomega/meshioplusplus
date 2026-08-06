@@ -12,10 +12,13 @@ grid = mio.to_pyvista(mesh)          # a pyvista.UnstructuredGrid, buffers share
 grid.plot(scalars="T")
 ```
 
-Three targets ship today: **PyVista**, **trimesh**, and **Apache Arrow /
-Parquet**. Open3D and DOLFINx are [Phase 2](#phase-2-open3d-and-dolfinx).
+Five targets ship today: **PyVista**, **trimesh**, **Apache Arrow / Parquet**,
+**pandas** and **polars**. Open3D and DOLFINx are
+[Phase 2](#phase-2-open3d-and-dolfinx).
 The same story continues on the [GPU handoff page](./gpu) — DLPack export and
-CuPy transfer, built on this module's payload conventions.
+CuPy transfer — and the [ML data handling page](./ml) — graphs, feature
+matrices, dataset export and PyTorch/JAX tensors — both built on this module's
+payload conventions.
 
 Nothing here is part of the C++ core, which stays dependency-free. This is pure
 Python over the numpy the readers already return: no format is added, no binding
@@ -28,7 +31,9 @@ is touched, and every third-party import is lazy.
 | `meshioplusplus[pyvista]` | [PyVista](https://pyvista.org/) (BSD-3-Clause) | `to_pyvista` / `from_pyvista` |
 | `meshioplusplus[trimesh]` | [trimesh](https://trimesh.org/) (MIT) | `to_trimesh` / `from_trimesh` |
 | `meshioplusplus[arrow]` | [pyarrow](https://arrow.apache.org/) (Apache-2.0) | `to_arrow` / `write_parquet` / … |
-| `meshioplusplus[interop]` | all three | everything on this page |
+| `meshioplusplus[pandas]` | [pandas](https://pandas.pydata.org/) (BSD-3-Clause) | `to_pandas` |
+| `meshioplusplus[polars]` | [polars](https://pola.rs/) (MIT) | `to_polars` |
+| `meshioplusplus[interop]` | all five | everything on this page |
 
 These are **not** in `meshioplusplus[all]`. `[all]` means "the optional
 dependencies the *formats* need" — h5py and netCDF4 — and quietly adding a
@@ -44,8 +49,9 @@ ImportError: meshio++: to_pyvista: pyvista is not installed;
              install it with `pip install meshioplusplus[pyvista]`
 ```
 
-`has_pyvista()`, `has_trimesh()`, `has_arrow()`, `has_open3d()` and
-`has_dolfinx()` answer the same question without raising.
+`has_pyvista()`, `has_trimesh()`, `has_arrow()`, `has_pandas()`,
+`has_polars()`, `has_open3d()` and `has_dolfinx()` answer the same question
+without raising.
 
 ## Architecture: the pure payload layer
 
@@ -71,7 +77,10 @@ writers use), and the global block-major cell index comes from
 ## The zero-copy contract
 
 A buffer is **shared** when the target accepts the array as-is: contiguous,
-supported dtype, right shape. Every `to_*` takes `zero_copy_only`:
+supported dtype, right shape. Every `to_*` takes `zero_copy_only` — with one
+deliberate exception: [`to_polars`](#pandas-and-polars) takes none, because
+polars always copies into its own Arrow-backed buffers, and a flag that could
+only ever raise would be dishonest:
 
 - `zero_copy_only=False` (default) — copies happen, and each is recorded in a
   `notes` list surfaced as a warning. Nothing is lost silently.
@@ -226,6 +235,11 @@ in meshio++'s format registry, so `meshioplusplus convert mesh.vtu out.parquet`
 does not work and will not be made to.
 :::
 
+For pandas and polars specifically there is also a
+[direct path](#pandas-and-polars) — `to_pandas` / `to_polars` — with no pyarrow
+or Parquet detour; Arrow remains the route when you need an on-disk file, a
+self-describing schema, or shared buffers.
+
 **Point table** — `x`/`y`/`z` (as many as the mesh has) plus one column per
 `point_data` array.
 
@@ -275,6 +289,63 @@ meshioplusplus data export mesh.vtu out.parquet --location cell
 A sub-verb of the [`data` group](./cli#meshioplusplus-data). It exists in the
 **Python CLI only** — the native C++ CLI has no counterpart, since pyarrow is a
 Python library. Same caveat as above: it exports data, not a mesh.
+
+## pandas and polars
+
+```python
+df = mio.to_pandas(mesh, location="cell")     # a pandas.DataFrame
+pf = mio.to_polars(mesh, location="point")    # a polars.DataFrame
+```
+
+The same tabular export as [Arrow](#arrow-and-parquet) — same columns, same
+point/cell tables, same "not a mesh format" caveat — but straight to a frame,
+with **no pyarrow dependency and no Parquet detour**. Both are thin wrappers
+over the same `_to_table_payload` seam `to_arrow` uses.
+
+### Multi-component arrays, revisited
+
+The Arrow rule above — a `(N, 3)` array stays one `fixed_size_list` column,
+never `v_0`/`v_1`/`v_2` — holds for polars too: `to_polars` maps it to a
+**`pl.Array(Float64, 3)`** column, so the shape survives structurally.
+
+pandas is the one target that genuinely cannot comply: a DataFrame column is
+one-dimensional, full stop. So `to_pandas` — and only `to_pandas` — flattens a
+`(N, k)` array into suffixed columns `v_0` … `v_{k-1}`, which is also the
+layout a training script wants. The grouping is recorded so nothing is lost:
+
+```python
+df = mio.to_pandas(mesh, location="point")
+list(df.columns)                              # [x, y, z, T, v_0, v_1, v_2]
+df.attrs["meshioplusplus:components"]         # '{"v":["v_0","v_1","v_2"]}'
+```
+
+If an expanded name collides with an existing column (a scalar `v_1` next to a
+vector `v`), the first-produced column wins and the later one is dropped with a
+warning — pandas cannot hold two columns of one name.
+
+### Metadata
+
+`df.attrs` carries all the [schema metadata](#schema-metadata) keys plus
+`meshioplusplus:components` above. Note pandas drops `attrs` on many
+operations, so read it before transforming the frame. polars has **no**
+attrs/metadata slot at all; the shape survives structurally, and `to_arrow`
+remains the self-describing-table path.
+
+### Copy semantics
+
+`to_pandas` takes `zero_copy_only` like every other `to_*`, and sharing is
+measured, never assumed. A multi-component array **always** copies here (the
+suffix expansion slices a row-major array), so under `zero_copy_only=True` it
+raises, pointing at `to_arrow` as the shared-buffer path for vector data.
+`to_polars` takes no `zero_copy_only` — polars always copies into its own
+Arrow-backed buffers, so the frame is independent of the mesh by construction.
+
+### No `from_pandas` / `from_polars`
+
+Deliberate, not an omission: the "from" direction of a table target returns
+plain arrays, not a `Mesh` (a table never carried the geometry), and a frame is
+one `{c: df[c].to_numpy() for c in df.columns}` away from the dict `from_arrow`
+already returns.
 
 ## Phase 2: Open3D and DOLFINx
 

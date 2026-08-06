@@ -368,6 +368,59 @@ def test_table_payload_unknown_location():
         _interop._to_table_payload(_mixed_mesh(), "field")
 
 
+def test_table_payload_unknown_location_names_op():
+    with pytest.raises(ValueError, match="to_pandas"):
+        _interop._to_table_payload(_mixed_mesh(), "field", op="to_pandas")
+
+
+# --------------------------------------------------------------------------- #
+# pure payload: frame columns (the pandas suffix expansion)                   #
+# --------------------------------------------------------------------------- #
+def test_frame_columns_expands_components():
+    payload = _interop._to_table_payload(_mixed_mesh(), "point")
+    columns, groups = _interop._frame_columns(payload)
+
+    assert [c.name for c in columns] == ["x", "y", "z", "T", "v_0", "v_1", "v_2"]
+    assert all(c.components == 1 for c in columns)
+    assert groups == {"v": ["v_0", "v_1", "v_2"]}
+    by_name = {c.name: c for c in columns}
+    v = _mixed_mesh().point_data["v"]
+    for i in range(3):
+        assert by_name[f"v_{i}"].values.tolist() == v[:, i].tolist()
+        # The expansion inherits the source's derived flag: v is real mesh
+        # data, so its components are copy-noted, unlike x/y/z.
+        assert by_name[f"v_{i}"].derived is False
+
+
+def test_frame_columns_scalar_passthrough_is_identity():
+    payload = _interop._to_table_payload(_mixed_mesh(), "point")
+    columns, _ = _interop._frame_columns(payload)
+
+    by_name = {c.name: c for c in columns}
+    for original in payload.columns:
+        if original.components == 1:
+            assert by_name[original.name] is original
+
+
+def test_frame_columns_collision_drops_with_note():
+    mesh = _mixed_mesh()
+    # A scalar whose name is exactly what expanding `v` produces. Sorted data
+    # names put `v` before `v_1`, so the expansion claims the name first.
+    mesh.point_data["v_1"] = np.arange(5, dtype=np.float64)
+    payload = _interop._to_table_payload(mesh, "point")
+    columns, groups = _interop._frame_columns(payload)
+
+    names = [c.name for c in columns]
+    assert names == ["x", "y", "z", "T", "v_0", "v_1", "v_2"]
+    assert groups == {"v": ["v_0", "v_1", "v_2"]}
+    # The v_1 column that survived is the vector component, not the scalar.
+    by_name = {c.name: c for c in columns}
+    assert by_name["v_1"].values.tolist() == mesh.point_data["v"][:, 1].tolist()
+    assert any(
+        "column 'v_1' was dropped" in note for note in payload.notes
+    ), payload.notes
+
+
 # --------------------------------------------------------------------------- #
 # predicates, named errors, Phase 2                                           #
 # --------------------------------------------------------------------------- #
@@ -384,6 +437,8 @@ def test_predicates_are_booleans():
         _interop.has_pyvista,
         _interop.has_trimesh,
         _interop.has_arrow,
+        _interop.has_pandas,
+        _interop.has_polars,
         _interop.has_open3d,
         _interop.has_dolfinx,
     ):
@@ -408,9 +463,13 @@ def test_public_api_is_exported():
         "from_arrow",
         "write_parquet",
         "read_parquet",
+        "to_pandas",
+        "to_polars",
         "has_pyvista",
         "has_trimesh",
         "has_arrow",
+        "has_pandas",
+        "has_polars",
     ):
         assert name in meshioplusplus.__all__
         assert hasattr(meshioplusplus, name)
@@ -736,3 +795,96 @@ def test_cli_data_export(tmp_path):
     )
     arrays = meshioplusplus.read_parquet(outfile)
     assert arrays["mat"].tolist() == [1, 2]
+
+
+# --------------------------------------------------------------------------- #
+# gated: pandas                                                               #
+# --------------------------------------------------------------------------- #
+def test_pandas_point_frame():
+    pytest.importorskip("pandas")
+    mesh = _mixed_mesh()
+    df = meshioplusplus.to_pandas(mesh, "point")
+
+    assert list(df.columns) == ["x", "y", "z", "T", "v_0", "v_1", "v_2"]
+    assert len(df) == 5
+    assert df["T"].dtype == np.float64
+    assert df["v_1"].tolist() == mesh.point_data["v"][:, 1].tolist()
+
+
+def test_pandas_cell_frame():
+    pytest.importorskip("pandas")
+    df = meshioplusplus.to_pandas(_mixed_mesh(), "cell")
+
+    assert list(df.columns) == ["block", "cell_type", "cell", "mat"]
+    assert df["cell_type"].tolist() == ["triangle", "quad", "tetra", "tetra"]
+    assert df["cell"].tolist() == [0, 1, 2, 3]
+    assert df["mat"].dtype == np.int64
+    assert df["mat"].tolist() == [10, 20, 30, 31]
+
+
+def test_pandas_attrs_metadata():
+    pytest.importorskip("pandas")
+    df = meshioplusplus.to_pandas(_mixed_mesh(), "point")
+
+    assert df.attrs["meshioplusplus:location"] == "point"
+    assert df.attrs["meshioplusplus:num_points"] == "5"
+    assert json.loads(df.attrs[_interop.COMPONENTS_META_KEY]) == {
+        "v": ["v_0", "v_1", "v_2"]
+    }
+    # No expansion -> the key is still present, recording that fact.
+    cells = meshioplusplus.to_pandas(_mixed_mesh(), "cell")
+    assert json.loads(cells.attrs[_interop.COMPONENTS_META_KEY]) == {}
+
+
+def test_pandas_expansion_warns_and_zero_copy_raises(monkeypatch):
+    pytest.importorskip("pandas")
+    recorded = []
+    monkeypatch.setattr(_interop, "warn", lambda s, highlight=True: recorded.append(s))
+    mesh = _mixed_mesh()
+
+    meshioplusplus.to_pandas(mesh, "point")
+    assert any("column 'v'" in s for s in recorded), recorded
+
+    with pytest.raises(_interop.InteropError, match="column 'v'"):
+        meshioplusplus.to_pandas(mesh, "point", zero_copy_only=True)
+
+
+def test_pandas_scalar_sharing_is_honest(monkeypatch):
+    """A scalar column is either genuinely shared or its copy was warned."""
+    pytest.importorskip("pandas")
+    recorded = []
+    monkeypatch.setattr(_interop, "warn", lambda s, highlight=True: recorded.append(s))
+    mesh = _triangle_mesh()
+    del mesh.point_data["v"]  # keep the frame all-scalar
+
+    df = meshioplusplus.to_pandas(mesh, "point")
+    shared = np.shares_memory(df["T"].to_numpy(), mesh.point_data["T"])
+    warned = any("column 'T'" in s for s in recorded)
+    assert shared != warned, (shared, recorded)
+
+
+# --------------------------------------------------------------------------- #
+# gated: polars                                                               #
+# --------------------------------------------------------------------------- #
+def test_polars_point_frame():
+    pl = pytest.importorskip("polars")
+    mesh = _mixed_mesh()
+    df = meshioplusplus.to_polars(mesh, "point")
+
+    assert df.columns == ["x", "y", "z", "T", "v"]
+    assert df.height == 5
+    # The (n, 3) shape survives structurally -- no suffix columns.
+    assert df.schema["v"] == pl.Array(pl.Float64, 3)
+    assert df["v"].to_numpy().shape == (5, 3)
+    assert np.allclose(df["v"].to_numpy(), mesh.point_data["v"])
+
+
+def test_polars_cell_frame():
+    pl = pytest.importorskip("polars")
+    df = meshioplusplus.to_polars(_mixed_mesh(), "cell")
+
+    assert df.columns == ["block", "cell_type", "cell", "mat"]
+    assert df.schema["cell_type"] == pl.String
+    assert df["cell_type"].to_list() == ["triangle", "quad", "tetra", "tetra"]
+    assert df.schema["mat"] == pl.Int64
+    assert df["mat"].to_list() == [10, 20, 30, 31]

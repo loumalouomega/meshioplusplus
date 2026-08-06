@@ -8,6 +8,68 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.27.0 (2026-08-05)
+
+**The ML gap, closed.** The roadmap's machine-learning section ships in full —
+graphs, feature matrices, dataset export and framework tensors, all pure
+Python over existing machinery (the table payload, the smoothing layer's edge
+topology, the sequence engine). The section is removed from the roadmap; the
+C++/WASM/C/Fortran core is untouched and the ABI version does not move.
+
+- **`edge_index(mesh, kind="node"|"cell", undirected=True)`** — the mesh as a
+  graph in the `(2, E)` int64 layout PyTorch Geometric and DGL expect. The
+  node graph reuses the smooth/`node_adjacency` edge topology (polygon blocks
+  contribute closed rings, routed by type name — a uniform n-gon stores
+  rectangularly); `kind="cell"` is the facet-sharing dual in global
+  block-major numbering. Both directions by default (the PyG convention),
+  lexsorted and deterministic.
+- **`feature_matrix(mesh, location, fields=, coords=, regions=)`** — a
+  `(N, F)` float64 matrix with a **stable, versioned column-order contract**
+  (`FEATURE_SCHEMA_VERSION` 1): coordinates, then data arrays (multi-component
+  expanded via the pandas suffix rule — one rule repo-wide), then
+  `region:<name>` one-hots in `Region.key` order. The returned
+  `FeatureMatrix.columns`/`schema` record the order so training and inference
+  cannot silently disagree.
+- **`write_dataset(source, path, format="parquet"|"zarr"|"hdf5")`** — a *set*
+  of meshes (glob / list / multi-step file, via the sequence machinery,
+  streaming one mesh at a time) as one `mesh_id`-keyed dataset:
+  hive-partitioned Parquet with a JSON manifest, or chunked Zarr/HDF5 groups
+  for out-of-memory datasets. The schema is strict — the first mesh defines
+  it, a mismatch is a named error — and a failed run leaves no manifest. New
+  `[zarr]` extra (zarr-python 2.x and 3.x); CLI verb `data export-dataset`;
+  MCP tool `export_dataset`.
+- **`to_torch(mesh, device=)` / `to_jax(mesh)`** — the DLPack payload adopted
+  per framework: torch host adoption is genuinely zero-copy (measured),
+  `device=` is one recorded bus transfer per array; JAX placement follows
+  JAX's default device with a documented x64 fallback. Deliberately **no
+  `[torch]`/`[jax]` extra** (the CuPy precedent); `has_torch()`/`has_jax()`/
+  `has_zarr()` answer availability without raising.
+
+## v9.26.0 (2026-08-05)
+
+**DataFrames directly.** The Arrow table payload now feeds pandas and polars
+without a pyarrow or Parquet detour, closing the first item of the roadmap's
+machine-learning section. Pure Python over the existing `_to_table_payload`
+seam; the C++/WASM/C/Fortran core is untouched and the ABI version does not
+move.
+
+- **`to_pandas(mesh, location=...)`** — one data location as a
+  `pandas.DataFrame`. pandas columns are one-dimensional, so multi-component
+  arrays become suffixed flat columns (`v_0`/`v_1`/`v_2`) — uniquely here; Arrow
+  and polars keep the shape — with the grouping recorded in
+  `df.attrs["meshioplusplus:components"]` alongside the full `meshioplusplus:*`
+  metadata, so nothing is lost. Takes `zero_copy_only` like every other `to_*`;
+  scalar buffer sharing is measured, never assumed, and the expansion (always a
+  copy) raises under the flag, pointing at `to_arrow` for shared vector data.
+- **`to_polars(mesh, location=...)`** — the polars counterpart. Multi-component
+  arrays keep their true `(n, k)` shape as `pl.Array` columns. Polars always
+  copies into its own Arrow-backed buffers, so there is deliberately no
+  `zero_copy_only` — the frame is independent of the mesh by construction.
+- **`has_pandas()` / `has_polars()`**, extras `[pandas]` / `[polars]`, and a
+  five-package `[interop]`. There is no `from_pandas`/`from_polars`:
+  `from_arrow` already returns plain arrays, and a table never carried the
+  geometry.
+
 ## v9.25.0 (2026-08-05)
 
 **Signed distance fields, completed.** v9.24.0 shipped the primitive; this

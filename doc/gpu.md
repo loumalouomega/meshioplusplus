@@ -109,6 +109,24 @@ float64/int64 arrays are shared as-is, anything that would copy is noted, and
 Lifetime works the way numpy's own DLPack does: the exported capsule keeps the
 exporting array alive, which keeps the reader's C++-owned buffer alive.
 
+## PyTorch / JAX convenience: `to_torch`, `to_jax`
+
+When the consumer is known, the per-array `torch.from_dlpack` calls above are
+already wrapped for you:
+
+```python
+t = mio.to_torch(mesh)                 # torch tensors, host, zero-copy
+t = mio.to_torch(mesh, device="cuda")  # + one bus transfer per array
+j = mio.to_jax(mesh)                   # jax arrays, JAX's default device
+```
+
+Both return the same `DevicePayload` shape with every array adopted for you —
+`to_torch` on the host genuinely zero-copy, `device=` an honest recorded
+transfer; `to_jax` on JAX's default device with a documented x64 caveat.
+There is deliberately no `[torch]`/`[jax]` pip extra (the CuPy reasoning).
+The full story — including the PyG `Data` recipe with
+`edge_index`/`feature_matrix` — lives on the [ML data handling](./ml) page.
+
 ## dtypes: explicit opt-in downcasts only
 
 meshio++'s canonical storage is float64/int64 and that is what you get by

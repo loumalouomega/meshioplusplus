@@ -25,7 +25,13 @@ jobs:
         with:
           node-version: 20
       - name: Install Doxygen
-        run: sudo apt-get update && sudo apt-get install -y doxygen
+        # packages.microsoft.com ships preinstalled on the runner image and is
+        # unrelated to this repo; strip it first so its occasional 403/
+        # "no longer signed" state (a recurring runner-image issue) can't
+        # abort `apt-get update` before doxygen is ever fetched.
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update && sudo apt-get install -y doxygen
       - name: Build Doxygen API reference
         run: doxygen Doxyfile
         working-directory: doc

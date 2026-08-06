@@ -19,6 +19,16 @@ readers already return, and every third-party import is lazy and named:
   ``point_data`` / ``cell_data`` into pandas / polars / DuckDB and deliberately
   does not round-trip geometry. It is not registered in the format registry, so
   ``meshioplusplus convert mesh.vtu out.parquet`` does not and will not work.
+* **pandas** — ``to_pandas`` (``pip install meshioplusplus[pandas]``). The same
+  tabular export, straight to a ``pandas.DataFrame`` with no pyarrow or Parquet
+  detour. pandas columns are one-dimensional, so a multi-component array is
+  flattened into suffixed columns (``v`` → ``v_0``/``v_1``/``v_2``) with the
+  grouping recorded in ``df.attrs`` — see :func:`to_pandas`.
+* **polars** — ``to_polars`` (``pip install meshioplusplus[polars]``). The
+  polars counterpart; multi-component arrays keep their true ``(n, k)`` shape
+  as ``pl.Array`` columns. There is no ``from_pandas``/``from_polars``:
+  :func:`from_arrow` already returns plain arrays, and a frame is one
+  ``{c: df[c].to_numpy() for c in df.columns}`` away from that dict.
 
 Architecture
 ------------
@@ -37,7 +47,9 @@ The zero-copy contract
 ----------------------
 A buffer is **shared** when the target accepts the array as-is: contiguous,
 supported dtype, right shape. Anything else forces a copy, and every ``to_*``
-takes ``zero_copy_only``:
+takes ``zero_copy_only`` (the one exception is :func:`to_polars` — polars
+always copies into its own Arrow-backed buffers, so a flag that could only
+ever raise would be dishonest):
 
 * ``False`` (default) — copies happen and each is recorded in ``notes``, which
   is surfaced as a warning.
@@ -734,8 +746,11 @@ def _to_triangles_payload(mesh, zero_copy_only: bool = False) -> TrianglesPayloa
 class Column:
     """One table column.
 
-    ``components > 1`` becomes an Arrow ``fixed_size_list`` — never ``_0``/
-    ``_1``/``_2`` suffix columns, which would lose the shape.
+    ``components > 1`` keeps its shape wherever the target can hold it — an
+    Arrow ``fixed_size_list``, a polars ``pl.Array``. Only :func:`to_pandas`
+    flattens it into ``_0``/``_1``/``_2`` suffix columns (pandas columns are
+    one-dimensional), and there the grouping is recorded in ``df.attrs`` so the
+    shape is not lost.
     """
 
     name: str
@@ -783,7 +798,9 @@ def _column(name, raw, notes):
     return Column(name, np.ascontiguousarray(flat), int(flat.shape[1]))
 
 
-def _to_table_payload(mesh, location: str = "point") -> TablePayload:
+def _to_table_payload(
+    mesh, location: str = "point", op: str = "to_arrow"
+) -> TablePayload:
     """Map one data location of a mesh onto table columns.
 
     Pure: imports no third-party library and does not modify ``mesh``.
@@ -792,7 +809,9 @@ def _to_table_payload(mesh, location: str = "point") -> TablePayload:
     one column per ``point_data`` array. ``location="cell"`` builds ``block``,
     ``cell_type`` and ``cell`` — the **global block-major** cell index, the same
     numbering regions use — plus one column per ``cell_data`` array,
-    concatenated block-major.
+    concatenated block-major. ``op`` names the calling entry point in the
+    unknown-location error, so a ``to_pandas`` mistake is not reported as a
+    ``to_arrow`` one.
 
     Raises
     ------
@@ -804,7 +823,7 @@ def _to_table_payload(mesh, location: str = "point") -> TablePayload:
 
     if location not in ("point", "cell"):
         raise ValueError(
-            f"meshio++: to_arrow: unknown location '{location}' (expected point or cell)"
+            f"meshio++: {op}: unknown location '{location}' (expected point or cell)"
         )
 
     notes: list = []
@@ -910,6 +929,16 @@ def has_trimesh() -> bool:
 def has_arrow() -> bool:
     """Whether pyarrow is installed (``pip install meshioplusplus[arrow]``)."""
     return _importable("pyarrow")
+
+
+def has_pandas() -> bool:
+    """Whether pandas is installed (``pip install meshioplusplus[pandas]``)."""
+    return _importable("pandas")
+
+
+def has_polars() -> bool:
+    """Whether polars is installed (``pip install meshioplusplus[polars]``)."""
+    return _importable("polars")
 
 
 def has_open3d() -> bool:
@@ -1232,7 +1261,7 @@ def to_arrow(mesh, location: str = "point", zero_copy_only: bool = False):
     """
     pa = _require("pyarrow", "arrow", "to_arrow")
 
-    payload = _to_table_payload(mesh, location)
+    payload = _to_table_payload(mesh, location, op="to_arrow")
 
     arrays, names = [], []
     for column in payload.columns:
@@ -1368,6 +1397,187 @@ def read_parquet(path, return_metadata: bool = False):
         for k, v in raw.items()
     }
     return arrays, metadata
+
+
+# --------------------------------------------------------------------------- #
+# pandas / polars                                                             #
+# --------------------------------------------------------------------------- #
+#: ``df.attrs`` key recording the pandas suffix expansion: compact JSON
+#: ``{source_name: [suffixed column names, in component order]}``. Always
+#: present (``"{}"`` when nothing was expanded), so the grouping — and with it
+#: the original ``(n, k)`` shape — is recoverable from the frame alone.
+COMPONENTS_META_KEY = "meshioplusplus:components"
+
+
+def _frame_columns(payload):
+    """Expand multi-component columns into suffixed one-component columns.
+
+    Pure: imports no third-party library. This is the part of :func:`to_pandas`
+    with actual decisions in it — pandas columns are one-dimensional, so a
+    ``(n, k)`` column ``v`` becomes ``v_0`` .. ``v_{k-1}`` — kept separate so it
+    is testable in the default CI matrix with pandas absent.
+
+    Returns ``(columns, groups)``: ``columns`` is a list of one-component
+    :class:`Column` in payload order (scalar columns pass through by identity,
+    no copy at this layer), ``groups`` maps each expanded source name to its
+    suffixed column names. Duplicate final names (a scalar ``v_1`` next to a
+    vector ``v``, a ``point_data["x"]`` next to the derived ``x``) keep the
+    first occurrence and drop the rest with a note appended to
+    ``payload.notes`` — pandas cannot hold two columns of one name.
+    """
+    seen: set = set()
+    columns: list = []
+    groups: dict = {}
+    for column in payload.columns:
+        if column.components == 1:
+            if column.name in seen:
+                payload.notes.append(
+                    f"column '{column.name}' was dropped "
+                    "(name collides with a column already produced)"
+                )
+                continue
+            seen.add(column.name)
+            columns.append(column)
+            continue
+        emitted = []
+        for i in range(column.components):
+            name = f"{column.name}_{i}"
+            if name in seen:
+                payload.notes.append(
+                    f"column '{name}' was dropped "
+                    "(name collides with a column already produced)"
+                )
+                continue
+            seen.add(name)
+            # A component is a strided slice of a row-major array — a copy by
+            # construction, the x/y/z argument (but these arrays DO exist in
+            # the mesh, so to_pandas records the copy; x/y/z are exempt).
+            columns.append(
+                Column(
+                    name,
+                    np.ascontiguousarray(column.values[:, i]),
+                    1,
+                    derived=column.derived,
+                )
+            )
+            emitted.append(name)
+        groups[column.name] = emitted
+    return columns, groups
+
+
+def to_pandas(mesh, location: str = "point", zero_copy_only: bool = False):
+    """Export one data location of a mesh as a :class:`pandas.DataFrame`.
+
+    **This is not a mesh format.** Like :func:`to_arrow`, it moves
+    ``point_data``/``cell_data`` into the analytics stack without a file
+    round-trip; it does not carry geometry, and there is no ``from_pandas`` —
+    :func:`from_arrow` already returns plain arrays, and a frame is one
+    ``{c: df[c].to_numpy() for c in df.columns}`` away from that dict.
+
+    pandas columns are one-dimensional, so — unlike Arrow's
+    ``fixed_size_list`` and polars' ``pl.Array`` — a multi-component array
+    ``v`` is flattened into suffixed columns ``v_0``/``v_1``/``v_2``. The
+    grouping is recorded in ``df.attrs["meshioplusplus:components"]`` (compact
+    JSON, source name → suffixed names) alongside the full ``meshioplusplus:*``
+    metadata :func:`to_arrow` puts in the schema, so nothing is lost — but note
+    pandas drops ``attrs`` on many operations.
+
+    Parameters
+    ----------
+    mesh :
+        the mesh to export (unmodified).
+    location :
+        ``"point"`` (default) or ``"cell"``.
+    zero_copy_only :
+        when true, raise instead of copying a numeric buffer that exists in
+        the mesh. A multi-component array **always** copies here (the suffix
+        expansion slices a row-major array), so under this flag it raises —
+        :func:`to_arrow` is the shared-buffer path for vector data. Scalar
+        sharing is measured, never assumed.
+
+    Raises
+    ------
+    ImportError
+        when pandas is not installed.
+    InteropError
+        under ``zero_copy_only=True`` when a mesh array had to be copied.
+    """
+    pd = _require("pandas", "pandas", "to_pandas")
+
+    payload = _to_table_payload(mesh, location, op="to_pandas")
+    columns, groups = _frame_columns(payload)
+    for name, emitted in groups.items():
+        _copy_note(
+            "to_pandas",
+            f"column '{name}'",
+            "pandas frames hold 1-D columns only; expanding to "
+            f"{', '.join(emitted)} copies (to_arrow keeps the shape)",
+            payload.notes,
+            {},
+            zero_copy_only,
+        )
+    expanded = {name for emitted in groups.values() for name in emitted}
+
+    # copy=False is load-bearing: pandas >= 2.0 copies a dict of ndarrays by
+    # default. No _meshioplusplus_refs list is needed here, unlike PyVista —
+    # a shared column is a numpy view whose .base chain keeps the mesh's
+    # capsule-backed buffer alive by ordinary refcounting.
+    df = pd.DataFrame({c.name: c.values for c in columns}, copy=False)
+    for column in columns:
+        if column.derived or column.name in expanded:
+            continue
+        if column.values.dtype == object:
+            continue
+        # Measured, not assumed — the _arrow_shares precedent.
+        if not np.shares_memory(df[column.name].to_numpy(), column.values):
+            _copy_note(
+                "to_pandas",
+                f"column '{column.name}'",
+                f"pandas materialized its {column.values.dtype} buffer",
+                payload.notes,
+                {},
+                zero_copy_only,
+            )
+    _emit("to_pandas", payload.notes)
+
+    df.attrs = dict(payload.metadata)
+    df.attrs[COMPONENTS_META_KEY] = json.dumps(groups, separators=(",", ":"))
+    return df
+
+
+def to_polars(mesh, location: str = "point"):
+    """Export one data location of a mesh as a :class:`polars.DataFrame`.
+
+    **This is not a mesh format** — :func:`to_arrow`'s caveat verbatim, and
+    like pandas there is deliberately no ``from_polars``.
+
+    Multi-component arrays keep their true ``(n, k)`` shape as ``pl.Array``
+    columns; the derived ``cell_type`` strings become ``pl.String``. There is
+    **no** ``zero_copy_only`` parameter — polars always copies into its own
+    Arrow-backed buffers, so the frame is independent of the mesh by
+    construction and a flag that could only ever raise would be dishonest
+    (use :func:`to_arrow` when you need shared buffers). Polars also has no
+    ``attrs``/schema-metadata slot, so the ``meshioplusplus:*`` metadata does
+    not ride along; :func:`to_arrow` is the self-describing-table path.
+
+    Raises
+    ------
+    ImportError
+        when polars is not installed.
+    """
+    pl = _require("polars", "polars", "to_polars")
+
+    payload = _to_table_payload(mesh, location, op="to_polars")
+    series = []
+    for column in payload.columns:
+        if column.values.dtype == object:
+            series.append(pl.Series(column.name, list(column.values), dtype=pl.String))
+        else:
+            # A (n, k) numpy array maps to pl.Array(inner, k) — the shape
+            # survives structurally, which is why polars needs no suffix rule.
+            series.append(pl.Series(column.name, column.values))
+    _emit("to_polars", payload.notes)
+    return pl.DataFrame(series)
 
 
 # --------------------------------------------------------------------------- #

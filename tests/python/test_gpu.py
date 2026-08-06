@@ -367,14 +367,63 @@ def test_to_cupy_without_cupy_names_the_wheel(monkeypatch):
 def test_predicates_are_booleans():
     assert isinstance(meshioplusplus.has_cupy(), bool)
     assert isinstance(meshioplusplus.has_cuda_device(), bool)
+    assert isinstance(meshioplusplus.has_torch(), bool)
+    assert isinstance(meshioplusplus.has_jax(), bool)
     if not meshioplusplus.has_cupy():
         assert meshioplusplus.has_cuda_device() is False
 
 
 def test_public_api_is_exported():
-    for name in ("to_dlpack", "to_cupy", "from_cupy", "has_cupy", "has_cuda_device"):
+    for name in (
+        "to_dlpack",
+        "to_cupy",
+        "from_cupy",
+        "has_cupy",
+        "has_cuda_device",
+        "to_torch",
+        "to_jax",
+        "has_torch",
+        "has_jax",
+    ):
         assert name in meshioplusplus.__all__
         assert hasattr(meshioplusplus, name)
+
+
+# --------------------------------------------------------------------------- #
+# PyTorch / JAX tensor handoff                                                #
+# --------------------------------------------------------------------------- #
+def test_require_framework_names_the_install_command(monkeypatch):
+    monkeypatch.setattr(_gpu, "_importable", lambda module: False)
+    with pytest.raises(ImportError, match="pip install torch") as excinfo:
+        meshioplusplus.to_torch(_triangle_mesh())
+    # No pip extra exists for torch/jax, deliberately — the CuPy precedent.
+    assert "meshioplusplus[" not in str(excinfo.value)
+    with pytest.raises(ImportError, match="pip install jax"):
+        meshioplusplus.to_jax(_triangle_mesh())
+
+
+def test_to_torch_adopts_host_buffers():
+    torch = pytest.importorskip("torch")
+    mesh = _triangle_mesh()
+    payload = meshioplusplus.to_torch(mesh)
+
+    assert isinstance(payload.points, torch.Tensor)
+    assert np.array_equal(payload.points.numpy(), mesh.points)
+    # Host adoption is genuinely zero-copy — measured, not assumed.
+    assert np.shares_memory(payload.points.numpy(), mesh.points)
+    assert np.shares_memory(payload.point_data["T"].numpy(), mesh.point_data["T"])
+    assert payload.cells[0].type == "triangle"
+    assert np.array_equal(payload.cells[0].data.numpy(), mesh.cells[0].data)
+
+
+def test_to_jax_adopts_arrays():
+    jnp = pytest.importorskip("jax.numpy")
+    mesh = _triangle_mesh()
+    payload = meshioplusplus.to_jax(mesh)
+
+    assert isinstance(payload.points, jnp.ndarray)
+    assert np.allclose(np.asarray(payload.points), mesh.points)
+    assert np.allclose(np.asarray(payload.point_data["T"]), mesh.point_data["T"])
 
 
 @needs_dlpack
